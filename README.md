@@ -13,10 +13,33 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 | 1 | Repo, SQLite schema, MCP server | done |
 | 2 | Design bible + lore graph + canon_check | done |
 | 3 | Blender adapter (headless bpy → render + mesh stats) | done |
-| 4 | Godot adapter + 2D template | needs Godot |
-| 5 | Playtest harness + QA gate | |
-| 6 | 3D template + asset registry/locking | |
+| 4 | Godot adapter (headless run + project check) | done |
+| 5 | Playtest recording → transcript → brief | done |
+| 5b | 2D/3D project templates + telemetry autoload | next |
+| 6 | Asset registry + binary locking | |
 | 7 | Agent seats + fan-out | |
+
+## Playtest mode
+
+Play the game, talk out loud, get an agent-readable brief.
+
+```
+playtest_check    → preflight: ffmpeg, mic SIGNAL, transcriber, target window
+playtest_start    → records game window (gdigrab) + your voice
+   …play, and say what you like / what needs fixing…
+playtest_stop     → whisper transcribes, classifies, aligns, extracts frames
+playtest_brief    → what the agents read
+playtest_promote  → YOU decide what becomes work
+```
+
+**Agents cannot watch video.** The mp4 is for you. The brief is transcript +
+frames pulled at each remark + game telemetry joined on one clock — so "the jump
+feels floaty" arrives next to `jump {air_time: 0.94}`. The game emits JSONL
+events (`playtest_telemetry_contract`); that join is what turns a vibe into a
+number an agent can act on.
+
+Items land as `new` and stay there until you promote them. Thinking out loud
+mid-play is not a decision to build.
 
 ## Layout
 
@@ -88,6 +111,40 @@ an agent's real render should never be the one that stalls. Iterate on
 **`bpy.ops.uv.smart_project` needs EDIT mode.** In OBJECT mode it fails
 `poll()`. In EDIT mode it's fine headless (~0.5s) — it does not hang, despite the
 folklore.
+
+**Subprocesses from a stdio MCP server MUST use `stdin=DEVNULL`.** The server's
+stdin *is* the client's protocol channel; a child that inherits it blocks forever
+at ~0% CPU and can corrupt the session. This presents as a *slow* render and gets
+misdiagnosed as a GPU stall. Tell: works standalone (stdin is a terminal), hangs
+under the server. Diagnose by **CPU time, not wall clock** — an idle child is
+blocked, a busy one is genuinely slow. Cost us an hour on the Blender adapter.
+
+**Godot's plain `.exe` does NOT lose stdout when piped** — measured on 4.7.1,
+both it and `_console.exe` deliver identical output. The console variant is a
+~200KB launcher that only attaches a console *window* for double-clicking. We
+prefer the main exe: same output, one less process to leak on a kill.
+
+**A failed unzip leaves a 0-byte `.exe`** that looks installed and fails with
+"not recognized as a program". Discovery rejects stubs under 64KB.
+
+**ctranslate2's `device="auto"` picks CUDA on any NVIDIA box** without checking
+that the CUDA libraries load — then dies at inference with `cublas64_12.dll is
+not found`. Worse, `WhisperModel(...)` construction touches no CUDA and
+`transcribe()` returns a **lazy generator**, so a naive probe "succeeds" without
+running an encode. The runner consumes the generator to force a real encode, then
+falls back to CPU/int8 and reports why.
+
+**Whisper segments are not utterances.** One segment routinely holds several
+remarks: *"the jump feels floaty. I do not like it. But I love the music here."*
+Classified whole, that becomes ONE item routed to **audio** (the word "music"
+wins) — a physics complaint lands on the wrong seat and the compliment vanishes.
+Segments are split per sentence with interpolated timestamps.
+
+**Speech-to-text does not preserve your word choice.** "floaty" comes back as
+"floating"; `\benemy\b` silently misses "the enemies are too fast". Match stems,
+not the adjective you imagined. Short pronoun remarks ("I do not like it") carry
+no routable noun and inherit the previous seat — but only within a segment, since
+across a pause "it" is anyone's guess.
 
 ## Choices worth knowing
 

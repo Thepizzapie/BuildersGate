@@ -22,3 +22,6 @@ packages = ["bgate_core", "bgate_mcp", "bgate_adapters", "bgate_cli"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: hits real Blender/whisper — deselect with -m 'not slow'",
+]

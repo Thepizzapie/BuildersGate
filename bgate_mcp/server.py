@@ -16,7 +16,10 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from bgate_adapters import blender as _blender
+from bgate_adapters import godot as _godot
+from bgate_adapters import recorder as _recorder
 from bgate_core import bible as _bible
+from bgate_core import playtest as _playtest
 from bgate_core import canon as _canon
 from bgate_core import db as _db
 from bgate_core import lore as _lore
@@ -286,6 +289,170 @@ def blender_scene_stats(blend_file: str) -> dict:
     """Report an existing .blend without modifying it — objects, tris, materials."""
     try:
         return _blender.scene_stats(blend_file)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Godot
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def godot_status() -> dict:
+    """Is Godot available, and which version? Check before engine work."""
+    try:
+        probe = _godot.available()
+        return {**probe, **(_godot.version() if probe["available"] else {})}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_run(script: str, project_dir: Optional[str] = None,
+              timeout: int = 120) -> dict:
+    """Run a GDScript headless and capture its output.
+
+    The script MUST `extends SceneTree`, do its work in `_init()`, and call
+    `quit()` — without quit() it runs until the timeout. Returns stdout, stderr,
+    and any parse/script errors (Godot prints SCRIPT ERROR and still exits 0, so
+    check `errors`, not just the exit code).
+    """
+    try:
+        return _godot.run_script(script, project_dir=project_dir, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_check_project(project_dir: str, timeout: int = 180) -> dict:
+    """Import/validate a project headless — the 'does it still build' check."""
+    try:
+        return _godot.check_project(project_dir, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Playtest
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def playtest_devices(filter_text: str = "") -> dict:
+    """List mic inputs and open windows — pick what to record before starting."""
+    try:
+        return {
+            "inputs": _recorder.list_inputs(),
+            "windows": _recorder.list_windows(filter_text),
+            "note": "pass an input 'index' as mic_device, and a window 'title' "
+                    "as window_title",
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_check(mic_device: Optional[int] = None,
+                   window_title: Optional[str] = None) -> dict:
+    """Preflight a session: ffmpeg, mic SIGNAL, transcriber, target window.
+
+    ALWAYS run this before playtest_start. It records a short mic sample and
+    measures level — a muted or unplugged mic records perfect digital silence,
+    which looks identical to a working one until the transcript comes back empty
+    and the whole playthrough is wasted.
+    """
+    try:
+        return _playtest.preflight(mic_device=mic_device, window_title=window_title)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_start(name: str, window_title: Optional[str] = None,
+                   mic_device: Optional[int] = None, build_ref: str = "",
+                   fps: int = 30) -> dict:
+    """Start recording a play session — game window video + your voice.
+
+    Play the game and talk out loud about what you like and what needs changing.
+    Say it near when it happens; feedback is matched to game events by timestamp.
+
+    window_title: match the game window (None = whole desktop). build_ref: the
+    commit/build under test. Returns telemetry_path — the game should append
+    JSONL events there (see playtest_telemetry_contract).
+    """
+    try:
+        return _playtest.start(_root(), name, window_title=window_title,
+                               mic_device=mic_device, build_ref=build_ref, fps=fps)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_stop(session_id: Optional[int] = None, model: str = "base",
+                  transcribe_now: bool = True) -> dict:
+    """Stop recording, then transcribe, align, and classify feedback.
+
+    Transcription runs a whisper model in a subprocess; expect roughly a minute
+    per 10 minutes of audio on CPU (the first run also downloads the model).
+    Items land as 'new' — nothing becomes work until you promote it.
+    """
+    try:
+        return _playtest.stop(_root(), session_id, model=model,
+                              transcribe_now=transcribe_now)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_brief(session_id: int, include_transcript: bool = False,
+                   window_s: float = 4.0) -> dict:
+    """The session as agents should read it: feedback + frames + telemetry.
+
+    Agents CANNOT watch the video. This returns each feedback item with a frame
+    captured at that moment and the game events within window_s of it — so
+    "the jump feels floaty" arrives next to the actual jump's air_time.
+    """
+    try:
+        return _playtest.brief(_root(), session_id, window_s=window_s,
+                               include_transcript=include_transcript)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_list(status: Optional[str] = None) -> dict:
+    """List play sessions. status: recording | processing | ready | failed."""
+    try:
+        return {"sessions": _playtest.list_sessions(_root(), status=status)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_promote(item_id: int, seat: Optional[str] = None,
+                     kind: Optional[str] = None, ref: str = "") -> dict:
+    """Accept a feedback item as real work, optionally re-routing it.
+
+    This is the human's call. Do not promote items on the user's behalf without
+    being asked — thinking out loud mid-play is not a decision to build.
+    """
+    try:
+        return _playtest.promote(_root(), item_id, seat=seat, kind=kind, ref=ref)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_dismiss(item_id: int) -> dict:
+    """Drop a feedback item — noise, or already handled."""
+    try:
+        return _playtest.dismiss(_root(), item_id)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def playtest_telemetry_contract() -> dict:
+    """What the game must emit so spoken feedback becomes actionable numbers."""
+    try:
+        return _playtest.telemetry_contract()
     except Exception as exc:
         return _fail(exc)
 

@@ -113,6 +113,74 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_asset_lock ON asset(lock_seat);
     """,
+    # 0002 — playtest sessions: recording, transcript, telemetry, feedback.
+    """
+    -- One play session. The VIDEO is for the human; the agent-facing artifact is
+    -- the aligned transcript + frames + telemetry (agents cannot watch video).
+    -- All t_* columns are SECONDS FROM SESSION START — the one clock everything
+    -- joins on.
+    CREATE TABLE playtest_session (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        name           TEXT NOT NULL,
+        slug           TEXT NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'recording'
+                           CHECK (status IN ('recording','processing','ready','failed')),
+        started_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        ended_at       TEXT,
+        duration_s     REAL NOT NULL DEFAULT 0,
+        video_path     TEXT,
+        audio_path     TEXT,
+        telemetry_path TEXT,
+        frames_dir     TEXT,
+        game_cmd       TEXT NOT NULL DEFAULT '',
+        build_ref      TEXT NOT NULL DEFAULT '',
+        error          TEXT,
+        notes          TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX idx_session_status ON playtest_session(status);
+
+    -- Transcript segments, timestamped against session start.
+    CREATE TABLE playtest_segment (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  INTEGER NOT NULL REFERENCES playtest_session(id) ON DELETE CASCADE,
+        t_start     REAL NOT NULL,
+        t_end       REAL NOT NULL,
+        text        TEXT NOT NULL,
+        confidence  REAL
+    );
+    CREATE INDEX idx_segment_session ON playtest_segment(session_id, t_start);
+
+    -- Feedback items lifted from the transcript. status stays 'new' until the
+    -- human promotes it: thinking out loud mid-play must not become backlog.
+    CREATE TABLE playtest_item (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id   INTEGER NOT NULL REFERENCES playtest_session(id) ON DELETE CASCADE,
+        segment_id   INTEGER REFERENCES playtest_segment(id) ON DELETE SET NULL,
+        t            REAL NOT NULL,
+        kind         TEXT NOT NULL DEFAULT 'note'
+                         CHECK (kind IN ('like','fix','add','change','question','note')),
+        text         TEXT NOT NULL,
+        seat         TEXT NOT NULL DEFAULT 'unassigned',
+        frame_path   TEXT,
+        status       TEXT NOT NULL DEFAULT 'new'
+                         CHECK (status IN ('new','promoted','dismissed')),
+        promoted_ref TEXT
+    );
+    CREATE INDEX idx_item_session ON playtest_item(session_id, t);
+    CREATE INDEX idx_item_status ON playtest_item(status);
+
+    -- Game-emitted events (JSONL), indexed on the same clock as the transcript.
+    -- This is what turns "the jump feels floaty" into a number an agent can act on.
+    CREATE TABLE playtest_event (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  INTEGER NOT NULL REFERENCES playtest_session(id) ON DELETE CASCADE,
+        t           REAL NOT NULL,
+        kind        TEXT NOT NULL,
+        data        TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX idx_event_session ON playtest_event(session_id, t);
+    CREATE INDEX idx_event_kind ON playtest_event(session_id, kind);
+    """,
 ]
 
 
