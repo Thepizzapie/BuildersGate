@@ -16,8 +16,32 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 | 4 | Godot adapter (headless run + project check) | done |
 | 5 | Playtest recording → transcript → brief | done |
 | 5b | 2D/3D templates + telemetry autoload | done |
-| 6 | Asset registry + binary locking | next |
-| 7 | Agent seats + fan-out | |
+| 6 | Blender→Godot asset round trip (glTF) | done |
+| 7 | Asset registry + binary locking | |
+| 8 | Agent seats + fan-out | |
+
+## The Blender → Godot round trip
+
+The spine: an agent models in Blender, exports glTF, and the asset lands usable
+in Godot — verified in the engine, not just on disk.
+
+```
+blender_export_gltf(out.glb, script=…)   # build + export; modifiers APPLIED
+godot_import_asset(project, out.glb)      # copy in, import, load in-engine
+   → engine_view: {total_tris, meshes:[{tris, has_uv, material, aabb}]}
+```
+
+`godot_import_asset` doesn't trust the file — it loads the resource inside a real
+headless Godot and reports the mesh the *engine* built. A `.glb` that imports with
+zero surfaces is a silent failure; checking tri counts on both ends catches it.
+Measured end to end: a beveled shard came out **106 tris in Blender → 106 tris in
+Godot**, UVs and material intact. Matching counts prove the modifier survived —
+which it only does because export applies modifiers (Blender defaults that off,
+and a naive export ships the un-beveled base mesh).
+
+`blender_export_gltf` also returns **game-readiness issues** — no UVs (can't be
+textured), n-gons (triangulate unpredictably per exporter), unapplied/non-uniform
+scale (shears children) — each cheap to catch here, expensive to debug in-engine.
 
 ## Templates
 

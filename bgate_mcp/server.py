@@ -294,6 +294,23 @@ def blender_scene_stats(blend_file: str) -> dict:
         return _fail(exc)
 
 
+@mcp.tool()
+def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
+                        script: str = "pass", timeout: int = 240) -> dict:
+    """Export a .blend (or a bpy-script-built scene) to .glb for Godot.
+
+    Modifiers are APPLIED on export — Blender defaults that off, which silently
+    ships the base mesh and makes an asset look right in Blender and wrong in the
+    engine. Also returns game-readiness issues (no UVs, n-gons, unapplied scale)
+    worth fixing before the asset reaches a level. Pair with godot_import_asset.
+    """
+    try:
+        return _blender.export_gltf(out_path, blend_file=blend_file,
+                                    script=script, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
 # ---------------------------------------------------------------------------
 # Godot
 # ---------------------------------------------------------------------------
@@ -357,6 +374,38 @@ def godot_check_project(project_dir: str, timeout: int = 180) -> dict:
     """Import/validate a project headless — the 'does it still build' check."""
     try:
         return _godot.check_project(project_dir, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
+                       timeout: int = 240) -> dict:
+    """Bring an asset (e.g. a Blender .glb) into a project and VERIFY the engine loads it.
+
+    Copies the file in, triggers a headless import, then loads the resource
+    IN-ENGINE and reports the meshes Godot actually built — tri counts, UVs,
+    materials, bounding box. Copying a file in is not integration: an asset that
+    imports with zero surfaces is a silent failure, and this catches it by
+    checking the engine's view, not the file's presence. The end of the
+    Blender→Godot round trip.
+    """
+    try:
+        return _godot.import_asset(project_dir, src_path, dest_rel=dest_rel,
+                                   timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_inspect_resource(project_dir: str, res_path: str, timeout: int = 180) -> dict:
+    """Load a res:// resource in-engine and report what it actually became.
+
+    Meshes, tri counts, per-surface UV/material, bounding box — the engine's
+    view of an asset already in the project.
+    """
+    try:
+        return _godot.inspect_resource(project_dir, res_path, timeout=timeout)
     except Exception as exc:
         return _fail(exc)
 

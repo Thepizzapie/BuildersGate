@@ -4,7 +4,7 @@ Contract: exec the agent's script, then report the scene as structured facts.
 A crash in the agent's script must still produce a result file — a silent
 non-zero exit tells the agent nothing about what broke.
 
-argv after '--': <script_path> <result_path> <render_path|-> <engine>
+argv after '--': <script_path> <result_path> <render_path|-> <engine> <glb_path|->
 """
 import json
 import sys
@@ -66,6 +66,93 @@ def _scene_report():
     }
 
 
+def _game_readiness(depsgraph):
+    """The asset problems that only surface once it's in the engine.
+
+    Each of these is cheap here and expensive later: a mesh with no UVs cannot be
+    textured, a non-uniform scale shears every child, an off-origin mesh rotates
+    around empty air, and n-gons triangulate unpredictably across exporters.
+    """
+    import bpy
+
+    issues = []
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH":
+            continue
+        name = obj.name
+
+        scale = tuple(round(v, 4) for v in obj.scale)
+        if len({round(v, 3) for v in scale}) > 1:
+            issues.append({"object": name, "issue": "non_uniform_scale",
+                           "detail": f"scale {scale} shears children and normals",
+                           "fix": "apply scale (Ctrl+A) before export"})
+        elif any(abs(v - 1.0) > 1e-3 for v in scale):
+            issues.append({"object": name, "issue": "unapplied_scale",
+                           "detail": f"scale {scale} is baked into the object, not the mesh",
+                           "fix": "apply scale so the engine sees true dimensions"})
+
+        try:
+            evaluated = obj.evaluated_get(depsgraph)
+            mesh = evaluated.to_mesh()
+        except Exception:
+            continue
+        try:
+            if not mesh.uv_layers:
+                issues.append({"object": name, "issue": "no_uv",
+                               "detail": "cannot be textured",
+                               "fix": "unwrap (smart_project in EDIT mode)"})
+            ngons = sum(1 for p in mesh.polygons if len(p.vertices) > 4)
+            if ngons:
+                issues.append({"object": name, "issue": "ngons", "count": ngons,
+                               "detail": "n-gons triangulate unpredictably per exporter",
+                               "fix": "triangulate or use quads"})
+            if not obj.material_slots:
+                issues.append({"object": name, "issue": "no_material",
+                               "detail": "imports with a default grey material",
+                               "fix": "assign a material before export"})
+        finally:
+            try:
+                evaluated.to_mesh_clear()
+            except Exception:
+                pass
+    return issues
+
+
+def _export_glb(path):
+    """Export the scene to a single .glb, with game-appropriate settings.
+
+    export_apply=True is the one that matters: Blender defaults it to FALSE, so a
+    naive export silently ships the BASE mesh — your bevel, subsurf, and mirror
+    modifiers simply don't come out the other side. The asset looks right in
+    Blender and wrong in the engine, which is a miserable thing to debug.
+    """
+    import bpy
+
+    kwargs = {
+        "filepath": path,
+        "export_format": "GLB",       # single self-contained file
+        "export_apply": True,         # <- modifiers. see docstring.
+        "export_yup": True,           # Godot is Y-up
+        "use_selection": False,
+        "export_materials": "EXPORT",
+        "export_cameras": False,
+        "export_lights": False,
+    }
+    # Blender renames export flags between versions; drop anything this build
+    # doesn't know rather than dying on an unexpected keyword.
+    known = set(bpy.ops.export_scene.gltf.get_rna_type().properties.keys())
+    kwargs = {k: v for k, v in kwargs.items() if k in known or k == "filepath"}
+
+    bpy.ops.export_scene.gltf(**kwargs)
+    import os
+    return {
+        "exported": os.path.exists(path),
+        "path": path,
+        "bytes": os.path.getsize(path) if os.path.exists(path) else 0,
+        "applied_modifiers": kwargs.get("export_apply", False),
+    }
+
+
 def _render(path, engine):
     scene = bpy.context.scene
     if not scene.camera:
@@ -85,6 +172,7 @@ def _render(path, engine):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     script_path, result_path, render_path, engine = argv[0], argv[1], argv[2], argv[3]
+    glb_path = argv[4] if len(argv) > 4 else "-"
 
     result = {"ok": False, "error": None, "traceback": None, "print": ""}
 
@@ -111,6 +199,18 @@ def main():
         result["scene"] = _scene_report()
     except Exception as exc:
         result["scene"] = {"error": f"scene report failed: {exc}"}
+
+    try:
+        result["issues"] = _game_readiness(bpy.context.evaluated_depsgraph_get())
+    except Exception as exc:
+        result["issues"] = [{"issue": "readiness_check_failed", "detail": str(exc)}]
+
+    if glb_path != "-" and result["ok"]:
+        try:
+            result["glb"] = _export_glb(glb_path)
+        except Exception as exc:
+            result["glb"] = {"exported": False,
+                             "error": f"{type(exc).__name__}: {exc}"}
 
     if render_path != "-" and result["ok"]:
         try:

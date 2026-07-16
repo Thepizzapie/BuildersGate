@@ -193,6 +193,141 @@ def check_project(project_dir: str, timeout: int = 180) -> dict:
     }
 
 
+# Walks an imported scene and reports what the ENGINE actually got — not what
+# the exporter claimed. Printed as one JSON line between markers so it survives
+# Godot's chatty stdout.
+_INSPECT_GD = """
+extends SceneTree
+
+func _walk(node: Node, out: Array) -> void:
+	if node is MeshInstance3D and node.mesh != null:
+		var mesh: Mesh = node.mesh
+		var tris := 0
+		var surfaces := []
+		for i in mesh.get_surface_count():
+			var arrays := mesh.surface_get_arrays(i)
+			var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+			var idx = arrays[Mesh.ARRAY_INDEX]
+			var count: int = (idx.size() if idx != null else verts.size()) / 3
+			tris += count
+			var mat := mesh.surface_get_material(i)
+			surfaces.append({
+				"index": i,
+				"tris": count,
+				"has_uv": arrays[Mesh.ARRAY_TEX_UV] != null,
+				"material": (mat.resource_name if mat != null else ""),
+			})
+		var aabb := mesh.get_aabb()
+		out.append({
+			"name": node.name,
+			"tris": tris,
+			"surfaces": surfaces,
+			"aabb_size": [aabb.size.x, aabb.size.y, aabb.size.z],
+		})
+	for child in node.get_children():
+		_walk(child, out)
+
+func _init():
+	var path := OS.get_environment("BGATE_INSPECT")
+	var res = load(path)
+	if res == null:
+		print("BGATE_JSON_START")
+		print(JSON.stringify({"ok": false, "error": "engine could not load " + path}))
+		print("BGATE_JSON_END")
+		quit()
+		return
+	if not (res is PackedScene):
+		print("BGATE_JSON_START")
+		print(JSON.stringify({"ok": false,
+			"error": "loaded, but not a PackedScene: " + res.get_class()}))
+		print("BGATE_JSON_END")
+		quit()
+		return
+	var root: Node = res.instantiate()
+	var meshes := []
+	_walk(root, meshes)
+	var total := 0
+	for m in meshes:
+		total += m["tris"]
+	print("BGATE_JSON_START")
+	print(JSON.stringify({
+		"ok": true,
+		"resource": path,
+		"root": root.name,
+		"root_type": root.get_class(),
+		"meshes": meshes,
+		"total_tris": total,
+	}))
+	print("BGATE_JSON_END")
+	quit()
+"""
+
+
+def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
+                 timeout: int = 240) -> dict:
+    """Bring an asset into a Godot project and VERIFY the engine loads it.
+
+    Copies src into <project>/<dest_rel>/, triggers a headless import, then loads
+    the resource in-engine and reports the meshes Godot actually built. Copying a
+    file in is not integration — an asset that imports with zero surfaces is a
+    silent failure, so this checks the ENGINE's view, not the file's presence.
+    """
+    project = Path(project_dir)
+    if not (project / "project.godot").exists():
+        return {"ok": False, "error": f"no project.godot in {project_dir}"}
+    src = Path(src_path)
+    if not src.exists():
+        return {"ok": False, "error": f"asset not found: {src_path}"}
+
+    dest_dir = project / dest_rel
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    shutil.copy2(src, dest)
+
+    imported = check_project(str(project), timeout=timeout)
+    res_path = "res://" + str(dest.relative_to(project)).replace("\\", "/")
+    inspected = inspect_resource(str(project), res_path, timeout=timeout)
+
+    return {
+        "ok": bool(inspected.get("ok")),
+        "copied_to": str(dest),
+        "res_path": res_path,
+        "import": {"ok": imported["ok"], "errors": imported.get("errors", [])},
+        "engine_view": inspected,
+    }
+
+
+def inspect_resource(project_dir: str, res_path: str, timeout: int = 180) -> dict:
+    """Load a resource IN THE ENGINE and report what it actually became."""
+    import json
+    import tempfile
+
+    exe = find_godot()
+    tmp = Path(tempfile.mkdtemp(prefix="bgate_inspect_"))
+    script = tmp / "inspect.gd"
+    script.write_text(_INSPECT_GD, encoding="utf-8")
+
+    env = {**os.environ, "BGATE_INSPECT": res_path}
+    cmd = [exe, "--headless", "--path", str(project_dir), "--script", str(script)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL, env=env,
+                              creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"inspect timed out after {timeout}s"}
+
+    output = proc.stdout or ""
+    if "BGATE_JSON_START" not in output:
+        return {"ok": False, "error": "inspector produced no result",
+                "stdout": output[-1500:], "stderr": (proc.stderr or "")[-800:]}
+    blob = output.split("BGATE_JSON_START", 1)[1].split("BGATE_JSON_END", 1)[0].strip()
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"unreadable inspector output: {exc}",
+                "raw": blob[:500]}
+
+
 def _errors(output: str) -> list[str]:
     """Godot reports failures on stdout and keeps going; grep them out."""
     hits = []

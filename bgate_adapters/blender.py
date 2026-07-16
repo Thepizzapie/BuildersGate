@@ -118,20 +118,23 @@ def version() -> dict:
 def run_script(script: str, *, blend_file: Optional[str] = None,
                render: bool = False, out_dir: Optional[str] = None,
                engine: str = DEFAULT_ENGINE, timeout: int = 180,
-               factory_startup: bool = True) -> dict:
+               factory_startup: bool = True,
+               export_glb: Optional[str] = None) -> dict:
     """Execute a bpy script headless and report what came back.
 
     script         bpy source. `bpy` is pre-imported; importing it again is fine.
     blend_file     open this .blend first; None starts from an empty scene
                    (no default cube — scripts should build what they mean).
     render         also render the active camera to a PNG.
+    export_glb     also export the scene to this .glb (modifiers applied).
     out_dir        where renders land. Defaults to <cwd>/.bgate_out.
     engine         BLENDER_WORKBENCH (default, fast) | BLENDER_EEVEE_NEXT | CYCLES.
 
     Returns {ok, error, traceback, print, scene:{objects,totals,materials,...},
-             render:{...}, exit_code, seconds}. A failing SCRIPT is a normal
-    result with ok=False — not an exception. A failing BLENDER (missing binary,
-    timeout, unparseable result) raises or reports ok=False with a reason.
+             issues:[game-readiness problems], glb:{...}, render:{...},
+             exit_code, seconds}. A failing SCRIPT is a normal result with
+     ok=False — not an exception. A failing BLENDER (missing binary, timeout,
+     unparseable result) raises or reports ok=False with a reason.
     """
     if engine not in ENGINES:
         raise ValueError(f"engine must be one of {ENGINES}, got {engine!r}")
@@ -151,6 +154,10 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
     script_path.write_text(script, encoding="utf-8")
 
     render_path = str(out / "render.png") if render else "-"
+    glb_path = "-"
+    if export_glb:
+        glb_path = str(Path(export_glb).resolve())
+        Path(glb_path).parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [exe, "--background"]
     if blend_file:
@@ -163,7 +170,7 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
         # diagnose from a tool result.
         cmd.append("--factory-startup")
     cmd += ["--python", str(RUNNER), "--",
-            str(script_path), str(result_path), render_path, engine]
+            str(script_path), str(result_path), render_path, engine, glb_path]
 
     import time
     started = time.monotonic()
@@ -239,3 +246,16 @@ def scene_stats(blend_file: str, timeout: int = 120) -> dict:
     """Report a .blend without changing it — the read-only path."""
     return run_script("pass", blend_file=blend_file, timeout=timeout,
                       factory_startup=True)
+
+
+def export_gltf(out_path: str, *, blend_file: Optional[str] = None,
+                script: str = "pass", timeout: int = 240) -> dict:
+    """Export a .blend (or a script-built scene) to .glb for the engine.
+
+    Modifiers are applied — Blender's exporter defaults that OFF, which silently
+    ships the base mesh and makes an asset look right in Blender and wrong in the
+    engine. Returns the run result plus glb{exported, bytes} and the
+    game-readiness issues worth fixing before this reaches a level.
+    """
+    return run_script(script, blend_file=blend_file, export_glb=out_path,
+                      timeout=timeout)
