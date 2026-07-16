@@ -1,0 +1,232 @@
+"""Builders Gate MCP server (FastMCP, stdio).
+
+Every tool resolves the project from BGATE_ROOT or the cwd by walking up for a
+.bgate dir, so an agent working inside a game repo never passes paths around.
+
+Tool errors return a dict with an "error" key rather than raising: a raised
+exception inside a tool call reads to the model as a broken server, while an
+error payload reads as a fact it can act on.
+"""
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+from mcp.server.fastmcp import FastMCP
+
+from bgate_core import bible as _bible
+from bgate_core import canon as _canon
+from bgate_core import db as _db
+from bgate_core import lore as _lore
+from bgate_core import project as _project
+from bgate_core import search as _search
+
+mcp = FastMCP("builders-gate")
+
+
+def _root() -> str:
+    """The active project root. BGATE_ROOT wins, else walk up from cwd."""
+    override = os.environ.get("BGATE_ROOT")
+    if override:
+        return override
+    return str(_project.require_root())
+
+
+def _fail(exc: Exception) -> dict:
+    return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Project
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def project_init(name: str, pitch: str = "", engine: str = "godot",
+                 dimension: str = "2d", root: Optional[str] = None) -> dict:
+    """Create a Builders Gate project (.bgate/game.db) at root (default: cwd).
+
+    engine: godot | none. dimension: 2d | 3d | 2d+3d. Safe to re-run.
+    """
+    try:
+        target = root or os.environ.get("BGATE_ROOT") or os.getcwd()
+        return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def project_status() -> dict:
+    """The project's identity plus a count of what's in the bible and lore."""
+    try:
+        root = _root()
+        conn = _db.connect(root)
+        counts = {
+            "bible_sections": conn.execute(
+                "SELECT count(*) FROM bible_section").fetchone()[0],
+            "entities": conn.execute("SELECT count(*) FROM lore_entity").fetchone()[0],
+            "canon_entities": conn.execute(
+                "SELECT count(*) FROM lore_entity WHERE status = 'canon'").fetchone()[0],
+            "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
+            "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
+        }
+        return {"project": _project.get(root), "root": root, "counts": counts}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Design bible
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
+    """Add a bible section.
+
+    kind: pillar | loop | scope_tier | cut_line | constraint | reference.
+    rank orders within a kind; for scope_tier, LOWER rank = higher priority, and
+    anything ranked at or below the cut_line's rank is explicitly not being built.
+    """
+    try:
+        return _bible.add(_root(), kind, title, body=body, rank=rank)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def bible_update(section_id: int, title: Optional[str] = None,
+                 body: Optional[str] = None, rank: Optional[int] = None) -> dict:
+    """Update a bible section in place. Omitted fields keep their current value."""
+    try:
+        return _bible.update(_root(), section_id, title=title, body=body, rank=rank)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def bible_read(kind: Optional[str] = None) -> dict:
+    """Read the bible. No kind: the grouped overview with the scope cut applied."""
+    try:
+        root = _root()
+        if kind:
+            return {"kind": kind, "sections": _bible.list_sections(root, kind)}
+        return _bible.overview(root)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def scope_check(rank: int) -> dict:
+    """Is work at this rank above the cut line? Call before building anything."""
+    try:
+        root = _root()
+        line = _bible.cut_line(root)
+        return {
+            "rank": rank,
+            "in_scope": _bible.in_scope(root, rank),
+            "cut_line": line,
+            "note": "no cut line set — scope call not yet made" if line is None else "",
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Lore
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def lore_add(kind: str, name: str, summary: str = "", body: str = "",
+             status: str = "draft") -> dict:
+    """Create a lore entity.
+
+    kind: faction | character | place | event | item | concept | species.
+    status: draft | canon | retired. Names are unique — update, don't duplicate.
+    """
+    try:
+        return _lore.add_entity(_root(), kind, name, summary=summary, body=body,
+                                status=status)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def lore_update(ref: str, summary: Optional[str] = None, body: Optional[str] = None,
+                status: Optional[str] = None) -> dict:
+    """Update an entity by slug or name. Promote draft to canon with status='canon'."""
+    try:
+        return _lore.update_entity(_root(), ref, summary=summary, body=body, status=status)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def lore_brief(ref: str) -> dict:
+    """Everything about one entity — record, facts, and edges. Read before writing it."""
+    try:
+        return _lore.brief(_root(), ref)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def lore_list(kind: Optional[str] = None, status: Optional[str] = None) -> dict:
+    """List entities, optionally filtered by kind and/or status."""
+    try:
+        return {"entities": _lore.list_entities(_root(), kind=kind, status=status)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def lore_link(src: str, rel: str, dst: str, note: str = "") -> dict:
+    """Connect two entities. rel is free-form: 'rules', 'allied_with', 'born_in'."""
+    try:
+        return _lore.link(_root(), src, rel, dst, note=note)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def lore_fact(ref: str, statement: str, source: str = "", locked: bool = False) -> dict:
+    """Assert ONE atomic fact about an entity — canon_check compares against these.
+
+    Keep it to a single checkable claim ("The siege lasted seven years"), not a
+    paragraph. locked=True marks it immovable: conflicts against it are hard.
+    """
+    try:
+        return _lore.add_fact(_root(), ref, statement, source=source, locked=locked)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Canon + recall
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def canon_check(text: str, entities: Optional[list[str]] = None) -> dict:
+    """Check text against canon BEFORE it lands. Run on every narrative write.
+
+    Returns verdict (ok | review | conflict), the entities it touches, the canon
+    facts in play, and flags. Deterministic lexical checks: catches retired
+    entities, invented proper nouns, polarity flips, and number disagreements.
+    It does not judge tone or theme — 'ok' means nothing mechanical is wrong.
+    """
+    try:
+        return _canon.check(_root(), text, entities=entities)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def recall(query: str, limit: int = 10, kind: Optional[str] = None) -> dict:
+    """Search the bible and lore. Call this BEFORE inventing anything."""
+    try:
+        conn = _db.connect(_root())
+        return {"query": query, "results": _search.find(conn, query, limit=limit, kind=kind)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

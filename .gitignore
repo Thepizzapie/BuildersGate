@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Per-project game store — never commit the DB itself
+.bgate/
+
+# Adapter scratch output (renders, playtest captures, logs)
+.bgate_out/
+
+.pytest_cache/
+.coverage
+
+# Godot
+.godot/
+export_presets.cfg
+
+# Blender
+*.blend1
+*.blend2

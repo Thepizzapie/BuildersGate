@@ -1,0 +1,24 @@
+[project]
+name = "builders-gate"
+version = "0.1.0"
+description = "Agentic game development pipeline — design bible, lore canon, and DCC/engine adapters over MCP."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+bgate = "bgate_cli.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["bgate_core", "bgate_mcp", "bgate_adapters", "bgate_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
