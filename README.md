@@ -17,8 +17,26 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 | 5 | Playtest recording → transcript → brief | done |
 | 5b | 2D/3D templates + telemetry autoload | done |
 | 6 | Blender→Godot asset round trip (glTF) | done |
-| 7 | Asset registry + binary locking | |
-| 8 | Agent seats + fan-out | |
+| 7 | Asset registry + binary locking | done |
+| 8 | Agent seats + fan-out | next |
+
+## Asset locking
+
+Binary files don't merge — two agents editing one `.blend` loses someone's work.
+
+```
+asset_lock(path, seat)      # claim BEFORE editing; a held lock errors, not queues
+   …edit…
+asset_release(path, seat)   # frees it and records the new content hash
+asset_verify()              # audits everything: names silent clobbers
+```
+
+`asset_verify` is the drift detector: a changed hash with **no lock held** means
+someone stomped the file outside the discipline — it's named, not silently
+absorbed. Locked files are expected to differ and aren't drift.
+`godot_import_asset` auto-registers what it lands, so bridge output is covered
+from birth. Locks are advisory at this layer (enforcement belongs to the seat
+hooks, step 8), but verify makes violations visible even without enforcement.
 
 ## The Blender → Godot round trip
 

@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
+from bgate_core import assets as _assets
 from bgate_core import bible as _bible
 from bgate_core import playtest as _playtest
 from bgate_core import scaffold as _scaffold
@@ -391,8 +392,16 @@ def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets"
     Blender→Godot round trip.
     """
     try:
-        return _godot.import_asset(project_dir, src_path, dest_rel=dest_rel,
-                                   timeout=timeout)
+        result = _godot.import_asset(project_dir, src_path, dest_rel=dest_rel,
+                                     timeout=timeout)
+        # Register the landed asset so asset_verify covers it from birth. Only
+        # possible when the game project lives inside the bgate root.
+        if result.get("ok") and result.get("copied_to"):
+            try:
+                result["registry"] = _assets.track(_root(), result["copied_to"])
+            except Exception as exc:
+                result["registry"] = {"tracked": False, "reason": str(exc)}
+        return result
     except Exception as exc:
         return _fail(exc)
 
@@ -406,6 +415,72 @@ def godot_inspect_resource(project_dir: str, res_path: str, timeout: int = 180) 
     """
     try:
         return _godot.inspect_resource(project_dir, res_path, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Assets — locks for the files git can't merge
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def asset_lock(path: str, seat: str) -> dict:
+    """Claim a binary asset for one seat BEFORE editing it.
+
+    Binary files (.blend, .glb, textures, audio) don't merge — two agents editing
+    one .blend loses someone's work. Lock first, edit, then asset_release. A held
+    lock errors rather than queues: decide to wait, or work on something else.
+    Lock-before-create is the normal flow for new assets.
+    """
+    try:
+        return _assets.lock(_root(), path, seat)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def asset_release(path: str, seat: str, force: bool = False) -> dict:
+    """Release a lock when the edit is done — records the new content hash.
+
+    Only the holding seat can release. force=True breaks anyone's lock (for a
+    dead agent's stale claim) — a human's call, not a convenience.
+    """
+    try:
+        if force:
+            return _assets.force_release(_root(), path)
+        return _assets.release(_root(), path, seat)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def asset_track(path: str) -> dict:
+    """Register an existing file under its content hash (sha256)."""
+    try:
+        return _assets.track(_root(), path)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
+    """List tracked assets, optionally by kind or only the locked ones."""
+    try:
+        return {"assets": _assets.list_assets(_root(), kind=kind,
+                                              locked_only=locked_only)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def asset_verify() -> dict:
+    """Audit every tracked asset against disk — catches silent clobbers.
+
+    'modified' means content changed with NO lock held: an unlocked write or an
+    outside edit. Locked files are expected to differ and aren't drift. Run this
+    before builds and after any multi-agent session.
+    """
+    try:
+        return _assets.verify(_root())
     except Exception as exc:
         return _fail(exc)
 
