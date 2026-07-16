@@ -191,6 +191,29 @@ _MIGRATIONS: list[str] = [
     """
     ALTER TABLE playtest_session ADD COLUMN started_epoch REAL;
     """,
+    # 0004 — seats: per-project overrides + the coordination blackboard.
+    #
+    # Seats are STABLE identities (the agent-spam rule: never one per task).
+    # Code defaults live in seats.py; this table only stores what a project
+    # changes. Notes are the token-frugal channel seats leave for each other.
+    """
+    CREATE TABLE seat_config (
+        role        TEXT PRIMARY KEY,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        write_globs TEXT,
+        mission     TEXT
+    );
+
+    CREATE TABLE seat_note (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        role        TEXT NOT NULL,
+        topic       TEXT NOT NULL DEFAULT '',
+        body        TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_note_topic ON seat_note(topic, id);
+    CREATE INDEX idx_note_role ON seat_note(role, id);
+    """,
 ]
 
 

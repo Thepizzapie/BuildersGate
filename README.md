@@ -18,7 +18,29 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 | 5b | 2D/3D templates + telemetry autoload | done |
 | 6 | Blender→Godot asset round trip (glTF) | done |
 | 7 | Asset registry + binary locking | done |
-| 8 | Agent seats + fan-out | next |
+| 8 | Agent seats + write lanes + blackboard | done |
+
+## Seats
+
+Seven stable game-dev identities — director, narrative, gameplay, tech, art,
+audio, qa. A seat is an identity a working agent **adopts**, not a spawned
+process; there is never a per-task registration.
+
+```
+seat_brief(role)            # mission, lanes, bible, canon, promoted feedback, locks, notes
+seat_can_write(role, path)  # the write oracle — two gates, both must pass
+seat_post_note / seat_notes # the blackboard between seats
+seat_configure(role, …)     # per-project lane/mission overrides, or disable a seat
+```
+
+`seat_can_write` is the oracle a PreToolUse hook asks: the path must be inside
+the seat's lanes **and** not locked by another seat. Being in-lane does not
+excuse stomping art's locked `.blend` — that's why lanes and locks are two
+separate gates. Unknown or disabled seats fail closed.
+
+`seat_brief` replaces re-deriving project state from scratch: one call returns
+the mission, the bible with the scope cut applied, canon entities, the promoted
+playtest feedback routed to that seat, and who holds which binaries.
 
 ## Asset locking
 

@@ -19,6 +19,7 @@ from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
 from bgate_core import assets as _assets
+from bgate_core import seats as _seats
 from bgate_core import bible as _bible
 from bgate_core import playtest as _playtest
 from bgate_core import scaffold as _scaffold
@@ -607,6 +608,83 @@ def playtest_telemetry_contract() -> dict:
     """What the game must emit so spoken feedback becomes actionable numbers."""
     try:
         return _playtest.telemetry_contract()
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Seats — stable roles, write lanes, and the blackboard
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def seat_list() -> dict:
+    """The project's seats: role, mission, write lanes. Adopt one before working."""
+    try:
+        return {"seats": list(_seats.roles_for(_root()).values())}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def seat_brief(role: str) -> dict:
+    """Everything a seat needs to start working, in one call.
+
+    Mission, write lanes, the bible (with the scope cut applied), canon entities,
+    the promoted playtest feedback routed to this seat, held/others' locks, and
+    recent blackboard notes. Read this BEFORE doing seat work — it replaces
+    re-deriving the project state from scratch.
+    """
+    try:
+        return _seats.brief(_root(), role)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def seat_can_write(role: str, path: str) -> dict:
+    """May this seat write this path? Check BEFORE editing outside your obvious lane.
+
+    Two gates, both must pass: the path must be inside the seat's write lanes,
+    and the file must not be locked by another seat — being in-lane does not
+    excuse stomping a locked binary. Fails closed for unknown/disabled seats.
+    """
+    try:
+        return _seats.can_write(_root(), role, path)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def seat_configure(role: str, enabled: Optional[bool] = None,
+                   write_globs: Optional[list[str]] = None,
+                   mission: Optional[str] = None) -> dict:
+    """Override a seat for this project: disable it, or change lanes/mission."""
+    try:
+        return _seats.configure(_root(), role, enabled=enabled,
+                                write_globs=write_globs, mission=mission)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def seat_post_note(role: str, body: str, topic: str = "") -> dict:
+    """Leave a note on the blackboard for other seats.
+
+    Post when your work changes another seat's world: an asset re-exported, a
+    tunable renamed, a scope call made. Short and factual beats long and vague.
+    """
+    try:
+        return _seats.post_note(_root(), role, body, topic=topic)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
+               limit: int = 20) -> dict:
+    """Read the blackboard, newest first, optionally filtered by topic or role."""
+    try:
+        return {"notes": _seats.read_notes(_root(), topic=topic, role=role,
+                                           limit=limit)}
     except Exception as exc:
         return _fail(exc)
 
