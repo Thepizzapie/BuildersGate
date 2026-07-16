@@ -10,10 +10,12 @@ error payload reads as a fact it can act on.
 from __future__ import annotations
 
 import os
+from pathlib import Path as _Path
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from bgate_adapters import blender as _blender
 from bgate_core import bible as _bible
 from bgate_core import canon as _canon
 from bgate_core import db as _db
@@ -220,6 +222,70 @@ def recall(query: str, limit: int = 10, kind: Optional[str] = None) -> dict:
     try:
         conn = _db.connect(_root())
         return {"query": query, "results": _search.find(conn, query, limit=limit, kind=kind)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Blender
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def blender_status() -> dict:
+    """Is Blender available to this machine, and which version? Check before modeling."""
+    try:
+        probe = _blender.available()
+        return {**probe, **(_blender.version() if probe["available"] else {})}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def blender_run(script: str, blend_file: Optional[str] = None, render: bool = False,
+                engine: str = "BLENDER_WORKBENCH", timeout: int = 180) -> dict:
+    """Run a bpy script in headless Blender and get the scene back as facts.
+
+    `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
+    modifiers count), UV warnings, materials, your print() output, and — with
+    render=True — a PNG of the active camera view.
+
+    A broken script is a normal result with ok=False plus the traceback, so read
+    the result and iterate rather than assuming it worked. engine:
+    BLENDER_WORKBENCH (fast preview) | BLENDER_EEVEE_NEXT | CYCLES.
+    """
+    try:
+        out_dir = str(_Path(_root()) / ".bgate_out")
+    except Exception:
+        out_dir = None  # modeling before project_init is allowed
+    try:
+        return _blender.run_script(script, blend_file=blend_file, render=render,
+                                   out_dir=out_dir, engine=engine, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def blender_warmup(engine: str = "BLENDER_EEVEE_NEXT") -> dict:
+    """Pay the GPU cold-start cost up front. Run once per machine boot.
+
+    A GPU engine's first render after a cold boot can take MINUTES of shader
+    warmup (then ~1-2s forever after). Call this at pipeline start so no agent's
+    real render is the one that stalls. Not needed for BLENDER_WORKBENCH.
+    """
+    try:
+        out_dir = str(_Path(_root()) / ".bgate_out")
+    except Exception:
+        out_dir = None
+    try:
+        return _blender.warmup(engine, out_dir=out_dir)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def blender_scene_stats(blend_file: str) -> dict:
+    """Report an existing .blend without modifying it — objects, tris, materials."""
+    try:
+        return _blender.scene_stats(blend_file)
     except Exception as exc:
         return _fail(exc)
 

@@ -12,7 +12,7 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 |---|---|---|
 | 1 | Repo, SQLite schema, MCP server | done |
 | 2 | Design bible + lore graph + canon_check | done |
-| 3 | Blender adapter (headless bpy → render + mesh stats) | next |
+| 3 | Blender adapter (headless bpy → render + mesh stats) | done |
 | 4 | Godot adapter + 2D template | needs Godot |
 | 5 | Playtest harness + QA gate | |
 | 6 | 3D template + asset registry/locking | |
@@ -64,6 +64,30 @@ own output for canon drift is the fox guarding the henhouse.
 
 **Assets lock, they don't merge.** Two agents editing one `.blend` is the failure
 mode the `asset` table exists for. Content-hashed, seat-locked, never merged.
+
+**Blender gives facts back, not logs.** `blender_run` returns per-object tri/vert
+counts off the *evaluated* mesh (so modifiers count), UV warnings, materials, and
+optionally a render. A script that throws is a normal result with `ok=False` plus
+the traceback and the partial scene — an agent that can't see what it built will
+confidently produce nothing.
+
+## Gotchas found the hard way
+
+**GPU cold start will eat your first render.** Measured here (Blender 4.5,
+Windows): the first EEVEE render after a cold boot blew past a 240s timeout. Every
+run after took 1–12s — the *same script* that timed out later ran in 1.4s.
+Clearing Blender's own `gl-shader-cache` did **not** bring the stall back, so the
+warmup lives below Blender (GPU driver shader cache, or the OS first-loading
+Blender's GPU DLLs). Root cause unconfirmed; the cost is real and reproducible.
+
+Mitigation: `blender_warmup()` once per boot to pay it deliberately, and the first
+GPU-engine render gets `COLD_START_TIMEOUT` regardless of the caller's timeout —
+an agent's real render should never be the one that stalls. Iterate on
+`BLENDER_WORKBENCH` (~1s) and switch to EEVEE/Cycles only for a beauty pass.
+
+**`bpy.ops.uv.smart_project` needs EDIT mode.** In OBJECT mode it fails
+`poll()`. In EDIT mode it's fine headless (~0.5s) — it does not hang, despite the
+folklore.
 
 ## Choices worth knowing
 
