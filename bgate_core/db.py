@@ -181,6 +181,16 @@ _MIGRATIONS: list[str] = [
     CREATE INDEX idx_event_session ON playtest_event(session_id, t);
     CREATE INDEX idx_event_kind ON playtest_event(session_id, kind);
     """,
+    # 0003 — wall-clock anchor for the session.
+    #
+    # The game's clock and the recorder's clock are unrelated: the game may have
+    # launched long before recording started, or after. Telemetry therefore
+    # carries a UNIX timestamp, and this column is the anchor that converts it
+    # onto the session clock. Without it, every telemetry join is silently off by
+    # however long the game had been running.
+    """
+    ALTER TABLE playtest_session ADD COLUMN started_epoch REAL;
+    """,
 ]
 
 

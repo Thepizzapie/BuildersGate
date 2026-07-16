@@ -20,6 +20,7 @@ from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
 from bgate_core import bible as _bible
 from bgate_core import playtest as _playtest
+from bgate_core import scaffold as _scaffold
 from bgate_core import canon as _canon
 from bgate_core import db as _db
 from bgate_core import lore as _lore
@@ -318,6 +319,35 @@ def godot_run(script: str, project_dir: Optional[str] = None,
     """
     try:
         return _godot.run_script(script, project_dir=project_dir, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_templates() -> dict:
+    """What project templates are available to scaffold."""
+    try:
+        return {"templates": _scaffold.list_templates()}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
+                   force: bool = False) -> dict:
+    """Create a runnable Godot project wired for playtesting.
+
+    kind: 2d (platformer slice) | 3d (first-person slice). dest defaults to
+    <project root>/game.
+
+    The template ships the BGate telemetry autoload already registered, and a
+    player whose feel tunables (gravity, fall_multiplier, coyote_time) are both
+    exported AND emitted on jump/land — so the first playtest already produces
+    the telemetry join. Refuses a non-empty dest unless force=True.
+    """
+    try:
+        target = dest or str(_Path(_root()) / "game")
+        return _scaffold.new_project(target, name, kind=kind, force=force)
     except Exception as exc:
         return _fail(exc)
 

@@ -15,9 +15,26 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 | 3 | Blender adapter (headless bpy → render + mesh stats) | done |
 | 4 | Godot adapter (headless run + project check) | done |
 | 5 | Playtest recording → transcript → brief | done |
-| 5b | 2D/3D project templates + telemetry autoload | next |
-| 6 | Asset registry + binary locking | |
+| 5b | 2D/3D templates + telemetry autoload | done |
+| 6 | Asset registry + binary locking | next |
 | 7 | Agent seats + fan-out | |
+
+## Templates
+
+```
+godot_scaffold(name="Emberfall", kind="2d")   # or "3d"
+godot_check_project(dest)                     # import + validate headless
+```
+
+Both are runnable slices, not empty shells: a player, ground, something to jump
+onto, and the BGate telemetry autoload already registered. The feel tunables
+(`gravity`, `fall_multiplier`, `coyote_time`) are exported **and** emitted on
+every jump/land — so the first playtest already produces the join that makes
+"the jump feels floaty" actionable.
+
+`BGATE_AUTOQUIT=<seconds>` runs a build unattended (headless smoke tests, CI).
+Without `BGATE_TELEMETRY` set, the autoload is completely inert — open the game
+normally and nothing is written.
 
 ## Playtest mode
 
@@ -139,6 +156,20 @@ remarks: *"the jump feels floaty. I do not like it. But I love the music here."*
 Classified whole, that becomes ONE item routed to **audio** (the word "music"
 wins) — a physics complaint lands on the wrong seat and the compliment vanishes.
 Segments are split per sentence with interpolated timestamps.
+
+**The game's clock and the recorder's clock are unrelated.** The game may have
+been running an hour before you hit record. Telemetry therefore carries `ts` (unix
+wall clock), and `playtest_session.started_epoch` anchors the conversion. A raw
+"seconds since game start" silently offsets every join by however long the game
+had been up. If an event arrives without `ts`, ingest says so rather than quietly
+assuming the clocks agree.
+
+**Uninitialized telemetry lies plausibly.** The template player spawns in mid-air;
+with `_peak_y` initialized only on jump, the opening drop reported
+`peak_height: 302` for a 24px player and no jump had happened. Nonsense that looks
+like a measurement is worse than a missing field — it sends an agent chasing
+physics that never occurred. Airborne state is now stamped on every entry
+(`spawn` / `jump` / `fall`) and `cause` rides along on every landing.
 
 **Speech-to-text does not preserve your word choice.** "floaty" comes back as
 "floating"; `\benemy\b` silently misses "the enemies are too fast". Match stems,

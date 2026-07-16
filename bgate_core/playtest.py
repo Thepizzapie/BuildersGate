@@ -100,9 +100,9 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
     with db.tx(root) as conn:
         conn.execute(
             "UPDATE playtest_session SET video_path = ?, audio_path = ?, "
-            "telemetry_path = ?, frames_dir = ? WHERE id = ?",
+            "telemetry_path = ?, frames_dir = ?, started_epoch = ? WHERE id = ?",
             (str(rec.video_path), str(rec.audio_path), str(telemetry),
-             str(out_dir / "frames"), session_id),
+             str(out_dir / "frames"), rec.started_at, session_id),
         )
     return {
         "session_id": session_id,
@@ -110,8 +110,10 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
         "recording": True,
         "dir": str(out_dir),
         "telemetry_path": str(telemetry),
-        "hint": "Play and talk. The game should append JSONL events to "
-                "telemetry_path — see telemetry_contract().",
+        "env": {"BGATE_TELEMETRY": str(telemetry)},
+        "hint": "Launch the game with BGATE_TELEMETRY set to telemetry_path (the "
+                "BGate autoload reads it). Then play and TALK — say what you like "
+                "and what needs fixing, right when it happens.",
     }
 
 
@@ -239,36 +241,64 @@ def transcribe_session(root: str | os.PathLike[str], session_id: int, *,
 def telemetry_contract() -> dict:
     """What the game must emit for feedback to become actionable."""
     return {
-        "path": "the session's telemetry_path (given by playtest_start)",
-        "format": "JSONL — one JSON object per line, appended live",
+        "easiest": ("scaffold a project with godot_scaffold — the BGate telemetry "
+                    "autoload already does all of this. Then just call "
+                    "BGateTelemetry.emit_event(kind, data) from your game code."),
+        "path": "env var BGATE_TELEMETRY (given by playtest_start)",
+        "format": "JSONL — one JSON object per line, appended and flushed live",
         "required": {
-            "t": "float, seconds since the game started (NOT wall clock)",
+            "ts": "float, UNIX WALL-CLOCK seconds (Time.get_unix_time_from_system()). "
+                  "NOT seconds-since-game-start: the game's clock and the recorder's "
+                  "are unrelated, and wall clock is the only shared axis.",
             "kind": "short event name: 'jump', 'death', 'fps', 'level_load'",
         },
-        "optional": {"data": "object — any payload, e.g. {'height': 2.4, 'air_time': 0.9}"},
-        "example": '{"t": 12.5, "kind": "jump", "data": {"air_time": 0.92, "peak_h": 2.4}}',
+        "optional": {
+            "data": "object — any payload, e.g. {'air_time': 0.92, 'peak_h': 2.4}",
+            "t": "float, seconds since game start — for humans reading the file",
+        },
+        "example": '{"ts": 1752694812.44, "t": 12.5, "kind": "jump", '
+                   '"data": {"air_time": 0.92, "peak_h": 2.4}}',
         "why": ("Joined to the transcript on the session clock, this is what turns "
-                "'the jump feels floaty' into 'air_time 0.92s at t=12.5' — a number "
-                "an agent can act on instead of a vibe it has to guess at."),
+                "'the jump feels floaty' into 'air_time 0.92s' — a number an agent "
+                "can act on instead of a vibe it has to guess at."),
+        "flush": ("flush on a timer. Godot buffers, and a crash would lose exactly "
+                  "the events that explain the crash."),
     }
 
 
 def ingest_telemetry(root: str | os.PathLike[str], session_id: int) -> dict:
-    """Read the game's JSONL into the event table. Bad lines are skipped, counted."""
+    """Read the game's JSONL into the event table, ON THE SESSION CLOCK.
+
+    Events carry `ts` (unix wall clock) because the game's own clock is unrelated
+    to the recorder's — the game may have been running for an hour before you hit
+    record. `ts - started_epoch` is the only correct conversion.
+
+    Falls back to a raw `t` when `ts` is absent, which ASSUMES the game and the
+    session started together. That's usually wrong, so it's reported, not hidden.
+    """
     session = get(root, session_id)
     path = session["telemetry_path"]
     if not path or not Path(path).exists():
         return {"ingested": 0, "skipped": 0,
                 "note": "no telemetry file — the game emitted nothing"}
 
-    good, bad = [], 0
+    anchor = session["started_epoch"]
+    good, bad, assumed = [], 0, 0
     for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             event = json.loads(line)
-            good.append((session_id, float(event["t"]), str(event["kind"]),
+            if "ts" in event and anchor:
+                t = float(event["ts"]) - float(anchor)
+            elif "t" in event:
+                t = float(event["t"])
+                assumed += 1
+            else:
+                bad += 1
+                continue
+            good.append((session_id, t, str(event["kind"]),
                          json.dumps(event.get("data", {}))))
         except Exception:
             bad += 1
@@ -278,7 +308,18 @@ def ingest_telemetry(root: str | os.PathLike[str], session_id: int) -> dict:
         conn.executemany(
             "INSERT INTO playtest_event (session_id, t, kind, data) VALUES (?, ?, ?, ?)",
             good)
-    return {"ingested": len(good), "skipped": bad}
+
+    out = {"ingested": len(good), "skipped": bad}
+    if assumed:
+        out["warning"] = (
+            f"{assumed} event(s) had no 'ts' — their timestamps assume the game "
+            "started exactly when recording did. Use the BGate telemetry autoload, "
+            "which emits wall-clock ts."
+        )
+    if good and anchor is None:
+        out["warning"] = ("session has no started_epoch anchor (recorded before "
+                          "this was tracked) — telemetry alignment is unreliable")
+    return out
 
 
 # ---------------------------------------------------------------------------

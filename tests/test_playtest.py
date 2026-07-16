@@ -191,5 +191,14 @@ class TestPromotion:
 class TestContract:
     def test_telemetry_contract_is_self_explaining(self):
         contract = playtest.telemetry_contract()
-        assert "t" in contract["required"] and "kind" in contract["required"]
+        # ts (wall clock) is REQUIRED; t (game clock) is a human convenience.
+        # The game's clock and the recorder's are unrelated.
+        assert "ts" in contract["required"] and "kind" in contract["required"]
+        assert "t" in contract["optional"]
         json.loads(contract["example"])  # the example must actually parse
+
+    def test_contract_example_satisfies_the_contract(self):
+        contract = playtest.telemetry_contract()
+        example = json.loads(contract["example"])
+        for field in contract["required"]:
+            assert field in example, f"example omits required field {field!r}"

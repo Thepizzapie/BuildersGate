@@ -1,0 +1,57 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_player"]
+size = Vector2(16, 24)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_ground"]
+size = Vector2(640, 32)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_ledge"]
+size = Vector2(96, 16)
+
+[node name="Main" type="Node2D"]
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(320, 180)
+
+[node name="Ground" type="StaticBody2D" parent="."]
+position = Vector2(320, 330)
+
+[node name="GroundShape" type="CollisionShape2D" parent="Ground"]
+shape = SubResource("RectangleShape2D_ground")
+
+[node name="GroundVisual" type="ColorRect" parent="Ground"]
+offset_left = -320.0
+offset_top = -16.0
+offset_right = 320.0
+offset_bottom = 16.0
+color = Color(0.18, 0.2, 0.24, 1)
+
+[node name="Ledge" type="StaticBody2D" parent="."]
+position = Vector2(440, 250)
+
+[node name="LedgeShape" type="CollisionShape2D" parent="Ledge"]
+shape = SubResource("RectangleShape2D_ledge")
+
+[node name="LedgeVisual" type="ColorRect" parent="Ledge"]
+offset_left = -48.0
+offset_top = -8.0
+offset_right = 48.0
+offset_bottom = 8.0
+color = Color(0.22, 0.26, 0.3, 1)
+
+[node name="Player" type="CharacterBody2D" parent="."]
+position = Vector2(160, 280)
+script = ExtResource("1_player")
+
+[node name="PlayerShape" type="CollisionShape2D" parent="Player"]
+shape = SubResource("RectangleShape2D_player")
+
+[node name="PlayerVisual" type="ColorRect" parent="Player"]
+offset_left = -8.0
+offset_top = -12.0
+offset_right = 8.0
+offset_bottom = 12.0
+color = Color(0.85, 0.35, 0.2, 1)
