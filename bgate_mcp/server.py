@@ -34,11 +34,16 @@ mcp = FastMCP("builders-gate")
 
 
 def _root() -> str:
-    """The active project root. BGATE_ROOT wins, else walk up from cwd."""
+    """The active project root. BGATE_ROOT wins, else walk up from cwd.
+    Also loads the project's .env (once) so secrets live with the project."""
     override = os.environ.get("BGATE_ROOT")
-    if override:
-        return override
-    return str(_project.require_root())
+    root = override if override else str(_project.require_root())
+    try:
+        from bgate_core import envfile
+        envfile.load_project_env(root)
+    except Exception:
+        pass
+    return root
 
 
 def _fail(exc: Exception) -> dict:
@@ -400,6 +405,52 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
                             f"for {name!r}" +
                             (f" ({len(result['failed'])} failed)" if result["failed"] else ""),
                  ref=result["sheet"])
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Painted art (gpt-image)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def image_status() -> dict:
+    """Is the painted-art leg (gpt-image) usable? Checks the key without exposing it."""
+    try:
+        _root()  # triggers .env load
+        from bgate_adapters import imagegen
+        return imagegen.available()
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def image_generate(prompt: str, filename: str, size: str = "1024x1024",
+                   quality: str = "medium", transparent: bool = False) -> dict:
+    """Generate PAINTED art via gpt-image — portraits, select-screen cards,
+    title splashes, stage paint-overs. Costs real money per image (~$0.02-0.19).
+
+    Division of labor: use blender_sprites for anything needing the SAME
+    character across multiple frames (an image model can't hold a rig steady);
+    use this for one-off illustrated pieces. transparent=True for art that
+    composites over the game; false for full backdrops.
+
+    filename is relative to the project's .bgate_out/art/ (e.g. "tommy_portrait.png").
+    The result is archived to the preview gallery — LOOK at it before importing
+    into the game with godot_import_asset.
+    """
+    try:
+        root = _Path(_root())
+        out = root / ".bgate_out" / "art" / filename
+        from bgate_adapters import imagegen
+        result = imagegen.generate(prompt, str(out), size=size, quality=quality,
+                                   transparent=transparent)
+        if result.get("ok"):
+            archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
+            if archived:
+                result["preview"] = archived
+            _log("art", f"generated painted art {filename} ({size}, {quality})",
+                 ref=archived or result["path"])
         return result
     except Exception as exc:
         return _fail(exc)
