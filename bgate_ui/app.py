@@ -268,8 +268,20 @@ def pt_status() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Play the game inside the app
+# Play the game inside the app — always the CURRENT build
 # ---------------------------------------------------------------------------
+@app.get("/api/play/status")
+def play_status() -> dict:
+    from bgate_ui import webbuild
+    return webbuild.status(_root())
+
+
+@app.post("/api/play/rebuild")
+def play_rebuild() -> dict:
+    from bgate_ui import webbuild
+    return webbuild.rebuild(str(_root()))
+
+
 @app.get("/play/{file_path:path}")
 def play_files(file_path: str = "") -> FileResponse:
     """Serve the WASM build inside the dashboard origin (COI comes from the

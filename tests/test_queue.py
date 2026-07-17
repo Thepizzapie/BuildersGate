@@ -180,3 +180,38 @@ class TestPlayRoute:
         got = client.get("/play/")
         assert got.status_code == 404
         assert "export" in got.json()["detail"]
+
+
+class TestStaleBuildGuard:
+    """The stale-build bug that wasted a morning: the app served an 11-hour-old
+    export while the source had every requested change. status() must catch it."""
+
+    def test_missing_build_reads_stale(self, client, root):
+        got = client.get("/api/play/status").json()
+        assert got["stale"] is True
+
+    def test_source_newer_than_build_reads_stale(self, client, root):
+        import time
+        from bgate_core import scaffold
+        scaffold.new_project(root / "game", "T", kind="2d")
+        web = root / "export" / "web"
+        web.mkdir(parents=True)
+        (web / "index.pck").write_bytes(b"old")
+        time.sleep(0.02)
+        # touch a script AFTER the build
+        (root / "game" / "scripts" / "player.gd").write_text("# changed\n",
+                                                             encoding="utf-8")
+        got = client.get("/api/play/status").json()
+        assert got["built"] is True
+        assert got["stale"] is True
+
+    def test_build_newer_than_source_reads_fresh(self, client, root):
+        import time
+        from bgate_core import scaffold
+        scaffold.new_project(root / "game", "T", kind="2d")
+        time.sleep(0.02)
+        web = root / "export" / "web"
+        web.mkdir(parents=True)
+        (web / "index.pck").write_bytes(b"fresh")  # written after the source
+        got = client.get("/api/play/status").json()
+        assert got["stale"] is False

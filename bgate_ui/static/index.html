@@ -492,9 +492,27 @@ async function pollQueue(){
   }catch(e){}
 }
 
-function loadGame(){
+async function loadGame(){
   const holder = document.getElementById("play-holder");
-  holder.innerHTML = `<iframe id="gameframe" src="/play/" allow="autoplay; fullscreen"></iframe>`;
+  // Never serve a stale build — rebuild if the source is newer than the export.
+  try{
+    const st = await (await fetch("/api/play/status")).json();
+    if (st.stale){
+      holder.innerHTML = `<div class="playbtn" style="cursor:default">rebuilding current build…</div>
+        <div class="playhint">exporting the game from latest source — a few seconds</div>`;
+      const r = await (await fetch("/api/play/rebuild", {method: "POST"})).json();
+      if (!r.ok){
+        holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error||"?")}</div>
+          <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
+        return;
+      }
+    }
+  }catch(e){}
+  bootFrame();
+}
+function bootFrame(){
+  document.getElementById("play-holder").innerHTML =
+    `<iframe id="gameframe" src="/play/?t=${Date.now()}" allow="autoplay; fullscreen"></iframe>`;
 }
 
 /* ── playtest recording ──────────────────────────────────────────────── */
