@@ -97,3 +97,12 @@ class TestMultiFrameGrouping:
         """Plain names keep the old one-anim-per-pose behavior exactly."""
         got = sprites._group_frames(["idle", "jab", "ko"])
         assert got == [("idle", 1), ("jab", 1), ("ko", 1)]
+
+    def test_ko_is_emitted_non_looping(self):
+        """A looping fall knocks the fighter down forever — ko plays once."""
+        tres = sprites._sprite_frames_tres(
+            "s.png", [("idle", 2), ("ko", 3)], (160, 240), 8.0, "assets/sprites")
+        idle_block = tres.split('&"idle"')[0].rsplit("{", 1)[-1]
+        ko_block = tres.split('&"ko"')[0].rsplit("{", 1)[-1]
+        assert '"loop": true' in idle_block
+        assert '"loop": false' in ko_block

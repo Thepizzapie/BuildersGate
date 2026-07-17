@@ -285,8 +285,14 @@ def _stitch(paths: list[str], out_path: Path) -> None:
     sheet.save(out_path)
 
 
+# Animations that must play ONCE and hold their last frame — a looping fall
+# would knock the fighter down forever. Applied by name in every emitter.
+NO_LOOP = ("ko", "death", "fall", "intro", "victory")
+
+
 def _sprite_frames_tres(sheet_filename: str, anims: list[tuple[str, int]],
-                        size: tuple[int, int], fps: float, res_dir: str) -> str:
+                        size: tuple[int, int], fps: float, res_dir: str,
+                        no_loop: tuple[str, ...] = NO_LOOP) -> str:
     """A Godot 4 SpriteFrames resource over a horizontal strip sheet.
 
     anims: [(animation_name, frame_count)] in sheet order — regions are
@@ -319,9 +325,10 @@ def _sprite_frames_tres(sheet_filename: str, anims: list[tuple[str, int]],
         frames = ", ".join(
             '{\n"duration": 1.0,\n"texture": SubResource("atlas_%d")\n}' % (index + f)
             for f in range(count))
+        loop = "false" if anim in no_loop else "true"
         blocks.append(
-            '{\n"frames": [%s],\n"loop": true,\n"name": &"%s",\n"speed": %s\n}'
-            % (frames, anim, fps))
+            '{\n"frames": [%s],\n"loop": %s,\n"name": &"%s",\n"speed": %s\n}'
+            % (frames, loop, anim, fps))
         index += count
     lines += ["[resource]", "animations = [" + ", ".join(blocks) + "]", ""]
     return "\n".join(lines)
