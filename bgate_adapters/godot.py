@@ -328,6 +328,90 @@ def inspect_resource(project_dir: str, res_path: str, timeout: int = 180) -> dic
                 "raw": blob[:500]}
 
 
+# Injected autoload that screenshots the RUNNING game. Uses env for its
+# parameters so nothing project-side needs editing.
+_SHOT_GD = """
+extends Node
+
+func _ready() -> void:
+	var at := float(OS.get_environment("BGATE_SHOT_AT"))
+	get_tree().create_timer(maxf(at, 0.1)).timeout.connect(_shoot)
+
+func _shoot() -> void:
+	var img := get_viewport().get_texture().get_image()
+	img.save_png(OS.get_environment("BGATE_SHOT_PATH"))
+	print("BGATE_SHOT_SAVED")
+	get_tree().quit()
+"""
+
+
+def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
+               scene: Optional[str] = None, timeout: int = 120) -> dict:
+    """Run the ACTUAL game briefly and capture the viewport to a PNG.
+
+    This is the 2D feedback loop: headless checks prove the game boots, but an
+    agent iterating on look has to SEE the running frame. Needs a GPU/display,
+    so a game window appears for ~`at`+1 seconds — the cost of a real frame.
+
+    Mechanism: Godot auto-reads `override.cfg` next to project.godot, and
+    autoloads are just settings — so we inject a screenshot autoload there,
+    run, and remove it. The project's own files are never modified; if a stale
+    override.cfg already exists we refuse rather than clobber it.
+    """
+    project = Path(project_dir)
+    if not (project / "project.godot").exists():
+        return {"ok": False, "error": f"no project.godot in {project_dir}"}
+
+    override = project / "override.cfg"
+    if override.exists():
+        return {"ok": False, "error": "override.cfg already exists in the project — "
+                                      "refusing to clobber it; remove it first"}
+
+    shot_script = project / ".bgate_shot.gd"
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        shot_script.write_text(_SHOT_GD, encoding="utf-8")
+        override.write_text(
+            '[autoload]\nBGateShot="*res://.bgate_shot.gd"\n', encoding="utf-8")
+
+        cmd = [find_godot(), "--path", str(project),
+               "--resolution", "1280x720"]
+        if scene:
+            cmd.append(scene)
+        env = {**os.environ, "BGATE_SHOT_PATH": str(out.resolve()),
+               "BGATE_SHOT_AT": str(at)}
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=timeout, stdin=subprocess.DEVNULL,
+                                  env=env, creationflags=_NO_WINDOW)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"game did not exit within {timeout}s — "
+                                          "the shot autoload should quit after capture"}
+
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if not out.exists():
+            return {"ok": False, "error": "no screenshot produced",
+                    "exit_code": proc.returncode,
+                    "saved_marker": "BGATE_SHOT_SAVED" in output,
+                    "output": output[-1500:], "errors": _errors(output)}
+        return {"ok": True, "path": str(out), "bytes": out.stat().st_size,
+                "at": at, "errors": _errors(output)}
+    finally:
+        # Never leave the injection behind — a stray override.cfg silently
+        # changes how the user's project runs forever after.
+        for leftover in (override, shot_script):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            (project / ".bgate_shot.gd.uid").unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _errors(output: str) -> list[str]:
     """Godot reports failures on stdout and keeps going; grep them out."""
     hits = []

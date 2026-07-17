@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
+from bgate_adapters import sprites as _sprites
 from bgate_core import assets as _assets
 from bgate_core import seats as _seats
 from bgate_core import bible as _bible
@@ -363,6 +364,47 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
         return _fail(exc)
 
 
+@mcp.tool()
+def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
+                    width: int = 128, height: int = 128,
+                    engine: str = "BLENDER_EEVEE_NEXT", fps: float = 8.0,
+                    res_dir: str = "assets/sprites", out_dir: Optional[str] = None,
+                    timeout: int = 420) -> dict:
+    """Render a Blender-built character as a transparent 2D sprite set.
+
+    THE 2D art path: build the model once in base_script (bpy; lights included —
+    camera optional, an auto-framed ORTHO one is added if missing), then each
+    pose in poses=[{"name","script"}] tweaks the scene and renders one frame.
+    Output: per-pose PNGs + <name>_sheet.png + <name>_frames.tres (a Godot
+    SpriteFrames with one animation per pose) ready for an AnimatedSprite2D via
+    godot_import_asset into res_dir. Rendered sprites cannot drift between
+    poses the way hand-drawn ones do — same rig, camera, light every frame.
+
+    A pose script that errors fails only that pose; check `failed` in the result.
+    The sheet is archived to the preview gallery.
+    """
+    try:
+        out = out_dir or str(_Path(_root()) / ".bgate_out" / "sprites")
+    except Exception:
+        out = out_dir or "sprites_out"
+    try:
+        result = _sprites.render_sprites(base_script, poses, out_dir=out,
+                                         name=name, size=(width, height),
+                                         engine=engine, fps=fps,
+                                         res_dir=res_dir, timeout=timeout)
+        if result.get("ok"):
+            archived = _archive_preview(result["sheet"], f"sprites-{name}")
+            if archived:
+                result["preview"] = archived
+            _log("sprites", f"rendered {len(result['frames'])} sprite frames "
+                            f"for {name!r}" +
+                            (f" ({len(result['failed'])} failed)" if result["failed"] else ""),
+                 ref=result["sheet"])
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
 # ---------------------------------------------------------------------------
 # Godot
 # ---------------------------------------------------------------------------
@@ -457,6 +499,35 @@ def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets"
             tris = result.get("engine_view", {}).get("total_tris", "?")
             _log("asset", f"landed {result['res_path']} ({tris} tris in-engine)",
                  ref=result["res_path"])
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def godot_screenshot(project_dir: str, at: float = 1.0, scene: Optional[str] = None,
+                     label: str = "", timeout: int = 120) -> dict:
+    """Run the ACTUAL game and capture the viewport to a PNG at `at` seconds.
+
+    The look-iteration loop: headless checks prove the game boots, this shows
+    what it LOOKS like. A game window appears briefly on the user's screen
+    (rendering needs a display) and closes itself after the capture. The shot
+    is archived to the preview gallery — check it before and after visual work.
+    """
+    try:
+        out = str(_Path(_root()) / ".bgate_out" / "shot.png")
+    except Exception:
+        out = "bgate_shot.png"
+    try:
+        result = _godot.screenshot(project_dir, out, at=at, scene=scene,
+                                   timeout=timeout)
+        if result.get("ok"):
+            archived = _archive_preview(result["path"], f"shot-{label or 'game'}")
+            if archived:
+                result["preview"] = archived
+            _log("screenshot", f"captured the running game at t={at}s"
+                               + (f" ({label})" if label else ""),
+                 ref=archived or result["path"])
         return result
     except Exception as exc:
         return _fail(exc)
