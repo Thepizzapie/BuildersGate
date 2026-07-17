@@ -228,6 +228,15 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
             "Narrative writes go through canon_check before they land.",
             "Check scope_check(rank) before building anything new.",
             "Leave a note (seat_post_note) when your work changes another seat's world.",
+            # The kill-tax rule: agents die mid-flight constantly (interrupts are
+            # normal usage). A successor must resume from ONE file read, never
+            # from archaeology.
+            "WORK MANIFEST: before starting, read .bgate/progress/<your-task>.jsonl "
+            "if it exists — a predecessor's checkpoint trail. After EVERY completed "
+            "unit of work, append one JSON line to it: "
+            '{"step": "<what just finished>", "artifacts": ["<paths>"], '
+            '"next": "<the very next action>"}. Your death must cost your '
+            "successor one file read, not an investigation.",
         ],
     }
 
