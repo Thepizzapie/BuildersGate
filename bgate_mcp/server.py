@@ -20,6 +20,7 @@ from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
 from bgate_adapters import sprites as _sprites
 from bgate_core import assets as _assets
+from bgate_core import refs as _refs
 from bgate_core import seats as _seats
 from bgate_core import bible as _bible
 from bgate_core import playtest as _playtest
@@ -465,15 +466,17 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     character's existing reference (~$0.04 at medium) instead of re-buying the
     whole set, or to derive variants that must stay on-model.
 
-    ref_images: absolute paths to the reference(s). filename lands under the
-    project's .bgate_out/art/. Result is archived to the gallery — LOOK at it.
-    Note: transparent output requires gpt-image-1 (gpt-image-2 rejects it).
+    ref_images: PINNED REFERENCE NAMES (see ref_list — preferred) or absolute
+    paths. filename lands under the project's .bgate_out/art/. Result is
+    archived to the gallery — LOOK at it. Note: transparent output requires
+    gpt-image-1 (gpt-image-2 rejects it).
     """
     try:
         root = _Path(_root())
         out = root / ".bgate_out" / "art" / filename
         from bgate_adapters import imagegen
-        result = imagegen.edit(prompt, ref_images, str(out), size=size,
+        resolved = [_refs.resolve(root, r) for r in ref_images]
+        result = imagegen.edit(prompt, resolved, str(out), size=size,
                                quality=quality, transparent=transparent)
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
@@ -523,7 +526,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # 1. The reference — the single source of who this character is.
         result: dict = {"poses_attempted": len(poses)}
         if ref_image:
-            ref_path = str(ref_image)
+            ref_path = _refs.resolve(root, str(ref_image))
         else:
             ref_path = str(art_dir / "reference.png")
             ref = imagegen.generate(
@@ -721,6 +724,44 @@ def godot_inspect_resource(project_dir: str, res_path: str, timeout: int = 180) 
     """
     try:
         return _godot.inspect_resource(project_dir, res_path, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Reference anchors
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
+    """Pin an APPROVED image as a canonical reference anchor.
+
+    The file is copied into .bgate/refs/ (durable, travels with the project)
+    under the given name; every seat brief lists the pins, and image_edit /
+    image_sprites accept pin names anywhere they accept paths. Pin a character's
+    approved reference, the style anchor, concept mocks from the user — the
+    things art must stay consistent WITH. Re-pinning a name upgrades the anchor
+    in place. kind: character | style | ui | concept.
+    """
+    try:
+        return _refs.pin(_root(), name, path, kind=kind, note=note)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def ref_list(kind: Optional[str] = None) -> dict:
+    """The pinned reference anchors. Check BEFORE generating character/style art."""
+    try:
+        return {"refs": _refs.list_refs(_root(), kind=kind)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def ref_unpin(name: str) -> dict:
+    """Remove a pin (the file itself is kept — deleting canon art is a human call)."""
+    try:
+        return _refs.unpin(_root(), name)
     except Exception as exc:
         return _fail(exc)
 

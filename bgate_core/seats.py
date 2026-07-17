@@ -204,11 +204,14 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "WHERE i.seat = ? AND i.status = 'promoted' ORDER BY i.id DESC LIMIT 25",
         (role,)))
 
+    from . import refs as _refs
+
     return {
         "role": role,
         "title": seat["title"],
         "mission": seat["mission"],
         "write_lanes": seat["write_globs"],
+        "pinned_refs": _refs.list_refs(root),
         "bible": bible.overview(root),
         "canon": [{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
                   for e in lore.list_entities(root, status="canon")],

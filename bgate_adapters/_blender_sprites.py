@@ -83,7 +83,8 @@ def main():
             try:
                 exec(compile(pose.get("script", "pass"), f"<pose:{pose['name']}>", "exec"),
                      namespace)
-                path = os.path.join(job["out_dir"], f"{pose['name']}.png")
+                path = os.path.join(job["out_dir"],
+                                    f"{pose['name'].replace('/', '_')}.png")
                 scene.render.filepath = path
                 bpy.ops.render.render(write_still=True)
                 entry.update(ok=os.path.exists(path), path=path)

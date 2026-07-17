@@ -230,6 +230,22 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_activity_id ON activity(id DESC);
     """,
+    # 0006 — pinned reference anchors.
+    #
+    # Approved visual references (character refs, style anchors, the user's
+    # concept mocks) were living in scratch dirs that agents rediscovered by
+    # path guesswork. A pin makes a reference canonical: named, durable (copied
+    # into .bgate/refs/), described, and surfaced in every seat brief.
+    """
+    CREATE TABLE ref_pin (
+        name        TEXT PRIMARY KEY,
+        path        TEXT NOT NULL,
+        kind        TEXT NOT NULL DEFAULT 'style'
+                        CHECK (kind IN ('character','style','ui','concept')),
+        note        TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """,
 ]
 
 

@@ -83,14 +83,15 @@ def render_sprites(base_script: str, poses: list[dict], *, out_dir: str,
 
     tres_path = out / f"{name}_frames.tres"
     tres_path.write_text(
-        _sprite_frames_tres(f"{name}_sheet.png", [f["name"] for f in rendered],
+        _sprite_frames_tres(f"{name}_sheet.png",
+                            _group_frames([f["name"] for f in rendered]),
                             size, fps, res_dir),
         encoding="utf-8")
 
     # Keep the individual frames next to the sheet for inspection/iteration.
     frame_files = {}
     for frame in rendered:
-        dest = out / f"{name}_{frame['name']}.png"
+        dest = out / f"{name}_{frame['name'].replace('/', '_')}.png"
         dest.write_bytes(Path(frame["path"]).read_bytes())
         frame_files[frame["name"]] = str(dest)
 
@@ -178,7 +179,8 @@ def from_painted_sheet(image_path: str, pose_names: list[str], *, out_dir: str,
     sheet_path = out / f"{name}_sheet.png"
     _stitch([frame_files[p] for p in ordered], sheet_path)
     tres_path = out / f"{name}_frames.tres"
-    tres_path.write_text(_sprite_frames_tres(f"{name}_sheet.png", ordered,
+    tres_path.write_text(_sprite_frames_tres(f"{name}_sheet.png",
+                                             _group_frames(ordered),
                                              frame_size, fps, res_dir),
                          encoding="utf-8")
     return {"ok": True, "frames": frame_files, "sheet": str(sheet_path),
@@ -197,7 +199,9 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
     character), gets alpha-trimmed, scaled, bottom-centered, and stitched.
     Same output contract as render_sprites / from_painted_sheet.
 
-    pose_files: [(pose_name, png_path)] in animation order.
+    pose_files: [(pose_name, png_path)] in animation order. A pose name may be
+    "anim/idx" (e.g. "jab/0", "jab/1") — frames sharing the prefix become ONE
+    multi-frame animation, ordered by idx. Bare names are 1-frame animations.
     """
     from PIL import Image
 
@@ -206,6 +210,19 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
         raise ValueError("no poses")
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate pose names: {names}")
+
+    # Frames of one animation must sit contiguously in the sheet (regions are
+    # consumed sequentially per animation) — reorder by first appearance of the
+    # anim, then by frame index within it.
+    first_seen: dict[str, int] = {}
+    for n in names:
+        first_seen.setdefault(n.split("/", 1)[0], len(first_seen))
+
+    def _order(entry):
+        anim, _, idx = entry[0].partition("/")
+        return (first_seen[anim], int(idx) if idx.isdigit() else 0)
+
+    pose_files = sorted(pose_files, key=_order)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -236,7 +253,7 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
                                  Image.LANCZOS)
         frame = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
         frame.paste(resized, ((fw - resized.width) // 2, fh - resized.height))
-        dest = out / f"{name}_{pose}.png"
+        dest = out / f"{name}_{pose.replace('/', '_')}.png"
         frame.save(dest)
         frame_files[pose] = str(dest)
         ordered.append(pose)
@@ -246,12 +263,14 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
 
     sheet_path = out / f"{name}_sheet.png"
     _stitch([frame_files[p] for p in ordered], sheet_path)
+    anims = _group_frames(ordered)
     tres_path = out / f"{name}_frames.tres"
-    tres_path.write_text(_sprite_frames_tres(f"{name}_sheet.png", ordered,
+    tres_path.write_text(_sprite_frames_tres(f"{name}_sheet.png", anims,
                                              frame_size, fps, res_dir),
                          encoding="utf-8")
     return {"ok": True, "frames": frame_files, "sheet": str(sheet_path),
-            "tres": str(tres_path), "size": list(frame_size), "failed": failed}
+            "tres": str(tres_path), "size": list(frame_size),
+            "animations": {a: c for a, c in anims}, "failed": failed}
 
 
 def _stitch(paths: list[str], out_path: Path) -> None:
@@ -266,31 +285,58 @@ def _stitch(paths: list[str], out_path: Path) -> None:
     sheet.save(out_path)
 
 
-def _sprite_frames_tres(sheet_filename: str, pose_names: list[str],
+def _sprite_frames_tres(sheet_filename: str, anims: list[tuple[str, int]],
                         size: tuple[int, int], fps: float, res_dir: str) -> str:
-    """A Godot 4 SpriteFrames resource: one animation per pose, atlas regions
-    cut from the sheet. res_dir is where the pair will live INSIDE the game
-    project (res://<res_dir>/<sheet>), so import them together to that folder.
+    """A Godot 4 SpriteFrames resource over a horizontal strip sheet.
+
+    anims: [(animation_name, frame_count)] in sheet order — regions are
+    consumed sequentially, so a 2-frame walk after a 1-frame idle occupies
+    regions 1 and 2. Multi-frame animations are what make motion feel sharp:
+    AnimatedSprite2D cycles the frames at `fps` natively, no code needed.
+
+    res_dir is where the pair will live INSIDE the game project
+    (res://<res_dir>/<sheet>), so import them together to that folder.
     """
     w, h = size
     res_dir = res_dir.strip("/").replace("\\", "/")
+    total = sum(count for _, count in anims)
     lines = [
-        f'[gd_resource type="SpriteFrames" load_steps={len(pose_names) + 2} format=3]',
+        f'[gd_resource type="SpriteFrames" load_steps={total + 2} format=3]',
         "",
         f'[ext_resource type="Texture2D" path="res://{res_dir}/{sheet_filename}" id="1"]',
         "",
     ]
-    for i, _ in enumerate(pose_names):
+    for i in range(total):
         lines += [
             f'[sub_resource type="AtlasTexture" id="atlas_{i}"]',
             'atlas = ExtResource("1")',
             f"region = Rect2({i * w}, 0, {w}, {h})",
             "",
         ]
-    anims = []
-    for i, pose in enumerate(pose_names):
-        anims.append(
-            '{\n"frames": [{\n"duration": 1.0,\n"texture": SubResource("atlas_%d")\n}],\n'
-            '"loop": true,\n"name": &"%s",\n"speed": %s\n}' % (i, pose, fps))
-    lines += ["[resource]", "animations = [" + ", ".join(anims) + "]", ""]
+    blocks = []
+    index = 0
+    for anim, count in anims:
+        frames = ", ".join(
+            '{\n"duration": 1.0,\n"texture": SubResource("atlas_%d")\n}' % (index + f)
+            for f in range(count))
+        blocks.append(
+            '{\n"frames": [%s],\n"loop": true,\n"name": &"%s",\n"speed": %s\n}'
+            % (frames, anim, fps))
+        index += count
+    lines += ["[resource]", "animations = [" + ", ".join(blocks) + "]", ""]
     return "\n".join(lines)
+
+
+def _group_frames(names: list[str]) -> list[tuple[str, int]]:
+    """Group frame names into (animation, count) preserving first-appearance
+    order. "jab/0", "jab/1" -> ("jab", 2); a bare "idle" is a 1-frame anim.
+    """
+    order: list[str] = []
+    counts: dict[str, int] = {}
+    for name in names:
+        anim = name.split("/", 1)[0]
+        if anim not in counts:
+            order.append(anim)
+            counts[anim] = 0
+        counts[anim] += 1
+    return [(anim, counts[anim]) for anim in order]
