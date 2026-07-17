@@ -186,6 +186,74 @@ def from_painted_sheet(image_path: str, pose_names: list[str], *, out_dir: str,
             "source": str(image_path)}
 
 
+def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
+                     name: str, frame_size: tuple[int, int] = (160, 240),
+                     res_dir: str = "assets/sprites", fps: float = 8.0,
+                     min_fill: float = 0.01) -> dict:
+    """Assemble individually-generated pose images into the sheet+tres contract.
+
+    The reference-first flow's back half: each pose arrives as its own
+    transparent PNG (generated via imagegen.edit against one reference
+    character), gets alpha-trimmed, scaled, bottom-centered, and stitched.
+    Same output contract as render_sprites / from_painted_sheet.
+
+    pose_files: [(pose_name, png_path)] in animation order.
+    """
+    from PIL import Image
+
+    names = [n for n, _ in pose_files]
+    if not names:
+        raise ValueError("no poses")
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate pose names: {names}")
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    fw, fh = frame_size
+
+    frame_files: dict[str, str] = {}
+    failed: list[dict] = []
+    ordered: list[str] = []
+    for pose, path in pose_files:
+        if not Path(path).is_file():
+            failed.append({"name": pose, "error": f"file missing: {path}"})
+            continue
+        img = Image.open(path).convert("RGBA")
+        bbox = img.getbbox()
+        coverage = 0.0
+        if bbox:
+            trimmed = img.crop(bbox)
+            alpha = trimmed.getchannel("A")
+            coverage = sum(1 for a in alpha.getdata() if a > 8) / (trimmed.width * trimmed.height or 1)
+        if not bbox or coverage < min_fill:
+            failed.append({"name": pose,
+                           "error": f"image is (near-)empty (coverage {coverage:.3f}) "
+                                    "— transparent generation likely failed"})
+            continue
+        scale = min(fw / trimmed.width, fh / trimmed.height)
+        resized = trimmed.resize((max(1, int(trimmed.width * scale)),
+                                  max(1, int(trimmed.height * scale))),
+                                 Image.LANCZOS)
+        frame = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
+        frame.paste(resized, ((fw - resized.width) // 2, fh - resized.height))
+        dest = out / f"{name}_{pose}.png"
+        frame.save(dest)
+        frame_files[pose] = str(dest)
+        ordered.append(pose)
+
+    if not frame_files:
+        return {"ok": False, "failed": failed, "error": "no usable pose images"}
+
+    sheet_path = out / f"{name}_sheet.png"
+    _stitch([frame_files[p] for p in ordered], sheet_path)
+    tres_path = out / f"{name}_frames.tres"
+    tres_path.write_text(_sprite_frames_tres(f"{name}_sheet.png", ordered,
+                                             frame_size, fps, res_dir),
+                         encoding="utf-8")
+    return {"ok": True, "frames": frame_files, "sheet": str(sheet_path),
+            "tres": str(tres_path), "size": list(frame_size), "failed": failed}
+
+
 def _stitch(paths: list[str], out_path: Path) -> None:
     """Horizontal strip, frame order preserved — regions are index * width."""
     from PIL import Image

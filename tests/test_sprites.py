@@ -235,6 +235,64 @@ class TestPaintedSheetSlicing:
         assert got["ok"] is False
 
 
+class TestFromPoseImages:
+    """The reference-first flow's assembly half — pure PIL, no API."""
+
+    def _blob(self, tmp_path, name, box, size=(1024, 1536)):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", size, (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse(box, fill=(200, 60, 40, 255))
+        path = tmp_path / f"{name}.png"
+        img.save(path)
+        return str(path)
+
+    def test_assembles_individual_poses(self, tmp_path):
+        from PIL import Image
+
+        files = [
+            ("idle", self._blob(tmp_path, "idle", (300, 200, 700, 1400))),
+            ("jab", self._blob(tmp_path, "jab", (200, 400, 900, 1400))),
+        ]
+        got = sprites.from_pose_images(files, out_dir=str(tmp_path / "out"),
+                                       name="t", frame_size=(160, 240))
+        assert got["ok"] is True and got["failed"] == []
+        assert _png_size(got["sheet"]) == (320, 240)
+        for path in got["frames"].values():
+            frame = Image.open(path)
+            alpha = frame.getchannel("A")
+            assert max(alpha.getpixel((x, 239)) for x in range(0, 160, 4)) > 0
+
+        tres = Path(got["tres"]).read_text(encoding="utf-8")
+        assert '&"idle"' in tres and '&"jab"' in tres
+
+    def test_missing_and_empty_files_fail_alone(self, tmp_path):
+        from PIL import Image
+
+        empty = tmp_path / "empty.png"
+        Image.new("RGBA", (100, 100), (0, 0, 0, 0)).save(empty)
+        files = [
+            ("good", self._blob(tmp_path, "good", (300, 200, 700, 1400))),
+            ("gone", str(tmp_path / "nope.png")),
+            ("blank", str(empty)),
+        ]
+        got = sprites.from_pose_images(files, out_dir=str(tmp_path / "o"), name="t")
+        assert got["ok"] is True
+        assert set(got["frames"]) == {"good"}
+        assert {f["name"] for f in got["failed"]} == {"gone", "blank"}
+
+
+class TestEditValidation:
+    def test_edit_requires_existing_reference(self, tmp_path, monkeypatch):
+        from bgate_adapters import imagegen
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+        with pytest.raises(FileNotFoundError):
+            imagegen.edit("x", [str(tmp_path / "ghost.png")], str(tmp_path / "o.png"))
+        with pytest.raises(ValueError, match="reference"):
+            imagegen.edit("x", [], str(tmp_path / "o.png"))
+
+
 @pytest.mark.skipif(not godot.available()["available"], reason="Godot not installed")
 @pytest.mark.slow
 class TestScreenshot:

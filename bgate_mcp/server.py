@@ -457,58 +457,100 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
 
 
 @mcp.tool()
-def image_sprites(prompt: str, poses: list[str], name: str,
-                  frame_width: int = 160, frame_height: int = 240,
-                  quality: str = "high", fps: float = 8.0,
+def image_sprites(character_prompt: str, poses: list[dict], name: str,
+                  ref_image: Optional[str] = None, frame_width: int = 160,
+                  frame_height: int = 240, quality: str = "medium",
+                  ref_quality: str = "high", fps: float = 8.0,
                   res_dir: str = "assets/sprites") -> dict:
-    """PAINTED sprite set via gpt-image — the illustrated look, engine-ready.
+    """PAINTED sprite set via gpt-image — REFERENCE-FIRST for consistency.
 
-    Consistency trick: all poses are generated in ONE image (a model can't hold
-    a character steady across generations, but it must within one), then sliced
-    into equal columns, alpha-trimmed, bottom-centered, and emitted as the same
-    sheet + SpriteFrames .tres contract as blender_sprites — a drop-in
-    replacement using the same animation names.
+    How it works (and why): a fresh generation invents a new character every
+    time, and asking for many poses in one image comes back misaligned. So:
+    (1) generate ONE reference character (or pass ref_image to reuse an approved
+    one — reusing the ref is also how you REGENERATE a single pose later without
+    changing the fighter); (2) each pose is an EDIT conditioned on that
+    reference — same character, new stance; (3) frames are alpha-trimmed,
+    bottom-centered, stitched into <name>_sheet.png + <name>_frames.tres (one
+    animation per pose) — drop-in for AnimatedSprite2D.
 
-    Your prompt should describe the CHARACTER and STYLE; the layout contract is
-    appended automatically (single row, N equal columns, transparent background,
-    pose list in order). Check `failed` — empty/misaligned cells are reported,
-    not silently shipped. LOOK at the sheet preview before importing. Costs real
-    money per attempt (~$0.25 at high quality).
+    character_prompt: the character + art style (full body, single character —
+    framing/transparency contracts are appended automatically).
+    poses: [{"name": "jab", "description": "lead fist fully extended right,
+    body driving forward"}] — name becomes the animation; description is the
+    stance. LOOK at the reference preview before the poses run wild, and at the
+    sheet preview before importing. Cost: 1 ref + 1 edit per pose (~$0.04-0.25
+    each by quality). Failed poses are listed, never silently shipped.
     """
     try:
         if not poses:
             raise ValueError("poses list is empty")
+        for p in poses:
+            if "name" not in p:
+                raise ValueError(f"each pose needs a 'name': {p}")
         root = _Path(_root())
-        layout = (
-            f" Layout contract, follow it exactly: a sprite sheet on a fully "
-            f"transparent background, one single horizontal row of exactly "
-            f"{len(poses)} full-body poses of the SAME character, evenly spaced "
-            f"in {len(poses)} equal-width columns with clear gaps and nothing "
-            f"crossing column boundaries, all feet on the same baseline, no "
-            f"labels/text/grid lines. Poses left to right: {', '.join(poses)}."
-        )
+        art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
-        raw = root / ".bgate_out" / "art" / f"{name}_posesheet_raw.png"
-        gen = imagegen.generate(prompt + layout, str(raw), size="1536x1024",
-                                quality=quality, transparent=True)
-        if not gen.get("ok"):
-            return gen
-        result = _sp.from_painted_sheet(str(raw), poses,
-                                        out_dir=str(root / ".bgate_out" / "sprites"),
-                                        name=name,
-                                        frame_size=(frame_width, frame_height),
-                                        res_dir=res_dir, fps=fps)
-        result["raw_sheet"] = str(raw)
-        if result.get("ok"):
-            archived = _archive_preview(result["sheet"], f"painted-{name}")
+        # 1. The reference — the single source of who this character is.
+        result: dict = {"poses_attempted": len(poses)}
+        if ref_image:
+            ref_path = str(ref_image)
+        else:
+            ref_path = str(art_dir / "reference.png")
+            ref = imagegen.generate(
+                character_prompt + " Exactly one character, full body head to "
+                "toe, neutral idle stance, centered, fully transparent "
+                "background, no text, no logo, no ground shadow.",
+                ref_path, size="1024x1536", quality=ref_quality, transparent=True)
+            if not ref.get("ok"):
+                return {"ok": False, "stage": "reference", **ref}
+            archived_ref = _archive_preview(ref_path, f"ref-{name}")
+            result["reference_preview"] = archived_ref
+        result["reference"] = ref_path
+
+        # 2. Each pose derives from the reference — same fighter, new stance.
+        pose_files: list[tuple[str, str]] = []
+        pose_errors: list[dict] = []
+        for pose in poses:
+            pname = pose["name"]
+            desc = pose.get("description", pname)
+            out_png = str(art_dir / f"pose_{pname}.png")
+            got = imagegen.edit(
+                "This exact character from the reference image — identical "
+                "design, colors, proportions, face, and art style — now in "
+                f"this stance: {desc}. Full body head to toe, single "
+                "character, fully transparent background, no text, no "
+                "cropping of limbs.",
+                [ref_path], out_png, size="1024x1536", quality=quality,
+                transparent=True)
+            if got.get("ok"):
+                pose_files.append((pname, out_png))
+            else:
+                pose_errors.append({"name": pname, "error": got.get("error")})
+
+        if not pose_files:
+            return {"ok": False, "stage": "poses", "failed": pose_errors,
+                    "reference": ref_path,
+                    "error": "every pose generation failed"}
+
+        # 3. Assemble into the standard engine contract.
+        assembled = _sp.from_pose_images(
+            pose_files, out_dir=str(root / ".bgate_out" / "sprites"), name=name,
+            frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps)
+        assembled.setdefault("failed", [])
+        assembled["failed"].extend(pose_errors)
+        assembled["reference"] = ref_path
+        if "reference_preview" in result:
+            assembled["reference_preview"] = result["reference_preview"]
+        if assembled.get("ok"):
+            archived = _archive_preview(assembled["sheet"], f"painted-{name}")
             if archived:
-                result["preview"] = archived
-            _log("sprites", f"painted sprite set {name!r}: "
-                            f"{len(result['frames'])}/{len(poses)} poses"
-                            + (f", {len(result['failed'])} FAILED" if result["failed"] else ""),
-                 ref=result["sheet"])
-        return result
+                assembled["preview"] = archived
+            _log("sprites", f"painted sprite set {name!r} (reference-first): "
+                            f"{len(assembled['frames'])}/{len(poses)} poses"
+                            + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else ""),
+                 ref=assembled["sheet"])
+        return assembled
     except Exception as exc:
         return _fail(exc)
 

@@ -71,6 +71,63 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
         # agent can act on — sanitized by the SDK, no key material inside.
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    return _save(result, out_path, probe["model"], size, quality, transparent)
+
+
+def edit(prompt: str, ref_paths: list[str], out_path: str, *,
+         size: str = "1024x1024", quality: str = "medium",
+         transparent: bool = False, timeout: float = 300.0) -> dict:
+    """Generate an image CONDITIONED ON reference image(s) — the consistency
+    primitive. A fresh generation invents a new character every time; an edit
+    against a reference keeps the same one. This is how sprite poses stay the
+    same fighter: one approved reference, then every pose derived from it.
+    """
+    if size not in SIZES:
+        raise ValueError(f"size must be one of {SIZES}, got {size!r}")
+    if quality not in QUALITIES:
+        raise ValueError(f"quality must be one of {QUALITIES}, got {quality!r}")
+    if not ref_paths:
+        raise ValueError("edit() needs at least one reference image")
+    for ref in ref_paths:
+        if not Path(ref).is_file():
+            raise FileNotFoundError(f"reference image not found: {ref}")
+    probe = available()
+    if not probe["available"]:
+        return {"ok": False, "error": probe["reason"]}
+
+    from openai import OpenAI
+
+    client = OpenAI(timeout=timeout)
+    handles = [open(ref, "rb") for ref in ref_paths]
+    try:
+        kwargs = {
+            "model": probe["model"],
+            "image": handles if len(handles) > 1 else handles[0],
+            "prompt": prompt,
+            "size": size,
+            "quality": quality,
+            "n": 1,
+        }
+        if transparent:
+            kwargs["background"] = "transparent"
+        try:
+            result = client.images.edit(**kwargs)
+        except TypeError:
+            # Older SDK/model rejecting a kwarg — retry with the minimal set.
+            result = client.images.edit(model=probe["model"],
+                                        image=kwargs["image"], prompt=prompt,
+                                        size=size, n=1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        for handle in handles:
+            handle.close()
+
+    return _save(result, out_path, probe["model"], size, quality, transparent)
+
+
+def _save(result, out_path: str, model: str, size: str, quality: str,
+          transparent: bool) -> dict:
     datum = result.data[0]
     if not getattr(datum, "b64_json", None):
         return {"ok": False, "error": "API returned no image payload"}
@@ -82,7 +139,7 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
         "ok": True,
         "path": str(out),
         "bytes": out.stat().st_size,
-        "model": probe["model"],
+        "model": model,
         "size": size,
         "quality": quality,
         "transparent": transparent,
