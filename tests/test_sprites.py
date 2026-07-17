@@ -160,6 +160,81 @@ func _init():
         assert "FRAME_SIZE 64x64" in got["stdout"]
 
 
+class TestPaintedSheetSlicing:
+    """Slicing a painted pose row — pure PIL, no API, fully testable."""
+
+    @pytest.fixture()
+    def pose_row(self, tmp_path):
+        """A fake 3-pose transparent row: colored blobs of differing heights."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (1536, 1024), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        # pose 0: tall red, pose 1: short green, pose 2: wide blue
+        draw.ellipse((100, 200, 400, 950), fill=(220, 40, 40, 255))
+        draw.ellipse((612, 600, 900, 950), fill=(40, 220, 40, 255))
+        draw.ellipse((1050, 500, 1500, 950), fill=(40, 40, 220, 255))
+        path = tmp_path / "row.png"
+        img.save(path)
+        return path
+
+    def test_slices_trims_and_bottom_aligns(self, pose_row, tmp_path):
+        from PIL import Image
+
+        got = sprites.from_painted_sheet(str(pose_row), ["idle", "duck", "wide"],
+                                         out_dir=str(tmp_path / "out"), name="p",
+                                         frame_size=(160, 240))
+        assert got["ok"] is True and got["failed"] == []
+        assert set(got["frames"]) == {"idle", "duck", "wide"}
+
+        for path in got["frames"].values():
+            frame = Image.open(path)
+            assert frame.size == (160, 240)
+            alpha = frame.getchannel("A")
+            # Bottom-aligned: content must touch the bottom rows (fighters
+            # stand on the ground), and the top-left corner stays transparent.
+            bottom = [alpha.getpixel((x, 239)) for x in range(0, 160, 4)]
+            assert max(bottom) > 0, "content does not reach the baseline"
+            assert alpha.getpixel((0, 0)) == 0
+
+    def test_sheet_and_tres_come_out_like_the_blender_path(self, pose_row, tmp_path):
+        got = sprites.from_painted_sheet(str(pose_row), ["a", "b", "c"],
+                                         out_dir=str(tmp_path), name="p",
+                                         frame_size=(160, 240))
+        assert _png_size(got["sheet"]) == (480, 240)
+        tres = Path(got["tres"]).read_text(encoding="utf-8")
+        assert 'type="SpriteFrames"' in tres
+        assert "region = Rect2(320, 0, 160, 240)" in tres
+
+    def test_empty_cell_is_reported_not_shipped(self, tmp_path):
+        """The model drew 2 poses where 3 were asked — the gap must be loud."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (1536, 1024), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse((100, 200, 400, 950), fill=(220, 40, 40, 255))
+        draw.ellipse((612, 600, 900, 950), fill=(40, 220, 40, 255))
+        # third column left empty
+        path = tmp_path / "row.png"
+        img.save(path)
+
+        got = sprites.from_painted_sheet(str(path), ["idle", "jab", "ko"],
+                                         out_dir=str(tmp_path / "o"), name="p")
+        assert got["ok"] is True
+        assert set(got["frames"]) == {"idle", "jab"}
+        assert got["failed"][0]["name"] == "ko"
+        assert "empty" in got["failed"][0]["error"]
+
+    def test_fully_blank_image_fails_loudly(self, tmp_path):
+        from PIL import Image
+
+        blank = tmp_path / "blank.png"
+        Image.new("RGBA", (300, 100), (0, 0, 0, 0)).save(blank)
+        got = sprites.from_painted_sheet(str(blank), ["a"], out_dir=str(tmp_path),
+                                         name="p")
+        assert got["ok"] is False
+
+
 @pytest.mark.skipif(not godot.available()["available"], reason="Godot not installed")
 @pytest.mark.slow
 class TestScreenshot:

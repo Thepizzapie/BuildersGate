@@ -456,6 +456,63 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         return _fail(exc)
 
 
+@mcp.tool()
+def image_sprites(prompt: str, poses: list[str], name: str,
+                  frame_width: int = 160, frame_height: int = 240,
+                  quality: str = "high", fps: float = 8.0,
+                  res_dir: str = "assets/sprites") -> dict:
+    """PAINTED sprite set via gpt-image — the illustrated look, engine-ready.
+
+    Consistency trick: all poses are generated in ONE image (a model can't hold
+    a character steady across generations, but it must within one), then sliced
+    into equal columns, alpha-trimmed, bottom-centered, and emitted as the same
+    sheet + SpriteFrames .tres contract as blender_sprites — a drop-in
+    replacement using the same animation names.
+
+    Your prompt should describe the CHARACTER and STYLE; the layout contract is
+    appended automatically (single row, N equal columns, transparent background,
+    pose list in order). Check `failed` — empty/misaligned cells are reported,
+    not silently shipped. LOOK at the sheet preview before importing. Costs real
+    money per attempt (~$0.25 at high quality).
+    """
+    try:
+        if not poses:
+            raise ValueError("poses list is empty")
+        root = _Path(_root())
+        layout = (
+            f" Layout contract, follow it exactly: a sprite sheet on a fully "
+            f"transparent background, one single horizontal row of exactly "
+            f"{len(poses)} full-body poses of the SAME character, evenly spaced "
+            f"in {len(poses)} equal-width columns with clear gaps and nothing "
+            f"crossing column boundaries, all feet on the same baseline, no "
+            f"labels/text/grid lines. Poses left to right: {', '.join(poses)}."
+        )
+        from bgate_adapters import imagegen, sprites as _sp
+
+        raw = root / ".bgate_out" / "art" / f"{name}_posesheet_raw.png"
+        gen = imagegen.generate(prompt + layout, str(raw), size="1536x1024",
+                                quality=quality, transparent=True)
+        if not gen.get("ok"):
+            return gen
+        result = _sp.from_painted_sheet(str(raw), poses,
+                                        out_dir=str(root / ".bgate_out" / "sprites"),
+                                        name=name,
+                                        frame_size=(frame_width, frame_height),
+                                        res_dir=res_dir, fps=fps)
+        result["raw_sheet"] = str(raw)
+        if result.get("ok"):
+            archived = _archive_preview(result["sheet"], f"painted-{name}")
+            if archived:
+                result["preview"] = archived
+            _log("sprites", f"painted sprite set {name!r}: "
+                            f"{len(result['frames'])}/{len(poses)} poses"
+                            + (f", {len(result['failed'])} FAILED" if result["failed"] else ""),
+                 ref=result["sheet"])
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
 # ---------------------------------------------------------------------------
 # Godot
 # ---------------------------------------------------------------------------
