@@ -1060,6 +1060,56 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
         return _fail(exc)
 
 
+# ---------------------------------------------------------------------------
+# Work queue
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def queue_list(status: Optional[str] = None, seat: Optional[str] = None) -> dict:
+    """The work queue. status: queued | dispatched | done | failed."""
+    try:
+        from bgate_core import queue as _q
+        return {"items": _q.list_items(_root(), status=status, seat=seat)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def queue_add(seat: str, title: str, brief: str = "", priority: int = 0) -> dict:
+    """Queue work for a seat. Use when your work uncovers work that isn't yours."""
+    try:
+        from bgate_core import queue as _q
+        return _q.add(_root(), seat, title, brief=brief, priority=priority,
+                      source=f"seat:{_seat() or 'unknown'}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def queue_next(seat: str) -> dict:
+    """The highest-priority queued item for a seat — what to work on next."""
+    try:
+        from bgate_core import queue as _q
+        item = _q.next_for(_root(), seat)
+        return item if item else {"empty": True, "seat": seat}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
+    """Close out a work item with an honest one-paragraph result.
+
+    failed=True when the work did not land — say why plainly; a false 'done'
+    poisons the queue's trustworthiness for everyone.
+    """
+    try:
+        from bgate_core import queue as _q
+        return _q.set_status(_root(), item_id, "failed" if failed else "done",
+                             result=result)
+    except Exception as exc:
+        return _fail(exc)
+
+
 def main() -> None:
     mcp.run()
 

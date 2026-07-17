@@ -181,6 +181,40 @@
     padding:10px 20px 22px; font-family:var(--mono); font-size:9.5px;
     color:#3c3c46; letter-spacing:.12em;
   }
+
+  /* ── dispatch + play ─────────────────────────────────────────────────── */
+  .qadd{display:flex; gap:6px; padding:10px 12px; border-bottom:1px solid var(--seam)}
+  .qadd select,.qadd input{
+    background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font-family:var(--mono); font-size:11px; padding:6px 8px;
+  }
+  .qadd input{flex:1}
+  .qadd button,.qbtn{
+    background:var(--ember-dim); border:1px solid var(--ember); color:var(--bone);
+    font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+    padding:6px 12px; cursor:pointer;
+  }
+  .qbtn.small{padding:2px 8px; font-size:9px}
+  .qbtn.ghost{background:transparent; border-color:var(--seam); color:var(--ash)}
+  .qitem{
+    display:flex; gap:10px; align-items:baseline; padding:7px 12px;
+    border-bottom:1px solid #1b1b22; font-family:var(--mono); font-size:11px;
+  }
+  .qitem .qseat{width:74px; text-transform:uppercase; font-size:9.5px; letter-spacing:.08em; flex-shrink:0; text-align:right}
+  .qitem .qtitle{color:var(--bone); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .qitem .qstat{font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--ash)}
+  .qitem.dispatched .qstat{color:var(--c-tech); animation:throb 1.4s infinite}
+  .qitem.done .qstat{color:#3adf82}
+  .qitem.failed .qstat{color:var(--ember)}
+  .playpanel{min-height:240px; display:flex; align-items:stretch}
+  #play-holder{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px}
+  .playbtn{
+    background:var(--ember-dim); border:1px solid var(--ember); color:var(--bone);
+    font-family:var(--mono); font-size:13px; letter-spacing:.2em; text-transform:uppercase;
+    padding:14px 28px; cursor:pointer;
+  }
+  .playhint{font-family:var(--mono); font-size:9.5px; color:#4c4c58}
+  #gameframe{flex:1; border:0; min-height:380px; width:100%}
 </style>
 </head>
 <body>
@@ -194,6 +228,29 @@
 </header>
 
 <main>
+  <div class="band">
+    <section>
+      <h2>Dispatch — the work queue</h2>
+      <div class="panel">
+        <div class="qadd">
+          <select id="q-seat"></select>
+          <input id="q-title" placeholder="what needs doing" maxlength="120">
+          <button id="q-go" onclick="addItem()">queue</button>
+        </div>
+        <div id="queue"></div>
+      </div>
+    </section>
+    <section>
+      <h2>Play — the current build</h2>
+      <div class="panel playpanel">
+        <div id="play-holder">
+          <button class="playbtn" onclick="loadGame()">▶ boot the game here</button>
+          <div class="playhint">A/D move · Space jump · J/K punch · U/I kick · S block · L duck · F1 tuning</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <section>
     <h2>The Floor — seven seats</h2>
     <div class="floor" id="floor"></div>
@@ -376,9 +433,61 @@ async function pollActivity(){
   }catch(e){}
 }
 
-pollState(); pollActivity();
+/* ── dispatch + play ─────────────────────────────────────────────────── */
+const seatSelect = document.getElementById("q-seat");
+Object.keys(SEATS).forEach(r => {
+  const opt = document.createElement("option");
+  opt.value = r; opt.textContent = r;
+  seatSelect.appendChild(opt);
+});
+
+async function addItem(){
+  const title = document.getElementById("q-title").value.trim();
+  if (!title) return;
+  await fetch("/api/queue", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({seat: seatSelect.value, title})});
+  document.getElementById("q-title").value = "";
+  pollQueue();
+}
+
+async function dispatchItem(id){
+  await fetch(`/api/queue/${id}/dispatch`, {method: "POST"});
+  pollQueue();
+}
+async function stopItem(id){
+  await fetch(`/api/queue/${id}/stop`, {method: "POST"});
+  pollQueue();
+}
+
+async function pollQueue(){
+  try{
+    const [qr, ar] = await Promise.all([fetch("/api/queue"), fetch("/api/agents")]);
+    if (!qr.ok) return;
+    const q = await qr.json();
+    const live = ar.ok ? (await ar.json()).agents.filter(a => a.state === "running")
+                          .map(a => a.item_id) : [];
+    document.getElementById("queue").innerHTML = q.items.slice(0, 14).map(i => `
+      <div class="qitem ${i.status}">
+        <span class="qseat" style="color:${color(i.seat)}">${esc(i.seat)}</span>
+        <span class="qtitle" title="${esc(i.brief || i.title)}">${esc(i.title)}</span>
+        <span class="qstat">${esc(i.status)}${live.includes(i.id) ? " ●" : ""}</span>
+        ${i.status === "queued" ? `<button class="qbtn small" onclick="dispatchItem(${i.id})">dispatch</button>` : ""}
+        ${live.includes(i.id) ? `<button class="qbtn small ghost" onclick="stopItem(${i.id})">stop</button>` : ""}
+      </div>`).join("") ||
+      `<div class="empty">queue is empty — promoted playtest feedback lands here automatically</div>`;
+  }catch(e){}
+}
+
+function loadGame(){
+  const holder = document.getElementById("play-holder");
+  holder.innerHTML = `<iframe id="gameframe" src="/play/" allow="autoplay; fullscreen"></iframe>`;
+}
+
+pollState(); pollActivity(); pollQueue();
 setInterval(pollState, 3000);
 setInterval(pollActivity, 2000);
+setInterval(pollQueue, 3500);
 </script>
 </body>
 </html>

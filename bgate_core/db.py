@@ -246,6 +246,28 @@ _MIGRATIONS: list[str] = [
         created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     """,
+    # 0007 — the work queue (Orbit's ticket->task pattern, game-dev shaped).
+    #
+    # Work flows in from the human (dashboard), from promoted playtest items,
+    # and (optionally) from an Orbit import. Seats pull from it; the dashboard
+    # dispatches real Claude sessions against it.
+    """
+    CREATE TABLE work_item (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        seat        TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        brief       TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'queued'
+                        CHECK (status IN ('queued','dispatched','done','failed')),
+        priority    INTEGER NOT NULL DEFAULT 0,
+        source      TEXT NOT NULL DEFAULT 'manual',
+        source_ref  TEXT NOT NULL DEFAULT '',
+        result      TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_work_status ON work_item(status, priority DESC, id);
+    """,
 ]
 
 

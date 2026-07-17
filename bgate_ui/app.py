@@ -15,8 +15,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from bgate_core import activity, assets, bible, db, lore, playtest, project, seats
+from bgate_core import queue as _queue
+from bgate_ui import dispatch as _dispatch
 
 app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def _coi_headers(request, call_next):
+    """Cross-origin isolation on every response — the embedded WASM game build
+    (/play) needs SharedArrayBuffer, which needs these on the whole origin."""
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    return response
 
 _STATIC = Path(__file__).with_name("static")
 
@@ -125,6 +137,76 @@ def preview(rel: str) -> FileResponse:
         raise HTTPException(415, "images only")
     if not target.is_file():
         raise HTTPException(404, f"no image at {rel}")
+    return FileResponse(target)
+
+
+# ---------------------------------------------------------------------------
+# The queue + dispatch: orchestration lives here now
+# ---------------------------------------------------------------------------
+@app.get("/api/queue")
+def queue_list(status: Optional[str] = None) -> dict:
+    root = _root()
+    synced = _queue.sync_promoted(root)  # promoted playtest feedback flows in
+    return {"items": _queue.list_items(root, status=status),
+            "synced_from_playtest": synced["created"]}
+
+
+@app.post("/api/queue")
+def queue_add(payload: dict) -> dict:
+    return _queue.add(_root(), payload["seat"], payload["title"],
+                      brief=payload.get("brief", ""),
+                      priority=int(payload.get("priority", 0)))
+
+
+@app.post("/api/queue/{item_id}/dispatch")
+def queue_dispatch(item_id: int, payload: Optional[dict] = None) -> dict:
+    payload = payload or {}
+    return _dispatch.dispatch(str(_root()), item_id,
+                              model=payload.get("model") or None)
+
+
+@app.post("/api/queue/{item_id}/stop")
+def queue_stop(item_id: int) -> dict:
+    return _dispatch.stop(item_id)
+
+
+@app.post("/api/queue/import-orbit")
+def queue_import_orbit() -> dict:
+    return _queue.import_orbit(_root())
+
+
+@app.get("/api/agents")
+def agents() -> dict:
+    return {"agents": _dispatch.status(str(_root()))}
+
+
+@app.get("/api/agent-log/{item_id}")
+def agent_log(item_id: int, tail: int = 60) -> dict:
+    path = _root() / ".bgate" / "agents" / f"item-{item_id}.log"
+    if not path.is_file():
+        return {"lines": []}
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return {"lines": lines[-tail:]}
+
+
+# ---------------------------------------------------------------------------
+# Play the game inside the app
+# ---------------------------------------------------------------------------
+@app.get("/play/{file_path:path}")
+def play_files(file_path: str = "") -> FileResponse:
+    """Serve the WASM build inside the dashboard origin (COI comes from the
+    middleware). /play/ -> index.html."""
+    root = _root().resolve()
+    web = (root / "export" / "web").resolve()
+    if not web.is_dir():
+        raise HTTPException(404, "no web build — export it first (tech seat)")
+    target = (web / (file_path or "index.html")).resolve()
+    try:
+        target.relative_to(web)
+    except ValueError:
+        raise HTTPException(403, "path escapes the build dir")
+    if not target.is_file():
+        raise HTTPException(404, file_path)
     return FileResponse(target)
 
 
