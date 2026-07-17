@@ -134,6 +134,15 @@ class TestBrief:
         with pytest.raises(ValueError, match="unknown or disabled"):
             seats.brief(root, "wizard")
 
+    def test_brief_carries_the_identity_frame(self, root):
+        """Spawned workers were re-litigating their own identity; the brief must
+        resolve it up front."""
+        frame = seats.brief(root, "art")["your_role"]
+        assert "SPAWNED SEAT WORKER" in frame
+        assert "not an injection" in frame.lower()
+        # The real boundary is preserved, not blanket-waived.
+        assert "through TOOLS" in frame and ".env" in frame
+
 
 class TestBlackboard:
     def test_post_and_read(self, root):

@@ -36,7 +36,10 @@ def find_claude() -> Optional[str]:
 
 
 def _prompt_for(item: dict) -> str:
+    from bgate_core.seats import SEAT_IDENTITY
+
     return (
+        SEAT_IDENTITY + "\n\n"
         f"You are the {item['seat'].upper()} seat of the Builders Gate game project "
         "in the current directory. The builders-gate MCP tools are available to you "
         "NATIVELY — no runner scripts.\n\n"
