@@ -190,6 +190,84 @@ def agent_log(item_id: int, tail: int = 60) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Playtest recording — start/stop from the app; triage flows to the director
+# ---------------------------------------------------------------------------
+_pt_processing: dict = {}
+
+
+@app.get("/api/playtest/preflight")
+def pt_preflight() -> dict:
+    return playtest.preflight()
+
+
+@app.post("/api/playtest/start")
+def pt_start(payload: Optional[dict] = None) -> dict:
+    payload = payload or {}
+    try:
+        return playtest.start(_root(), payload.get("name") or "app session",
+                              window_title=payload.get("window_title"),
+                              mic_device=payload.get("mic_device"))
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@app.post("/api/playtest/stop")
+def pt_stop() -> dict:
+    """Stop recording; transcription runs in a worker thread (it takes ~a
+    minute per 10 of audio). When it finishes, a DIRECTOR TRIAGE work item is
+    queued automatically — dispatch it and a director session reviews the
+    brief, promotes/dismisses feedback, and queues work for the seats."""
+    import threading
+
+    root = _root()
+    try:
+        session = playtest._active(root, None)
+    except LookupError as exc:
+        return {"ok": False, "error": str(exc)}
+    sid = session["id"]
+    _pt_processing[sid] = "processing"
+
+    def worker():
+        try:
+            result = playtest.stop(root, sid)
+            transcript = result.get("transcript") or {}
+            items = transcript.get("items", 0)
+            _queue.add(
+                root, "director",
+                title=f"Triage playtest session {sid} ({items} feedback items)",
+                brief=(f"A playtest session (id {sid}) was recorded and "
+                       "transcribed. Call playtest_brief with "
+                       f"session_id={sid} (include_transcript=true), review "
+                       "every item WITH its telemetry, then: playtest_promote "
+                       "the real ones (re-routing seat/kind where the "
+                       "classifier guessed wrong), playtest_dismiss the noise, "
+                       "and queue_add a work item per theme for the owning "
+                       "seat with a brief that quotes the feedback and its "
+                       "numbers. Scope discipline applies: nothing below the "
+                       "cut line becomes work."),
+                priority=3, source="playtest-triage", source_ref=str(sid))
+            _pt_processing[sid] = "ready"
+        except Exception as exc:
+            _pt_processing[sid] = f"failed: {exc}"
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "session_id": sid, "processing": True}
+
+
+@app.get("/api/playtest/status")
+def pt_status() -> dict:
+    root = _root()
+    recording = None
+    try:
+        recording = playtest._active(root, None)
+    except LookupError:
+        pass
+    return {"recording": {"id": recording["id"], "name": recording["name"]}
+            if recording else None,
+            "processing": dict(_pt_processing)}
+
+
+# ---------------------------------------------------------------------------
 # Play the game inside the app
 # ---------------------------------------------------------------------------
 @app.get("/play/{file_path:path}")

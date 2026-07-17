@@ -215,6 +215,14 @@
   }
   .playhint{font-family:var(--mono); font-size:9.5px; color:#4c4c58}
   #gameframe{flex:1; border:0; min-height:380px; width:100%}
+  .playpanel{flex-direction:column}
+  .ptbar{
+    display:flex; gap:10px; align-items:center; padding:8px 12px;
+    border-bottom:1px solid var(--seam); font-family:var(--mono); font-size:10px;
+    color:var(--ash);
+  }
+  .ptbar .lamp{width:7px;height:7px}
+  #pt-btn.recording{background:var(--ember); animation:throb 1.2s infinite}
 </style>
 </head>
 <body>
@@ -243,6 +251,11 @@
     <section>
       <h2>Play — the current build</h2>
       <div class="panel playpanel">
+        <div class="ptbar">
+          <span class="lamp" id="pt-lamp"></span>
+          <span id="pt-msg">checking playtest gear…</span>
+          <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
+        </div>
         <div id="play-holder">
           <button class="playbtn" onclick="loadGame()">▶ boot the game here</button>
           <div class="playhint">A/D move · Space jump · J/K punch · U/I kick · S block · L duck · F1 tuning</div>
@@ -483,6 +496,72 @@ function loadGame(){
   const holder = document.getElementById("play-holder");
   holder.innerHTML = `<iframe id="gameframe" src="/play/" allow="autoplay; fullscreen"></iframe>`;
 }
+
+/* ── playtest recording ──────────────────────────────────────────────── */
+let ptReady = false, ptRecording = false;
+
+async function ptPreflight(){
+  try{
+    const r = await fetch("/api/playtest/preflight");
+    const p = await r.json();
+    ptReady = p.ready;
+    const lamp = document.getElementById("pt-lamp");
+    const btn = document.getElementById("pt-btn");
+    lamp.className = "lamp" + (p.ready ? "" : " bad");
+    btn.disabled = !p.ready && !ptRecording;
+    document.getElementById("pt-msg").textContent = p.ready
+      ? "playtest ready — record, play, talk"
+      : "not ready: " + Object.entries(p.checks)
+          .filter(([k, c]) => !(c.ok ?? c.available))
+          .map(([k, c]) => `${k} (${(c.reason || "unavailable").slice(0, 60)})`)
+          .join(" · ");
+  }catch(e){}
+}
+
+async function toggleRecord(){
+  const btn = document.getElementById("pt-btn");
+  if (!ptRecording){
+    const r = await fetch("/api/playtest/start", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: "app session " + new Date().toLocaleTimeString()})});
+    const got = await r.json();
+    if (got.recording){
+      ptRecording = true;
+      btn.textContent = "■ stop";
+      btn.classList.add("recording");
+      document.getElementById("pt-msg").textContent =
+        "RECORDING — play and say what you like and what needs fixing";
+    } else {
+      document.getElementById("pt-msg").textContent = "start failed: " + (got.error || "?");
+    }
+  } else {
+    const r = await fetch("/api/playtest/stop", {method: "POST"});
+    const got = await r.json();
+    ptRecording = false;
+    btn.textContent = "● record";
+    btn.classList.remove("recording");
+    document.getElementById("pt-msg").textContent = got.ok
+      ? `session ${got.session_id} transcribing — a director triage item will land in the queue`
+      : "stop failed: " + (got.error || "?");
+  }
+}
+
+async function ptPoll(){
+  if (ptRecording) return;  // don't stomp the recording message
+  try{
+    const r = await fetch("/api/playtest/status");
+    const s = await r.json();
+    const busy = Object.entries(s.processing).filter(([, v]) => v === "processing");
+    if (busy.length){
+      document.getElementById("pt-msg").textContent =
+        `transcribing session ${busy[0][0]}…`;
+    }
+  }catch(e){}
+}
+
+ptPreflight();
+setInterval(ptPreflight, 15000);
+setInterval(ptPoll, 4000);
 
 pollState(); pollActivity(); pollQueue();
 setInterval(pollState, 3000);

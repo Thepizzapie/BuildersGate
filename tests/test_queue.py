@@ -116,6 +116,51 @@ class TestQueueApi:
         dispatch._live.clear()
 
 
+class TestPlaytestFromApp:
+    def test_preflight_endpoint_reports_shape(self, client):
+        got = client.get("/api/playtest/preflight").json()
+        assert "ready" in got and "checks" in got
+
+    def test_stop_without_recording_is_honest(self, client):
+        got = client.post("/api/playtest/stop").json()
+        assert got["ok"] is False
+        assert "recording" in got["error"]
+
+    def test_stop_processes_and_queues_director_triage(self, client, root, monkeypatch):
+        """The routing the app exists for: session -> transcript -> a DIRECTOR
+        triage item in the queue, carrying the session id."""
+        from bgate_core import playtest as pt
+        from bgate_ui import app as ui_app
+
+        with db.tx(root) as conn:
+            conn.execute("INSERT INTO playtest_session (id, name, slug, status) "
+                         "VALUES (7, 'app session', 'app-session', 'recording')")
+
+        monkeypatch.setattr(pt, "stop", lambda r, sid, **kw: {
+            "session_id": sid, "transcript": {"ok": True, "items": 5}})
+
+        got = client.post("/api/playtest/stop").json()
+        assert got["ok"] is True and got["session_id"] == 7
+
+        import time
+        for _ in range(50):
+            if ui_app._pt_processing.get(7) == "ready":
+                break
+            time.sleep(0.05)
+        assert ui_app._pt_processing[7] == "ready"
+
+        items = queue.list_items(root, status="queued", seat="director")
+        assert len(items) == 1
+        assert items[0]["source"] == "playtest-triage"
+        assert items[0]["source_ref"] == "7"
+        assert "playtest_brief" in items[0]["brief"]
+        assert "session_id=7" in items[0]["brief"]
+
+    def test_status_endpoint(self, client):
+        got = client.get("/api/playtest/status").json()
+        assert "recording" in got and "processing" in got
+
+
 class TestPlayRoute:
     def test_coi_headers_on_every_response(self, client):
         got = client.get("/api/queue")
