@@ -83,6 +83,45 @@ def unpin(root: str | os.PathLike[str], name: str) -> dict:
     return entry
 
 
+# ---------------------------------------------------------------------------
+# Character profiles — identity as a stored artifact, never re-imagined prose.
+# Written by a vision pass LOOKING at the approved reference; injected into
+# every generation prompt; the checklist consistency_check judges against.
+# ---------------------------------------------------------------------------
+def profile_path(root: str | os.PathLike[str], name: str) -> "Path":
+    return _refs_dir(root) / f"{slugify(name)}.profile.json"
+
+
+def profile_set(root: str | os.PathLike[str], name: str, *, traits: str,
+                style: str, negative: str) -> dict:
+    """Store a character's visual identity next to its pinned reference.
+
+    traits    what the character IS (from LOOKING at the reference)
+    style     the rendering style every frame must hold
+    negative  what generations must never introduce
+    """
+    import json
+
+    get(root, name)  # must be a pinned reference
+    data = {"name": slugify(name), "traits": traits.strip(),
+            "style": style.strip(), "negative": negative.strip()}
+    path = profile_path(root, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    activity.log(root, "profile", f"visual profile set for {data['name']}",
+                 ref=str(path))
+    return data
+
+
+def profile_get(root: str | os.PathLike[str], name: str) -> Optional[dict]:
+    import json
+
+    path = profile_path(root, name)
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def resolve(root: str | os.PathLike[str], name_or_path: str) -> str:
     """A pin name -> its file path; an existing path passes through untouched.
 

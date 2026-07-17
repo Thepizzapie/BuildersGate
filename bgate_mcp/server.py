@@ -523,8 +523,22 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
+        # The stored visual identity, if one exists — injected into EVERY
+        # prompt so no generation depends on anyone's memory of the character.
+        profile = None
+        for key in ((str(ref_image),) if ref_image else ()) + (name, f"{name}-character"):
+            profile = _refs.profile_get(root, key)
+            if profile:
+                break
+        identity = ""
+        if profile:
+            identity = (f" IDENTITY (must hold exactly): {profile['traits']}. "
+                        f"STYLE (must hold exactly): {profile['style']}. "
+                        f"NEVER: {profile['negative']}.")
+
         # 1. The reference — the single source of who this character is.
-        result: dict = {"poses_attempted": len(poses)}
+        result: dict = {"poses_attempted": len(poses),
+                        "profile_used": bool(profile)}
         if ref_image:
             ref_path = _refs.resolve(root, str(ref_image))
         else:
@@ -574,7 +588,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 + " — identical design, colors, proportions, face, and art "
                 f"style — now in this stance: {desc}. ONE single full-body "
                 "character head to toe, exactly one figure, fully transparent "
-                "background, no text, no cropping of limbs.",
+                "background, no text, no cropping of limbs." + identity,
                 refs, out_png, size="1024x1536", quality=quality,
                 transparent=True)
             if got.get("ok"):
@@ -778,6 +792,113 @@ def ref_list(kind: Optional[str] = None) -> dict:
     """The pinned reference anchors. Check BEFORE generating character/style art."""
     try:
         return {"refs": _refs.list_refs(_root(), kind=kind)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def profile_set(name: str, traits: str, style: str, negative: str) -> dict:
+    """Store a character's visual identity — written while LOOKING at the pinned
+    reference, never from memory. Injected automatically into every
+    image_sprites generation for this character, and consistency_check judges
+    against it. traits = what the character IS; style = the rendering style
+    every frame must hold; negative = what must never appear.
+    """
+    try:
+        return _refs.profile_set(_root(), name, traits=traits, style=style,
+                                 negative=negative)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def profile_get(name: str) -> dict:
+    """A character's stored visual identity (or {missing: true})."""
+    try:
+        got = _refs.profile_get(_root(), name)
+        return got if got else {"missing": True, "name": name}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def consistency_check(candidate_path: str, character: str) -> dict:
+    """Judge a generated frame against its character — from a BUILT comparison,
+    never from memory. Composes reference | candidate side-by-side on a
+    checkerboard (alpha honesty), archives it to the gallery, and returns the
+    profile checklist + a palette-drift tripwire. YOU then look at the
+    composite and verdict each checklist line. A frame only lands if every
+    line passes. This exists because three off-style batches were approved by
+    agents judging frames in isolation.
+    """
+    try:
+        from PIL import Image
+
+        root = _Path(_root())
+        ref_path = _refs.resolve(root, character)
+        profile = _refs.profile_get(root, character)
+
+        def _board(img: Image.Image) -> Image.Image:
+            board = Image.new("RGB", img.size, (140, 140, 140))
+            tile = 16
+            for y in range(0, img.size[1], tile):
+                for x in range(0, img.size[0], tile):
+                    if (x // tile + y // tile) % 2:
+                        board.paste((180, 180, 180), (x, y, min(x + tile, img.size[0]),
+                                                      min(y + tile, img.size[1])))
+            board.paste(img, (0, 0), img)
+            return board
+
+        ref = Image.open(ref_path).convert("RGBA")
+        cand = Image.open(candidate_path).convert("RGBA")
+        h = 512
+        ref.thumbnail((h, h))
+        cand.thumbnail((h, h))
+        combo = Image.new("RGB", (ref.width + cand.width + 12, max(ref.height, cand.height)),
+                          (24, 24, 28))
+        combo.paste(_board(ref), (0, 0))
+        combo.paste(_board(cand), (ref.width + 12, 0))
+        out = root / ".bgate_out" / "art" / "consistency_check.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        combo.save(out)
+        archived = _archive_preview(str(out),
+                                    f"check-{_Path(candidate_path).stem}"[:40])
+
+        # Palette tripwire (advisory — catches color drift, blind to identity).
+        def _pal(img, n=6):
+            img = img.copy()
+            img.thumbnail((128, 128))
+            px = [(r, g, b) for r, g, b, a in img.getdata() if a > 64]
+            if not px:
+                return []
+            q = Image.new("RGB", (len(px), 1))
+            q.putdata(px)
+            q = q.quantize(n)
+            pal = q.getpalette()[:n * 3]
+            return [tuple(pal[i * 3:i * 3 + 3]) for _, i in
+                    sorted(q.getcolors(), reverse=True)[:n]]
+
+        pa, pb = _pal(ref), _pal(cand)
+        drift = (round(sum(min(sum((x - y) ** 2 for x, y in zip(c, d)) ** 0.5
+                               for d in pb) for c in pa) / len(pa), 1)
+                 if pa and pb else None)
+
+        checklist = ["same character design (species/build/proportions)",
+                     "same rendering style (brushwork/detail level — no added "
+                     "texture like fur, hair, etched lines)",
+                     "same palette family", "no extra elements (glow, shadow, props)"]
+        if profile:
+            checklist.insert(0, f"matches traits: {profile['traits'][:160]}")
+            checklist.insert(1, f"holds style: {profile['style'][:160]}")
+            checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
+
+        return {"composite": archived or str(out), "reference": ref_path,
+                "palette_drift": drift,
+                "palette_note": "advisory: >30 = color drift likely; low values "
+                                "do NOT prove identity",
+                "checklist": checklist,
+                "instruction": "LOOK at the composite. Verdict every checklist "
+                               "line explicitly. Any fail = do not land."}
     except Exception as exc:
         return _fail(exc)
 
