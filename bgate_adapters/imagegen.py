@@ -16,9 +16,27 @@ import os
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_MODEL = "gpt-image-1"
+# Model routing, learned in production: gpt-image-2 paints opaque pieces well
+# but REJECTS background=transparent (400) and proved flaky on sprite work;
+# gpt-image-1 is the reliable choice wherever alpha matters. So the mode picks
+# the model — agents never have to remember which is which.
+DEFAULT_OPAQUE_MODEL = "gpt-image-2"
+DEFAULT_TRANSPARENT_MODEL = "gpt-image-1"
 SIZES = ("1024x1024", "1536x1024", "1024x1536", "auto")
 QUALITIES = ("low", "medium", "high", "auto")
+
+
+def _model_for(transparent: bool) -> str:
+    """BGATE_IMAGE_MODEL forces one model for everything; otherwise the mode
+    routes: transparent -> gpt-image-1, opaque -> gpt-image-2 (overridable via
+    BGATE_IMAGE_MODEL_TRANSPARENT / BGATE_IMAGE_MODEL_OPAQUE)."""
+    forced = os.environ.get("BGATE_IMAGE_MODEL")
+    if forced:
+        return forced
+    if transparent:
+        return os.environ.get("BGATE_IMAGE_MODEL_TRANSPARENT",
+                              DEFAULT_TRANSPARENT_MODEL)
+    return os.environ.get("BGATE_IMAGE_MODEL_OPAQUE", DEFAULT_OPAQUE_MODEL)
 
 
 def available() -> dict:
@@ -31,7 +49,9 @@ def available() -> dict:
         import openai  # noqa: F401
     except ImportError:
         return {"available": False, "reason": "openai package not installed"}
-    return {"available": True, "model": os.environ.get("BGATE_IMAGE_MODEL", DEFAULT_MODEL)}
+    return {"available": True,
+            "model_transparent": _model_for(True),
+            "model_opaque": _model_for(False)}
 
 
 def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
@@ -53,8 +73,9 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
     from openai import OpenAI
 
     client = OpenAI(timeout=timeout)
+    model = _model_for(transparent)
     kwargs = {
-        "model": probe["model"],
+        "model": model,
         "prompt": prompt,
         "size": size,
         "quality": quality,
@@ -71,7 +92,7 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
         # agent can act on — sanitized by the SDK, no key material inside.
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    return _save(result, out_path, probe["model"], size, quality, transparent)
+    return _save(result, out_path, model, size, quality, transparent)
 
 
 def edit(prompt: str, ref_paths: list[str], out_path: str, *,

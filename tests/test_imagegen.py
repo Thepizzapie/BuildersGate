@@ -65,6 +65,39 @@ class TestEnvFile:
         os.environ.pop("BGATE_TEST_SECRET", None)
 
 
+class TestModelRouting:
+    """The mode picks the model — learned in production: gpt-image-2 rejects
+    transparency and was flaky on sprites; gpt-image-1 owns alpha work."""
+
+    @pytest.fixture(autouse=True)
+    def clean_env(self, monkeypatch):
+        for var in ("BGATE_IMAGE_MODEL", "BGATE_IMAGE_MODEL_TRANSPARENT",
+                    "BGATE_IMAGE_MODEL_OPAQUE"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_transparent_routes_to_image_1(self):
+        assert imagegen._model_for(True) == "gpt-image-1"
+
+    def test_opaque_routes_to_image_2(self):
+        assert imagegen._model_for(False) == "gpt-image-2"
+
+    def test_global_override_forces_both(self, monkeypatch):
+        monkeypatch.setenv("BGATE_IMAGE_MODEL", "gpt-image-1")
+        assert imagegen._model_for(True) == "gpt-image-1"
+        assert imagegen._model_for(False) == "gpt-image-1"
+
+    def test_per_mode_overrides(self, monkeypatch):
+        monkeypatch.setenv("BGATE_IMAGE_MODEL_OPAQUE", "gpt-image-3")
+        assert imagegen._model_for(False) == "gpt-image-3"
+        assert imagegen._model_for(True) == "gpt-image-1"
+
+    def test_available_reports_both_routes(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+        got = imagegen.available()
+        assert got["model_transparent"] == "gpt-image-1"
+        assert got["model_opaque"] == "gpt-image-2"
+
+
 class TestAdapter:
     def test_available_reports_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
