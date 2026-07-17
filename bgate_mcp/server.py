@@ -457,6 +457,35 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
 
 
 @mcp.tool()
+def image_edit(prompt: str, ref_images: list[str], filename: str,
+               size: str = "1024x1536", quality: str = "medium",
+               transparent: bool = False) -> dict:
+    """Generate an image CONDITIONED ON reference image(s) — the consistency
+    primitive, exposed raw. Use it to regenerate a single sprite pose against a
+    character's existing reference (~$0.04 at medium) instead of re-buying the
+    whole set, or to derive variants that must stay on-model.
+
+    ref_images: absolute paths to the reference(s). filename lands under the
+    project's .bgate_out/art/. Result is archived to the gallery — LOOK at it.
+    Note: transparent output requires gpt-image-1 (gpt-image-2 rejects it).
+    """
+    try:
+        root = _Path(_root())
+        out = root / ".bgate_out" / "art" / filename
+        from bgate_adapters import imagegen
+        result = imagegen.edit(prompt, ref_images, str(out), size=size,
+                               quality=quality, transparent=transparent)
+        if result.get("ok"):
+            archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
+            if archived:
+                result["preview"] = archived
+            _log("art", f"reference-edit {filename}", ref=archived or result["path"])
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
 def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
