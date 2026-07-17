@@ -6,20 +6,38 @@ and actually *playtest* a game instead of just writing about one.
 
 Local-first: one SQLite file per game project, no daemon, no cloud.
 
-## Status
+## What's in the box
 
-| Step | | |
-|---|---|---|
-| 1 | Repo, SQLite schema, MCP server | done |
-| 2 | Design bible + lore graph + canon_check | done |
-| 3 | Blender adapter (headless bpy → render + mesh stats) | done |
-| 4 | Godot adapter (headless run + project check) | done |
-| 5 | Playtest recording → transcript → brief | done |
-| 5b | 2D/3D templates + telemetry autoload | done |
-| 6 | Blender→Godot asset round trip (glTF) | done |
-| 7 | Asset registry + binary locking | done |
-| 8 | Agent seats + write lanes + blackboard | done |
-| 9 | Registration + hook enforcement + dashboard | done |
+- **Design bible + lore canon** — pillars, scope tiers with a mechanical cut
+  line, an entity graph with atomic facts, and `canon_check` (a deterministic
+  lexical gate every narrative write passes through)
+- **Seven agent seats** — director / narrative / gameplay / tech / art / audio /
+  qa, each with write lanes, one-call briefs, and a shared blackboard;
+  a PreToolUse hook gives the lanes teeth
+- **Blender adapter** — headless bpy with structured feedback (tri counts, UV
+  warnings, renders), sprite factory, glTF export verified in-engine
+- **Godot adapter** — headless run/check, asset import with engine inspection,
+  live game screenshots, project scaffolds with a telemetry autoload
+- **Painted-art leg (optional)** — gpt-image portraits/UI/backdrops and
+  reference-first sprite sets, with pinned reference anchors
+- **Asset registry** — content hashes + per-file locks for binaries (they don't
+  merge), with a drift detector that names silent clobbers
+- **Playtest mode** — record the game window + your voice, whisper-transcribe,
+  classify feedback, and join it to game telemetry on one clock
+- **Dashboard** — a live view of the seats working, the ledger, and every
+  render/screenshot the pipeline produces
+
+## Requirements
+
+- Python 3.11+ (`pip install -e .` pulls mcp/fastapi/uvicorn/Pillow)
+- [Godot 4.x](https://godotengine.org) — portable exe is fine; discovery checks
+  common install dirs, or set `BGATE_GODOT`
+- [Blender 4.x](https://blender.org) (optional, for the 3D leg) — or set `BGATE_BLENDER`
+- An OpenAI API key (optional, for painted art) — put `OPENAI_API_KEY=...` in a
+  gitignored `.env` at your game project's root; it is loaded per-project and
+  never logged
+- `faster-whisper` + `sounddevice` (optional, for playtest transcription):
+  `pip install -e ".[stt,record]"`
 
 ## Setup (once)
 
@@ -38,6 +56,35 @@ hook asks `seats.can_write` and blocks out-of-lane or lock-violating writes
 (exit 2 with guidance). No seat adopted, not a bgate project, or anything
 unexpected → the hook is inert / fails open — a crashing hook must never dam a
 session.
+
+## Building a game with it — the loop
+
+Everything below is an MCP tool call; any Claude session (or agent) with the
+server registered can drive it. The intended shape: you (or an orchestrator)
+fan out one agent per seat, each adopting its role via `BGATE_SEAT`.
+
+```text
+1  project_init            name, engine, 2d/3d — creates .bgate/game.db at the root
+2  godot_scaffold          a runnable slice (player, ground, telemetry autoload wired)
+3  DIRECTOR seat           bible_add: pillars, the core loop, scope tiers, the CUT LINE
+4  NARRATIVE seat          lore_add / lore_fact (locked facts mirror real tunables),
+                           canon_check on every narrative write
+5  ART seat                ref_pin approved references first; then blender_sprites /
+                           image_sprites (reference-first painted sets) / image_generate;
+                           asset_lock before touching any binary, asset_release after
+6  GAMEPLAY seat           writes code in its lanes; godot_check_project + godot_run
+                           after every change; godot_screenshot to SEE the game
+7  QA seat                 headless test scripts via godot_run; asset_verify for drift
+8  playtest_check/start    play it yourself, talk out loud; feedback lands classified
+                           and joined to telemetry; YOU promote what becomes work
+```
+
+Rules that make multi-agent work safe: check `seat_can_write` before writing
+outside your obvious lane, lock binaries before editing, leave a
+`seat_post_note` when your work changes another seat's world, and
+`scope_check(rank)` before building anything new. `seat_brief(role)` returns
+everything a seat needs to start — mission, lanes, bible, canon, pinned
+reference anchors, promoted feedback, and who holds which locks.
 
 ## The dashboard
 
