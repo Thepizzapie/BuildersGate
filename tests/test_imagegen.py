@@ -98,6 +98,64 @@ class TestModelRouting:
         assert got["model_opaque"] == "gpt-image-2"
 
 
+class TestRoutingReachesTheApi:
+    """Regression: the routing refactor changed available()'s shape and edit()
+    kept reading probe['model'] — every edit() call raised KeyError. These
+    tests drive BOTH entry points through a stubbed client all the way to the
+    API call, so a routing/shape change that breaks one path fails loudly.
+    """
+
+    @pytest.fixture()
+    def stub(self, tmp_path, monkeypatch):
+        import base64
+        import types
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+        captured = {}
+
+        class _Images:
+            def generate(self, **kw):
+                captured["generate"] = kw
+                return types.SimpleNamespace(data=[types.SimpleNamespace(
+                    b64_json=base64.b64encode(b"\x89PNG\r\n\x1a\nstub").decode(),
+                    revised_prompt=None)])
+
+            def edit(self, **kw):
+                captured["edit"] = kw
+                return self.generate()
+
+        class _Client:
+            def __init__(self, timeout=None):
+                self.images = _Images()
+
+        monkeypatch.setattr("openai.OpenAI", _Client)
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(b"\x89PNG\r\n\x1a\nref")
+        return {"captured": captured, "ref": ref, "tmp": tmp_path}
+
+    def test_generate_routes_and_saves(self, stub):
+        got = imagegen.generate("x", str(stub["tmp"] / "g.png"), transparent=True)
+        assert got["ok"] is True, got
+        assert stub["captured"]["generate"]["model"] == "gpt-image-1"
+        got2 = imagegen.generate("x", str(stub["tmp"] / "g2.png"), transparent=False)
+        assert got2["model"] == "gpt-image-2"
+
+    def test_edit_routes_and_saves(self, stub):
+        """The path the KeyError killed — must reach the API and save."""
+        got = imagegen.edit("x", [str(stub["ref"])], str(stub["tmp"] / "e.png"),
+                            transparent=True)
+        assert got["ok"] is True, got
+        assert stub["captured"]["edit"]["model"] == "gpt-image-1"
+        assert got["model"] == "gpt-image-1"
+        assert (stub["tmp"] / "e.png").exists()
+
+    def test_edit_opaque_routes_to_image_2(self, stub):
+        got = imagegen.edit("x", [str(stub["ref"])], str(stub["tmp"] / "e2.png"),
+                            transparent=False)
+        assert got["ok"] is True
+        assert stub["captured"]["edit"]["model"] == "gpt-image-2"
+
+
 class TestAdapter:
     def test_available_reports_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

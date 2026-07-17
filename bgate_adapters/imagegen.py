@@ -119,10 +119,11 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
     from openai import OpenAI
 
     client = OpenAI(timeout=timeout)
+    model = _model_for(transparent)  # same routing as generate() — keep in sync
     handles = [open(ref, "rb") for ref in ref_paths]
     try:
         kwargs = {
-            "model": probe["model"],
+            "model": model,
             "image": handles if len(handles) > 1 else handles[0],
             "prompt": prompt,
             "size": size,
@@ -135,7 +136,7 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
             result = client.images.edit(**kwargs)
         except TypeError:
             # Older SDK/model rejecting a kwarg — retry with the minimal set.
-            result = client.images.edit(model=probe["model"],
+            result = client.images.edit(model=model,
                                         image=kwargs["image"], prompt=prompt,
                                         size=size, n=1)
         except Exception as exc:
@@ -144,7 +145,7 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
         for handle in handles:
             handle.close()
 
-    return _save(result, out_path, probe["model"], size, quality, transparent)
+    return _save(result, out_path, model, size, quality, transparent)
 
 
 def _save(result, out_path: str, model: str, size: str, quality: str,
