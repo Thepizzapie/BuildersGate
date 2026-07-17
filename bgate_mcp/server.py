@@ -541,22 +541,36 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         result["reference"] = ref_path
 
         # 2. Each pose derives from the reference — same fighter, new stance.
-        # CHAINED: every edit conditions on the reference PLUS the previous
-        # successful frame, so consecutive frames anchor each other instead of
-        # each one re-deriving the character from scratch. ONE frame per API
-        # call, always — sheet generations are where consistency dies.
+        # ANCHOR + ROLLING conditioning: every edit carries (a) the character
+        # ANCHOR — always present, so identity re-grounds each call and drift
+        # can't compound telephone-style, (b) the PREVIOUS successful frame —
+        # motion continuity, (c) for the closing frame of a multi-frame
+        # animation, that animation's FIRST frame — so cycles loop smoothly
+        # (walk/2 flows back into walk/0). ONE frame per API call, always.
         pose_files: list[tuple[str, str]] = []
         pose_errors: list[dict] = []
         prev_frame: Optional[str] = None
+        anim_first: dict[str, str] = {}
+        anim_counts: dict[str, int] = {}
+        for p in poses:
+            anim_counts[p["name"].split("/", 1)[0]] = \
+                anim_counts.get(p["name"].split("/", 1)[0], 0) + 1
         for pose in poses:
             pname = pose["name"]
             desc = pose.get("description", pname)
+            anim, _, idx = pname.partition("/")
             out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
-            refs = [ref_path] + ([prev_frame] if prev_frame else [])
+            refs = [ref_path]
+            is_last_of_cycle = (idx.isdigit() and anim_counts[anim] > 1
+                                and int(idx) == anim_counts[anim] - 1)
+            if is_last_of_cycle and anim in anim_first and anim_first[anim] != prev_frame:
+                refs.append(anim_first[anim])
+            if prev_frame:
+                refs.append(prev_frame)
             got = imagegen.edit(
                 "This exact character from the reference image"
-                + (" (and shown again in the second image in a different pose)"
-                   if prev_frame else "")
+                + (" (shown again in the other image(s) in different poses of "
+                   "the same motion)" if len(refs) > 1 else "")
                 + " — identical design, colors, proportions, face, and art "
                 f"style — now in this stance: {desc}. ONE single full-body "
                 "character head to toe, exactly one figure, fully transparent "
@@ -566,6 +580,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if got.get("ok"):
                 pose_files.append((pname, out_png))
                 prev_frame = out_png
+                if anim not in anim_first:
+                    anim_first[anim] = out_png
             else:
                 pose_errors.append({"name": pname, "error": got.get("error")})
 
