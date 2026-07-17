@@ -19,6 +19,45 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 | 6 | Blender→Godot asset round trip (glTF) | done |
 | 7 | Asset registry + binary locking | done |
 | 8 | Agent seats + write lanes + blackboard | done |
+| 9 | Registration + hook enforcement + dashboard | done |
+
+## Setup (once)
+
+```bash
+pip install -e .                                          # from this repo
+claude mcp add builders-gate --scope user -- <abs-python> -m bgate_mcp.server
+python -m bgate_cli.main hook-install <game-project>      # lane/lock teeth
+```
+
+Registration must use the ABSOLUTE python path — the claude CLI's health check
+resolves a bare `python` differently than your shell and reports
+"failed to connect" against a server that runs fine.
+
+Enforcement activates when a session sets `BGATE_SEAT=<role>`: the PreToolUse
+hook asks `seats.can_write` and blocks out-of-lane or lock-violating writes
+(exit 2 with guidance). No seat adopted, not a bgate project, or anything
+unexpected → the hook is inert / fails open — a crashing hook must never dam a
+session.
+
+## The dashboard
+
+```bash
+python -m bgate_ui [--port 7788]     # from inside a project, or BGATE_ROOT
+```
+
+A foundry control room, not a generic admin panel: **the Floor** shows seven
+seat bays — each with its glyph, accent color, working/idle lamp (holds locks or
+acted <5 min ago), held binaries, last ledger entry, and promoted-feedback queue.
+**The Ledger** streams activity live (locks, releases, renders, canon checks,
+scaffolds, promotions — every meaningful event writes to the activity table).
+**The Forge Gallery** archives every `blender_run(render=True)` to
+`.bgate/previews/` and shows them with a lightbox. **The Vault** lists tracked
+binaries with lock/drift chips; the header's integrity lamp goes ember and
+throbs when `asset_verify` finds drift. **The World** shows pillars, the cut
+line (cut items struck through), and canon entities.
+
+Read-only by design: every mutation stays in the MCP tools where it's
+attributable to a seat. Single HTML file, no build step, no CDN, 127.0.0.1 only.
 
 ## Seats
 

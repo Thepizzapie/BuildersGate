@@ -214,6 +214,22 @@ _MIGRATIONS: list[str] = [
     CREATE INDEX idx_note_topic ON seat_note(topic, id);
     CREATE INDEX idx_note_role ON seat_note(role, id);
     """,
+    # 0005 — the activity ledger the dashboard watches.
+    #
+    # One row per meaningful event (lock taken, asset landed, render produced,
+    # session recorded, note posted). `seat` is the adopted identity when known,
+    # '' when the actor is anonymous. `ref` is a path / slug / id to link on.
+    """
+    CREATE TABLE activity (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        seat        TEXT NOT NULL DEFAULT '',
+        kind        TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        ref         TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_activity_id ON activity(id DESC);
+    """,
 ]
 
 

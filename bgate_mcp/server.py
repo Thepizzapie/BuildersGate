@@ -44,6 +44,42 @@ def _fail(exc: Exception) -> dict:
     return {"error": f"{type(exc).__name__}: {exc}"}
 
 
+def _seat() -> str:
+    """The session's adopted seat, if any. Each Claude session spawns its own
+    stdio server process, so a per-session env var is a per-session identity."""
+    return os.environ.get("BGATE_SEAT", "").strip()
+
+
+def _log(kind: str, summary: str, ref: str = "") -> None:
+    """Ledger entry against the active project. Never lets telemetry fail work."""
+    try:
+        from bgate_core import activity
+        activity.log(_root(), kind, summary, seat=_seat(), ref=ref)
+    except Exception:
+        pass
+
+
+def _archive_preview(src: str, label: str) -> Optional[str]:
+    """Copy a render into .bgate/previews/ so the dashboard keeps a history.
+
+    Renders land on a fixed path (render.png) and each run overwrites the last —
+    without archiving, the dashboard could only ever show the newest one.
+    """
+    try:
+        import shutil
+        import time
+
+        root = _Path(_root())
+        previews = root / ".bgate" / "previews"
+        previews.mkdir(parents=True, exist_ok=True)
+        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40]
+        dest = previews / f"{time.strftime('%Y%m%d-%H%M%S')}_{safe or 'render'}.png"
+        shutil.copy2(src, dest)
+        return str(dest)
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Project
 # ---------------------------------------------------------------------------
@@ -247,12 +283,14 @@ def blender_status() -> dict:
 
 @mcp.tool()
 def blender_run(script: str, blend_file: Optional[str] = None, render: bool = False,
-                engine: str = "BLENDER_WORKBENCH", timeout: int = 180) -> dict:
+                engine: str = "BLENDER_WORKBENCH", timeout: int = 180,
+                label: str = "") -> dict:
     """Run a bpy script in headless Blender and get the scene back as facts.
 
     `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
     modifiers count), UV warnings, materials, your print() output, and — with
-    render=True — a PNG of the active camera view.
+    render=True — a PNG of the active camera view (archived to the project's
+    preview gallery; give a `label` so humans can tell renders apart).
 
     A broken script is a normal result with ok=False plus the traceback, so read
     the result and iterate rather than assuming it worked. engine:
@@ -263,8 +301,20 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     except Exception:
         out_dir = None  # modeling before project_init is allowed
     try:
-        return _blender.run_script(script, blend_file=blend_file, render=render,
-                                   out_dir=out_dir, engine=engine, timeout=timeout)
+        result = _blender.run_script(script, blend_file=blend_file, render=render,
+                                     out_dir=out_dir, engine=engine, timeout=timeout)
+        rendered = result.get("render", {}) if isinstance(result.get("render"), dict) else {}
+        if rendered.get("rendered") and rendered.get("path"):
+            archived = _archive_preview(rendered["path"], label or "render")
+            if archived:
+                result["render"]["preview"] = archived
+                _log("render", f"rendered {label or 'a preview'} "
+                               f"({result['scene']['totals']['tris']} tris)",
+                     ref=archived)
+        elif result.get("ok"):
+            _log("blender", f"blender run: {label}" if label else
+                 f"blender run ({result.get('scene', {}).get('totals', {}).get('tris', '?')} tris)")
+        return result
     except Exception as exc:
         return _fail(exc)
 
@@ -366,7 +416,9 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
     """
     try:
         target = dest or str(_Path(_root()) / "game")
-        return _scaffold.new_project(target, name, kind=kind, force=force)
+        result = _scaffold.new_project(target, name, kind=kind, force=force)
+        _log("scaffold", f"scaffolded {kind} project {name!r}", ref=result["path"])
+        return result
     except Exception as exc:
         return _fail(exc)
 
@@ -402,6 +454,9 @@ def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets"
                 result["registry"] = _assets.track(_root(), result["copied_to"])
             except Exception as exc:
                 result["registry"] = {"tracked": False, "reason": str(exc)}
+            tris = result.get("engine_view", {}).get("total_tris", "?")
+            _log("asset", f"landed {result['res_path']} ({tris} tris in-engine)",
+                 ref=result["res_path"])
         return result
     except Exception as exc:
         return _fail(exc)

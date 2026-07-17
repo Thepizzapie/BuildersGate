@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Builders Gate</title>
+<style>
+  /* ── the foundry ─────────────────────────────────────────────────────── */
+  :root{
+    --void:#0c0c10; --iron:#121218; --plate:#17171f; --seam:#26262f;
+    --ash:#8b8b98; --bone:#e8e6df; --ember:#ff5c33; --ember-dim:#8a2f1c;
+    --mono:"Cascadia Mono","Consolas",ui-monospace,monospace;
+    --sans:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+    --c-director:#e8c05a; --c-narrative:#b083e8; --c-gameplay:#ff5c33;
+    --c-tech:#4fa3ff; --c-art:#ff7ab8; --c-audio:#43d6a5; --c-qa:#9adb4f;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--void); color:var(--bone); font-family:var(--sans);
+    background-image:radial-gradient(circle, #1d1d26 1px, transparent 1px);
+    background-size:26px 26px; min-height:100vh;
+  }
+  ::selection{background:var(--ember);color:var(--void)}
+
+  /* ── header: the gate lintel ─────────────────────────────────────────── */
+  header{
+    display:flex; align-items:stretch; border-bottom:1px solid var(--seam);
+    background:linear-gradient(180deg,#15151c 0%,#101016 100%);
+  }
+  .sigil{
+    padding:18px 22px; border-right:1px solid var(--seam);
+    font-family:var(--mono); font-size:22px; color:var(--ember); line-height:1;
+    display:flex; align-items:center; user-select:none;
+  }
+  .masthead{padding:12px 20px; flex:1}
+  .masthead h1{
+    font-size:15px; letter-spacing:.42em; font-weight:600; color:var(--bone);
+    text-transform:uppercase;
+  }
+  .masthead .sub{
+    font-family:var(--mono); font-size:11px; color:var(--ash); margin-top:4px;
+  }
+  .masthead .sub b{color:var(--bone); font-weight:600}
+  .integrity{
+    display:flex; align-items:center; gap:10px; padding:0 22px;
+    border-left:1px solid var(--seam); font-family:var(--mono); font-size:11px;
+    letter-spacing:.12em; text-transform:uppercase;
+  }
+  .lamp{width:9px;height:9px;border-radius:50%;background:#3adf82;box-shadow:0 0 8px #3adf82}
+  .lamp.bad{background:var(--ember);box-shadow:0 0 10px var(--ember);animation:throb 1.1s infinite}
+  @keyframes throb{50%{opacity:.35}}
+
+  /* ── the floor: seat bays ────────────────────────────────────────────── */
+  main{padding:18px; display:grid; gap:18px}
+  section h2{
+    font-family:var(--mono); font-size:10px; letter-spacing:.35em; color:var(--ash);
+    text-transform:uppercase; margin-bottom:10px; display:flex; gap:8px; align-items:center;
+  }
+  section h2::after{content:""; flex:1; height:1px; background:var(--seam)}
+  .floor{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:10px}
+  .bay{
+    background:var(--plate); border:1px solid var(--seam); border-top:2px solid var(--sc,#555);
+    padding:12px 13px 11px; position:relative; min-height:132px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .bay .head{display:flex; align-items:baseline; gap:9px}
+  .bay .glyph{
+    font-family:var(--mono); font-size:15px; color:var(--sc);
+    width:20px; text-align:center;
+  }
+  .bay .role{font-size:12px; font-weight:700; letter-spacing:.18em; text-transform:uppercase}
+  .bay .state{
+    margin-left:auto; font-family:var(--mono); font-size:9px; letter-spacing:.14em;
+    color:var(--ash);
+  }
+  .bay.working .state{color:var(--sc)}
+  .bay.working .state::before{
+    content:"●"; margin-right:5px; animation:throb 1.4s infinite;
+  }
+  .bay .doing{
+    font-family:var(--mono); font-size:11px; color:var(--bone); line-height:1.45;
+    overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    min-height:2.6em;
+  }
+  .bay .doing.idle{color:#4c4c58}
+  .bay .locks{display:flex; flex-direction:column; gap:3px}
+  .bay .lock{
+    font-family:var(--mono); font-size:10px; color:var(--ash);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .bay .lock::before{content:"⌸ "; color:var(--sc)}
+  .bay .foot{
+    margin-top:auto; display:flex; justify-content:space-between;
+    font-family:var(--mono); font-size:9.5px; color:#4c4c58; letter-spacing:.08em;
+  }
+  .bay .foot .fb{color:var(--ash)}
+  .bay .foot .fb b{color:var(--sc); font-weight:600}
+
+  /* ── two-column band: ledger + gallery ───────────────────────────────── */
+  .band{display:grid; grid-template-columns:minmax(340px,5fr) minmax(300px,4fr); gap:18px}
+  @media (max-width:1000px){.band{grid-template-columns:1fr}}
+
+  .ledger{
+    background:var(--iron); border:1px solid var(--seam);
+    font-family:var(--mono); font-size:11px; max-height:340px; overflow-y:auto;
+  }
+  .ledger .line{
+    display:flex; gap:10px; padding:5px 12px; border-bottom:1px solid #1b1b22;
+    line-height:1.5; align-items:baseline;
+  }
+  .ledger .line.fresh{animation:arrive .9s ease-out}
+  @keyframes arrive{from{background:#2a1912}to{background:transparent}}
+  .ledger .t{color:#4c4c58; flex-shrink:0}
+  .ledger .who{
+    flex-shrink:0; width:76px; text-transform:uppercase; letter-spacing:.08em;
+    font-size:9.5px; text-align:right;
+  }
+  .ledger .what{color:var(--ash); word-break:break-word}
+  .ledger .what b{color:var(--bone); font-weight:500}
+  .ledger:empty::after, .empty{
+    display:block; padding:18px; color:#4c4c58; font-family:var(--mono); font-size:11px;
+  }
+
+  .gallery{display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; align-content:start}
+  .shot{
+    border:1px solid var(--seam); background:var(--plate); cursor:zoom-in;
+    aspect-ratio:1; position:relative; overflow:hidden;
+  }
+  .shot img{width:100%; height:100%; object-fit:cover; display:block; filter:saturate(.92)}
+  .shot:hover img{filter:none}
+  .shot .tag{
+    position:absolute; left:0; right:0; bottom:0; padding:3px 6px;
+    font-family:var(--mono); font-size:8.5px; color:var(--ash);
+    background:rgba(12,12,16,.82); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  #lightbox{
+    position:fixed; inset:0; background:rgba(8,8,11,.93); display:none;
+    align-items:center; justify-content:center; z-index:9; cursor:zoom-out;
+  }
+  #lightbox img{max-width:92vw; max-height:92vh; border:1px solid var(--seam)}
+
+  /* ── lower band: vault + world + sessions ────────────────────────────── */
+  .lower{display:grid; grid-template-columns:5fr 4fr 3fr; gap:18px}
+  @media (max-width:1100px){.lower{grid-template-columns:1fr}}
+  table{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:10.5px}
+  th{
+    text-align:left; color:#4c4c58; font-weight:400; letter-spacing:.16em;
+    text-transform:uppercase; font-size:9px; padding:4px 10px;
+    border-bottom:1px solid var(--seam);
+  }
+  td{padding:5px 10px; border-bottom:1px solid #1b1b22; color:var(--ash)}
+  td.path{color:var(--bone); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .chip{
+    font-size:9px; padding:1px 7px; border:1px solid var(--seam); letter-spacing:.1em;
+    text-transform:uppercase; white-space:nowrap;
+  }
+  .chip.drift{color:var(--ember); border-color:var(--ember-dim); animation:throb 1.2s infinite}
+  .chip.held{color:var(--void); font-weight:700}
+  .panel{background:var(--iron); border:1px solid var(--seam); padding:0 0 4px}
+  .panel .inner{padding:10px 12px; display:grid; gap:8px}
+  .pillar{font-size:12.5px; color:var(--bone); padding-left:12px; position:relative}
+  .pillar::before{content:""; position:absolute; left:0; top:4px; bottom:4px; width:2px; background:var(--ember)}
+  .cutline{
+    font-family:var(--mono); font-size:10px; color:var(--ember); letter-spacing:.2em;
+    text-transform:uppercase; text-align:center; padding:5px 0; margin:2px 0;
+    border-top:1px dashed var(--ember-dim); border-bottom:1px dashed var(--ember-dim);
+  }
+  .cut-item{color:#4c4c58; font-size:12px; padding-left:12px; text-decoration:line-through}
+  .canonrow{display:flex; flex-wrap:wrap; gap:5px}
+  .entity{
+    font-family:var(--mono); font-size:10px; padding:2px 8px;
+    border:1px solid var(--seam); color:var(--ash);
+  }
+  .entity b{color:var(--bone); font-weight:500}
+  .sess{display:flex; gap:10px; font-family:var(--mono); font-size:10.5px; padding:6px 12px;
+        border-bottom:1px solid #1b1b22; align-items:baseline}
+  .sess .nm{color:var(--bone)}
+  .sess .st{margin-left:auto; color:var(--ash); font-size:9px; letter-spacing:.1em; text-transform:uppercase}
+
+  footer{
+    padding:10px 20px 22px; font-family:var(--mono); font-size:9.5px;
+    color:#3c3c46; letter-spacing:.12em;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="sigil">⌐<span style="color:var(--bone)">|</span>¬</div>
+  <div class="masthead">
+    <h1>Builders Gate</h1>
+    <div class="sub" id="projline">connecting to the floor…</div>
+  </div>
+  <div class="integrity" id="integrity"><span class="lamp" id="lamp"></span><span id="lamptext">…</span></div>
+</header>
+
+<main>
+  <section>
+    <h2>The Floor — seven seats</h2>
+    <div class="floor" id="floor"></div>
+  </section>
+
+  <div class="band">
+    <section>
+      <h2>Ledger — live</h2>
+      <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
+    </section>
+    <section>
+      <h2>Forge Gallery — renders &amp; frames</h2>
+      <div class="gallery" id="gallery"><div class="empty">renders appear here (blender_run with render=true)</div></div>
+    </section>
+  </div>
+
+  <div class="lower">
+    <section>
+      <h2>Vault — tracked binaries</h2>
+      <div class="panel"><table id="vault"></table></div>
+    </section>
+    <section>
+      <h2>World — pillars · cut line · canon</h2>
+      <div class="panel"><div class="inner" id="world"></div></div>
+    </section>
+    <section>
+      <h2>Playtests</h2>
+      <div class="panel" id="sessions"></div>
+    </section>
+  </div>
+</main>
+
+<div id="lightbox" onclick="this.style.display='none'"><img id="lightimg" alt=""></div>
+<footer id="foot">builders gate · local floor · 127.0.0.1</footer>
+
+<script>
+const SEATS = {
+  director:{g:"◆"}, narrative:{g:"¶"}, gameplay:{g:"⌖"}, tech:{g:"⚙"},
+  art:{g:"▲"}, audio:{g:"♪"}, qa:{g:"✓"},
+};
+const color = r => getComputedStyle(document.documentElement).getPropertyValue(`--c-${r}`) || "#888";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let lastActivityId = 0;
+
+/* A seat is "at work" when it holds a lock or acted in the last 5 minutes. */
+function isWorking(seat){
+  if (seat.locks.length) return true;
+  if (!seat.last_activity) return false;
+  return (Date.now() - Date.parse(seat.last_activity.at + "Z")) < 5 * 60 * 1000;
+}
+
+function renderFloor(seatsData){
+  document.getElementById("floor").innerHTML = seatsData.map(s => {
+    const working = isWorking(s);
+    const doing = s.last_activity
+      ? `<span style="color:${color(s.role)}">${esc(s.last_activity.kind)}</span> · ${esc(s.last_activity.summary)}`
+      : "idle — no ledger entries yet";
+    return `
+    <div class="bay ${working ? "working" : ""}" style="--sc:${color(s.role)}">
+      <div class="head">
+        <span class="glyph">${SEATS[s.role]?.g ?? "•"}</span>
+        <span class="role" style="color:${color(s.role)}">${esc(s.role)}</span>
+        <span class="state">${working ? "at work" : "idle"}</span>
+      </div>
+      <div class="doing ${s.last_activity ? "" : "idle"}">${doing}</div>
+      <div class="locks">${s.locks.slice(0,3).map(l => `<div class="lock" title="${esc(l.path)}">${esc(l.path)}</div>`).join("")}</div>
+      <div class="foot">
+        <span>${s.locks.length ? s.locks.length + " held" : "no locks"}</span>
+        <span class="fb">queue <b>${s.promoted_feedback}</b></span>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderLedger(events, fresh){
+  const box = document.getElementById("ledger");
+  if (!events.length) return;
+  if (box.querySelector(".empty")) box.innerHTML = "";
+  for (const e of events.slice().reverse()){
+    const div = document.createElement("div");
+    div.className = "line" + (fresh ? " fresh" : "");
+    const who = e.seat || "—";
+    div.innerHTML = `<span class="t">${esc((e.created_at || "").slice(11,19))}</span>` +
+      `<span class="who" style="color:${e.seat ? color(e.seat) : "#4c4c58"}">${esc(who)}</span>` +
+      `<span class="what"><b>${esc(e.kind)}</b> ${esc(e.summary)}</span>`;
+    box.prepend(div);
+    lastActivityId = Math.max(lastActivityId, e.id);
+  }
+  while (box.children.length > 120) box.removeChild(box.lastChild);
+}
+
+let galleryKey = "";
+function renderGallery(previews){
+  const g = document.getElementById("gallery");
+  if (!previews.length) return;
+  // Rebuild ONLY when the set changes: replacing innerHTML on every poll
+  // destroys <img> elements mid-load, so they never finish decoding.
+  const key = previews.map(p => p.rel + ":" + p.mtime).join("|");
+  if (key === galleryKey) return;
+  galleryKey = key;
+  g.innerHTML = previews.map(p => `
+    <div class="shot" onclick="show('${esc(p.rel)}')">
+      <img src="/api/preview?rel=${encodeURIComponent(p.rel)}" alt="${esc(p.name)}">
+      <div class="tag">${esc(p.name)}</div>
+    </div>`).join("");
+}
+function show(rel){
+  document.getElementById("lightimg").src = "/api/preview?rel=" + encodeURIComponent(rel);
+  document.getElementById("lightbox").style.display = "flex";
+}
+
+function renderVault(assetsData, verify){
+  const drifted = new Set(verify.modified.map(m => m.path));
+  const missing = new Set(verify.missing);
+  const rows = assetsData.map(a => {
+    let state = `<span class="chip">clean</span>`;
+    if (a.lock_seat) state = `<span class="chip held" style="background:${color(a.lock_seat)};border-color:${color(a.lock_seat)}">${esc(a.lock_seat)}</span>`;
+    else if (drifted.has(a.path)) state = `<span class="chip drift">drift</span>`;
+    else if (missing.has(a.path)) state = `<span class="chip drift">missing</span>`;
+    return `<tr><td class="path" title="${esc(a.path)}">${esc(a.path)}</td>
+      <td>${esc(a.kind)}</td><td>${a.bytes ? (a.bytes/1024).toFixed(1)+"k" : "—"}</td><td>${state}</td></tr>`;
+  }).join("");
+  document.getElementById("vault").innerHTML =
+    `<tr><th>path</th><th>kind</th><th>size</th><th>state</th></tr>` +
+    (rows || `<tr><td colspan="4" style="color:#4c4c58">nothing tracked yet — asset_track / asset_lock</td></tr>`);
+}
+
+function renderWorld(bible, loreData){
+  const w = [];
+  for (const p of bible.pillars) w.push(`<div class="pillar">${esc(p.title)}</div>`);
+  for (const s of bible.in_scope) w.push(`<div class="pillar" style="opacity:.75">${esc(s.title)}</div>`);
+  if (bible.cut_line) w.push(`<div class="cutline">— the cut line —</div>`);
+  for (const c of bible.cut) w.push(`<div class="cut-item">${esc(c.title)}</div>`);
+  if (loreData.canon.length){
+    w.push(`<div class="canonrow">` + loreData.canon.map(e =>
+      `<span class="entity" title="${esc(e.summary)}"><b>${esc(e.name)}</b> · ${esc(e.kind)}</span>`).join("") + `</div>`);
+  }
+  if (!w.length) w.push(`<div class="empty" style="padding:4px 0">no bible yet — bible_add pillars and scope tiers</div>`);
+  document.getElementById("world").innerHTML = w.join("");
+}
+
+function renderSessions(sessions){
+  document.getElementById("sessions").innerHTML = sessions.length
+    ? sessions.map(s => `<div class="sess"><span class="nm">${esc(s.name)}</span>
+        <span>${s.duration_s ? s.duration_s.toFixed(0)+"s" : ""}</span>
+        <span class="st">${esc(s.status)}</span></div>`).join("")
+    : `<div class="empty">no playtests yet — playtest_check, then playtest_start</div>`;
+}
+
+async function pollState(){
+  try{
+    const r = await fetch("/api/state");
+    if (!r.ok){ setLamp(false, "no project"); return; }
+    const s = await r.json();
+    document.getElementById("projline").innerHTML =
+      `<b>${esc(s.project.name)}</b> · ${esc(s.project.engine)} ${esc(s.project.dimension)} · ${esc(s.root)}`;
+    const v = s.verify;
+    setLamp(v.ok, v.ok
+      ? `vault clean · ${v.counts.clean} tracked · ${v.counts.locked} held`
+      : `${v.counts.modified} drift · ${v.counts.missing} missing`);
+    renderFloor(s.seats);
+    renderGallery(s.previews);
+    renderVault(s.assets, v);
+    renderWorld(s.bible, s.lore);
+    renderSessions(s.sessions);
+    document.getElementById("foot").textContent =
+      `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
+  }catch(e){ setLamp(false, "backend unreachable"); }
+}
+function setLamp(ok, text){
+  document.getElementById("lamp").className = "lamp" + (ok ? "" : " bad");
+  document.getElementById("lamptext").textContent = text;
+}
+async function pollActivity(){
+  try{
+    const r = await fetch(`/api/activity?after_id=${lastActivityId}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    renderLedger(data.events, lastActivityId > 0);
+  }catch(e){}
+}
+
+pollState(); pollActivity();
+setInterval(pollState, 3000);
+setInterval(pollActivity, 2000);
+</script>
+</body>
+</html>

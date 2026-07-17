@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from . import db, feedback
+from . import activity, db, feedback
 from .util import rows, slugify
 
 # Live recordings, keyed by session id. Deliberately in-memory: a Recording owns
@@ -104,6 +104,8 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
             (str(rec.video_path), str(rec.audio_path), str(telemetry),
              str(out_dir / "frames"), rec.started_at, session_id),
         )
+    activity.log(root, "playtest", f"recording session {name!r}",
+                 ref=str(session_id))
     return {
         "session_id": session_id,
         "name": name,
@@ -225,6 +227,9 @@ def transcribe_session(root: str | os.PathLike[str], session_id: int, *,
             )
 
     _ready(root, session_id)
+    activity.log(root, "playtest",
+                 f"session {session_id} transcribed: {len(items)} feedback items",
+                 ref=str(session_id))
     return {
         "ok": True,
         "segments": len(segments),
@@ -393,6 +398,9 @@ def promote(root: str | os.PathLike[str], item_id: int, *, seat: Optional[str] =
             "promoted_ref = ? WHERE id = ?",
             (seat or row["seat"], kind or row["kind"], ref, item_id),
         )
+    activity.log(root, "promote",
+                 f"promoted to {seat or row['seat']}: {row['text'][:80]}",
+                 seat=seat or row["seat"], ref=str(item_id))
     return dict(db.connect(root).execute(
         "SELECT * FROM playtest_item WHERE id = ?", (item_id,)).fetchone())
 

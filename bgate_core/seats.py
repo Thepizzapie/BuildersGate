@@ -243,6 +243,8 @@ def post_note(root: str | os.PathLike[str], role: str, body: str,
             "INSERT INTO seat_note (role, topic, body) VALUES (?, ?, ?)",
             (role, topic.strip(), body.strip()))
         nid = int(cur.lastrowid)
+    from . import activity
+    activity.log(root, "note", body.strip()[:120], seat=role, ref=topic.strip())
     return dict(db.connect(root).execute(
         "SELECT * FROM seat_note WHERE id = ?", (nid,)).fetchone())
 

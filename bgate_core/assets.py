@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import db
+from . import activity, db
 from .util import rows
 
 # Kinds are advisory labels for humans/agents, inferred from suffix.
@@ -146,6 +146,7 @@ def lock(root: str | os.PathLike[str], path: str | os.PathLike[str],
                 "UPDATE asset SET lock_seat = ?, lock_at = ? WHERE path = ?",
                 (seat, _now(), rel),
             )
+    activity.log(root, "lock", f"locked {rel}", seat=seat, ref=rel)
     return get(root, rel)
 
 
@@ -175,6 +176,8 @@ def release(root: str | os.PathLike[str], path: str | os.PathLike[str],
             "bytes = ?, updated_at = ? WHERE path = ?",
             (digest, size, _now(), rel),
         )
+    activity.log(root, "release", f"released {rel} ({size:,} bytes)",
+                 seat=seat.strip(), ref=rel)
     return get(root, rel)
 
 
@@ -186,6 +189,7 @@ def force_release(root: str | os.PathLike[str], path: str | os.PathLike[str]) ->
         conn.execute(
             "UPDATE asset SET lock_seat = NULL, lock_at = NULL, updated_at = ? "
             "WHERE path = ?", (_now(), rel))
+    activity.log(root, "force_release", f"lock on {rel} broken by hand", ref=rel)
     return get(root, rel)
 
 
