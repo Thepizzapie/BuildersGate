@@ -541,22 +541,31 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         result["reference"] = ref_path
 
         # 2. Each pose derives from the reference — same fighter, new stance.
+        # CHAINED: every edit conditions on the reference PLUS the previous
+        # successful frame, so consecutive frames anchor each other instead of
+        # each one re-deriving the character from scratch. ONE frame per API
+        # call, always — sheet generations are where consistency dies.
         pose_files: list[tuple[str, str]] = []
         pose_errors: list[dict] = []
+        prev_frame: Optional[str] = None
         for pose in poses:
             pname = pose["name"]
             desc = pose.get("description", pname)
-            out_png = str(art_dir / f"pose_{pname}.png")
+            out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
+            refs = [ref_path] + ([prev_frame] if prev_frame else [])
             got = imagegen.edit(
-                "This exact character from the reference image — identical "
-                "design, colors, proportions, face, and art style — now in "
-                f"this stance: {desc}. Full body head to toe, single "
-                "character, fully transparent background, no text, no "
-                "cropping of limbs.",
-                [ref_path], out_png, size="1024x1536", quality=quality,
+                "This exact character from the reference image"
+                + (" (and shown again in the second image in a different pose)"
+                   if prev_frame else "")
+                + " — identical design, colors, proportions, face, and art "
+                f"style — now in this stance: {desc}. ONE single full-body "
+                "character head to toe, exactly one figure, fully transparent "
+                "background, no text, no cropping of limbs.",
+                refs, out_png, size="1024x1536", quality=quality,
                 transparent=True)
             if got.get("ok"):
                 pose_files.append((pname, out_png))
+                prev_frame = out_png
             else:
                 pose_errors.append({"name": pname, "error": got.get("error")})
 

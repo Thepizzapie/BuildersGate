@@ -54,9 +54,38 @@ def available() -> dict:
             "model_opaque": _model_for(False)}
 
 
+# USER RULE (enforced, not advised): character frames are generated ONE per
+# API call. Multi-pose sheet generations are where the model loses the
+# character — poses drift, cells misalign, identity mutates. Prompts that ask
+# for sheets/rows/multiple poses are refused with a pointer to image_sprites
+# (which is one call per frame, chained). allow_multi exists for legitimately
+# multi-subject art (crowds, rosters, backdrops with cast).
+import re as _re
+
+_MULTI_POSE = _re.compile(
+    r"sprite\s*sheet|pose\s*(row|sheet|grid)|multiple\s+poses|"
+    r"\b(two|three|four|five|six|\d+)\s+(poses|frames|stances)\b|"
+    r"turn\s*around\s*sheet|animation\s+frames", _re.I)
+
+
+def _reject_multi_pose(prompt: str, allow_multi: bool) -> dict | None:
+    if allow_multi:
+        return None
+    match = _MULTI_POSE.search(prompt)
+    if match:
+        return {"ok": False,
+                "error": f"prompt asks for multiple poses in one image "
+                         f"({match.group(0)!r}) — sheet generations are where "
+                         "character consistency dies. Generate ONE frame per "
+                         "call: use image_sprites (per-pose, chained), or pass "
+                         "allow_multi=true only for genuinely multi-subject "
+                         "art (crowds, rosters, backdrops)."}
+    return None
+
+
 def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
              quality: str = "medium", transparent: bool = False,
-             timeout: float = 300.0) -> dict:
+             allow_multi: bool = False, timeout: float = 300.0) -> dict:
     """Generate one image to out_path. Returns {ok, path, bytes, ...} or an error.
 
     transparent=True requests a transparent background (PNG alpha) — right for
@@ -66,6 +95,9 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
         raise ValueError(f"size must be one of {SIZES}, got {size!r}")
     if quality not in QUALITIES:
         raise ValueError(f"quality must be one of {QUALITIES}, got {quality!r}")
+    rejected = _reject_multi_pose(prompt, allow_multi)
+    if rejected:
+        return rejected
     probe = available()
     if not probe["available"]:
         return {"ok": False, "error": probe["reason"]}
@@ -97,16 +129,21 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
 
 def edit(prompt: str, ref_paths: list[str], out_path: str, *,
          size: str = "1024x1024", quality: str = "medium",
-         transparent: bool = False, timeout: float = 300.0) -> dict:
+         transparent: bool = False, allow_multi: bool = False,
+         timeout: float = 300.0) -> dict:
     """Generate an image CONDITIONED ON reference image(s) — the consistency
     primitive. A fresh generation invents a new character every time; an edit
     against a reference keeps the same one. This is how sprite poses stay the
     same fighter: one approved reference, then every pose derived from it.
+    ONE frame per call — multi-pose prompts are refused (see _reject_multi_pose).
     """
     if size not in SIZES:
         raise ValueError(f"size must be one of {SIZES}, got {size!r}")
     if quality not in QUALITIES:
         raise ValueError(f"quality must be one of {QUALITIES}, got {quality!r}")
+    rejected = _reject_multi_pose(prompt, allow_multi)
+    if rejected:
+        return rejected
     if not ref_paths:
         raise ValueError("edit() needs at least one reference image")
     for ref in ref_paths:

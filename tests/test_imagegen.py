@@ -156,6 +156,43 @@ class TestRoutingReachesTheApi:
         assert stub["captured"]["edit"]["model"] == "gpt-image-2"
 
 
+class TestSingleFrameEnforcement:
+    """USER RULE: one frame per generation. Multi-pose sheet prompts are where
+    gpt-image loses the character — refused at the adapter, not advised."""
+
+    @pytest.mark.parametrize("prompt", [
+        "a sprite sheet of the character",
+        "one row of six poses, evenly spaced",
+        "generate 4 frames of a walk cycle",
+        "character turnaround sheet, front and side",
+        "three stances left to right",
+    ])
+    def test_multi_pose_prompts_refused(self, prompt, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+        got = imagegen.generate(prompt, str(tmp_path / "x.png"))
+        assert got["ok"] is False
+        assert "image_sprites" in got["error"]
+
+    def test_edit_is_guarded_too(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+        ref = tmp_path / "r.png"
+        ref.write_bytes(b"\x89PNG\r\n\x1a\nx")
+        got = imagegen.edit("this character in a pose grid", [str(ref)],
+                            str(tmp_path / "x.png"))
+        assert got["ok"] is False
+        assert "image_sprites" in got["error"]
+
+    def test_single_pose_prompts_pass_the_guard(self):
+        for prompt in ("the character throwing a single jab",
+                       "a market colosseum backdrop at night",
+                       "portrait of a tomato boxer"):
+            assert imagegen._reject_multi_pose(prompt, False) is None
+
+    def test_allow_multi_overrides_for_legit_group_art(self):
+        assert imagegen._reject_multi_pose(
+            "roster splash with three stances", True) is None
+
+
 class TestAdapter:
     def test_available_reports_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
