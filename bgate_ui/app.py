@@ -174,10 +174,12 @@ def preview(rel: str) -> FileResponse:
 # ---------------------------------------------------------------------------
 @app.get("/api/queue")
 def queue_list(status: Optional[str] = None) -> dict:
-    root = _root()
-    synced = _queue.sync_promoted(root)  # promoted playtest feedback flows in
-    return {"items": _queue.list_items(root, status=status),
-            "synced_from_playtest": synced["created"]}
+    # NOTE: promoted playtest feedback does NOT auto-become work items. That
+    # dumped raw transcript fragments ("[add] Jump velocity negative 172.A")
+    # straight into the queue as dispatchable tasks -- garbage that spawned
+    # agents on sentence fragments. The director SYNTHESIZES promoted feedback
+    # into a few coherent work items (queue_add) instead; a fragment is not a task.
+    return {"items": _queue.list_items(_root(), status=status)}
 
 
 @app.post("/api/queue")
@@ -305,11 +307,24 @@ def _queue_playtest_triage(root: Path, session_id: int, item_count: int) -> None
         title=f"Triage playtest session {session_id} ({item_count} feedback items)",
         brief=(f"A playtest session (id {session_id}) was recorded and "
                "transcribed. Call playtest_brief with "
-               f"session_id={session_id} (include_transcript=true), review "
-               "every item WITH its telemetry, then propose dispositions. "
-               "In supervised mode the user promotes/dismisses in the app; "
-               "queue_add work only for items already promoted. Scope "
-               "discipline applies: nothing below the cut line becomes work."),
+               f"session_id={session_id} (include_transcript=true) and read the "
+               "WHOLE transcript for context -- the items are lexical fragments "
+               "of spoken commentary, not clean tasks.\n\n"
+               "SYNTHESIZE, do not forward fragments. The transcript will have "
+               "many half-sentences ('I think it was', 'see how the'); most are "
+               "not actionable alone. Your job is to distill the session into a "
+               "SMALL number (typically 1-4) of COHERENT work items:\n"
+               "- MERGE every fragment about the same issue into ONE item (e.g. "
+               "several lines about the opponent hitting the wrong way = one "
+               "'Fix opponent facing hit-detection' gameplay item).\n"
+               "- Write a real title and a brief that quotes the relevant lines "
+               "and any numbers the user said, and names the concrete change.\n"
+               "- Route each to the owning seat. queue_add ONE item per real "
+               "theme -- NEVER one per fragment.\n"
+               "- Ignore pure thinking-aloud and anything below the cut line.\n"
+               "Then queue_complete this triage item summarizing what you filed. "
+               "Do NOT promote raw playtest items as a substitute for authoring "
+               "coherent work -- promotion no longer auto-creates tasks."),
         priority=3, source="playtest-triage", source_ref=str(session_id))
 
 
