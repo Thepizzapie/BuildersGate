@@ -1374,18 +1374,89 @@ async function refreshAgentView(){
   if (_watching == null) return;
   try{
     const a = await (await fetch(`/api/agent-activity/${_watching}`)).json();
-    const icon = {tool:"⚙", say:"", result:"→"};
     const rows = a.steps.map(s => {
       if (s.kind === "tool") return `<div class="astep atool">⚙ <b>${esc(s.name)}</b> <span>${esc(s.hint)}</span></div>`;
       if (s.kind === "result") return `<div class="astep ares">→ ${esc(s.text)}</div>`;
+      if (s.kind === "steer") return `<div class="astep asteer">🧭 <b>steer</b> ${esc(s.text)}</div>`;
       return `<div class="astep asay">${esc(s.text)}</div>`;
     }).join("");
     const head = `<div class="ahead">agent #${_watching} · ${a.running ? '<span class="alive">● working</span>' : 'finished'} · ${a.step_count||0} steps <button class="qbtn small ghost" onclick="watchAgent(${_watching})">close</button></div>`;
     const fin = a.final ? `<div class="afinal">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""}): ${esc(a.final.text)}</div>` : "";
-    document.getElementById("agentview").innerHTML = head + `<div class="asteps">${rows || '<div class="empty">no activity yet — the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
+    const steer = a.running ? `<div class="steerbar">
+        <input id="steer-input" class="steerin" placeholder="steer this agent — e.g. that pose is off-model, regenerate against the ref"
+               onkeydown="if(event.key==='Enter')steerAgent(${_watching})">
+        <button class="qbtn small" onclick="steerAgent(${_watching})">steer</button>
+      </div>` : "";
+    const art = await renderArtRail(_watching, a.running);
+    document.getElementById("agentview").innerHTML =
+      _agentStyle + head + steer + art +
+      `<div class="asteps">${rows || '<div class="empty">no activity yet — the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
     const box = document.querySelector(".asteps"); if (box) box.scrollTop = box.scrollHeight;
   }catch(e){}
 }
+
+async function steerAgent(id, prefill){
+  const inp = document.getElementById("steer-input");
+  const text = (prefill != null ? prefill : (inp ? inp.value : "")).trim();
+  if (!text) return;
+  const r = await (await fetch(`/api/queue/${id}/steer`, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({text})})).json();
+  if (inp) inp.value = "";
+  if (!r.ok) alert("steer failed: " + (r.error||"?"));
+  refreshAgentView();
+}
+
+/* Art consistency rail: the renders THIS agent produced, each next to the
+   reference it was drawn against, with a one-click off-model steer. */
+async function renderArtRail(itemId, running){
+  let arts = [];
+  try{
+    const d = await (await fetch("/api/artifacts")).json();
+    arts = (d.artifacts||[]).filter(x => x.work_item_id === itemId);
+  }catch(e){ return ""; }
+  if (!arts.length) return "";
+  arts.sort((a,b)=> (b.id||0)-(a.id||0));
+  const refRel = r => {
+    if (!r) return null;
+    r = String(r).replace(/\\/g,"/");
+    if (r.includes("/")) { const i = r.indexOf(".bgate"); return i>=0 ? r.slice(i) : null; }
+    return `.bgate/refs/${r}.png`;               // bare ref name -> conventional path
+  };
+  const cards = arts.slice(0,12).map(x => {
+    const cand = `/api/preview?rel=${encodeURIComponent(x.path)}`;
+    const rr = refRel((x.refs||[])[ (x.refs||[]).length>1 ? x.refs.length-1 : 0 ]);
+    const refImg = rr ? `<img class="refthumb" src="/api/preview?rel=${encodeURIComponent(rr)}" title="reference: ${esc(String((x.refs||[]).join(', ')))}">` : "";
+    const badge = x.status==="approved" ? "✓" : x.status==="rejected" ? "✕" : "•";
+    const offmsg = `Candidate "${x.logical_name}" (rev ${x.revision}) is OFF-MODEL / off-style. Regenerate it against the pinned reference — match silhouette, palette, cel-shaded 16-bit style exactly. Do NOT self-approve; run consistency_check before accepting.`;
+    return `<div class="artcard">
+      <div class="artpair">
+        ${refImg}
+        <img class="candthumb" src="${cand}" title="${esc(x.logical_name)} · ${esc(x.model||'')}">
+      </div>
+      <div class="artmeta"><span class="artbadge s-${esc(x.status)}">${badge}</span> ${esc(x.logical_name)} <span class="artmodel">${esc(x.producer||'')}</span></div>
+      ${running ? `<button class="qbtn small ghost" onclick='steerAgent(${itemId}, ${JSON.stringify(offmsg)})'>off-model → redo</button>` : ""}
+    </div>`;
+  }).join("");
+  return `<div class="artrail"><div class="artrail-h">renders this agent produced · ref ▏ candidate</div>
+    <div class="artscroll">${cards}</div></div>`;
+}
+
+const _agentStyle = `<style>
+  .steerbar{display:flex;gap:6px;margin:6px 0 10px}
+  .steerin{flex:1;padding:7px 10px;background:#12141a;border:1px solid #2b3a44;border-radius:8px;color:#e6e8ee;font:inherit}
+  .steerin:focus{outline:none;border-color:#3b7f9e}
+  .astep.asteer{background:#1c2733;border-left:3px solid #3b7f9e;color:#cfe6f0;padding-left:8px}
+  .artrail{margin:4px 0 12px;padding:10px;background:#101319;border:1px solid #222833;border-radius:10px}
+  .artrail-h{font-size:11px;color:#8a93a2;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+  .artscroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+  .artcard{flex:0 0 auto;width:168px}
+  .artpair{display:flex;gap:4px;align-items:center;background:#0b0d12;border-radius:8px;padding:4px}
+  .refthumb{width:52px;height:78px;object-fit:contain;opacity:.85;border-right:1px dashed #333a46;padding-right:4px}
+  .candthumb{flex:1;height:78px;object-fit:contain;border-radius:4px}
+  .artmeta{font-size:12px;margin:5px 0;color:#cfd3db;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .artmodel{color:#6b7280;font-size:10px}
+  .artbadge{display:inline-block;width:15px}.artbadge.s-approved{color:#5fd08a}.artbadge.s-rejected{color:#e06666}.artbadge.s-candidate{color:#e0a13b}
+</style>`;
 
 async function loadGame(){
   const holder = document.getElementById("play-holder");

@@ -201,6 +201,12 @@ def queue_stop(item_id: int) -> dict:
     return _dispatch.stop(item_id)
 
 
+@app.post("/api/queue/{item_id}/steer")
+def queue_steer(item_id: int, payload: dict) -> dict:
+    """Inject a live course-correction into a running agent (no restart)."""
+    return _dispatch.steer(str(_root()), item_id, payload.get("text", ""))
+
+
 @app.post("/api/queue/import-orbit")
 def queue_import_orbit() -> dict:
     return _queue.import_orbit(_root())

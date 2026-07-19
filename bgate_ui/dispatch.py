@@ -11,6 +11,7 @@ One live session per work item; state is in-memory plus a log file per item
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -26,6 +27,12 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 _live: dict[int, dict] = {}
 _lock = threading.Lock()
+
+
+def _user_msg(text: str) -> str:
+    """A stream-json user turn — the wire format the CLI reads from stdin."""
+    return json.dumps({"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
 
 
 def find_claude() -> Optional[str]:
@@ -87,12 +94,17 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         "BGATE_WORK_ITEM": str(item_id),
         "BGATE_LOCK_OWNER": f"item-{item_id}",
     }
-    # stream-json + verbose makes claude emit one NDJSON event per step AS IT
-    # WORKS (tool calls, messages), instead of buffering everything to the end
-    # -- that's what feeds the live "what is the agent doing" view. read_activity
-    # parses this log back into readable steps.
-    args = [claude, "-p", _prompt_for(item), "--permission-mode", permission_mode,
-            "--output-format", "stream-json", "--verbose",
+    # stream-json OUTPUT makes claude emit one NDJSON event per step AS IT WORKS
+    # (tool calls, messages) instead of buffering to the end -- that feeds the
+    # live activity view. stream-json INPUT keeps stdin open as a channel: the
+    # initial prompt is the first user message, and steer() can inject more
+    # user turns WHILE the agent runs. --replay-user-messages echoes injected
+    # steers back into the output log so they show in the activity feed. The
+    # process waits on stdin, so it only exits when we close the pipe (done in
+    # status() once the agent self-reports via queue_complete).
+    args = [claude, "-p", "--permission-mode", permission_mode,
+            "--input-format", "stream-json", "--output-format", "stream-json",
+            "--verbose", "--replay-user-messages",
             "--allowedTools", "mcp__builders-gate", "Read", "Edit", "Write",
             "Glob", "Grep", "Bash"]
     if model:
@@ -100,12 +112,71 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
 
     log_handle = open(log_path, "ab")
     proc = subprocess.Popen(args, cwd=str(root), env=env,
-                            stdin=subprocess.DEVNULL, stdout=log_handle,
+                            stdin=subprocess.PIPE, stdout=log_handle,
                             stderr=log_handle, creationflags=_NO_WINDOW)
+    # Deliver the task as the first streamed user message, then leave stdin open.
+    try:
+        proc.stdin.write(_user_msg(_prompt_for(item)).encode("utf-8"))
+        proc.stdin.flush()
+    except OSError as exc:
+        proc.kill()
+        return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
     with _lock:
-        _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle}
+        _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
+                          "stdin": proc.stdin, "steers": [], "stdin_closed": False}
     _queue.set_status(root, item_id, "dispatched")
+    # The streamed session waits on stdin forever; close it once the agent
+    # self-reports so it exits even when no dashboard is polling /api/agents.
+    threading.Thread(target=_watch_completion, args=(root, item_id),
+                     daemon=True).start()
     return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path)}
+
+
+def _watch_completion(root: str, item_id: int, poll_s: float = 4.0) -> None:
+    """Close the agent's stdin once it has queue_complete'd, so the waiting
+    process reaches EOF and exits — independent of any UI polling."""
+    import time
+    while True:
+        time.sleep(poll_s)
+        with _lock:
+            entry = _live.get(item_id)
+            if not entry:
+                return
+            if entry["proc"].poll() is not None:
+                return  # already gone; status() will reap
+            if entry.get("stdin_closed"):
+                return
+            try:
+                if _queue.get(root, item_id)["status"] in ("done", "failed"):
+                    try:
+                        entry["stdin"].close()
+                    except OSError:
+                        pass
+                    entry["stdin_closed"] = True
+                    return
+            except LookupError:
+                return
+
+
+def steer(root: str, item_id: int, text: str) -> dict:
+    """Inject a live user message into a running agent — course-correction
+    without killing and re-dispatching. Lands as a new user turn mid-work."""
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "steer text is empty"}
+    with _lock:
+        entry = _live.get(item_id)
+        if not entry or entry["proc"].poll() is not None:
+            return {"ok": False, "error": "no live agent for this item"}
+        if entry.get("stdin_closed"):
+            return {"ok": False, "error": "agent is finishing; steer channel closed"}
+        try:
+            entry["stdin"].write(_user_msg(f"STEER FROM THE DIRECTOR (act on this now): {text}").encode("utf-8"))
+            entry["stdin"].flush()
+        except OSError as exc:
+            return {"ok": False, "error": f"agent not accepting input: {exc}"}
+        entry["steers"].append(text)
+    return {"ok": True, "item_id": item_id, "steers": len(entry["steers"])}
 
 
 def status(root: str) -> list[dict]:
@@ -130,9 +201,21 @@ def status(root: str) -> list[dict]:
                 del _live[item_id]
                 out.append({"item_id": item_id, "state": "exited", "code": code})
             else:
+                # The streamed session waits on stdin forever. Once the agent
+                # has self-reported (queue_complete -> status no longer
+                # 'dispatched'), close stdin so it hits EOF and exits.
+                if not entry.get("stdin_closed"):
+                    try:
+                        item = _queue.get(root, item_id)
+                        if item["status"] in ("done", "failed"):
+                            entry["stdin"].close()
+                            entry["stdin_closed"] = True
+                    except LookupError:
+                        pass
                 _assets.heartbeat(root, f"item-{item_id}")
                 out.append({"item_id": item_id, "state": "running",
-                            "pid": entry["proc"].pid, "log": entry["log"]})
+                            "pid": entry["proc"].pid, "log": entry["log"],
+                            "steers": len(entry.get("steers", []))})
     return out
 
 
@@ -176,6 +259,14 @@ def read_activity(root: str, item_id: int, limit: int = 40) -> dict:
                         c[0].get("text", "") if isinstance(c, list) and c else "")
                     if txt.strip():
                         steps.append({"kind": "result", "text": txt.strip()[:160]})
+                elif block.get("type") == "text":
+                    # Replayed user turns. The initial prompt is one too; only
+                    # surface live steers (they carry the director marker).
+                    txt = block.get("text", "")
+                    marker = "STEER FROM THE DIRECTOR (act on this now): "
+                    if marker in txt:
+                        steps.append({"kind": "steer",
+                                      "text": txt.split(marker, 1)[1].strip()[:200]})
         elif etype == "result":
             final = {"subtype": ev.get("subtype"),
                      "text": str(ev.get("result", ""))[:400],
