@@ -62,11 +62,15 @@ def list_inputs() -> list[dict]:
 
 
 def probe_mic(device: Optional[int] = None, seconds: float = 1.5) -> dict:
-    """Record briefly and measure level. The preflight that saves a session.
+    """Verify a mic is present and openable; measure level as an ADVISORY.
 
-    Returns {ok, device, rms, peak, reason}. ok=False when the device errors OR
-    records digital silence — a silent mic is indistinguishable from a working
-    one until you try to read the transcript, which is far too late.
+    Returns {ok, device, name, rms, peak, signal_detected, warning}. ok=True as
+    long as a real input device OPENS — because a silence check cannot pass a
+    noise-gated headset (Arctis, most gaming headsets) when you're not talking
+    during the 1.5s probe: idle output is indistinguishable from a muted mic.
+    Blocking those wastes more sessions than it saves. If no signal is heard we
+    pass with a warning instead, and the empty-transcript case is caught on the
+    far side. ok=False only when there is genuinely no openable device.
     """
     try:
         import numpy as np
@@ -80,15 +84,12 @@ def probe_mic(device: Optional[int] = None, seconds: float = 1.5) -> dict:
         except Exception:
             device = -1
         if device is None or device == -1:
+            # No default set, but fall back to the first real input device
+            # rather than blocking — a connected-but-not-default mic is common.
             candidates = list_inputs()
             if not candidates:
                 return {"ok": False, "reason": "no input devices at all"}
-            return {
-                "ok": False,
-                "reason": ("Windows reports no DEFAULT input device. Pass device= "
-                           "explicitly, or set a default in Sound settings."),
-                "candidates": candidates,
-            }
+            device = candidates[0]["index"]
 
     try:
         info = sd.query_devices(device)
@@ -105,14 +106,17 @@ def probe_mic(device: Optional[int] = None, seconds: float = 1.5) -> dict:
 
     peak = float(np.max(np.abs(rec)))
     rms = float(np.sqrt(np.mean(rec ** 2)))
-    if peak < SILENCE_PEAK:
-        return {
-            "ok": False, "device": device, "name": info["name"],
-            "rms": rms, "peak": peak,
-            "reason": ("device records digital silence — nothing plugged in, muted, "
-                       "or the wrong input. Do NOT record a session on this."),
-        }
-    return {"ok": True, "device": device, "name": info["name"], "rms": rms, "peak": peak}
+    signal = peak >= SILENCE_PEAK
+    out = {"ok": True, "device": device, "name": info["name"],
+           "rms": rms, "peak": peak, "signal_detected": signal}
+    if not signal:
+        # Present and openable, but quiet during the probe — likely a
+        # noise-gated headset (nothing to hear until you talk) or a muted mic.
+        # Pass with a warning rather than block; the transcript is the arbiter.
+        out["warning"] = (f"{info['name']} opened but was silent during the "
+                          "check — if it's a noise-gated headset that's normal; "
+                          "if the transcript comes back empty, it was muted.")
+    return out
 
 
 def find_ffmpeg() -> str:
