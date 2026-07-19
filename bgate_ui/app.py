@@ -1,24 +1,41 @@
-"""The dashboard backend — read-only over the project's SQLite store.
+"""The dashboard backend — the local cockpit over the project's SQLite store.
 
-One page, polled JSON, no build step, no node, no CDN. The UI is a window, not a
-control panel: every mutation stays in the MCP tools where it's attributable to
-a seat. The only state this server holds is which project root it watches.
+One page, polled JSON, no build step, no node, no CDN. Mutations are deliberately
+limited to user-facing orchestration and review: queue/dispatch, recording,
+feedback disposition, and generated-artifact approval.
 
 Run: bgate serve [--port 7788]   (from anywhere inside a project, or BGATE_ROOT)
 """
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
-from bgate_core import activity, assets, bible, db, lore, playtest, project, seats
+from bgate_core import (
+    activity, artifacts, assets, bible, db, iterations, lore, playtest,
+    project, seats,
+)
 from bgate_core import queue as _queue
 from bgate_ui import dispatch as _dispatch
 
 app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None)
+_verify_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _asset_verification(root: Path, *, force: bool = False) -> dict:
+    key = str(root.resolve())
+    cached = _verify_cache.get(key)
+    if not force and cached and time.monotonic() - cached[0] < 10:
+        return cached[1]
+    result = assets.verify(root)
+    result["verified_at"] = time.time()
+    _verify_cache[key] = (time.monotonic(), result)
+    return result
 
 
 @app.middleware("http")
@@ -81,7 +98,11 @@ def state() -> dict:
     feedback_counts: dict[str, int] = {}
     for row in conn.execute(
             "SELECT seat, count(*) AS n FROM playtest_item "
-            "WHERE status = 'promoted' GROUP BY seat"):
+            "WHERE status = 'promoted' "
+            "AND NOT EXISTS (SELECT 1 FROM work_item w "
+            "WHERE w.source = 'playtest' "
+            "AND w.source_ref = CAST(playtest_item.id AS TEXT) "
+            "AND w.status = 'done') GROUP BY seat"):
         feedback_counts[row["seat"]] = row["n"]
 
     previews_dir = root / ".bgate" / "previews"
@@ -92,6 +113,11 @@ def state() -> dict:
         previews = [{"rel": str(p.relative_to(root)).replace("\\", "/"),
                      "name": p.stem,
                      "mtime": int(p.stat().st_mtime)} for p in files]
+    session_rows = playtest.list_sessions(root)[:10]
+    for session in session_rows:
+        if session["status"] == "processing":
+            session["processing_worker"] = _pt_processing.get(
+                session["id"], "stalled")
 
     return {
         "project": proj,
@@ -106,13 +132,16 @@ def state() -> dict:
             for role, cfg in seat_table.items()
         ],
         "assets": assets.list_assets(root),
-        "verify": assets.verify(root),
+        "artifacts": artifacts.list_revisions(root, limit=100),
+        "asset_groups": artifacts.workspace(root),
+        "iterations": iterations.list_iterations(root, limit=12),
+        "verify": _asset_verification(root),
         "bible": bible.overview(root),
         "lore": {
             "canon": lore.list_entities(root, status="canon"),
             "draft": lore.list_entities(root, status="draft"),
         },
-        "sessions": playtest.list_sessions(root)[:10],
+        "sessions": session_rows,
         "notes": seats.read_notes(root, limit=15),
         "previews": previews,
     }
@@ -189,15 +218,144 @@ def agent_log(item_id: int, tail: int = 60) -> dict:
     return {"lines": lines[-tail:]}
 
 
+@app.get("/api/agent-activity/{item_id}")
+def agent_activity(item_id: int) -> dict:
+    """Readable live feed of what a dispatched agent is doing — parsed from its
+    stream-json log into tool calls, messages, and the final result."""
+    return _dispatch.read_activity(str(_root()), item_id)
+
+
+@app.get("/api/artifacts")
+def artifact_list(status: Optional[str] = None,
+                  logical_name: Optional[str] = None) -> dict:
+    return {"artifacts": artifacts.list_revisions(
+        _root(), status=status, logical_name=logical_name)}
+
+
+@app.post("/api/artifacts/{artifact_id}/review")
+def artifact_review(artifact_id: int, payload: dict) -> dict:
+    try:
+        return artifacts.review(
+            _root(), artifact_id, payload.get("status", ""), payload.get("note", ""))
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/assets/workspace")
+def asset_workspace() -> dict:
+    return {"groups": artifacts.workspace(_root())}
+
+
+@app.post("/api/artifacts/{artifact_id}/regenerate")
+def artifact_regenerate(artifact_id: int, payload: Optional[dict] = None) -> dict:
+    try:
+        return artifacts.regenerate(
+            _root(), artifact_id, (payload or {}).get("reason", ""))
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/artifacts/{artifact_id}/feedback/{item_id}")
+def artifact_link_feedback(artifact_id: int, item_id: int,
+                           payload: Optional[dict] = None) -> dict:
+    try:
+        return artifacts.link_feedback(
+            _root(), artifact_id, item_id,
+            float((payload or {}).get("confidence", 1.0)))
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/iterations")
+def iteration_list(limit: int = 30) -> dict:
+    return {"iterations": iterations.list_iterations(_root(), limit=limit)}
+
+
+@app.get("/api/iterations/{iteration_id}")
+def iteration_detail(iteration_id: int) -> dict:
+    try:
+        return iterations.get(_root(), iteration_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/assets/verify")
+def asset_verify_full() -> dict:
+    return _asset_verification(_root(), force=True)
+
+
 # ---------------------------------------------------------------------------
 # Playtest recording — start/stop from the app; triage flows to the director
 # ---------------------------------------------------------------------------
 _pt_processing: dict = {}
 
 
+def _triage_exists(root: Path, session_id: int) -> bool:
+    row = db.connect(root).execute(
+        "SELECT 1 FROM work_item WHERE source = 'playtest-triage' "
+        "AND source_ref = ? LIMIT 1", (str(session_id),)).fetchone()
+    return row is not None
+
+
+def _queue_playtest_triage(root: Path, session_id: int, item_count: int) -> None:
+    if _triage_exists(root, session_id):
+        return
+    _queue.add(
+        root, "director",
+        title=f"Triage playtest session {session_id} ({item_count} feedback items)",
+        brief=(f"A playtest session (id {session_id}) was recorded and "
+               "transcribed. Call playtest_brief with "
+               f"session_id={session_id} (include_transcript=true), review "
+               "every item WITH its telemetry, then propose dispositions. "
+               "In supervised mode the user promotes/dismisses in the app; "
+               "queue_add work only for items already promoted. Scope "
+               "discipline applies: nothing below the cut line becomes work."),
+        priority=3, source="playtest-triage", source_ref=str(session_id))
+
+
+def _finish_playtest(root: Path, session_id: int, *, resume: bool = False) -> None:
+    """Finish or resume durable processing in a worker thread."""
+    try:
+        if resume:
+            session = playtest.get(root, session_id)
+            result = {
+                "session_id": session_id,
+                "transcript": playtest.transcribe_session(
+                    root, session_id,
+                    audio_offset_s=float(session["audio_offset_s"] or 0)),
+            }
+        else:
+            result = playtest.stop(root, session_id)
+        transcript = result.get("transcript") or {}
+        if not transcript.get("ok"):
+            reason = transcript.get("error", "transcription did not complete")
+            with db.tx(root) as conn:
+                conn.execute(
+                    "UPDATE playtest_session SET status = 'failed', "
+                    "processing_stage = 'failed', processing_error = ?, error = ? "
+                    "WHERE id = ?", (reason, reason, session_id))
+            _pt_processing[session_id] = f"failed: {reason}"
+            return
+        item_count = int(transcript.get("items", 0))
+        _queue_playtest_triage(root, session_id, item_count)
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE playtest_session SET status = 'ready', "
+                "processing_stage = 'ready', processing_error = '' WHERE id = ?",
+                (session_id,))
+        _pt_processing[session_id] = "ready"
+    except Exception as exc:
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE playtest_session SET status = 'failed', "
+                "processing_stage = 'failed', processing_error = ?, error = ? "
+                "WHERE id = ?", (str(exc), str(exc), session_id))
+        _pt_processing[session_id] = f"failed: {exc}"
+
+
 @app.get("/api/playtest/preflight")
-def pt_preflight() -> dict:
-    return playtest.preflight()
+def pt_preflight(native: bool = False) -> dict:
+    return playtest.preflight(root=_root(), native=native)
 
 
 @app.post("/api/playtest/start")
@@ -206,7 +364,9 @@ def pt_start(payload: Optional[dict] = None) -> dict:
     try:
         return playtest.start(_root(), payload.get("name") or "app session",
                               window_title=payload.get("window_title"),
-                              mic_device=payload.get("mic_device"))
+                              mic_device=payload.get("mic_device"),
+                              game_cmd=payload.get("game_cmd", ""),
+                              launch_native=bool(payload.get("launch_native")))
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -226,31 +386,14 @@ def pt_stop() -> dict:
         return {"ok": False, "error": str(exc)}
     sid = session["id"]
     _pt_processing[sid] = "processing"
+    with db.tx(root) as conn:
+        conn.execute(
+            "UPDATE playtest_session SET status = 'processing', "
+            "processing_stage = 'stopping', processing_error = '' WHERE id = ?",
+            (sid,))
 
-    def worker():
-        try:
-            result = playtest.stop(root, sid)
-            transcript = result.get("transcript") or {}
-            items = transcript.get("items", 0)
-            _queue.add(
-                root, "director",
-                title=f"Triage playtest session {sid} ({items} feedback items)",
-                brief=(f"A playtest session (id {sid}) was recorded and "
-                       "transcribed. Call playtest_brief with "
-                       f"session_id={sid} (include_transcript=true), review "
-                       "every item WITH its telemetry, then: playtest_promote "
-                       "the real ones (re-routing seat/kind where the "
-                       "classifier guessed wrong), playtest_dismiss the noise, "
-                       "and queue_add a work item per theme for the owning "
-                       "seat with a brief that quotes the feedback and its "
-                       "numbers. Scope discipline applies: nothing below the "
-                       "cut line becomes work."),
-                priority=3, source="playtest-triage", source_ref=str(sid))
-            _pt_processing[sid] = "ready"
-        except Exception as exc:
-            _pt_processing[sid] = f"failed: {exc}"
-
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(
+        target=_finish_playtest, args=(root, sid), daemon=True).start()
     return {"ok": True, "session_id": sid, "processing": True}
 
 
@@ -262,9 +405,133 @@ def pt_status() -> dict:
         recording = playtest._active(root, None)
     except LookupError:
         pass
-    return {"recording": {"id": recording["id"], "name": recording["name"]}
-            if recording else None,
-            "processing": dict(_pt_processing)}
+    processing = playtest.list_sessions(root, status="processing")
+    recording_state = None
+    if recording:
+        event_count = db.connect(root).execute(
+            "SELECT count(*) FROM playtest_event WHERE session_id = ?",
+            (recording["id"],)).fetchone()[0]
+        recording_state = {
+            "id": recording["id"], "name": recording["name"],
+            "telemetry_events": event_count,
+            "native": bool(recording["game_cmd"]),
+        }
+    return {
+        "recording": recording_state,
+        "processing": [
+            {"id": s["id"], "stage": s["processing_stage"] or "processing",
+             "error": s["processing_error"] or "",
+             "worker": _pt_processing.get(s["id"], "stalled")}
+            for s in processing
+        ],
+    }
+
+
+@app.post("/api/playtest/{session_id}/retry")
+def pt_retry(session_id: int) -> dict:
+    import threading
+
+    root = _root()
+    if _pt_processing.get(session_id) == "processing":
+        raise HTTPException(409, "session processing is already running")
+    session = playtest.get(root, session_id)
+    if not session["audio_path"] or not Path(session["audio_path"]).is_file():
+        raise HTTPException(409, "session has no captured audio to transcribe")
+    _pt_processing[session_id] = "processing"
+    threading.Thread(
+        target=_finish_playtest, args=(root, session_id),
+        kwargs={"resume": True}, daemon=True).start()
+    return {"ok": True, "session_id": session_id, "processing": True}
+
+
+@app.post("/api/playtest/{session_id}/events")
+def pt_event(session_id: int, payload: dict) -> dict:
+    try:
+        if isinstance(payload.get("events"), list):
+            accepted = [
+                playtest.ingest_web_event(_root(), session_id, event)
+                for event in payload["events"]
+            ]
+            return {"ok": True, "accepted": len(accepted)}
+        return playtest.ingest_web_event(_root(), session_id, payload)
+    except (LookupError, RuntimeError, ValueError) as exc:
+        raise HTTPException(409, str(exc))
+
+
+@app.get("/api/playtest/{session_id}")
+def pt_review(session_id: int) -> dict:
+    try:
+        root = _root().resolve()
+        result = playtest.brief(root, session_id, include_transcript=True)
+        for item in result["items"]:
+            frame = item.get("frame_path")
+            if frame:
+                try:
+                    item["frame_rel"] = str(
+                        Path(frame).resolve().relative_to(root)).replace("\\", "/")
+                except ValueError:
+                    item["frame_rel"] = ""
+        result["has_video"] = bool(
+            result["session"]["video_path"]
+            and Path(result["session"]["video_path"]).is_file())
+        result["asset_options"] = [
+            {
+                "logical_name": group["logical_name"],
+                "artifact_id": (
+                    group["approved"] or
+                    (group["revisions"][0] if group["revisions"] else None)
+                )["id"],
+            }
+            for group in artifacts.workspace(root)
+            if group["approved"] or group["revisions"]
+        ]
+        return result
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/api/playtest/{session_id}/video")
+def pt_video(session_id: int) -> FileResponse:
+    root = _root().resolve()
+    session = playtest.get(root, session_id)
+    path = Path(session["video_path"] or "").resolve()
+    try:
+        path.relative_to(root / ".bgate" / "playtests")
+    except ValueError:
+        raise HTTPException(403, "video path escapes playtest storage")
+    if not path.is_file():
+        raise HTTPException(404, "session has no playable video")
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.post("/api/playtest/items/{item_id}/promote")
+def pt_promote(item_id: int, payload: Optional[dict] = None) -> dict:
+    payload = payload or {}
+    try:
+        root = _root()
+        item = playtest.promote(
+            root, item_id, seat=payload.get("seat"),
+            kind=payload.get("kind"), ref=payload.get("ref", "app-review"))
+        _queue.sync_promoted(root)
+        return item
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/playtest/items/{item_id}/dismiss")
+def pt_dismiss(item_id: int) -> dict:
+    try:
+        return playtest.dismiss(_root(), item_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/playtest/items/{item_id}/merge")
+def pt_merge(item_id: int, payload: dict) -> dict:
+    try:
+        return playtest.merge(_root(), item_id, int(payload["target_id"]))
+    except (LookupError, ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc))
 
 
 # ---------------------------------------------------------------------------

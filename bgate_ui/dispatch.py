@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from bgate_core import assets as _assets
 from bgate_core import queue as _queue
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -79,8 +80,19 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"item-{item_id}.log"
 
-    env = {**os.environ, "BGATE_SEAT": item["seat"], "BGATE_ROOT": str(root)}
+    env = {
+        **os.environ,
+        "BGATE_SEAT": item["seat"],
+        "BGATE_ROOT": str(root),
+        "BGATE_WORK_ITEM": str(item_id),
+        "BGATE_LOCK_OWNER": f"item-{item_id}",
+    }
+    # stream-json + verbose makes claude emit one NDJSON event per step AS IT
+    # WORKS (tool calls, messages), instead of buffering everything to the end
+    # -- that's what feeds the live "what is the agent doing" view. read_activity
+    # parses this log back into readable steps.
     args = [claude, "-p", _prompt_for(item), "--permission-mode", permission_mode,
+            "--output-format", "stream-json", "--verbose",
             "--allowedTools", "mcp__builders-gate", "Read", "Edit", "Write",
             "Glob", "Grep", "Bash"]
     if model:
@@ -118,9 +130,60 @@ def status(root: str) -> list[dict]:
                 del _live[item_id]
                 out.append({"item_id": item_id, "state": "exited", "code": code})
             else:
+                _assets.heartbeat(root, f"item-{item_id}")
                 out.append({"item_id": item_id, "state": "running",
                             "pid": entry["proc"].pid, "log": entry["log"]})
     return out
+
+
+def read_activity(root: str, item_id: int, limit: int = 40) -> dict:
+    """Parse an agent's stream-json log into a readable live activity feed:
+    what tools it's calling, what it's saying, and its final result."""
+    import json
+
+    log_path = Path(root) / ".bgate" / "agents" / f"item-{item_id}.log"
+    if not log_path.is_file():
+        return {"steps": [], "running": item_id in _live, "final": None}
+
+    steps: list[dict] = []
+    final = None
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        etype = ev.get("type")
+        if etype == "assistant":
+            for block in ev.get("message", {}).get("content", []):
+                if block.get("type") == "text" and block.get("text", "").strip():
+                    steps.append({"kind": "say", "text": block["text"].strip()[:280]})
+                elif block.get("type") == "tool_use":
+                    name = block.get("name", "?")
+                    inp = block.get("input", {})
+                    hint = (inp.get("path") or inp.get("file_path") or inp.get("role")
+                            or inp.get("title") or inp.get("query") or inp.get("prompt")
+                            or inp.get("command") or "")
+                    steps.append({"kind": "tool", "name": name.replace("mcp__builders-gate__", ""),
+                                  "hint": str(hint)[:80]})
+        elif etype == "user":
+            for block in ev.get("message", {}).get("content", []):
+                if block.get("type") == "tool_result":
+                    c = block.get("content")
+                    txt = c if isinstance(c, str) else (
+                        c[0].get("text", "") if isinstance(c, list) and c else "")
+                    if txt.strip():
+                        steps.append({"kind": "result", "text": txt.strip()[:160]})
+        elif etype == "result":
+            final = {"subtype": ev.get("subtype"),
+                     "text": str(ev.get("result", ""))[:400],
+                     "cost": ev.get("total_cost_usd"),
+                     "turns": ev.get("num_turns")}
+    live = item_id in _live and _live[item_id]["proc"].poll() is None
+    return {"steps": steps[-limit:], "running": live, "final": final,
+            "step_count": len(steps)}
 
 
 def stop(item_id: int) -> dict:

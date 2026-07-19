@@ -48,6 +48,7 @@
   }
   .lamp{width:9px;height:9px;border-radius:50%;background:#3adf82;box-shadow:0 0 8px #3adf82}
   .lamp.bad{background:var(--ember);box-shadow:0 0 10px var(--ember);animation:throb 1.1s infinite}
+  .lamp.waiting{background:#e8c05a;box-shadow:0 0 8px rgba(232,192,90,.65)}
   @keyframes throb{50%{opacity:.35}}
 
   /* ── the floor: seat bays ────────────────────────────────────────────── */
@@ -182,6 +183,29 @@
     color:#3c3c46; letter-spacing:.12em;
   }
 
+  /* ── live agent activity view ────────────────────────────────────────── */
+  #agentview{
+    margin-top:8px; border:1px solid var(--seam); background:var(--void);
+    font-family:var(--mono); font-size:10.5px;
+  }
+  #agentview .ahead{
+    display:flex; gap:8px; align-items:center; padding:7px 10px;
+    border-bottom:1px solid var(--seam); color:var(--ash); letter-spacing:.08em;
+  }
+  #agentview .ahead .alive{color:#3adf82; animation:throb 1.3s infinite}
+  #agentview .ahead button{margin-left:auto}
+  #agentview .asteps{max-height:280px; overflow-y:auto; padding:4px 0}
+  .astep{padding:3px 10px; line-height:1.45; border-bottom:1px solid #16161c}
+  .astep.atool{color:var(--c-tech)}
+  .astep.atool b{color:var(--bone); font-weight:600}
+  .astep.atool span{color:var(--ash)}
+  .astep.asay{color:var(--bone)}
+  .astep.ares{color:#4c4c58; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  #agentview .afinal{
+    padding:8px 10px; border-top:1px solid var(--seam); color:var(--bone);
+    background:#12120c;
+  }
+
   /* ── dispatch + play ─────────────────────────────────────────────────── */
   .qadd{display:flex; gap:6px; padding:10px 12px; border-bottom:1px solid var(--seam)}
   .qadd select,.qadd input{
@@ -223,6 +247,402 @@
   }
   .ptbar .lamp{width:7px;height:7px}
   #pt-btn.recording{background:var(--ember); animation:throb 1.2s infinite}
+  .sess{cursor:pointer}
+  .sess:hover{background:var(--plate)}
+  .artifact-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+  .artifact{background:var(--iron);border:1px solid var(--seam);display:grid;grid-template-columns:76px 1fr;min-height:90px}
+  .artifact img{width:76px;height:100%;min-height:90px;object-fit:cover;background:var(--void)}
+  .artifact .meta{padding:8px;display:grid;gap:5px;align-content:start;min-width:0}
+  .artifact .name{font-family:var(--mono);font-size:11px;color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .artifact .detail{font-family:var(--mono);font-size:9px;color:var(--ash)}
+  .artifact .actions{display:flex;gap:5px;margin-top:3px}
+  .review-overlay{position:fixed;inset:0;background:rgba(8,8,11,.88);z-index:12;display:none;padding:3vh 4vw}
+  .review-shell{height:94vh;background:var(--void);border:1px solid var(--seam);display:grid;grid-template-rows:auto 1fr;max-width:1400px;margin:auto}
+  .review-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--seam)}
+  .review-head h3{font-family:var(--mono);font-size:13px;letter-spacing:.15em;text-transform:uppercase}
+  .review-head button{margin-left:auto}
+  .review-body{overflow:auto;padding:14px;display:grid;gap:14px}
+  .review-summary{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--ash)}
+  .review-video{width:min(760px,100%);max-height:430px;background:#000}
+  .feedback-list{display:grid;gap:10px}
+  .feedback-card{border:1px solid var(--seam);background:var(--iron);display:grid;grid-template-columns:180px 1fr}
+  .feedback-card img{width:180px;height:150px;object-fit:cover;background:var(--void)}
+  .feedback-main{padding:10px;display:grid;gap:8px}
+  .feedback-text{font-size:13px;color:var(--bone)}
+  .feedback-events{font-family:var(--mono);font-size:9.5px;color:var(--ash);display:flex;gap:5px;flex-wrap:wrap}
+  .feedback-controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .feedback-controls select{background:var(--void);border:1px solid var(--seam);color:var(--bone);font-family:var(--mono);font-size:10px;padding:4px}
+  .transcript{font-family:var(--mono);font-size:10px;color:var(--ash);max-height:220px;overflow:auto;border:1px solid var(--seam);padding:8px}
+  @media(max-width:700px){.feedback-card{grid-template-columns:1fr}.feedback-card img{width:100%;height:200px}}
+</style>
+<style id="ui-cleanup">
+  :root{
+    --void:#0e1116;
+    --iron:#151a21;
+    --plate:#1b212a;
+    --seam:#2a323d;
+    --ash:#94a0ad;
+    --bone:#f1f4f7;
+    --ember:#ff6b4a;
+    --ember-dim:#b7442d;
+    --sans:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  }
+  body{
+    background:
+      radial-gradient(circle at 50% -20%,#202b36 0,transparent 42%),
+      var(--void);
+    background-attachment:fixed;
+  }
+  :focus-visible{outline:2px solid var(--c-tech);outline-offset:2px}
+  header{
+    position:sticky;top:0;z-index:8;min-height:68px;align-items:center;
+    background:rgba(14,17,22,.92);backdrop-filter:blur(16px);
+    box-shadow:0 8px 30px rgba(0,0,0,.22);
+  }
+  .sigil{align-self:stretch;min-width:68px;justify-content:center;padding:0 18px}
+  .masthead{padding:12px 20px}
+  .masthead h1{font-size:18px;letter-spacing:.22em}
+  .masthead .sub{max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .integrity{min-height:68px}
+
+  main{max-width:1680px;margin:0 auto;padding:24px;gap:24px}
+  section h2{margin-bottom:11px;letter-spacing:.22em}
+  .band{gap:24px}
+  .band:first-child{grid-template-columns:minmax(320px,4fr) minmax(560px,8fr)}
+
+  .panel,.ledger{
+    overflow:hidden;border-radius:8px;
+    box-shadow:0 10px 30px rgba(0,0,0,.15);
+  }
+  .playpanel{
+    min-height:440px;background:#0a0d11;border-color:#303b48;
+    box-shadow:0 18px 46px rgba(0,0,0,.34);
+  }
+  .ptbar{min-height:48px;padding:9px 14px;background:#161d25}
+  .ptbar #pt-btn{margin-left:auto}
+  #play-holder{min-height:390px;background:radial-gradient(circle at 50% 40%,#19232d,#090c10 65%)}
+  #gameframe{min-height:390px;background:#050607}
+  .playbtn,.qbtn,.qadd button{
+    border-radius:5px;font-weight:650;transition:filter .15s,transform .15s;
+  }
+  .playbtn:hover,.qbtn:hover,.qadd button:hover{filter:brightness(1.12)}
+  .playbtn:hover{transform:translateY(-1px)}
+  .playhint{max-width:720px;padding:0 20px;text-align:center;line-height:1.6;color:#6f7d8a}
+
+  .qadd{padding:12px;background:#171d25}
+  .qadd select,.qadd input,.feedback-controls select{
+    min-height:36px;border-radius:5px;background:#0f141a;
+  }
+  .qadd input{min-width:0}
+  .qitem{min-height:42px;padding:8px 12px}
+  .qitem:hover,.sess:hover{background:#1c232c}
+  .qitem .qtitle{font-family:var(--sans);font-size:12px}
+  .empty{color:#687582}
+
+  .floor{grid-template-columns:repeat(7,minmax(150px,1fr));gap:9px}
+  .bay{
+    min-height:144px;padding:14px;border-radius:7px;border-top-width:3px;
+    box-shadow:0 8px 24px rgba(0,0,0,.12);
+    transition:transform .16s,background .16s;
+  }
+  .bay:hover{transform:translateY(-2px);background:#1d242d}
+  .bay .role{font-size:11px;letter-spacing:.12em}
+  .bay .doing{font-size:10.5px}
+  .bay .doing.idle,.bay .foot{color:#687582}
+
+  .ledger{max-height:360px}
+  .ledger .line{padding:7px 12px}
+  .gallery{grid-template-columns:repeat(auto-fill,minmax(135px,1fr));gap:10px}
+  .gallery>.empty,.artifact-grid>.empty{grid-column:1/-1}
+  .shot{border-radius:7px;border-color:#303945;box-shadow:0 8px 22px rgba(0,0,0,.18)}
+  .shot img{transition:transform .2s,filter .2s}
+  .shot:hover img{transform:scale(1.03)}
+  .shot .tag{padding:6px 8px}
+
+  .artifact-grid{grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+  .artifact{
+    grid-template-columns:96px 1fr;min-height:112px;overflow:hidden;
+    border-radius:7px;box-shadow:0 8px 24px rgba(0,0,0,.14);
+  }
+  .artifact img{width:96px;min-height:112px}
+  .artifact .meta{padding:11px;gap:7px}
+  .artifact .name{font-family:var(--sans);font-size:12px;font-weight:650}
+  .artifact .detail{line-height:1.35}
+
+  .lower{gap:24px}
+  th{padding:8px 10px}
+  td{padding:7px 10px}
+  .chip{border-radius:999px}
+  .panel .inner{padding:14px}
+  .sess{min-height:40px}
+
+  .review-overlay{background:rgba(5,7,9,.82);backdrop-filter:blur(8px)}
+  .review-shell{overflow:hidden;border-radius:10px;box-shadow:0 28px 90px rgba(0,0,0,.5)}
+  .review-head{min-height:54px;padding:12px 18px;background:#171d25}
+  .review-body{padding:18px;gap:18px}
+  .review-video{border-radius:7px;box-shadow:0 14px 40px rgba(0,0,0,.3)}
+  .feedback-card{overflow:hidden;border-radius:7px}
+  .feedback-main{padding:13px}
+  .transcript{border-radius:6px;background:#11161d}
+  footer{max-width:1680px;margin:0 auto;padding:0 24px 28px;color:#596672}
+
+  @media(max-width:1320px){
+    .floor{grid-template-columns:repeat(4,minmax(170px,1fr))}
+    .lower{grid-template-columns:1fr 1fr}
+    .lower section:first-child{grid-column:1/-1}
+  }
+  @media(max-width:1000px){
+    .band:first-child,.band{grid-template-columns:1fr}
+  }
+  @media(max-width:720px){
+    html,body{max-width:100%;overflow-x:hidden}
+    header{position:relative}
+    .sigil{min-width:54px;padding:0 12px}
+    .integrity{padding:0 12px}
+    #lamptext{display:none}
+    main{padding:16px;gap:18px}
+    main,.band,.band>section,.panel,.playpanel{min-width:0;max-width:100%}
+    .band,.band>section,main>section,.lower{width:calc(100vw - 32px)}
+    .floor{grid-template-columns:repeat(2,minmax(140px,1fr))}
+    .lower{grid-template-columns:1fr}
+    .lower section:first-child{grid-column:auto}
+    .qadd{display:grid;grid-template-columns:110px minmax(0,1fr);min-width:0}
+    .qadd select,.qadd input{width:100%;max-width:100%}
+    .qadd button{grid-column:1/-1}
+    .ptbar{min-width:0}
+    #pt-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .playhint{max-width:100%;overflow-wrap:anywhere}
+    .playpanel{min-height:350px}
+    #play-holder,#gameframe{min-height:300px}
+  }
+  @media(max-width:480px){
+    .masthead .sub{display:none}
+    .floor{grid-template-columns:1fr}
+    .gallery{grid-template-columns:repeat(2,1fr)}
+    .artifact-grid{grid-template-columns:1fr}
+  }
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation:none!important;transition:none!important}
+  }
+</style>
+<style id="ux-rework">
+  .app-shell{display:block;max-width:1800px;padding:28px}
+  .studio-layout{
+    display:grid;grid-template-columns:minmax(0,1fr) 390px;gap:22px;
+    align-items:start;
+  }
+  .build-stage,.iteration-sidebar,.workspace,.workspace-view{min-width:0}
+  .section-heading,.side-head,.view-heading{
+    display:flex;align-items:flex-end;justify-content:space-between;gap:20px;
+  }
+  .section-heading{margin-bottom:12px}
+  .section-heading h2,.side-head h2,.view-heading h2{
+    margin:2px 0 0;color:var(--bone);font-family:var(--sans);font-size:20px;
+    font-weight:680;letter-spacing:-.025em;text-transform:none;
+  }
+  .section-heading h2::after,.side-head h2::after,.view-heading h2::after{display:none}
+  .eyebrow{
+    display:block;color:#7d8c99;font:700 9px var(--mono);
+    letter-spacing:.18em;text-transform:uppercase;
+  }
+  .stage-hint,.side-note,.view-heading p{
+    color:#73818e;font:10px/1.45 var(--mono);
+  }
+  .stage-hint{padding-bottom:2px}
+  .build-stage .playpanel{height:620px;min-height:620px}
+  .build-stage #play-holder,.build-stage #gameframe{min-height:570px}
+  .pt-target{
+    flex:0 0 auto;padding:5px 7px;border:1px solid #34404d;border-radius:5px;
+    background:#10161c;color:#a9b4bf;font:9px var(--mono);
+  }
+  .pt-goal{
+    flex:0 1 280px;min-width:120px;padding:5px 8px;border:1px solid #34404d;
+    border-radius:5px;background:#10161c;color:#dbe3e9;font:10px var(--sans);
+  }
+  .iteration-sidebar{display:grid;gap:22px;padding-top:2px}
+  .side-card{min-width:0}
+  .side-head{align-items:end;margin-bottom:10px}
+  .side-head h2{font-size:15px}
+  .side-note{text-align:right}
+  .compact-list{max-height:235px;overflow:auto}
+  .dispatch-card .compact-list{max-height:255px}
+  .iteration-sidebar .panel{box-shadow:0 8px 24px rgba(0,0,0,.12)}
+  .iteration-sidebar .qadd{
+    display:grid;grid-template-columns:110px minmax(0,1fr) 52px;gap:6px;
+  }
+  .iteration-sidebar .qadd button{padding:6px 8px}
+  .iteration-sidebar .qitem{
+    display:grid;grid-template-columns:64px minmax(0,1fr) auto auto;gap:7px;
+  }
+  .iteration-sidebar .qitem .qseat{width:auto;text-align:left}
+
+  .workspace{
+    margin-top:28px;overflow:hidden;border:1px solid var(--seam);border-radius:10px;
+    background:rgba(17,22,29,.72);box-shadow:0 14px 40px rgba(0,0,0,.16);
+  }
+  .workspace-tabs{
+    display:flex;gap:3px;padding:7px;background:#10151b;border-bottom:1px solid var(--seam);
+    overflow-x:auto;
+  }
+  .workspace-tab{
+    flex:0 0 auto;padding:10px 15px;border:0;border-radius:6px;background:transparent;
+    color:#788795;font:650 11px var(--sans);cursor:pointer;
+  }
+  .workspace-tab:hover{background:#1a212a;color:#b7c0c9}
+  .workspace-tab.active{background:#252e39;color:#fff;box-shadow:inset 0 0 0 1px #34404d}
+  .workspace-view{display:none;padding:22px;min-height:300px}
+  .workspace-view.active{display:block}
+  .view-heading{align-items:center;margin-bottom:20px}
+  .view-heading h2{font-size:18px}
+  .view-heading p{max-width:520px;text-align:right}
+  .workspace .artifact-grid{grid-template-columns:repeat(auto-fill,minmax(285px,1fr))}
+  .workspace .artifact{background:#171d25}
+  .asset-groups{display:grid;gap:16px}
+  .asset-group{
+    overflow:hidden;border:1px solid var(--seam);border-radius:9px;background:#11171e;
+  }
+  .asset-group-head{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:12px 14px;border-bottom:1px solid var(--seam);background:#171e26;
+  }
+  .asset-group-head h3{font-size:14px;font-weight:680}
+  .revision-tabs{display:flex;gap:5px;flex-wrap:wrap}
+  .revision-tab{
+    padding:4px 8px;border:1px solid #34404d;border-radius:999px;background:transparent;
+    color:#82919e;font:9px var(--mono);cursor:pointer;
+  }
+  .revision-tab.active{border-color:var(--c-tech);color:#c7dfff;background:#192535}
+  .asset-compare{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--seam)}
+  .revision-pane{min-width:0;padding:14px;background:#11171e}
+  .revision-pane.candidate{background:#131a22}
+  .revision-label{
+    display:flex;justify-content:space-between;gap:8px;margin-bottom:10px;
+    color:#7f8e9b;font:700 9px var(--mono);letter-spacing:.13em;text-transform:uppercase;
+  }
+  .revision-preview{
+    width:100%;height:240px;display:grid;place-items:center;overflow:hidden;
+    border-radius:7px;background:#090d11;
+  }
+  .revision-preview img{width:100%;height:100%;object-fit:contain}
+  .revision-meta{display:grid;gap:7px;margin-top:12px;color:#8e9ca8;font:10px/1.45 var(--mono)}
+  .revision-meta strong{color:#dce3e9;font-weight:600}
+  .revision-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+  .health-row{display:flex;gap:6px;flex-wrap:wrap}
+  .health-good{color:#75dcb1;border-color:#397e64}
+  .health-bad{color:#ff9379;border-color:#7d4338}
+  .asset-feedback{
+    padding:11px 14px;border-top:1px solid var(--seam);color:#81909d;
+    font:10px/1.5 var(--mono);
+  }
+  .asset-feedback-item{padding:4px 0}
+  .iteration-list{display:grid;gap:14px}
+  .iteration-card{
+    display:grid;grid-template-columns:190px minmax(0,1fr);overflow:hidden;
+    border:1px solid var(--seam);border-radius:9px;background:#11171e;
+  }
+  .iteration-summary{padding:15px;border-right:1px solid var(--seam);background:#171e26}
+  .iteration-summary h3{margin:4px 0 9px;font-size:15px}
+  .iteration-fingerprint{color:#748390;font:9px/1.6 var(--mono);word-break:break-all}
+  .causal-track{display:flex;gap:0;padding:18px;overflow-x:auto}
+  .causal-event{position:relative;flex:0 0 160px;padding:0 14px 0 20px}
+  .causal-event::before{
+    content:"";position:absolute;left:0;top:4px;width:9px;height:9px;border-radius:50%;
+    background:var(--c-tech);box-shadow:0 0 0 4px rgba(79,163,255,.13);
+  }
+  .causal-event::after{
+    content:"";position:absolute;left:9px;right:-1px;top:8px;height:1px;background:#34404d;
+  }
+  .causal-event:last-child::after{display:none}
+  .causal-event b{position:relative;z-index:1;color:#dce3e9;font:650 10px var(--sans)}
+  .causal-event span{display:block;margin-top:7px;color:#7e8d9a;font:9px/1.45 var(--mono)}
+  .coverage-warnings{display:flex;gap:7px;flex-wrap:wrap}
+  .coverage-warning{
+    padding:6px 9px;border:1px solid #754439;border-radius:5px;
+    background:#291a18;color:#ff9b83;font:9px var(--mono);
+  }
+  .video-stage{position:relative;width:min(900px,100%)}
+  .video-stage .review-video{width:100%}
+  .marker-track{position:relative;height:28px;margin-top:5px;background:#151c24;border-radius:4px}
+  .timeline-marker{
+    position:absolute;top:4px;width:10px;height:20px;transform:translateX(-50%);
+    border:0;border-radius:3px;background:var(--c-tech);cursor:pointer;
+  }
+  .transcript-line{padding:4px 6px;border-left:2px solid transparent;cursor:pointer}
+  .transcript-line.active{border-color:var(--c-tech);background:#192535;color:#fff}
+  .telemetry-chart{display:flex;align-items:flex-end;gap:3px;height:70px;padding:8px;background:#0f151b}
+  .telemetry-bar{flex:1;min-width:3px;max-width:12px;background:var(--c-tech);opacity:.8}
+  .feedback-confidence{display:flex;gap:6px;flex-wrap:wrap}
+  .work-link{
+    display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;
+    border-left:3px solid var(--c-tech);background:#121a22;
+    color:#93a2af;font:10px/1.45 var(--mono);
+  }
+  .work-link b{color:#dbe3e9}
+  .work-result{color:#74d6aa}
+  .workspace .floor{grid-template-columns:repeat(7,minmax(145px,1fr))}
+  .ledger-block{margin-top:22px}
+  .ledger-block>h2,.asset-workspace section>h2{
+    margin-bottom:10px;color:#85929e;font:700 10px var(--mono);
+    letter-spacing:.16em;text-transform:uppercase;
+  }
+  .ledger-block>h2::after,.asset-workspace section>h2::after{display:none}
+  .workspace .ledger{max-height:290px}
+  .asset-workspace{
+    display:grid;grid-template-columns:minmax(300px,4fr) minmax(500px,7fr);gap:22px;
+  }
+  .workspace .gallery{grid-template-columns:repeat(auto-fill,minmax(145px,1fr))}
+  .vault-scroll{max-height:460px;overflow:auto}
+  .world-panel{max-width:1000px;min-height:260px}
+  .world-panel .inner{padding:20px}
+  #view-review>.empty{padding:30px}
+
+  @media(max-width:1250px){
+    .studio-layout{grid-template-columns:minmax(0,1fr) 340px}
+    .build-stage .playpanel{height:560px;min-height:560px}
+    .build-stage #play-holder,.build-stage #gameframe{min-height:510px}
+    .workspace .floor{grid-template-columns:repeat(4,minmax(160px,1fr))}
+    .asset-workspace{grid-template-columns:1fr}
+  }
+  @media(max-width:900px){
+    .app-shell{padding:18px}
+    .studio-layout{grid-template-columns:1fr}
+    .iteration-sidebar{grid-template-columns:1fr 1fr}
+    .build-stage .playpanel{height:500px;min-height:500px}
+    .build-stage #play-holder,.build-stage #gameframe{min-height:450px}
+    .asset-compare{grid-template-columns:1fr}
+    .iteration-card{grid-template-columns:1fr}
+    .iteration-summary{border-right:0;border-bottom:1px solid var(--seam)}
+  }
+  @media(max-width:680px){
+    .app-shell{width:100vw;max-width:100vw;padding:14px;overflow:hidden}
+    .studio-layout,.build-stage,.iteration-sidebar,.side-card,.workspace{
+      width:100%;max-width:100%;min-width:0;
+    }
+    .studio-layout,.iteration-sidebar{grid-template-columns:1fr}
+    .section-heading{align-items:flex-start}
+    .stage-hint{display:none}
+    .side-note{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .build-stage .playpanel{height:390px;min-height:390px}
+    .build-stage #play-holder,.build-stage #gameframe{min-height:340px}
+    .build-stage .ptbar{width:100%;min-width:0}
+    .build-stage .ptbar{flex-wrap:wrap}
+    .build-stage #pt-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .build-stage #pt-btn{flex:0 0 auto}
+    .build-stage .pt-goal{order:3;flex:1 1 100%;max-width:none}
+    .build-stage .playhint{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+    .iteration-sidebar .qadd{grid-template-columns:105px minmax(0,1fr)}
+    .iteration-sidebar .qadd button{grid-column:1/-1}
+    .workspace{margin-top:20px}
+    .workspace-view{padding:16px}
+    .view-heading{align-items:flex-start}
+    .view-heading p{display:none}
+    .workspace .floor{grid-template-columns:1fr 1fr}
+    .asset-workspace{grid-template-columns:1fr}
+  }
+  @media(max-width:430px){
+    .workspace .floor{grid-template-columns:1fr}
+    .workspace .artifact-grid{grid-template-columns:1fr}
+  }
 </style>
 </head>
 <body>
@@ -235,68 +655,135 @@
   <div class="integrity" id="integrity"><span class="lamp" id="lamp"></span><span id="lamptext">…</span></div>
 </header>
 
-<main>
-  <div class="band">
-    <section>
-      <h2>Dispatch — the work queue</h2>
-      <div class="panel">
-        <div class="qadd">
-          <select id="q-seat"></select>
-          <input id="q-title" placeholder="what needs doing" maxlength="120">
-          <button id="q-go" onclick="addItem()">queue</button>
+<main class="app-shell">
+  <div class="studio-layout">
+    <section class="build-stage">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">Current build</span>
+          <h2>Play, observe, iterate</h2>
         </div>
-        <div id="queue"></div>
+        <span class="stage-hint">The game is the primary artifact.</span>
       </div>
-    </section>
-    <section>
-      <h2>Play — the current build</h2>
       <div class="panel playpanel">
         <div class="ptbar">
           <span class="lamp" id="pt-lamp"></span>
           <span id="pt-msg">checking playtest gear…</span>
+          <input class="pt-goal" id="pt-goal" placeholder="Iteration goal" maxlength="160">
+          <select class="pt-target" id="pt-target" aria-label="Playtest target">
+            <option value="web">web build</option>
+            <option value="native">native Godot</option>
+          </select>
           <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
         </div>
         <div id="play-holder">
-          <button class="playbtn" onclick="loadGame()">▶ boot the game here</button>
+          <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
           <div class="playhint">A/D move · Space jump · J/K punch · U/I kick · S block · L duck · F1 tuning</div>
         </div>
       </div>
     </section>
+
+    <aside class="iteration-sidebar">
+      <section class="side-card">
+        <div class="side-head">
+          <div><span class="eyebrow">Evidence</span><h2>Playtest inbox</h2></div>
+          <span class="side-note">open to review</span>
+        </div>
+        <div class="panel compact-list" id="sessions"></div>
+      </section>
+
+      <section class="side-card dispatch-card">
+        <div class="side-head">
+          <div><span class="eyebrow">Next iteration</span><h2>Dispatch</h2></div>
+          <span class="side-note">agent work queue</span>
+        </div>
+        <div class="panel">
+          <div class="qadd">
+            <select id="q-seat" aria-label="Seat"></select>
+            <input id="q-title" placeholder="Describe the next change" maxlength="120">
+            <button id="q-go" onclick="addItem()">add</button>
+          </div>
+          <div class="compact-list" id="queue"></div>
+          <div id="agentview" style="display:none"></div>
+        </div>
+      </section>
+    </aside>
   </div>
 
-  <section>
-    <h2>The Floor — seven seats</h2>
-    <div class="floor" id="floor"></div>
-  </section>
+  <div class="workspace">
+    <nav class="workspace-tabs" aria-label="Workspace views">
+      <button class="workspace-tab active" data-view="review" onclick="setWorkspace('review',this)">Asset Lab</button>
+      <button class="workspace-tab" data-view="team" onclick="setWorkspace('team',this)">Agent floor</button>
+      <button class="workspace-tab" data-view="assets" onclick="setWorkspace('assets',this)">Raw vault</button>
+      <button class="workspace-tab" data-view="world" onclick="setWorkspace('world',this)">World bible</button>
+      <button class="workspace-tab" data-view="timeline" onclick="setWorkspace('timeline',this)">Iteration timeline</button>
+    </nav>
 
-  <div class="band">
-    <section>
-      <h2>Ledger — live</h2>
-      <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
+    <section class="workspace-view active" id="view-review">
+      <div class="view-heading">
+        <div><span class="eyebrow">Revision workspace</span><h2>Asset Lab</h2></div>
+        <p>Compare approved assets with candidates, inspect provenance and integration, then decide.</p>
+      </div>
+      <div class="asset-groups" id="asset-groups"><div class="empty">generated candidates appear here grouped by logical asset</div></div>
     </section>
-    <section>
-      <h2>Forge Gallery — renders &amp; frames</h2>
-      <div class="gallery" id="gallery"><div class="empty">renders appear here (blender_run with render=true)</div></div>
-    </section>
-  </div>
 
-  <div class="lower">
-    <section>
-      <h2>Vault — tracked binaries</h2>
-      <div class="panel"><table id="vault"></table></div>
+    <section class="workspace-view" id="view-team" hidden>
+      <div class="view-heading">
+        <div><span class="eyebrow">Production</span><h2>Agent floor</h2></div>
+        <p>Ownership, locks, queued feedback, and live work across all seven seats.</p>
+      </div>
+      <div class="floor" id="floor"></div>
+      <div class="ledger-block">
+        <h2>Live activity</h2>
+        <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
+      </div>
     </section>
-    <section>
-      <h2>World — pillars · cut line · canon</h2>
-      <div class="panel"><div class="inner" id="world"></div></div>
+
+    <section class="workspace-view" id="view-assets" hidden>
+      <div class="view-heading">
+        <div><span class="eyebrow">Library</span><h2>Asset vault</h2></div>
+        <button class="qbtn small ghost" onclick="fullAudit()">run integrity audit</button>
+      </div>
+      <div class="asset-workspace">
+        <section>
+          <h2>Recent renders</h2>
+          <div class="gallery" id="gallery"><div class="empty">renders appear here (blender_run with render=true)</div></div>
+        </section>
+        <section>
+          <h2>Tracked binaries</h2>
+          <div class="panel vault-scroll"><table id="vault"></table></div>
+        </section>
+      </div>
     </section>
-    <section>
-      <h2>Playtests</h2>
-      <div class="panel" id="sessions"></div>
+
+    <section class="workspace-view" id="view-world" hidden>
+      <div class="view-heading">
+        <div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div>
+        <p>Pillars, scope, cut line, and canon used by the pipeline.</p>
+      </div>
+      <div class="panel world-panel"><div class="inner" id="world"></div></div>
+    </section>
+
+    <section class="workspace-view" id="view-timeline" hidden>
+      <div class="view-heading">
+        <div><span class="eyebrow">Causal history</span><h2>Iteration timeline</h2></div>
+        <p>Goal, snapshot, assets, evidence, decisions, queued changes, resulting work, and outcome.</p>
+      </div>
+      <div class="iteration-list" id="iterations"><div class="empty">the first recorded playtest creates an iteration</div></div>
     </section>
   </div>
 </main>
 
 <div id="lightbox" onclick="this.style.display='none'"><img id="lightimg" alt=""></div>
+<div class="review-overlay" id="review-overlay">
+  <div class="review-shell">
+    <div class="review-head">
+      <h3 id="review-title">Playtest review</h3>
+      <button class="qbtn ghost" onclick="closeReview()">close</button>
+    </div>
+    <div class="review-body" id="review-body"></div>
+  </div>
+</div>
 <footer id="foot">builders gate · local floor · 127.0.0.1</footer>
 
 <script>
@@ -307,6 +794,34 @@ const SEATS = {
 const color = r => getComputedStyle(document.documentElement).getPropertyValue(`--c-${r}`) || "#888";
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let lastActivityId = 0;
+
+function setWorkspace(name, trigger){
+  const allowed = ["review","team","assets","world","timeline"];
+  const next = allowed.includes(name) ? name : "review";
+  document.querySelectorAll(".workspace-view").forEach(view => {
+    const active = view.id === `view-${next}`;
+    view.classList.toggle("active", active);
+    view.hidden = !active;
+  });
+  document.querySelectorAll(".workspace-tab").forEach(tab => {
+    const active = tab.dataset.view === next;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  try{ localStorage.setItem("bgate-workspace", next); }catch(e){}
+  if (trigger) trigger.focus();
+}
+
+document.querySelector(".workspace-tabs")?.addEventListener("keydown", event => {
+  if (!["ArrowLeft","ArrowRight"].includes(event.key)) return;
+  const tabs = [...document.querySelectorAll(".workspace-tab")];
+  const index = tabs.indexOf(document.activeElement);
+  const delta = event.key === "ArrowRight" ? 1 : -1;
+  const next = tabs[(index + delta + tabs.length) % tabs.length];
+  event.preventDefault();
+  setWorkspace(next.dataset.view, next);
+});
 
 /* A seat is "at work" when it holds a lock or acted in the last 5 minutes. */
 function isWorking(seat){
@@ -375,14 +890,125 @@ function show(rel){
   document.getElementById("lightbox").style.display = "flex";
 }
 
+function artifactImage(a){
+  return /\.(png|jpe?g|webp|svg)$/i.test(a.path)
+    ? `<img src="/api/preview?rel=${encodeURIComponent(a.path)}" alt="${esc(a.logical_name)}">`
+    : `<div style="width:76px;display:grid;place-items:center;font-family:var(--mono);color:#4c4c58">${esc(a.kind)}</div>`;
+}
+let assetGroupsState = [];
+const assetSelections = {};
+function healthChip(label,value){
+  if (!value || (typeof value === "object" && !Object.keys(value).length))
+    return `<span class="chip">not checked · ${label}</span>`;
+  const explicit = value.ok ?? value.consistent ?? value.imported;
+  if (explicit == null) return `<span class="chip health-good">${label} · checked</span>`;
+  const ok = Boolean(explicit);
+  return `<span class="chip ${ok ? "health-good" : "health-bad"}">${label} · ${ok ? "pass" : "fail"}</span>`;
+}
+function revisionPreview(a){
+  if (!a) return `<div class="revision-preview"><span class="empty">none approved yet</span></div>`;
+  return /\.(png|jpe?g|webp|svg)$/i.test(a.path)
+    ? `<div class="revision-preview"><img src="/api/preview?rel=${encodeURIComponent(a.path)}" alt="${esc(a.logical_name)} revision ${a.revision}"></div>`
+    : `<div class="revision-preview"><span class="chip">${esc(a.kind)}</span><span class="empty">${esc(a.path)}</span></div>`;
+}
+function revisionPane(a,label,candidate=false){
+  if (!a) return `<div class="revision-pane"><div class="revision-label"><span>${label}</span></div>${revisionPreview(null)}</div>`;
+  const lock = a.lock;
+  return `<div class="revision-pane ${candidate ? "candidate" : ""}">
+    <div class="revision-label"><span>${label} · r${a.revision}</span><span>${esc(a.status)}</span></div>
+    ${revisionPreview(a)}
+    <div class="revision-meta">
+      <div><strong>${esc(a.producer || "unknown producer")}</strong> · ${esc(a.model || a.kind)}</div>
+      <div>${esc(a.profile || "no generation profile")} · refs ${a.refs?.length || 0}</div>
+      <div title="${esc(a.path)}">${esc(a.path)}</div>
+      <div class="health-row">
+        ${healthChip("consistency",a.consistency)}
+        ${healthChip("engine import",a.engine_import)}
+        ${a.used_in_current_build ? `<span class="chip health-good">used in current build</span>` : `<span class="chip">not in current build</span>`}
+      </div>
+      ${lock?.seat ? `<div>lock <strong>${esc(lock.seat)}</strong> · ${esc(lock.owner || "unowned")} · work ${lock.work_item_id || "—"}<br>
+        heartbeat ${esc(lock.heartbeat_at || "none")} · lease ${esc(lock.lease_expires_at || "none")}</div>` : `<div>unlocked</div>`}
+      ${a.work_item ? `<div>work #${a.work_item.id} · ${esc(a.work_item.status)}${a.work_item.result ? ` · ${esc(a.work_item.result)}` : ""}</div>` : ""}
+      ${a.review_note ? `<div>decision: ${esc(a.review_note)}</div>` : ""}
+    </div>
+    ${candidate ? `<div class="revision-actions">
+      <button class="qbtn small" onclick="reviewArtifact(${a.id},'approved')">approve</button>
+      <button class="qbtn small ghost" onclick="reviewArtifact(${a.id},'rejected')">reject with reason</button>
+      <button class="qbtn small ghost" onclick="regenerateArtifact(${a.id})">regenerate</button>
+      <button class="qbtn small ghost" onclick="reviewArtifact(${a.id},'superseded')">supersede</button>
+    </div>` : ""}
+  </div>`;
+}
+function selectAssetRevision(id){
+  for (const group of assetGroupsState){
+    if (group.revisions.some(r => r.id === id)){
+      assetSelections[group.logical_name] = id;
+      break;
+    }
+  }
+  renderAssetWorkspace(assetGroupsState);
+}
+function renderAssetWorkspace(groups){
+  assetGroupsState = groups;
+  const box = document.getElementById("asset-groups");
+  if (!groups.length){
+    box.innerHTML = `<div class="empty">generated candidates appear here grouped by logical asset</div>`;
+    return;
+  }
+  box.innerHTML = groups.map(group => {
+    const selectedId = assetSelections[group.logical_name];
+    const selected = group.revisions.find(r => r.id === selectedId)
+      || group.candidates[0]
+      || group.revisions.find(r => r.id !== group.approved?.id)
+      || null;
+    return `<article class="asset-group">
+      <div class="asset-group-head">
+        <h3>${esc(group.logical_name)}</h3>
+        <div class="revision-tabs">${group.revisions.map(r =>
+          `<button class="revision-tab ${selected?.id === r.id ? "active" : ""}" onclick="selectAssetRevision(${r.id})">r${r.revision} · ${esc(r.status)}</button>`
+        ).join("")}</div>
+      </div>
+      <div class="asset-compare">
+        ${revisionPane(group.approved,"approved")}
+        ${revisionPane(selected,"comparison",selected?.status === "candidate")}
+      </div>
+      <div class="asset-feedback">
+        <strong>${group.feedback.length} linked playtest notes</strong>
+        ${group.feedback.slice(0,5).map(f =>
+          `<div class="asset-feedback-item">session ${f.session_id} · ${esc(f.kind)} · ${esc(f.text)} · ${esc(f.status)}</div>`
+        ).join("") || `<div class="asset-feedback-item">No playtest feedback linked to this asset.</div>`}
+      </div>
+    </article>`;
+  }).join("");
+}
+async function reviewArtifact(id,status){
+  const note = status === "rejected" ? (prompt("Reason for rejection (becomes precedent):") || "") : "";
+  await fetch(`/api/artifacts/${id}/review`, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({status,note})});
+  pollState();
+}
+async function regenerateArtifact(id){
+  const reason = prompt("What should the next revision improve?") || "";
+  await fetch(`/api/artifacts/${id}/regenerate`, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({reason})});
+  pollState(); pollQueue();
+}
+async function fullAudit(){
+  document.getElementById("lamptext").textContent = "hashing all tracked assets…";
+  const r = await fetch("/api/assets/verify", {method:"POST"});
+  if (r.ok) pollState();
+}
+
 function renderVault(assetsData, verify){
   const drifted = new Set(verify.modified.map(m => m.path));
   const missing = new Set(verify.missing);
+  const pending = new Set(verify.untracked_hash || []);
   const rows = assetsData.map(a => {
     let state = `<span class="chip">clean</span>`;
     if (a.lock_seat) state = `<span class="chip held" style="background:${color(a.lock_seat)};border-color:${color(a.lock_seat)}">${esc(a.lock_seat)}</span>`;
     else if (drifted.has(a.path)) state = `<span class="chip drift">drift</span>`;
     else if (missing.has(a.path)) state = `<span class="chip drift">missing</span>`;
+    else if (pending.has(a.path)) state = `<span class="chip drift">pending</span>`;
     return `<tr><td class="path" title="${esc(a.path)}">${esc(a.path)}</td>
       <td>${esc(a.kind)}</td><td>${a.bytes ? (a.bytes/1024).toFixed(1)+"k" : "—"}</td><td>${state}</td></tr>`;
   }).join("");
@@ -405,12 +1031,213 @@ function renderWorld(bible, loreData){
   document.getElementById("world").innerHTML = w.join("");
 }
 
+function renderIterations(items){
+  const box = document.getElementById("iterations");
+  if (!items.length){
+    box.innerHTML = `<div class="empty">the first recorded playtest creates an iteration</div>`;
+    return;
+  }
+  box.innerHTML = items.map(item => {
+    const outcome = item.outcome || {};
+    const compare = outcome.versus_previous || {};
+    const delta = outcome.snapshot_delta || {};
+    return `<article class="iteration-card">
+      <div class="iteration-summary">
+        <span class="eyebrow">Iteration ${item.id} · ${esc(item.status)}</span>
+        <h3>${esc(item.goal)}</h3>
+        <div class="health-row">
+          <span class="chip">${item.sessions.length} playtest${item.sessions.length===1?"":"s"}</span>
+          <span class="chip">${item.active_artifact_ids.length} active assets</span>
+          <span class="chip">${esc(item.tests?.status || "tests unknown")}</span>
+          <span class="chip">telemetry schema v${item.telemetry_schema_version}</span>
+        </div>
+        <div class="iteration-fingerprint">
+          commit ${esc((item.source_commit || "unversioned").slice(0,12))}<br>
+          dirty ${esc((item.dirty_fingerprint || "none").slice(0,12))}<br>
+          source ${esc((item.source_fingerprint || "none").slice(0,12))}<br>
+          export ${esc((item.export_hash || "missing").slice(0,12))}
+        </div>
+        ${outcome.session_id ? `<div class="iteration-fingerprint">
+          outcome · ${outcome.feedback} feedback · ${outcome.telemetry_events} events
+          ${Object.keys(compare).length ? `<br>vs previous · feedback ${compare.feedback>=0?"+":""}${compare.feedback} · events ${compare.telemetry_events>=0?"+":""}${compare.telemetry_events}` : ""}
+          ${Object.keys(delta).length ? `<br>${delta.build_changed?"new build":"same build"} · ${delta.source_changed?"source changed":"same source"} · ${delta.active_assets_changed?"assets changed":"same assets"}` : ""}
+        </div>` : ""}
+      </div>
+      <div class="causal-track">${item.events.map(event =>
+        `<div class="causal-event"><b>${esc(event.stage.replaceAll("_"," "))}</b>
+          <span>${esc(event.summary || `${event.ref_type} ${event.ref_id}`)}<br>${esc((event.created_at || "").slice(5,16))}</span>
+        </div>`).join("") || `<div class="empty">snapshot captured; waiting for evidence</div>`}
+      </div>
+    </article>`;
+  }).join("");
+}
+
 function renderSessions(sessions){
   document.getElementById("sessions").innerHTML = sessions.length
-    ? sessions.map(s => `<div class="sess"><span class="nm">${esc(s.name)}</span>
+    ? sessions.map(s => `<div class="sess" onclick="openSession(${s.id})"><span class="nm">${esc(s.name)}</span>
         <span>${s.duration_s ? s.duration_s.toFixed(0)+"s" : ""}</span>
-        <span class="st">${esc(s.status)}</span></div>`).join("")
+        <span class="st">${esc(s.processing_stage || s.status)}</span>
+        ${(s.status === "failed" || (s.status === "processing" && s.processing_worker === "stalled")) && s.audio_path
+          ? `<button class="qbtn small ghost" onclick="event.stopPropagation();retrySession(${s.id})">retry</button>` : ""}
+        </div>`).join("")
     : `<div class="empty">no playtests yet — playtest_check, then playtest_start</div>`;
+}
+async function retrySession(id){
+  await fetch(`/api/playtest/${id}/retry`, {method:"POST"});
+  pollState(); ptPoll();
+}
+
+let activeReviewSession = null;
+function closeReview(){
+  document.getElementById("review-overlay").style.display = "none";
+  activeReviewSession = null;
+}
+function options(values,current){
+  return values.map(v => `<option value="${v}" ${v===current?"selected":""}>${v}</option>`).join("");
+}
+async function openSession(id){
+  activeReviewSession = id;
+  const overlay = document.getElementById("review-overlay");
+  const body = document.getElementById("review-body");
+  overlay.style.display = "block";
+  body.innerHTML = `<div class="empty">loading session ${id}…</div>`;
+  const r = await fetch(`/api/playtest/${id}`);
+  if (!r.ok){ body.innerHTML = `<div class="empty">failed to load session</div>`; return; }
+  const d = await r.json();
+  document.getElementById("review-title").textContent = `Playtest ${id} — ${d.session.name}`;
+  const telemetry = d.telemetry_backed
+    ? `<span class="chip">${d.counts.events} telemetry events</span>`
+    : `<span class="chip drift">no telemetry</span>`;
+  const duration = Math.max(Number(d.session.duration_s || 0), 1);
+  const eventMap = new Map();
+  d.items.flatMap(item => item.events || []).forEach(event =>
+    eventMap.set(`${event.t}:${event.kind}`, event));
+  const allEvents = [...eventMap.values()].sort((a,b) => a.t-b.t);
+  const snapshot = d.iteration;
+  body.innerHTML = `
+    ${d.coverage_warnings?.length ? `<div class="coverage-warnings">${d.coverage_warnings.map(w =>
+      `<span class="coverage-warning">${esc(w.message)}</span>`).join("")}</div>` : ""}
+    <div class="review-summary">
+      <span>${esc(d.session.status)}</span><span>${Number(d.session.duration_s||0).toFixed(1)}s</span>
+      <span>${d.counts.items} feedback items</span><span>build ${esc(d.session.build_ref || "unknown")}</span>${telemetry}
+    </div>
+    ${snapshot ? `<div class="work-link">
+      <b>iteration ${snapshot.id}</b>
+      <span>commit ${esc((snapshot.source_commit || "unversioned").slice(0,12))}</span>
+      <span>dirty ${esc((snapshot.dirty_fingerprint || "none").slice(0,12))}</span>
+      <span>source ${esc((snapshot.source_fingerprint || "none").slice(0,12))}</span>
+      <span>export ${esc((snapshot.export_hash || "missing").slice(0,12))}</span>
+      <span>${snapshot.active_artifact_ids.length} active assets</span>
+      <span>tests ${esc(snapshot.tests?.status || "unknown")}</span>
+      <span>telemetry schema v${snapshot.telemetry_schema_version}</span>
+    </div>` : ""}
+    ${d.has_video ? `<div class="video-stage">
+      <video class="review-video" id="review-video" controls src="/api/playtest/${id}/video"></video>
+      <div class="marker-track">${d.timeline_markers.map(marker =>
+        `<button class="timeline-marker" style="left:${Math.min(100,marker.t/duration*100)}%" title="${esc(marker.kind)} · ${esc(marker.text)}" onclick="seekReview(${marker.t})"></button>`
+      ).join("")}</div>
+    </div>` : ""}
+    <div>
+      <h2>Telemetry across this session</h2>
+      <div class="telemetry-chart">${allEvents.map(event =>
+        `<button class="telemetry-bar" style="height:${20 + ((Number(event.t)*37)%50)}px" title="${esc(event.kind)} @ ${Number(event.t).toFixed(2)}s" onclick="seekReview(${Number(event.t)})"></button>`
+      ).join("") || `<span class="empty">no telemetry events</span>`}</div>
+    </div>
+    <div class="feedback-list">${d.items.map(item => `
+      <div class="feedback-card">
+        ${item.frame_rel ? `<img src="/api/preview?rel=${encodeURIComponent(item.frame_rel)}" alt="feedback frame">`
+                         : `<div class="empty">no frame</div>`}
+        <div class="feedback-main">
+          <div class="feedback-text">${esc(item.text)}</div>
+          <div class="feedback-confidence">
+            <span class="chip">director recommends ${esc(item.director_recommendation || "review")}</span>
+            <span class="chip">classifier ${Math.round(Number(item.classification?.confidence || 0) * 100)}% · ${esc(item.classification?.kind || item.kind)}</span>
+            ${item.transcript_confidence != null
+              ? `<span class="chip">speech confidence ${Number(item.transcript_confidence).toFixed(2)}</span>` : ""}
+          </div>
+          <div class="feedback-events">${item.events.length ? item.events.map(e =>
+            `<span class="chip">${esc(e.kind)} @ ${Number(e.t).toFixed(2)}s ${esc(JSON.stringify(e.data))}</span>`).join("")
+            : `<span class="chip drift">no nearby telemetry</span>`}</div>
+          <div class="feedback-controls">
+            <span class="chip">${esc(item.status)}</span>
+            <select id="seat-${item.id}">${options(Object.keys(SEATS),item.seat)}</select>
+            <select id="kind-${item.id}">${options(["like","fix","add","change","question","note"],item.kind)}</select>
+            ${item.status === "new" ? `<button class="qbtn small" onclick="promoteFeedback(${item.id})">promote</button>
+              <button class="qbtn small ghost" onclick="dismissFeedback(${item.id})">dismiss</button>
+              <select id="merge-${item.id}" aria-label="Merge target">
+                <option value="">merge into…</option>
+                ${d.items.filter(target => target.id !== item.id && target.status !== "dismissed").map(target =>
+                  `<option value="${target.id}">#${target.id} ${esc(target.text.slice(0,42))}</option>`).join("")}
+              </select>
+              <button class="qbtn small ghost" onclick="mergeFeedback(${item.id})">merge</button>` : ""}
+          </div>
+          ${item.assets?.length ? `<div class="feedback-events">linked assets · ${item.assets.map(a =>
+            `<span class="chip">${esc(a.logical_name)}</span>`).join("")}</div>` : ""}
+          ${d.asset_options?.length ? `<div class="feedback-controls">
+            <select id="asset-link-${item.id}" aria-label="Link asset">
+              ${d.asset_options.map(asset =>
+                `<option value="${asset.artifact_id}">${esc(asset.logical_name)}</option>`).join("")}
+            </select>
+            <button class="qbtn small ghost" onclick="linkFeedbackAsset(${item.id})">link asset</button>
+          </div>` : ""}
+          ${item.work ? `<div class="work-link">
+            <b>queue #${item.work.id}</b>
+            <span>${esc(item.work.seat)} · ${esc(item.work.status)}</span>
+            ${item.work.result ? `<span class="work-result">${esc(item.work.result)}</span>` : ""}
+            <button class="qbtn small ghost" onclick="closeReview();document.getElementById('work-${item.work.id}')?.scrollIntoView({behavior:'smooth',block:'center'})">show work</button>
+          </div>` : item.status === "promoted"
+            ? `<div class="work-link"><span>promoted · queue item is being created</span></div>` : ""}
+        </div>
+      </div>`).join("") || `<div class="empty">no feedback items were extracted</div>`}</div>
+    <div><h2 style="margin-top:4px">Transcript</h2>
+      <div class="transcript" id="review-transcript">${(d.transcript||[]).map((s,index) =>
+        `<div class="transcript-line" id="transcript-${index}" data-start="${Number(s.t_start)}" data-end="${Number(s.t_end)}" onclick="seekReview(${Number(s.t_start)})"><span style="color:#4c4c58">${Number(s.t_start).toFixed(1)}s</span> ${esc(s.text)}
+          ${s.confidence != null ? `<span class="chip">confidence ${Number(s.confidence).toFixed(2)}</span>` : ""}</div>`).join("")
+        || "no transcript"}</div>
+    </div>`;
+  document.getElementById("review-video")?.addEventListener("timeupdate", syncTranscript);
+}
+function seekReview(t){
+  const video = document.getElementById("review-video");
+  if (!video) return;
+  video.currentTime = Math.max(0,Number(t)||0);
+  video.play().catch(()=>{});
+}
+function syncTranscript(){
+  const video = document.getElementById("review-video");
+  if (!video) return;
+  document.querySelectorAll(".transcript-line").forEach(line => {
+    const active = video.currentTime >= Number(line.dataset.start)
+      && video.currentTime <= Number(line.dataset.end);
+    line.classList.toggle("active",active);
+    if (active) line.scrollIntoView({block:"nearest"});
+  });
+}
+async function promoteFeedback(id){
+  await fetch(`/api/playtest/items/${id}/promote`, {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({seat:document.getElementById(`seat-${id}`).value,
+      kind:document.getElementById(`kind-${id}`).value})});
+  openSession(activeReviewSession); pollState(); pollQueue();
+}
+async function dismissFeedback(id){
+  await fetch(`/api/playtest/items/${id}/dismiss`, {method:"POST"});
+  openSession(activeReviewSession); pollState();
+}
+async function mergeFeedback(id){
+  const target = document.getElementById(`merge-${id}`)?.value;
+  if (!target) return;
+  await fetch(`/api/playtest/items/${id}/merge`, {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({target_id:Number(target)})});
+  openSession(activeReviewSession); pollState();
+}
+async function linkFeedbackAsset(itemId){
+  const artifactId = document.getElementById(`asset-link-${itemId}`)?.value;
+  if (!artifactId) return;
+  await fetch(`/api/artifacts/${artifactId}/feedback/${itemId}`, {method:"POST",
+    headers:{"Content-Type":"application/json"}, body:"{}"});
+  openSession(activeReviewSession); pollState();
 }
 
 async function pollState(){
@@ -423,12 +1250,14 @@ async function pollState(){
     const v = s.verify;
     setLamp(v.ok, v.ok
       ? `vault clean · ${v.counts.clean} tracked · ${v.counts.locked} held`
-      : `${v.counts.modified} drift · ${v.counts.missing} missing`);
+      : `${v.counts.modified} drift · ${v.counts.missing} missing · ${v.counts.pending || 0} pending`);
     renderFloor(s.seats);
     renderGallery(s.previews);
+    renderAssetWorkspace(s.asset_groups || []);
     renderVault(s.assets, v);
     renderWorld(s.bible, s.lore);
     renderSessions(s.sessions);
+    renderIterations(s.iterations || []);
     document.getElementById("foot").textContent =
       `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
   }catch(e){ setLamp(false, "backend unreachable"); }
@@ -481,14 +1310,43 @@ async function pollQueue(){
     const live = ar.ok ? (await ar.json()).agents.filter(a => a.state === "running")
                           .map(a => a.item_id) : [];
     document.getElementById("queue").innerHTML = q.items.slice(0, 14).map(i => `
-      <div class="qitem ${i.status}">
+      <div class="qitem ${i.status}" id="work-${i.id}">
         <span class="qseat" style="color:${color(i.seat)}">${esc(i.seat)}</span>
         <span class="qtitle" title="${esc(i.brief || i.title)}">${esc(i.title)}</span>
         <span class="qstat">${esc(i.status)}${live.includes(i.id) ? " ●" : ""}</span>
         ${i.status === "queued" ? `<button class="qbtn small" onclick="dispatchItem(${i.id})">dispatch</button>` : ""}
+        ${i.status !== "queued" ? `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">watch</button>` : ""}
         ${live.includes(i.id) ? `<button class="qbtn small ghost" onclick="stopItem(${i.id})">stop</button>` : ""}
       </div>`).join("") ||
       `<div class="empty">queue is empty — promoted playtest feedback lands here automatically</div>`;
+    if (_watching != null) refreshAgentView();
+  }catch(e){}
+}
+
+/* ── live agent activity view ────────────────────────────────────────── */
+let _watching = null;
+function watchAgent(id){
+  _watching = (_watching === id) ? null : id;   // toggle
+  const v = document.getElementById("agentview");
+  if (_watching == null){ v.style.display = "none"; return; }
+  v.style.display = "block";
+  v.innerHTML = `<div class="empty">opening agent #${id}…</div>`;
+  refreshAgentView();
+}
+async function refreshAgentView(){
+  if (_watching == null) return;
+  try{
+    const a = await (await fetch(`/api/agent-activity/${_watching}`)).json();
+    const icon = {tool:"⚙", say:"", result:"→"};
+    const rows = a.steps.map(s => {
+      if (s.kind === "tool") return `<div class="astep atool">⚙ <b>${esc(s.name)}</b> <span>${esc(s.hint)}</span></div>`;
+      if (s.kind === "result") return `<div class="astep ares">→ ${esc(s.text)}</div>`;
+      return `<div class="astep asay">${esc(s.text)}</div>`;
+    }).join("");
+    const head = `<div class="ahead">agent #${_watching} · ${a.running ? '<span class="alive">● working</span>' : 'finished'} · ${a.step_count||0} steps <button class="qbtn small ghost" onclick="watchAgent(${_watching})">close</button></div>`;
+    const fin = a.final ? `<div class="afinal">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""}): ${esc(a.final.text)}</div>` : "";
+    document.getElementById("agentview").innerHTML = head + `<div class="asteps">${rows || '<div class="empty">no activity yet — the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
+    const box = document.querySelector(".asteps"); if (box) box.scrollTop = box.scrollHeight;
   }catch(e){}
 }
 
@@ -510,17 +1368,20 @@ async function loadGame(){
   }catch(e){}
   bootFrame();
 }
-function bootFrame(){
+function bootFrame(sessionId=null){
+  const session = sessionId ? `&bgate_session=${encodeURIComponent(sessionId)}` : "";
   document.getElementById("play-holder").innerHTML =
-    `<iframe id="gameframe" src="/play/?t=${Date.now()}" allow="autoplay; fullscreen"></iframe>`;
+    `<iframe id="gameframe" src="/play/?t=${Date.now()}${session}" allow="autoplay; fullscreen"></iframe>`;
 }
 
 /* ── playtest recording ──────────────────────────────────────────────── */
 let ptReady = false, ptRecording = false;
 
 async function ptPreflight(){
+  if (ptRecording) return;
   try{
-    const r = await fetch("/api/playtest/preflight");
+    const native = document.getElementById("pt-target")?.value === "native";
+    const r = await fetch(`/api/playtest/preflight?native=${native}`);
     const p = await r.json();
     ptReady = p.ready;
     const lamp = document.getElementById("pt-lamp");
@@ -539,16 +1400,35 @@ async function ptPreflight(){
 async function toggleRecord(){
   const btn = document.getElementById("pt-btn");
   if (!ptRecording){
+    const target = document.getElementById("pt-target").value;
+    const buildStatus = target === "web"
+      ? await (await fetch("/api/play/status")).json() : {stale:false};
+    if (target === "web" && buildStatus.stale){
+      document.getElementById("pt-msg").textContent = "rebuilding current build before recording…";
+      const rebuilt = await (await fetch("/api/play/rebuild", {method:"POST"})).json();
+      if (!rebuilt.ok){
+        document.getElementById("pt-msg").textContent =
+          "record blocked: current build failed — " + (rebuilt.error || "?");
+        return;
+      }
+    }
     const r = await fetch("/api/playtest/start", {method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: "app session " + new Date().toLocaleTimeString()})});
+      body: JSON.stringify({
+        name: document.getElementById("pt-goal").value.trim()
+          || "Evaluate current build " + new Date().toLocaleTimeString(),
+        launch_native: target === "native"
+      })});
     const got = await r.json();
     if (got.recording){
       ptRecording = true;
+      if (target === "web") bootFrame(got.session_id);
       btn.textContent = "■ stop";
       btn.classList.add("recording");
       document.getElementById("pt-msg").textContent =
-        "RECORDING — play and say what you like and what needs fixing";
+        target === "native"
+          ? `RECORDING — native Godot launched (pid ${got.native_launch?.pid || "?"})`
+          : "RECORDING — play and say what you like and what needs fixing";
     } else {
       document.getElementById("pt-msg").textContent = "start failed: " + (got.error || "?");
     }
@@ -558,6 +1438,7 @@ async function toggleRecord(){
     ptRecording = false;
     btn.textContent = "● record";
     btn.classList.remove("recording");
+    if (got.ok && document.getElementById("pt-target").value === "web") bootFrame();
     document.getElementById("pt-msg").textContent = got.ok
       ? `session ${got.session_id} transcribing — a director triage item will land in the queue`
       : "stop failed: " + (got.error || "?");
@@ -565,19 +1446,45 @@ async function toggleRecord(){
 }
 
 async function ptPoll(){
-  if (ptRecording) return;  // don't stomp the recording message
   try{
     const r = await fetch("/api/playtest/status");
     const s = await r.json();
-    const busy = Object.entries(s.processing).filter(([, v]) => v === "processing");
+    const btn = document.getElementById("pt-btn");
+    if (s.recording){
+      ptRecording = true;
+      document.getElementById("pt-lamp").className =
+        "lamp" + (s.recording.telemetry_events > 0 ? "" : " waiting");
+      const frame = document.getElementById("gameframe");
+      if (!s.recording.native &&
+          (!frame || !frame.src.includes(`bgate_session=${s.recording.id}`))){
+        bootFrame(s.recording.id);
+      }
+      btn.disabled = false;
+      btn.textContent = "■ stop";
+      btn.classList.add("recording");
+      document.getElementById("pt-msg").textContent =
+        `RECORDING session ${s.recording.id} — ${s.recording.telemetry_events} telemetry events`;
+      return;
+    }
+    if (ptRecording){
+      ptRecording = false;
+      btn.textContent = "● record";
+      btn.classList.remove("recording");
+    }
+    const busy = (s.processing || []).filter(v => v.stage !== "failed");
     if (busy.length){
       document.getElementById("pt-msg").textContent =
-        `transcribing session ${busy[0][0]}…`;
+        `${busy[0].stage || "processing"} session ${busy[0].id}…`;
     }
   }catch(e){}
 }
 
-ptPreflight();
+let initialWorkspace = "review";
+try{ initialWorkspace = localStorage.getItem("bgate-workspace") || "review"; }catch(e){}
+setWorkspace(initialWorkspace);
+
+ptPoll().then(ptPreflight);
+document.getElementById("pt-target")?.addEventListener("change", ptPreflight);
 setInterval(ptPreflight, 15000);
 setInterval(ptPoll, 4000);
 
