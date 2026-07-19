@@ -26,7 +26,12 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 MIC_RATE = 16000       # what whisper wants; resampling later is wasted work
 MIC_CHANNELS = 1
-SILENCE_PEAK = 0.001   # below this over a whole probe = nothing is plugged in
+# Distinguishes a DEAD mic (unplugged/muted -> exact digital silence, peak ~0)
+# from a LIVE one. It must sit BELOW a live mic's idle noise floor, not above
+# it: at 0.001 a working-but-quiet headset (e.g. Arctis: idle ~3e-4, speech
+# ~3e-3) failed the passive check unless you happened to be talking during it.
+# 5e-5 clears any live mic's noise floor while still catching true silence.
+SILENCE_PEAK = 0.00005
 
 
 class RecorderError(RuntimeError):
