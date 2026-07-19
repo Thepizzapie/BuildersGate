@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from . import activity, db, seats as _seats
+from . import activity, db, iterations, seats as _seats
 from .util import rows
 
 STATUSES = ("queued", "dispatched", "done", "failed")
@@ -48,6 +48,42 @@ def get(root: str | os.PathLike[str], item_id: int) -> dict:
     return dict(row)
 
 
+def update(root: str | os.PathLike[str], item_id: int, *,
+           title: Optional[str] = None, brief: Optional[str] = None,
+           seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
+    """Edit an existing item in place, without changing its status/lineage.
+
+    This is how a reviewer enriches a ticket: e.g. the video-watching director
+    rewriting a transcript-era brief to add the frames/timestamps/telemetry it
+    saw. Only the passed fields change; the rest (status, source, source_ref)
+    are untouched."""
+    get(root, item_id)  # 404 if missing
+    sets, params = [], []
+    if title is not None:
+        if not title.strip():
+            raise ValueError("title cannot be blank")
+        sets.append("title = ?"); params.append(title.strip())
+    if brief is not None:
+        sets.append("brief = ?"); params.append(brief)
+    if seat is not None:
+        if seat not in _seats.DEFAULT_SEATS:
+            raise ValueError(f"unknown seat {seat!r}; seats are {tuple(_seats.DEFAULT_SEATS)}")
+        sets.append("seat = ?"); params.append(seat)
+    if priority is not None:
+        sets.append("priority = ?"); params.append(int(priority))
+    if not sets:
+        return get(root, item_id)
+    params.append(item_id)
+    with db.tx(root) as conn:
+        conn.execute(
+            f"UPDATE work_item SET {', '.join(sets)}, updated_at = datetime('now') "
+            "WHERE id = ?", params)
+    item = get(root, item_id)
+    activity.log(root, "queue", f"item {item_id} edited: {item['title'][:60]}",
+                 seat=item["seat"], ref=str(item_id))
+    return item
+
+
 def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
                seat: Optional[str] = None) -> list[dict]:
     conn = db.connect(root)
@@ -77,6 +113,25 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
     item = get(root, item_id)
     activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
+    iteration_id = None
+    conn = db.connect(root)
+    if item["source"] == "playtest" and item["source_ref"].isdigit():
+        linked = conn.execute(
+            "SELECT s.iteration_id FROM playtest_item i "
+            "JOIN playtest_session s ON s.id = i.session_id WHERE i.id = ?",
+            (int(item["source_ref"]),)).fetchone()
+        iteration_id = int(linked["iteration_id"]) if linked and linked["iteration_id"] else None
+    elif item["source"] == "artifact" and item["source_ref"].isdigit():
+        linked = conn.execute(
+            "SELECT iteration_id FROM artifact_revision WHERE id = ?",
+            (int(item["source_ref"]),)).fetchone()
+        iteration_id = int(linked["iteration_id"]) if linked and linked["iteration_id"] else None
+    if iteration_id:
+        iterations.add_event(
+            root, iteration_id,
+            "resulting_change" if status in ("done", "failed") else "queued_change",
+            "work_item", str(item_id), f"Work item {item_id} -> {status}",
+            {"status": status, "result": result[:2000], "seat": item["seat"]})
     return item
 
 

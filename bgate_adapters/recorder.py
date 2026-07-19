@@ -310,6 +310,36 @@ def extract_frame(video_path: str, t: float, out_path: str) -> dict:
     return {"ok": True, "t": t, "path": out_path}
 
 
+def extract_filmstrip(video_path: str, out_dir: str, *, duration_s: float,
+                      interval_s: float = 4.0, max_frames: int = 90) -> list[dict]:
+    """Sample the WHOLE video into an ordered strip of frames.
+
+    This is how the director actually watches a playtest: a Claude session
+    cannot stream video, but it can read a sequence of stills. One ffmpeg pass
+    with an fps filter is far cheaper than N seeks. The interval widens for long
+    sessions so we never blow past max_frames.
+
+    Returns [{i, t, path}] ordered by time. t is derived from frame index and
+    the effective interval (fps filter emits evenly), which is accurate enough
+    to line a frame up against a transcript timestamp.
+    """
+    ffmpeg = find_ffmpeg()
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    dur = max(float(duration_s or 0.0), interval_s)
+    step = max(interval_s, dur / max_frames)  # widen so count stays <= max_frames
+    # fps=1/step samples one frame every `step` seconds across the whole file.
+    cmd = [ffmpeg, "-y", "-loglevel", "error", "-i", video_path,
+           "-vf", f"fps=1/{step:.4f},scale=768:-1", "-q:v", "4",
+           str(out / "strip_%04d.jpg")]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=300,
+                   stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    frames = sorted(out.glob("strip_*.jpg"))
+    # ffmpeg's first fps frame lands at t≈step/2; each subsequent is +step.
+    return [{"i": i, "t": round(step * (i + 0.5), 2), "path": str(p)}
+            for i, p in enumerate(frames)]
+
+
 def probe_video(video_path: str) -> dict:
     """Duration/size of a finished recording — proves the file is playable."""
     ffprobe = shutil.which("ffprobe")

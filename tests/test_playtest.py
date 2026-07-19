@@ -62,6 +62,34 @@ class TestLifecycle:
         with pytest.raises(LookupError, match="no session is currently recording"):
             playtest.stop(root)
 
+    def test_backend_launches_native_godot_with_session_telemetry(
+            self, root, session, monkeypatch):
+        from bgate_adapters import godot
+
+        game = root / "game"
+        game.mkdir()
+        (game / "project.godot").write_text("[application]\n", encoding="utf-8")
+        monkeypatch.setattr(godot, "find_godot", lambda: "godot-test")
+        launched = {}
+
+        class FakeProcess:
+            pid = 1234
+
+        def fake_popen(args, **kwargs):
+            launched["args"] = args
+            launched.update(kwargs)
+            return FakeProcess()
+
+        monkeypatch.setattr(playtest.subprocess, "Popen", fake_popen)
+        got = playtest.launch_native_game(
+            root, session, str(root / "telemetry.jsonl"))
+
+        assert got["pid"] == 1234
+        assert launched["args"][:2] == ["godot-test", "--path"]
+        assert launched["env"]["BGATE_TELEMETRY"].endswith("telemetry.jsonl")
+        assert playtest.get(root, session)["game_cmd"]
+        playtest._GAMES.pop(session, None)
+
 
 class TestClockAlignment:
     def test_whisper_timestamps_are_shifted_onto_the_session_clock(
@@ -120,6 +148,50 @@ class TestTelemetry:
             "SELECT count(*) FROM playtest_event WHERE session_id = ?", (session,)).fetchone()[0]
         assert count == 1
 
+    def test_browser_event_posts_directly_to_active_session(self, root, session):
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE playtest_session SET status = 'recording', "
+                "started_epoch = 1000 WHERE id = ?", (session,))
+        got = playtest.ingest_web_event(
+            root, session,
+            {"ts": 1002.5, "kind": "jump", "data": {"air_time": 0.8}})
+        assert got["ok"] is True
+        event = db.connect(root).execute(
+            "SELECT * FROM playtest_event WHERE id = ?", (got["id"],)).fetchone()
+        assert event["t"] == 2.5
+        assert event["kind"] == "jump"
+
+    def test_browser_event_rejects_closed_session(self, root, session):
+        with pytest.raises(RuntimeError, match="telemetry is closed"):
+            playtest.ingest_web_event(root, session, {"t": 1, "kind": "jump"})
+
+
+class TestVideoAlignment:
+    def test_frame_seek_subtracts_video_start_offset(
+            self, root, session, monkeypatch):
+        from bgate_adapters import recorder, transcribe
+
+        video = root / "session.mp4"
+        audio = root / "session.wav"
+        video.write_bytes(b"video")
+        audio.write_bytes(b"audio")
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE playtest_session SET video_path = ?, audio_path = ?, "
+                "video_offset_s = 0.75 WHERE id = ?",
+                (str(video), str(audio), session))
+        monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: {
+            "ok": True, "segments": [{
+                "t_start": 2.0, "t_end": 3.0,
+                "text": "the jump feels really floaty"}]})
+        seeks = []
+        monkeypatch.setattr(recorder, "extract_frame",
+                            lambda video, t, out: seeks.append(t) or {"ok": False})
+
+        playtest.transcribe_session(root, session)
+        assert seeks == [1.25]
+
 
 class TestBrief:
     @pytest.fixture()
@@ -156,6 +228,37 @@ class TestBrief:
     def test_brief_warns_agents_they_cannot_watch_video(self, root, loaded):
         assert "cannot watch" in playtest.brief(root, loaded)["note"]
 
+    def test_brief_exposes_confidence_telemetry_truth_and_work_lineage(
+            self, root, session):
+        with db.tx(root) as conn:
+            segment = conn.execute(
+                "INSERT INTO playtest_segment "
+                "(session_id, t_start, t_end, text, confidence) "
+                "VALUES (?, 3, 4, 'the jump feels floaty', -0.15)",
+                (session,)).lastrowid
+            item = conn.execute(
+                "INSERT INTO playtest_item "
+                "(session_id, segment_id, t, kind, text, seat, status) "
+                "VALUES (?, ?, 3, 'fix', 'the jump feels floaty', "
+                "'gameplay', 'promoted')", (session, segment)).lastrowid
+            conn.execute(
+                "INSERT INTO playtest_event (session_id, t, kind, data) "
+                "VALUES (?, 3.1, 'jump', '{}')", (session,))
+            conn.execute(
+                "INSERT INTO work_item "
+                "(seat, title, status, source, source_ref, result) "
+                "VALUES ('gameplay', 'fix jump', 'done', 'playtest', ?, 'retuned jump')",
+                (str(item),))
+
+        got = playtest.brief(root, session, include_transcript=True)
+        assert got["telemetry_backed"] is True
+        assert got["items"][0]["transcript_confidence"] == -0.15
+        assert got["items"][0]["classification"]["kind"] == "fix"
+        assert got["items"][0]["classification"]["confidence"] > 0
+        assert got["items"][0]["work"]["status"] == "done"
+        assert got["items"][0]["work"]["result"] == "retuned jump"
+        assert got["transcript"][0]["confidence"] == -0.15
+
 
 class TestPromotion:
     @pytest.fixture()
@@ -182,6 +285,17 @@ class TestPromotion:
 
     def test_dismiss(self, root, item):
         assert playtest.dismiss(root, item)["status"] == "dismissed"
+
+    def test_merge_preserves_source_and_names_target(self, root, session, item):
+        with db.tx(root) as conn:
+            target = conn.execute(
+                "INSERT INTO playtest_item "
+                "(session_id, t, kind, text, seat) "
+                "VALUES (?, 6, 'fix', 'same jump issue', 'gameplay')",
+                (session,)).lastrowid
+        merged = playtest.merge(root, item, target)
+        assert merged["status"] == "dismissed"
+        assert merged["merged_into_id"] == target
 
     def test_promote_missing_item(self, root):
         with pytest.raises(LookupError):

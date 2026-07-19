@@ -268,6 +268,103 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_work_status ON work_item(status, priority DESC, id);
     """,
+    # 0008 — durable playtest processing, execution-owned asset locks, and
+    # immutable artifact revisions. These are the three pieces the cockpit
+    # needs to survive restarts and explain which generated thing reached which
+    # playable build.
+    """
+    ALTER TABLE playtest_session ADD COLUMN processing_stage TEXT NOT NULL DEFAULT '';
+    ALTER TABLE playtest_session ADD COLUMN processing_error TEXT NOT NULL DEFAULT '';
+    ALTER TABLE playtest_session ADD COLUMN audio_offset_s REAL NOT NULL DEFAULT 0;
+    ALTER TABLE playtest_session ADD COLUMN video_offset_s REAL NOT NULL DEFAULT 0;
+
+    ALTER TABLE asset ADD COLUMN lock_owner TEXT NOT NULL DEFAULT '';
+
+    CREATE TABLE artifact_revision (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        logical_name  TEXT NOT NULL,
+        revision      INTEGER NOT NULL,
+        path          TEXT NOT NULL,
+        kind          TEXT NOT NULL DEFAULT 'unknown',
+        hash          TEXT NOT NULL DEFAULT '',
+        bytes         INTEGER NOT NULL DEFAULT 0,
+        status        TEXT NOT NULL DEFAULT 'candidate'
+                          CHECK (status IN
+                              ('candidate','approved','rejected','integrated','superseded')),
+        producer      TEXT NOT NULL DEFAULT '',
+        model         TEXT NOT NULL DEFAULT '',
+        prompt        TEXT NOT NULL DEFAULT '',
+        refs_json     TEXT NOT NULL DEFAULT '[]',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        work_item_id  INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        review_note   TEXT NOT NULL DEFAULT '',
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        reviewed_at   TEXT,
+        UNIQUE (logical_name, revision)
+    );
+    CREATE INDEX idx_artifact_name ON artifact_revision(logical_name, revision DESC);
+    CREATE INDEX idx_artifact_status ON artifact_revision(status, created_at DESC);
+    """,
+    # 0009 — first-class iterations and complete playtest/build snapshots.
+    #
+    # A session without its exact source, build, assets, tunables, checks, and
+    # telemetry contract cannot be compared honestly to the next session.
+    """
+    CREATE TABLE iteration (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal                     TEXT NOT NULL,
+        status                   TEXT NOT NULL DEFAULT 'active'
+                                     CHECK (status IN ('active','complete','abandoned')),
+        previous_id              INTEGER REFERENCES iteration(id) ON DELETE SET NULL,
+        source_commit            TEXT NOT NULL DEFAULT '',
+        dirty_fingerprint        TEXT NOT NULL DEFAULT '',
+        source_fingerprint       TEXT NOT NULL DEFAULT '',
+        export_hash              TEXT NOT NULL DEFAULT '',
+        active_artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+        tunables_json            TEXT NOT NULL DEFAULT '{}',
+        tests_json               TEXT NOT NULL DEFAULT '{}',
+        telemetry_schema_version INTEGER NOT NULL DEFAULT 1,
+        outcome_json             TEXT NOT NULL DEFAULT '{}',
+        created_at               TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at             TEXT
+    );
+    CREATE INDEX idx_iteration_created ON iteration(id DESC);
+
+    CREATE TABLE iteration_event (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        iteration_id INTEGER NOT NULL REFERENCES iteration(id) ON DELETE CASCADE,
+        stage        TEXT NOT NULL,
+        ref_type     TEXT NOT NULL DEFAULT '',
+        ref_id       TEXT NOT NULL DEFAULT '',
+        summary      TEXT NOT NULL DEFAULT '',
+        data_json    TEXT NOT NULL DEFAULT '{}',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_iteration_event ON iteration_event(iteration_id, id);
+
+    ALTER TABLE playtest_session ADD COLUMN iteration_id
+        INTEGER REFERENCES iteration(id) ON DELETE SET NULL;
+    ALTER TABLE playtest_item ADD COLUMN director_recommendation
+        TEXT NOT NULL DEFAULT '';
+    ALTER TABLE playtest_item ADD COLUMN merged_into_id
+        INTEGER REFERENCES playtest_item(id) ON DELETE SET NULL;
+
+    ALTER TABLE artifact_revision ADD COLUMN iteration_id
+        INTEGER REFERENCES iteration(id) ON DELETE SET NULL;
+
+    ALTER TABLE asset ADD COLUMN work_item_id
+        INTEGER REFERENCES work_item(id) ON DELETE SET NULL;
+    ALTER TABLE asset ADD COLUMN heartbeat_at TEXT;
+    ALTER TABLE asset ADD COLUMN lease_expires_at TEXT;
+
+    CREATE TABLE playtest_item_asset (
+        item_id      INTEGER NOT NULL REFERENCES playtest_item(id) ON DELETE CASCADE,
+        logical_name TEXT NOT NULL,
+        confidence   REAL NOT NULL DEFAULT 1,
+        PRIMARY KEY (item_id, logical_name)
+    );
+    CREATE INDEX idx_feedback_asset ON playtest_item_asset(logical_name, item_id);
+    """,
 ]
 
 

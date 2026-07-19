@@ -7,6 +7,8 @@ dependencies = [
     "mcp>=1.2.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "Pillow>=10.0",
+    "openai>=1.30",
 ]
 
 [project.optional-dependencies]

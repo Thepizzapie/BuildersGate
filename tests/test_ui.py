@@ -1,10 +1,10 @@
-"""Dashboard backend — the read-only contract and the path-escape guard."""
+"""Dashboard cockpit — state, review mutations, and path-escape guards."""
 from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
 
-from bgate_core import activity, assets, bible, lore, seats
+from bgate_core import activity, artifacts, assets, bible, lore, seats
 from bgate_ui.app import app
 
 
@@ -40,6 +40,28 @@ class TestState:
         got = client.get("/api/state").json()
         assert got["verify"]["ok"] is False
         assert got["verify"]["modified"][0]["path"] == "b.blend"
+
+    def test_artifact_candidates_surface_and_can_be_reviewed(self, client, root):
+        image = root / "hero.png"
+        image.write_bytes(b"hero")
+        item = artifacts.register(root, "hero", image, producer="image_generate")
+
+        state = client.get("/api/state").json()
+        assert state["artifacts"][0]["logical_name"] == "hero"
+        assert state["asset_groups"][0]["logical_name"] == "hero"
+        reviewed = client.post(
+            f"/api/artifacts/{item['id']}/review",
+            json={"status": "approved", "note": "ship it"}).json()
+        assert reviewed["status"] == "approved"
+
+    def test_iteration_timeline_endpoint(self, client, root):
+        from bgate_core import iterations
+
+        created = iterations.create(root, "Validate the loop")
+        state = client.get("/api/state").json()
+        assert state["iterations"][0]["goal"] == "Validate the loop"
+        detail = client.get(f"/api/iterations/{created['id']}").json()
+        assert detail["events"][0]["stage"] == "snapshot"
 
 
 class TestActivity:

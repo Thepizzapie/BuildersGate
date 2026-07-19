@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -40,15 +40,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _norm(root: str | os.PathLike[str], path: str | os.PathLike[str]) -> str:
+def normalize_path(root: str | os.PathLike[str],
+                   path: str | os.PathLike[str]) -> str:
     """Registry key: repo-root-relative, forward slashes — stable across OSes."""
-    p = Path(path)
-    if p.is_absolute():
-        try:
-            p = p.relative_to(Path(root).resolve())
-        except ValueError as exc:
-            raise ValueError(f"{path} is outside the project root {root}") from exc
-    return str(p).replace("\\", "/")
+    project = Path(root).resolve()
+    supplied = Path(path)
+    absolute = supplied.resolve() if supplied.is_absolute() else (project / supplied).resolve()
+    try:
+        relative = absolute.relative_to(project)
+    except ValueError as exc:
+        raise ValueError(f"{path} is outside the project root {root}") from exc
+    return str(relative).replace("\\", "/")
+
+
+_norm = normalize_path
 
 
 def file_hash(path: str | os.PathLike[str]) -> str:
@@ -114,44 +119,64 @@ def list_assets(root: str | os.PathLike[str], kind: Optional[str] = None,
 # Locking
 # ---------------------------------------------------------------------------
 def lock(root: str | os.PathLike[str], path: str | os.PathLike[str],
-         seat: str) -> dict:
+         seat: str, owner: str = "", work_item_id: Optional[int] = None,
+         lease_s: int = 300) -> dict:
     """Claim a path for one seat. Held locks fail loudly, not queue silently.
 
-    Locking is idempotent for the SAME seat (re-lock = refresh), an error for a
-    different one — the caller must decide whether to wait, steal, or re-plan,
-    and that's a judgment this layer refuses to make for it.
+    Locking is idempotent for the same seat AND execution owner. A second work
+    item in the same seat still conflicts: stable role identity must not let two
+    art workers edit one binary concurrently.
     """
     if not seat or not seat.strip():
         raise ValueError("a lock needs a seat name")
     seat = seat.strip()
+    owner = owner.strip()
     rel = _norm(root, path)
+    heartbeat = _now()
+    lease_expires = (
+        datetime.now(timezone.utc) + timedelta(seconds=max(30, int(lease_s)))
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    if work_item_id is None and owner.startswith("item-") and owner[5:].isdigit():
+        candidate_id = int(owner[5:])
+        if db.connect(root).execute(
+                "SELECT 1 FROM work_item WHERE id = ?", (candidate_id,)).fetchone():
+            work_item_id = candidate_id
 
     with db.tx(root) as conn:
         row = conn.execute("SELECT * FROM asset WHERE path = ?", (rel,)).fetchone()
         if row is None:
             # Lock-before-create is the normal flow: claim the path, then write.
             conn.execute(
-                "INSERT INTO asset (path, kind, lock_seat, lock_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (rel, kind_of(rel), seat, _now(), _now()),
+                "INSERT INTO asset "
+                "(path, kind, lock_seat, lock_owner, lock_at, updated_at, "
+                "work_item_id, heartbeat_at, lease_expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (rel, kind_of(rel), seat, owner, heartbeat, heartbeat,
+                 work_item_id, heartbeat, lease_expires),
             )
         else:
             holder = row["lock_seat"]
-            if holder and holder != seat:
+            held_owner = row["lock_owner"] or ""
+            if holder and (holder != seat or (held_owner and held_owner != owner)):
                 raise RuntimeError(
-                    f"{rel} is locked by seat {holder!r} since {row['lock_at']} — "
+                    f"{rel} is locked by seat {holder!r}"
+                    + (f" ({held_owner})" if held_owner else "")
+                    + f" since {row['lock_at']} — "
                     "binary assets don't merge; wait for release or re-plan"
                 )
             conn.execute(
-                "UPDATE asset SET lock_seat = ?, lock_at = ? WHERE path = ?",
-                (seat, _now(), rel),
+                "UPDATE asset SET lock_seat = ?, lock_owner = ?, lock_at = ?, "
+                "work_item_id = ?, heartbeat_at = ?, lease_expires_at = ? "
+                "WHERE path = ?",
+                (seat, owner, heartbeat, work_item_id, heartbeat,
+                 lease_expires, rel),
             )
     activity.log(root, "lock", f"locked {rel}", seat=seat, ref=rel)
     return get(root, rel)
 
 
 def release(root: str | os.PathLike[str], path: str | os.PathLike[str],
-            seat: str) -> dict:
+            seat: str, owner: str = "") -> dict:
     """Free a lock and record what the file became.
 
     Only the holder can release. Re-hashing on release is the point: the registry
@@ -166,14 +191,20 @@ def release(root: str | os.PathLike[str], path: str | os.PathLike[str],
     if holder != seat.strip():
         raise RuntimeError(
             f"{rel} is locked by seat {holder!r}; seat {seat!r} cannot release it")
+    held_owner = entry["lock_owner"] or ""
+    if held_owner and held_owner != owner.strip():
+        raise RuntimeError(
+            f"{rel} is owned by execution {held_owner!r}; "
+            f"execution {owner.strip()!r} cannot release it")
 
     abspath = Path(root) / rel
     digest = file_hash(abspath) if abspath.exists() else ""
     size = abspath.stat().st_size if abspath.exists() else 0
     with db.tx(root) as conn:
         conn.execute(
-            "UPDATE asset SET lock_seat = NULL, lock_at = NULL, hash = ?, "
-            "bytes = ?, updated_at = ? WHERE path = ?",
+            "UPDATE asset SET lock_seat = NULL, lock_owner = '', lock_at = NULL, hash = ?, "
+            "bytes = ?, updated_at = ?, work_item_id = NULL, heartbeat_at = NULL, "
+            "lease_expires_at = NULL WHERE path = ?",
             (digest, size, _now(), rel),
         )
     activity.log(root, "release", f"released {rel} ({size:,} bytes)",
@@ -187,10 +218,31 @@ def force_release(root: str | os.PathLike[str], path: str | os.PathLike[str]) ->
     get(root, rel)  # raise if untracked
     with db.tx(root) as conn:
         conn.execute(
-            "UPDATE asset SET lock_seat = NULL, lock_at = NULL, updated_at = ? "
+            "UPDATE asset SET lock_seat = NULL, lock_owner = '', lock_at = NULL, "
+            "updated_at = ?, work_item_id = NULL, heartbeat_at = NULL, "
+            "lease_expires_at = NULL "
             "WHERE path = ?", (_now(), rel))
     activity.log(root, "force_release", f"lock on {rel} broken by hand", ref=rel)
     return get(root, rel)
+
+
+def heartbeat(root: str | os.PathLike[str], owner: str,
+              lease_s: int = 300) -> dict:
+    """Refresh every asset lease held by one dispatched execution."""
+    owner = owner.strip()
+    if not owner:
+        raise ValueError("heartbeat needs an execution owner")
+    now = _now()
+    expires = (
+        datetime.now(timezone.utc) + timedelta(seconds=max(30, int(lease_s)))
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    with db.tx(root) as conn:
+        cur = conn.execute(
+            "UPDATE asset SET heartbeat_at = ?, lease_expires_at = ? "
+            "WHERE lock_owner = ? AND lock_seat IS NOT NULL",
+            (now, expires, owner))
+    return {"owner": owner, "refreshed": cur.rowcount,
+            "heartbeat_at": now, "lease_expires_at": expires}
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +263,11 @@ def verify(root: str | os.PathLike[str]) -> dict:
         abspath = Path(root) / entry["path"]
         if entry["lock_seat"]:
             locked.append({"path": entry["path"], "seat": entry["lock_seat"],
-                           "since": entry["lock_at"]})
+                           "owner": entry["lock_owner"] or "",
+                           "work_item_id": entry["work_item_id"],
+                           "since": entry["lock_at"],
+                           "heartbeat_at": entry["heartbeat_at"],
+                           "lease_expires_at": entry["lease_expires_at"]})
             continue
         if not abspath.exists():
             missing.append(entry["path"])
@@ -230,12 +286,13 @@ def verify(root: str | os.PathLike[str]) -> dict:
             })
 
     return {
-        "ok": not modified and not missing,
+        "ok": not modified and not missing and not pending,
         "clean": clean,
         "locked": locked,
         "modified": modified,
         "missing": missing,
         "untracked_hash": pending,
         "counts": {"clean": len(clean), "locked": len(locked),
-                   "modified": len(modified), "missing": len(missing)},
+                   "modified": len(modified), "missing": len(missing),
+                   "pending": len(pending)},
     }

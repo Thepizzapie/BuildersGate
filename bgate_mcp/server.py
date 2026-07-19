@@ -20,6 +20,7 @@ from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
 from bgate_adapters import sprites as _sprites
 from bgate_core import assets as _assets
+from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
 from bgate_core import seats as _seats
 from bgate_core import bible as _bible
@@ -28,6 +29,7 @@ from bgate_core import scaffold as _scaffold
 from bgate_core import canon as _canon
 from bgate_core import db as _db
 from bgate_core import lore as _lore
+from bgate_core import iterations as _iterations
 from bgate_core import project as _project
 from bgate_core import search as _search
 
@@ -57,6 +59,15 @@ def _seat() -> str:
     return os.environ.get("BGATE_SEAT", "").strip()
 
 
+def _lock_identity(requested_seat: str) -> tuple[str, str]:
+    """Bind asset ownership to the dispatched session when one is present."""
+    adopted = _seat()
+    if adopted and requested_seat != adopted:
+        raise PermissionError(
+            f"session adopted seat {adopted!r}; it cannot claim seat {requested_seat!r}")
+    return requested_seat, os.environ.get("BGATE_LOCK_OWNER", "").strip()
+
+
 def _log(kind: str, summary: str, ref: str = "") -> None:
     """Ledger entry against the active project. Never lets telemetry fail work."""
     try:
@@ -83,6 +94,21 @@ def _archive_preview(src: str, label: str) -> Optional[str]:
         dest = previews / f"{time.strftime('%Y%m%d-%H%M%S')}_{safe or 'render'}.png"
         shutil.copy2(src, dest)
         return str(dest)
+    except Exception:
+        return None
+
+
+def _register_artifact(logical_name: str, path: str, *, producer: str,
+                       model: str = "", prompt: str = "",
+                       refs: Optional[list[str]] = None,
+                       metadata: Optional[dict] = None) -> Optional[dict]:
+    """Best-effort provenance; failure never discards a successfully made file."""
+    try:
+        work_item = os.environ.get("BGATE_WORK_ITEM", "").strip()
+        return _artifacts.register(
+            _root(), logical_name, path, producer=producer, model=model,
+            prompt=prompt, refs=refs, metadata=metadata,
+            work_item_id=int(work_item) if work_item.isdigit() else None)
     except Exception:
         return None
 
@@ -315,6 +341,13 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
             archived = _archive_preview(rendered["path"], label or "render")
             if archived:
                 result["render"]["preview"] = archived
+            artifact = _register_artifact(
+                label or "blender-render", rendered["path"],
+                producer="blender_run",
+                metadata={"engine": engine, "preview": archived or "",
+                          "scene": result.get("scene", {})})
+            if artifact:
+                result["render"]["artifact"] = artifact
                 _log("render", f"rendered {label or 'a preview'} "
                                f"({result['scene']['totals']['tris']} tris)",
                      ref=archived)
@@ -402,6 +435,14 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
             archived = _archive_preview(result["sheet"], f"sprites-{name}")
             if archived:
                 result["preview"] = archived
+            artifact = _register_artifact(
+                name, result["sheet"], producer="blender_sprites",
+                metadata={"poses": [p.get("name", "") for p in poses],
+                          "frames": result.get("frames", {}),
+                          "failed": result.get("failed", []),
+                          "engine": engine, "preview": archived or ""})
+            if artifact:
+                result["artifact"] = artifact
             _log("sprites", f"rendered {len(result['frames'])} sprite frames "
                             f"for {name!r}" +
                             (f" ({len(result['failed'])} failed)" if result["failed"] else ""),
@@ -450,6 +491,14 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
             archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
             if archived:
                 result["preview"] = archived
+            artifact = _register_artifact(
+                _Path(filename).stem, result["path"], producer="image_generate",
+                model=result.get("model", ""), prompt=prompt,
+                metadata={"size": size, "quality": quality,
+                          "transparent": transparent,
+                          "preview": archived or ""})
+            if artifact:
+                result["artifact"] = artifact
             _log("art", f"generated painted art {filename} ({size}, {quality})",
                  ref=archived or result["path"])
         return result
@@ -482,6 +531,14 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
             archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
             if archived:
                 result["preview"] = archived
+            artifact = _register_artifact(
+                _Path(filename).stem, result["path"], producer="image_edit",
+                model=result.get("model", ""), prompt=prompt, refs=ref_images,
+                metadata={"resolved_refs": resolved, "size": size,
+                          "quality": quality, "transparent": transparent,
+                          "preview": archived or ""})
+            if artifact:
+                result["artifact"] = artifact
             _log("art", f"reference-edit {filename}", ref=archived or result["path"])
         return result
     except Exception as exc:
@@ -617,6 +674,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             archived = _archive_preview(assembled["sheet"], f"painted-{name}")
             if archived:
                 assembled["preview"] = archived
+            artifact = _register_artifact(
+                name, assembled["sheet"], producer="image_sprites",
+                prompt=character_prompt,
+                refs=[str(ref_image)] if ref_image else [ref_path],
+                metadata={"poses": poses, "frames": assembled.get("frames", {}),
+                          "failed": assembled.get("failed", []),
+                          "preview": archived or ""})
+            if artifact:
+                assembled["artifact"] = artifact
             _log("sprites", f"painted sprite set {name!r} (reference-first): "
                             f"{len(assembled['frames'])}/{len(poses)} poses"
                             + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else ""),
@@ -720,6 +786,14 @@ def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets"
             tris = result.get("engine_view", {}).get("total_tris", "?")
             _log("asset", f"landed {result['res_path']} ({tris} tris in-engine)",
                  ref=result["res_path"])
+            try:
+                linked = _artifacts.record_check(
+                    _root(), result["copied_to"], "engine_import", result)
+                if linked is None:
+                    _artifacts.record_check(
+                        _root(), src_path, "engine_import", result)
+            except Exception:
+                pass
         return result
     except Exception as exc:
         return _fail(exc)
@@ -892,13 +966,19 @@ def consistency_check(candidate_path: str, character: str) -> dict:
             checklist.insert(1, f"holds style: {profile['style'][:160]}")
             checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
 
-        return {"composite": archived or str(out), "reference": ref_path,
-                "palette_drift": drift,
-                "palette_note": "advisory: >30 = color drift likely; low values "
-                                "do NOT prove identity",
-                "checklist": checklist,
-                "instruction": "LOOK at the composite. Verdict every checklist "
-                               "line explicitly. Any fail = do not land."}
+        result = {"composite": archived or str(out), "reference": ref_path,
+                  "palette_drift": drift,
+                  "palette_note": "advisory: >30 = color drift likely; low values "
+                                  "do NOT prove identity",
+                  "checklist": checklist,
+                  "instruction": "LOOK at the composite. Verdict every checklist "
+                                 "line explicitly. Any fail = do not land."}
+        try:
+            _artifacts.record_check(
+                _root(), candidate_path, "consistency", result)
+        except Exception:
+            pass
+        return result
     except Exception as exc:
         return _fail(exc)
 
@@ -925,7 +1005,8 @@ def asset_lock(path: str, seat: str) -> dict:
     Lock-before-create is the normal flow for new assets.
     """
     try:
-        return _assets.lock(_root(), path, seat)
+        bound_seat, owner = _lock_identity(seat)
+        return _assets.lock(_root(), path, bound_seat, owner=owner)
     except Exception as exc:
         return _fail(exc)
 
@@ -940,7 +1021,8 @@ def asset_release(path: str, seat: str, force: bool = False) -> dict:
     try:
         if force:
             return _assets.force_release(_root(), path)
-        return _assets.release(_root(), path, seat)
+        bound_seat, owner = _lock_identity(seat)
+        return _assets.release(_root(), path, bound_seat, owner=owner)
     except Exception as exc:
         return _fail(exc)
 
@@ -979,6 +1061,30 @@ def asset_verify() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Iterations
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def iteration_status(limit: int = 10) -> dict:
+    """Causal iteration history: snapshots, assets, playtests, decisions, work, outcome."""
+    try:
+        return {"iterations": _iterations.list_iterations(_root(), limit=limit)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def iteration_record_checks(status: str, summary: str = "",
+                            checks: Optional[dict] = None) -> dict:
+    """Attach automated-check results to the active iteration and next snapshot."""
+    try:
+        return _iterations.record_checks(
+            _root(), {"status": status, "summary": summary,
+                      "checks": checks or {}})
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
 # Playtest
 # ---------------------------------------------------------------------------
 @mcp.tool()
@@ -997,7 +1103,8 @@ def playtest_devices(filter_text: str = "") -> dict:
 
 @mcp.tool()
 def playtest_check(mic_device: Optional[int] = None,
-                   window_title: Optional[str] = None) -> dict:
+                   window_title: Optional[str] = None,
+                   native: bool = False) -> dict:
     """Preflight a session: ffmpeg, mic SIGNAL, transcriber, target window.
 
     ALWAYS run this before playtest_start. It records a short mic sample and
@@ -1006,7 +1113,9 @@ def playtest_check(mic_device: Optional[int] = None,
     and the whole playthrough is wasted.
     """
     try:
-        return _playtest.preflight(mic_device=mic_device, window_title=window_title)
+        return _playtest.preflight(
+            mic_device=mic_device, window_title=window_title,
+            root=_root(), native=native)
     except Exception as exc:
         return _fail(exc)
 
@@ -1014,19 +1123,22 @@ def playtest_check(mic_device: Optional[int] = None,
 @mcp.tool()
 def playtest_start(name: str, window_title: Optional[str] = None,
                    mic_device: Optional[int] = None, build_ref: str = "",
-                   fps: int = 30) -> dict:
+                   fps: int = 30, launch_native: bool = False,
+                   game_cmd: str = "") -> dict:
     """Start recording a play session — game window video + your voice.
 
     Play the game and talk out loud about what you like and what needs changing.
     Say it near when it happens; feedback is matched to game events by timestamp.
 
     window_title: match the game window (None = whole desktop). build_ref: the
-    commit/build under test. Returns telemetry_path — the game should append
-    JSONL events there (see playtest_telemetry_contract).
+    commit/build under test. Set launch_native to let the backend launch Godot
+    with BGATE_TELEMETRY already attached; game_cmd optionally overrides the
+    default <root>/game project command.
     """
     try:
         return _playtest.start(_root(), name, window_title=window_title,
-                               mic_device=mic_device, build_ref=build_ref, fps=fps)
+                               mic_device=mic_device, build_ref=build_ref, fps=fps,
+                               launch_native=launch_native, game_cmd=game_cmd)
     except Exception as exc:
         return _fail(exc)
 
@@ -1050,11 +1162,13 @@ def playtest_stop(session_id: Optional[int] = None, model: str = "base",
 @mcp.tool()
 def playtest_brief(session_id: int, include_transcript: bool = False,
                    window_s: float = 4.0) -> dict:
-    """The session as agents should read it: feedback + frames + telemetry.
+    """The session as agents should read it: video frames + feedback + telemetry.
 
-    Agents CANNOT watch the video. This returns each feedback item with a frame
-    captured at that moment and the game events within window_s of it — so
-    "the jump feels floaty" arrives next to the actual jump's air_time.
+    You CAN watch the recording: `video_frames` is an ordered strip of stills
+    ({i, t, path}) sampled across the whole session — Read them in order to see
+    what happened. Each feedback item also carries a frame at its own moment and
+    the game events within window_s of it, and `transcript` is what the player
+    said, timestamped. Line frames up with the transcript by t.
     """
     try:
         return _playtest.brief(_root(), session_id, window_s=window_s,
@@ -1201,6 +1315,24 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0) -> dict
         from bgate_core import queue as _q
         return _q.add(_root(), seat, title, brief=brief, priority=priority,
                       source=f"seat:{_seat() or 'unknown'}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
+                 seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
+    """Edit an existing work item in place (title/brief/seat/priority).
+
+    For enriching a ticket without re-filing it — e.g. rewriting a transcript-
+    era brief to add the frames, timestamps, and telemetry you saw while
+    watching the recording. Only the fields you pass change; status and lineage
+    stay put. Pass the full new brief text (this replaces, it does not append).
+    """
+    try:
+        from bgate_core import queue as _q
+        return _q.update(_root(), item_id, title=title, brief=brief,
+                         seat=seat, priority=priority)
     except Exception as exc:
         return _fail(exc)
 

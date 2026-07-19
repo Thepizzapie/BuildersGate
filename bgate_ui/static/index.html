@@ -1109,10 +1109,9 @@ async function openSession(id){
     ? `<span class="chip">${d.counts.events} telemetry events</span>`
     : `<span class="chip drift">no telemetry</span>`;
   const duration = Math.max(Number(d.session.duration_s || 0), 1);
-  const eventMap = new Map();
-  d.items.flatMap(item => item.events || []).forEach(event =>
-    eventMap.set(`${event.t}:${event.kind}`, event));
-  const allEvents = [...eventMap.values()].sort((a,b) => a.t-b.t);
+  const T = d.telemetry || {by_kind:{}, settings:[], moments:[], fps:null, total:0};
+  const fmtT = t => { const s=Math.max(0,Number(t)||0); return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`; };
+  const fmtV = v => (typeof v==="number") ? (Number.isInteger(v)?String(v):v.toFixed(2)) : esc(String(v));
   const snapshot = d.iteration;
   body.innerHTML = `
     ${d.coverage_warnings?.length ? `<div class="coverage-warnings">${d.coverage_warnings.map(w =>
@@ -1137,11 +1136,44 @@ async function openSession(id){
         `<button class="timeline-marker" style="left:${Math.min(100,marker.t/duration*100)}%" title="${esc(marker.kind)} · ${esc(marker.text)}" onclick="seekReview(${marker.t})"></button>`
       ).join("")}</div>
     </div>` : ""}
-    <div>
-      <h2>Telemetry across this session</h2>
-      <div class="telemetry-chart">${allEvents.map(event =>
-        `<button class="telemetry-bar" style="height:${20 + ((Number(event.t)*37)%50)}px" title="${esc(event.kind)} @ ${Number(event.t).toFixed(2)}s" onclick="seekReview(${Number(event.t)})"></button>`
-      ).join("") || `<span class="empty">no telemetry events</span>`}</div>
+    <style>
+      .tele-panel{margin:14px 0;padding:14px 16px;background:#12141a;border:1px solid #242833;border-radius:12px}
+      .tele-panel h2{margin:0 0 8px}.tele-panel h3{margin:14px 0 8px;font-size:13px;color:#9aa3b2;text-transform:uppercase;letter-spacing:.04em}
+      .tele-kinds{display:flex;flex-wrap:wrap;gap:6px}
+      .tuning-list{display:flex;flex-direction:column;gap:4px}
+      .tuning-row{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:7px 10px;background:#191c24;border:1px solid #262a35;border-radius:8px;color:#e6e8ee;cursor:pointer;font:inherit}
+      .tuning-row:hover{background:#20242e;border-color:#3b7f9e}
+      .tuning-time{font-variant-numeric:tabular-nums;color:#7d8595;min-width:38px}
+      .tuning-key{font-weight:600;flex:1}
+      .tuning-delta{font-variant-numeric:tabular-nums;color:#9aa3b2}.tuning-delta b{color:#5fd08a}
+      .tuning-count{font-size:11px;color:#6b7280}
+      .moment-track{position:relative;height:22px;margin-top:6px;background:#191c24;border-radius:6px}
+      .moment-dot{position:absolute;top:4px;width:8px;height:14px;margin-left:-4px;border:0;border-radius:3px;cursor:pointer;background:#3b7f9e}
+      .moment-dot.k-jump{background:#5f9ed0}.moment-dot.k-punch_landed{background:#e0a13b}.moment-dot.k-punch_thrown{background:#8a6d3b}
+      .moment-dot.k-ko{background:#d05f5f;width:11px}.moment-dot.k-fight_start{background:#5fd08a;width:11px}.moment-dot.k-setting_changed{background:#9a6dd0}
+    </style>
+    <div class="tele-panel">
+      <h2>What the recording captured</h2>
+      <div class="tele-kinds">
+        ${Object.entries(T.by_kind).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
+          `<span class="chip">${esc(k)} ×${n}</span>`).join("") || `<span class="chip drift">no telemetry — this session was audio only</span>`}
+        ${T.fps ? `<span class="chip">fps ${T.fps.min}–${T.fps.max} · avg ${T.fps.avg}</span>` : ""}
+      </div>
+
+      <h3>Tuning changes you made · ${T.settings.length}</h3>
+      ${T.settings.length ? `<div class="tuning-list">${T.settings.map(s => `
+        <button class="tuning-row" onclick="seekReview(${Number(s.t)})" title="jump to ${fmtT(s.t)} in the video">
+          <span class="tuning-time">${fmtT(s.t)}</span>
+          ${s.group ? `<span class="chip">${esc(s.group)}</span>` : ""}
+          <span class="tuning-key">${esc(s.prop || s.key)}</span>
+          <span class="tuning-delta">${fmtV(s.from)} → <b>${fmtV(s.to)}</b></span>
+          ${s.count > 1 ? `<span class="tuning-count">${s.count} nudges</span>` : ""}
+        </button>`).join("")}</div>`
+        : `<p class="empty" style="margin:0">No settings were changed during this session.</p>`}
+
+      ${T.moments.length ? `<h3>Gameplay moments · ${T.moments.length}</h3>
+      <div class="moment-track">${T.moments.map(m =>
+        `<button class="moment-dot k-${esc(m.kind)}" style="left:${Math.min(100,m.t/duration*100)}%" title="${esc(m.kind)} @ ${fmtT(m.t)}" onclick="seekReview(${Number(m.t)})"></button>`).join("")}</div>` : ""}
     </div>
     <div class="feedback-list">${d.items.map(item => `
       <div class="feedback-card">
@@ -1155,9 +1187,14 @@ async function openSession(id){
             ${item.transcript_confidence != null
               ? `<span class="chip">speech confidence ${Number(item.transcript_confidence).toFixed(2)}</span>` : ""}
           </div>
-          <div class="feedback-events">${item.events.length ? item.events.map(e =>
-            `<span class="chip">${esc(e.kind)} @ ${Number(e.t).toFixed(2)}s ${esc(JSON.stringify(e.data))}</span>`).join("")
-            : `<span class="chip drift">no nearby telemetry</span>`}</div>
+          ${(() => {
+            const near = (item.events||[]).filter(e => e.kind !== "fps");
+            if (!near.length) return "";
+            return `<div class="feedback-events">while saying this: ${near.map(e =>
+              e.kind === "setting_changed"
+                ? `<span class="chip" style="background:#241a33">${esc(e.data?.prop || e.data?.key || "setting")} → ${fmtV(e.data?.value)}</span>`
+                : `<span class="chip">${esc(e.kind)}</span>`).join("")}</div>`;
+          })()}
           <div class="feedback-controls">
             <span class="chip">${esc(item.status)}</span>
             <select id="seat-${item.id}">${options(Object.keys(SEATS),item.seat)}</select>

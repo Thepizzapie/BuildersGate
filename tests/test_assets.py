@@ -39,6 +39,10 @@ class TestTracking:
         with pytest.raises(ValueError, match="outside the project root"):
             assets.track(root, stranger)
 
+    def test_relative_parent_escape_is_rejected(self, root):
+        with pytest.raises(ValueError, match="outside the project root"):
+            assets.lock(root, "../outside.blend", "art")
+
     def test_missing_file_is_an_error(self, root):
         with pytest.raises(FileNotFoundError):
             assets.track(root, "assets/ghost.blend")
@@ -63,6 +67,12 @@ class TestLocking:
         assets.lock(root, blend, "art")
         got = assets.lock(root, blend, "art")  # refresh, not error
         assert got["lock_seat"] == "art"
+
+    def test_same_seat_different_execution_conflicts(self, root, blend):
+        assets.track(root, blend)
+        assets.lock(root, blend, "art", owner="item-1")
+        with pytest.raises(RuntimeError, match="locked by seat 'art'"):
+            assets.lock(root, blend, "art", owner="item-2")
 
     def test_lock_before_create_claims_the_path(self, root):
         """Normal flow: claim the path, THEN write the file."""
@@ -148,3 +158,14 @@ class TestDriftDetection:
         assert got["ok"] is True
         assert got["clean"] == ["assets/shard.blend"]
         assert got["locked"] == []
+
+    def test_unhashed_unlocked_asset_is_not_healthy(self, root):
+        path = root / "assets" / "candidate.png"
+        assets.lock(root, path, "art")
+        path.write_bytes(b"candidate")
+        assets.force_release(root, path)
+
+        got = assets.verify(root)
+        assert got["ok"] is False
+        assert got["untracked_hash"] == ["assets/candidate.png"]
+        assert got["counts"]["pending"] == 1

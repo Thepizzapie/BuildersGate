@@ -160,6 +160,20 @@ class TestTelemetryEndToEnd:
         assert not list(tmp_path.glob("*.jsonl"))
 
 
+class TestWebTelemetryContract:
+    def test_web_build_posts_to_the_active_app_session(self):
+        telemetry = (
+            Path(__file__).parents[1]
+            / "templates" / "shared" / "addons" / "bgate"
+            / "bgate_telemetry.gd"
+        ).read_text(encoding="utf-8")
+        assert "bgate_session" in telemetry
+        assert "/api/playtest/%s/events" in telemetry
+        assert 'OS.has_feature("web")' in telemetry
+        assert "SCHEMA_VERSION := 1" in telemetry
+        assert '"schema": SCHEMA_VERSION' in telemetry
+
+
 @needs_godot
 class TestSessionClockAlignment:
     """Telemetry must land on the SESSION clock, not the game's."""

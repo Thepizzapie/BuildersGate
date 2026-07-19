@@ -227,9 +227,13 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
     my_feedback = rows(conn.execute(
         "SELECT i.id, i.t, i.kind, i.text, i.frame_path, i.promoted_ref, s.name AS session "
         "FROM playtest_item i JOIN playtest_session s ON s.id = i.session_id "
-        "WHERE i.seat = ? AND i.status = 'promoted' ORDER BY i.id DESC LIMIT 25",
+        "WHERE i.seat = ? AND i.status = 'promoted' "
+        "AND NOT EXISTS (SELECT 1 FROM work_item w "
+        "WHERE w.source = 'playtest' AND w.source_ref = CAST(i.id AS TEXT) "
+        "AND w.status = 'done') ORDER BY i.id DESC LIMIT 25",
         (role,)))
 
+    from . import artifacts as _artifacts
     from . import refs as _refs
 
     return {
@@ -239,6 +243,15 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "mission": seat["mission"],
         "write_lanes": seat["write_globs"],
         "pinned_refs": _refs.list_refs(root),
+        "approved_artifacts": [
+            {k: item[k] for k in
+             ("id", "logical_name", "revision", "path", "kind", "status",
+              "producer", "review_note")}
+            for item in (
+                _artifacts.list_revisions(root, status="approved", limit=50)
+                + _artifacts.list_revisions(root, status="integrated", limit=50)
+            )
+        ],
         "bible": bible.overview(root),
         "canon": [{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
                   for e in lore.list_entities(root, status="canon")],

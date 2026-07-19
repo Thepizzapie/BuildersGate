@@ -97,14 +97,21 @@ seat bays — each with its glyph, accent color, working/idle lamp (holds locks 
 acted <5 min ago), held binaries, last ledger entry, and promoted-feedback queue.
 **The Ledger** streams activity live (locks, releases, renders, canon checks,
 scaffolds, promotions — every meaningful event writes to the activity table).
-**The Forge Gallery** archives every `blender_run(render=True)` to
-`.bgate/previews/` and shows them with a lightbox. **The Vault** lists tracked
-binaries with lock/drift chips; the header's integrity lamp goes ember and
-throbs when `asset_verify` finds drift. **The World** shows pillars, the cut
-line (cut items struck through), and canon entities.
+**Asset Lab** groups immutable revisions by logical asset and compares the
+approved version with candidates side by side. It surfaces generation profile,
+references, consistency/import evidence, current-build use, work provenance,
+lease heartbeat, linked playtest feedback, and every review action.
+**Playtest Review** opens the recording with feedback markers, synchronized
+transcript, frames, telemetry, confidence, director recommendation, final
+disposition, merge/queue controls, and coverage warnings. **Iteration Timeline**
+preserves the causal chain from goal and exact source/build snapshot through
+assets, playtest evidence, decisions, work, resulting build, and comparative
+outcome. **The World** shows pillars, the cut line, and canon entities.
 
-Read-only by design: every mutation stays in the MCP tools where it's
-attributable to a seat. Single HTML file, no build step, no CDN, 127.0.0.1 only.
+The cockpit owns explicit user-facing mutations: queue/dispatch, recording,
+feedback disposition, and artifact approval. Production mutations remain MCP
+tools attributable to a seat. Single HTML file, no build step, no CDN,
+127.0.0.1 only.
 
 ## Seats
 
@@ -192,7 +199,7 @@ Play the game, talk out loud, get an agent-readable brief.
 
 ```
 playtest_check    → preflight: ffmpeg, mic SIGNAL, transcriber, target window
-playtest_start    → records game window (gdigrab) + your voice
+playtest_start    → snapshots the iteration; records game + voice
    …play, and say what you like / what needs fixing…
 playtest_stop     → whisper transcribes, classifies, aligns, extracts frames
 playtest_brief    → what the agents read
@@ -207,6 +214,16 @@ number an agent can act on.
 
 Items land as `new` and stay there until you promote them. Thinking out loud
 mid-play is not a decision to build.
+
+Native Godot sessions append telemetry to the session JSONL path. Web builds
+loaded inside the cockpit post the same event contract directly to the active
+session API using the `bgate_session` query parameter; the review screen marks
+sessions with zero telemetry rather than silently presenting them as aligned.
+Each start automatically records the Git commit and dirty fingerprint, source
+fingerprint, exported PCK hash, active artifact revision IDs, exported tunables
+and overrides, latest automated-check result, and telemetry schema version.
+`iteration_record_checks` updates the check snapshot; `iteration_status` returns
+the complete causal history.
 
 ## Layout
 
