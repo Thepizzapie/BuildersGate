@@ -156,9 +156,57 @@ class TestPlaytestFromApp:
         assert "playtest_brief" in items[0]["brief"]
         assert "session_id=7" in items[0]["brief"]
 
+    def test_failed_transcription_does_not_queue_triage(
+            self, client, root, monkeypatch):
+        from bgate_core import playtest as pt
+        from bgate_ui import app as ui_app
+
+        with db.tx(root) as conn:
+            conn.execute("INSERT INTO playtest_session (id, name, slug, status) "
+                         "VALUES (8, 'failed session', 'failed-session', 'recording')")
+        monkeypatch.setattr(pt, "stop", lambda r, sid, **kw: {
+            "session_id": sid,
+            "transcript": {"ok": False, "error": "whisper failed"}})
+
+        assert client.post("/api/playtest/stop").json()["ok"] is True
+        import time
+        for _ in range(50):
+            if str(ui_app._pt_processing.get(8, "")).startswith("failed"):
+                break
+            time.sleep(0.05)
+        assert queue.list_items(root, seat="director") == []
+
     def test_status_endpoint(self, client):
         got = client.get("/api/playtest/status").json()
         assert "recording" in got and "processing" in got
+
+    def test_web_telemetry_and_review_endpoints(self, client, root):
+        with db.tx(root) as conn:
+            conn.execute(
+                "INSERT INTO playtest_session "
+                "(id, name, slug, status, started_epoch) "
+                "VALUES (9, 'web', 'web', 'recording', 1000)")
+            conn.execute(
+                "INSERT INTO playtest_item "
+                "(id, session_id, t, kind, text, seat) "
+                "VALUES (90, 9, 2.0, 'fix', 'jump is floaty', 'gameplay')")
+
+        event = client.post("/api/playtest/9/events", json={
+            "ts": 1002.0, "kind": "jump", "data": {"air_time": 0.9}})
+        assert event.status_code == 200
+        review = client.get("/api/playtest/9").json()
+        assert review["counts"]["events"] == 1
+        assert review["items"][0]["events"][0]["data"]["air_time"] == 0.9
+
+        promoted = client.post(
+            "/api/playtest/items/90/promote",
+            json={"seat": "tech", "kind": "fix"}).json()
+        assert promoted["status"] == "promoted"
+        assert promoted["seat"] == "tech"
+        # Promotion marks the moment noteworthy; it must NOT auto-create a work
+        # item (that produced blob/fragment tasks -- the director authors work
+        # from the full transcript by meaning).
+        assert queue.list_items(root) == []
 
 
 class TestPlayRoute:

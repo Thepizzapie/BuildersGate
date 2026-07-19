@@ -304,27 +304,33 @@ def _queue_playtest_triage(root: Path, session_id: int, item_count: int) -> None
         return
     _queue.add(
         root, "director",
-        title=f"Triage playtest session {session_id} ({item_count} feedback items)",
+        title=f"Triage playtest session {session_id}",
         brief=(f"A playtest session (id {session_id}) was recorded and "
-               "transcribed. Call playtest_brief with "
-               f"session_id={session_id} (include_transcript=true) and read the "
-               "WHOLE transcript for context -- the items are lexical fragments "
-               "of spoken commentary, not clean tasks.\n\n"
-               "SYNTHESIZE, do not forward fragments. The transcript will have "
-               "many half-sentences ('I think it was', 'see how the'); most are "
-               "not actionable alone. Your job is to distill the session into a "
-               "SMALL number (typically 1-4) of COHERENT work items:\n"
-               "- MERGE every fragment about the same issue into ONE item (e.g. "
-               "several lines about the opponent hitting the wrong way = one "
-               "'Fix opponent facing hit-detection' gameplay item).\n"
-               "- Write a real title and a brief that quotes the relevant lines "
-               "and any numbers the user said, and names the concrete change.\n"
-               "- Route each to the owning seat. queue_add ONE item per real "
-               "theme -- NEVER one per fragment.\n"
-               "- Ignore pure thinking-aloud and anything below the cut line.\n"
-               "Then queue_complete this triage item summarizing what you filed. "
-               "Do NOT promote raw playtest items as a substitute for authoring "
-               "coherent work -- promotion no longer auto-creates tasks."),
+               "transcribed. THE TRANSCRIPT IS THE SOURCE OF TRUTH -- call "
+               f"playtest_brief with session_id={session_id} and "
+               "include_transcript=true, and read the whole transcript "
+               "yourself.\n\n"
+               "IGNORE the auto-classified 'items' / their seats. They are a "
+               "crude lexical index made by keyword-matching: they merge four "
+               "issues spoken in one breath into a single blob, and mis-route "
+               "on stray words ('character' -> narrative when it's a gameplay "
+               "bug). Do not trust their grouping or routing. YOU do the "
+               "grouping, by MEANING.\n\n"
+               "Read the transcript and author work items:\n"
+               "- ONE work item per DISTINCT ISSUE. A single continuous "
+               "monologue that covers jump tuning, a facing bug, a turning "
+               "bug, and spam is FOUR items, not one -- split it by meaning.\n"
+               "- Conversely, MERGE lines scattered across the transcript that "
+               "are about the same issue into one item.\n"
+               "- Real title, and a brief that quotes the relevant spoken lines "
+               "and any exact numbers the user said, and names the concrete "
+               "change. Route each to the owning seat.\n"
+               "- Drop pure thinking-aloud ('hopefully this is recording') and "
+               "anything below the cut line.\n"
+               "queue_add each item; then queue_complete this triage summarizing "
+               "what you filed. Do NOT playtest_promote items as a substitute "
+               "for authoring work -- promotion no longer creates tasks; it only "
+               "marks a moment as noteworthy."),
         priority=3, source="playtest-triage", source_ref=str(session_id))
 
 
@@ -524,11 +530,13 @@ def pt_promote(item_id: int, payload: Optional[dict] = None) -> dict:
     payload = payload or {}
     try:
         root = _root()
-        item = playtest.promote(
+        # Promotion marks a moment as noteworthy -- it does NOT create a work
+        # item. Turning a raw feedback chunk verbatim into a task produced blob/
+        # fragment work items; coherent work is authored by the director from
+        # the full transcript, by meaning. (sync_promoted call removed.)
+        return playtest.promote(
             root, item_id, seat=payload.get("seat"),
             kind=payload.get("kind"), ref=payload.get("ref", "app-review"))
-        _queue.sync_promoted(root)
-        return item
     except (LookupError, ValueError) as exc:
         raise HTTPException(400, str(exc))
 
