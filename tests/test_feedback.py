@@ -107,19 +107,21 @@ class TestSplitUtterances:
     def test_empty_segment_yields_nothing(self):
         assert feedback.split_utterances({"t_start": 0, "t_end": 1, "text": "  "}) == []
 
-    def test_the_real_regression_each_remark_gets_its_own_seat(self):
+    def test_continuous_speech_is_ONE_item_not_shredded(self):
+        """The deliberate reversal (real playtest feedback): a continuous
+        stretch of talking is ONE feedback item, even when it spans topics —
+        because in practice a real complaint spans several segments and
+        shredding it routed one issue to three seats. A single segment holding
+        two topics spoken with no pause can't be split by a time rule; that
+        semantic split is the director's job when it reads the transcript.
+        """
         items = feedback.extract([{
             "id": 1, "t_start": 0.0, "t_end": 9.0,
             "text": "The jump feels really floaty. I do not like it. "
                     "But I love the music in this level.",
         }])
-        by_text = {i["text"]: i for i in items}
-        jump = next(i for t, i in by_text.items() if "jump" in t)
-        music = next(i for t, i in by_text.items() if "music" in t)
-
-        assert jump["seat"] == "gameplay" and jump["kind"] == "fix"
-        assert music["seat"] == "audio" and music["kind"] == "like"
-        assert jump["t"] < music["t"]
+        assert len(items) == 1  # one thought, not three shreds
+        assert items[0]["segment_ids"] == [1]
 
 
 class TestSpeechVariance:
@@ -145,45 +147,47 @@ class TestSpeechVariance:
         assert feedback.route(text) == seat
 
 
-class TestAnaphora:
-    """'I do not like it' is real feedback with no routable noun in it."""
+class TestGroupThoughts:
+    """One spoken thought = one item. Consecutive segments merge while the
+    speaker keeps talking; a pause starts the next. This replaced sentence-
+    splitting, which shredded one complaint across several items/seats."""
 
-    def test_pronoun_utterance_inherits_seat_within_segment(self):
-        items = feedback.extract([{
-            "id": 1, "t_start": 0.0, "t_end": 6.0,
-            "text": "The jump feels floaty. I do not like it.",
-        }])
-        orphan = next(i for i in items if "not like" in i["text"])
-        assert orphan["seat"] == "gameplay"
-        assert orphan["seat_inherited"] is True
-        assert orphan["kind"] == "fix"
-
-    def test_inheritance_does_not_cross_segments(self):
-        """Across a pause, 'it' is anyone's guess — unassigned beats wrong."""
+    def test_continuous_segments_merge_into_one_thought(self):
+        # Same facing complaint, spoken continuously (0s gaps) -> ONE item,
+        # routed on the full text, instead of three items across three seats.
         items = feedback.extract([
-            {"id": 1, "t_start": 0.0, "t_end": 2.0, "text": "The jump feels floaty."},
-            {"id": 2, "t_start": 30.0, "t_end": 32.0, "text": "I do not like it."},
+            {"id": 1, "t_start": 0.0, "t_end": 2.0, "text": "The way he faces is wrong."},
+            {"id": 2, "t_start": 2.0, "t_end": 4.0, "text": "He hits me from behind."},
+            {"id": 3, "t_start": 4.0, "t_end": 6.0, "text": "He should only hit forward."},
         ])
-        orphan = next(i for i in items if "not like" in i["text"])
-        assert orphan["seat"] == "unassigned"
+        assert len(items) == 1
+        assert items[0]["seat"] == "gameplay"
+        assert items[0]["segment_ids"] == [1, 2, 3]
+        assert "faces" in items[0]["text"] and "forward" in items[0]["text"]
 
-    def test_long_sentence_is_not_treated_as_anaphoric(self):
-        items = feedback.extract([{
-            "id": 1, "t_start": 0.0, "t_end": 8.0,
-            "text": "The jump feels floaty. "
-                    "I think the whole thing needs a rethink from scratch honestly.",
-        }])
-        long_one = next(i for i in items if "rethink" in i["text"])
-        assert long_one["seat_inherited"] is False
+    def test_a_pause_starts_a_new_thought(self):
+        items = feedback.extract([
+            {"id": 1, "t_start": 0.0, "t_end": 2.0, "text": "The jump feels great."},
+            {"id": 2, "t_start": 8.0, "t_end": 10.0, "text": "The music is too loud."},
+        ])
+        assert len(items) == 2
+        assert items[0]["seat"] == "gameplay"
+        assert items[1]["seat"] == "audio"
 
-    def test_routable_sentence_never_inherits(self):
-        items = feedback.extract([{
-            "id": 1, "t_start": 0.0, "t_end": 6.0,
-            "text": "The jump feels floaty. I love this music.",
-        }])
-        music = next(i for i in items if "music" in i["text"])
-        assert music["seat"] == "audio"
-        assert music["seat_inherited"] is False
+    def test_gap_threshold_is_tunable(self):
+        segs = [
+            {"id": 1, "t_start": 0.0, "t_end": 2.0, "text": "the jump is floaty"},
+            {"id": 2, "t_start": 3.5, "t_end": 5.0, "text": "the music is loud"},
+        ]
+        assert len(feedback.extract(segs, max_gap=1.0)) == 2   # 1.5s gap splits
+        assert len(feedback.extract(segs, max_gap=3.0)) == 1   # merges
+
+    def test_group_thoughts_orders_by_time(self):
+        thoughts = feedback.group_thoughts([
+            {"id": 2, "t_start": 5.0, "t_end": 6.0, "text": "second"},
+            {"id": 1, "t_start": 0.0, "t_end": 1.0, "text": "first"},
+        ])
+        assert thoughts[0]["text"] == "first"
 
 
 class TestExtract:

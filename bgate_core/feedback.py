@@ -166,37 +166,72 @@ def split_utterances(seg: dict) -> list[dict]:
     return out
 
 
-def extract(segments: list[dict]) -> list[dict]:
-    """Transcript segments -> candidate feedback items, one per utterance.
+# Seconds of silence that end one spoken thought. A playtest comment is a
+# continuous 5-15s ramble about ONE thing; then a pause, then the next thing.
+# Merging segments separated by less than this keeps one issue as ONE item
+# instead of shredding it across sentences (which routed the same complaint to
+# three different seats). Larger = fewer, chunkier items.
+# 1.0s: a middle ground found from real playtest audio. Smaller shreds one
+# thought across sentences; larger fuses distinct topics the user spoke
+# back-to-back. No time threshold separates topics said with no pause between
+# them — that final semantic grouping is the director's job (it reads the whole
+# transcript for meaning). This just stops the worst over-fragmentation.
+THOUGHT_GAP = 1.0
 
-    Splits segments into sentences, drops noise, classifies, routes. Everything
-    survives as 'new'; nothing here decides what becomes work.
+
+def group_thoughts(segments: list[dict], max_gap: float = THOUGHT_GAP) -> list[dict]:
+    """Merge temporally-adjacent transcript segments into coherent thoughts.
+
+    The inverse of sentence-splitting: instead of breaking a comment apart, we
+    stitch consecutive segments back together while the speaker keeps talking,
+    and only break when they pause (a gap > max_gap). One thought carries the
+    full spoken context, so classify/route see the whole complaint at once.
+    """
+    thoughts: list[dict] = []
+    cur: Optional[dict] = None
+    for seg in sorted(segments, key=lambda s: s.get("t_start", 0.0)):
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        if cur is not None and seg["t_start"] - cur["t_end"] <= max_gap:
+            cur["text"] = (cur["text"] + " " + text).strip()
+            cur["t_end"] = seg["t_end"]
+            cur["segment_ids"].append(seg.get("id"))
+        else:
+            if cur is not None:
+                thoughts.append(cur)
+            cur = {"text": text, "t_start": seg["t_start"], "t_end": seg["t_end"],
+                   "segment_ids": [seg.get("id")]}
+    if cur is not None:
+        thoughts.append(cur)
+    return thoughts
+
+
+def extract(segments: list[dict], max_gap: float = THOUGHT_GAP) -> list[dict]:
+    """Transcript segments -> candidate feedback items, ONE PER SPOKEN THOUGHT.
+
+    Groups temporally-adjacent segments (see group_thoughts), drops pure-filler
+    thoughts, then classifies and routes each on its FULL text — so a facing
+    complaint spread over three sentences stays one gameplay item instead of
+    three items across three seats. Everything survives as 'new'; nothing here
+    decides what becomes work.
     """
     items = []
-    for seg in segments:
-        # Context carries only WITHIN a segment — across a pause, "it" is anyone's
-        # guess and a wrong inheritance is worse than an honest 'unassigned'.
-        last_seat = "unassigned"
-        for utterance in split_utterances(seg):
-            text = utterance["text"].strip()
-            if is_noise(text):
-                continue
-            kind, scores = classify(text)
-            seat = route(text)
-            inherited = False
-            if seat == "unassigned" and last_seat != "unassigned" and _is_anaphoric(text):
-                seat, inherited = last_seat, True
-            if seat != "unassigned" and not inherited:
-                last_seat = seat
-            items.append({
-                "segment_id": seg.get("id"),
-                "t": utterance["t_start"],
-                "kind": kind,
-                "text": text,
-                "seat": seat,
-                "seat_inherited": inherited,
-                "scores": scores,
-            })
+    for thought in group_thoughts(segments, max_gap):
+        text = thought["text"].strip()
+        if is_noise(text):
+            continue
+        kind, scores = classify(text)
+        items.append({
+            "segment_id": thought["segment_ids"][0],
+            "segment_ids": thought["segment_ids"],
+            "t": thought["t_start"],
+            "t_end": thought["t_end"],
+            "kind": kind,
+            "text": text,
+            "seat": route(text),
+            "scores": scores,
+        })
     return items
 
 
