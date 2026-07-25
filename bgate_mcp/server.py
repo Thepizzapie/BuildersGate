@@ -16,17 +16,41 @@ call can reach in.
 Tool errors return a dict with an "error" key rather than raising: a raised
 exception inside a tool call reads to the model as a broken server, while an
 error payload reads as a fact it can act on.
+
+FAILURE SHAPE — ONE PREDICATE, EVERY TOOL. A result is a failure if and only if
+it carries a truthy "error"; every failure also carries "ok": false, and the two
+are always set together, so either key answers the question. Legacy shapes are
+kept alongside rather than replaced, because callers already read them: a tool
+that used to answer {"available": false, "reason": ...} still answers with those
+keys AND with ok/error, and a tool that answered a bare {"ok": false, ...} gains
+the "error" string built from whatever reason it did state. Success payloads are
+left exactly as they were — an absent "error" is the success signal, and no tool
+gains a cosmetic "ok": true it never had.
+
+Not everything false is a failure: seat_can_write's {"allowed": false} and
+queue_next's {"empty": true} are ANSWERS the tool succeeded in producing, and
+neither is normalized into an error.
+
+Tool bodies do NOT run on the event loop. Every tool is a plain sync def and the
+`_tool` decorator hands it to a worker thread: one image_sprites call can spend
+half an hour in paid API calls, and while it does, the dashboard, the queue and
+every other seat's tool call must still be served. The per-call ContextVar is
+bound INSIDE a copied context in that thread, so the isolation survives the hop.
 """
 from __future__ import annotations
 
 import contextvars
 import functools
 import inspect
+import itertools
 import json as _json
 import os
+import threading
+import time as _time
 from pathlib import Path as _Path
 from typing import Annotated, Callable, Optional
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
@@ -34,6 +58,7 @@ from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
 from bgate_adapters import sprites as _sprites
+from bgate_core import activity as _activity
 from bgate_core import assets as _assets
 from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
@@ -42,6 +67,7 @@ from bgate_core import bible as _bible
 from bgate_core import playtest as _playtest
 from bgate_core import scaffold as _scaffold
 from bgate_core import canon as _canon
+from bgate_core import causal as _causal
 from bgate_core import db as _db
 from bgate_core import lore as _lore
 from bgate_core import iterations as _iterations
@@ -97,14 +123,66 @@ def _root() -> str:
     return root
 
 
+# Keys a tool might have used to say WHY, in the order they are believed. The
+# first non-empty one becomes the unified "error" string.
+_REASON_KEYS = ("error", "reason", "message", "detail", "stderr", "traceback")
+
+
+def _normalize(result):
+    """Collapse the three legacy failure shapes onto one predicate.
+
+    {error}, {ok: false, ...} and {available: false, reason} all meant failure
+    and a model calling these tools had to know which tool spoke which dialect.
+    Now any of them also carries ok=false AND a filled-in "error", so `"error"
+    in result` is the whole test. Legacy keys stay put — the dashboard and the
+    seat scripts already read `available` and `reason`, and a normalizer that
+    renames things breaks callers to please a schema.
+
+    Only the top level is touched, and only when the result claims failure: a
+    doctor report whose `blender` row is unavailable is a SUCCESSFUL answer to
+    "what is installed", and stamping an error on it would be a lie.
+    """
+    if not isinstance(result, dict):
+        return result
+    failed = (result.get("ok") is False or bool(result.get("error"))
+              or result.get("available") is False)
+    if not failed:
+        return result
+    reason = ""
+    for key in _REASON_KEYS:
+        value = result.get(key)
+        text = value.strip() if isinstance(value, str) else ""
+        if text:
+            reason = text
+            break
+    return {**result, "ok": False,
+            "error": reason or "the call failed without stating a reason"}
+
+
 def _tool(fn: Callable) -> Callable:
-    """Register a function as an MCP tool, with `project_dir` bolted on.
+    """Register a function as an MCP tool, with `project_dir` bolted on, run OFF
+    the event loop, and its failures normalized to one shape.
 
     Every tool gets the same optional trailing parameter rather than 70-odd
     hand-edited signatures, and the wrapper binds it into `_CALL_ROOT` for the
     duration of the call so the existing `_root()` bodies need no change. The
     binding is reset in a finally — a tool that raises must not leave its root
     behind for the next call on this thread.
+
+    The bodies are blocking by nature: subprocesses (Blender, Godot, ffmpeg),
+    sqlite, and image-model calls that legitimately run for tens of minutes.
+    Run as a plain sync def, FastMCP would await them ON the loop and one
+    image_sprites batch would freeze the dashboard, the queue and every other
+    seat's tool call behind it — the exact failure the transcribe adapter's
+    docstring says this design exists to avoid. So the wrapper is async and the
+    body goes to a worker thread.
+
+    That hop is why the ContextVar is bound inside a FRESH copied context rather
+    than around the await: anyio reuses worker threads, so a `set` left on a
+    pooled thread's default context could be seen by whatever call lands on that
+    thread next. Each call gets its own contextvars.Context, sets the root in
+    there, and drops it — call N's project_dir cannot reach call N+1 no matter
+    which thread either one runs on.
     """
     signature = inspect.signature(fn, eval_str=True)
     if "project_dir" in signature.parameters:
@@ -116,13 +194,19 @@ def _tool(fn: Callable) -> Callable:
             "for the Builders Gate project root on every tool")
 
     @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
         given = (kwargs.pop("project_dir", None) or "").strip() or None
-        token = _CALL_ROOT.set(given)
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            _CALL_ROOT.reset(token)
+
+        def _call():
+            token = _CALL_ROOT.set(given)
+            try:
+                return _normalize(fn(*args, **kwargs))
+            finally:
+                _CALL_ROOT.reset(token)
+
+        # abandon_on_cancel stays False (the default): a cancelled client must
+        # not leave a half-written .blend or a half-downloaded image behind.
+        return await anyio.to_thread.run_sync(contextvars.copy_context().run, _call)
 
     wrapper.__signature__ = signature.replace(
         parameters=[*signature.parameters.values(), inspect.Parameter(
@@ -133,7 +217,50 @@ def _tool(fn: Callable) -> Callable:
 
 
 def _fail(exc: Exception) -> dict:
-    return {"error": f"{type(exc).__name__}: {exc}"}
+    # ok=false alongside the message: one predicate for every failure in this
+    # module, whatever the tool. See _normalize.
+    return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+_RUN_SEQ = itertools.count()
+_RUN_SEQ_LOCK = threading.Lock()
+
+
+def _run_tag(label: str = "") -> str:
+    """A token unique to ONE tool call, for output paths nobody else can clobber.
+
+    Fixed output names (shot.png, consistency_check.png, .bgate_out/render.png)
+    are fine with one seat and silently destructive with several: two seats
+    screenshotting at once, and the second write lands under the first one's
+    returned path, so the first seat reviews the second seat's game. The pid is
+    in there because seats are separate PROCESSES — a counter alone repeats
+    across them — and the counter is because two calls in one process can start
+    inside the same clock second.
+    """
+    with _RUN_SEQ_LOCK:
+        seq = next(_RUN_SEQ)
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:32]
+    stamp = f"{_time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{seq:04d}"
+    return f"{safe}-{stamp}" if safe else stamp
+
+
+def _actor() -> str:
+    """Who this server process acts as — the identity artifacts.review checks."""
+    return _activity.current_actor()
+
+
+def _caller_is_agent() -> bool:
+    """Is this server an AGENT's, rather than the human's own session?
+
+    Two signals, either is enough. BGATE_ACTOR carries the `agent:` prefix the
+    core's actor model uses; but dispatch.py stamps a spawned seat with
+    BGATE_SEAT / BGATE_WORK_ITEM and does NOT stamp BGATE_ACTOR, so trusting the
+    actor alone would let every dispatched agent read as the human at the
+    keyboard — which is precisely the caller a permission gate must catch.
+    """
+    if _activity.is_agent(_actor()):
+        return True
+    return bool(_seat() or os.environ.get("BGATE_WORK_ITEM", "").strip())
 
 
 def _seat() -> str:
@@ -186,6 +313,65 @@ def _work_item_id() -> Optional[int]:
     ledger charges against."""
     raw = os.environ.get("BGATE_WORK_ITEM", "").strip()
     return int(raw) if raw.isdigit() else None
+
+
+def _run_ceiling(root: str, override_usd: float = 0.0) -> float:
+    """The dollar ceiling for ONE tool call. 0.0 means uncapped.
+
+    Three sources, most specific first: an explicit argument on the call, the
+    max_cost_usd of the work item this session is executing, then the project
+    budget's per_item_usd. spend.item_ceiling already knows the last two — this
+    only has to find the work item, which the ledger keys spend against anyway.
+    """
+    if override_usd and float(override_usd) > 0:
+        return float(override_usd)
+    from bgate_core import spend as _spend
+
+    item: dict = {}
+    work_item = _work_item_id()
+    if work_item:
+        try:
+            from bgate_core import queue as _q
+            item = _q.get(root, work_item) or {}
+        except Exception:
+            item = {}
+    try:
+        return float(_spend.item_ceiling(root, item) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _spend_gate(root: str, projected_usd: float, what: str,
+                ceiling_usd: float = 0.0) -> Optional[dict]:
+    """Refuse a paid run BEFORE the first call, or None to proceed.
+
+    A cap that only reports what a run cost is an invoice, not a cap. Both
+    ceilings are consulted: the per-run one (see _run_ceiling) and the project
+    /day budget (spend.check), which is the same gate the dispatcher asks before
+    spawning — an overnight fan-out must not be bounded in one leg and unbounded
+    in the other. The refusal names the number so the caller can decide, rather
+    than saying no and leaving the model to guess by how much.
+    """
+    from bgate_core import spend as _spend
+
+    projected = round(max(0.0, float(projected_usd or 0.0)), 4)
+    if ceiling_usd and projected > ceiling_usd:
+        return {"ok": False, "stage": "spend_gate", "estimated_usd": projected,
+                "ceiling_usd": round(float(ceiling_usd), 4),
+                "error": f"{what} is estimated at ${projected:.2f}, over the "
+                         f"${float(ceiling_usd):.2f} ceiling for one run — cut "
+                         "poses or quality, or pass max_cost_usd to confirm the "
+                         "spend deliberately"}
+    try:
+        verdict = _spend.check(root, projected_usd=projected)
+    except Exception:
+        verdict = {"allowed": True}  # no ledger is not a licence to refuse work
+    if not verdict.get("allowed", True):
+        return {"ok": False, "stage": "spend_gate", "estimated_usd": projected,
+                "budget": verdict,
+                "error": f"{what} (~${projected:.2f}) is refused by the project "
+                         f"budget: {verdict.get('reason') or 'ceiling reached'}"}
+    return None
 
 
 def _register_artifact(logical_name: str, path: str, *, producer: str,
@@ -494,7 +680,11 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     BLENDER_WORKBENCH (fast preview) | BLENDER_EEVEE_NEXT | CYCLES.
     """
     try:
-        out_dir = str(_Path(_root()) / ".bgate_out")
+        # Per-call render directory. The adapter always writes <out_dir>/render.png,
+        # so a shared out_dir means the second seat rendering at the same moment
+        # overwrites the first seat's frame at the very path the first call just
+        # returned — silent, and it looks like the render simply came out wrong.
+        out_dir = str(_Path(_root()) / ".bgate_out" / "renders" / _run_tag(label))
     except Exception:
         out_dir = None  # modeling before project_init is allowed
     try:
@@ -532,7 +722,7 @@ def blender_warmup(engine: str = "BLENDER_EEVEE_NEXT") -> dict:
     real render is the one that stalls. Not needed for BLENDER_WORKBENCH.
     """
     try:
-        out_dir = str(_Path(_root()) / ".bgate_out")
+        out_dir = str(_Path(_root()) / ".bgate_out" / "renders" / _run_tag("warmup"))
     except Exception:
         out_dir = None
     try:
@@ -1155,19 +1345,44 @@ def _pick_chroma(ref_path):
 
 def _chroma_key(img, chroma, tol=125, despill=185):
     """Key a solid chroma backdrop to transparent, in place, with edge despill.
-    Distance-based; safe because the chroma is auto-picked far from the art."""
-    px = img.load(); W, H = img.size; cr, cg, cb = chroma
-    for y in range(H):
-        for x in range(W):
-            r, g, b, a = px[x, y]
-            if a == 0:
-                continue
-            d = ((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2) ** 0.5
-            if d < tol:
-                px[x, y] = (0, 0, 0, 0)
-            elif d < despill:                       # pull fringe away from the chroma
-                m = (r + g + b) // 3
-                px[x, y] = ((r + m) // 2, (g + m) // 2, (b + m) // 2, a)
+    Distance-based; safe because the chroma is auto-picked far from the art.
+
+    Whole-band Pillow math, not a per-pixel loop. This runs on every generated
+    pose at 1024x1536 — 1.6M pixels, and the Python loop it replaces cost
+    seconds of pure interpreter time per frame while holding a worker thread.
+    Comparing SQUARED distance keeps it in integer bands (no sqrt, which
+    ImageMath has no function for) and the ordering is identical, so the same
+    pixels are keyed as before.
+    """
+    from PIL import Image as _I, ImageChops as _IC, ImageMath as _IM
+
+    # unsafe_eval is ImageMath.eval renamed in Pillow 10.3 (the old name warns).
+    ev = getattr(_IM, "unsafe_eval", None) or _IM.eval
+    cr, cg, cb = chroma
+    near, band = tol * tol, despill * despill
+    r, g, b, a = img.split()
+    d2 = ev("(r-cr)*(r-cr)+(g-cg)*(g-cg)+(b-cb)*(b-cb)",
+            r=r, g=g, b=b, cr=cr, cg=cg, cb=cb)
+    # *255: an ImageMath comparison yields 1, and a mask of 1 is a 1/255 blend —
+    # it looks like the key silently did almost nothing.
+    keyed = ev("convert((d2 < near) * 255, 'L')", d2=d2, near=near)
+    fringe = ev("convert(min(d2 >= near, d2 < band) * 255, 'L')",
+                d2=d2, near=near, band=band)
+    # int() before convert() so the halving floors exactly like the // it
+    # replaces — an F->L convert would be free to land a pixel one step off.
+    grey = ev("convert(int((r+g+b)/3), 'L')", r=r, g=g, b=b)
+    softened = _I.merge("RGB", tuple(
+        ev("convert(int((c+m)/2), 'L')", c=c, m=grey) for c in (r, g, b)))
+    img.paste(softened, (0, 0), fringe)
+    # RGB:=0 under the key, not just alpha:=0. Leaving the chroma color sitting
+    # under transparent pixels is exactly the "dirty alpha" consistency_check
+    # auto-fails on, and it fringes green/magenta the moment anything rescales.
+    img.paste((0, 0, 0, 0), (0, 0), keyed)
+    # Alpha LAST: the paste above is RGB-only in intent but Pillow promotes the
+    # source to RGBA, so anything written to alpha before it would be lost.
+    # Subtracting the 255-valued key mask clamps the keyed pixels to alpha 0 and
+    # leaves every other pixel's alpha exactly where it was.
+    img.putalpha(_IC.subtract(a, keyed))
     return img
 
 
@@ -1176,7 +1391,9 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
                   ref_quality: str = "high", fps: float = 8.0,
-                  res_dir: str = "assets/sprites", max_retries: int = 1) -> dict:
+                  res_dir: str = "assets/sprites", max_retries: int = 1,
+                  max_cost_usd: float = 0.0, timeout: int = 300,
+                  max_seconds: int = 1800) -> dict:
     """PAINTED sprite set via gpt-image — REFERENCE-FIRST for consistency.
 
     How it works (and why): a fresh generation invents a new character every
@@ -1195,6 +1412,18 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     stance. LOOK at the reference preview before the poses run wild, and at the
     sheet preview before importing. Cost: 1 ref + 1 edit per pose (~$0.04-0.25
     each by quality). Failed poses are listed, never silently shipped.
+
+    THIS IS THE MOST EXPENSIVE TOOL HERE and it is capped like it. The plan is
+    priced before anything is bought and REFUSED if it exceeds max_cost_usd (or,
+    unset, the work item's ceiling / the project's per_item_usd) or the project
+    /day budget; the running tally is re-checked before every pose, so a retry
+    storm stops mid-set instead of discovering the overrun on the invoice.
+    `timeout` bounds ONE image call and `max_seconds` the whole run — past the
+    deadline the remaining poses are reported as skipped and whatever was made
+    is still assembled, because half a sheet plus a reason beats a hung call.
+
+    Returns the assembled sheet result, or {ok: false, stage, error} when the
+    spend gate, the reference gate or every pose fails.
     """
     try:
         if not poses:
@@ -1205,6 +1434,24 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         root = _Path(_root())
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
+
+        # PRICE THE RUN BEFORE BUYING ANY OF IT. One reference (skipped when an
+        # approved ref_image is reused) plus one edit per pose, at this call's
+        # qualities. Retries are deliberately NOT in the estimate — they are
+        # bounded per pose and caught by the running check below; pricing the
+        # worst case up front would refuse healthy runs.
+        ceiling = _run_ceiling(str(root), max_cost_usd)
+        per_pose = imagegen.price_per_image(quality)
+        projected = round(
+            (0.0 if ref_image else imagegen.price_per_image(ref_quality))
+            + per_pose * len(poses), 4)
+        refused = _spend_gate(
+            str(root), projected,
+            f"painting {len(poses)} poses for {name!r}", ceiling)
+        if refused:
+            return {**refused, "poses_attempted": 0, "name": name}
+        deadline = _time.monotonic() + max(60, int(max_seconds))
+        call_timeout = float(max(30, int(timeout)))
 
         # The stored visual identity, if one exists — injected into EVERY
         # prompt so no generation depends on anyone's memory of the character.
@@ -1244,7 +1491,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "background, no text, no logo, no ground shadow.",
                     ref_path, size="1024x1536", quality=ref_quality,
                     transparent=True, root=root, logical_name=name,
-                    work_item_id=_work_item_id())
+                    work_item_id=_work_item_id(), timeout=call_timeout)
                 _tally(r)
                 if r.get("ok"):
                     result["reference_preview"] = _archive_preview(
@@ -1318,7 +1565,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 + identity,
                 refs, out_png, size="1024x1536", quality=quality,
                 transparent=False, root=root, logical_name=name,
-                work_item_id=_work_item_id())
+                work_item_id=_work_item_id(), timeout=call_timeout)
             _tally(got)
             # STAGE 3 — key the chroma backdrop out to clean transparency.
             if got.get("ok"):
@@ -1331,10 +1578,29 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     pass
             return got
 
+        def _stop_reason(next_cost: float) -> str:
+            """Why this run must not start another paid call — or "" to go on.
+            Checked before EVERY pose: the estimate up front is a plan, and a
+            plan is not a cap once retries and a slow API get involved."""
+            if _time.monotonic() >= deadline:
+                return (f"run deadline reached ({max_seconds}s) after "
+                        f"{tally['calls']} image calls")
+            if ceiling and tally["estimated_usd"] + next_cost > ceiling:
+                return (f"run ceiling reached (~${tally['estimated_usd']:.2f} "
+                        f"spent of ${ceiling:.2f})")
+            return ""
+
         for pose in poses:
             pname = pose["name"]
             desc = pose.get("description", pname)
             pose_desc[pname] = desc
+            stop = _stop_reason(per_pose)
+            if stop:
+                # Stop BUYING, don't abort: the poses already painted still
+                # assemble into a partial sheet, and the caller is told exactly
+                # which ones never ran and why.
+                pose_errors.append({"name": pname, "error": f"skipped — {stop}"})
+                continue
             anim, _, idx = pname.partition("/")
             out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
             refs = [ref_path]
@@ -1424,6 +1690,18 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             for pname in flagged:
                 if pname not in pose_path or pname not in pose_desc:
                     continue
+                stop = _stop_reason(per_pose)
+                if stop:
+                    # Re-rolls are where an unbounded run actually happens: the
+                    # gate can flag every frame every round. The cap applies to
+                    # them exactly as it does to the first pass.
+                    # Into pose_errors, not into `assembled`: every assemble
+                    # re-extends its failed list from here, and `assembled` is
+                    # about to be replaced by the next one.
+                    pose_errors.append(
+                        {"name": pname, "error": f"regen skipped — {stop}"})
+                    tries = 0
+                    break
                 bak = pose_path[pname] + ".bak"
                 try:
                     _shutil.copy2(pose_path[pname], bak); backups[pname] = bak
@@ -1447,6 +1725,13 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 
         assembled["reference"] = ref_path
         assembled["chroma"] = result.get("chroma")
+        assembled["spend"] = {
+            "estimated_usd": round(tally["estimated_usd"], 4),
+            "image_calls": tally["calls"],
+            "seconds": round(tally["seconds"], 2),
+            "ceiling_usd": round(ceiling, 4) if ceiling else None,
+            "timed_out": _time.monotonic() >= deadline,
+        }
         if "reference_preview" in result:
             assembled["reference_preview"] = result["reference_preview"]
         if assembled.get("ok"):
@@ -1627,9 +1912,12 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
     godot_project: the directory holding project.godot.
     """
     try:
-        out = str(_Path(_root()) / ".bgate_out" / "shot.png")
+        # One file per capture. A single shot.png meant two seats screenshotting
+        # at the same moment each got back a path holding the OTHER one's game.
+        out = str(_Path(_root()) / ".bgate_out" / "shots" /
+                  f"{_run_tag(label or 'game')}.png")
     except Exception:
-        out = "bgate_shot.png"
+        out = f"bgate_shot_{_run_tag()}.png"
     try:
         result = _godot.screenshot(godot_project, out, at=at, scene=scene,
                                    timeout=timeout)
@@ -1656,6 +1944,144 @@ def godot_inspect_resource(godot_project: str, res_path: str, timeout: int = 180
     """
     try:
         return _godot.inspect_resource(godot_project, res_path, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = None,
+                   overlay: bool = True, label: str = "",
+                   timeout: int = 120) -> dict:
+    """Capture a frame PLUS a screen-space manifest of what is actually where.
+
+    The upgrade over godot_screenshot. A PNG shows what the game looks like; it
+    cannot tell you whether the health bar matches the fighter's real hp,
+    whether a hitbox lines up with its sprite, or whether an entity is on
+    screen at all. This runs the game the same way, then walks the live tree at
+    capture time and reports every measurable node as screen-pixel bounds,
+    visibility, z, and — for progress bars and labels — its RUNTIME VALUE.
+
+    Returns beauty.png, an overlay.png with collision shapes (red) and other
+    bounds (blue) stroked over the frame, and manifest.json with `entities` and
+    `ui`. Pair with `causal_chains` — the manifest says what was on screen, the
+    chains say why it happened.
+
+    godot_project: the directory holding project.godot.
+    """
+    try:
+        out_dir = str(_Path(_root()) / ".bgate_out" / "evidence" /
+                      _run_tag(label or "frame"))
+    except Exception:
+        out_dir = f"bgate_evidence_{_run_tag()}"
+    try:
+        result = _godot.evidence(godot_project, out_dir, at=at, scene=scene,
+                                 overlay=overlay, timeout=timeout)
+        if result.get("ok"):
+            for key, tag in (("beauty", "beauty"), ("overlay", "overlay")):
+                path = result.get(key)
+                if path:
+                    archived = _archive_preview(
+                        path, f"evidence-{tag}-{label or 'frame'}")
+                    if archived:
+                        result[f"{key}_preview"] = archived
+            counts = result.get("counts", {})
+            _log("evidence",
+                 f"captured {counts.get('entities', 0)} entities / "
+                 f"{counts.get('ui', 0)} ui elements at t={at}s"
+                 + (f" ({label})" if label else ""),
+                 ref=result.get("beauty_preview") or result.get("beauty") or "")
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def evidence_check_ui(manifest_path: str, expect: dict,
+                      tolerance: float = 0.5) -> dict:
+    """Assert HUD values from an evidence manifest against expected state.
+
+    `expect` maps a UI node name to the value it should be showing, e.g.
+    {"PlayerHealth": 92}. Numeric checks use `tolerance` so a bar mid-tween
+    does not fail as a bug. This is the assertion godot_screenshot could never
+    support: proof the HUD agrees with the sim, not a picture of a bar.
+    """
+    try:
+        manifest = _json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
+        return _godot.check_ui_matches(manifest, expect, tolerance=tolerance)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Causal chains — DESIGN.md §8 over shipped telemetry, no engine required
+
+
+def _telemetry_path(session: Optional[int], telemetry_path: str) -> str:
+    """Resolve a telemetry file from either an explicit path or a session id."""
+    if telemetry_path:
+        return telemetry_path
+    if session is None:
+        raise ValueError("pass either session (a playtest id) or telemetry_path")
+    row = _playtest.get(_root(), session)
+    path = row.get("telemetry_path") or ""
+    if not path:
+        raise ValueError(f"playtest session {session} has no telemetry file")
+    return path
+
+
+@_tool
+def causal_chains(session: Optional[int] = None, telemetry_path: str = "",
+                  spec: str = "fighter_attack", actor: str = "",
+                  outcome: str = "", failed_gate: str = "", move: str = "",
+                  limit: int = 40) -> dict:
+    """Why did that attack fail? The gate ladder, reconstructed from telemetry.
+
+    A log line says `punch_whiffed reason=facing`. A causal chain says the
+    attack was thrown, cleared the cooldown, paid stamina, reached contact,
+    PASSED the range gate at dist=104 vs reach=115, and then failed on facing —
+    which is a completely different bug from failing on range, and the raw
+    event cannot distinguish them.
+
+    Works on telemetry the game ALREADY emits: no engine, no new store, no
+    change to the game. The inference is sound because the gates run in a fixed
+    order, so the gate that failed implies every earlier one passed. Run
+    `causal_spec` to see the ladder that inference rests on.
+
+    Filter with actor ("player"/"opponent"), outcome ("landed", "whiffed",
+    "blocked", "refused", "ducked", "aborted", "dropped"), failed_gate
+    ("range_ok", "facing_ok", "elevation_ok", "guard_ok"), or move ("jab").
+    """
+    try:
+        path = _telemetry_path(session, telemetry_path)
+        chains = _causal.chains_from_file(path, spec)
+        summary = _causal.summarize(chains)
+        filtered = _causal.find(
+            chains, actor=actor or None, outcome=outcome or None,
+            failed_gate=failed_gate or None, move=move or None, limit=limit)
+        return {
+            "ok": True,
+            "telemetry": path,
+            "spec": spec,
+            "summary": summary,
+            "returned": len(filtered),
+            "chains": filtered,
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def causal_spec(spec: str = "fighter_attack") -> dict:
+    """The gate ladder causal_chains asserts, and the source lines it mirrors.
+
+    Read this before trusting a chain. Every PASS in a chain is an INFERENCE
+    from gate ordering, not an observation — it is only sound while this ladder
+    matches the game's real resolution order. If someone reorders the gates in
+    the game, this is what has to change with them.
+    """
+    try:
+        return {"ok": True, **_causal.describe_spec(spec),
+                "available": list(_causal.SPECS)}
     except Exception as exc:
         return _fail(exc)
 
@@ -1751,7 +2177,11 @@ def consistency_check(candidate_path: str, character: str) -> dict:
                           (24, 24, 28))
         combo.paste(_board(ref), (0, 0))
         combo.paste(_board(cand), (ref.width + 12, 0))
-        out = root / ".bgate_out" / "art" / "consistency_check.png"
+        # Per-call composite: the shared consistency_check.png meant a second
+        # seat's comparison landed on the path the first seat was told to LOOK
+        # at, so a frame could be judged against someone else's reference.
+        out = (root / ".bgate_out" / "art" / "checks" /
+               f"{_run_tag(_Path(candidate_path).stem)}.png")
         out.parent.mkdir(parents=True, exist_ok=True)
         combo.save(out)
         archived = _archive_preview(str(out),
@@ -2234,8 +2664,33 @@ def seat_can_write(role: str, path: str) -> dict:
 def seat_configure(role: str, enabled: Optional[bool] = None,
                    write_globs: Optional[list[str]] = None,
                    mission: Optional[str] = None) -> dict:
-    """Override a seat for this project: disable it, or change lanes/mission."""
+    """Override a seat for this project: change its mission, or (human only)
+    its write lanes and enabled flag.
+
+    `mission` is prose about what a seat should focus on and any caller may
+    rewrite it. `write_globs` and `enabled` are PERMISSIONS, and an agent
+    calling this is refused: write_globs=['**'] is a seat granting itself the
+    whole repo, and enabled=false is a seat switching off the QA that would
+    have caught it. A lane change that comes from a machine is not a lane
+    system, it is a suggestion. Ask the human to make the change in the
+    dashboard, or state the case in a work item and let them decide.
+
+    Returns the merged seat {role, title, mission, write_globs, enabled}, or
+    {ok: false, error} — including on the permission refusal, which is a normal
+    result to read and route around, not a crash.
+    """
     try:
+        privileged = [name for name, value in
+                      (("write_globs", write_globs), ("enabled", enabled))
+                      if value is not None]
+        if privileged and _caller_is_agent():
+            raise PermissionError(
+                f"{_actor() or 'an agent session'} may not change "
+                f"{', '.join(privileged)} on seat {role!r} — write lanes and the "
+                "enabled flag are a human's call, because a seat that can widen "
+                "its own lanes has no lanes. Change the mission here if that is "
+                "what you meant, or ask the human to edit the seat in the "
+                "dashboard (Seats -> " + role + ").")
         return _seats.configure(_root(), role, enabled=enabled,
                                 write_globs=write_globs, mission=mission)
     except Exception as exc:

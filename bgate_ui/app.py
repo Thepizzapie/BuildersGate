@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -24,6 +26,7 @@ from bgate_core import (
     activity, artifacts, assets, bible, db, iterations, lore, playtest,
     project, scaffold, seats,
 )
+from bgate_core import controls as _controls
 from bgate_core import queue as _queue
 from bgate_core.util import rows as _rows
 from bgate_ui import api as _api
@@ -55,18 +58,207 @@ def _start_qa_gate() -> None:
                          f"reaped {len(swept['killed'])} orphaned agent(s)")
     except Exception:
         pass
+    # Same problem one layer over: a recording ffmpeg outlives the server too.
+    try:
+        _repair_orphan_recordings(_root())
+    except Exception:
+        pass
+    # Settle anything the last run left mid-flight. status() is a pure read now,
+    # so nothing else will do this on a poll — an item stranded in 'dispatched'
+    # would otherwise sit there until someone dispatched it again.
+    try:
+        _dispatch.sweep(str(_root()))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Orphaned recordings — a restart mid-session leaves ffmpeg running
+# ---------------------------------------------------------------------------
+# recorder.start() holds ffmpeg's stdin so stop() can send 'q' and let it write
+# the moov atom. Kill the server instead and BOTH halves are lost: ffmpeg keeps
+# capturing the desktop forever against a session nobody will ever stop, and the
+# mp4 it is writing has no index, so the review overlay offers a video that no
+# player can open. The session row, meanwhile, still says 'recording' — which
+# blocks the next playtest.start() ("already recording") for good.
+#
+# So a restart reaps it: kill the capture, try to salvage the file, and tell the
+# truth about the session instead of leaving all three states lying.
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_ORPHAN_REASON = ("the server restarted while this session was recording — "
+                  "the capture was reaped and the audio was never written")
+
+
+def _ffmpeg_pids_for(needle: str) -> list[int]:
+    """PIDs of ffmpeg processes whose command line mentions ``needle``.
+
+    tasklist cannot show a command line and the pid was never persisted, so the
+    output path IS the identity — matching it is what keeps this from killing
+    an unrelated ffmpeg the user is running. Best effort: no CIM, no kills.
+    """
+    import json as _json
+
+    script = ("Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | "
+              "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress")
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=20,
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW).stdout
+        data = _json.loads(out.strip() or "[]")
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    want = needle.lower()
+    return [int(row["ProcessId"]) for row in data
+            if isinstance(row, dict) and row.get("ProcessId")
+            and want in (row.get("CommandLine") or "").lower()]
+
+
+def _kill_ffmpeg(pid: int) -> None:
+    """Ask, then insist. /T because gdigrab capture is the whole tree."""
+    for args in (["taskkill", "/PID", str(pid), "/T"],
+                 ["taskkill", "/PID", str(pid), "/T", "/F"]):
+        try:
+            done = subprocess.run(args, capture_output=True, text=True,
+                                  timeout=20, creationflags=_NO_WINDOW)
+            if done.returncode == 0:
+                return
+        except Exception:
+            return
+
+
+def _finalise_orphan_video(path: Path) -> bool:
+    """Remux an unfinalised mp4 in place. True when it is playable afterwards.
+
+    ffmpeg can rebuild an index from the raw stream it already wrote, which is
+    the difference between a recoverable session and a 300 MB file the browser
+    reports as corrupt. If it cannot, we say so rather than serving the wreck.
+    """
+    try:
+        from bgate_adapters.recorder import find_ffmpeg
+        ffmpeg = find_ffmpeg()
+    except Exception:
+        return False
+    if not path.is_file() or path.stat().st_size == 0:
+        return False
+    fixed = path.with_suffix(".repaired.mp4")
+    try:
+        done = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-err_detect", "ignore_err",
+             "-i", str(path), "-c", "copy", "-movflags", "+faststart",
+             str(fixed)],
+            capture_output=True, text=True, timeout=300,
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except Exception:
+        return False
+    if done.returncode != 0 or not fixed.is_file() or fixed.stat().st_size == 0:
+        fixed.unlink(missing_ok=True)
+        return False
+    try:
+        fixed.replace(path)
+    except OSError:
+        return False
+    return True
+
+
+def _repair_orphan_recordings(root: Path) -> list[dict]:
+    """Close out every session still marked 'recording' at startup.
+
+    Nothing can legitimately be recording when the process that owned the
+    capture has just started: playtest keeps its handles in memory.
+    """
+    try:
+        stuck = _rows(db.connect(root).execute(
+            "SELECT id, name, video_path FROM playtest_session "
+            "WHERE status = 'recording'"))
+    except Exception:
+        return []
+    repaired = []
+    for session in stuck:
+        video = (session["video_path"] or "").strip()
+        killed = []
+        if video:
+            for pid in _ffmpeg_pids_for(video):
+                _kill_ffmpeg(pid)
+                killed.append(pid)
+        playable = bool(video) and _finalise_orphan_video(Path(video))
+        reason = _ORPHAN_REASON + (
+            "; the video was salvaged" if playable else
+            "; the video could not be finalised")
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE playtest_session SET status = 'failed', "
+                "processing_stage = 'orphaned', processing_error = ?, "
+                "error = ?, ended_at = COALESCE(ended_at, datetime('now')), "
+                # An unplayable file is worse than none: pt_video answers "no
+                # video yet" instead of streaming bytes no player can decode.
+                "video_path = CASE WHEN ? THEN video_path ELSE '' END "
+                "WHERE id = ?",
+                (reason, reason, 1 if playable else 0, session["id"]))
+        try:
+            activity.log(root, "playtest",
+                         f"reaped orphaned recording {session['id']} "
+                         f"({'video salvaged' if playable else 'video lost'})",
+                         ref=str(session["id"]))
+        except Exception:
+            pass
+        repaired.append({"session_id": session["id"], "killed": killed,
+                         "video_playable": playable})
+    return repaired
+
+
+# ---------------------------------------------------------------------------
+# Asset verification — expensive, so never on the poll thread
+# ---------------------------------------------------------------------------
 _verify_cache: dict[str, tuple[float, dict]] = {}
+_verify_refreshing: set[str] = set()
+# 10s was shorter than the interval between the two pollers that read it, so
+# every /api/state paid for a full re-hash of every tracked binary.
+_VERIFY_TTL = 30.0
 
 
 def _asset_verification(root: Path, *, force: bool = False) -> dict:
+    """Verify now, on this thread. The on-demand answer (POST /api/assets/verify)."""
     key = str(root.resolve())
     cached = _verify_cache.get(key)
-    if not force and cached and time.monotonic() - cached[0] < 10:
+    if not force and cached and time.monotonic() - cached[0] < _VERIFY_TTL:
         return cached[1]
     result = assets.verify(root)
     result["verified_at"] = time.time()
+    result["stale"] = False
     _verify_cache[key] = (time.monotonic(), result)
     return result
+
+
+def _verification_snapshot(root: Path) -> dict:
+    """The verification /api/state gets — hashing never happens on the poll.
+
+    assets.verify() full-sha256s every tracked binary; two independent pollers
+    (3s and 4s) hitting a 10s cache meant a project of large .blend/.png files
+    re-hashed itself forever, for a panel nobody was looking at. The first call
+    computes (there is nothing else to show); after that the last answer is
+    served immediately and a daemon thread refreshes it when it goes stale.
+    """
+    key = str(root.resolve())
+    cached = _verify_cache.get(key)
+    if cached is None:
+        return _asset_verification(root)
+    age = time.monotonic() - cached[0]
+    if age >= _VERIFY_TTL and key not in _verify_refreshing:
+        _verify_refreshing.add(key)
+
+        def _refresh() -> None:
+            try:
+                _asset_verification(root, force=True)
+            finally:
+                _verify_refreshing.discard(key)
+
+        threading.Thread(target=_refresh, name="asset-verify",
+                         daemon=True).start()
+    return {**cached[1], "stale": age >= _VERIFY_TTL}
 
 
 @app.middleware("http")
@@ -91,8 +283,8 @@ def _root() -> Path:
         return Path(override)
     root = db.resolve_root()
     if root is None:
-        raise HTTPException(503, "no .bgate project at or above the cwd — "
-                                 "run the dashboard from inside a game project")
+        raise _api.unavailable("no .bgate project at or above the cwd — "
+                               "run the dashboard from inside a game project")
     return root
 
 
@@ -105,7 +297,7 @@ def _root_or_none() -> Optional[Path]:
     """
     try:
         return _root()
-    except HTTPException:
+    except (_api.ApiError, HTTPException):
         return None
 
 
@@ -300,7 +492,7 @@ def state() -> dict:
         "artifacts": artifacts.list_revisions(root, limit=100),
         "asset_groups": artifacts.workspace(root),
         "iterations": iterations.list_iterations(root, limit=12),
-        "verify": _asset_verification(root),
+        "verify": _verification_snapshot(root),
         "bible": bible.overview(root),
         "lore": {
             "canon": lore.list_entities(root, status="canon"),
@@ -333,11 +525,11 @@ def preview(rel: str) -> FileResponse:
     try:
         target.relative_to(root)
     except ValueError:
-        raise HTTPException(403, "path escapes the project root")
+        raise _api.forbidden("path escapes the project root", rel=rel)
     if target.suffix.lower() not in _IMAGE_SUFFIXES:
-        raise HTTPException(415, "images only")
+        raise _api.ApiError(415, "images only", detail={"rel": rel})
     if not target.is_file():
-        raise HTTPException(404, f"no image at {rel}")
+        raise _api.not_found(f"no image at {rel}", rel=rel)
     return FileResponse(target)
 
 
@@ -369,9 +561,42 @@ def queue_list(request: Request, status: Optional[str] = None,
 
 @app.post("/api/queue")
 def queue_add(payload: dict) -> dict:
-    return _queue.add(_root(), payload["seat"], payload["title"],
-                      brief=payload.get("brief", ""),
-                      priority=int(payload.get("priority", 0)))
+    """Add a work item.
+
+    Two bugs in one line before: ``payload["seat"]`` on a body without one was a
+    KeyError, i.e. a 500 for a typo; and source/source_ref were dropped on the
+    floor, so anything filed through HTTP lost its provenance and the director's
+    source badge rendered "manual" for playtest- and QA-born work alike.
+    """
+    seat = str(payload.get("seat") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    missing = [field for field, value in (("seat", seat), ("title", title))
+               if not value]
+    if missing:
+        raise _api.bad_request(f"a work item needs {' and '.join(missing)}",
+                               missing=missing)
+    try:
+        priority = int(payload.get("priority") or 0)
+    except (TypeError, ValueError):
+        raise _api.bad_request("priority must be a whole number",
+                               priority=payload.get("priority"))
+    tier = payload.get("scope_tier_id")
+    try:
+        tier = None if tier in (None, "") else int(tier)
+    except (TypeError, ValueError):
+        raise _api.bad_request("scope_tier_id must be a scope tier id",
+                               scope_tier_id=payload.get("scope_tier_id"))
+    try:
+        return _queue.add(_root(), seat, title,
+                          brief=str(payload.get("brief") or ""),
+                          priority=priority,
+                          source=str(payload.get("source") or "manual"),
+                          source_ref=str(payload.get("source_ref") or ""),
+                          scope_tier_id=tier)
+    except ValueError as exc:
+        # Unknown seat, blank title, and out-of-scope (OutOfScope subclasses
+        # ValueError) — all of them are the caller's, not the server's.
+        raise _api.bad_request(str(exc), seat=seat)
 
 
 @app.get("/api/screenmap")
@@ -382,36 +607,60 @@ def screenmap_view() -> dict:
     return _screenmap.scan(_root())
 
 
+# A waiter costs nothing while it waits (see queue_wait) but it still holds a
+# connection, so it is bounded anyway: a caller that still cares re-issues, and
+# the re-issue is also how we learn it is still alive.
+_WAIT_MAX_S = 120
+_WAIT_MAX_IDS = 200
+_WAIT_TICK_S = 2.0
+
+
 @app.get("/api/queue/wait")
-def queue_wait(ids: str, timeout_s: int = 600) -> dict:
+async def queue_wait(ids: str, timeout_s: int = 60) -> dict:
     """LONG-POLL: block until any of the given items reaches done/failed.
 
     ids is comma-separated ("101,105"). This is the anti-sleep-poll: an
     orchestrator fires ONE background request per dispatch batch and gets
     woken the moment an agent self-reports (or dies and gets reaped) instead
-    of guessing check-in intervals. Runs in FastAPI's threadpool, so blocking
-    here doesn't stall the event loop; check interval is 2s against the DB,
-    which every completion path writes through (queue.set_status).
+    of guessing check-in intervals.
+
+    Async, and capped at _WAIT_MAX_S. It used to be a sync handler sleeping up
+    to THIRTY MINUTES, which pinned one of FastAPI's threadpool workers per
+    waiter — a couple of dispatch batches and the server had no workers left for
+    the dashboard's own polls, i.e. the feature starved the page that uses it.
+    Awaiting on the event loop holds no worker at all; the 2s DB check runs in a
+    thread only for the microseconds it takes.
     """
-    import time as _time
-    want = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    import asyncio
+
+    want = [int(x) for x in ids.split(",") if x.strip().isdigit()][:_WAIT_MAX_IDS]
     if not want:
-        return {"error": "ids must be a comma-separated list of item ids"}
-    deadline = _time.monotonic() + max(5, min(int(timeout_s), 1800))
+        # Sentence + code, deliberately at 200: this route's callers are
+        # orchestrators reading `error` as prose (see the contract test).
+        return {"ok": False, "code": "bad_request",
+                "error": "ids must be a comma-separated list of item ids"}
+    budget = max(5, min(int(timeout_s), _WAIT_MAX_S))
+    deadline = time.monotonic() + budget
     root = _root()
-    while True:
-        statuses = {}
-        for i in want:
+
+    def _statuses() -> dict:
+        out = {}
+        for item_id in want:
             try:
-                statuses[i] = _queue.get(root, i)["status"]
+                out[item_id] = _queue.get(root, item_id)["status"]
             except LookupError:
-                statuses[i] = "missing"
+                out[item_id] = "missing"
+        return out
+
+    while True:
+        statuses = await asyncio.to_thread(_statuses)
         finished = {i: s for i, s in statuses.items()
-                    if s in ("done", "failed", "missing")}
-        if finished or _time.monotonic() >= deadline:
+                    if s in ("done", "failed", "cancelled", "missing")}
+        remaining = deadline - time.monotonic()
+        if finished or remaining <= 0:
             return {"finished": finished, "statuses": statuses,
-                    "timed_out": not finished}
-        _time.sleep(2.0)
+                    "timed_out": not finished, "waited_budget_s": budget}
+        await asyncio.sleep(min(_WAIT_TICK_S, remaining))
 
 
 @app.post("/api/queue/{item_id}/dispatch")
@@ -446,13 +695,35 @@ def agents(request: Request, page: _api.Page = Depends()) -> dict:
         lambda limit, offset: (running[offset:offset + limit], len(running)))
 
 
+_RUN_MARKER = '"bgate_run_start"'
+
+
 @app.get("/api/agent-log/{item_id}")
-def agent_log(item_id: int, tail: int = 60) -> dict:
+def agent_log(item_id: int, tail: int = 60, all_runs: bool = False) -> dict:
+    """The raw stream-json log, one RUN at a time.
+
+    The log appends across re-dispatches, so a tail that spanned a boundary
+    interleaved a dead run's output with the live one and read as a single
+    incoherent session — read_activity has always seeked past the last
+    bgate_run_start marker, this did not. ?all_runs=1 keeps the history, with a
+    visible separator where a splice used to be silent.
+    """
     path = _root() / ".bgate" / "agents" / f"item-{item_id}.log"
     if not path.is_file():
-        return {"lines": []}
+        return {"lines": [], "runs": 0, "run": 0}
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return {"lines": lines[-tail:]}
+    starts = [i for i, line in enumerate(lines) if _RUN_MARKER in line]
+    runs = len(starts)
+    if all_runs:
+        out: list[str] = []
+        for index, line in enumerate(lines):
+            if index in starts:
+                out.append(f"───── run {starts.index(index) + 1} of {runs} ─────")
+            out.append(line)
+        return {"lines": out[-tail:], "runs": runs, "run": runs}
+    if starts:
+        lines = lines[starts[-1]:]
+    return {"lines": lines[-tail:], "runs": runs, "run": runs}
 
 
 @app.get("/api/agent-activity/{item_id}")
@@ -493,7 +764,7 @@ def artifact_review(artifact_id: int, payload: dict) -> dict:
         return artifacts.review(
             _root(), artifact_id, payload.get("status", ""), payload.get("note", ""))
     except (LookupError, ValueError) as exc:
-        raise HTTPException(400, str(exc))
+        raise _api.bad_request(str(exc), artifact_id=artifact_id)
 
 
 @app.post("/api/artifacts/{artifact_id}/react")
@@ -502,50 +773,88 @@ def artifact_react(artifact_id: int, payload: dict) -> dict:
       1. disposition — like -> approved, dislike -> rejected (with the note);
       2. durable art-seat preference note (future agents read it in seat_brief);
       3. if a live agent is working the item, steer it to course-correct NOW.
-    Payload: {verdict: 'like'|'dislike', note?: str, item_id?: int}."""
+    Payload: {verdict: 'like'|'dislike', note?: str, item_id?: int}.
+
+    Every effect reports its own outcome in ``effects``, and ``ok`` is true only
+    when the ones that were attempted all worked. It used to return ok:true
+    unconditionally with a grab-bag of optional *_error keys, so a verdict that
+    saved nothing and steered nobody looked exactly like one that did all three.
+    """
     root = _root()
     verdict = (payload.get("verdict") or "").lower()
     note = (payload.get("note") or "").strip()
     item_id = payload.get("item_id")
+    if verdict not in ("like", "dislike"):
+        raise _api.bad_request("verdict must be 'like' or 'dislike'",
+                               verdict=payload.get("verdict"))
     try:
         art = artifacts.get(root, artifact_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc))
+        raise _api.not_found(str(exc), artifact_id=artifact_id)
     name = art.get("logical_name") or f"artifact {artifact_id}"
-    out = {"ok": True, "verdict": verdict, "artifact": name}
+    effects: dict[str, dict] = {}
+    out = {"ok": True, "verdict": verdict, "artifact": name, "effects": effects}
+
+    def _effect(kind: str, work) -> None:
+        """Run one fan-out leg and record what actually happened to it."""
+        try:
+            effects[kind] = {"attempted": True, "ok": True, **(work() or {})}
+        except Exception as exc:
+            effects[kind] = {"attempted": True, "ok": False,
+                             "error": f"{type(exc).__name__}: {exc}"}
 
     # 1. disposition
-    status = {"like": "approved", "dislike": "rejected"}.get(verdict, "")
-    if status:
-        try:
-            artifacts.review(root, artifact_id, status, note); out["reviewed"] = status
-        except Exception as exc:
-            out["review_error"] = str(exc)
+    status = "approved" if verdict == "like" else "rejected"
+
+    def _review() -> dict:
+        artifacts.review(root, artifact_id, status, note)
+        out["reviewed"] = status          # legacy key the dashboard reads
+        return {"status": status}
+
+    _effect("disposition", _review)
 
     # 2. durable preference the next art agent reads in seat_brief
-    if verdict:
-        body = (("KEEP / on-model" if verdict == "like" else "AVOID / off-model")
-                + f" — {name}" + (f": {note}" if note else "")
-                + f" (via live like/dislike).")
-        try:
-            seats.post_note(root, "art", "ART PREFERENCE — " + body, topic="art-feedback")
-            out["saved_preference"] = True
-        except Exception as exc:
-            out["note_error"] = str(exc)
+    body = (("KEEP / on-model" if verdict == "like" else "AVOID / off-model")
+            + f" — {name}" + (f": {note}" if note else "")
+            + f" (via live like/dislike).")
+
+    def _note() -> dict:
+        seats.post_note(root, "art", "ART PREFERENCE — " + body,
+                        topic="art-feedback")
+        out["saved_preference"] = True
+        return {}
+
+    _effect("seat_note", _note)
 
     # 3. live course-correction — dislike always steers; a like only steers if it
     #    carries a note (a bare like is just a keeper, no need to interrupt).
-    if item_id and (verdict == "dislike" or note):
+    wants_steer = bool(item_id) and (verdict == "dislike" or bool(note))
+    if not wants_steer:
+        effects["steer"] = {"attempted": False, "ok": True,
+                            "reason": "no running item to steer" if not item_id
+                                      else "a bare like does not interrupt work"}
+    else:
         icon = "👎 disliked" if verdict == "dislike" else "👍 liked"
         msg = (f"DIRECTOR FEEDBACK on {name}: {icon}."
                + (f" {note}." if note else "")
                + (" Regenerate that animation to fix it (re-run image_sprites for it);"
                   " do NOT self-approve." if verdict == "dislike" else ""))
-        try:
-            r = _dispatch.steer(str(root), int(item_id), msg)
-            out["steered"] = bool(r.get("ok")); out["steer"] = r
-        except Exception as exc:
-            out["steer_error"] = str(exc)
+
+        def _steer() -> dict:
+            result = _dispatch.steer(str(root), int(item_id), msg)
+            out["steer"] = result          # legacy keys the dashboard reads
+            out["steered"] = bool(result.get("ok"))
+            # dispatch.steer answers in sentence+code form, not by raising: a
+            # steer aimed at an item with no live agent is a real failure here.
+            return {"ok": bool(result.get("ok")),
+                    "error": str(result.get("error") or "")}
+
+        _effect("steer", _steer)
+        out.setdefault("steered", False)
+
+    out["failed"] = sorted(k for k, e in effects.items()
+                           if e["attempted"] and not e["ok"])
+    out["ok"] = not out["failed"]
     return out
 
 
@@ -560,10 +869,11 @@ def artifact_restore(artifact_id: int) -> dict:
     try:
         art = artifacts.get(root, artifact_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc))
+        raise _api.not_found(str(exc), artifact_id=artifact_id)
     arch = (art.get("metadata") or {}).get("preview")
     if not arch or not Path(arch).is_file():
-        raise HTTPException(400, "no archived snapshot for this revision to restore")
+        raise _api.bad_request("no archived snapshot for this revision to restore",
+                               artifact_id=artifact_id)
     dst = Path(root) / art["path"]
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(arch, dst)
@@ -590,7 +900,7 @@ def artifact_regenerate(artifact_id: int, payload: Optional[dict] = None) -> dic
         return artifacts.regenerate(
             _root(), artifact_id, (payload or {}).get("reason", ""))
     except (LookupError, ValueError) as exc:
-        raise HTTPException(400, str(exc))
+        raise _api.bad_request(str(exc), artifact_id=artifact_id)
 
 
 @app.post("/api/artifacts/{artifact_id}/feedback/{item_id}")
@@ -601,7 +911,7 @@ def artifact_link_feedback(artifact_id: int, item_id: int,
             _root(), artifact_id, item_id,
             float((payload or {}).get("confidence", 1.0)))
     except (LookupError, ValueError) as exc:
-        raise HTTPException(400, str(exc))
+        raise _api.bad_request(str(exc), artifact_id=artifact_id, item_id=item_id)
 
 
 @app.get("/api/iterations")
@@ -626,7 +936,7 @@ def iteration_detail(iteration_id: int) -> dict:
     try:
         return iterations.get(_root(), iteration_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc))
+        raise _api.not_found(str(exc), iteration_id=iteration_id)
 
 
 @app.post("/api/assets/verify")
@@ -738,7 +1048,11 @@ def pt_start(payload: Optional[dict] = None) -> dict:
                               game_cmd=payload.get("game_cmd", ""),
                               launch_native=bool(payload.get("launch_native")))
     except Exception as exc:
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        # Sentence + code at 200, like dispatch(): the record button renders
+        # `error` as prose next to a still-usable control, and a preflight that
+        # says "your mic is muted" is advice, not a transport failure.
+        return {"ok": False, "code": "record_failed",
+                "error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.post("/api/playtest/stop")
@@ -753,7 +1067,8 @@ def pt_stop() -> dict:
     try:
         session = playtest._active(root, None)
     except LookupError as exc:
-        return {"ok": False, "error": str(exc)}
+        # Sentence + code at 200 — same convention as pt_start above.
+        return {"ok": False, "code": "not_recording", "error": str(exc)}
     sid = session["id"]
     _pt_processing[sid] = "processing"
     with db.tx(root) as conn:
@@ -810,10 +1125,12 @@ def pt_retry(session_id: int) -> dict:
 
     root = _root()
     if _pt_processing.get(session_id) == "processing":
-        raise HTTPException(409, "session processing is already running")
+        raise _api.conflict("session processing is already running",
+                            session_id=session_id)
     session = playtest.get(root, session_id)
     if not session["audio_path"] or not Path(session["audio_path"]).is_file():
-        raise HTTPException(409, "session has no captured audio to transcribe")
+        raise _api.conflict("session has no captured audio to transcribe",
+                            session_id=session_id)
     _pt_processing[session_id] = "processing"
     threading.Thread(
         target=_finish_playtest, args=(root, session_id),
@@ -832,7 +1149,7 @@ def pt_event(session_id: int, payload: dict) -> dict:
             return {"ok": True, "accepted": len(accepted)}
         return playtest.ingest_web_event(_root(), session_id, payload)
     except (LookupError, RuntimeError, ValueError) as exc:
-        raise HTTPException(409, str(exc))
+        raise _api.conflict(str(exc), session_id=session_id)
 
 
 @app.get("/api/playtest/{session_id}")
@@ -875,7 +1192,7 @@ def pt_review(session_id: int, request: Request,
         result["page"] = windowed["page"]
         return result
     except LookupError as exc:
-        raise HTTPException(404, str(exc))
+        raise _api.not_found(str(exc), session_id=session_id)
 
 
 _RANGE_RE = re.compile(r"^bytes\s*=\s*(\d*)\s*-\s*(\d*)$")
@@ -999,7 +1316,7 @@ def pt_promote(item_id: int, payload: Optional[dict] = None) -> dict:
             root, item_id, seat=payload.get("seat"),
             kind=payload.get("kind"), ref=payload.get("ref", "app-review"))
     except (LookupError, ValueError) as exc:
-        raise HTTPException(400, str(exc))
+        raise _api.bad_request(str(exc), item_id=item_id)
 
 
 @app.post("/api/playtest/items/{item_id}/dismiss")
@@ -1007,15 +1324,17 @@ def pt_dismiss(item_id: int) -> dict:
     try:
         return playtest.dismiss(_root(), item_id)
     except LookupError as exc:
-        raise HTTPException(404, str(exc))
+        raise _api.not_found(str(exc), item_id=item_id)
 
 
 @app.post("/api/playtest/items/{item_id}/merge")
 def pt_merge(item_id: int, payload: dict) -> dict:
     try:
         return playtest.merge(_root(), item_id, int(payload["target_id"]))
-    except (LookupError, ValueError, KeyError) as exc:
-        raise HTTPException(400, str(exc))
+    except KeyError:
+        raise _api.bad_request("merge needs a target_id", item_id=item_id)
+    except (LookupError, ValueError) as exc:
+        raise _api.bad_request(str(exc), item_id=item_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1343,13 @@ def pt_merge(item_id: int, payload: dict) -> dict:
 @app.get("/api/play/status")
 def play_status() -> dict:
     from bgate_ui import webbuild
-    return webbuild.status(_root())
+    root = _root()
+    status = webbuild.status(root)
+    # The controls the player is about to use, read from the project's own
+    # input map. The panel used to hardcode one game's fighting-game bindings
+    # for every project; anything it says now is something the game does.
+    status["controls"] = _controls.for_project(root)
+    return status
 
 
 @app.post("/api/play/rebuild")
@@ -1040,14 +1365,15 @@ def play_files(file_path: str = "") -> FileResponse:
     root = _root().resolve()
     web = (root / "export" / "web").resolve()
     if not web.is_dir():
-        raise HTTPException(404, "no web build — export it first (tech seat)")
+        raise _api.not_found("no web build — export it first (tech seat)")
     target = (web / (file_path or "index.html")).resolve()
     try:
         target.relative_to(web)
     except ValueError:
-        raise HTTPException(403, "path escapes the build dir")
+        raise _api.forbidden("path escapes the build dir", path=file_path)
     if not target.is_file():
-        raise HTTPException(404, file_path)
+        raise _api.not_found(f"no file {file_path} in the web build",
+                             path=file_path)
     return FileResponse(target)
 
 

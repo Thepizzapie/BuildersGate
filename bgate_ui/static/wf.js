@@ -85,6 +85,98 @@
 
     _stepDef(type) { return this.steps[type] || { type, category: "control", label: type, glyph: "◇", body: () => "", ports: () => ({ in: [{ id: "i" }], out: [{ id: "o" }] }) }; },
 
+    /* ---- pinned references ---------------------------------------------
+       Pins are VERSIONED files named <slug>.rN<suffix> and the suffix is
+       whatever was pinned, so ".bgate/refs/<name>.png" rendered every jpg and
+       webp anchor blank — and pointed at a revision that may not exist. The
+       registry is read once and every thumbnail resolves through it. A step
+       may name an older revision as "<name>@r2". */
+    _refs: { list: [], at: 0, loading: null },
+    refsLoad(force) {
+      const now = Date.now();
+      if (!force && this._refs.list.length && now - this._refs.at < 20000) return Promise.resolve(this._refs.list);
+      if (this._refs.loading) return this._refs.loading;
+      this._refs.loading = get("/api/refs").then(d => {
+        const list = (d && d.refs) || (d && d.data) || [];
+        const first = !this._refs.at;
+        if (Array.isArray(list)) { this._refs.list = list; this._refs.at = Date.now(); }
+        this._refs.loading = null;
+        // Node bodies asked for a thumbnail before the registry existed; repaint
+        // them once it does, or every anchor stays blank until the next click.
+        if (first && this._nc) {
+          try { this._nc.nodes.forEach(n => this._nc._renderNode(n)); } catch (e) {}
+        }
+        return this._refs.list;
+      }).catch(() => { this._refs.loading = null; return this._refs.list; });
+      return this._refs.loading;
+    },
+    // "tommy@r2" -> {name:"tommy", revision:2}
+    refParse(value) {
+      const s = String(value == null ? "" : value).trim();
+      const m = /^(.+?)@r?(\d+)$/.exec(s);
+      return m ? { name: m[1], revision: parseInt(m[2], 10) } : { name: s, revision: null };
+    },
+    refPin(name) {
+      const want = String(name || "").trim().toLowerCase();
+      return this._refs.list.find(r => r && String(r.name || "").toLowerCase() === want) || null;
+    },
+    // The project-relative path /api/preview wants, for the exact revision asked for.
+    refRel(value) {
+      const q = this.refParse(value);
+      if (!q.name) return "";
+      const pin = this.refPin(q.name);
+      if (!pin) { this.refsLoad(); return ""; }
+      let p = String(pin.path || "").replace(/\\/g, "/");
+      const cut = p.indexOf(".bgate/");
+      if (cut !== -1) p = p.slice(cut);
+      if (q.revision && q.revision !== Number(pin.revision || 1)) {
+        // Older revisions sit beside the current one with the same suffix.
+        p = p.replace(/\.r\d+(\.[^.]+)$/, ".r" + q.revision + "$1");
+      }
+      return p;
+    },
+    refImg(value, cls) {
+      const rel = this.refRel(value);
+      if (!rel) return "";
+      return `<img class="${cls || "wf-b-img"}" src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.display='none'">`;
+    },
+    /* The reference step's picker: real pins, real thumbnails, real revisions —
+       it used to be one sentence and a free-text box, so a typo produced a
+       workflow that ran against nothing. */
+    refPicker(nodeId, field, current) {
+      const host = `wf-refpick-${nodeId}`;
+      this.refsLoad().then(() => this._paintRefPicker(host, nodeId, field));
+      setTimeout(() => this._paintRefPicker(host, nodeId, field), 0);
+      return `<div class="wf-refpick" id="${host}"><div class="wf-b-note">loading pinned references…</div></div>
+        <div class="wf-row" style="flex-direction:column;align-items:stretch">
+          <label style="margin-bottom:5px">or name it (supports <code>name@r2</code>)</label>
+          <input type="text" style="width:100%" placeholder="a pinned ref, e.g. scoville"
+            value="${esc(current || "")}" oninput="WF.set('${nodeId}','${field}',this.value)"></div>`;
+    },
+    _paintRefPicker(hostId, nodeId, field) {
+      const host = document.getElementById(hostId);
+      if (!host) return;
+      const list = this._refs.list || [];
+      if (!list.length) {
+        host.innerHTML = `<div class="wf-b-note">no pinned references yet — pin one from the art seat's anchoring panel, then it appears here.</div>`;
+        return;
+      }
+      const node = (this._wf && this._wf.nodes || []).find(n => n.id === nodeId);
+      const cur = (node && node.config && node.config[field]) || "";
+      const curName = this.refParse(cur).name.toLowerCase();
+      host.innerHTML = list.map(r => {
+        const rel = this.refRel(r.name);
+        const sel = String(r.name || "").toLowerCase() === curName;
+        return `<button class="wf-refcard ${sel ? "sel" : ""}" title="${esc(r.note || r.name)}"
+          onclick="WF.set('${nodeId}','${field}','${esc(r.name)}');WF._paintRefPicker('${hostId}','${nodeId}','${field}')">
+          ${rel ? `<img src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">` : `<span class="wf-refnone">?</span>`}
+          <span class="wf-refname">${esc(r.name)}</span>
+          <span class="wf-refmeta">${esc(r.kind || "")} · r${esc(r.revision || 1)}</span>
+        </button>`;
+      }).join("") + (curName && !this.refPin(curName)
+        ? `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” is not a pinned reference — this step would run against nothing.</div>` : "");
+    },
+
     /* ---- library landing ------------------------------------------------ */
     async open(host, api) {
       this._api = api || {};
@@ -133,9 +225,21 @@
       if (d.data && d.data.id) this.openWorkflow(d.data);
       else toast("could not load workflow", true);
     },
+    /* Delete meant "drop it from the index": no confirmation, and the stored
+       document (and any run history keyed to it) stayed behind forever. Now it
+       asks first and empties the doc it is dropping. */
     async deleteSaved(id) {
+      const entry = this._saved.find(s => s.id === id);
+      const name = (entry && entry.name) || id;
+      if (!window.confirm(`Delete the saved workflow “${name}”?\n\nThe stored document is removed too. Runs already started from it keep their own record.`)) return;
       this._saved = this._saved.filter(s => s.id !== id);
       await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      // The workspace store has no DELETE; an empty document is the tombstone,
+      // and openSaved() already treats a doc with no id as unloadable.
+      await post("/api/workspace/studio/wf:" + id, { data: {} });
+      if (this._wf && this._wf.id === id) { this._wf = null; clearTimeout(this._saveT); }
+      toast(`deleted ${name}`);
+      this._renderPalette();
       this._renderLibrary();
     },
 
@@ -207,6 +311,7 @@
         onNodeRemove: id => { this._wf.nodes = (this._wf.nodes || []).filter(n => n.id !== id); this._wf.edges = nc.edges.slice(); this.persist(); },
       });
       nc.mount(); nc.fit(); this._nc = nc;
+      this.refsLoad();      // thumbnails resolve through the pin registry
       if (this._api && this._api.setCanvas) this._api.setCanvas(nc);
     },
     // a stored workflow node -> a NodeCanvas node (pull ports/glyph from the step def)
@@ -349,14 +454,19 @@
       gates.forEach(g => {
         html += `<div class="wf-gate">
           <span class="wf-gate-g">⏛</span>
-          <span><b>${esc(g.label)}</b> is holding this run — a human has to decide.</span>
+          <span><b>${esc(g.label)}</b> is holding this run — a human has to decide.${
+            g.detail ? ` <span class="wf-run-s">${esc(g.detail)}</span>` : ""}</span>
           <div style="flex:1"></div>
           <button class="qbtn small" onclick="WF.resolveGate('${esc(g.node_id)}','approve')">approve</button>
           <button class="qbtn small ghost" onclick="WF.resolveGate('${esc(g.node_id)}','reject')">reject</button>
         </div>`;
       });
+      // A failure has to say WHY it failed — a consistency step that fails for
+      // want of evidence reads differently from one that scored under its floor.
       failed.forEach(f => {
-        html += `<div class="wf-fail"><b>${esc(f.label)}</b> — ${esc(f.detail || "failed")}</div>`;
+        html += `<div class="wf-fail"><b>${esc(f.label)}</b>${
+          f.kind ? ` <span class="wf-run-s">${esc(f.kind)}</span>` : ""} — ${esc(f.detail || "failed with no reason recorded")}${
+          f.work_item_id ? ` <span class="wf-run-s">item #${esc(f.work_item_id)}</span>` : ""}</div>`;
       });
       bar.innerHTML = html;
     },
@@ -401,9 +511,11 @@
       + `<textarea class="wf-ta" placeholder="e.g. Scoville's hit-detection fires from behind" oninput="WF.set('${n.id}','text',this.value)">${esc((n.config && n.config.text) || "")}</textarea>` });
   WF.registerStep({ type: "input.reference", category: "input", label: "Reference", glyph: "▦", accent: "var(--c-art)",
     kind: "passive", defaults: { ref: "" }, ports: () => ({ out: [{ id: "o", label: "ref" }] }),
-    body: n => (n.config && n.config.ref) ? `<img class="wf-b-img" src="/api/preview?rel=${encodeURIComponent(".bgate/refs/" + n.config.ref + ".png")}" onerror="this.style.opacity=.12">` : `<div class="wf-b-note">pick a reference</div>`,
-    config: (n, ctx) => `<div class="wf-insp-p">A reference image / anchor for downstream steps.</div>`
-      + `<div class="wf-row" style="flex-direction:column;align-items:stretch"><label style="margin-bottom:5px">Reference name</label><input type="text" style="width:100%" placeholder="a pinned ref, e.g. scoville" value="${esc((n.config && n.config.ref) || "")}" oninput="WF.set('${n.id}','ref',this.value)"></div>` });
+    body: n => (n.config && n.config.ref)
+      ? (WF.refImg(n.config.ref) || `<div class="wf-b-note">${esc(n.config.ref)} — not a pinned reference</div>`)
+      : `<div class="wf-b-note">pick a reference</div>`,
+    config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference — the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`
+      + WF.refPicker(n.id, "ref", (n.config && n.config.ref) || "") });
   WF.registerStep({ type: "control.gate", category: "control", label: "Review gate", glyph: "⏛", accent: "var(--warn)",
     kind: "gate", defaults: {}, ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "ok" }] }),
     body: () => `<div class="wf-b-note">blocks until a human approves</div>`,
@@ -462,6 +574,14 @@
       .wf-row label{color:var(--ash);font-size:12px}
       .wf-row input,.wf-row select,.wf-ta{background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:12px;padding:6px 8px}
       .wf-ta{width:100%;min-height:60px;resize:vertical;margin-top:6px}
+      .wf-refpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:7px;margin:8px 0}
+      .wf-refcard{display:flex;flex-direction:column;gap:3px;padding:5px;background:var(--plate);border:1px solid var(--seam);border-radius:8px;cursor:pointer;color:var(--bone);font:inherit;text-align:left}
+      .wf-refcard:hover{border-color:var(--ember)}
+      .wf-refcard.sel{border-color:var(--ember);background:var(--plate2)}
+      .wf-refcard img{width:100%;height:56px;object-fit:contain;background:#000;border-radius:5px}
+      .wf-refnone{display:block;height:56px;line-height:56px;text-align:center;color:var(--ash2);background:#000;border-radius:5px}
+      .wf-refname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .wf-refmeta{font-family:var(--mono);font-size:9px;color:var(--ash2)}
       .wf-b-note{font-size:11.5px;color:var(--ash);line-height:1.4}
       .wf-b-img{width:100%;height:78px;object-fit:contain;background:#000;border-radius:6px}
       .wf-b-tag{font-family:var(--mono);font-size:10px;color:var(--ash2)}

@@ -27,6 +27,12 @@
   var HINT_EMPTY = "empty board — click “+ Panel” or pick a starter below";
   var HINT_READY = "drag a panel header to move · scroll / drag empty canvas to pan";
 
+  var LORE_KINDS = ["character", "faction", "place", "event", "item", "concept", "species"];
+  var SEATS = ["narrative", "gameplay", "art", "audio", "tech", "qa", "director"];
+  // What a board arrow means once it is canon. lore.link takes any rel; these
+  // are the ones a storyboard actually draws.
+  var LINK_RELS = ["leads_to", "involves", "located_in", "member_of", "related_to"];
+
   var N = {
     label: "Narrative",
     glyph: "¶",
@@ -39,6 +45,7 @@
     _counter: 0,
     _saveTimer: null,
     _drag: null,          // active drag context
+    _lore: [],            // GET /api/lore — canon entities a panel can bind to
 
     render: function (container, bg) {
       try {
@@ -49,6 +56,7 @@
         this._linkSrc = null;
         this._buildShell();
         this._load();
+        this._loadLore();
       } catch (e) {
         try {
           container.innerHTML = '<div class="empty">narrative workspace failed to start: ' +
@@ -73,6 +81,10 @@
             '<button class="nar-btn" data-act="link">→ Link mode</button>' +
             '<button class="nar-btn nar-danger" data-act="del">✕ Delete</button>' +
             '<span class="nar-sep"></span>' +
+            '<button class="nar-btn" data-act="canon" title="Check the selected panel (or the whole board) against established canon">⚖ Canon check</button>' +
+            '<button class="nar-btn" data-act="lore" title="Bind this panel to a canon entity, or promote it into one">◈ Lore…</button>' +
+            '<button class="nar-btn" data-act="sync" title="Every board arrow between two bound panels becomes a lore edge">⛓ Sync links</button>' +
+            '<button class="nar-btn" data-act="work" title="Turn this panel into a work item a seat can be dispatched on">→ Queue work</button>' +
             '<button class="nar-btn" data-act="save">↺ Save</button>' +
             '<span class="nar-status" id="nar-status"></span>' +
             '<span class="nar-hint" id="nar-hint">drag a panel header to move · scroll / drag empty canvas to pan</span>' +
@@ -111,6 +123,10 @@
         else if (act === "link") self._toggleLink();
         else if (act === "del") self._deleteSelected();
         else if (act === "save") self._save(true);
+        else if (act === "canon") self._canonCheck();
+        else if (act === "lore") self._openLore();
+        else if (act === "sync") self._syncLinks();
+        else if (act === "work") self._openWork();
       });
 
       // Pan by dragging empty canvas; click empty to deselect.
@@ -150,6 +166,8 @@
           title: p.title == null ? "" : String(p.title),
           text: p.text == null ? "" : String(p.text),
           img: p.img ? String(p.img) : "",
+          lore: p.lore ? String(p.lore) : "",
+          work_item_id: p.work_item_id ? Number(p.work_item_id) : null,
           x: this._num(p.x, 60 + i * 40),
           y: this._num(p.y, 60 + i * 30)
         });
@@ -206,7 +224,8 @@
       var y = (sc ? sc.scrollTop : 0) + 60 + (this._state.panels.length % 5) * 24;
       var id = "p" + (++this._counter) + "-" + Date.now().toString(36);
       this._state.panels.push({ id: id, kind: PRESETS[kind] ? kind : "beat",
-        title: preset.title, text: preset.text, img: "", x: x, y: y });
+        title: preset.title, text: preset.text, img: "", lore: "",
+        work_item_id: null, x: x, y: y });
       this._renderAll();
       this._select(id);
       this._autosave();
@@ -305,6 +324,10 @@
         '<div class="nar-head" title="drag to move">' +
           '<span class="nar-grip">☰</span>' +
           '<span class="nar-badge">' + bg.esc(p.kind || "beat") + "</span>" +
+          (p.lore ? '<span class="nar-badge nar-canon" title="bound to canon entity ' +
+            bg.esc(p.lore) + '">◈ ' + bg.esc(p.lore) + "</span>" : "") +
+          (p.work_item_id ? '<span class="nar-badge nar-work" title="queued as work item #' +
+            p.work_item_id + '">#' + p.work_item_id + "</span>" : "") +
         "</div>" +
         '<input class="nar-title" value="' + bg.esc(p.title) + '" placeholder="Title…" spellcheck="false">' +
         '<div class="nar-imgwrap">' + this._imgHtml(p) + "</div>" +
@@ -526,6 +549,282 @@
       });
     },
 
+    /* ---- canon / lore / work ------------------------------------------
+     * The storyboard used to be an island: prose that nothing checked, that no
+     * canon entity knew about, and that no seat could be dispatched on. These
+     * four verbs are the bridges — check, bind, link, dispatch.
+     */
+    _data: function (r) {
+      if (r && typeof r === "object" && r.ok === true && "data" in r) return r.data;
+      return r;
+    },
+    _err: function (r) {
+      if (!r) return "no response from the server";
+      if (r.ok === false || r.error) {
+        var e = r.error;
+        if (!e) return "request failed";
+        if (typeof e === "string") return e;
+        return e.message || e.code || "request failed";
+      }
+      return null;
+    },
+    // A canon refusal is a 409 carrying the flags that caused it. They are the
+    // whole point of the gate, so they are rendered — never swallowed.
+    _flags: function (r) {
+      var d = (r && r.error && r.error.detail) || r || {};
+      return Array.isArray(d.flags) ? d.flags : [];
+    },
+    _flagHtml: function (flags) {
+      var bg = this._bg;
+      if (!flags.length) return '<div class="nar-ok">nothing contradicts established canon.</div>';
+      var out = "";
+      for (var i = 0; i < flags.length; i++) {
+        var f = flags[i] || {};
+        var hard = f.level === "conflict";
+        out += '<div class="nar-flag ' + (hard ? "hard" : "soft") + '">' +
+          '<b>' + bg.esc(hard ? "CONFLICT" : "review") + "</b> " +
+          bg.esc(f.message || f.code || "") +
+          (f.canon ? '<div class="nar-flagq">canon: ' + bg.esc(f.canon) + "</div>" : "") +
+          (f.text ? '<div class="nar-flagq">here: ' + bg.esc(f.text) + "</div>" : "") +
+          "</div>";
+      }
+      return out;
+    },
+
+    _loadLore: function () {
+      var self = this;
+      this._bg.get("/api/lore?graph=false&limit=200")
+        .then(function (r) {
+          var d = self._data(r);
+          self._lore = Array.isArray(d) ? d : [];
+        })
+        .catch(function () { self._lore = []; });
+    },
+
+    _panel: function (id) {
+      var list = (this._state && this._state.panels) || [];
+      for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+      return null;
+    },
+    _selectedPanel: function () { return this._selected ? this._panel(this._selected) : null; },
+    _panelText: function (p) {
+      return ((p.title || "") + "\n" + (p.text || "")).trim();
+    },
+    _boardText: function () {
+      var list = (this._state && this._state.panels) || [], out = [];
+      for (var i = 0; i < list.length; i++) out.push(this._panelText(list[i]));
+      return out.join("\n\n").trim();
+    },
+
+    _modal: function (title, body) {
+      var overlay = document.createElement("div");
+      overlay.className = "nar-modal";
+      overlay.innerHTML =
+        '<div class="nar-modal-box">' +
+          '<div class="nar-modal-head"><b>' + this._bg.esc(title) + "</b>" +
+            '<button class="nar-mini" data-close="1">close</button></div>' +
+          '<div class="nar-modal-body">' + body + "</div>" +
+        "</div>";
+      overlay.addEventListener("mousedown", function (e) {
+        if (e.target === overlay || (e.target.getAttribute && e.target.getAttribute("data-close"))) overlay.remove();
+      });
+      this._root.appendChild(overlay);
+      return overlay;
+    },
+
+    _canonCheck: function () {
+      var self = this, bg = this._bg;
+      var p = this._selectedPanel();
+      var text = p ? this._panelText(p) : this._boardText();
+      if (!text) { bg.toast("nothing to check — write a panel first", true); return; }
+      var overlay = this._modal(p ? "Canon check — " + (p.title || "panel") : "Canon check — whole board",
+        '<div class="empty">checking against canon…</div>');
+      this._bg.post("/api/canon/check", { text: text }).then(function (r) {
+        var body = overlay.querySelector(".nar-modal-body");
+        if (!body) return;
+        var err = self._err(r);
+        var d = self._data(r) || {};
+        var flags = self._flags(r).length ? self._flags(r) : (d.flags || []);
+        if (err && !flags.length) { body.innerHTML = '<div class="nar-flag hard">' + bg.esc(err) + "</div>"; return; }
+        body.innerHTML =
+          '<div class="nar-verdict v-' + bg.esc(d.verdict || "ok") + '">verdict: ' +
+            bg.esc(d.verdict || "ok") + "</div>" + self._flagHtml(flags) +
+          (Array.isArray(d.entities) && d.entities.length
+            ? '<div class="nar-consulted">canon consulted: ' +
+              bg.esc(d.entities.map(function (e) { return e.slug || e.name || e; }).join(", ")) + "</div>"
+            : "");
+      }).catch(function (e) {
+        var body = overlay.querySelector(".nar-modal-body");
+        if (body) body.innerHTML = '<div class="nar-flag hard">canon check failed: ' + bg.esc(e && e.message) + "</div>";
+      });
+    },
+
+    _openLore: function () {
+      var self = this, bg = this._bg;
+      var p = this._selectedPanel();
+      if (!p) { bg.toast("select a panel first", true); return; }
+      var opts = '<option value="">— none —</option>';
+      for (var i = 0; i < this._lore.length; i++) {
+        var e = this._lore[i];
+        opts += '<option value="' + bg.esc(e.slug) + '"' + (e.slug === p.lore ? " selected" : "") + ">" +
+          bg.esc(e.name + " · " + e.kind + " · " + e.status) + "</option>";
+      }
+      var kinds = LORE_KINDS.map(function (k) {
+        return '<option value="' + k + '"' + (k === "concept" && p.kind === "lore" ? " selected" : "") + ">" + k + "</option>";
+      }).join("");
+      var overlay = this._modal("Lore — " + (p.title || "panel"),
+        '<div class="nar-fieldrow"><label>Bind to an existing entity</label>' +
+          '<select id="nar-lore-sel">' + opts + "</select>" +
+          '<button class="nar-btn" id="nar-lore-bind">bind</button></div>' +
+        '<div class="nar-sep2"></div>' +
+        '<div class="nar-fieldrow"><label>…or promote this panel into canon</label>' +
+          '<select id="nar-lore-kind">' + kinds + "</select>" +
+          '<select id="nar-lore-status"><option value="draft">draft</option><option value="canon">canon (human only)</option></select>' +
+          '<button class="nar-btn nar-primary" id="nar-lore-add">create entity</button></div>' +
+        '<div class="nar-hintline">The summary is this panel\'s text. It passes the canon gate first: a hard conflict is refused and the flags are shown here.</div>' +
+        '<div id="nar-lore-out"></div>');
+
+      var out = overlay.querySelector("#nar-lore-out");
+      overlay.querySelector("#nar-lore-bind").addEventListener("click", function () {
+        p.lore = overlay.querySelector("#nar-lore-sel").value || "";
+        self._renderAll(); self._select(p.id); self._autosave();
+        bg.toast(p.lore ? "bound to " + p.lore : "unbound");
+        overlay.remove();
+      });
+      overlay.querySelector("#nar-lore-add").addEventListener("click", function () {
+        self._createLore(p, overlay, out, false);
+      });
+    },
+
+    // The 409 path is the interesting one: show the flags, then offer the
+    // override — which the server only honours for a human.
+    _createLore: function (p, overlay, out, override) {
+      var self = this, bg = this._bg;
+      var kind = overlay.querySelector("#nar-lore-kind").value;
+      var status = overlay.querySelector("#nar-lore-status").value;
+      var name = (p.title || "").trim();
+      if (!name) { out.innerHTML = '<div class="nar-flag hard">give the panel a title first — it becomes the entity name</div>'; return; }
+      out.innerHTML = '<div class="empty">writing…</div>';
+      var body = { kind: kind, name: name, summary: (p.text || "").slice(0, 2000), status: status };
+      if (override) body.override = true;
+      this._bg.post("/api/lore", body).then(function (r) {
+        var err = self._err(r);
+        if (err) {
+          var flags = self._flags(r);
+          out.innerHTML = '<div class="nar-flag hard">' + bg.esc(err) + "</div>" +
+            (flags.length ? self._flagHtml(flags) : "") +
+            (flags.length && !override
+              ? '<button class="nar-btn nar-danger" id="nar-lore-force">override — I am a human and this is intended</button>'
+              : "");
+          var force = out.querySelector("#nar-lore-force");
+          if (force) force.addEventListener("click", function () { self._createLore(p, overlay, out, true); });
+          return;
+        }
+        var d = self._data(r) || {};
+        p.lore = d.slug || "";
+        self._lore.push({ slug: d.slug, name: d.name, kind: d.kind, status: d.status });
+        self._renderAll(); self._select(p.id); self._autosave();
+        bg.toast("canon entity " + (d.slug || name) + " created");
+        overlay.remove();
+      }).catch(function (e) {
+        out.innerHTML = '<div class="nar-flag hard">write failed: ' + bg.esc(e && e.message) + "</div>";
+      });
+    },
+
+    /* Board arrows are story order; lore edges are canon. This makes the first
+       become the second, so the graph the rest of the studio reads is the one
+       the writer actually drew. */
+    _syncLinks: function () {
+      var self = this, bg = this._bg;
+      var edges = (this._state && this._state.edges) || [];
+      var pairs = [];
+      for (var i = 0; i < edges.length; i++) {
+        var a = this._panel(edges[i].from), b = this._panel(edges[i].to);
+        if (a && b && a.lore && b.lore) pairs.push({ src: a.lore, dst: b.lore, a: a, b: b });
+      }
+      if (!pairs.length) {
+        bg.toast("no arrow connects two panels bound to canon entities yet", true);
+        return;
+      }
+      var rels = LINK_RELS.map(function (r) { return '<option value="' + r + '">' + r + "</option>"; }).join("");
+      var rows = pairs.map(function (p) {
+        return '<div class="nar-linkrow">' + bg.esc(p.a.title || p.src) + " → " + bg.esc(p.b.title || p.dst) + "</div>";
+      }).join("");
+      var overlay = this._modal("Sync " + pairs.length + " arrow(s) into canon",
+        rows + '<div class="nar-fieldrow"><label>relationship</label><select id="nar-rel">' + rels + "</select>" +
+        '<button class="nar-btn nar-primary" id="nar-rel-go">create lore edges</button></div><div id="nar-rel-out"></div>');
+      overlay.querySelector("#nar-rel-go").addEventListener("click", function () {
+        var rel = overlay.querySelector("#nar-rel").value;
+        var out = overlay.querySelector("#nar-rel-out");
+        out.innerHTML = '<div class="empty">linking…</div>';
+        var done = 0, failed = [];
+        var next = function (i) {
+          if (i >= pairs.length) {
+            out.innerHTML = '<div class="nar-ok">' + done + " edge(s) written." + "</div>" +
+              (failed.length ? '<div class="nar-flag hard">' + bg.esc(failed.join(" · ")) + "</div>" : "");
+            bg.toast(done + " lore edge(s) written");
+            return;
+          }
+          self._bg.post("/api/lore/link", { src: pairs[i].src, rel: rel, dst: pairs[i].dst })
+            .then(function (r) {
+              var err = self._err(r);
+              if (err) failed.push(pairs[i].src + "→" + pairs[i].dst + ": " + err); else done++;
+              next(i + 1);
+            })
+            .catch(function (e) { failed.push(String(e && e.message)); next(i + 1); });
+        };
+        next(0);
+      });
+    },
+
+    _openWork: function () {
+      var self = this, bg = this._bg;
+      var p = this._selectedPanel();
+      if (!p) { bg.toast("select a panel first", true); return; }
+      var seats = SEATS.map(function (s) {
+        return '<option value="' + s + '"' + (s === "narrative" ? " selected" : "") + ">" + s + "</option>";
+      }).join("");
+      var brief = this._panelText(p) +
+        (p.lore ? "\n\nCanon entity: " + p.lore : "") +
+        (p.img ? "\n\nReference image: " + p.img : "") +
+        "\n\n(from the narrative storyboard, panel " + p.id + ")";
+      var overlay = this._modal("Queue work — " + (p.title || "panel"),
+        '<div class="nar-fieldrow"><label>seat</label><select id="nar-w-seat">' + seats + "</select>" +
+          '<label>priority</label><input id="nar-w-pri" type="number" min="0" max="5" value="2" style="width:64px"></div>' +
+        '<div class="nar-fieldrow" style="flex-direction:column;align-items:stretch"><label>title</label>' +
+          '<input id="nar-w-title" value="' + bg.esc((p.title || "story beat").slice(0, 90)) + '"></div>' +
+        '<div class="nar-fieldrow" style="flex-direction:column;align-items:stretch"><label>brief</label>' +
+          '<textarea id="nar-w-brief" class="nar-wta">' + bg.esc(brief) + "</textarea></div>" +
+        '<div class="nar-fieldrow"><label><input type="checkbox" id="nar-w-dispatch"> dispatch immediately</label>' +
+          '<button class="nar-btn nar-primary" id="nar-w-go">queue it</button></div><div id="nar-w-out"></div>');
+      overlay.querySelector("#nar-w-go").addEventListener("click", function () {
+        var out = overlay.querySelector("#nar-w-out");
+        out.innerHTML = '<div class="empty">queueing…</div>';
+        self._bg.post("/api/queue", {
+          seat: overlay.querySelector("#nar-w-seat").value,
+          title: overlay.querySelector("#nar-w-title").value.trim(),
+          brief: overlay.querySelector("#nar-w-brief").value,
+          priority: Number(overlay.querySelector("#nar-w-pri").value) || 0,
+          source: "storyboard",
+          source_ref: p.id,
+        }).then(function (r) {
+          var err = self._err(r);
+          if (err) { out.innerHTML = '<div class="nar-flag hard">' + bg.esc(err) + "</div>"; return; }
+          var item = self._data(r) || {};
+          p.work_item_id = item.id || null;
+          self._renderAll(); self._select(p.id); self._autosave();
+          try { bg.setActiveItem(item.id); } catch (e) {}
+          if (overlay.querySelector("#nar-w-dispatch").checked && item.id) {
+            self._bg.post("/api/queue/" + item.id + "/dispatch", {}).catch(function () {});
+          }
+          bg.toast("queued work item #" + item.id);
+          overlay.remove();
+        }).catch(function (e) {
+          out.innerHTML = '<div class="nar-flag hard">queue failed: ' + bg.esc(e && e.message) + "</div>";
+        });
+      });
+    },
+
     /* ---- helpers ------------------------------------------------------ */
     _panelNode: function (id) { return this._root.querySelector('.nar-panel[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]'); },
     _num: function (v, d) { var n = Number(v); return isFinite(n) ? n : d; },
@@ -566,6 +865,25 @@
       ".nar-head:active{cursor:grabbing}" +
       ".nar-grip{color:#4c5666;font-size:12px}" +
       ".nar-badge{font-size:9px;letter-spacing:.09em;text-transform:uppercase;color:#8a93a2}" +
+      ".nar-badge.nar-canon{color:#8fd6a8;border:1px solid #2f6b48;border-radius:5px;padding:0 4px}" +
+      ".nar-badge.nar-work{color:#e8c05a;border:1px solid #5a4a1c;border-radius:5px;padding:0 4px;margin-left:auto}" +
+      ".nar-verdict{font-size:12px;padding:6px 9px;border-radius:8px;margin-bottom:10px;border:1px solid #2a313d;color:#c4cbd6}" +
+      ".nar-verdict.v-conflict{border-color:#7a3535;color:#f0b3b3}" +
+      ".nar-verdict.v-review{border-color:#7a6a35;color:#e0c15a}" +
+      ".nar-verdict.v-ok{border-color:#2f6b48;color:#8fd6a8}" +
+      ".nar-flag{font-size:12px;line-height:1.45;padding:7px 9px;border-radius:8px;margin-bottom:6px;border:1px solid #2a313d;color:#c4cbd6}" +
+      ".nar-flag.hard{border-color:#7a3535;background:#150d0e}.nar-flag.hard b{color:#f0b3b3}" +
+      ".nar-flag.soft{border-color:#5a4a1c;background:#151005}.nar-flag.soft b{color:#e0c15a}" +
+      ".nar-flagq{color:#7a8494;font-size:11px;margin-top:3px}" +
+      ".nar-ok{font-size:12px;color:#8fd6a8;padding:6px 0}" +
+      ".nar-consulted{font-size:11px;color:#6b7280;margin-top:8px}" +
+      ".nar-fieldrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:#c4cbd6}" +
+      ".nar-fieldrow label{color:#8a93a2}" +
+      ".nar-fieldrow select,.nar-fieldrow input{background:#0b0e13;border:1px solid #2a313d;border-radius:7px;color:#e6e8ee;font:inherit;font-size:12px;padding:6px 8px}" +
+      ".nar-wta{width:100%;min-height:120px;resize:vertical;background:#0b0e13;border:1px solid #2a313d;border-radius:7px;color:#c4cbd6;font:inherit;font-size:12px;padding:8px}" +
+      ".nar-sep2{height:1px;background:#1e232c;margin:12px 0}" +
+      ".nar-hintline{font-size:11px;color:#6b7280;line-height:1.5;margin-bottom:8px}" +
+      ".nar-linkrow{font-size:12px;color:#c4cbd6;padding:3px 0}" +
       ".nar-title{width:100%;box-sizing:border-box;background:transparent;border:0;border-bottom:1px solid transparent;" +
         "color:#e6e8ee;font:inherit;font-size:13px;font-weight:600;padding:8px 9px 6px;outline:none}" +
       ".nar-title:focus{border-bottom-color:#3b7f9e}" +

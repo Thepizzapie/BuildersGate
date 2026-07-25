@@ -17,34 +17,62 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 - **Blender adapter** — headless bpy with structured feedback (tri counts, UV
   warnings, renders), sprite factory, glTF export verified in-engine
 - **Godot adapter** — headless run/check, asset import with engine inspection,
-  live game screenshots, project scaffolds with a telemetry autoload
+  live game screenshots, project scaffolds with telemetry and F1 live-tuning
+  autoloads already wired
 - **Painted-art leg (optional)** — gpt-image portraits/UI/backdrops and
   reference-first sprite sets, with pinned reference anchors
 - **Asset registry** — content hashes + per-file locks for binaries (they don't
   merge), with a drift detector that names silent clobbers
 - **Playtest mode** — record the game window + your voice, whisper-transcribe,
-  classify feedback, and join it to game telemetry on one clock
-- **Dashboard** — a live view of the seats working, the ledger, and every
-  render/screenshot the pipeline produces
+  classify feedback, join it to game telemetry on one clock, and export a bug
+  report you can paste into a tracker
+- **Dashboard** — nine views over the same store: overview, live agents you can
+  steer mid-run, node editors, per-seat workspaces, playtests, assets, the
+  project atlas, the world bible, and the iteration timeline
+- **Gates with teeth** — the cut line refuses out-of-scope work, a spend budget
+  refuses an agent that would blow the ceiling, watchdogs kill a wedged run, and
+  approval is human-only: an agent records a verdict, it does not sign off
 
 ## Requirements
 
-- Python 3.11+ (`pip install -e .` pulls mcp/fastapi/uvicorn/Pillow)
+- Python 3.11+ (`pip install -e .` pulls mcp/fastapi/uvicorn/Pillow/openai)
 - [Godot 4.x](https://godotengine.org) — portable exe is fine; discovery checks
   common install dirs, or set `BGATE_GODOT`
 - [Blender 4.x](https://blender.org) (optional, for the 3D leg) — or set `BGATE_BLENDER`
 - An OpenAI API key (optional, for painted art) — put `OPENAI_API_KEY=...` in a
-  gitignored `.env` at your game project's root; it is loaded per-project and
-  never logged
+  `.env` at your game project's root; `.env` and `.env.*` are gitignored here
+  (they were not, for a while, which is how following these instructions
+  committed a key). Loaded per-project, never logged
 - `faster-whisper` + `sounddevice` (optional, for playtest transcription):
   `pip install -e ".[stt,record]"`
+
+`bgate doctor` answers all of the above in one pass and exits 1 if anything is
+unavailable — it is the line a setup script or a CI step runs instead of
+grepping five status commands for "not found". It never opens the microphone,
+launches an engine, or spends money; every probe is wall-clock bounded and
+reports `{available, path, version, min_required, reason}`.
 
 ## Setup (once)
 
 ```bash
-pip install -e .                                          # from this repo
+pip install -e .                          # from this repo
+bgate doctor                              # python/key/ffmpeg/blender/godot/whisper
+bgate init emberfall --kind 2d            # a project AND a runnable game
+cd emberfall
+bgate serve                               # dashboard on http://127.0.0.1:7788
+```
+
+`bgate init` creates `.bgate/game.db`, unpacks the Godot template, and prints the
+absolute path it wrote to — into a NEW directory named after the project, not
+whatever directory you were standing in. There is no "make a project" step
+hidden inside an MCP session any more; if you would rather start in the browser,
+`bgate serve` with no project shows a first-run screen that posts the same call.
+
+To let agents drive it, register the MCP server and install the enforcement hook:
+
+```bash
 claude mcp add builders-gate --scope user -- <abs-python> -m bgate_mcp.server
-python -m bgate_cli.main hook-install <game-project>      # lane/lock teeth
+bgate hook-install <game-project>         # lane/lock teeth
 ```
 
 Registration must use the ABSOLUTE python path — the claude CLI's health check
@@ -59,13 +87,21 @@ session.
 
 ## Building a game with it — the loop
 
-Everything below is an MCP tool call; any Claude session (or agent) with the
-server registered can drive it. The intended shape: you (or an orchestrator)
-fan out one agent per seat, each adopting its role via `BGATE_SEAT`.
+Step 1 is `bgate init`. Everything after it is an MCP tool call; any Claude
+session (or agent) with the server registered can drive it. The intended shape:
+you (or an orchestrator) fan out one agent per seat, each adopting its role via
+`BGATE_SEAT`.
+
+Every tool takes an optional `project_dir` and resolves the project from it, then
+`BGATE_ROOT`, then by walking up from the cwd for a `.bgate/` dir. Pass it
+explicitly whenever more than one project could be in play — it is the only way a
+call is guaranteed to land in the game you mean. (`project_select` is deprecated
+and switches nothing: it used to mutate a module-level active root, which made
+"which game does this call affect" a function of call order.)
 
 ```text
-1  project_init            name, engine, 2d/3d — creates .bgate/game.db at the root
-2  godot_scaffold          a runnable slice (player, ground, telemetry autoload wired)
+1  bgate init <name>       .bgate/game.db + a runnable game, path printed
+2  godot_scaffold          (or, into an existing project: the same runnable slice)
 3  DIRECTOR seat           bible_add: pillars, the core loop, scope tiers, the CUT LINE
 4  NARRATIVE seat          lore_add / lore_fact (locked facts mirror real tunables),
                            canon_check on every narrative write
@@ -82,36 +118,64 @@ fan out one agent per seat, each adopting its role via `BGATE_SEAT`.
 Rules that make multi-agent work safe: check `seat_can_write` before writing
 outside your obvious lane, lock binaries before editing, leave a
 `seat_post_note` when your work changes another seat's world, and
-`scope_check(rank)` before building anything new. `seat_brief(role)` returns
+`scope_check(rank)` before building anything new — that one is advice; the
+refusals behind it are under **The cut line** below. `seat_brief(role)` returns
 everything a seat needs to start — mission, lanes, bible, canon, pinned
 reference anchors, promoted feedback, and who holds which locks.
 
 ## The dashboard
 
 ```bash
-python -m bgate_ui [--port 7788]     # from inside a project, or BGATE_ROOT
+bgate serve [--port 7788]     # from inside a project, or BGATE_ROOT
 ```
 
-A foundry control room, not a generic admin panel: **the Floor** shows seven
-seat bays — each with its glyph, accent color, working/idle lamp (holds locks or
-acted <5 min ago), held binaries, last ledger entry, and promoted-feedback queue.
-**The Ledger** streams activity live (locks, releases, renders, canon checks,
-scaffolds, promotions — every meaningful event writes to the activity table).
-**Asset Lab** groups immutable revisions by logical asset and compares the
-approved version with candidates side by side. It surfaces generation profile,
-references, consistency/import evidence, current-build use, work provenance,
-lease heartbeat, linked playtest feedback, and every review action.
-**Playtest Review** opens the recording with feedback markers, synchronized
-transcript, frames, telemetry, confidence, director recommendation, final
-disposition, merge/queue controls, and coverage warnings. **Iteration Timeline**
-preserves the causal chain from goal and exact source/build snapshot through
-assets, playtest evidence, decisions, work, resulting build, and comparative
-outcome. **The World** shows pillars, the cut line, and canon entities.
+It prints the URL and the project it opened, because a command that starts the
+product and says nothing looks like a hang. With no project it does not error —
+it shows a first-run screen that creates one.
+
+Nine views over the same store:
+
+- **Overview** — live agents, the queue, the build, and a play/record panel
+- **Agents** — dispatch work to a seat, then watch and steer it live. A run is
+  spawned on a captured git base commit, so its work is readable as per-file
+  diffs and undoable with a scoped revert (refused if anything it touched has
+  changed since, unless you look at the diff and insist)
+- **Studio** — node editors over the existing endpoints: workflow graphs and a
+  Godot-style game workspace. A workflow run is a real graph — steps queue seat
+  work, consistency nodes carry a measured score, and a `gate` node stops the run
+  until a **human** approves or rejects it
+- **Seat workspaces** — one workspace per seat, tuned to its craft. Art's is the
+  flagship: every candidate revision beside the reference it was drawn against,
+  two frames stacked with an opacity slider / `difference` blend / palette delta,
+  batch approve-reject over a selection, and a dispatch button for an
+  **independent** QA reviewer that never made the image
+- **Playtests** — recorded sessions: video, transcript, telemetry, the director's
+  triage, editable repro steps, and a bug report exported as markdown (or a zip
+  with the frames it links) so the evidence stops being trapped in the session
+- **Assets** — immutable revisions grouped by logical asset, with an integrity audit
+- **Atlas** — every screen wired to every asset it uses, derived live from the
+  scenes, scripts, and SpriteFrames. Click a node to file work against it
+- **World bible** — a write surface, not a viewer: pillars, constraints, and one
+  drag-ordered list of scope tiers with the **cut line as a draggable row in it**,
+  plus the lore graph. Every narrative write runs `canon_check` first; a conflict
+  is a 409 carrying its flags, and only a human may override it
+- **Timeline** — the causal chain per iteration: goal, source/build snapshot,
+  assets, playtest evidence, decisions, work, resulting build, outcome
 
 The cockpit owns explicit user-facing mutations: queue/dispatch, recording,
-feedback disposition, and artifact approval. Production mutations remain MCP
-tools attributable to a seat. Single HTML file, no build step, no CDN,
-127.0.0.1 only.
+feedback disposition, bible authoring, and artifact approval. Production
+mutations remain MCP tools attributable to a seat. Approval is human-only
+throughout — the dashboard identifies an agent's session by `BGATE_ACTOR` and
+refuses it the bible, the scope filing, the budget, the revert, a workflow gate,
+and promoting a candidate to the build.
+
+127.0.0.1 is not a security boundary — any page in your browser can POST to
+localhost — so every mutation must be same-origin AND carry a per-project bearer
+token from `.bgate/ui-token` (gitignored, 0600). The page is served with the
+token injected and `fetch` wrapped to send it same-origin only; nothing else is
+asked to know it. `BGATE_NO_AUTH=1` opts out for a scripted run.
+
+No build step, no node, no CDN.
 
 ## Seats
 
@@ -150,8 +214,8 @@ asset_verify()              # audits everything: names silent clobbers
 someone stomped the file outside the discipline — it's named, not silently
 absorbed. Locked files are expected to differ and aren't drift.
 `godot_import_asset` auto-registers what it lands, so bridge output is covered
-from birth. Locks are advisory at this layer (enforcement belongs to the seat
-hooks, step 8), but verify makes violations visible even without enforcement.
+from birth. Locks are advisory at this layer — enforcement is the PreToolUse hook
+from **Setup** — but verify makes violations visible even without it.
 
 ## The Blender → Godot round trip
 
@@ -179,15 +243,27 @@ scale (shears children) — each cheap to catch here, expensive to debug in-engi
 ## Templates
 
 ```
-godot_scaffold(name="Emberfall", kind="2d")   # or "3d"
+bgate init emberfall --kind 2d                # or 3d — the usual way in
+godot_scaffold(name="Emberfall", kind="2d")   # the same slice, from an agent
 godot_check_project(dest)                     # import + validate headless
 ```
 
 Both are runnable slices, not empty shells: a player, ground, something to jump
-onto, and the BGate telemetry autoload already registered. The feel tunables
-(`gravity`, `fall_multiplier`, `coyote_time`) are exported **and** emitted on
-every jump/land — so the first playtest already produces the join that makes
-"the jump feels floaty" actionable.
+onto, and the BGate autoloads already registered. The 2D slice is a side-on
+platformer and reads exactly three actions — `move_left` (A/←), `move_right`
+(D/→), `jump` (Space). That is the whole control surface; anything else you see
+advertised is not in the template. The feel tunables (`gravity`,
+`fall_multiplier`, `coyote_time`) are exported **and** emitted on every
+jump/land — so the first playtest already produces the join that makes "the jump
+feels floaty" actionable.
+
+**F1 opens a live tuning overlay** over the running game. Every `@export` the
+current scene exposes gets a control bound to the live node, and moving a slider
+moves the game — no apply button, because the point is to feel the change while
+you make it. Values persist to `.bgate/tunables.json` and are re-applied at boot,
+which is the same file the iteration snapshot reads as `overrides`, so a tuned
+build is visible rather than invisible drift. A release export is inert: no input
+hook, no file access, no overlay.
 
 `BGATE_AUTOQUIT=<seconds>` runs a build unattended (headless smoke tests, CI).
 Without `BGATE_TELEMETRY` set, the autoload is completely inert — open the game
@@ -228,28 +304,30 @@ the complete causal history.
 ## Layout
 
 ```
-bgate_core/       db, project, bible, lore, canon, search, util
+bgate_cli/        the `bgate` console script: init, serve, doctor, hook
+bgate_core/       db, project, bible, lore, canon, scope, spend, queue,
+                  workflows, artifacts, playtest, iterations, git, search
 bgate_mcp/        FastMCP server (stdio)
-bgate_adapters/   blender, godot, playtest        [step 3+]
-templates/        Godot project skeletons          [step 4+]
+bgate_adapters/   blender, godot, imagegen, sprites, recorder, transcribe
+bgate_ui/         dashboard backend + routes/ + the single-page static/ front end
+templates/        Godot project skeletons (2d, 3d, shared autoloads)
+bgate_engine/     a design proposal + JSON schemas — no runtime code, nothing
+                  imports it. See bgate_engine/DESIGN.md for its actual status
+docs/             findings from real production runs, and the QA audits
 tests/
 ```
 
-## Quickstart
+## Working on Builders Gate itself
 
 ```bash
 pip install -e ".[dev]"
 pytest tests/ -q
 ```
 
-Register with Claude Code from inside a game project:
-
-```bash
-claude mcp add builders-gate -- python -m bgate_mcp.server
-```
-
-Every tool resolves the project by walking up from the cwd for a `.bgate/` dir.
-`BGATE_ROOT` overrides that when you need to point elsewhere.
+CI runs the suite plus a clean-venv wheel smoke test, because the failure it
+exists to catch is invisible under `pip install -e .`: a wheel that shipped no
+JavaScript and no `templates/` produced a dashboard of 404s and a scaffolder that
+raised `FileNotFoundError`, and nothing had ever verified otherwise.
 
 ## The concepts that carry the design
 
@@ -257,6 +335,33 @@ Every tool resolves the project by walking up from the cwd for a `.bgate/` dir.
 shipping stops. Anything ranked at or below it is explicitly not being built.
 This is the only mechanism that reliably stops an agent fleet from gold-plating —
 `scope_check(rank)` answers "should I build this?" without a judgment call.
+
+It is a refusal, not advice. `queue.add` will not FILE work under a cut tier, and
+the dispatcher re-checks at the last possible moment before spawning a process:
+the line moves, so an item queued legitimately can be retroactively out of scope
+by the time anyone runs it, and spending an agent on that is the exact
+gold-plating the tiers exist to stop. Untiered work is deliberately allowed
+through, loudly flagged — refusing it would make the first cut line anyone draws
+reject the entire existing queue, and the predictable fix would be to turn the
+gate off, which is how a gate stops gating.
+
+**Money and wall clock are the two things that run away unattended.** Every
+paying call appends to a spend ledger, and the dispatcher consults the budget
+*before* a process exists: per-item, per-day, per-project ceilings and a
+concurrency cap (the dashboard's "dispatch all" has no cap of its own — twenty
+queued items is twenty claude trees on one laptop). Once running, a watchdog
+kills the tree when it passes its runtime or cost ceiling and says so on the
+item. A dispatch also refuses a dirty tree by default, because a run started on
+top of uncommitted work produces a diff that cannot tell the agent's edits from
+yours.
+
+**An agent may propose; only a human approves.** A spawned session carries
+`BGATE_ACTOR=agent:item-<id>`, and that is what makes "approved" mean anything.
+An art agent that judged its own frame approved off-style drift three times, and
+a second agent doing it instead is the same failure with an extra hop — so
+`art_qa_verdict` lets a reviewer FAIL a candidate outright (refusing to ship is a
+call a machine can make alone) while a pass only records evidence and leaves the
+revision a candidate waiting for a person.
 
 **Facts vs. prose.** Entity `body` is prose for humans. `canon_fact` rows are one
 atomic, checkable claim each ("The siege lasted seven years"). You cannot diff a

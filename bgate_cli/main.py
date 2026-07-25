@@ -5,6 +5,7 @@
     bgate serve [--port 7788]   run the dashboard
     bgate doctor [DIR] [--json] check every external dependency in one pass
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
+    bgate hook-status [DIR]     prove the hook is installed AND biting
     bgate hook                  (internal) the PreToolUse hook itself
 """
 from __future__ import annotations
@@ -14,11 +15,25 @@ import os
 import sys
 from pathlib import Path
 
+# Bash is in the matcher because dispatch grants the agent Bash: guarding only
+# the file-edit tools left `echo x > game/foo.gd` as an open door through every
+# lane and lock the README advertises.
+HOOK_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
+
+# `python -m`, never sys.executable. This file is COMMITTED into the game repo,
+# so an absolute interpreter path bakes one machine's venv into everyone else's
+# checkout — where it silently fails to run and enforcement quietly stops.
+HOOK_COMMAND = "python -m bgate_cli.hook"
+
 HOOK_CONFIG = {
-    "matcher": "Write|Edit|MultiEdit|NotebookEdit",
-    "hooks": [{"type": "command",
-               "command": sys.executable.replace("\\", "/") + " -m bgate_cli.hook"}],
+    "matcher": HOOK_MATCHER,
+    "hooks": [{"type": "command", "command": HOOK_COMMAND}],
 }
+
+
+def _is_bgate_hook(entry: dict) -> bool:
+    return any("bgate_cli.hook" in h.get("command", "")
+               for h in entry.get("hooks", []))
 
 
 def install_hook(project_dir: str) -> dict:
@@ -26,6 +41,9 @@ def install_hook(project_dir: str) -> dict:
 
     Merges rather than overwrites — a game project may already carry its own
     hooks, and clobbering them is exactly the kind of stomp this tool polices.
+    An entry we wrote on an earlier version IS rewritten, because a stale
+    matcher (or an absolute interpreter path from another machine) is a gate
+    that no longer gates.
     """
     settings_path = Path(project_dir) / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,21 +59,64 @@ def install_hook(project_dir: str) -> dict:
 
     hooks = settings.setdefault("hooks", {})
     pre = hooks.setdefault("PreToolUse", [])
-    already = any(
-        h.get("command", "").endswith("bgate_cli.hook")
-        for entry in pre for h in entry.get("hooks", [])
-    )
+    ours = [entry for entry in pre if _is_bgate_hook(entry)]
+    already = bool(ours)
+    updated = False
     if not already:
         pre.append(HOOK_CONFIG)
+    else:
+        for entry in ours:
+            if entry != HOOK_CONFIG:
+                entry.clear()
+                entry.update(HOOK_CONFIG)
+                updated = True
+        # A duplicate entry would run the hook twice per write; keep the first.
+        for extra in ours[1:]:
+            pre.remove(extra)
+            updated = True
+    if not already or updated:
         settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     return {
         "ok": True,
         "settings": str(settings_path),
         "installed": not already,
+        "updated": updated,
+        "matcher": HOOK_MATCHER,
+        "command": HOOK_COMMAND,
         "note": "set BGATE_SEAT=<role> in the session's environment to enforce; "
-                "without it the hook is inert",
+                "without it the hook is inert. `bgate hook-status` proves it.",
     }
+
+
+def hook_status(project_dir: str = "", as_json: bool = False) -> int:
+    """Run the hook's own probes and print the verdict. Exit 1 if not enforcing.
+
+    The hook fails open on purpose, so its silence proves nothing. This is the
+    one command that answers 'is anything actually being enforced right now'.
+    """
+    from bgate_cli import hook
+
+    report = hook.selftest(project_dir or None)
+    if as_json:
+        print(json.dumps(report, indent=2))
+        return 0 if report["enforcing"] else 1
+
+    print(f"project   {report['project_root'] or '(none)'}")
+    print(f"seat      {report['seat'] or '(unset — hook is inert)'}")
+    print(f"installed {'yes' if report['installed'] else 'NO'}"
+          + (f"  matcher={report.get('matchers') or []}" if report["installed"] else ""))
+    for probe in report["probes"]:
+        mark = "ok  " if probe.get("ok") else "FAIL"
+        print(f"{mark}  {probe['probe']}: {probe.get('error') or probe.get('got')}")
+    if report["recent_failures"]:
+        print(f"\n{len(report['recent_failures'])} recent FAIL-OPEN event(s) — "
+              "writes went through unchecked:")
+        for row in report["recent_failures"]:
+            print(f"  {row.get('ts', '?')}  {row.get('detail', '')[:120]}")
+    print()
+    print(report.get("reason", ""))
+    return 0 if report["enforcing"] else 1
 
 
 def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
@@ -195,6 +256,11 @@ def main() -> int:
         target = args[1] if len(args) > 1 else "."
         print(json.dumps(install_hook(target), indent=2))
         return 0
+
+    if cmd == "hook-status":
+        positional = [a for a in args[1:] if not a.startswith("-")]
+        return hook_status(positional[0] if positional else "",
+                           as_json="--json" in args)
 
     if cmd == "serve":
         port = 7788

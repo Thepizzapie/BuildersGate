@@ -7,6 +7,7 @@ reliably stops an agent fleet from gold-plating.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 
 from . import activity, db, search
@@ -15,8 +16,31 @@ from .util import rows
 KINDS = ("pillar", "loop", "scope_tier", "cut_line", "constraint", "reference")
 
 
+class StaleWrite(ValueError):
+    """The section changed since the caller read it. Refuse, do not merge."""
+
+    def __init__(self, section_id: int, expected: str, actual: str) -> None:
+        super().__init__(
+            f"bible section {section_id} changed since you loaded it "
+            f"(you had {expected}, stored is {actual}) — reload and reapply; "
+            "saving would erase the other edit")
+        self.section_id, self.expected, self.actual = section_id, expected, actual
+
+
 def _ref(section_id: int) -> str:
     return f"bible:{section_id}"
+
+
+def version_of(section: dict) -> str:
+    """Content version of a section — what an editor holds while it edits.
+
+    A hash rather than updated_at: SQLite stores whole seconds, and two saves in
+    the same second are exactly the collision this is meant to catch.
+    """
+    blob = "\x00".join((str(section.get("title") or ""),
+                        str(section.get("body") or ""),
+                        str(section.get("rank") or 0)))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def add(root: str | os.PathLike[str], kind: str, title: str, body: str = "",
@@ -34,12 +58,29 @@ def add(root: str | os.PathLike[str], kind: str, title: str, body: str = "",
 
 
 def update(root: str | os.PathLike[str], section_id: int, *, title: str | None = None,
-           body: str | None = None, rank: int | None = None) -> dict:
-    current = get(root, section_id)
-    title = current["title"] if title is None else title
-    body = current["body"] if body is None else body
-    rank = current["rank"] if rank is None else rank
+           body: str | None = None, rank: int | None = None,
+           expected_version: str | None = None) -> dict:
+    """Edit a section. A partial edit is a read-modify-write, so it is done
+    under the write lock and, when the caller says what it was editing
+    (``expected_version``, from :func:`version_of`), refused if the section has
+    moved since. Without that the second of two editors silently wins: pillars
+    and the cut line are the last place in the product where that is acceptable.
+    """
     with db.tx(root) as conn:
+        # The lock must be taken BEFORE the read the merge is based on.
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM bible_section WHERE id = ?",
+                           (section_id,)).fetchone()
+        if row is None:
+            raise LookupError(f"no bible section {section_id}")
+        current = dict(row)
+        actual = version_of(current)
+        if expected_version is not None and expected_version != actual:
+            raise StaleWrite(section_id, expected_version, actual)
+        title = current["title"] if title is None else title
+        body = current["body"] if body is None else body
+        rank = current["rank"] if rank is None else rank
         conn.execute(
             "UPDATE bible_section SET title = ?, body = ?, rank = ?, "
             "updated_at = datetime('now') WHERE id = ?",
@@ -137,15 +178,23 @@ def get(root: str | os.PathLike[str], section_id: int) -> dict:
     row = conn.execute("SELECT * FROM bible_section WHERE id = ?", (section_id,)).fetchone()
     if row is None:
         raise LookupError(f"no bible section {section_id}")
-    return dict(row)
+    section = dict(row)
+    # Handed out with every read so an editor can pass it back to update() and
+    # find out it was beaten, instead of overwriting the winner.
+    section["version"] = version_of(section)
+    return section
 
 
 def list_sections(root: str | os.PathLike[str], kind: str | None = None) -> list[dict]:
     conn = db.connect(root)
     if kind:
-        return rows(conn.execute(
+        listed = rows(conn.execute(
             "SELECT * FROM bible_section WHERE kind = ? ORDER BY rank, id", (kind,)))
-    return rows(conn.execute("SELECT * FROM bible_section ORDER BY kind, rank, id"))
+    else:
+        listed = rows(conn.execute("SELECT * FROM bible_section ORDER BY kind, rank, id"))
+    for section in listed:  # the editor edits from this list; it needs the version
+        section["version"] = version_of(section)
+    return listed
 
 
 def in_scope(root: str | os.PathLike[str], rank: int) -> bool:

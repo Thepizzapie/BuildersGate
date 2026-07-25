@@ -11,14 +11,76 @@
   const post = async (p, b) => { try { const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); return r.json().catch(() => ({ ok: r.ok })); } catch (e) { return { ok: false }; } };
   const toast = (m, bad) => (window.BGWS ? BGWS.toast(m, bad) : console.log(m));
 
+  /* Every flow this dispatcher can open, and where its module lives. The tab
+     strip and the whitelist are BOTH derived from here plus whatever a plugin
+     registered on window.StudioFlows — a hardcoded ["workflows","game"] made
+     two finished flows (asset, agent) unreachable, and their script tags were
+     never added either, so nothing registered them. Loading is lazy and
+     idempotent; a module that fails to load falls back to the built-in below. */
+  const MODULES = {
+    asset: "/static/flow_asset.js",
+    agent: "/static/flow_agent.js",
+    game: "/static/flow_game.js",
+  };
+  // Flows this file implements itself — the fallback when a module is absent.
+  const BUILTIN = {
+    asset: { label: "Asset flow", glyph: "⬡" },
+    agent: { label: "Agent flow", glyph: "⌁" },
+    game: { label: "Game editor", glyph: "⌖" },
+  };
+  const CORE = { workflows: { label: "Workflows", glyph: "⬡" } };
+
+  function loadScript(src) {
+    return new Promise(resolve => {
+      if (document.querySelector(`script[src="${src}"]`)) { resolve(false); return; }
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = () => resolve(true);
+      s.onerror = () => { console.warn("[studio] could not load", src); resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+
   const Studio = {
-    _flow: null, _nc: null,
-    activate() {
+    _flow: null, _nc: null, _loaded: null,
+
+    // The registry, in tab order: the core builder, then every registered or
+    // built-in flow. Adding a flow_*.js is all it takes to appear here.
+    flows() {
+      const reg = window.StudioFlows || {};
+      const ids = Object.keys(CORE)
+        .concat(Object.keys(BUILTIN).filter(id => !(id in CORE)))
+        .concat(Object.keys(reg).filter(id => !(id in CORE) && !(id in BUILTIN)));
+      return ids.map(id => {
+        const meta = reg[id] || BUILTIN[id] || CORE[id] || {};
+        return { id, label: meta.label || id, glyph: meta.glyph || "◇" };
+      });
+    },
+    _ensureModules() {
+      if (!this._loaded) {
+        this._loaded = Promise.all(Object.keys(MODULES).map(id =>
+          ((window.StudioFlows || {})[id] ? Promise.resolve(false) : loadScript(MODULES[id]))));
+      }
+      return this._loaded;
+    },
+    async activate() {
       if (!this._flow) { try { this._flow = localStorage.getItem("studio-flow"); } catch (e) {} }
-      if (!["workflows", "game"].includes(this._flow)) this._flow = "workflows";
+      await this._ensureModules();
+      this._renderNav();
+      const ids = this.flows().map(f => f.id);
+      if (ids.indexOf(this._flow) === -1) this._flow = ids[0] || "workflows";
       this.select(this._flow);
     },
+    _renderNav() {
+      const nav = document.getElementById("studio-subnav");
+      if (!nav) return;
+      nav.innerHTML = this.flows().map(f =>
+        `<button class="seat-tab ${f.id === this._flow ? "active" : ""}" data-flow="${esc(f.id)}"
+           onclick="Studio.select('${esc(f.id)}')">${esc(f.glyph)} ${esc(f.label)}</button>`).join("");
+    },
     select(flow) {
+      const ids = this.flows().map(f => f.id);
+      if (ids.indexOf(flow) === -1) flow = ids[0] || "workflows";
       this._flow = flow;
       try { localStorage.setItem("studio-flow", flow); } catch (e) {}
       document.querySelectorAll("#studio-subnav .seat-tab").forEach(t => t.classList.toggle("active", t.dataset.flow === flow));
@@ -32,7 +94,8 @@
         }
         const plugin = (window.StudioFlows || {})[flow];
         if (plugin && plugin.build) { plugin.build(body, this._api()); return; }
-        this.game(body);   // built-in fallback game editor
+        if (typeof this[flow] === "function") { this[flow](body); return; }  // built-in
+        body.innerHTML = `<div class="empty">no module registered for the “${esc(flow)}” flow</div>`;
       } catch (e) { body.innerHTML = `<div class="empty">studio error: ${esc(e.message)}</div>`; console.error(e); }
     },
     // Shared services handed to full flow modules (window.StudioFlows.<flow>).
@@ -77,10 +140,18 @@
       nc.mount(); nc.fit(); this._nc = nc;
       host.querySelectorAll(".st-pi").forEach(b => b.onclick = () => this._assetAdd(b.dataset.add));
     },
+    // Pins are versioned files (<slug>.rN<suffix>) with a stored path, and the
+    // suffix is whatever was pinned — jpg and webp render blank if you assume
+    // .png. Always ask the ref for its own path.
+    refRel(ref) {
+      const p = String((ref && (ref.resolved_path || ref.path)) || "").replace(/\\/g, "/");
+      const cut = p.indexOf(".bgate/");
+      return cut === -1 ? p : p.slice(cut);
+    },
     _assetBody(n) {
       if (n.type === "reference") {
-        const rel = ".bgate/refs/" + n.data.name + ".png";
-        return `<img class="st-thumb" src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">`;
+        const rel = this.refRel(n.data);
+        return rel ? `<img class="st-thumb" src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">` : "";
       }
       if (n.type === "candidate") {
         return `<img class="st-thumb" src="/api/preview?rel=${encodeURIComponent(n.data.path)}" onerror="this.style.opacity=.12">`;
@@ -106,8 +177,10 @@
           <button class="qbtn small ghost" onclick="Studio.reviewCandidate(${a.id},'rejected')">reject</button>
           <button class="qbtn small ghost" onclick="Studio.regen(${a.id})">regenerate</button></div>`;
       } else if (n.type === "reference") {
-        body += `<img class="st-insp-img" src="/api/preview?rel=${encodeURIComponent(".bgate/refs/" + n.data.name + ".png")}" onerror="this.style.opacity=.12">`;
-        body += kv("name", n.data.name) + kv("kind", n.data.kind) + (n.data.note ? kv("note", n.data.note) : "");
+        const rel = this.refRel(n.data);
+        if (rel) body += `<img class="st-insp-img" src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">`;
+        body += kv("name", n.data.name) + kv("revision", "r" + (n.data.revision || 1)) +
+                kv("kind", n.data.kind) + (n.data.note ? kv("note", n.data.note) : "");
       } else if (n.type === "model") {
         body += `<div class="st-insp-p">Connect references and a prompt, then run to dispatch the art seat. Candidates appear as the agent produces them.</div>`;
       } else if (n.type === "prompt") {
@@ -131,7 +204,18 @@
       if (item && item.id) { await post(`/api/queue/${item.id}/dispatch`, {}); toast("art agent dispatched"); }
       else toast("could not queue", true);
     },
-    async reviewCandidate(id, status) { await post(`/api/artifacts/${id}/review`, { status }); toast(status); this.select("asset"); },
+    // /react, not /review: a verdict has to leave a durable seat note (and a
+    // live steer) behind it, or rejecting teaches the next agent nothing.
+    async reviewCandidate(id, status) {
+      const verdict = status === "approved" ? "like" : "dislike";
+      const note = verdict === "dislike"
+        ? (window.prompt("Reject — what is off-model? (the art seat keeps this)", "") || "")
+        : "";
+      const r = await post(`/api/artifacts/${id}/react`, { verdict, note });
+      const err = (r && r.error && (r.error.message || r.error)) || (r && r.review_error) || null;
+      toast(err ? String(err) : status, !!err);
+      this.select("asset");
+    },
     async regen(id) { await post(`/api/artifacts/${id}/regenerate`, { reason: "from studio" }); toast("regenerate queued"); },
 
     /* ══════════════════ AGENT FLOW ══════════════════ */

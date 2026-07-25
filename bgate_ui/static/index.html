@@ -5,102 +5,56 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Builders Gate</title>
 <style>
-  /* ── the foundry ─────────────────────────────────────────────────────── */
+  /* ── tokens ──────────────────────────────────────────────────────────────
+     ONE token block. Four themes used to stack in this file — foundry, then a
+     cleanup pass, then a console rework, then a void/iris experiment, then an
+     ember revert — each redefining the same custom properties further down, so
+     reading any colour meant reading all four. Custom properties resolve at USE
+     time, so the layers were never anything but the last value written; this is
+     that value, stated once.
+
+     Fonts: two of those layers declared a webfont that was never shipped —
+     there is no CDN here and no local face to load it from, so every browser
+     silently fell through to Segoe UI anyway. The stack now names only what
+     actually renders on the machine.
+     ─────────────────────────────────────────────────────────────────────── */
   :root{
-    --void:#0c0c10; --iron:#121218; --plate:#17171f; --seam:#26262f;
-    --ash:#8b8b98; --bone:#e8e6df; --ember:#ff5c33; --ember-dim:#8a2f1c;
-    --mono:"Cascadia Mono","Consolas",ui-monospace,monospace;
-    --sans:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+    --void:#000000; --iron:#050507; --plate:#0b0b0f; --plate2:#121218;
+    --seam:rgba(255,255,255,.075); --seam2:rgba(255,255,255,.14);
+    --ash:#9a9a9a; --ash2:#6a6a6a; --bone:#ffffff; --silver:#bdbdbd;
+    --ember:#ff6a3d; --ember-dim:#3a2018; --ember-soft:rgba(255,106,61,.16);
+    --spark:#ffb23d;
+    --good:#2fae90; --warn:#ffb829; --bad:#ff5d5d; --info:#8aa0ff;
+    --grid-dot:rgba(255,255,255,.05);
+    --mono:"Cascadia Code","Cascadia Mono","Consolas",ui-monospace,monospace;
+    --sans:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
     --c-director:#e8c05a; --c-narrative:#b083e8; --c-gameplay:#ff5c33;
     --c-tech:#4fa3ff; --c-art:#ff7ab8; --c-audio:#43d6a5; --c-qa:#9adb4f;
+    --rail-w:236px; --insp-w:480px; --bar-h:60px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{
     background:var(--void); color:var(--bone); font-family:var(--sans);
-    background-image:radial-gradient(circle, #1d1d26 1px, transparent 1px);
-    background-size:26px 26px; min-height:100vh;
+    min-height:100vh; letter-spacing:-.005em; -webkit-font-smoothing:antialiased;
   }
-  ::selection{background:var(--ember);color:var(--void)}
+  ::selection{background:var(--ember-soft);color:var(--bone)}
 
-  /* ── header: the gate lintel ─────────────────────────────────────────── */
-  header{
-    display:flex; align-items:stretch; border-bottom:1px solid var(--seam);
-    background:linear-gradient(180deg,#15151c 0%,#101016 100%);
-  }
-  .sigil{
-    padding:18px 22px; border-right:1px solid var(--seam);
-    font-family:var(--mono); font-size:22px; color:var(--ember); line-height:1;
-    display:flex; align-items:center; user-select:none;
-  }
-  .masthead{padding:12px 20px; flex:1}
-  .masthead h1{
-    font-size:15px; letter-spacing:.42em; font-weight:600; color:var(--bone);
-    text-transform:uppercase;
-  }
-  .masthead .sub{
-    font-family:var(--mono); font-size:11px; color:var(--ash); margin-top:4px;
-  }
-  .masthead .sub b{color:var(--bone); font-weight:600}
-  .integrity{
-    display:flex; align-items:center; gap:10px; padding:0 22px;
-    border-left:1px solid var(--seam); font-family:var(--mono); font-size:11px;
-    letter-spacing:.12em; text-transform:uppercase;
-  }
+  /* The old shell's <header> (sigil + masthead + integrity strip) and its seat
+     "bays" are gone — the rail and the seat pills replace both. Only the lamp
+     and the throb it uses survive, on the playtest bar. */
   .lamp{width:9px;height:9px;border-radius:50%;background:#3adf82;box-shadow:0 0 8px #3adf82}
   .lamp.bad{background:var(--ember);box-shadow:0 0 10px var(--ember);animation:throb 1.1s infinite}
   .lamp.waiting{background:#e8c05a;box-shadow:0 0 8px rgba(232,192,90,.65)}
   @keyframes throb{50%{opacity:.35}}
 
-  /* ── the floor: seat bays ────────────────────────────────────────────── */
-  main{padding:18px; display:grid; gap:18px}
   section h2{
     font-family:var(--mono); font-size:10px; letter-spacing:.35em; color:var(--ash);
     text-transform:uppercase; margin-bottom:10px; display:flex; gap:8px; align-items:center;
   }
   section h2::after{content:""; flex:1; height:1px; background:var(--seam)}
-  .floor{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:10px}
-  .bay{
-    background:var(--plate); border:1px solid var(--seam); border-top:2px solid var(--sc,#555);
-    padding:12px 13px 11px; position:relative; min-height:132px;
-    display:flex; flex-direction:column; gap:8px;
-  }
-  .bay .head{display:flex; align-items:baseline; gap:9px}
-  .bay .glyph{
-    font-family:var(--mono); font-size:15px; color:var(--sc);
-    width:20px; text-align:center;
-  }
-  .bay .role{font-size:12px; font-weight:700; letter-spacing:.18em; text-transform:uppercase}
-  .bay .state{
-    margin-left:auto; font-family:var(--mono); font-size:9px; letter-spacing:.14em;
-    color:var(--ash);
-  }
-  .bay.working .state{color:var(--sc)}
-  .bay.working .state::before{
-    content:"●"; margin-right:5px; animation:throb 1.4s infinite;
-  }
-  .bay .doing{
-    font-family:var(--mono); font-size:11px; color:var(--bone); line-height:1.45;
-    overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
-    min-height:2.6em;
-  }
-  .bay .doing.idle{color:#4c4c58}
-  .bay .locks{display:flex; flex-direction:column; gap:3px}
-  .bay .lock{
-    font-family:var(--mono); font-size:10px; color:var(--ash);
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  }
-  .bay .lock::before{content:"⌸ "; color:var(--sc)}
-  .bay .foot{
-    margin-top:auto; display:flex; justify-content:space-between;
-    font-family:var(--mono); font-size:9.5px; color:#4c4c58; letter-spacing:.08em;
-  }
-  .bay .foot .fb{color:var(--ash)}
-  .bay .foot .fb b{color:var(--sc); font-weight:600}
 
-  /* ── two-column band: ledger + gallery ───────────────────────────────── */
-  .band{display:grid; grid-template-columns:minmax(340px,5fr) minmax(300px,4fr); gap:18px}
-  @media (max-width:1000px){.band{grid-template-columns:1fr}}
-
+  /* .band / .lower were the two-column and three-column bands of the old shell;
+     the deck replaced both. Their rules (and their breakpoints) are gone. */
   .ledger{
     background:var(--iron); border:1px solid var(--seam);
     font-family:var(--mono); font-size:11px; max-height:340px; overflow-y:auto;
@@ -140,9 +94,7 @@
   }
   #lightbox img{max-width:92vw; max-height:92vh; border:1px solid var(--seam)}
 
-  /* ── lower band: vault + world + sessions ────────────────────────────── */
-  .lower{display:grid; grid-template-columns:5fr 4fr 3fr; gap:18px}
-  @media (max-width:1100px){.lower{grid-template-columns:1fr}}
+  /* ── vault + world + sessions ────────────────────────────────────────── */
   table{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:10.5px}
   th{
     text-align:left; color:#4c4c58; font-weight:400; letter-spacing:.16em;
@@ -493,39 +445,9 @@
   .atlas-screen .pad-b{padding-bottom:8px}
 </style>
 <style id="ui-cleanup">
-  :root{
-    --void:#0e1116;
-    --iron:#151a21;
-    --plate:#1b212a;
-    --seam:#2a323d;
-    --ash:#94a0ad;
-    --bone:#f1f4f7;
-    --ember:#ff6b4a;
-    --ember-dim:#b7442d;
-    --sans:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
-  }
-  body{
-    background:
-      radial-gradient(circle at 50% -20%,#202b36 0,transparent 42%),
-      var(--void);
-    background-attachment:fixed;
-  }
+  /* Tokens live in ONE place now — see the token block above. */
   :focus-visible{outline:2px solid var(--c-tech);outline-offset:2px}
-  header{
-    position:sticky;top:0;z-index:8;min-height:68px;align-items:center;
-    background:rgba(14,17,22,.92);backdrop-filter:blur(16px);
-    box-shadow:0 8px 30px rgba(0,0,0,.22);
-  }
-  .sigil{align-self:stretch;min-width:68px;justify-content:center;padding:0 18px}
-  .masthead{padding:12px 20px}
-  .masthead h1{font-size:18px;letter-spacing:.22em}
-  .masthead .sub{max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .integrity{min-height:68px}
-
-  main{max-width:1680px;margin:0 auto;padding:24px;gap:24px}
   section h2{margin-bottom:11px;letter-spacing:.22em}
-  .band{gap:24px}
-  .band:first-child{grid-template-columns:minmax(320px,4fr) minmax(560px,8fr)}
 
   .panel,.ledger{
     overflow:hidden;border-radius:8px;
@@ -556,17 +478,6 @@
   .qitem .qtitle{font-family:var(--sans);font-size:12px}
   .empty{color:#687582}
 
-  .floor{grid-template-columns:repeat(7,minmax(150px,1fr));gap:9px}
-  .bay{
-    min-height:144px;padding:14px;border-radius:7px;border-top-width:3px;
-    box-shadow:0 8px 24px rgba(0,0,0,.12);
-    transition:transform .16s,background .16s;
-  }
-  .bay:hover{transform:translateY(-2px);background:#1d242d}
-  .bay .role{font-size:11px;letter-spacing:.12em}
-  .bay .doing{font-size:10.5px}
-  .bay .doing.idle,.bay .foot{color:#687582}
-
   .ledger{max-height:360px}
   .ledger .line{padding:7px 12px}
   .gallery{grid-template-columns:repeat(auto-fill,minmax(135px,1fr));gap:10px}
@@ -586,7 +497,6 @@
   .artifact .name{font-family:var(--sans);font-size:12px;font-weight:650}
   .artifact .detail{line-height:1.35}
 
-  .lower{gap:24px}
   th{padding:8px 10px}
   td{padding:7px 10px}
   .chip{border-radius:999px}
@@ -603,38 +513,18 @@
   .transcript{border-radius:6px;background:#11161d}
   footer{max-width:1680px;margin:0 auto;padding:0 24px 28px;color:#596672}
 
-  @media(max-width:1320px){
-    .floor{grid-template-columns:repeat(4,minmax(170px,1fr))}
-    .lower{grid-template-columns:1fr 1fr}
-    .lower section:first-child{grid-column:1/-1}
-  }
-  @media(max-width:1000px){
-    .band:first-child,.band{grid-template-columns:1fr}
-  }
+  /* The 1320 / 1000 / 720 / 480 breakpoints that used to sit here targeted
+     .band, .lower, .floor, main > section, header and .qadd — every one of them
+     markup the deck shell deleted. They were dead weight that made the layout
+     look responsive while the only live rule left on the embedded game was a
+     fixed min-height. Live breakpoints are at the end of this file, against the
+     deck/rail/stage markup that exists. */
   @media(max-width:720px){
     html,body{max-width:100%;overflow-x:hidden}
-    header{position:relative}
-    .sigil{min-width:54px;padding:0 12px}
-    .integrity{padding:0 12px}
-    #lamptext{display:none}
-    main{padding:16px;gap:18px}
-    main,.band,.band>section,.panel,.playpanel{min-width:0;max-width:100%}
-    .band,.band>section,main>section,.lower{width:calc(100vw - 32px)}
-    .floor{grid-template-columns:repeat(2,minmax(140px,1fr))}
-    .lower{grid-template-columns:1fr}
-    .lower section:first-child{grid-column:auto}
-    .qadd{display:grid;grid-template-columns:110px minmax(0,1fr);min-width:0}
-    .qadd select,.qadd input{width:100%;max-width:100%}
-    .qadd button{grid-column:1/-1}
-    .ptbar{min-width:0}
-    #pt-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .panel,.playpanel{min-width:0;max-width:100%}
     .playhint{max-width:100%;overflow-wrap:anywhere}
-    .playpanel{min-height:350px}
-    #play-holder,#gameframe{min-height:300px}
   }
   @media(max-width:480px){
-    .masthead .sub{display:none}
-    .floor{grid-template-columns:1fr}
     .gallery{grid-template-columns:repeat(2,1fr)}
     .artifact-grid{grid-template-columns:1fr}
   }
@@ -895,7 +785,6 @@
   }
   .work-link b{color:#dbe3e9}
   .work-result{color:#74d6aa}
-  .workspace .floor{grid-template-columns:repeat(7,minmax(145px,1fr))}
   .ledger-block{margin-top:22px}
   .ledger-block>h2,.asset-workspace section>h2{
     margin-bottom:10px;color:#85929e;font:700 10px var(--mono);
@@ -912,77 +801,30 @@
   .world-panel .inner{padding:20px}
   #view-review>.empty{padding:30px}
 
+  /* Same story as the block above: .studio-layout / .build-stage /
+     .iteration-sidebar / .workspace* / .app-shell were replaced by the deck
+     shell, so every `.build-stage #gameframe` rule here matched nothing. Only
+     the rules whose markup still exists are kept. */
   @media(max-width:1250px){
-    .studio-layout{grid-template-columns:minmax(0,1fr) 340px}
-    .build-stage .playpanel{height:560px;min-height:560px}
-    .build-stage #play-holder,.build-stage #gameframe{min-height:510px}
-    .workspace .floor{grid-template-columns:repeat(4,minmax(160px,1fr))}
     .asset-workspace{grid-template-columns:1fr}
   }
   @media(max-width:900px){
-    .app-shell{padding:18px}
-    .studio-layout{grid-template-columns:1fr}
-    .iteration-sidebar{grid-template-columns:1fr 1fr}
-    .build-stage .playpanel{height:500px;min-height:500px}
-    .build-stage #play-holder,.build-stage #gameframe{min-height:450px}
     .asset-compare{grid-template-columns:1fr}
     .iteration-card{grid-template-columns:1fr}
     .iteration-summary{border-right:0;border-bottom:1px solid var(--seam)}
   }
   @media(max-width:680px){
-    .app-shell{width:100vw;max-width:100vw;padding:14px;overflow:hidden}
-    .studio-layout,.build-stage,.iteration-sidebar,.side-card,.workspace{
-      width:100%;max-width:100%;min-width:0;
-    }
-    .studio-layout,.iteration-sidebar{grid-template-columns:1fr}
-    .section-heading{align-items:flex-start}
-    .stage-hint{display:none}
-    .side-note{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .build-stage .playpanel{height:390px;min-height:390px}
-    .build-stage #play-holder,.build-stage #gameframe{min-height:340px}
-    .build-stage .ptbar{width:100%;min-width:0}
-    .build-stage .ptbar{flex-wrap:wrap}
-    .build-stage #pt-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .build-stage #pt-btn{flex:0 0 auto}
-    .build-stage .pt-goal{order:3;flex:1 1 100%;max-width:none}
-    .build-stage .playhint{max-width:100%;white-space:normal;overflow-wrap:anywhere}
-    .iteration-sidebar .qadd{grid-template-columns:105px minmax(0,1fr)}
-    .iteration-sidebar .qadd button{grid-column:1/-1}
-    .workspace{margin-top:20px}
-    .workspace-view{padding:16px}
     .view-heading{align-items:flex-start}
     .view-heading p{display:none}
-    .workspace .floor{grid-template-columns:1fr 1fr}
     .asset-workspace{grid-template-columns:1fr}
-  }
-  @media(max-width:430px){
-    .workspace .floor{grid-template-columns:1fr}
-    .workspace .artifact-grid{grid-template-columns:1fr}
   }
 
   /* ═══════════════════════════════════════════════════════════════════════
      COMMAND DECK — professional console rework (loaded last; overrides above)
      Re-themes every existing component by redefining the shared tokens, then
      replaces the scattered shell with a persistent rail + status bar + a
-     universal inspector drawer. Frontend only.
+     universal inspector drawer. Frontend only. (Tokens: one block, at the top.)
      ═══════════════════════════════════════════════════════════════════════ */
-  :root{
-    /* Cool deep-slate console. One warm ember signal, used with restraint.
-       Muted semantic colors for status so the accent stays meaningful. */
-    --void:#0a0c11; --iron:#0e1117; --plate:#12161e; --plate2:#171c25;
-    --seam:#212734; --seam2:#2c3442;
-    --ash:#95a0b2; --ash2:#606b7d; --bone:#e9ecf3;
-    --ember:#ff6a3d; --ember-dim:#3a2018; --ember-soft:rgba(255,106,61,.14);
-    --good:#46c08a; --warn:#e4a63f; --bad:#e5645f; --info:#5aa2e6;
-    --mono:"Cascadia Code","JetBrains Mono","SF Mono",ui-monospace,Consolas,monospace;
-    --sans:"Segoe UI Variable Display","Segoe UI",Inter,system-ui,sans-serif;
-    --rail-w:224px; --insp-w:460px; --bar-h:54px;
-  }
-  body{
-    background:var(--void); background-image:none;   /* kill the busy dot grid */
-    font-family:var(--sans); -webkit-font-smoothing:antialiased;
-  }
-  ::selection{background:var(--ember-soft);color:var(--bone)}
   /* thin, quiet scrollbars everywhere */
   *::-webkit-scrollbar{width:10px;height:10px}
   *::-webkit-scrollbar-thumb{background:#232a36;border-radius:6px;border:2px solid transparent;background-clip:padding-box}
@@ -990,7 +832,6 @@
   *::-webkit-scrollbar-track{background:transparent}
 
   /* hide the legacy shell chrome — the deck replaces it */
-  body > header{display:none}
 
   .deck{display:grid; grid-template-columns:var(--rail-w) 1fr; height:100vh; overflow:hidden}
 
@@ -1108,21 +949,8 @@
      violet accent, amber emphasis labels, white/ash type, generous radius,
      float-on-void surfaces. Adapted for a dense console: legibility kept,
      structure kept; borrowed the palette, radius, and "trust scale not weight"
-     type feel. Loaded last — wins. (Remaps the shared tokens → re-themes all.)
+     type feel. (Tokens: one block, at the top — the values below resolve from it.)
      ═══════════════════════════════════════════════════════════════════════ */
-  :root{
-    --void:#000000; --iron:#050507; --plate:#0b0b0f; --plate2:#121218;
-    --seam:rgba(255,255,255,.075); --seam2:rgba(255,255,255,.14);
-    --ash:#9a9a9a; --ash2:#6a6a6a; --bone:#ffffff; --silver:#bdbdbd;
-    --ember:#8052ff; --ember-dim:#241a45; --ember-soft:rgba(128,82,255,.16);
-    --spark:#ffb829;
-    --good:#2fae90; --warn:#ffb829; --bad:#ff5d5d; --info:#8aa0ff;
-    --sans:"Inter","Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
-    --rail-w:236px; --insp-w:480px; --bar-h:60px;
-  }
-  body{background:#000; letter-spacing:-.005em}
-  ::selection{background:var(--ember-soft); color:#fff}
-
   /* Type — quiet weight, scale + tracking carry hierarchy; amber labels. */
   .deck-view > .view-heading h2{font-size:30px; font-weight:400; letter-spacing:-.03em; color:#fff; line-height:1.06}
   .deck-view > .view-heading p{color:var(--silver); font-weight:300; font-size:14px}
@@ -1154,7 +982,6 @@
   .dcard > h3{font-weight:500; color:#fff; font-size:13px}
   .stage-body{padding:26px 30px 72px}
   .panel{background:#000; border:1px solid var(--seam); border-radius:20px}
-  .bay{background:#000; border:1px solid var(--seam); border-top:2px solid var(--sc,#8052ff); border-radius:16px}
   .ledger{background:#000; border:1px solid var(--seam); border-radius:16px}
 
   /* Buttons — pill; the violet primary is the sole filled accent. */
@@ -1176,15 +1003,123 @@
      and re-points the single accent to a warm ember/coral — ties to the arcade
      game and matches the n8n / Anthropic Workbench tool references. Node-editor
      views (asset flow, agent flow) layer their own dot-grid canvas on top.
+     (Tokens: one block, at the top — --ember is the ember/coral this describes.)
      ═══════════════════════════════════════════════════════════════════════ */
-  :root{
-    --ember:#ff6a3d; --ember-dim:#3a2018; --ember-soft:rgba(255,106,61,.16);
-    --spark:#ffb23d;
-    --sans:"Inter","Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
-    --grid-dot:rgba(255,255,255,.05);
-  }
   /* undo the iridescent-text brand mark; ember glyph instead */
   .rail-brand .mark{background:none; -webkit-text-fill-color:var(--ember); color:var(--ember)}
+
+  /* ── toasts: where a failed mutation becomes visible ──────────────────── */
+  .toasts{
+    position:fixed; right:18px; bottom:18px; z-index:9500;
+    display:flex; flex-direction:column; gap:8px; max-width:min(460px,92vw);
+  }
+  .toast{
+    display:flex; align-items:flex-start; gap:10px; padding:11px 12px;
+    border:1px solid var(--seam2); border-radius:12px; background:var(--plate2);
+    box-shadow:0 16px 40px rgba(0,0,0,.55); font-size:12.5px; line-height:1.45;
+    color:var(--bone); animation:toastin .16s ease-out;
+  }
+  @keyframes toastin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .toast.err{border-color:#7d4338}
+  .toast.err .ti{color:var(--bad)}
+  .toast.ok{border-color:#2c6b58}
+  .toast.ok .ti{color:var(--good)}
+  .toast .ti{flex:none; font-family:var(--mono)}
+  .toast .tmsg{flex:1; min-width:0; word-break:break-word}
+  .toast .tx{
+    flex:none; border:0; background:transparent; color:var(--ash2);
+    cursor:pointer; font-size:15px; line-height:1; padding:0 2px;
+  }
+  .toast .tx:hover{color:var(--bone)}
+  .empty.err{color:#ff9379}
+
+  /* ── playtest preflight: the full, actionable reason ──────────────────── */
+  .pt-why{
+    padding:10px 14px 12px; border-bottom:1px solid var(--seam);
+    background:var(--plate); font:11px/1.5 var(--mono); color:var(--ash);
+  }
+  .pt-why[hidden]{display:none}
+  .pt-checks{list-style:none; display:flex; flex-direction:column; gap:8px}
+  .pt-checks li{display:flex; flex-direction:column; gap:2px;
+    padding-left:10px; border-left:2px solid #7d4338}
+  .pt-checks b{color:var(--bone); text-transform:uppercase; letter-spacing:.1em; font-size:9.5px}
+  .pt-checks .r{color:#ff9379; word-break:break-word}      /* never truncated */
+  .pt-checks .fix{color:var(--bone); word-break:break-word}
+  .pt-note{margin-top:9px; color:var(--ash2)}
+  .pt-note code{color:var(--spark); background:var(--void); padding:1px 6px; border-radius:5px}
+
+  /* ── review overlay: merged ≠ dismissed, unrouted stays visible ───────── */
+  .feedback-card.st-dismissed{opacity:.5}
+  .feedback-card.st-merged{opacity:.78; border-left:3px solid var(--info)}
+  .feedback-card.st-promoted{border-left:3px solid var(--good)}
+  .feedback-card.flash{box-shadow:0 0 0 2px var(--info)}
+  .chip.merged{border-color:var(--info); color:var(--info)}
+  .chip.merged a{color:var(--info); font-weight:600}
+  .chip.st-dismissed{color:var(--ash2)}
+  .chip.st-promoted{border-color:#2c6b58; color:var(--good)}
+  .feedback-controls select.unrouted{border-color:var(--spark); color:var(--spark)}
+  .feedback-controls select.needs-seat{
+    border-color:var(--bad); color:var(--bad); animation:throb .7s 3;
+  }
+
+  /* ── responsive, against the markup that actually exists ─────────────────
+     The old breakpoints targeted .band / .lower / main > section / .app-shell /
+     .studio-layout / .build-stage — markup deleted when the deck shell landed —
+     so the only rule that still applied to the embedded game was a fixed
+     min-height, and it rendered in a letterbox no matter how tall the stage was.
+     ─────────────────────────────────────────────────────────────────────── */
+  .playpanel{min-height:0; height:auto}
+  #play-holder{
+    width:100%; min-height:0; aspect-ratio:16/9;
+    max-height:calc(100vh - var(--bar-h) - 210px);
+  }
+  #gameframe{
+    width:100%; height:100%; min-height:0; flex:1 1 auto;
+    background:#050607; border:0;
+  }
+  @media(max-width:1180px){
+    /* collapse the rail to icons rather than letting the stage disappear */
+    .deck{grid-template-columns:64px 1fr}
+    .rail-brand{padding:16px 0 14px; justify-content:center}
+    .rail-brand > div, .rail-item .ct, .rail-item .dot, .rail-foot .vrow span:last-child{display:none}
+    .rail-nav{padding:12px 6px}
+    .rail-group{padding:12px 0 5px; text-align:center; font-size:0}
+    .rail-group::after{content:"···"; font-size:9px; letter-spacing:.2em}
+    .rail-item{justify-content:center; padding:10px 0; gap:0; font-size:0}
+    .rail-item .ic{font-size:15px; width:auto}
+    .rail-item.active::before{left:-6px}
+    .rail-foot{padding:12px 0; text-align:center}
+    .stage-body{padding:20px 18px 56px}
+  }
+  @media(max-width:820px){
+    .deck{grid-template-columns:1fr; height:auto; min-height:100vh; overflow:visible}
+    .rail{
+      flex-direction:row; align-items:center; overflow-x:auto;
+      border-right:0; border-bottom:1px solid var(--seam);
+    }
+    .rail-brand{border-bottom:0; border-right:1px solid var(--seam); flex:none}
+    .rail-nav{display:flex; gap:4px; padding:8px; overflow-x:auto; overflow-y:hidden}
+    .rail-group{display:none}
+    .rail-item{width:auto; flex:0 0 auto}
+    .rail-foot{display:none}
+    .stage{overflow:visible}
+    .stage-body{overflow:visible; padding:18px 14px 48px}
+    .statusbar{padding:0 14px; gap:8px; overflow-x:auto}
+    .ptbar{flex-wrap:wrap}
+    .ptbar #pt-msg{flex:1 1 100%; order:2}
+    .pt-goal{flex:1 1 100%}
+    #play-holder{max-height:none}
+    .col2{grid-template-columns:1fr}
+    .orch-composer-row{flex-wrap:wrap}
+    .orch-composer-row #q-title{flex:1 1 100%; order:-1}
+    .review-overlay{padding:0}
+    .review-shell{height:100vh; border-radius:0}
+  }
+  @media(max-width:520px){
+    .ov-stats{grid-template-columns:repeat(2,1fr)}
+    .asset-grid{grid-template-columns:repeat(auto-fill,minmax(112px,1fr))}
+    .toasts{left:12px; right:12px; bottom:12px; max-width:none}
+  }
 </style>
 <body>
 <div class="deck">
@@ -1243,9 +1178,11 @@
             </select>
             <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
           </div>
+          <!-- What is actually missing, in full, with the command that fixes it. -->
+          <div class="pt-why" id="pt-why" hidden></div>
           <div id="play-holder">
             <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
-            <div class="playhint">A/D move · Space jump · J/K punch · U/I kick · S block · L duck · F1 tuning</div>
+            <div class="playhint" id="play-controls">Controls come from your game's own input map — F1 opens live tuning over the running build.</div>
           </div>
         </div>
       </section>
@@ -1289,10 +1226,10 @@
 
       <section class="deck-view" id="view-studio">
         <div class="view-heading" style="margin-bottom:12px"><div><span class="eyebrow">Node studio</span><h2>Studio</h2></div><p>Visual node editors for asset generation, agent orchestration, and the game.</p></div>
-        <div class="seat-subnav" id="studio-subnav">
-          <button class="seat-tab active" data-flow="workflows" onclick="Studio.select('workflows')">⬡ Workflows</button>
-          <button class="seat-tab" data-flow="game" onclick="Studio.select('game')">⌖ Game editor</button>
-        </div>
+        <!-- Rendered by flows.js from the registered StudioFlows. Hardcoding
+             the tabs here is what hid the asset and agent flows: both modules
+             were fully built and simply never listed. -->
+        <div class="seat-subnav" id="studio-subnav"></div>
         <div id="studio-body" class="studio-body"><div class="empty">loading studio…</div></div>
       </section>
 
@@ -1414,6 +1351,113 @@ const color = r => getComputedStyle(document.documentElement).getPropertyValue(`
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let lastActivityId = 0;
 
+/* ── one path for every mutation ─────────────────────────────────────────
+ * Every mutation in this shell used to be `await fetch(...)` with the response
+ * dropped on the floor, and every read was wrapped in a blanket catch returning
+ * an empty object — which does not even fire on a 500, because an error body is
+ * still valid JSON, so the empty object never happened and the error was simply
+ * never read.
+ * So the backend's perfectly actionable sentence ("claude CLI not found on
+ * PATH") was binned and the failure rendered as nothing happening.
+ *
+ * The backend speaks two shapes and both are handled here:
+ *   {ok:true, data} / {ok:false, error:{code,message,detail}}  — api.py routes
+ *   bare payloads, 200 {ok:false, error:"a sentence"}, {detail} — app.py
+ * mutate() returns {ok, data, error, code, status}; a caller skips its
+ * re-render when ok is false so the operator's selection survives the failure.
+ */
+function apiError(body, status){
+  const e = body && body.error;
+  if (e && typeof e === "object") return e.message || e.code || `request failed · ${status}`;
+  if (typeof e === "string" && e) return e;
+  const d = body && body.detail;
+  if (typeof d === "string" && d) return d;
+  if (d && typeof d === "object" && d.message) return d.message;
+  if (body && typeof body.reason === "string" && body.reason) return body.reason;
+  return `request failed · ${status}`;
+}
+function unwrap(body){
+  return (body && body.ok === true && Object.prototype.hasOwnProperty.call(body, "data"))
+    ? body.data : body;
+}
+async function mutate(path, options){
+  const {method = "POST", body = null, quiet = false, ok = null, button = null} = options || {};
+  const btn = typeof button === "string" ? document.getElementById(button) : button;
+  const wasLabel = btn ? btn.textContent : null;
+  if (btn){ btn.disabled = true; }
+  let response, text = "", payload = null;
+  try{
+    const init = {method};
+    if (body !== null && body !== undefined){
+      init.headers = {"Content-Type":"application/json"};
+      init.body = typeof body === "string" ? body : JSON.stringify(body);
+    }
+    response = await fetch(path, init);
+    text = await response.text();
+  }catch(err){
+    if (btn){ btn.disabled = false; if (wasLabel != null) btn.textContent = wasLabel; }
+    const message = "backend unreachable — is the dashboard still running?";
+    if (!quiet) toast(message);
+    return {ok:false, data:null, error:message, code:"unreachable", status:0};
+  }
+  if (btn){ btn.disabled = false; if (wasLabel != null) btn.textContent = wasLabel; }
+  try{ payload = text ? JSON.parse(text) : null; }catch(e){ payload = null; }
+  if (!response.ok || (payload && payload.ok === false)){
+    const message = payload
+      ? apiError(payload, response.status)
+      : (text ? trunc(text.trim(), 300) : `request failed · ${response.status}`);
+    const code = (payload && ((payload.error && payload.error.code) || payload.code))
+      || String(response.status);
+    if (!quiet) toast(message);
+    return {ok:false, data:null, error:message, code, status:response.status};
+  }
+  if (ok && !quiet) toast(ok, "ok");
+  return {ok:true, data:unwrap(payload), error:null, code:null, status:response.status};
+}
+
+/* Reads. Same two shapes; a failure returns the caller's fallback TAGGED with
+ * __error so a panel can render "backend error" instead of the empty state —
+ * empty and broken must not look identical. */
+async function readJSON(path, fallback){
+  const failed = message => {
+    const out = (fallback && typeof fallback === "object") ? {...fallback} : {};
+    out.__error = message;
+    return out;
+  };
+  let response, body;
+  try{
+    response = await fetch(path);
+    body = await response.json();
+  }catch(e){
+    return failed("backend unreachable");
+  }
+  if (!response.ok || (body && body.ok === false)) return failed(apiError(body, response.status));
+  return unwrap(body);
+}
+
+/* Toasts. The only place a mutation failure becomes visible, so it must not be
+ * possible to miss it: errors linger and have to be dismissed or time out. */
+function toast(message, kind){
+  let host = document.getElementById("toasts");
+  if (!host){
+    host = document.createElement("div");
+    host.id = "toasts";
+    host.className = "toasts";
+    host.setAttribute("role", "status");
+    host.setAttribute("aria-live", "polite");
+    document.body.appendChild(host);
+  }
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "ok" ? "ok" : "err");
+  el.innerHTML = `<span class="ti">${kind === "ok" ? "✓" : "⚠"}</span>`
+    + `<span class="tmsg">${esc(message)}</span>`
+    + `<button class="tx" aria-label="Dismiss">×</button>`;
+  el.querySelector(".tx").onclick = () => el.remove();
+  host.appendChild(el);
+  setTimeout(() => el.remove(), kind === "ok" ? 3500 : 11000);
+  return el;
+}
+
 const DECK_CRUMB = {
   overview:"Overview", agents:"Agents", studio:"Studio", seats:"Seat workspaces",
   playtests:"Playtests", assets:"Assets", atlas:"Atlas", world:"World bible",
@@ -1432,7 +1476,7 @@ function setWorkspace(name, trigger){
   if (next === "studio" && window.Studio) window.Studio.activate();
   if (next === "atlas" && window.Atlas) window.Atlas.activate();
   if (next === "world" && window.World) window.World.activate();
-  if (next === "overview") refreshOverview();
+  if (next === "overview"){ refreshOverview(); ptPreflight(false); }
   const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
 }
 
@@ -1441,12 +1485,13 @@ async function refreshOverview(){
   if (!view || !view.classList.contains("active")) return;
   try{
     const [st, q, ag, arts, act] = await Promise.all([
-      fetch("/api/state").then(r=>r.json()).catch(()=>({})),
-      fetch("/api/queue").then(r=>r.json()).catch(()=>({items:[]})),
-      fetch("/api/agents").then(r=>r.json()).catch(()=>({agents:[]})),
-      fetch("/api/artifacts").then(r=>r.json()).catch(()=>({artifacts:[]})),
-      fetch("/api/activity?after_id=0").then(r=>r.json()).catch(()=>({events:[]})),
+      readJSON("/api/state", {}),
+      readJSON("/api/queue", {items:[]}),
+      readJSON("/api/agents", {agents:[]}),
+      readJSON("/api/artifacts", {artifacts:[]}),
+      readJSON("/api/activity?after_id=0", {events:[]}),
     ]);
+    const readError = [st, q, ag, arts, act].map(x => x && x.__error).find(Boolean);
     const items = q.items || [];
     const live = (ag.agents || []).filter(a => a.state === "running");
     const tiles = [
@@ -1467,7 +1512,10 @@ async function refreshOverview(){
     }).join("") : `<div class="empty">nothing dispatched</div>`;
     const evs = (act.events||[]).slice(-9).reverse();
     const actEl = document.getElementById("ov-activity");
-    if (actEl) actEl.innerHTML = evs.length ? evs.map(e=>`<div class="line"><span class="who" style="color:${color(e.seat)}">${esc(e.seat||"")}</span><span class="what">${esc(e.summary||e.kind||"")}</span></div>`).join("") : `<div class="empty">quiet</div>`;
+    if (actEl) actEl.innerHTML = evs.length
+      ? evs.map(e=>`<div class="line"><span class="who" style="color:${color(e.seat)}">${esc(e.seat||"")}</span><span class="what">${esc(e.summary||e.kind||"")}</span></div>`).join("")
+      : readError ? `<div class="empty err">could not read the studio — ${esc(readError)}</div>`
+      : `<div class="empty">quiet</div>`;
   }catch(e){}
 }
 setInterval(refreshOverview, 4000);
@@ -1604,16 +1652,34 @@ let assetFilter = "all";
 let assetSearch = "";
 let assetDrawerName = null;
 const IMG_RE = /\.(png|jpe?g|webp|svg)$/i;
+/* Categories are DERIVED, never named here. This used to hardcode two character
+ * names from one game and float them to the top of every project's library. A
+ * bucket now comes from the project's own canon entities (/api/state ships
+ * lore.canon) or, failing that, the logical name's own prefix — so "tommy_idle"
+ * and "tommy_punch" still group, in a project this file has never heard of. */
+const GENERIC_CATS = ["arenas & world", "hud", "misc", "trials"];
+const _slug = s => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 function assetCategory(name){
   const n = (name || "").toLowerCase();
   if (n.startsWith("_trial") || n.startsWith("trial")) return "trials";
+  const flat = _slug(n);
+  for (const entity of (window._canonNames || [])){
+    const slug = _slug(entity);
+    if (slug.length >= 3 && flat.includes(slug)) return String(entity).toLowerCase();
+  }
   if (/icon|portrait|\bhud\b/.test(n)) return "hud";
   if (/arena|^bg_|background|stage|parallax|tileset/.test(n)) return "arenas & world";
-  if (n.includes("scoville")) return "scoville";
-  if (n.includes("tommy")) return "tommy";
+  const prefix = n.split(/[_\-.]/)[0];
+  if (prefix && prefix.length >= 3 && prefix !== n) return prefix;
   return "misc";
 }
-const CAT_ORDER = ["scoville","tommy","arenas & world","hud","misc","trials"];
+/* Project-specific buckets lead (those are what you came looking for); the
+ * generic ones follow in a stable order. */
+function catOrder(cats){
+  const generic = cats.filter(c => GENERIC_CATS.includes(c))
+    .sort((a, b) => GENERIC_CATS.indexOf(a) - GENERIC_CATS.indexOf(b));
+  return cats.filter(c => !GENERIC_CATS.includes(c)).sort().concat(generic);
+}
 function groupStatus(g){
   if (g.approved) return "approved";
   if (g.candidates && g.candidates.length) return "review";
@@ -1667,11 +1733,10 @@ function renderAssetGrid(){
     box.innerHTML = `<div class="empty">no assets match this filter</div>`;
     return;
   }
-  // bucket by category, preserve CAT_ORDER
+  // bucket by derived category
   const buckets = {};
   groups.forEach(g => { (buckets[assetCategory(g.logical_name)] ||= []).push(g); });
-  const cats = CAT_ORDER.filter(c => buckets[c]).concat(
-    Object.keys(buckets).filter(c => !CAT_ORDER.includes(c)));
+  const cats = catOrder(Object.keys(buckets));
   box.innerHTML = cats.map(cat => {
     const tiles = buckets[cat].map(g => {
       const st = groupStatus(g);
@@ -1763,20 +1828,24 @@ function renderAssetDrawer(){
 }
 async function reviewArtifact(id,status){
   const note = status === "rejected" ? (prompt("Reason for rejection (becomes precedent):") || "") : "";
-  await fetch(`/api/artifacts/${id}/review`, {method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify({status,note})});
+  const r = await mutate(`/api/artifacts/${id}/review`, {body:{status,note},
+                                                        ok:`revision ${id} → ${status}`});
+  if (!r.ok) return;
   pollState();
 }
 async function regenerateArtifact(id){
   const reason = prompt("What should the next revision improve?") || "";
-  await fetch(`/api/artifacts/${id}/regenerate`, {method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify({reason})});
+  const r = await mutate(`/api/artifacts/${id}/regenerate`, {body:{reason},
+                                                            ok:"regeneration queued"});
+  if (!r.ok) return;
   pollState(); pollQueue();
 }
 async function fullAudit(){
-  document.getElementById("lamptext").textContent = "hashing all tracked assets…";
-  const r = await fetch("/api/assets/verify", {method:"POST"});
-  if (r.ok) pollState();
+  const lamp = document.getElementById("lamptext");
+  if (lamp) lamp.textContent = "hashing all tracked assets…";
+  const r = await mutate("/api/assets/verify", {ok:"integrity audit complete"});
+  if (!r.ok){ if (lamp) lamp.textContent = "audit failed — " + r.error; return; }
+  pollState();
 }
 
 function renderVault(assetsData, verify){
@@ -1853,7 +1922,8 @@ function renderSessions(sessions){
     : `<div class="empty">no playtests yet — playtest_check, then playtest_start</div>`;
 }
 async function retrySession(id){
-  await fetch(`/api/playtest/${id}/retry`, {method:"POST"});
+  const r = await mutate(`/api/playtest/${id}/retry`, {ok:`session ${id} re-queued`});
+  if (!r.ok) return;
   pollState(); ptPoll();
 }
 
@@ -1861,6 +1931,7 @@ let activeReviewSession = null;
 function closeReview(){
   document.getElementById("review-overlay").style.display = "none";
   activeReviewSession = null;
+  activeReviewOffset = 0;
 }
 function options(values,current){
   return values.map(v => `<option value="${v}" ${v===current?"selected":""}>${v}</option>`).join("");
@@ -1871,9 +1942,13 @@ async function openSession(id){
   const body = document.getElementById("review-body");
   overlay.style.display = "block";
   body.innerHTML = `<div class="empty">loading session ${id}…</div>`;
-  const r = await fetch(`/api/playtest/${id}`);
-  if (!r.ok){ body.innerHTML = `<div class="empty">failed to load session</div>`; return; }
-  const d = await r.json();
+  const d = await readJSON(`/api/playtest/${id}`, null);
+  if (!d || d.__error){
+    body.innerHTML = `<div class="empty err">could not load session ${id} — `
+      + `${esc((d && d.__error) || "no response")}</div>`;
+    return;
+  }
+  activeReviewOffset = Number(d.session.video_offset_s ?? d.video_offset_s ?? 0) || 0;
   document.getElementById("review-title").textContent = `Playtest ${id} — ${d.session.name}`;
   const telemetry = d.telemetry_backed
     ? `<span class="chip">${d.counts.events} telemetry events</span>`
@@ -1945,8 +2020,14 @@ async function openSession(id){
       <div class="moment-track">${T.moments.map(m =>
         `<button class="moment-dot k-${esc(m.kind)}" style="left:${Math.min(100,m.t/duration*100)}%" title="${esc(m.kind)} @ ${fmtT(m.t)}" onclick="seekReview(${Number(m.t)})"></button>`).join("")}</div>` : ""}
     </div>
-    <div class="feedback-list">${d.items.map(item => `
-      <div class="feedback-card">
+    <div class="feedback-list">${d.items.map(item => {
+      // A merged item is NOT a dismissed one: it was folded into a live item and
+      // its evidence still counts. They used to render identically — same grey
+      // "dismissed" chip — so the whole record of what was merged was invisible.
+      const mergedInto = item.merged_into_id || null;
+      const state = mergedInto ? "merged" : item.status;
+      return `
+      <div class="feedback-card st-${esc(state)}" id="feedback-${item.id}">
         ${item.frame_rel ? `<img src="/api/preview?rel=${encodeURIComponent(item.frame_rel)}" alt="feedback frame">`
                          : `<div class="empty">no frame</div>`}
         <div class="feedback-main">
@@ -1966,8 +2047,13 @@ async function openSession(id){
                 : `<span class="chip">${esc(e.kind)}</span>`).join("")}</div>`;
           })()}
           <div class="feedback-controls">
-            <span class="chip">${esc(item.status)}</span>
-            <select id="seat-${item.id}">${options(Object.keys(SEATS),item.seat)}</select>
+            ${mergedInto
+              ? `<span class="chip merged">merged into
+                   <a href="#feedback-${mergedInto}"
+                      onclick="jumpToFeedback(${mergedInto});return false">#${mergedInto}</a></span>`
+              : `<span class="chip st-${esc(item.status)}">${esc(item.status)}</span>`}
+            <select id="seat-${item.id}" class="${item.seat === "unassigned" ? "unrouted" : ""}"
+              >${options(["unassigned", ...Object.keys(SEATS)],item.seat)}</select>
             <select id="kind-${item.id}">${options(["like","fix","add","change","question","note"],item.kind)}</select>
             ${item.status === "new" ? `<button class="qbtn small" onclick="promoteFeedback(${item.id})">promote</button>
               <button class="qbtn small ghost" onclick="dismissFeedback(${item.id})">dismiss</button>
@@ -1995,7 +2081,8 @@ async function openSession(id){
           </div>` : item.status === "promoted"
             ? `<div class="work-link"><span>promoted · queue item is being created</span></div>` : ""}
         </div>
-      </div>`).join("") || `<div class="empty">no feedback items were extracted</div>`}</div>
+      </div>`;
+    }).join("") || `<div class="empty">no feedback items were extracted</div>`}</div>
     <div><h2 style="margin-top:4px">Transcript</h2>
       <div class="transcript" id="review-transcript">${(d.transcript||[]).map((s,index) =>
         `<div class="transcript-line" id="transcript-${index}" data-start="${Number(s.t_start)}" data-end="${Number(s.t_end)}" onclick="seekReview(${Number(s.t_start)})"><span style="color:#4c4c58">${Number(s.t_start).toFixed(1)}s</span> ${esc(s.text)}
@@ -2004,46 +2091,92 @@ async function openSession(id){
     </div>`;
   document.getElementById("review-video")?.addEventListener("timeupdate", syncTranscript);
 }
+/* Session time vs video time. The capture starts a beat after the session does,
+ * so every timestamp the backend stores (transcript, markers, telemetry) is in
+ * SESSION time while the video's own clock starts at zero. playtest.py already
+ * subtracts video_offset_s when it extracts a frame; seeking did not, so the
+ * human watched a moment several seconds off from the one the agent was handed.
+ * (Backend still owed: video_offset_s in brief()'s session payload — until it
+ * lands this reads 0 and behaves exactly as before, never worse.) */
+let activeReviewOffset = 0;
+const toVideoTime = t => Math.max(0, (Number(t) || 0) - activeReviewOffset);
+
 function seekReview(t){
   const video = document.getElementById("review-video");
   if (!video) return;
-  video.currentTime = Math.max(0,Number(t)||0);
+  video.currentTime = toVideoTime(t);
   video.play().catch(()=>{});
 }
 function syncTranscript(){
   const video = document.getElementById("review-video");
   if (!video) return;
+  const at = video.currentTime + activeReviewOffset;   // back into session time
   document.querySelectorAll(".transcript-line").forEach(line => {
-    const active = video.currentTime >= Number(line.dataset.start)
-      && video.currentTime <= Number(line.dataset.end);
+    const active = at >= Number(line.dataset.start) && at <= Number(line.dataset.end);
     line.classList.toggle("active",active);
     if (active) line.scrollIntoView({block:"nearest"});
   });
 }
+function jumpToFeedback(id){
+  const card = document.getElementById(`feedback-${id}`);
+  if (!card) return;
+  card.scrollIntoView({behavior:"smooth", block:"center"});
+  card.classList.add("flash");
+  setTimeout(() => card.classList.remove("flash"), 1400);
+}
 async function promoteFeedback(id){
-  await fetch(`/api/playtest/items/${id}/promote`, {method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({seat:document.getElementById(`seat-${id}`).value,
-      kind:document.getElementById(`kind-${id}`).value})});
+  const seatEl = document.getElementById(`seat-${id}`);
+  const seat = seatEl ? seatEl.value : "";
+  // An unrouted bug stays visibly unrouted. The dropdown used to omit
+  // 'unassigned' entirely, so the browser silently selected the first option
+  // (director) and every unrouted bug was filed under the director.
+  if (!seat || seat === "unassigned"){
+    if (seatEl){
+      seatEl.classList.add("needs-seat");
+      seatEl.focus();
+      setTimeout(() => seatEl.classList.remove("needs-seat"), 2500);
+    }
+    toast("this item is unrouted — pick the seat that owns it before promoting");
+    return;
+  }
+  const r = await mutate(`/api/playtest/items/${id}/promote`, {
+    body:{seat, kind:document.getElementById(`kind-${id}`).value},
+    ok:`item ${id} promoted to ${seat}`});
+  if (!r.ok) return;
   openSession(activeReviewSession); pollState(); pollQueue();
 }
 async function dismissFeedback(id){
-  await fetch(`/api/playtest/items/${id}/dismiss`, {method:"POST"});
+  const r = await mutate(`/api/playtest/items/${id}/dismiss`, {ok:`item ${id} dismissed`});
+  if (!r.ok) return;
   openSession(activeReviewSession); pollState();
 }
 async function mergeFeedback(id){
-  const target = document.getElementById(`merge-${id}`)?.value;
-  if (!target) return;
-  await fetch(`/api/playtest/items/${id}/merge`, {method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({target_id:Number(target)})});
+  const select = document.getElementById(`merge-${id}`);
+  const target = select ? select.value : "";
+  if (!target){
+    toast("pick the item to merge this one into first");
+    if (select) select.focus();
+    return;
+  }
+  // Merging is one-way on the backend (it writes status='dismissed' plus
+  // merged_into_id and there is no unmerge endpoint), so it gets a confirm
+  // rather than a silent single click.
+  const label = select.options[select.selectedIndex]?.text || `#${target}`;
+  if (!confirm(`Merge item #${id} into ${label}?\n\n`
+             + `#${id} stops being actionable on its own and its text lives on `
+             + `under the target. There is no undo yet — this cannot be reversed `
+             + `from the dashboard.`)) return;
+  const r = await mutate(`/api/playtest/items/${id}/merge`, {
+    body:{target_id:Number(target)}, ok:`item ${id} merged into #${target}`});
+  if (!r.ok) return;
   openSession(activeReviewSession); pollState();
 }
 async function linkFeedbackAsset(itemId){
   const artifactId = document.getElementById(`asset-link-${itemId}`)?.value;
-  if (!artifactId) return;
-  await fetch(`/api/artifacts/${artifactId}/feedback/${itemId}`, {method:"POST",
-    headers:{"Content-Type":"application/json"}, body:"{}"});
+  if (!artifactId){ toast("pick an asset to link"); return; }
+  const r = await mutate(`/api/artifacts/${artifactId}/feedback/${itemId}`, {
+    body:{}, ok:"asset linked"});
+  if (!r.ok) return;
   openSession(activeReviewSession); pollState();
 }
 
@@ -2105,35 +2238,38 @@ async function createProject(event){
   const go = document.getElementById("fr-go");
   if (!name){ err.textContent = "give it a name first"; err.hidden = false; return; }
   err.hidden = true; go.disabled = true; go.textContent = "creating…";
-  try{
-    const r = await fetch("/api/project", {method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({name, kind: firstRunKind,
-        pitch: (document.getElementById("fr-pitch").value || "").trim()})});
-    const body = await r.json().catch(() => ({}));
-    if (!r.ok || body.ok === false){
-      err.textContent = (body.error && body.error.message) || `create failed · ${r.status}`;
-      err.hidden = false; go.disabled = false; go.textContent = "Create project";
-      return;
-    }
-    // The dashboard token is minted per project and this page was served before
-    // the project existed, so the fetch shim is carrying nothing. Reload.
-    go.textContent = "created — opening " + ((body.data && body.data.root) || "");
-    location.reload();
-  }catch(e){
-    err.textContent = "backend unreachable"; err.hidden = false;
-    go.disabled = false; go.textContent = "Create project";
+  // quiet: the first-run card shows the reason inline, in the form, rather than
+  // in a toast behind the overlay.
+  const r = await mutate("/api/project", {quiet:true, body:{
+    name, kind: firstRunKind,
+    pitch: (document.getElementById("fr-pitch").value || "").trim()}});
+  if (!r.ok){
+    err.textContent = r.error;
+    err.hidden = false; go.disabled = false; go.textContent = "Create project";
+    return;
   }
+  // The dashboard token is minted per project and this page was served before
+  // the project existed, so the fetch shim is carrying nothing. Reload.
+  go.textContent = "created — opening " + ((r.data && r.data.root) || "");
+  location.reload();
 }
 
 async function pollState(){
   try{
     const r = await fetch("/api/state");
-    if (r.status === 404 || r.status === 503){
-      showFirstRun("no project here yet — name one below");
+    if (!r.ok){
+      // Never "Offline · server 503" on a fresh machine. Read the body: the
+      // backend already says WHY, and a missing project is a first run, not an
+      // outage. Older backends 404/503 here; newer ones answer 200 project:null.
+      const body = await r.json().catch(() => null);
+      const why = body ? apiError(body, r.status) : `server ${r.status}`;
+      if (r.status === 404 || r.status === 503 || /no \.?bgate|no project/i.test(why)){
+        showFirstRun(/project/i.test(why) ? why : "no project here yet — name one below");
+        return;
+      }
+      showOffline(why);
       return;
     }
-    if (!r.ok){ showOffline(`server ${r.status}`); return; }
     const s = await r.json();
     if (!s || !s.project){ showFirstRun(s && s.hint); return; }
     hideFirstRun();
@@ -2145,6 +2281,10 @@ async function pollState(){
       : `${v.counts.modified} drift · ${v.counts.missing} missing · ${v.counts.pending || 0} pending`);
     renderFloor(s.seats);
     renderGallery(s.previews);
+    // Canon entity names drive the asset library's buckets — see assetCategory.
+    window._canonNames = ((s.lore && s.lore.canon) || [])
+      .map(e => (e && e.name) || "").filter(Boolean);
+    renderControlsHint(s);
     renderAssetWorkspace(s.asset_groups || []);
     renderVault(s.assets, v);
     renderSessions(s.sessions);
@@ -2154,6 +2294,27 @@ async function pollState(){
       `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
   }catch(e){ showOffline("backend unreachable"); }
 }
+/* The play panel used to advertise a fighting-game control scheme — punch, kick,
+ * block, duck on six keys — in EVERY project, and the shipped 2D template binds
+ * exactly three actions: move_left, move_right, jump.
+ * The real bindings live in the game's own project.godot [input] section, so the
+ * hint renders whatever the backend reports and otherwise promises nothing.
+ * (Backend still owed: a `controls` list on /api/state or /api/play/status.) */
+function renderControlsHint(state){
+  const el = document.getElementById("play-controls");
+  if (!el) return;
+  const controls = (state && (state.controls
+    || (state.project && state.project.controls))) || null;
+  const line = Array.isArray(controls) && controls.length
+    ? controls.map(c => typeof c === "string" ? c
+        : `${((c.keys || []).join("/")) || "—"} ${String(c.action || "").replace(/_/g, " ")}`)
+        .join(" · ")
+    : "";
+  el.textContent = line
+    ? `${line} · F1 opens live tuning`
+    : "Controls come from your game's own input map — F1 opens live tuning over the running build.";
+}
+
 function setLamp(ok, text){
   const l = document.getElementById("lamp"); if (l) l.className = "vlamp" + (ok ? "" : " bad");
   const t = document.getElementById("lamptext"); if (t) t.textContent = text;
@@ -2189,24 +2350,32 @@ function toggleBrief(){
   if (opening) document.getElementById("q-brief").focus();
 }
 async function addItem(){
-  const title = document.getElementById("q-title").value.trim();
-  if (!title) return;
+  const titleEl = document.getElementById("q-title");
+  const title = titleEl.value.trim();
+  if (!title){ toast("give the task a title first"); titleEl.focus(); return; }
   const brief = (document.getElementById("q-brief")?.value || "").trim();
   const priority = parseInt(document.getElementById("q-priority")?.value || "0", 10) || 0;
-  await fetch("/api/queue", {method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({seat: seatSelect.value, title, brief, priority})});
-  document.getElementById("q-title").value = "";
+  const r = await mutate("/api/queue", {
+    body:{seat: seatSelect.value, title, brief, priority},
+    button:"q-go", ok:`queued for ${seatSelect.value}`});
+  // On failure the composer keeps what the operator typed — clearing the field
+  // and showing nothing was how a rejected task looked exactly like a queued one.
+  if (!r.ok) return;
+  titleEl.value = "";
   const b = document.getElementById("q-brief"); if (b) b.value = "";
   pollQueue();
 }
 
 async function dispatchItem(id){
-  await fetch(`/api/queue/${id}/dispatch`, {method: "POST"});
+  // The most common first-run failure lives here: "claude CLI not found on
+  // PATH" comes back as 200 {ok:false,error} and used to be discarded whole.
+  const r = await mutate(`/api/queue/${id}/dispatch`, {ok:`agent dispatched on item ${id}`});
+  if (!r.ok) return;
   pollQueue();
 }
 async function stopItem(id){
-  await fetch(`/api/queue/${id}/stop`, {method: "POST"});
+  const r = await mutate(`/api/queue/${id}/stop`, {ok:`item ${id} stopped`});
+  if (!r.ok) return;
   pollQueue();
 }
 
@@ -2357,11 +2526,12 @@ async function _sendSteer(id, text, inputEl){
   (window._steers[id] = window._steers[id] || []).push(entry);
   const btn = document.getElementById(`steerbtn-${id}`); if (btn) btn.textContent = "sent";
   renderActive._refresh && renderActive._refresh();   // paint the optimistic chip now
-  try {
-    const r = await (await fetch(`/api/queue/${id}/steer`, {method:"POST",
-      headers:{"Content-Type":"application/json"}, body:JSON.stringify({text})})).json();
-    entry.state = r.ok ? "queued" : "error"; entry.err = r.error;
-  } catch(e){ entry.state = "error"; entry.err = String(e); }
+  // Steering already read its response; it goes through mutate() too so the
+  // refusal ("agent is finishing; steer channel closed") reads the same as
+  // every other failure and lands in a toast as well as the chip.
+  const r = await mutate(`/api/queue/${id}/steer`, {body:{text}});
+  entry.state = r.ok ? "queued" : "error";
+  entry.err = r.error;
   renderActive._refresh && renderActive._refresh();
   // A queued steer lands at the agent's next turn; clear the chip once that's
   // almost certainly happened (errors linger a bit so they're seen).
@@ -2447,8 +2617,13 @@ const Inspector = {
   async agent(id){
     this._id=id; this.open(); this.head("Agent · item #"+id, "loading…");
     const activity = { label:"Activity", render: async (body)=>{
-      const a = await fetch(`/api/agent-activity/${id}`).then(r=>r.json()).catch(()=>({steps:[],running:false}));
-      this.head(`Agent · item #${id}`, (a.running?"● working":"finished")+` · ${a.step_count||0} steps`);
+      const a = await readJSON(`/api/agent-activity/${id}`, {steps:[],running:false});
+      this.head(`Agent · item #${id}`, a.__error ? "unavailable"
+        : (a.running?"● working":"finished")+` · ${a.step_count||0} steps`);
+      if (a.__error){
+        body.innerHTML = `<div class="empty err">could not read this agent — ${esc(a.__error)}</div>`;
+        return;
+      }
       const steer = a.running ? `<div class="steerbar" style="margin-bottom:12px">
           <input id="steer-input" class="steerin" placeholder="steer this agent — e.g. that pose is off-model, regenerate against the ref"
                  onkeydown="if(event.key==='Enter')steerAgent(${id})">
@@ -2466,8 +2641,10 @@ const Inspector = {
     }};
     const rawlog = { label:"Raw log", render: async (body)=>{
       body.innerHTML = '<div class="empty">loading full log…</div>';
-      const d = await fetch(`/api/agent-log/${id}?tail=2000`).then(r=>r.json()).catch(()=>({lines:[]}));
-      body.innerHTML = `<div class="insp-code">${esc((d.lines||[]).join("\n")) || "empty log"}</div>`;
+      const d = await readJSON(`/api/agent-log/${id}?tail=2000`, {lines:[]});
+      body.innerHTML = d.__error
+        ? `<div class="empty err">could not read the log — ${esc(d.__error)}</div>`
+        : `<div class="insp-code">${esc((d.lines||[]).join("\n")) || "empty log"}</div>`;
     }};
     this.setTabs([activity, rawlog]);
     if (this._poll) clearInterval(this._poll);
@@ -2525,21 +2702,24 @@ async function reactArt(artId, verdict, itemId){
     const b = bar.querySelector(".rx." + (verdict === "like" ? "up" : "down")); if (b) b.classList.add("on"); }
   const setSt = t => { const s = bar && bar.querySelector(".rx-st"); if (s) s.textContent = t; };
   setSt("…");
-  try {
-    const r = await (await fetch(`/api/artifacts/${artId}/react`, {method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({verdict, note, item_id: itemId})})).json();
-    const st = r.steered ? "steered + saved" : r.saved_preference ? "saved" : "done";
-    window._reacted[artId].status = st; setSt(st);
-    // if it steered the live agent, surface it as a queued-steer chip on its card
-    if (r.steered && window._steers){
-      (window._steers[itemId] = window._steers[itemId] || []).push({
-        text: (verdict === "dislike" ? "👎 " : "👍 ") + (note || ("feedback on " + (r.artifact||artId))),
-        state: "queued" });
-      renderActive._refresh && renderActive._refresh();
-    }
-    if (noteEl) noteEl.value = "";
-  } catch(e){ window._reacted[artId].status = "failed"; setSt("failed"); }
+  const got = await mutate(`/api/artifacts/${artId}/react`,
+                           {body:{verdict, note, item_id: itemId}});
+  if (!got.ok){
+    window._reacted[artId].status = "failed";
+    setSt("failed — " + got.error);
+    return;
+  }
+  const r = got.data || {};
+  const st = r.steered ? "steered + saved" : r.saved_preference ? "saved" : "done";
+  window._reacted[artId].status = st; setSt(st);
+  // if it steered the live agent, surface it as a queued-steer chip on its card
+  if (r.steered && window._steers){
+    (window._steers[itemId] = window._steers[itemId] || []).push({
+      text: (verdict === "dislike" ? "👎 " : "👍 ") + (note || ("feedback on " + (r.artifact||artId))),
+      state: "queued" });
+    renderActive._refresh && renderActive._refresh();
+  }
+  if (noteEl) noteEl.value = "";
 }
 
 /* Sprite-sheet player: plays a horizontal N-frame sheet in place so you can SEE
@@ -2583,11 +2763,10 @@ window.SpriteAnim = SpriteAnim;
 /* Art consistency rail: the renders THIS agent produced, each next to the
    reference it was drawn against, with a one-click off-model steer. */
 async function renderArtRail(itemId, running){
-  let arts = [];
-  try{
-    const d = await (await fetch("/api/artifacts")).json();
-    arts = (d.artifacts||[]).filter(x => x.work_item_id === itemId);
-  }catch(e){ return ""; }
+  const d = await readJSON("/api/artifacts", {artifacts:[]});
+  if (d.__error) return `<div class="artrail"><div class="artrail-h">renders this agent produced</div>`
+    + `<div class="empty err">could not read artifacts — ${esc(d.__error)}</div></div>`;
+  const arts = (d.artifacts||[]).filter(x => x.work_item_id === itemId);
   if (!arts.length) return "";
   arts.sort((a,b)=> (b.id||0)-(a.id||0));
   const refRel = r => {
@@ -2648,19 +2827,18 @@ const _agentStyle = `<style>
 async function loadGame(){
   const holder = document.getElementById("play-holder");
   // Never serve a stale build — rebuild if the source is newer than the export.
-  try{
-    const st = await (await fetch("/api/play/status")).json();
-    if (st.stale){
-      holder.innerHTML = `<div class="playbtn" style="cursor:default">rebuilding current build…</div>
-        <div class="playhint">exporting the game from latest source — a few seconds</div>`;
-      const r = await (await fetch("/api/play/rebuild", {method: "POST"})).json();
-      if (!r.ok){
-        holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error||"?")}</div>
-          <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
-        return;
-      }
+  const st = await readJSON("/api/play/status", {});
+  if (st.stale){
+    holder.innerHTML = `<div class="playbtn" style="cursor:default">rebuilding current build…</div>
+      <div class="playhint">exporting the game from latest source — a few seconds</div>`;
+    const r = await mutate("/api/play/rebuild", {quiet:true});
+    if (!r.ok){
+      holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error)}</div>
+        <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
+      toast("rebuild failed — " + r.error);
+      return;
     }
-  }catch(e){}
+  }
   bootFrame();
 }
 function bootFrame(sessionId=null){
@@ -2672,24 +2850,110 @@ function bootFrame(sessionId=null){
 /* ── playtest recording ──────────────────────────────────────────────── */
 let ptReady = false, ptRecording = false;
 
-async function ptPreflight(){
+/* The literal thing to install, per check. "not ready: transcriber (unavail…"
+ * truncated at 60 characters told nobody what to do, and the Record button sat
+ * dead forever on a stock install. */
+const PT_FIXES = {
+  ffmpeg: 'install ffmpeg and put it on PATH, or point BGATE_FFMPEG at the binary',
+  ffprobe: 'ffprobe ships with ffmpeg — install ffmpeg and put it on PATH',
+  transcriber: 'install the speech extras:  pip install -e ".[stt,record]"',
+  whisper: 'install the speech extras:  pip install -e ".[stt]"',
+  mic: 'no usable input device — connect a microphone and enable it in the OS sound settings',
+  window: 'no game window to capture — boot the build first, then re-check; otherwise the whole desktop gets recorded',
+  native_game: 'no game/project.godot yet — scaffold the game (godot_scaffold), and set BGATE_GODOT if Godot is not on PATH',
+  godot: 'install Godot 4 and put it on PATH, or set BGATE_GODOT',
+};
+const ptFix = name => PT_FIXES[name] || "run  bgate doctor  for the full toolchain report";
+
+function togglePtWhy(){
+  const why = document.getElementById("pt-why");
+  if (why) why.hidden = !why.hidden;
+}
+
+function renderPreflight(p){
+  const lamp = document.getElementById("pt-lamp");
+  const btn = document.getElementById("pt-btn");
+  const msg = document.getElementById("pt-msg");
+  const why = document.getElementById("pt-why");
+  const bad = Object.entries(p.checks || {})
+    .filter(([, c]) => !(c.ok ?? c.available));
+  ptReady = Boolean(p.ready) && !bad.length;
+  if (lamp) lamp.className = "lamp" + (ptReady ? "" : " bad");
+  if (btn) btn.disabled = !ptReady && !ptRecording;
+  if (!msg) return;
+  if (ptReady){
+    msg.textContent = "playtest ready — record, play, talk";
+    if (why){ why.hidden = true; why.innerHTML = ""; }
+    return;
+  }
+  msg.innerHTML = `record unavailable · ${bad.length} check${bad.length === 1 ? "" : "s"} failing `
+    + `<button class="qbtn small ghost" onclick="togglePtWhy()">what do I install?</button>`;
+  if (!why) return;
+  const windows = (p.windows || []).map(w => typeof w === "string" ? w : (w && w.title) || "")
+    .filter(Boolean).slice(0, 6);
+  why.innerHTML = `<ul class="pt-checks">${bad.map(([name, c]) => `
+      <li><b>${esc(name)}</b>
+        <span class="r">${esc(c.reason || "unavailable")}</span>
+        <span class="fix">→ ${esc(ptFix(name))}</span></li>`).join("")}</ul>`
+    + (windows.length
+        ? `<div class="pt-note">capture targets visible right now · ${windows.map(esc).join(" · ")}</div>`
+        : "")
+    + `<div class="pt-note">Full toolchain report from a terminal: <code>bgate doctor</code></div>`;
+  why.hidden = false;
+}
+
+/* Polling. This used to fire every 15 seconds forever — and the full preflight
+ * OPENS THE MICROPHONE for over a second and loads a whisper model to answer.
+ * Now: only while the panel holding the button is on screen, never while
+ * recording, cheapest probe first, and a long back-off once it has come back
+ * ready (a toolchain does not uninstall itself between ticks). */
+const PT_FRESH_MS = 180000;    // 3 min once ready
+const PT_RETRY_MS = 20000;     // floor between probes while broken
+let _ptLastCheck = 0, _ptDoctorGone = false;
+
+function ptPanelVisible(){
+  const view = document.getElementById("view-overview");
+  return Boolean(view && view.classList.contains("active")
+                 && document.visibilityState !== "hidden");
+}
+
+async function ptPreflight(force){
   if (ptRecording) return;
-  try{
-    const native = document.getElementById("pt-target")?.value === "native";
-    const r = await fetch(`/api/playtest/preflight?native=${native}`);
-    const p = await r.json();
-    ptReady = p.ready;
-    const lamp = document.getElementById("pt-lamp");
-    const btn = document.getElementById("pt-btn");
-    lamp.className = "lamp" + (p.ready ? "" : " bad");
-    btn.disabled = !p.ready && !ptRecording;
-    document.getElementById("pt-msg").textContent = p.ready
-      ? "playtest ready — record, play, talk"
-      : "not ready: " + Object.entries(p.checks)
-          .filter(([k, c]) => !(c.ok ?? c.available))
-          .map(([k, c]) => `${k} (${(c.reason || "unavailable").slice(0, 60)})`)
-          .join(" · ");
-  }catch(e){}
+  if (!force && !ptPanelVisible()) return;
+  const now = Date.now();
+  if (!force && now - _ptLastCheck < (ptReady ? PT_FRESH_MS : PT_RETRY_MS)) return;
+  _ptLastCheck = now;
+  const native = document.getElementById("pt-target")?.value === "native";
+
+  // Cheap path: bgate_core.doctor probes the binaries WITHOUT opening an audio
+  // device or spawning a whisper probe. If the toolchain itself is missing we
+  // can say exactly what to install and never touch the hardware at all.
+  if (!_ptDoctorGone){
+    const d = await readJSON("/api/doctor", {});
+    if (d.__error){
+      // No such endpoint on this build — stop asking, fall through forever.
+      _ptDoctorGone = true;
+    } else {
+      const rows = d.checks || d;
+      const need = native ? ["ffmpeg", "whisper", "godot"] : ["ffmpeg", "whisper"];
+      const missing = need.filter(k => rows[k] && rows[k].available === false);
+      if (missing.length){
+        renderPreflight({ready:false, checks:Object.fromEntries(
+          missing.map(k => [k === "whisper" ? "transcriber" : k, rows[k]]))});
+        return;
+      }
+    }
+  }
+  // Toolchain is fine (or unknown) — now the expensive check, which is the only
+  // one that can answer "is there a mic" and "what would we capture".
+  const p = await readJSON(`/api/playtest/preflight?native=${native}`, null);
+  if (!p || p.__error){
+    const msg = document.getElementById("pt-msg");
+    if (msg) msg.textContent = "could not check playtest gear — "
+      + ((p && p.__error) || "no response");
+    return;
+  }
+  renderPreflight(p);
 }
 
 async function toggleRecord(){
@@ -2697,24 +2961,24 @@ async function toggleRecord(){
   if (!ptRecording){
     const target = document.getElementById("pt-target").value;
     const buildStatus = target === "web"
-      ? await (await fetch("/api/play/status")).json() : {stale:false};
+      ? await readJSON("/api/play/status", {}) : {stale:false};
     if (target === "web" && buildStatus.stale){
       document.getElementById("pt-msg").textContent = "rebuilding current build before recording…";
-      const rebuilt = await (await fetch("/api/play/rebuild", {method:"POST"})).json();
+      const rebuilt = await mutate("/api/play/rebuild", {quiet:true});
       if (!rebuilt.ok){
         document.getElementById("pt-msg").textContent =
-          "record blocked: current build failed — " + (rebuilt.error || "?");
+          "record blocked: current build failed — " + rebuilt.error;
+        toast("record blocked — the current build failed to export: " + rebuilt.error);
         return;
       }
     }
-    const r = await fetch("/api/playtest/start", {method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
+    const started = await mutate("/api/playtest/start", {
+      body:{
         name: document.getElementById("pt-goal").value.trim()
           || "Evaluate current build " + new Date().toLocaleTimeString(),
         launch_native: target === "native"
-      })});
-    const got = await r.json();
+      }});
+    const got = started.ok ? (started.data || {}) : {};
     if (got.recording){
       ptRecording = true;
       if (target === "web") bootFrame(got.session_id);
@@ -2725,18 +2989,24 @@ async function toggleRecord(){
           ? `RECORDING — native Godot launched (pid ${got.native_launch?.pid || "?"})`
           : "RECORDING — play and say what you like and what needs fixing";
     } else {
-      document.getElementById("pt-msg").textContent = "start failed: " + (got.error || "?");
+      const why = started.ok ? (got.error || "the recorder did not start") : started.error;
+      document.getElementById("pt-msg").textContent = "start failed: " + why;
+      if (started.ok) toast("recording did not start — " + why);
+      ptPreflight(true);   // whatever broke, re-check the gear and say what
     }
   } else {
-    const r = await fetch("/api/playtest/stop", {method: "POST"});
-    const got = await r.json();
+    const stopped = await mutate("/api/playtest/stop", {quiet:true});
+    const got = stopped.ok ? (stopped.data || {}) : {};
     ptRecording = false;
     btn.textContent = "● record";
     btn.classList.remove("recording");
-    if (got.ok && document.getElementById("pt-target").value === "web") bootFrame();
-    document.getElementById("pt-msg").textContent = got.ok
+    const fine = stopped.ok && got.ok !== false;
+    if (fine && document.getElementById("pt-target").value === "web") bootFrame();
+    const why = stopped.ok ? (got.error || "?") : stopped.error;
+    document.getElementById("pt-msg").textContent = fine
       ? `session ${got.session_id} transcribing — a director triage item will land in the queue`
-      : "stop failed: " + (got.error || "?");
+      : "stop failed: " + why;
+    if (!fine) toast("stop failed — " + why);
   }
 }
 
@@ -2779,9 +3049,15 @@ try{ initialWorkspace = localStorage.getItem("bgate-workspace") || "overview"; }
 if (!DECK_CRUMB[initialWorkspace]) initialWorkspace = "overview";
 setWorkspace(initialWorkspace);
 
-ptPoll().then(ptPreflight);
-document.getElementById("pt-target")?.addEventListener("change", ptPreflight);
-setInterval(ptPreflight, 15000);
+ptPoll().then(() => ptPreflight(true));
+document.getElementById("pt-target")?.addEventListener("change", () => ptPreflight(true));
+// The tick is cheap: ptPreflight self-throttles (3 min once ready, 20s while
+// broken) and returns immediately unless the panel holding the button is on
+// screen. It used to open the microphone every 15 seconds, forever.
+setInterval(() => ptPreflight(false), 30000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") ptPreflight(false);
+});
 setInterval(ptPoll, 4000);
 
 pollState(); pollActivity(); pollQueue();
@@ -2843,6 +3119,10 @@ setInterval(pollQueue, 3500);
 <script src="/static/nodecanvas.js"></script>
 <script src="/static/flows.js"></script>
 <script src="/static/flow_game.js"></script>
+<!-- Both were written, finished, and never given a script tag — so nothing
+     registered them and the Studio showed two flows instead of four. -->
+<script src="/static/flow_asset.js"></script>
+<script src="/static/flow_agent.js"></script>
 <script src="/static/wf.js"></script>
 <script src="/static/wf_steps_asset.js"></script>
 <script src="/static/wf_steps_world.js"></script>

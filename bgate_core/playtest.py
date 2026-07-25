@@ -31,9 +31,71 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 SESSIONS_DIRNAME = "playtests"
 
+# Feedback items span a spoken thought, not an instant: a complaint runs 5-15
+# seconds and the thing being complained about usually happened at the START of
+# it — but not always, and a ±4s window hung off t alone can end BEFORE the
+# speaker got to the point. So the join uses the whole span [t, t_end].
+#
+# t_end has no column yet (playtest_item predates thought-grouping and db.py is
+# not ours to migrate — the migration is written down in the fix report). Until
+# it lands, the span is reconstructed from the segments the item was grouped
+# from, which is exact: the same grouping rule, over the same stored rows.
+_T_END_COLUMN = "t_end"
+
 # Heartbeat kinds that say nothing about a bug. fps ticks alone are 100+ per
 # minute; pasted into a ticket they bury the one event that explains the report.
 NOISE_KINDS = {"fps", "session_open", "session_close", "autoquit"}
+
+
+def _has_t_end(conn) -> bool:
+    """True once db.py's owner lands the playtest_item.t_end column."""
+    return any(row["name"] == _T_END_COLUMN
+               for row in conn.execute("PRAGMA table_info(playtest_item)"))
+
+
+def _item_spans(conn, session_id: int) -> dict[int, float]:
+    """item id -> the END of the spoken thought it came from.
+
+    Prefers the stored column; otherwise regroups the session's segments with
+    the SAME rule feedback.extract used (group_thoughts), which reproduces the
+    original span exactly, and keys it by the item's first segment.
+    """
+    stored = _has_t_end(conn)
+    items = rows(conn.execute(
+        "SELECT id, t, segment_id" + (f", {_T_END_COLUMN}" if stored else "")
+        + " FROM playtest_item WHERE session_id = ?", (session_id,)))
+
+    known: dict[int, float] = {}
+    if stored:
+        known = {int(i["id"]): float(i[_T_END_COLUMN]) for i in items
+                 if (i[_T_END_COLUMN] or 0) > float(i["t"])}
+        if len(known) == len(items):
+            return known
+        # Rows written before the column existed carry 0. That is "unknown",
+        # not "zero length" — fall through and rebuild those from the segments,
+        # so an old session keeps the span its transcript still proves.
+        items = [i for i in items if int(i["id"]) not in known]
+
+    segments = rows(conn.execute(
+        "SELECT id, t_start, t_end, text FROM playtest_segment "
+        "WHERE session_id = ? ORDER BY t_start", (session_id,)))
+    ends: dict[int, float] = {}   # first segment id -> thought end
+    for thought in feedback.group_thoughts(segments):
+        head = thought["segment_ids"][0]
+        if head is not None:
+            ends[int(head)] = float(thought["t_end"])
+    by_segment = {int(s["id"]): float(s["t_end"]) for s in segments}
+    out: dict[int, float] = {}
+    for item in items:
+        seg = item["segment_id"]
+        span_end = None
+        if seg is not None:
+            span_end = ends.get(int(seg), by_segment.get(int(seg)))
+        # No segment (hand-entered item, or a pre-grouping session): the item is
+        # an instant, which is what the old ±window assumed anyway.
+        out[int(item["id"])] = float(span_end if span_end is not None else item["t"])
+    out.update(known)
+    return out
 
 
 def _session_dir(root, session_id: int, slug: str) -> Path:
@@ -413,6 +475,7 @@ def transcribe_session(root: str | os.PathLike[str], session_id: int, *,
                 item["frame_path"] = got["path"]
 
     with db.tx(root) as conn:
+        has_t_end = _has_t_end(conn)
         logical_assets = [
             row[0] for row in conn.execute(
                 "SELECT DISTINCT logical_name FROM artifact_revision")
@@ -423,13 +486,27 @@ def transcribe_session(root: str | os.PathLike[str], session_id: int, *,
                 and item["seat"] != "unassigned" else
                 "keep" if item["kind"] == "like" else "review"
             )
-            cur = conn.execute(
-                "INSERT INTO playtest_item (session_id, segment_id, t, kind, text, seat, "
-                "frame_path, status, director_recommendation) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?)",
-                (session_id, item.get("segment_id"), item["t"], item["kind"],
-                 item["text"], item["seat"], item["frame_path"], recommendation),
-            )
+            # t_end is the end of the spoken thought. Persisted when the column
+            # exists; until then it is recomputed from the segments on read
+            # (_item_spans) rather than dropped, which is what anchored the
+            # telemetry window to the first second of a 15-second complaint.
+            if has_t_end:
+                cur = conn.execute(
+                    "INSERT INTO playtest_item (session_id, segment_id, t, t_end, "
+                    "kind, text, seat, frame_path, status, director_recommendation) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)",
+                    (session_id, item.get("segment_id"), item["t"],
+                     item.get("t_end", item["t"]), item["kind"], item["text"],
+                     item["seat"], item["frame_path"], recommendation),
+                )
+            else:
+                cur = conn.execute(
+                    "INSERT INTO playtest_item (session_id, segment_id, t, kind, text, seat, "
+                    "frame_path, status, director_recommendation) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?)",
+                    (session_id, item.get("segment_id"), item["t"], item["kind"],
+                     item["text"], item["seat"], item["frame_path"], recommendation),
+                )
             item_id = int(cur.lastrowid)
             normalized = item["text"].lower().replace("_", " ").replace("-", " ")
             for logical_name in logical_assets:
@@ -648,36 +725,103 @@ def telemetry_summary(root: str | os.PathLike[str], session_id: int) -> dict:
     }
 
 
+FILMSTRIP_JOB = "playtest-filmstrip"
+
+
+def _strip_dir(session: dict) -> Path:
+    return Path(session["video_path"]).parent / "strip"
+
+
+def _existing_strip(session: dict) -> list[dict]:
+    dur = max(float(session.get("duration_s") or 0.0), 4.0)
+    step = max(4.0, dur / 90)  # must match recorder.extract_filmstrip's formula
+    return [{"i": i, "t": round(step * (i + 0.5), 2), "path": str(p)}
+            for i, p in enumerate(sorted(_strip_dir(session).glob("strip_*.jpg")))]
+
+
 def _ensure_filmstrip(session: dict) -> list[dict]:
     """Frames spanning the whole video — the director's way of watching it.
 
-    Idempotent: extract once into <video>/strip, reuse on later calls (the
-    review endpoint is polled). Returns [] when there is no playable video.
+    BLOCKING: this is the ffmpeg pass itself. Idempotent (extract once into
+    <video>/strip, reuse afterwards), but a 20-minute recording is a ~90-frame
+    extraction, which is why it runs on a job and not inside a GET.
     """
     from bgate_adapters import recorder
 
     vp = session.get("video_path")
     if not vp or not Path(vp).is_file():
         return []
-    dur = max(float(session.get("duration_s") or 0.0), 4.0)
-    step = max(4.0, dur / 90)  # must match recorder.extract_filmstrip's formula
-    strip_dir = Path(vp).parent / "strip"
-    existing = sorted(strip_dir.glob("strip_*.jpg"))
+    existing = _existing_strip(session)
     if existing:
-        return [{"i": i, "t": round(step * (i + 0.5), 2), "path": str(p)}
-                for i, p in enumerate(existing)]
+        return existing
     try:
-        return recorder.extract_filmstrip(vp, str(strip_dir), duration_s=dur)
+        return recorder.extract_filmstrip(
+            vp, str(_strip_dir(session)),
+            duration_s=max(float(session.get("duration_s") or 0.0), 4.0))
     except Exception:
         return []
+
+
+def _filmstrip_job(root: str | os.PathLike[str], session: dict) -> dict:
+    """The job extracting this session's filmstrip, started if there isn't one.
+
+    Opening a review used to shell out to ffmpeg inside the GET — the first
+    reviewer of a long session waited on a spinner holding a request (and a
+    threadpool worker) open, and a poll during extraction started a second one.
+    A job that already FAILED is reported, not retried: the review endpoint is
+    polled, and respawning a doomed ffmpeg every few seconds is its own bug.
+    """
+    from . import jobs
+
+    session_id = int(session["id"])
+    for job in jobs.list_jobs(root, kind=FILMSTRIP_JOB, limit=50):
+        try:
+            same = int(json.loads(job["request_json"]).get("session_id", 0)) == session_id
+        except (ValueError, TypeError):
+            continue
+        if not same:
+            continue
+        if job["status"] in ("queued", "running"):
+            return {"state": "extracting", "job_id": int(job["id"])}
+        if job["status"] == "failed":
+            return {"state": "failed", "job_id": int(job["id"]),
+                    "error": job["error"] or "extraction failed"}
+        break  # newest is done but produced nothing usable — try once more
+    frozen = dict(session)
+    return {"state": "extracting", "job_id": jobs.run_in_background(
+        root, FILMSTRIP_JOB,
+        lambda _job_id: {"frames": _ensure_filmstrip(frozen)},
+        request={"session_id": session_id})}
+
+
+def _filmstrip(root: str | os.PathLike[str], session: dict) -> dict:
+    """Frames if they exist, a job if they don't. Never blocks the caller."""
+    vp = session.get("video_path")
+    if not vp or not Path(vp).is_file():
+        return {"state": "no_video", "frames": [], "job_id": None}
+    existing = _existing_strip(session)
+    if existing:
+        return {"state": "ready", "frames": existing, "job_id": None}
+    try:
+        state = _filmstrip_job(root, session)
+    except Exception as exc:  # a failed extraction must not lose the review
+        return {"state": "failed", "frames": [], "job_id": None,
+                "error": f"{type(exc).__name__}: {exc}"}
+    return {"frames": [], "note": "poll /api/jobs/<job_id>; the frames appear "
+                                  "here when it lands", **state}
 
 
 def brief(root: str | os.PathLike[str], session_id: int, *,
           window_s: float = 4.0, include_transcript: bool = False) -> dict:
     """The session as agents consume it: items + frames + nearby telemetry.
 
-    window_s: how far around an item to pull events. 4s covers "I say it right
-    after it happens" without dragging in the whole level.
+    window_s: how far around an item to pull events — [t - window_s,
+    t_end + window_s]. Hung off `t` alone, the window could close before the
+    speaker finished the sentence describing the bug; the event being complained
+    about then sat just outside it. 4s of margin covers "I say it right after it
+    happens" without dragging in the whole level.
+
+    Non-blocking: the filmstrip extraction runs as a job (see ``filmstrip``).
     """
     session = get(root, session_id)
     conn = db.connect(root)
@@ -687,7 +831,11 @@ def brief(root: str | os.PathLike[str], session_id: int, *,
         "FROM playtest_item i "
         "LEFT JOIN playtest_segment s ON s.id = i.segment_id "
         "WHERE i.session_id = ? ORDER BY i.t", (session_id,)))
+    spans = _item_spans(conn, session_id)
     for item in items:
+        # The join runs over the WHOLE remark, not its first instant.
+        item["t_end"] = max(float(spans.get(int(item["id"]), item["t"])),
+                            float(item["t"]))
         classified_kind, scores = feedback.classify(item["text"])
         score_total = sum(scores.values())
         item["classification"] = {
@@ -701,7 +849,7 @@ def brief(root: str | os.PathLike[str], session_id: int, *,
         item["events"] = rows(conn.execute(
             "SELECT t, kind, data FROM playtest_event WHERE session_id = ? "
             "AND t BETWEEN ? AND ? ORDER BY t",
-            (session_id, item["t"] - window_s, item["t"] + window_s)))
+            (session_id, item["t"] - window_s, item["t_end"] + window_s)))
         for event in item["events"]:
             try:
                 event["data"] = json.loads(event["data"])
@@ -717,9 +865,14 @@ def brief(root: str | os.PathLike[str], session_id: int, *,
             "WHERE item_id = ? ORDER BY logical_name", (item["id"],)))
 
     out = {
+        # video_offset_s ships because the reviewer needs it: item times are on
+        # the SESSION clock and the mp4 starts a beat later, so a player seeking
+        # to `t` lands before the moment unless it subtracts this. Absent, the
+        # UI reads 0 and the correction silently does nothing.
         "session": {k: session[k] for k in
                     ("id", "name", "status", "started_at", "duration_s",
-                     "video_path", "audio_path", "build_ref", "iteration_id")},
+                     "video_path", "audio_path", "build_ref", "iteration_id",
+                     "video_offset_s", "audio_offset_s")},
         "counts": {
             "items": len(items),
             "events": conn.execute(
@@ -743,7 +896,9 @@ def brief(root: str | os.PathLike[str], session_id: int, *,
     }
     out["telemetry_backed"] = out["counts"]["events"] > 0
     out["telemetry"] = telemetry_summary(root, session_id)
-    out["video_frames"] = _ensure_filmstrip(session)
+    strip = _filmstrip(root, session)
+    out["video_frames"] = strip["frames"]
+    out["filmstrip"] = strip
     iteration = None
     if session.get("iteration_id"):
         try:
@@ -782,7 +937,11 @@ def brief(root: str | os.PathLike[str], session_id: int, *,
     return out
 
 
-_ITEM_FIELDS = ("notes", "repro_steps", "kind", "seat", "text")
+# Editable through PATCH /api/playtest/items/{id} (the route reads this tuple).
+# merged_into_id is here so a merge is REVERSIBLE from the dashboard: pass a
+# target id to merge, pass null/0 to unmerge. A misclick used to bury a real bug
+# report permanently, because neither status nor merged_into_id was editable.
+_ITEM_FIELDS = ("notes", "repro_steps", "kind", "seat", "text", "merged_into_id")
 
 
 def get_item(root: str | os.PathLike[str], item_id: int) -> dict:
@@ -806,6 +965,18 @@ def update_item(root: str | os.PathLike[str], item_id: int, **fields) -> dict:
         raise ValueError(f"cannot set {sorted(unknown)}; editable fields are "
                          f"{list(_ITEM_FIELDS)}")
     get_item(root, item_id)  # raises LookupError if it does not exist
+
+    # merged_into_id is not a column edit — merging and unmerging both move the
+    # item's status and both belong in the record, so they go through the real
+    # functions rather than a bare UPDATE.
+    if "merged_into_id" in fields:
+        target = fields.pop("merged_into_id")
+        if target in (None, 0, "", "0", "null"):
+            unmerge(root, item_id)
+        else:
+            merge(root, item_id, int(target))
+        if not fields:
+            return get_item(root, item_id)
     if fields.get("seat") is not None and fields["seat"] not in feedback.SEATS:
         raise ValueError(f"seat must be one of {feedback.SEATS}, got {fields['seat']!r}")
     if fields.get("kind") is not None and fields["kind"] not in feedback.KINDS:
@@ -954,6 +1125,37 @@ def merge(root: str | os.PathLike[str], item_id: int, target_id: int) -> dict:
             {"disposition": "merged", "target_id": target_id})
     return dict(db.connect(root).execute(
         "SELECT * FROM playtest_item WHERE id = ?", (item_id,)).fetchone())
+
+
+def unmerge(root: str | os.PathLike[str], item_id: int) -> dict:
+    """Undo a merge: the item comes back as untriaged, its own report again.
+
+    Merging is one click and a misclick buried a real bug report permanently —
+    the item was dismissed AND pointed at another one, and neither field is
+    editable through update_item. Reversal restores 'new' rather than whatever
+    it was before: an item that was merged had not been triaged on its own
+    merits, and 'new' is exactly the queue where that decision gets made.
+    """
+    row = db.connect(root).execute(
+        "SELECT * FROM playtest_item WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"no playtest item {item_id}")
+    if row["merged_into_id"] is None:
+        raise ValueError(f"playtest item {item_id} is not merged into anything")
+    target = int(row["merged_into_id"])
+    with db.tx(root) as conn:
+        conn.execute(
+            "UPDATE playtest_item SET status = 'new', merged_into_id = NULL "
+            "WHERE id = ?", (item_id,))
+    activity.log(root, "playtest",
+                 f"unmerged feedback item {item_id} from {target}", ref=str(item_id))
+    iteration_id = _iteration_for_item(root, item_id)
+    if iteration_id:
+        iterations.add_event(
+            root, iteration_id, "decision", "feedback", str(item_id),
+            f"Unmerged feedback from item {target}",
+            {"disposition": "unmerged", "was_merged_into": target})
+    return get_item(root, item_id)
 
 
 def _iteration_for_item(root: str | os.PathLike[str], item_id: int) -> Optional[int]:

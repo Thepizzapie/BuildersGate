@@ -164,12 +164,20 @@ class TestStart:
         monkeypatch.delenv("BGATE_QA_GATE", raising=False)
         # POLL_S is long enough that the thread sleeps for the whole test; it is
         # a daemon, so it cannot outlive the run.
+        # Count only the threads THIS test starts. Any earlier test that built a
+        # TestClient ran the app's startup hook, which starts a gate of its own;
+        # it is a sleeping daemon that never exits, so a global enumeration by
+        # name attributes someone else's thread to us and fails out of order.
+        def gate_threads() -> set:
+            return {t for t in qa_gate.threading.enumerate()
+                    if t.name == "bgate-qa-gate"}
+
+        before = gate_threads()
         assert qa_gate.start(str(root)) is True
         assert qa_gate.start(str(root)) is True
-        threads = [t for t in qa_gate.threading.enumerate()
-                   if t.name == "bgate-qa-gate"]
-        assert len(threads) == 1
-        assert threads[0].daemon
+        started = gate_threads() - before
+        assert len(started) == 1, "the second start() spawned another watcher"
+        assert next(iter(started)).daemon
 
     def test_the_watcher_swallows_a_broken_scan(self, root, monkeypatch):
         """Fail-safe: the gate must never take the dashboard down. (It is also

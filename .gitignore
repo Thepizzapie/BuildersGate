@@ -6,8 +6,16 @@ dist/
 .venv/
 venv/
 
-# Per-project game store — never commit the DB itself
+# Per-project game store — never commit the DB itself (it also holds the
+# dashboard's auth token)
 .bgate/
+
+# API keys. The README tells people to put OPENAI_API_KEY in a "gitignored
+# .env at the game project's root" — it was never actually ignored here, so
+# following the documented instructions committed the key.
+.env
+.env.*
+!.env.example
 
 # Adapter scratch output (renders, playtest captures, logs)
 .bgate_out/

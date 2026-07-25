@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 
 from bgate_core import refs as _refs
 from bgate_core import task_refs as _task_refs
+from bgate_core.util import slugify
 from bgate_ui.deps import root
 
 router = APIRouter()
@@ -74,16 +76,22 @@ def refs_upload(payload: dict) -> dict:
         raise HTTPException(400, "data is not valid base64")
     if not blob:
         raise HTTPException(400, "empty image")
-    tmp = Path(tempfile.gettempdir()) / f"bgate_upload_{name}.{ext}"
-    tmp.write_bytes(blob)
+    # The name is user-supplied and was being pasted straight into a filename:
+    # "../../.ssh/authorized_keys" wrote wherever it pleased. refs.pin slugifies
+    # the pin name itself, so the only unsanitized surface was this staging
+    # file — it gets the slug too, in a private mkdtemp nobody else can predict.
+    if any(sep in name for sep in ("/", "\\")) or ".." in name:
+        raise HTTPException(
+            400, "name is a ref label, not a path — no separators or '..'")
+    slug = slugify(name)
+    staging = Path(tempfile.mkdtemp(prefix="bgate_upload_"))
+    tmp = staging / f"{slug}.{ext}"
     try:
+        tmp.write_bytes(blob)
         return _refs.pin(r, name, str(tmp), kind=payload.get("kind", "style"),
                          note=payload.get("note", ""))
     finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 @router.delete("/api/refs/{name}")

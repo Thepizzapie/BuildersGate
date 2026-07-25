@@ -9,11 +9,19 @@ agent can generate, judge, annotate and reject; promoting a candidate to canon
 takes a human, and the human's identity is stamped on the row. review() is
 where that is enforced — not in any one caller, because the audit's finding was
 precisely that a second caller walked around the first one's gate.
+
+Approving also has to MOVE A FILE. Every generation overwrites the same stable
+sheet path, so the bytes at ``path`` are whatever was rendered last — which,
+after a rejected r3, is the rejected art the game keeps loading. Flipping a
+status column while the build still loads r3 is a gate that does not gate, so
+review() reinstalls the approved revision's archived render over the live path
+and reports the transition as ``integrated``. See :func:`_promote`.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -105,6 +113,52 @@ def list_revisions(root: str | os.PathLike[str], *,
     return [_decode(row) for row in rows(conn.execute(sql, params))]
 
 
+def archived_render(root: str | os.PathLike[str], artifact: dict) -> Optional[Path]:
+    """The per-revision snapshot of this candidate, if one was archived.
+
+    ``metadata.preview`` is written by the generators as an immutable copy of
+    what this revision actually looked like; ``path`` is the shared sheet the
+    next generation overwrites. Only the archive can put an older revision back.
+    """
+    raw = (artifact.get("metadata") or {}).get("preview")
+    if not raw:
+        return None
+    candidate = Path(str(raw))
+    if not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    return candidate if candidate.is_file() else None
+
+
+def _promote(root: str | os.PathLike[str], artifact: dict) -> dict:
+    """Install this revision at the live path the game loads.
+
+    Returns a record, never raises: an approval whose file could not be moved
+    must still land as a decision, but it must land LOUDLY — the record says
+    what is actually on disk so the workspace can show "approved but not live"
+    rather than a green badge over the wrong image.
+    """
+    live = Path(root) / artifact["path"]
+    live_hash = assets.file_hash(live) if live.is_file() else ""
+    if live_hash and live_hash == (artifact["hash"] or ""):
+        # The build already loads exactly these bytes — nothing to install.
+        return {"ok": True, "promoted": False, "path": artifact["path"],
+                "detail": "already the live file"}
+    archive = archived_render(root, artifact)
+    if archive is None:
+        return {"ok": False, "promoted": False, "path": artifact["path"],
+                "detail": "no archived render for this revision — the live file "
+                          "is a different image and cannot be reinstalled"}
+    try:
+        live.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(archive, live)
+        assets.track(root, artifact["path"])   # keep the registry hash honest
+    except OSError as exc:
+        return {"ok": False, "promoted": False, "path": artifact["path"],
+                "detail": f"could not write {artifact['path']}: {exc}"}
+    return {"ok": True, "promoted": True, "path": artifact["path"],
+            "from": str(archive), "detail": "installed at the live path"}
+
+
 def review(root: str | os.PathLike[str], artifact_id: int, status: str,
            note: str = "", *, actor: Optional[str] = None) -> dict:
     """Approve/reject/integrate a candidate and preserve the decision as case law.
@@ -128,6 +182,16 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
             "for a human to approve), or review(..., 'rejected') to fail it."
         )
     artifact = get(root, artifact_id)
+    promotion = None
+    metadata = artifact["metadata"]
+    if status in ("approved", "integrated"):
+        # Put the bytes where the build reads them. A revision that had to be
+        # reinstalled is 'integrated'; one whose file was already live stays
+        # 'approved' — both mean the live file IS this revision.
+        promotion = _promote(root, artifact)
+        metadata = {**metadata, "integration": promotion}
+        if promotion["promoted"]:
+            status = "integrated"
     with db.tx(root) as conn:
         if status in ("approved", "integrated"):
             conn.execute(
@@ -139,18 +203,25 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
             )
         conn.execute(
             "UPDATE artifact_revision SET status = ?, review_note = ?, "
-            "reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?",
-            (status, note.strip()[:1000], (who or "")[:120], artifact_id),
+            "reviewed_by = ?, reviewed_at = datetime('now'), metadata_json = ? "
+            "WHERE id = ?",
+            (status, note.strip()[:1000], (who or "")[:120],
+             json.dumps(metadata), artifact_id),
         )
+    tail = ""
+    if promotion and promotion["promoted"]:
+        tail = f" (installed at {promotion['path']})"
+    elif promotion and not promotion["ok"]:
+        tail = f" (NOT live: {promotion['detail']})"
     activity.log(root, "artifact_review",
-                 f"{artifact['logical_name']} r{artifact['revision']} -> {status}",
+                 f"{artifact['logical_name']} r{artifact['revision']} -> {status}{tail}",
                  ref=str(artifact_id), actor=who)
     iteration_id = artifact.get("iteration_id") or iterations.active_id(root)
     if iteration_id:
         iterations.add_event(
             root, int(iteration_id), "asset_decision", "artifact", str(artifact_id),
-            f"{artifact['logical_name']} r{artifact['revision']} -> {status}",
-            {"status": status, "reason": note.strip()})
+            f"{artifact['logical_name']} r{artifact['revision']} -> {status}{tail}",
+            {"status": status, "reason": note.strip(), "integration": promotion})
     return get(root, artifact_id)
 
 
@@ -204,19 +275,30 @@ def _pin_snapshot(root: str | os.PathLike[str], names: list[str]) -> list[dict]:
     return out
 
 
-def ref_drift(root: str | os.PathLike[str], artifact: dict) -> list[dict]:
+def _pin_index(root: str | os.PathLike[str]) -> dict[str, dict]:
+    """Every pin by name, in one read. Drift is asked per revision; asking the
+    database per revision made a 500-revision workspace 500 queries deep."""
+    return {row["name"]: dict(row) for row in
+            db.connect(root).execute("SELECT * FROM ref_pin")}
+
+
+def ref_drift(root: str | os.PathLike[str], artifact: dict, *,
+              index: Optional[dict[str, dict]] = None) -> list[dict]:
     """References that have moved on since this artifact was generated.
 
     An artifact card whose anchor was re-pinned is no longer evidence of what it
     claims: it was drawn against an image that is not what that name means now.
-    """
-    from . import refs as _refs
 
+    ``index`` is the pins already read by a caller looping over many revisions
+    (see :func:`workspace`); omit it and one is read for this call.
+    """
+    from .util import slugify
+
+    pins = _pin_index(root) if index is None else index
     stale = []
     for pin in (artifact.get("metadata") or {}).get("ref_pins") or []:
-        try:
-            current = _refs.get(root, pin.get("name", ""))
-        except (LookupError, ValueError):
+        current = pins.get(slugify(str(pin.get("name") or "")))
+        if current is None:
             stale.append({**pin, "current_revision": None,
                           "detail": "the pin was removed"})
             continue
@@ -228,8 +310,18 @@ def ref_drift(root: str | os.PathLike[str], artifact: dict) -> list[dict]:
     return stale
 
 
+def _chunks(values: list, size: int = 400) -> list[list]:
+    """SQLite caps host parameters (999 by default); an IN () list has to fit."""
+    return [values[i:i + size] for i in range(0, len(values), size)]
+
+
 def workspace(root: str | os.PathLike[str]) -> list[dict]:
-    """Logical assets with every revision and the state needed to review them."""
+    """Logical assets with every revision and the state needed to review them.
+
+    Every lookup this needs is read in a fixed number of queries, not one per
+    revision: the dashboard polls this, and a per-row work-item/feedback/pin
+    query turned a 500-revision project into ~1500 round trips per tick.
+    """
     conn = db.connect(root)
     revisions = list_revisions(root, limit=500)
     tracked = {item["path"]: item for item in assets.list_assets(root)}
@@ -243,21 +335,28 @@ def workspace(root: str | os.PathLike[str]) -> list[dict]:
                         json.loads(latest_iteration["active_artifact_ids_json"])}
         except (TypeError, ValueError, json.JSONDecodeError):
             pass
+    work_ids = sorted({int(r["work_item_id"]) for r in revisions
+                       if r.get("work_item_id")})
+    work_by_id: dict[int, dict] = {}
+    for batch in _chunks(work_ids):
+        marks = ",".join("?" * len(batch))
+        work_by_id.update({int(row["id"]): dict(row) for row in conn.execute(
+            "SELECT id, seat, title, status, result, updated_at "
+            f"FROM work_item WHERE id IN ({marks})", tuple(batch))})
+    pins = _pin_index(root)
+
     groups: dict[str, dict] = {}
     for revision in revisions:
         asset = tracked.get(revision["path"], {})
-        work = None
-        if revision.get("work_item_id"):
-            row = conn.execute(
-                "SELECT id, seat, title, status, result, updated_at "
-                "FROM work_item WHERE id = ?", (revision["work_item_id"],)).fetchone()
-            work = dict(row) if row else None
+        work = (work_by_id.get(int(revision["work_item_id"]))
+                if revision.get("work_item_id") else None)
         revision.update({
             "profile": revision["metadata"].get("profile", ""),
             "consistency": revision["metadata"].get("consistency", {}),
             "engine_import": revision["metadata"].get("engine_import", {}),
+            "integration": revision["metadata"].get("integration", {}),
             "used_in_current_build": int(revision["id"]) in used_ids,
-            "ref_drift": ref_drift(root, revision),
+            "ref_drift": ref_drift(root, revision, index=pins),
             "lock": {
                 "seat": asset.get("lock_seat"),
                 "owner": asset.get("lock_owner", ""),
@@ -280,13 +379,18 @@ def workspace(root: str | os.PathLike[str]) -> list[dict]:
         if revision["status"] == "candidate":
             group["candidates"].append(revision)
 
-    for logical_name, group in groups.items():
-        group["feedback"] = rows(conn.execute(
-            "SELECT i.id, i.session_id, i.t, i.kind, i.text, i.seat, i.status, "
-            "l.confidence FROM playtest_item_asset l "
-            "JOIN playtest_item i ON i.id = l.item_id "
-            "WHERE l.logical_name = ? ORDER BY i.id DESC",
-            (logical_name,)))
+    # Feedback for every group in one pass, bucketed here. Groups with no
+    # linked playtest items keep the empty list they were created with.
+    names = sorted(groups)
+    for batch in _chunks(names):
+        marks = ",".join("?" * len(batch))
+        for row in rows(conn.execute(
+                "SELECT l.logical_name, i.id, i.session_id, i.t, i.kind, i.text, "
+                "i.seat, i.status, l.confidence FROM playtest_item_asset l "
+                "JOIN playtest_item i ON i.id = l.item_id "
+                f"WHERE l.logical_name IN ({marks}) ORDER BY i.id DESC",
+                tuple(batch))):
+            groups[row.pop("logical_name")]["feedback"].append(row)
     return sorted(groups.values(), key=lambda item: item["logical_name"].lower())
 
 

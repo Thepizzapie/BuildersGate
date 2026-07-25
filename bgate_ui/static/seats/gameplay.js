@@ -184,8 +184,12 @@ func _init():
     <div class="gp-row" style="margin-top:0">
       <select class="gp-sel" id="gp-item" style="flex:1;min-width:220px"></select>
       <button class="gp-btn alt" id="gp-dispatch">Dispatch</button>
+      <button class="gp-btn alt" id="gp-diff" title="what this run actually changed, per file, since its base commit">Diff</button>
+      <button class="gp-btn alt" id="gp-reopen" title="send a done/failed/cancelled item back to the queue with a reason">Reopen</button>
+      <button class="gp-btn danger" id="gp-cancel" title="call the work off — a live agent is stopped first">Cancel</button>
       <button class="gp-btn danger" id="gp-stop" disabled title="no live agent to stop">Stop</button>
     </div>
+    <div class="gp-out" id="gp-diff-out" style="display:none"></div>
     <div class="gp-feed" id="gp-feed"><div class="gp-empty">pick a gameplay work item</div></div>
     <div class="gp-row">
       <input class="gp-in" id="gp-steer" placeholder="no live agent — dispatch one to steer it" style="flex:1;min-width:220px" disabled>
@@ -204,6 +208,9 @@ func _init():
     on("gp-shot-btn", "click", capture);
     on("gp-play-reload", "click", reloadPlay);
     on("gp-dispatch", "click", dispatchItem);
+    on("gp-diff", "click", showDiff);
+    on("gp-reopen", "click", reopenItem);
+    on("gp-cancel", "click", cancelItem);
     on("gp-stop", "click", stopItem);
     on("gp-steer-btn", "click", steerItem);
     on("gp-item", "change", (e) => {
@@ -531,6 +538,74 @@ func _init():
     catch (e) { r = { ok: false, error: (e && e.message) }; }
     if (r && r.ok) { S.bg.toast(`dispatched #${S.selItem}`); S.activityKey = null; loadQueue(); }
     else S.bg.toast((r && r.error) || "dispatch failed", true);
+  }
+
+  /* The three verbs that were missing next to a finished run: see what it
+   * changed, send it back with a reason, or call it off. All three answer the
+   * {ok,data} envelope, so a refusal shows its sentence instead of nothing. */
+  function envData(r) { return (r && r.ok === true && "data" in r) ? r.data : r; }
+  function envErr(r) {
+    if (!r) return "no response from the server";
+    if (r.ok === false || r.error) {
+      const e = r.error;
+      if (!e) return "request failed";
+      return typeof e === "string" ? e : (e.message || e.code || "request failed");
+    }
+    return null;
+  }
+
+  async function showDiff() {
+    const out = q("gp-diff-out");
+    if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
+    if (!out) return;
+    out.style.display = "block";
+    out.innerHTML = "reading what this run changed…";
+    let r;
+    try { r = await S.bg.get(`/api/queue/${S.selItem}/diff`); }
+    catch (e) { r = { ok: false, error: { message: (e && e.message) || "diff failed" } }; }
+    const err = envErr(r);
+    if (err) { out.innerHTML = `<span class="gp-err">${esc(err)}</span>`; return; }
+    const d = envData(r) || {};
+    if (d.available === false) {
+      out.innerHTML = `<span class="gp-err">${esc(d.reason || "no diff available")}</span>`;
+      return;
+    }
+    const files = d.files || [];
+    if (!files.length) { out.innerHTML = "this run changed nothing on disk."; return; }
+    out.innerHTML = files.map(f => {
+      const head = `<b>${esc(f.path)}</b> <span class="gp-tag">${esc(f.status || "")}</span>` +
+        (f.binary ? ` <span class="gp-tag">binary ${esc(f.bytes_delta != null ? f.bytes_delta + " bytes" : "")}</span>`
+                  : ` <span class="gp-good">+${f.added || 0}</span> <span class="gp-err">-${f.removed || 0}</span>`);
+      const body = f.binary || !f.diff ? "" : `\n${esc(String(f.diff).slice(0, 4000))}`;
+      return `${head}${body}`;
+    }).join("\n\n");
+  }
+
+  async function reopenItem() {
+    if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
+    const reason = window.prompt("Reopen #" + S.selItem + " — what still has to be fixed?\n(the reason is appended to the brief the next agent reads)", "");
+    if (reason == null) return;
+    let r;
+    try { r = await S.bg.post(`/api/queue/${S.selItem}/reopen`, { reason }); }
+    catch (e) { r = { ok: false, error: { message: (e && e.message) } }; }
+    const err = envErr(r);
+    if (err) { S.bg.toast(err, true); return; }
+    S.bg.toast(`#${S.selItem} reopened`);
+    S.activityKey = null;
+    loadQueue();
+  }
+
+  async function cancelItem() {
+    if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
+    if (!window.confirm(`Cancel #${S.selItem}? A live agent is stopped first; the item stays in the queue as cancelled.`)) return;
+    let r;
+    try { r = await S.bg.post(`/api/queue/${S.selItem}/cancel`, { reason: "cancelled from the gameplay seat" }); }
+    catch (e) { r = { ok: false, error: { message: (e && e.message) } }; }
+    const err = envErr(r);
+    if (err) { S.bg.toast(err, true); return; }
+    S.bg.toast(`#${S.selItem} cancelled${r && r.agent_stopped ? " · agent stopped" : ""}`);
+    S.activityKey = null;
+    loadQueue();
   }
 
   async function stopItem() {

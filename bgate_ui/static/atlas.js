@@ -14,16 +14,77 @@ window.Atlas = (() => {
                      shader:"tech", other:"tech" };
   let map = null;
 
+  /* The scan walks every .tscn/.gd/.tres in the project, so it is not a
+   * per-poll request. One in-flight scan is shared by every caller, the result
+   * is reused for TTL_MS, and the dead/missing COUNTS are cached in
+   * sessionStorage so the nav badge can be right on first paint — it used to
+   * appear only after someone opened Atlas, which is exactly when they no
+   * longer needed telling. */
+  const TTL_MS = 60000;
+  const SUMMARY_KEY = "atlas-summary";
+  let fetchedAt = 0, inflight = null;
+
+  function load(force){
+    if (!force && map && Date.now() - fetchedAt < TTL_MS) return Promise.resolve(map);
+    if (inflight) return inflight;
+    inflight = fetch("/api/screenmap")
+      .then(r => r.json())
+      .then(d => {
+        inflight = null;
+        if (d && !d.error){ map = d; fetchedAt = Date.now(); cacheSummary(d); }
+        else if (d && d.error){ map = d; }
+        return d;
+      })
+      .catch(e => { inflight = null; throw e; });
+    return inflight;
+  }
+
+  function cacheSummary(d){
+    try {
+      sessionStorage.setItem(SUMMARY_KEY, JSON.stringify({
+        at: Date.now(),
+        dead: (d.orphans || []).length,
+        missing: (d.missing || []).length,
+      }));
+    } catch (e) {}
+  }
+
+  function paintBadge(dead, missing){
+    const badge = document.getElementById("rc-atlas");
+    if (!badge) return;
+    const n = (dead || 0) + (missing || 0);
+    badge.textContent = n;
+    badge.style.display = n ? "" : "none";
+    badge.title = n ? `${dead} dead · ${missing} missing asset(s) — open Atlas to see them` : "";
+  }
+
+  /* Called at load: paints from the cached counts immediately and only scans
+     when that cache is stale or absent. Never renders the panel. */
+  function badge(){
+    let cached = null;
+    try { cached = JSON.parse(sessionStorage.getItem(SUMMARY_KEY) || "null"); } catch (e) {}
+    if (cached && typeof cached.dead === "number") paintBadge(cached.dead, cached.missing);
+    if (cached && Date.now() - (cached.at || 0) < TTL_MS) return Promise.resolve(cached);
+    return load().then(d => {
+      if (d && !d.error) paintBadge((d.orphans || []).length, (d.missing || []).length);
+      return d;
+    }).catch(() => null);
+  }
+
   async function activate(){
     const grid = document.getElementById("atlas-grid");
+    const fresh = map && Date.now() - fetchedAt < TTL_MS;
+    if (fresh && !map.error) render();          // paint the cached map at once
+    else if (grid && !map) grid.innerHTML = '<div class="empty">scanning the project…</div>';
+    let d;
     try {
-      map = await (await fetch("/api/screenmap")).json();
+      d = await load(!fresh);
     } catch (e) {
-      grid.innerHTML = `<div class="empty">scan failed: ${E(String(e))}</div>`;
+      if (!fresh && grid) grid.innerHTML = `<div class="empty">scan failed: ${E(String(e))}</div>`;
       return;
     }
-    if (map.error){
-      grid.innerHTML = `<div class="empty">${E(map.error)}</div>`;
+    if (d && d.error){
+      if (grid) grid.innerHTML = `<div class="empty">${E(d.error)}</div>`;
       return;
     }
     render();
@@ -76,11 +137,8 @@ window.Atlas = (() => {
           title="Referenced in scenes/scripts but not found on disk. Click to see them."
           onclick="Atlas.showMissing()"><b>${map.missing.length}</b>missing ▾</span>` : "",
     ].join("");
-    const badge = document.getElementById("rc-atlas");
-    if (badge){
-      const n = map.orphans.length + map.missing.length;
-      badge.textContent = n; badge.style.display = n ? "" : "none";
-    }
+    paintBadge(map.orphans.length, map.missing.length);
+    cacheSummary(map);
 
     document.getElementById("atlas-grid").innerHTML = map.screens.map(s => {
       const mine = map.edges.filter(e => e.from === s.id)
@@ -160,5 +218,14 @@ window.Atlas = (() => {
       + ".import) or wire it up if it was meant to ship:\n" + list);
   }
 
-  return { activate, deploy, deployCleanup, showDead, showMissing };
+  // The badge is a startup concern, not an "open the panel" concern.
+  try {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => setTimeout(badge, 1200));
+    } else {
+      setTimeout(badge, 1200);
+    }
+  } catch (e) {}
+
+  return { activate, deploy, deployCleanup, showDead, showMissing, badge };
 })();

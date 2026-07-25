@@ -287,7 +287,37 @@ def can_write(root: str | os.PathLike[str], role: str, path: str,
 # ---------------------------------------------------------------------------
 # The brief — everything a seat needs, one call
 # ---------------------------------------------------------------------------
+# Every seat is told to call brief() FIRST, so its size is a tax on every single
+# agent this system starts. Each list is capped and says so when it truncates —
+# an agent that needs the rest can page the specific tool (ref_list,
+# playtest_list, asset_status), which is cheaper than shipping everything to
+# everyone forever.
+MAX_REFS = 40
+MAX_ARTIFACTS = 40
+MAX_CANON = 60
+MAX_FEEDBACK = 25
+MAX_LOCKS = 40
+BODY_CHARS = 1200
+
+
+def _capped(items: list, limit: int, what: str) -> tuple[list, dict | None]:
+    """The first ``limit`` items, plus an honest note when there were more."""
+    if len(items) <= limit:
+        return items, None
+    return items[:limit], {
+        "shown": limit, "total": len(items),
+        "note": f"{len(items) - limit} more {what} not shown — this brief is "
+                f"capped; use the {what} tool to page the rest"}
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
+    """Everything a seat needs to start, BOUNDED.
+
+    It used to return every ref, every approved artifact, every canon entity and
+    the whole bible verbatim — an uncapped blob that grew with the project and
+    was billed to every agent at startup. The caps below are the contract; the
+    ``truncated`` block names anything they cut so nothing goes missing silently.
+    """
     seats = roles_for(root)
     if role not in seats:
         raise ValueError(f"unknown or disabled seat {role!r}; active: {sorted(seats)}")
@@ -306,6 +336,31 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
     from . import artifacts as _artifacts
     from . import refs as _refs
 
+    truncated: dict[str, dict] = {}
+
+    def cap(items: list, limit: int, what: str) -> list:
+        kept, cut = _capped(items, limit, what)
+        if cut:
+            truncated[what] = cut
+        return kept
+
+    artifact_rows = [
+        {k: item[k] for k in
+         ("id", "logical_name", "revision", "path", "kind", "status",
+          "producer", "review_note")}
+        for item in (
+            _artifacts.list_revisions(root, status="approved", limit=50)
+            + _artifacts.list_revisions(root, status="integrated", limit=50)
+        )
+    ]
+    locked = assets.list_assets(root, locked_only=True)
+    # The bible is prose the seat must read, but a 40-page body is not a brief.
+    bible_view = bible.overview(root)
+    for group in bible_view.values():
+        for section in (group if isinstance(group, list) else [group]):
+            if isinstance(section, dict) and len(section.get("body") or "") > BODY_CHARS:
+                section["body"] = section["body"][:BODY_CHARS] + "\n…[truncated — bible_read for the full section]"
+
     return {
         "role": role,
         "your_role": SEAT_IDENTITY,
@@ -313,26 +368,20 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "mission": seat["mission"],
         "workflow": seat.get("workflow", ""),
         "write_lanes": seat["write_globs"],
-        "pinned_refs": _refs.list_refs(root),
-        "approved_artifacts": [
-            {k: item[k] for k in
-             ("id", "logical_name", "revision", "path", "kind", "status",
-              "producer", "review_note")}
-            for item in (
-                _artifacts.list_revisions(root, status="approved", limit=50)
-                + _artifacts.list_revisions(root, status="integrated", limit=50)
-            )
-        ],
-        "bible": bible.overview(root),
-        "canon": [{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
-                  for e in lore.list_entities(root, status="canon")],
-        "promoted_feedback": my_feedback,
-        "held_locks": [a["path"] for a in assets.list_assets(root, locked_only=True)
-                       if a["lock_seat"] == role],
-        "others_locks": [{"path": a["path"], "seat": a["lock_seat"]}
-                         for a in assets.list_assets(root, locked_only=True)
-                         if a["lock_seat"] != role],
+        "pinned_refs": cap(_refs.list_refs(root), MAX_REFS, "ref_list"),
+        "approved_artifacts": cap(artifact_rows, MAX_ARTIFACTS, "artifact list"),
+        "bible": bible_view,
+        "canon": cap([{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
+                      for e in lore.list_entities(root, status="canon")],
+                     MAX_CANON, "lore_list"),
+        "promoted_feedback": cap(my_feedback, MAX_FEEDBACK, "playtest_list"),
+        "held_locks": cap([a["path"] for a in locked if a["lock_seat"] == role],
+                          MAX_LOCKS, "asset_status"),
+        "others_locks": cap([{"path": a["path"], "seat": a["lock_seat"]}
+                             for a in locked if a["lock_seat"] != role],
+                            MAX_LOCKS, "asset_status (others)"),
         "notes": read_notes(root, limit=note_limit),
+        "truncated": truncated,
         "rules": [
             "Write only inside your lanes; can_write is the oracle, not a suggestion.",
             "Lock binaries before editing (asset_lock), release when done.",

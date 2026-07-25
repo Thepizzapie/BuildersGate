@@ -68,9 +68,10 @@ def _account(result: dict, root: Any, logical_name: str,
 
 
 def _model_for(transparent: bool) -> str:
-    """BGATE_IMAGE_MODEL forces one model for everything; otherwise the mode
-    routes: transparent -> gpt-image-1, opaque -> gpt-image-2 (overridable via
-    BGATE_IMAGE_MODEL_TRANSPARENT / BGATE_IMAGE_MODEL_OPAQUE)."""
+    """BGATE_IMAGE_MODEL forces one model for everything; otherwise BOTH modes
+    route to gpt-image-1 (the 2026-07-20 ban above — this used to send opaque
+    work to gpt-image-2 and the docstring outlived the code). The per-mode hook
+    survives only as BGATE_IMAGE_MODEL_TRANSPARENT / BGATE_IMAGE_MODEL_OPAQUE."""
     forced = os.environ.get("BGATE_IMAGE_MODEL")
     if forced:
         return forced
@@ -99,8 +100,13 @@ def available() -> dict:
 # API call. Multi-pose sheet generations are where the model loses the
 # character — poses drift, cells misalign, identity mutates. Prompts that ask
 # for sheets/rows/multiple poses are refused with a pointer to image_sprites
-# (which is one call per frame, chained). allow_multi exists for legitimately
-# multi-subject art (crowds, rosters, backdrops with cast).
+# (which is one call per frame, chained).
+#
+# allow_multi is a PYTHON-ONLY escape hatch for in-process callers doing
+# legitimately multi-subject art (crowds, rosters, backdrops with cast) — no MCP
+# tool exposes it, so the refusal below must never tell an agent to pass it. An
+# error naming a parameter the caller cannot set is an error it can only retry
+# verbatim; the message names prompt edits and image_sprites instead.
 import re as _re
 
 _MULTI_POSE = _re.compile(
@@ -117,10 +123,12 @@ def _reject_multi_pose(prompt: str, allow_multi: bool) -> dict | None:
         return {"ok": False,
                 "error": f"prompt asks for multiple poses in one image "
                          f"({match.group(0)!r}) — sheet generations are where "
-                         "character consistency dies. Generate ONE frame per "
-                         "call: use image_sprites (per-pose, chained), or pass "
-                         "allow_multi=true only for genuinely multi-subject "
-                         "art (crowds, rosters, backdrops)."}
+                         "character consistency dies. Two ways forward: rewrite "
+                         "the prompt to describe ONE frame (drop "
+                         f"{match.group(0)!r} and name a single stance), or call "
+                         "image_sprites with one entry in `poses` per frame — it "
+                         "generates a reference, then one edit per pose, and "
+                         "stitches the sheet for you."}
     return None
 
 

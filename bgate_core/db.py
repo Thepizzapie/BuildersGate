@@ -624,6 +624,22 @@ _MIGRATIONS: list = [
     );
     CREATE INDEX idx_path_lease_owner ON path_lease(owner);
     """,
+    # 0012 — when a complaint ENDED, not just when it started.
+    #
+    # feedback.extract already returned t_end and the INSERT dropped it, so the
+    # telemetry join anchored its window to the first syllable of a fifteen
+    # second complaint — it went looking for the bug several seconds before the
+    # speaker got to describing it. playtest.py reconstructs the span from the
+    # stored segments today; with the column it just reads it.
+    #
+    # Deliberately NOT backfilled: 0 means "never recorded", and playtest reads
+    # that as a cue to reconstruct the span from the session's segments. Writing
+    # t into it would look like a real answer and permanently freeze every
+    # existing complaint to a zero-length span — losing the reconstruction the
+    # code can still do.
+    """
+    ALTER TABLE playtest_item ADD COLUMN t_end REAL NOT NULL DEFAULT 0;
+    """,
 ]
 
 

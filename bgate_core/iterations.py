@@ -249,6 +249,9 @@ def complete_from_playtest(root: str | os.PathLike[str], iteration_id: int,
                 != current_iteration["active_artifact_ids_json"]),
         } if previous else {},
     }
+    # The verdict belongs in the outcome, not only in a live query: this is the
+    # record of whether the round was worth doing.
+    outcome["progress"] = progress(root, iteration_id)
     with db.tx(root) as tx:
         tx.execute(
             "UPDATE iteration SET status = 'complete', outcome_json = ?, "
@@ -257,6 +260,165 @@ def complete_from_playtest(root: str | os.PathLike[str], iteration_id: int,
     add_event(root, iteration_id, "outcome", "playtest", str(session_id),
               "Iteration outcome captured", outcome)
     return get(root, iteration_id)
+
+
+# ---------------------------------------------------------------------------
+# Did the game get better?
+#
+# An iteration recorded a build fingerprint and a pile of event counts, which
+# answers "is this a different build" and nothing else. The question the
+# timeline exists to answer is whether the last round of work MOVED anything,
+# and the data to answer it now exists: playtest_item statuses (what was found
+# and what was accepted), work_item.attempts (what had to be redone), qa_bot_run
+# (whether the automated checks agree), spend_event (what it cost).
+# ---------------------------------------------------------------------------
+def _metrics(conn, row) -> dict:
+    """Raw, comparable numbers for one iteration. No judgement here."""
+    iteration_id = int(row["id"])
+    start = row["created_at"]
+    end = row["completed_at"] or "9999-12-31 23:59:59"
+
+    feedback = {"new": 0, "promoted": 0, "dismissed": 0}
+    for item in conn.execute(
+            "SELECT i.status AS status, count(*) AS n FROM playtest_item i "
+            "JOIN playtest_session s ON s.id = i.session_id "
+            "WHERE s.iteration_id = ? GROUP BY i.status", (iteration_id,)):
+        feedback[item["status"]] = int(item["n"])
+    problems = int(conn.execute(
+        "SELECT count(*) FROM playtest_item i "
+        "JOIN playtest_session s ON s.id = i.session_id "
+        "WHERE s.iteration_id = ? AND i.kind IN ('fix', 'change')",
+        (iteration_id,)).fetchone()[0])
+    resolved = int(conn.execute(
+        "SELECT count(*) FROM work_item w WHERE w.source = 'playtest' "
+        "AND w.status = 'done' AND w.source_ref IN "
+        "(SELECT CAST(i.id AS TEXT) FROM playtest_item i "
+        " JOIN playtest_session s ON s.id = i.session_id "
+        " WHERE s.iteration_id = ?)", (iteration_id,)).fetchone()[0])
+
+    qa = {"pass": 0, "fail": 0, "error": 0, "unknown": 0}
+    for bot in conn.execute(
+            "SELECT verdict, count(*) AS n FROM qa_bot_run "
+            "WHERE created_at >= ? AND created_at <= ? GROUP BY verdict",
+            (start, end)):
+        qa[bot["verdict"]] = int(bot["n"])
+
+    spend = float(conn.execute(
+        "SELECT COALESCE(SUM(usd), 0) FROM spend_event "
+        "WHERE created_at >= ? AND created_at <= ?", (start, end)).fetchone()[0])
+
+    work = {"done": 0, "failed": 0, "cancelled": 0}
+    rework = 0
+    for item in conn.execute(
+            "SELECT status, count(*) AS n, COALESCE(SUM(attempts), 0) AS redone "
+            "FROM work_item WHERE updated_at >= ? AND updated_at <= ? "
+            "GROUP BY status", (start, end)):
+        if item["status"] in work:
+            work[item["status"]] = int(item["n"])
+        rework += int(item["redone"])
+
+    checks = {}
+    try:
+        checks = json.loads(row["tests_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        checks = {}
+
+    qa_total = qa["pass"] + qa["fail"]
+    return {
+        "iteration_id": iteration_id,
+        "goal": row["goal"],
+        "status": row["status"],
+        "window": {"from": start, "to": row["completed_at"] or ""},
+        "feedback": feedback,
+        "problems_reported": problems,
+        "feedback_resolved": resolved,
+        "open_problems": max(problems - resolved, 0),
+        "qa": qa,
+        "qa_pass_rate": round(qa["pass"] / qa_total, 3) if qa_total else None,
+        "checks_status": checks.get("status", "not_captured"),
+        "spend_usd": round(spend, 4),
+        "work": work,
+        "rework_rounds": rework,
+    }
+
+
+_BETTER = ("feedback_resolved", "qa_pass_rate")
+_WORSE = ("open_problems", "rework_rounds", "spend_usd")
+
+
+def progress(root: str | os.PathLike[str], iteration_id: int) -> dict:
+    """Did this iteration move the game, compared with the one before it?
+
+    Reports the change in the only things that speak to that — problems found
+    vs. problems actually closed, whether the automated checks agree, how much
+    work had to be redone, and what it cost — plus a plain verdict and the
+    reasons behind it. A hash tells you the build changed; this tells you
+    whether the change was worth having.
+    """
+    conn = db.connect(root)
+    row = conn.execute("SELECT * FROM iteration WHERE id = ?",
+                       (iteration_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"no iteration {iteration_id}")
+    current = _metrics(conn, row)
+
+    previous_row = conn.execute(
+        "SELECT * FROM iteration WHERE id = "
+        "(SELECT previous_id FROM iteration WHERE id = ?)",
+        (iteration_id,)).fetchone()
+    if previous_row is None:
+        return {**current, "previous_id": None, "deltas": {}, "verdict": "baseline",
+                "reasons": ["first iteration — nothing to compare against yet"]}
+
+    previous = _metrics(conn, previous_row)
+    deltas: dict[str, float] = {}
+    for field in (*_BETTER, *_WORSE):
+        now, before = current[field], previous[field]
+        if now is None or before is None:
+            continue
+        deltas[field] = round(now - before, 4)
+
+    reasons: list[str] = []
+    score = 0
+    if deltas.get("feedback_resolved", 0) > 0:
+        score += 1
+        reasons.append(
+            f"{deltas['feedback_resolved']:+.0f} playtest problems closed "
+            f"({current['feedback_resolved']} of {current['problems_reported']} "
+            "reported this round)")
+    if deltas.get("open_problems", 0) < 0:
+        score += 1
+        reasons.append(f"open problems {previous['open_problems']} -> "
+                       f"{current['open_problems']}")
+    elif deltas.get("open_problems", 0) > 0:
+        score -= 1
+        reasons.append(f"open problems grew {previous['open_problems']} -> "
+                       f"{current['open_problems']}")
+    if deltas.get("qa_pass_rate") is not None and deltas["qa_pass_rate"]:
+        score += 1 if deltas["qa_pass_rate"] > 0 else -1
+        reasons.append(f"QA bot pass rate {previous['qa_pass_rate']} -> "
+                       f"{current['qa_pass_rate']}")
+    if current["checks_status"] not in ("passed", "pass", "ok"):
+        reasons.append(f"automated checks: {current['checks_status']} — no passing "
+                       "snapshot is attached to this build")
+    if deltas.get("rework_rounds", 0) > 0:
+        reasons.append(f"{deltas['rework_rounds']:+.0f} rework rounds "
+                       "(items sent back to be redone)")
+    if current["spend_usd"]:
+        reasons.append(f"cost ${current['spend_usd']:.2f} "
+                       f"({deltas.get('spend_usd', 0):+.2f} vs previous)")
+
+    if not deltas or (current["problems_reported"] == 0
+                      and previous["problems_reported"] == 0
+                      and current["qa_pass_rate"] is None):
+        verdict = "unknown"
+        reasons.append("no playtest feedback and no QA runs — nothing measured "
+                       "this iteration, so nothing can be said about progress")
+    else:
+        verdict = "better" if score > 0 else "worse" if score < 0 else "flat"
+    return {**current, "previous_id": int(previous_row["id"]),
+            "previous": previous, "deltas": deltas, "verdict": verdict,
+            "reasons": reasons}
 
 
 def get(root: str | os.PathLike[str], iteration_id: int) -> dict:
@@ -274,6 +436,8 @@ def get(root: str | os.PathLike[str], iteration_id: int) -> dict:
         "SELECT id, name, status, duration_s, build_ref, started_at "
         "FROM playtest_session WHERE iteration_id = ? ORDER BY id",
         (iteration_id,)))
+    # The timeline's headline: not "the hash changed" but "did it get better".
+    item["progress"] = progress(root, iteration_id)
     return item
 
 

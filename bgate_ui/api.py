@@ -226,6 +226,26 @@ def current_actor(request: Optional[Request] = None) -> str:
     env = os.environ.get("BGATE_ACTOR", "").strip()
     if env:
         return env
+
+    # Fail closed: infer an agent from the environment dispatch actually sets.
+    #
+    # BGATE_ACTOR is the explicit stamp, but it is one line in one spawn path,
+    # and this gate is only worth having if forgetting that line cannot silently
+    # disable it. It was in fact forgotten — a dispatched agent resolved to the
+    # machine's human identity and could approve its own art, which is the exact
+    # thing the human-only rule exists to prevent. BGATE_WORK_ITEM/BGATE_SEAT are
+    # set by every spawn because the hook needs them, so they are the honest
+    # signal that nobody can forget without breaking enforcement outright.
+    #
+    # A human who exports BGATE_SEAT in their own shell is read as an agent and
+    # loses the ability to approve. That is the safe direction to be wrong in.
+    item = os.environ.get("BGATE_WORK_ITEM", "").strip()
+    if item:
+        return f"{AGENT_PREFIX}item-{item}"
+    seat = os.environ.get("BGATE_SEAT", "").strip()
+    if seat:
+        return f"{AGENT_PREFIX}seat-{seat}"
+
     if request is not None:
         header = (request.headers.get("x-bgate-actor") or "").strip()
         if header and not header.startswith(AGENT_PREFIX):

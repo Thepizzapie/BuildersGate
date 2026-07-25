@@ -10,19 +10,34 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-_loaded: set[str] = set()
+# path -> the (mtime_ns, size) we last loaded. Keyed on the STAMP, not just
+# "seen it", because the miss this fixes is the common one: the server says
+# OPENAI_API_KEY is missing, the user pastes it into .env, and a set-once cache
+# means only a RESTART is ever going to see it — with nothing on screen saying
+# so. A stat() per call is cheap enough for the hot path (every tool call goes
+# through here) and buys us noticing the edit on the next call instead.
+#
+# Size rides along with mtime because a fast edit can land inside one filesystem
+# timestamp tick; a key being added always changes the length.
+_stamps: dict[str, tuple[int, int]] = {}
 
 
 def load_project_env(root: str | os.PathLike[str]) -> list[str]:
-    """Load <root>/.env into os.environ (once per root). Returns loaded KEYS
-    only — never values."""
+    """Load <root>/.env into os.environ, re-reading it whenever the file has
+    changed since the last load. Returns loaded KEYS only — never values."""
     path = Path(root) / ".env"
     key = str(path.resolve())
-    if key in _loaded:
+    try:
+        stat = path.stat()
+    except OSError:  # missing, or a directory we cannot stat
+        _stamps.pop(key, None)
         return []
-    _loaded.add(key)
     if not path.is_file():
         return []
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    if _stamps.get(key) == stamp:
+        return []
+    _stamps[key] = stamp
 
     loaded = []
     for line in path.read_text(encoding="utf-8-sig").splitlines():
@@ -41,4 +56,4 @@ def load_project_env(root: str | os.PathLike[str]) -> list[str]:
 
 def reset_cache() -> None:
     """Tests only."""
-    _loaded.clear()
+    _stamps.clear()

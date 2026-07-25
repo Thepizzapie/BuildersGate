@@ -1,11 +1,70 @@
 # Builders Gate — Agent-Native Engine (`bgate_engine`)
 
-**Status:** design proposal, pre-implementation. No runtime code yet.
-**Decisions locked (2026-07-19):**
-- **Python engine is the source of truth.** The canonical world + the deterministic
-  simulation live in `bgate_engine`. Godot becomes a **renderer / playback surface**
-  driven by engine-produced state and replays — it does not re-simulate for proofs.
-- **Ship the design + schemas first** (this document) for review before any runtime code.
+> ## Read this first: what this document is, and what it is not
+>
+> **It is** a proposal, written from one game. Every schema here was reverse-
+> engineered field-by-field from a single title (*Commodity Brawler*, an arcade
+> fighter) and its `boxer.gd` / `fight.gd`. It is an exploration of what an
+> agent-native engine could look like if that title's shape generalised.
+>
+> **It is not** a validated general model, an accepted architecture, or shipped.
+> `bgate_engine/` contains this document and seven JSON files. There is no
+> runtime code, and **nothing in the repository imports it** — the only
+> references anywhere are packaging (`pyproject.toml` ships the schemas as data),
+> `tests/test_packaging.py` asserting they land in the wheel, and CI checking the
+> same. Deleting the directory would break a packaging test and nothing else.
+>
+> **The load-bearing risk** is the derivation itself. Section 1 presents
+> single-title derivation as a *strength* ("not a generic toy"). Read it as the
+> known weakness it also is: this proposes a **second authoritative simulation
+> model** — a large, long-lived commitment — generalised from one data point.
+> Reverse-engineering one game's runtime always produces something that looks
+> principled, because the thing it was traced from is real and coherent. That
+> says nothing about the second game. See **§16** for which parts survive a
+> second title, which are the fighter leaking through, and what would have to be
+> true before any of this is built.
+>
+> **Decisions recorded 2026-07-19** (proposals, not ratified):
+> - **Python engine as the source of truth.** The canonical world + the
+>   deterministic simulation would live in `bgate_engine`; Godot becomes a
+>   **renderer / playback surface** driven by engine-produced state and replays,
+>   and does not re-simulate for proofs.
+> - **Ship the design + schemas first** (this document) for review before any
+>   runtime code. That step happened; the review it was waiting for did not.
+>
+> **Amended 2026-07-25 — the sim runtime is Rust** (`../bgate-sim`).
+> **⚠️ WITHDRAWN the same day — see §16.5. Never implemented; no crate exists.**
+> The §16.4 experiment was run against two other titles and both failed, so the
+> layer this amendment chose a language for should not be built. Retained as a
+> record of a decision made and withdrawn, not as guidance. Original text follows.
+>
+> Recorded in
+> the same register as the decisions above: proposed, not ratified. It *narrows*
+> the first decision rather than replacing it — the engine is still the source of
+> truth, Godot still never re-simulates, and only the **language of the
+> deterministic runtime** changed. Python keeps the world store, transactions,
+> queries, tests, evidence, and the MCP surface; steps 1 and 3–7 of §14.1 are
+> untouched. Three reasons, in the order they mattered:
+>
+> 1. **One authoritative sim, and the choice expires at step 2.** §4's argument
+>    is that exactly one simulator exists. Writing step 2 in Python and porting
+>    later yields two, reintroducing the cross-runtime float-parity problem §4 was
+>    structured to dodge. A now-or-never fork, which is why it was worth settling
+>    before step 1 seeds `engine.db`.
+> 2. **WASM is the only clean answer to cloud-side agents.** One crate emits a
+>    native extension for local Builders Gate and a `.wasm` for cloud agents —
+>    browser, Worker, or sandbox, with no Python or Godot install.
+> 3. **Throughput converts tuning into search.** §2.1's `peak_height_px [130,152]`
+>    / `air_time_s [1.5,1.75]` requirement stops being a human on the F1 panel and
+>    becomes an exhaustive sweep. See §4.1.
+>
+> **What this amendment does not do:** it does not answer the load-bearing risk
+> above, and it makes that risk *worse* in one respect — a Rust runtime is a
+> larger, longer-lived commitment than a Python one, so single-title derivation
+> matters more, not less. It is therefore scoped deliberately to **Commodity
+> Brawler's simulation only** — the one title the schemas were traced from — so it
+> stays cheap to discard. **§16 is still missing:** the preamble promises it and
+> this document ends at §15. Nothing past step 2 should be built until it exists.
 
 ---
 
@@ -43,7 +102,7 @@ That loop is the engine's primary workflow.
 
 ---
 
-## 1. This is not a generic toy — it describes *Commodity Brawler*
+## 1. It describes *Commodity Brawler* — which is both the evidence and the limit
 
 The test game (`../haymaker`, "Commodity Brawler") already made the hard commitment:
 its combat is a **fixed-step deterministic simulation** built for rollback netcode.
@@ -63,6 +122,15 @@ So the engine's job is not to invent an ECS for a toy. It is to **lift the seman
 already encoded in GDScript into typed, queryable canonical state**, reimplement
 `sim_tick` as the authoritative Python runtime, and let Godot render what the engine
 produces. The schemas below are derived field-by-field from `boxer.gd`/`fight.gd`.
+
+**And that is the whole problem with them.** Commodity Brawler is not a
+representative game; it is an unusually convenient one. Fixed-step, rollback-
+disciplined, integer tick counters, an explicit `save_state()`, no physics body,
+no delta anywhere. Nothing in the design below has been asked to hold for a game
+that leans on Godot's physics, uses variable timestep, has more than two entities
+alive at once, or streams a world larger than a 640×360 stage. A model traced
+from the one project that already did the hard determinism work will always fit
+that project. §16 is the honest accounting of what that buys and what it costs.
 
 ---
 
@@ -518,3 +586,183 @@ The one demo that proves the architecture (not "AI bolted onto conventional dev"
 - No new runtime dependencies are assumed beyond the Python stdlib + SQLite already in
   use (schemas are plain JSON; validation can be hand-rolled or use an existing dep if
   already vendored).
+
+---
+
+## 16. Evidence, limitations, and how to settle this
+
+### 16.1 Relationship to what shipped: none
+
+`bgate_engine/` is this document, `README.md`, and seven JSON files. No Python,
+no tests of its own, and no importer. Grepping the repository for `bgate_engine`
+returns `pyproject.toml` (which ships the schemas as package data),
+`tests/test_packaging.py` (which asserts they reach the wheel), and the CI wheel
+inspection — no `import bgate_engine` anywhere, in this repo or the game.
+
+Every capability the demo in §14 promises has a shipped, non-engine counterpart
+today: `godot_run` drives the real engine headless and a QA bot evaluates
+server-side `expect` entries against sampled runtime state; `bgate_core.gitwork`
+gives per-file diffs and a scoped revert off a captured base commit;
+`bgate_core.iterations` records the causal chain; `godot_screenshot` and the
+playtest filmstrip are the evidence frames. Those are worse than what §9 and §14
+describe — they are unaddressable, untyped, and prove less. They also exist. Any
+case for building this has to be made against them, not against the path pile
+§0 argues with.
+
+### 16.2 What is game-agnostic and what is the fighter leaking through
+
+Read per file, not in aggregate — the split is not even:
+
+| Schema | Verdict |
+|---|---|
+| `authored_intent.schema.json` | **Agnostic.** Requirement id, named acceptance ranges, priority, owner, `verified_by`. Nothing genre-bound. Its `owner` enum hard-codes Builders Gate's seven seats — a coupling to *this product*, not to the fighter. Examples are boxer; the shape is not. |
+| `transaction.schema.json` | **Agnostic.** Base revision, ops, validation, evidence links, field-level conflict. The one leak is cosmetic: `id` is pinned to `^tx_[a-z]+_[0-9]+$`, and `seat` again enumerates the seven seats. |
+| `query_response.schema.json` | **Agnostic.** An entity/component/asset/system/test relationship map. Would apply unchanged to any ECS-shaped world. |
+| `protocol.commands.json` | **Agnostic** command surface (discover / query / mutate / simulate / prove) with per-command capability and side effects. `critical_demo_trace` is boxer-specific on purpose — it is a demo script, not a contract. |
+| `evidence_manifest.schema.json` | **Mostly agnostic.** Per-tick frame + buffers + screen bounds + UI values. The buffer list is a closed enum, and `entities`/`ui` are screen-space only — fine for 2D, thin for a 3D title that wants world-space or per-instance evidence. |
+| `run_identifier.schema.json` | **Agnostic except one field.** `tick_rate` is `"const": 60` — Commodity Brawler's `TICK = 1/60` written into the schema as a universal law. That single `const` is the clearest example of the derivation problem in this directory: a second game at 30 or 120Hz is invalid against the schema that claims to identify any run. Otherwise sound. |
+| `component_defs.json` | **This is one fighting game with the serial numbers filed off.** `Health` is generic. Everything else is not: `Transform2D` bakes a 640×360 stage and arcade auto-facing; `Movement` carries `ring_min_x`/`ring_max_x` (a boxing ring) and a hand-rolled jump arc that presumes no physics body; `Fighter` is jab/hook/kick reach-damage-cost plus the stamina, fatigue, gassed and stagger economy four playtests of *that game* tuned; `Hitbox` is a state rule whose whole content is the blind-side facing gate; `StateMachine`'s enum and `runtime_counters` mirror `boxer.gd`'s `save_state()` exactly, with a comment noting `fight_test.gd` hard-codes the integer values; `SpriteRig.required_animations` defaults to the fighter's move list. |
+
+So the framing layer (intent, transactions, queries, protocol, evidence) is
+plausibly general and would be worth keeping even if the rest were dropped. The
+**world model** — the part that decides what a game *is* — is a single fighter,
+and it is the part the whole "canonical world" claim rests on.
+
+### 16.3 What would have to be true for this to generalise
+
+Stated as falsifiable conditions, because "it seems principled" is not one:
+
+1. **A second game's runtime lifts into `component_defs.json` without a rewrite.**
+   Not "we add components" — additions are expected. The test is whether
+   `Transform2D`, `Movement`, `StateMachine` survive contact, or whether the
+   second title needs its own incompatible versions of them. If every game brings
+   its own world model, the canonical store is a per-game schema with extra
+   ceremony, and the value collapses to the framing layer alone.
+2. **A game that does not already have `sim_tick` can be given one.** Commodity
+   Brawler was rollback-disciplined before the engine was imagined. §4's
+   determinism argument assumes that discipline is present. For a normal Godot
+   game leaning on `_physics_process` and a `CharacterBody2D`, "reimplement the
+   sim in Python and make Godot a renderer" is not a lift — it is a full rewrite
+   of the game, per game, and the engine is then a reason to write games twice.
+3. **The Python runtime is fast enough to be the authority.** No benchmark exists.
+   §14.2 proposes a full snapshot every tick because "the fight is seconds long".
+   A game that is not seconds long invalidates the storage plan and possibly the
+   time-travel feature that plan exists to serve.
+4. **Someone chooses to author through it.** §13 claims editor and agent issue the
+   same typed ops. There is no editor, and the existing pipeline's mutations are
+   MCP tools against `.bgate/game.db`. A second authoritative store that nothing
+   writes to is drift waiting to happen — the exact failure `asset_verify` exists
+   to catch, one layer up.
+
+### 16.4 Recommended next step: one cheap experiment, then decide
+
+Do **not** start at §14.1 step 1. The build order assumes the architecture and
+front-loads a SQLite world store; it cannot fail in a way that teaches anything.
+Instead:
+
+**Take a second game — ideally one nobody wrote with this document open — and try
+to express it in `component_defs.json` and `run_identifier.schema.json` as they
+stand.** No code. Hours, not weeks. Record every field that had to change, every
+component that had to be added, and every one that turned out to mean something
+different. Two outcomes, both useful:
+
+- *The framing holds and only the components grow* → the general parts are real.
+  Split this document: keep intent / transactions / queries / protocol / evidence
+  as the proposal, and demote `component_defs.json` to what it actually is — one
+  worked example of a game-specific schema.
+- *The second game does not fit* → retire the "canonical world + authoritative
+  Python simulation" claim. Salvage the two ideas that need no engine at all and
+  would improve the shipped pipeline tomorrow: **causal chains** (§8 — an event
+  that carries the gates it passed beats any log line, and the QA bot could emit
+  them today from GDScript) and **structured visual evidence** (§9 — an entity-id
+  or collision buffer beside the beauty frame, which `godot_screenshot` could
+  produce without a new store).
+
+Until one of those happens, this directory is a design note with schemas
+attached, and should be cited as one.
+
+### 16.5 The experiment was run (2026-07-25). Result: the second game does not fit.
+
+§16.4 asked for a second game, expressed against `component_defs.json` and
+`run_identifier.schema.json` as they stand, no code. Two were used — a near case
+and a far case, both written years before this document, neither with it open:
+
+| | **tommy-tomato** — *Harvest Souls* | **tomato-strike** — *Garden Offensive* |
+|---|---|---|
+| Genre | 2D melee soulslike | 3D tactical FPS |
+| Stack | custom HTML5 canvas engine | react-three-fiber + WebRTC |
+| Core | `src/game/sim/Game.ts` (119 KB, explicit `sim/`) | `src/game/core/sim.ts` + `core/types.ts` |
+| Why chosen | *closest* to the fighter — 2D, melee, real-time, and it already calls its module `sim` | *furthest* — 3D, ranged, round-based, team economy |
+
+The near case is the fair test; the far case only confirms it.
+
+**Neither game has a tick.** This is the finding, not the component mismatch.
+
+- tommy-tomato drives everything from `requestAnimationFrame` with a clamped
+  wall-clock delta — `let dt = (now - this.lastT) / 1000; if (dt > 0.05) dt = 0.05`
+  (`Game.ts:537`). Every update is `dt`-parameterised: `updatePlayer(dt)`,
+  `updateEnemy(e, dt)`, eight `ai*(e, dt, …)` behaviours, `updateProjectiles(dt)`,
+  `updateCombatVsPlayer(dt)`.
+- tomato-strike's authority is `hostTick(state, inputs, dt)` (`sim.ts:203`), which
+  advances a wall-clock accumulator, `state.now += dt * 1000`. The only fixed step
+  in the entire title is `const dt = 1/60` inside grenade integration
+  (`sim.ts:523`) — a sub-system, not the simulation.
+
+**Neither seeds its randomness**, and not just cosmetically. tommy-tomato draws
+the *run seed itself* from unseeded global random — `newRun(Math.floor(Math.random()
+* 1e9))` (`Game.ts:2208`) — then passes `() => Math.random()` as the roll function
+for boon selection (`:2269`). tomato-strike picks the bomb carrier (`sim.ts:154`)
+and spawn points (`:596`) the same way. §4's named-stream discipline has nothing
+to attach to: there is no seed to derive streams from.
+
+So `run_identifier.schema.json` fails both, and `tick_rate: "const": 60` is the
+least of it. The schema's *premise* — that `{world_revision, seed, tick_rate,
+input_schedule_hash, …}` identifies a bit-replayable run — requires fixed-step
+plus seeded RNG. Neither title has either. Neither is one `const` away.
+
+`component_defs.json` fails as §16.2 predicted, and worse in the near case than
+expected. tommy-tomato's `Enemy` (`Game.ts:88–118`) is a single flat 31-field
+struct that mixes canonical state (`x, y, vx, vy, hp, state, timer`), the
+soulslike poise economy (`staggerVal`, `staggerT`) that `Fighter` has no vocabulary
+for, presentation (`phase // anim phase`, `attackProg // 0..1 for art`), and
+netcode interpolation (`tx?`, `ty? // client interpolation`) in one place — so it
+violates §2's three-representation separation *within a single type*, which is the
+separation the whole store depends on. Absent entirely from the schema: projectiles,
+pickups, charms, the sap economy, husks, bonfire/area transitions, boss phases
+(`bossMove`, `bossPhase2`). tomato-strike additionally needs `Vec3` and yaw/pitch
+against a `Transform2D` whose `position` is length-2 with `facing` an enum of
+`[-1, 1]`; hitscan `ShotMsg`/`ShotHit` applied from clients rather than resolved at
+a contact tick; and a whole match layer — `RoundPhase`, `BombState` plant/defuse
+progress, `InventoryItem`, the buy economy, `TeamId` — that sits *above* entities
+and has no home in the model at all.
+
+**Condition §16.3.1 fails. Condition §16.3.2 fails, and fails harder than it was
+written.** §16.3.2 anticipated "a full rewrite of the game, per game." The evidence
+is worse than cost: *both* titles independently adopted **host-authoritative
+netcode with snapshot interpolation** — tommy-tomato via `netTick` /
+`interpolateEnemies` / `RemotePlayer.snap`, tomato-strike via `hostTick` plus
+client `ShotMsg`. That is the architecture you choose *specifically so that you do
+not need determinism*. It is not an oversight to be corrected; it is a sound
+decision, made twice, that is incompatible with the premise.
+
+Which exposes the confound in §1. This document reads "the test game already made
+the hard commitment" as evidence that the engine is grounded in something real.
+Read the other way: **the engine was derived from the one title that already
+satisfied its hardest precondition.** Across three titles by the same author the
+deterministic one is 1 of 3, and it is the *oldest* — both later games moved away
+from it. The engine does not supply determinism. It requires it, per game, as a
+precondition, and that precondition is where the real cost lives.
+
+**Verdict: §16.4's second outcome.** Retire the canonical-world + authoritative-
+simulation claim. Keep the framing layer (intent, transactions, queries, protocol,
+evidence), which survived both titles unchanged and is worth keeping on its own.
+Demote `component_defs.json` to what it is: one worked example, for one game.
+Salvage **causal chains** (§8) and **structured visual evidence** (§9) onto the
+shipped `godot_run` / `godot_screenshot` path, per §16.4 — both need no store, no
+second runtime, and would improve the existing pipeline without any of this.
+
+**This also cancels the Rust amendment in the preamble.** `bgate-sim` was scoped to
+be the authoritative runtime; that layer should not be built, so the language it
+would have been written in is moot. The reasoning there was sound *conditional on
+the engine being built* — the condition failed. Nothing was implemented; the
+amendment is retained above as a record of a decision made and withdrawn.

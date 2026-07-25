@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,13 @@ GPU_ENGINES = ("BLENDER_EEVEE_NEXT", "CYCLES")
 
 _warmed: set[str] = set()
 
+# EEVEE_NEXT — the engine warmup() defaults to and the one every GPU path in
+# this adapter names — landed in Blender 4.2 and does not exist before it, so a
+# 4.1 install is not "old", it is unusable here. bgate_core.doctor declares the
+# same floor in MIN_REQUIRED; the two must stay equal or the health check and
+# the adapter will disagree about the same binary.
+MIN_VERSION = (4, 2)
+
 _SEARCH_GLOBS = (
     r"C:\Program Files\Blender Foundation\Blender *\blender.exe",
     r"C:\Program Files (x86)\Blender Foundation\Blender *\blender.exe",
@@ -74,8 +82,43 @@ class BlenderNotFound(RuntimeError):
     pass
 
 
+# Blender's Windows layout puts the version in a directory name
+# ("C:\Program Files\Blender Foundation\Blender 4.5\blender.exe"), and the Linux
+# packages sometimes do too ("/opt/blender-4.5.1/blender").
+_DIR_VERSION = re.compile(r"blender[ _\-]*(\d+)\.(\d+)(?:\.(\d+))?", re.I)
+
+
+def _path_version(path: str) -> tuple[int, ...]:
+    """Version read out of the install PATH, or () when it carries none.
+
+    From the name, never from `blender --version`: discovery is called by health
+    polls and pytest skipifs, and spawning a process per candidate just to rank
+    the list would turn a stat() into seconds. Unversioned layouts (a PATH entry,
+    a custom dir) come back () and sort lowest — a known-good 4.5 beats a guess.
+    """
+    for part in reversed(Path(path).parts):
+        match = _DIR_VERSION.search(part)
+        if match:
+            return tuple(int(g) for g in match.groups() if g is not None)
+    return ()
+
+
+def _pretty(version: tuple[int, ...]) -> str:
+    return ".".join(str(n) for n in version)
+
+
 def find_blender() -> str:
-    """Locate the Blender executable. Newest version wins among install dirs."""
+    """Locate the Blender executable. Newest usable version wins.
+
+    "Newest" is by PARSED version, not by string: sorted() on the raw paths puts
+    "Blender 4.10" BEFORE "Blender 4.9" (and "3.6" after "4.5" the moment a
+    layout stops padding), so the lexicographic sort this used to do would hand
+    an agent the older install and then blame Blender for the missing feature.
+
+    Anything below MIN_VERSION is not a candidate — but it is not silence
+    either: a too-old install is reported AS too old, with its version, because
+    "Blender not found" sends the user hunting for an install they already have.
+    """
     override = os.environ.get("BGATE_BLENDER")
     if override:
         if not Path(override).exists():
@@ -90,8 +133,21 @@ def find_blender() -> str:
     for pattern in _SEARCH_GLOBS:
         found.extend(glob(pattern) if "*" in pattern else
                      ([pattern] if Path(pattern).exists() else []))
+
     if found:
-        return sorted(found)[-1]
+        ranked = sorted(found, key=_path_version)
+        usable = [p for p in ranked
+                  if not _path_version(p) or _path_version(p) >= MIN_VERSION]
+        if usable:
+            return usable[-1]
+        newest = ranked[-1]
+        raise BlenderNotFound(
+            f"Blender {_pretty(_path_version(newest))} is installed at {newest}, "
+            f"but this adapter needs {_pretty(MIN_VERSION)} or newer — "
+            "BLENDER_EEVEE_NEXT (the render engine every GPU path here uses) "
+            f"does not exist before {_pretty(MIN_VERSION)}. Upgrade Blender, or "
+            "point BGATE_BLENDER at a newer build."
+        )
 
     raise BlenderNotFound(
         "Blender not found. Install it, put it on PATH, or set BGATE_BLENDER "
@@ -148,70 +204,79 @@ def run_script(script: str, *, blend_file: Optional[str] = None,
     out = Path(out_dir or (Path.cwd() / ".bgate_out"))
     out.mkdir(parents=True, exist_ok=True)
 
+    # Everything from here down lives inside the try: the rmtree used to sit on
+    # the last line, so the ONLY path that cleaned up was total success. A
+    # timeout, a crashed Blender, an unreadable result.json, a missing
+    # blend_file — every failure mode left its scratch dir in %TEMP%, and
+    # failures are exactly what an agent produces in bulk while iterating.
     tmp = Path(tempfile.mkdtemp(prefix="bgate_blender_"))
-    script_path = tmp / "agent_script.py"
-    result_path = tmp / "result.json"
-    script_path.write_text(script, encoding="utf-8")
-
-    render_path = str(out / "render.png") if render else "-"
-    glb_path = "-"
-    if export_glb:
-        glb_path = str(Path(export_glb).resolve())
-        Path(glb_path).parent.mkdir(parents=True, exist_ok=True)
-
-    cmd = [exe, "--background"]
-    if blend_file:
-        if not Path(blend_file).exists():
-            raise FileNotFoundError(f"blend_file not found: {blend_file}")
-        cmd.append(str(blend_file))
-    if factory_startup:
-        # Ignore the user's startup file and addons: agent runs must be
-        # reproducible, and a stray addon changing defaults is a nightmare to
-        # diagnose from a tool result.
-        cmd.append("--factory-startup")
-    cmd += ["--python", str(RUNNER), "--",
-            str(script_path), str(result_path), render_path, engine, glb_path]
-
-    import time
-    started = time.monotonic()
     try:
-        proc = _spawn(cmd, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        hint = "infinite loop, a modal operator waiting on a UI, or a heavy render"
-        if engine in GPU_ENGINES:
-            hint = (f"{engine}'s first render on a cold machine can take minutes "
-                    "(GPU shader warmup). Call warmup() once, use BLENDER_WORKBENCH "
-                    "for iteration, or raise timeout.")
-        return {"ok": False, "error": f"Blender timed out after {timeout}s",
-                "hint": hint, "seconds": timeout}
+        script_path = tmp / "agent_script.py"
+        result_path = tmp / "result.json"
+        script_path.write_text(script, encoding="utf-8")
+
+        render_path = str(out / "render.png") if render else "-"
+        glb_path = "-"
+        if export_glb:
+            glb_path = str(Path(export_glb).resolve())
+            Path(glb_path).parent.mkdir(parents=True, exist_ok=True)
+
+        cmd = [exe, "--background"]
+        if blend_file:
+            if not Path(blend_file).exists():
+                raise FileNotFoundError(f"blend_file not found: {blend_file}")
+            cmd.append(str(blend_file))
+        if factory_startup:
+            # Ignore the user's startup file and addons: agent runs must be
+            # reproducible, and a stray addon changing defaults is a nightmare to
+            # diagnose from a tool result.
+            cmd.append("--factory-startup")
+        cmd += ["--python", str(RUNNER), "--",
+                str(script_path), str(result_path), render_path, engine, glb_path]
+
+        import time
+        started = time.monotonic()
+        try:
+            proc = _spawn(cmd, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            hint = "infinite loop, a modal operator waiting on a UI, or a heavy render"
+            if engine in GPU_ENGINES:
+                hint = (f"{engine}'s first render on a cold machine can take minutes "
+                        "(GPU shader warmup). Call warmup() once, use BLENDER_WORKBENCH "
+                        "for iteration, or raise timeout.")
+            return {"ok": False, "error": f"Blender timed out after {timeout}s",
+                    "hint": hint, "seconds": timeout}
+        finally:
+            elapsed = round(time.monotonic() - started, 2)
+
+        if render and engine in GPU_ENGINES:
+            _warmed.add(engine)
+
+        if not result_path.exists():
+            # Blender died before the runner could write anything — a crash, a bad
+            # .blend, or a startup failure. Surface its own words.
+            return {
+                "ok": False,
+                "error": "Blender exited without producing a result",
+                "exit_code": proc.returncode,
+                "stderr": (proc.stderr or "")[-2000:],
+                "stdout": (proc.stdout or "")[-1000:],
+                "seconds": elapsed,
+            }
+
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return {"ok": False, "error": f"unreadable result from Blender: {exc}",
+                    "exit_code": proc.returncode, "seconds": elapsed}
+
+        result["exit_code"] = proc.returncode
+        result["seconds"] = elapsed
+        return result
     finally:
-        elapsed = round(time.monotonic() - started, 2)
-
-    if render and engine in GPU_ENGINES:
-        _warmed.add(engine)
-
-    if not result_path.exists():
-        # Blender died before the runner could write anything — a crash, a bad
-        # .blend, or a startup failure. Surface its own words.
-        return {
-            "ok": False,
-            "error": "Blender exited without producing a result",
-            "exit_code": proc.returncode,
-            "stderr": (proc.stderr or "")[-2000:],
-            "stdout": (proc.stdout or "")[-1000:],
-            "seconds": elapsed,
-        }
-
-    try:
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return {"ok": False, "error": f"unreadable result from Blender: {exc}",
-                "exit_code": proc.returncode, "seconds": elapsed}
-
-    result["exit_code"] = proc.returncode
-    result["seconds"] = elapsed
-    shutil.rmtree(tmp, ignore_errors=True)
-    return result
+        # ignore_errors: a Blender killed on timeout can still hold a handle for
+        # a beat on Windows, and a failed cleanup must not mask the result.
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def warmup(engine: str = "BLENDER_EEVEE_NEXT", out_dir: Optional[str] = None) -> dict:

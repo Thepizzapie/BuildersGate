@@ -55,6 +55,7 @@
     _strip: [],            // artifact ids in filmstrip order
     _cost: { by_logical: {}, prices: {} },
     _animTimer: null,      // looping SpriteFrames preview
+    _locks: null,          // GET /api/locks — held claims, waiters, path leases
 
     // --- entry -----------------------------------------------------------
     render(container, bg) {
@@ -74,6 +75,8 @@
                   <div id="art-refs"></div></div>
                 <div class="art-card"><div class="art-h">⧉ Flow map — assets rigged into Godot</div>
                   <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div></div>
+                <div class="art-card"><div class="art-h">⛨ Locks &amp; contention</div>
+                  <div id="art-locks"><div class="art-empty">loading locks…</div></div></div>
               </div>
               <div class="art-main">
                 <div class="art-card" id="art-lab">
@@ -88,6 +91,7 @@
           picker: container.querySelector("#art-picker"),
           refs: container.querySelector("#art-refs"),
           flow: container.querySelector("#art-flow"),
+          locks: container.querySelector("#art-locks"),
           lab: container.querySelector("#art-lab"),
           lightbox: container.querySelector("#art-lightbox"),
         };
@@ -145,11 +149,15 @@
     // --- data ------------------------------------------------------------
     async _loadAll(full) {
       const bg = this._bg;
-      const [arts, ws, queue, cost] = await Promise.all([
+      const [arts, ws, queue, cost, locks] = await Promise.all([
         bg.get("/api/artifacts").catch(() => ({ artifacts: [] })),
         bg.get("/api/assets/workspace").catch(() => ({ groups: [] })),
         bg.get("/api/queue").catch(() => ({ items: [] })),
         bg.get("/api/art/cost").catch(() => null),
+        // bg.get throws on a non-2xx, and the status is the useful part: a 404
+        // means this dashboard process predates /api/locks, which is a restart,
+        // not a mystery.
+        bg.get("/api/locks").catch(e => ({ ok: false, error: { message: String((e && e.message) || "unreachable").slice(0, 120) } })),
       ]);
       this._arts = (arts && arts.artifacts) || [];
       this._groups = (ws && ws.groups) || [];
@@ -163,8 +171,11 @@
         };
       }
 
+      this._locks = { payload: this._data(locks), error: this._err(locks) };
+
       this._renderPicker();
       this._renderFlow();
+      this._renderLocks();
       // ensure a valid selection
       const names = this._logicalNames();
       if (!this._logical || names.indexOf(this._logical) === -1) {
@@ -332,6 +343,104 @@
       }
     },
 
+    /* --- 3b. locks + contention -----------------------------------------
+     * The art seat is where you act on a held lock: this is the panel that
+     * turns "the agent silently did nothing" into "gameplay is holding
+     * hero_sheet.png and two runs are queued behind it". */
+    _renderLocks() {
+      const bg = this._bg, host = this._els && this._els.locks;
+      if (!host) return;
+      try {
+        const st = this._locks || {};
+        if (st.error) { host.innerHTML = `<div class="art-empty">locks unavailable — ${bg.esc(st.error)}</div>`; return; }
+        const d = st.payload || {};
+        const held = Array.isArray(d.held) ? d.held : [];
+        const leases = Array.isArray(d.path_leases) ? d.path_leases : [];
+        if (!held.length && !leases.length) {
+          host.innerHTML = '<div class="art-empty">nothing locked — every asset is free to edit.</div>';
+          return;
+        }
+        const short = p => { const s = String(p || "").replace(/\\/g, "/"); const i = s.lastIndexOf("/"); return i === -1 ? s : s.slice(i + 1); };
+        const rows = held.map(h => {
+          const waiters = Array.isArray(h.waiters) ? h.waiters : [];
+          const mine = h.seat === "art";
+          const stale = this._leaseStale(h.lease_expires_at);
+          return `<div class="art-lock ${mine ? "mine" : ""}">
+            <div class="art-lockrow">
+              <span class="art-lockseat" style="color:${mine ? "var(--ember)" : "var(--ash)"}">${bg.esc(h.seat || "?")}</span>
+              <span class="art-lockpath" title="${bg.esc(h.path)}">${bg.esc(short(h.path))}</span>
+              ${h.work_item_id ? `<button class="art-btn art-lockitem" data-lockitem="${h.work_item_id}" title="focus the work item holding this">#${h.work_item_id}</button>` : ""}
+            </div>
+            <div class="art-lockmeta">${bg.esc(h.owner || h.actor || "unnamed holder")}${h.since ? " · since " + bg.esc(h.since) : ""}${
+              stale ? ' · <span style="color:var(--bad)">lease expired</span>' : (h.lease_expires_at ? " · lease " + bg.esc(h.lease_expires_at) : "")}</div>
+            ${waiters.length ? `<div class="art-lockwait">⏳ ${waiters.length} waiting: ${
+              bg.esc(waiters.map(w => `${w.seat}${w.owner ? " (" + w.owner + ")" : ""}`).join(", "))}</div>` : ""}
+          </div>`;
+        }).join("");
+        const leaseRow = leases.length
+          ? `<div class="art-lockmeta" style="margin-top:8px">${leases.length} text path lease${leases.length === 1 ? "" : "s"} held: ${
+              bg.esc(leases.slice(0, 6).map(l => `${short(l.path)} → ${l.seat || l.owner || "?"}`).join(", "))}</div>`
+          : "";
+        host.innerHTML = rows + leaseRow;
+        host.querySelectorAll("[data-lockitem]").forEach(b =>
+          b.addEventListener("click", () => bg.setActiveItem(Number(b.dataset.lockitem))));
+      } catch (e) {
+        host.innerHTML = '<div class="art-empty">lock panel error</div>';
+        console.error("[art] locks", e);
+      }
+    },
+    // The server already drops expired claims; this only colours a lease whose
+    // clock ran out between polls.
+    _leaseStale(when) {
+      if (!when) return false;
+      const t = Date.parse(String(when).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(String(when)) ? "" : "Z"));
+      return isFinite(t) && t < Date.now();
+    },
+
+    // /api/artifacts carries the raw revision rows; /api/assets/workspace folds
+    // in ref_drift, the live lock and the integration record. Marry them by id
+    // so a card can show evidence neither endpoint has alone.
+    _wsRev(id) {
+      const groups = this._groups || [];
+      for (const g of groups) {
+        for (const r of (g.revisions || [])) if (r && r.id === id) return r;
+      }
+      return null;
+    },
+    _driftChips(a) {
+      const w = this._wsRev(a.id);
+      const drift = (w && w.ref_drift) || a.ref_drift || [];
+      if (!Array.isArray(drift) || !drift.length) return "";
+      return drift.map(d => this._chip(
+        `ref drift: ${d.name || "?"}`, "var(--bad)",
+        d.detail || `${d.name} has been re-pinned since this was generated — this card is no longer evidence of what it claims`,
+        "art-cons")).join("");
+    },
+    _liveChips(a) {
+      const w = this._wsRev(a.id);
+      const out = [];
+      const lock = w && w.lock;
+      if (lock && lock.seat) {
+        out.push(this._chip(`locked · ${lock.seat}`,
+          lock.seat === "art" ? "var(--warn)" : "var(--bad)",
+          `${lock.path || a.path} is held by the ${lock.seat} seat` +
+          (lock.owner ? ` (${lock.owner})` : "") +
+          (lock.work_item_id ? ` for item #${lock.work_item_id}` : "") +
+          " — regenerating it now would collide", "art-cons"));
+      }
+      // Approval has to MOVE the file; the backend records whether it could.
+      const integ = (w && w.integration) || this._meta(a).integration;
+      if (integ && typeof integ === "object" && integ.ok === false) {
+        out.push(this._chip("approved, NOT live", "var(--bad)",
+          `${integ.detail || "the approved revision was not installed"} — the game is still loading a different image`,
+          "art-cons"));
+      } else if (integ && integ.promoted) {
+        out.push(this._chip("live", "var(--good)",
+          `installed at ${integ.path} — this is the image the build loads`, "art-cons"));
+      }
+      return out.join("");
+    },
+
     _selectLogical(name) {
       if (!name) return;
       this._logical = name;
@@ -360,7 +469,7 @@
         // synced in place so a half-typed reason survives a refresh tick.
         const grp = m[this._logical] || [];
         const sig = this._logical + "|" + grp.map(a =>
-          a.id + ":" + a.status + ":" + this._verdictSig(a)).join(",") +
+          a.id + ":" + a.status + ":" + this._verdictSig(a) + ":" + this._stateSig(a)).join(",") +
           "|rv:" + Object.keys(this._reviewers).join(",") +
           "|$:" + (this._cost.by_logical || {})[this._logical];
         if (!full && sig === this._detailSig) { this._renderLabList(m, names); return; }
@@ -389,10 +498,14 @@
         const cand = g.filter(a => a.status === "candidate").length;
         const dot = approved ? "var(--good)" : (cand ? "var(--warn)" : "var(--ash2)");
         const jitter = g.some(a => this._seqFlags(a).length);
+        const drifted = g.some(a => { const w = this._wsRev(a.id); return w && (w.ref_drift || []).length; });
+        const locked = g.map(a => this._wsRev(a.id)).find(w => w && w.lock && w.lock.seat);
         const usd = (this._cost.by_logical || {})[n];
         return `<button class="art-lrow ${n === this._logical ? "sel" : ""}" data-logical="${bg.esc(n)}">
           <span class="art-dot" style="background:${dot}"></span>
           <span class="art-lname">${bg.esc(n)}</span>
+          ${drifted ? '<span class="art-ldrift" title="a reference this asset was generated against has been re-pinned since">⇅</span>' : ""}
+          ${locked ? `<span class="art-llock" title="held by the ${bg.esc(locked.lock.seat)} seat">⛨</span>` : ""}
           ${jitter ? '<span class="art-ljit" title="a multi-frame animation on this asset has adjacent-frame height jitter">⚡</span>' : ""}
           ${usd ? `<span class="art-lusd" title="spent on this asset">${this._money(usd)}</span>` : ""}
           <span class="art-lcount">${g.length}${cand ? " · " + cand + "c" : ""}</span>
@@ -405,6 +518,14 @@
     _verdictSig(a) {
       const qa = (a.metadata && a.metadata.qa_review) || null;
       return qa ? (qa.verdict || "?") + (qa.score != null ? qa.score : "") : "-";
+    },
+    // Lock / drift / integration move without the revision row changing, so
+    // they have to be part of what tells the detail pane to repaint.
+    _stateSig(a) {
+      const w = this._wsRev(a.id) || {};
+      const lock = w.lock || {};
+      const integ = w.integration || this._meta(a).integration || {};
+      return [(w.ref_drift || []).length, lock.seat || "", integ.promoted ? "live" : (integ.ok === false ? "stuck" : "")].join("/");
     },
 
     _projRel(p) {
@@ -599,7 +720,8 @@
           : '<div class="art-noref">no reference on record</div>';
         const cons = this._meta(a).consistency || {};
         const composite = this._projRel(cons.composite);
-        const evid = this._consChips(a) + this._seqChips(a);
+        const evid = this._consChips(a) + this._seqChips(a) +
+                     this._driftChips(a) + this._liveChips(a);
         return `<div class="art-cand" data-card="${a.id}">
           <div class="art-cand-top">
             <label class="art-cbxw" title="select for batch triage">
@@ -625,7 +747,7 @@
             </div>` : ""}
           </div>
           <div class="art-actions">
-            <button class="art-btn art-ok" data-act="approve" data-id="${a.id}" ${a.status === "approved" ? "disabled" : ""}>Approve</button>
+            <button class="art-btn art-ok" data-act="approve" data-id="${a.id}" ${a.status === "approved" || a.status === "integrated" ? "disabled" : ""}>Approve</button>
             <button class="art-btn art-no" data-act="reject" data-id="${a.id}">Reject</button>
             <button class="art-btn" data-act="regen" data-id="${a.id}">Regenerate</button>
             <button class="art-btn" data-act="restore" data-id="${a.id}" title="Make this revision the live sheet the game uses">Restore</button>
@@ -862,31 +984,41 @@
     _reload() { this._detailSig = ""; this._loadAll(false); },
 
     // ---- the three review verbs, batch-shaped ---------------------------
-    async _approve(ids, note) {
+    /* Verdicts go through /react, never /review. React fans one decision three
+     * ways — the disposition, a durable art-seat preference note the NEXT agent
+     * reads in its seat brief, and a live steer to the agent still working the
+     * item. /review writes a column nobody reads, so a rejection through it
+     * teaches nothing. The endpoint reports a refused disposition in
+     * `review_error` (it keeps the note and the steer either way), so that has
+     * to be surfaced as well as the envelope error. */
+    async _react(ids, verdict, note) {
       const bg = this._bg;
+      const item = bg.activeItem || null;
       let done = 0, firstErr = null;
       for (const id of ids) {
-        const r = await bg.post(`/api/artifacts/${id}/review`, { status: "approved", note: note || "" });
+        const body = { verdict, note: note || "" };
+        if (item) body.item_id = item;
+        const r = await bg.post(`/api/artifacts/${id}/react`, body);
         // Approval is human-only server-side; a 403 comes back as a real
         // sentence and must be shown, not swallowed into a blank panel.
-        const err = this._err(r);
+        const err = this._err(r) || (r && r.review_error) || null;
         if (err) { if (!firstErr) firstErr = err; } else done++;
       }
+      return { done, firstErr };
+    },
+    async _approve(ids, note) {
+      const bg = this._bg;
+      const { done, firstErr } = await this._react(ids, "like", note);
       if (firstErr) bg.toast(done ? `${done} approved · ${firstErr}` : firstErr, true);
-      else bg.toast(done === 1 ? "approved" : `approved ${done}`);
+      else bg.toast(done === 1 ? "approved — installed as the live sheet" : `approved ${done}`);
       this._sel = new Set();
       this._reload();
     },
     async _reject(ids, note) {
       const bg = this._bg;
-      let done = 0, firstErr = null;
-      for (const id of ids) {
-        const r = await bg.post(`/api/artifacts/${id}/review`, { status: "rejected", note: note || "" });
-        const err = this._err(r);
-        if (err) { if (!firstErr) firstErr = err; } else done++;
-      }
+      const { done, firstErr } = await this._react(ids, "dislike", note);
       if (firstErr) bg.toast(done ? `${done} rejected · ${firstErr}` : firstErr, true);
-      else bg.toast(done === 1 ? "rejected" : `rejected ${done}`);
+      else bg.toast(done === 1 ? "rejected — the art seat keeps the reason" : `rejected ${done}`);
       this._sel = new Set();
       this._reload();
     },
@@ -1272,6 +1404,17 @@
     .art-lname{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .art-lcount{color:var(--ash);font-size:10px}
     .art-ljit{color:var(--warn);font-size:10px}
+    .art-ldrift{color:var(--bad);font-size:10px}
+    .art-llock{color:var(--ash2);font-size:10px}
+    /* locks panel */
+    .art-lock{border:1px solid var(--seam);border-radius:8px;padding:7px 9px;margin-bottom:7px;background:var(--plate2)}
+    .art-lock.mine{border-color:var(--ember)}
+    .art-lockrow{display:flex;align-items:center;gap:7px}
+    .art-lockseat{font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+    .art-lockpath{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+    .art-lockitem{padding:2px 7px;font-size:10px}
+    .art-lockmeta{font-size:10px;color:var(--ash);margin-top:3px;line-height:1.4}
+    .art-lockwait{font-size:11px;color:var(--warn);margin-top:4px}
     .art-lusd{color:var(--ash);font-size:10px;font-variant-numeric:tabular-nums}
     .art-detail{flex:1;min-width:0}
     @media(max-width:720px){.art-lab{flex-direction:column}.art-list{width:100%;flex:none;flex-direction:row;flex-wrap:wrap}}

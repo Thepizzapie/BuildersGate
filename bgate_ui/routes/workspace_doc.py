@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from bgate_core import workspace as _ws
+from bgate_ui import api
 from bgate_ui.deps import root
 
 router = APIRouter()
@@ -26,4 +27,10 @@ def ws_get(seat: str, key: str) -> dict:
 @router.post("/api/workspace/{seat}/{key}")
 def ws_set(seat: str, key: str, payload: dict) -> dict:
     data = payload.get("data", payload)
-    return _ws.set(root(), seat, key, data)
+    try:
+        return _ws.set(root(), seat, key, data)
+    except _ws.StaleWrite as exc:
+        # A lost update is a 409 the UI can act on, not a 500. Both versions go
+        # out so the page can say what it is about to overwrite instead of
+        # silently eating the other tab's afternoon.
+        raise api.conflict(str(exc), expected=exc.expected, actual=exc.actual)

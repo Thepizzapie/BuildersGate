@@ -15,8 +15,10 @@
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   // Show real assets in the nodes: a reference thumbnail (hides on 404).
-  const refThumb = name => name
-    ? `<img class="wf-b-img" src="/api/preview?rel=${encodeURIComponent(".bgate/refs/" + name + ".png")}" onerror="this.style.display='none'">` : "";
+  // Resolved through WF.refImg — pins are versioned files whose suffix is
+  // whatever was pinned, so assuming "<name>.png" rendered jpg/webp anchors
+  // blank and pointed at a revision that need not exist.
+  const refThumb = name => (name && WF.refImg) ? WF.refImg(name) : "";
   // Walk the graph backwards from a node to the character on its upstream anchor,
   // so animation/edit nodes can preview the character they're working from.
   function upstreamCharacter(node) {
@@ -34,17 +36,15 @@
   }
 
   /* -- character reference cache (from /api/refs) --------------------------- */
-  // config() is synchronous; we keep a cheap cache of character/ref names and
-  // refresh it fire-and-forget so the <select> is populated on the next open.
+  // config() is synchronous; WF owns the one ref registry (versioned paths and
+  // all) and we read the names out of it, refreshing fire-and-forget so the
+  // <select> is populated on the next open.
   let CHARS = [];
-  async function refreshChars() {
-    try {
-      const r = await fetch("/api/refs");
-      if (!r.ok) return;
-      const d = await r.json();
-      const list = (d && d.refs) || [];
-      CHARS = list.map(x => (x && (x.name || x.id))).filter(Boolean);
-    } catch (e) { /* never throw */ }
+  function refreshChars() {
+    return WF.refsLoad().then(list => {
+      CHARS = (list || []).map(x => (x && x.name)).filter(Boolean);
+      return CHARS;
+    }).catch(() => CHARS);
   }
   refreshChars();
 

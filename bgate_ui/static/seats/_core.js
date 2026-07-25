@@ -33,6 +33,14 @@
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     },
     preview(rel) { return "/api/preview?rel=" + encodeURIComponent(rel); },
+    // A stored ref/artifact path is absolute; /api/preview refuses anything
+    // that is not root-relative. Anchoring on .bgate is what the task scope
+    // already did — this just makes it the one rule everywhere.
+    relRef(path) {
+      if (!path) return "";
+      const cut = String(path).replace(/^.*[\\/](?=\.bgate[\\/])/, "");
+      return cut.replace(/\\/g, "/");
+    },
     el(html) {
       const t = document.createElement("template");
       t.innerHTML = String(html).trim();
@@ -213,7 +221,11 @@
       ]);
       const card = (r, scope) => {
         const path = r.resolved_path || r.path;
-        const img = path ? `<img src="${BGWS.preview(scope === "task" ? path.replace(/^.*[\\/]\.bgate/, ".bgate") : path)}" onerror="this.style.opacity=.2">` : "";
+        // /api/preview only accepts root-relative paths, and a pin's stored
+        // path is absolute — the task scope normalised it and the global scope
+        // did not, which is why every global ref card rendered blank. One rule
+        // for both: cut everything ahead of .bgate, leave relative paths alone.
+        const img = path ? `<img src="${BGWS.preview(BGWS.relRef(path))}" onerror="this.style.opacity=.2">` : "";
         const del = scope === "task"
           ? `<button class="rm-x" title="remove anchor" onclick="RefManager._rmTask(${itemId},'${BGWS.esc(r.ref)}',this)">✕</button>`
           : `<button class="rm-x" title="unpin globally" onclick="RefManager._rmGlobal('${BGWS.esc(r.name)}',this)">✕</button>`;

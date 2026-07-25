@@ -93,7 +93,13 @@ def bible_update(request: Request, section_id: int, payload: dict) -> dict:
     if "rank" in fields:
         fields["rank"] = int(fields["rank"])
     try:
-        return api.ok(_bible.update(root(), section_id, **fields))
+        return api.ok(_bible.update(root(), section_id,
+                                    expected_version=payload.get("version"),
+                                    **fields))
+    except _bible.StaleWrite as exc:
+        # Every read hands out a version; a writer that sends a stale one is
+        # about to erase somebody's edit. 409 with both sides, not a 500.
+        raise api.conflict(str(exc), expected=exc.expected, actual=exc.actual)
     except ValueError as exc:
         raise api.bad_request(str(exc))
 
