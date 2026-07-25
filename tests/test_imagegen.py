@@ -66,8 +66,9 @@ class TestEnvFile:
 
 
 class TestModelRouting:
-    """The mode picks the model — learned in production: gpt-image-2 rejects
-    transparency and was flaky on sprites; gpt-image-1 owns alpha work."""
+    """DIRECTOR DIRECTIVE (2026-07-20): gpt-image-2 is BANNED — it rejects
+    transparency (400) and was flaky on sprites. gpt-image-1 routes for BOTH
+    modes now; env overrides remain the only way to run anything else."""
 
     @pytest.fixture(autouse=True)
     def clean_env(self, monkeypatch):
@@ -78,8 +79,9 @@ class TestModelRouting:
     def test_transparent_routes_to_image_1(self):
         assert imagegen._model_for(True) == "gpt-image-1"
 
-    def test_opaque_routes_to_image_2(self):
-        assert imagegen._model_for(False) == "gpt-image-2"
+    def test_opaque_routes_to_image_1_ban_holds(self):
+        # The ban: opaque must NOT drift back to gpt-image-2.
+        assert imagegen._model_for(False) == "gpt-image-1"
 
     def test_global_override_forces_both(self, monkeypatch):
         monkeypatch.setenv("BGATE_IMAGE_MODEL", "gpt-image-1")
@@ -95,7 +97,7 @@ class TestModelRouting:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
         got = imagegen.available()
         assert got["model_transparent"] == "gpt-image-1"
-        assert got["model_opaque"] == "gpt-image-2"
+        assert got["model_opaque"] == "gpt-image-1"
 
 
 class TestRoutingReachesTheApi:
@@ -138,7 +140,7 @@ class TestRoutingReachesTheApi:
         assert got["ok"] is True, got
         assert stub["captured"]["generate"]["model"] == "gpt-image-1"
         got2 = imagegen.generate("x", str(stub["tmp"] / "g2.png"), transparent=False)
-        assert got2["model"] == "gpt-image-2"
+        assert got2["model"] == "gpt-image-1"  # ban: opaque is image-1 too
 
     def test_edit_routes_and_saves(self, stub):
         """The path the KeyError killed — must reach the API and save."""
@@ -149,11 +151,11 @@ class TestRoutingReachesTheApi:
         assert got["model"] == "gpt-image-1"
         assert (stub["tmp"] / "e.png").exists()
 
-    def test_edit_opaque_routes_to_image_2(self, stub):
+    def test_edit_opaque_routes_to_image_1_ban_holds(self, stub):
         got = imagegen.edit("x", [str(stub["ref"])], str(stub["tmp"] / "e2.png"),
                             transparent=False)
         assert got["ok"] is True
-        assert stub["captured"]["edit"]["model"] == "gpt-image-2"
+        assert stub["captured"]["edit"]["model"] == "gpt-image-1"
 
 
 class TestSingleFrameEnforcement:

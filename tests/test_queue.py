@@ -1,6 +1,8 @@
 """Work queue + dispatch endpoints + the in-app play route."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -69,19 +71,33 @@ class TestQueueApi:
         assert "claude" in got["error"].lower()
 
     def test_dispatch_spawns_with_seat_env_and_marks(self, client, root, monkeypatch):
+        # The dispatch contract is streamed: the CLI starts in stream-json
+        # input mode and the task arrives as the FIRST user message on stdin
+        # (not as a -p argument) so steer() can inject more turns later.
+        import io
+
         from bgate_ui import dispatch
 
         captured = {}
 
+        class FakeStdin(io.BytesIO):
+            def close(self):  # dispatch closes stdin at EOF; keep it readable
+                pass
+
         class FakeProc:
             pid = 4242
+            def __init__(self):
+                self.stdin = FakeStdin()
             def poll(self):
                 return None
+            def kill(self):
+                pass
         def fake_popen(args, **kw):
             captured["args"] = args
             captured["env"] = kw["env"]
             captured["cwd"] = kw["cwd"]
-            return FakeProc()
+            captured["proc"] = FakeProc()
+            return captured["proc"]
 
         monkeypatch.setattr(dispatch, "find_claude", lambda: "claude")
         monkeypatch.setattr(dispatch.subprocess, "Popen", fake_popen)
@@ -92,19 +108,27 @@ class TestQueueApi:
         assert got["ok"] is True
         assert captured["env"]["BGATE_SEAT"] == "art"
         assert captured["cwd"] == str(root)
-        assert "-p" in captured["args"]
-        prompt = captured["args"][captured["args"].index("-p") + 1]
+        assert "--input-format" in captured["args"]  # stdin is the task channel
+        first_msg = json.loads(captured["proc"].stdin.getvalue().decode("utf-8"))
+        assert first_msg["type"] == "user"
+        prompt = first_msg["message"]["content"][0]["text"]
         assert "queue_complete" in prompt and "progress/item-" in prompt
         assert queue.get(root, item["id"])["status"] == "dispatched"
         dispatch._live.clear()
 
     def test_double_dispatch_refused(self, client, root, monkeypatch):
+        import io
+
         from bgate_ui import dispatch
 
         class FakeProc:
             pid = 1
+            def __init__(self):
+                self.stdin = io.BytesIO()
             def poll(self):
                 return None
+            def kill(self):
+                pass
         monkeypatch.setattr(dispatch, "find_claude", lambda: "claude")
         monkeypatch.setattr(dispatch.subprocess, "Popen", lambda *a, **k: FakeProc())
         dispatch._live.clear()

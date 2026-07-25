@@ -134,7 +134,13 @@ def resolve(root: str | os.PathLike[str], name_or_path: str) -> str:
         pass
     if Path(name_or_path).is_file():
         return str(name_or_path)
+    try:
+        available = [r["name"] for r in list_refs(root)]
+    except Exception:
+        available = []
+    hint = (f" Available pinned refs: {', '.join(available)}." if available
+            else " No refs are pinned yet (use ref_pin).")
     raise LookupError(
-        f"{name_or_path!r} is neither a pinned reference nor an existing file — "
-        "pin it first (ref_pin) or pass a real path"
+        f"{name_or_path!r} is neither a pinned reference nor an existing file."
+        + hint + " Pass one of those names, a real file path, or ref_pin it first."
     )

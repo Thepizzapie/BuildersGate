@@ -166,7 +166,12 @@
     text-transform:uppercase; text-align:center; padding:5px 0; margin:2px 0;
     border-top:1px dashed var(--ember-dim); border-bottom:1px dashed var(--ember-dim);
   }
-  .cut-item{color:#4c4c58; font-size:12px; padding-left:12px; text-decoration:line-through}
+  /* below the cut line = DEFERRED (not deleted): dim + muted bar, never a
+     strikethrough (strikethrough read as "cancelled milestone" in QA). */
+  .cut-item{color:#6a6a76; font-size:12px; padding-left:12px; position:relative; opacity:.85}
+  .cut-item::before{content:""; position:absolute; left:0; top:4px; bottom:4px; width:2px; background:#3a3a44}
+  .world-label{font-family:var(--mono); font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:#4c4c58; margin-top:8px}
+  .world-label:first-child{margin-top:0}
   .canonrow{display:flex; flex-wrap:wrap; gap:5px}
   .entity{
     font-family:var(--mono); font-size:10px; padding:2px 8px;
@@ -230,6 +235,189 @@
   .qitem.dispatched .qstat{color:var(--c-tech); animation:throb 1.4s infinite}
   .qitem.done .qstat{color:#3adf82}
   .qitem.failed .qstat{color:var(--ember)}
+
+  /* ── Orchestration command center ──────────────────────────────── */
+  .orch-composer{
+    display:flex; flex-direction:column; gap:9px; margin-bottom:20px;
+    padding:10px; border:1px solid var(--seam); border-radius:12px; background:var(--iron);
+  }
+  .orch-composer-row{display:flex; gap:8px; align-items:center}
+  .orch-composer select{
+    background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font:600 11px var(--mono); padding:9px 10px; border-radius:8px; text-transform:uppercase; letter-spacing:.06em;
+  }
+  .orch-composer input[type=text], .orch-composer #q-title{
+    flex:1; min-width:0; background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font:12px var(--mono); padding:9px 12px; border-radius:8px; outline:none;
+  }
+  .orch-composer #q-title:focus{border-color:var(--ember)}
+  .orch-composer #q-title::placeholder{color:#4c4c58}
+  .orch-composer button{border-radius:8px; padding:9px 16px}
+  .orch-composer .qbtn.on{border-color:var(--ember); color:var(--bone); background:var(--ember-dim)}
+  .orch-brief[hidden]{display:none}
+  .orch-brief textarea{
+    width:100%; box-sizing:border-box; resize:vertical; min-height:78px;
+    background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font:11px/1.55 var(--mono); padding:10px 12px; border-radius:8px; outline:none;
+  }
+  .orch-brief textarea:focus{border-color:var(--ember)}
+  .orch-brief textarea::placeholder{color:#4c4c58}
+  .orch-brief-foot{display:flex; align-items:center; gap:12px; margin-top:7px; font:9.5px var(--mono); color:var(--ash)}
+  .orch-brief-foot select{
+    background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font:10px var(--mono); padding:3px 7px; border-radius:6px; margin-left:5px;
+  }
+  .orch-brief-foot .hint{color:#6a6a76}
+
+  .orch-sec{margin-bottom:22px}
+  .orch-sec-head{
+    display:flex; align-items:center; gap:9px; margin-bottom:11px;
+    font:700 9.5px var(--mono); letter-spacing:.2em; text-transform:uppercase; color:var(--ash);
+  }
+  .orch-sec-head .n{
+    min-width:18px; text-align:center; padding:1px 6px; border-radius:999px;
+    background:var(--plate); border:1px solid var(--seam); color:var(--bone); font-size:9px;
+  }
+  .orch-sec-head .n.live{background:var(--ember); border-color:var(--ember); color:var(--void)}
+
+  /* active-now agent cards */
+  .orch-active{display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px}
+  .orch-active .empty-card{
+    grid-column:1/-1; padding:22px; border:1px dashed var(--seam); border-radius:12px;
+    text-align:center; color:var(--ash); font:11px var(--mono); background:var(--iron);
+  }
+  .ac-card{
+    border:1px solid var(--seam); border-top:2px solid var(--sc,var(--ember)); border-radius:12px;
+    background:var(--plate); padding:13px 14px; display:flex; flex-direction:column; gap:9px;
+  }
+  .ac-head{display:flex; align-items:center; gap:8px; font:11px var(--mono)}
+  .ac-glyph{font-size:14px}
+  .ac-seat{text-transform:uppercase; font-weight:700; letter-spacing:.08em; font-size:10px}
+  .ac-id{color:var(--ash)}
+  .ac-live{margin-left:auto; color:var(--ember); font-size:9px; letter-spacing:.1em; text-transform:uppercase; animation:throb 1.3s infinite}
+  .ac-title{font:12px/1.4 var(--sans); color:var(--bone)}
+  .ac-step{
+    font:10px/1.4 var(--mono); color:var(--ash); background:var(--void); border:1px solid var(--seam);
+    border-radius:7px; padding:7px 9px; min-height:30px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .ac-step b{color:var(--bone); font-weight:600}
+  .ac-foot{display:flex; align-items:center; gap:8px}
+  .ac-steps{font:9px var(--mono); color:var(--ash); letter-spacing:.08em; text-transform:uppercase}
+  .ac-actions{margin-left:auto; display:flex; gap:6px}
+  .ac-steer{display:flex; gap:6px}
+  .ac-steer .steerin{
+    flex:1; min-width:0; background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font:10px var(--mono); padding:6px 9px; border-radius:7px; outline:none;
+  }
+  .ac-steer .steerin:focus{border-color:var(--ember)}
+  .ac-pending{display:flex; flex-direction:column; gap:4px}
+  .steerchip{
+    display:flex; align-items:center; gap:7px; padding:5px 8px; border-radius:7px;
+    background:var(--void); border:1px solid var(--seam); font:9.5px var(--mono);
+  }
+  .steerchip .sc-ic{flex:none}
+  .steerchip .sc-txt{color:var(--bone); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .steerchip .sc-st{flex:none; color:var(--ash); letter-spacing:.04em; text-transform:uppercase; font-size:8.5px}
+  .steerchip.sending{opacity:.7}
+  .steerchip.queued{border-color:var(--ember-dim)} .steerchip.queued .sc-st{color:var(--ember)}
+  .steerchip.queued .sc-ic{animation:throb 1.3s infinite}
+  .steerchip.applied{border-color:#397e64} .steerchip.applied .sc-st{color:#75dcb1} .steerchip.applied .sc-ic{color:#75dcb1}
+  .steerchip.error{border-color:#7d4338} .steerchip.error .sc-st,.steerchip.error .sc-ic{color:#ff9379}
+
+  /* pipeline lanes */
+  .orch-pipeline{
+    display:grid; grid-auto-flow:column; grid-auto-columns:minmax(210px,1fr);
+    gap:12px; overflow-x:auto; padding-bottom:4px; align-items:start;
+  }
+  .lane{border:1px solid var(--seam); border-radius:12px; background:var(--iron); overflow:hidden; min-width:0}
+  .lane-head{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:10px 12px; border-bottom:1px solid var(--seam); background:var(--plate);
+    font:700 9px var(--mono); letter-spacing:.14em; text-transform:uppercase; color:var(--ash);
+  }
+  .lane-head .lc{color:var(--bone)}
+  .lane.running .lane-head{color:var(--ember)}
+  .lane.failed  .lane-head{color:#ff9379}
+  .lane.review  .lane-head{color:var(--spark,#ffb23d)}
+  .lane-body{max-height:340px; overflow-y:auto; padding:8px; display:flex; flex-direction:column; gap:7px}
+  .lane-body .empty{padding:14px 4px; color:#4c4c58; font:10px var(--mono); text-align:center}
+  .pchip{
+    border:1px solid var(--seam); border-left:2px solid var(--sc,var(--seam)); border-radius:8px;
+    background:var(--plate); padding:8px 9px; display:flex; flex-direction:column; gap:5px; cursor:default;
+  }
+  .pchip-top{display:flex; align-items:center; gap:6px; font:9px var(--mono)}
+  .pchip-seat{text-transform:uppercase; font-weight:700; letter-spacing:.06em}
+  .pchip-id{color:var(--ash); margin-left:auto}
+  .pchip-title{font:10.5px/1.35 var(--sans); color:var(--bone); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .pchip.live{border-left-color:var(--ember); box-shadow:0 0 0 1px var(--ember-dim)}
+  .pchip-act{display:flex; gap:5px; margin-top:1px}
+  .lane-more{padding:6px 4px; color:var(--ash); font:9px var(--mono); text-align:center}
+
+  /* seat strip */
+  .orch-foot{display:grid; grid-template-columns:1fr; gap:14px}
+  .orch-seats{display:flex; gap:8px; flex-wrap:wrap}
+  .seatpill{
+    display:inline-flex; align-items:center; gap:7px; padding:8px 12px;
+    border:1px solid var(--seam); border-radius:999px; background:var(--iron); cursor:pointer;
+    font:600 10px var(--mono); color:var(--ash); letter-spacing:.06em; transition:all .12s;
+  }
+  .seatpill:hover{border-color:var(--sc); color:var(--bone)}
+  .seatpill .sp-glyph{color:var(--sc); font-size:13px}
+  .seatpill .sp-name{text-transform:uppercase}
+  .seatpill.on{background:color-mix(in srgb, var(--sc) 14%, var(--iron)); border-color:var(--sc); color:var(--bone)}
+  .seatpill .sp-dot{width:6px; height:6px; border-radius:50%; background:var(--sc); box-shadow:0 0 6px var(--sc); animation:throb 1.3s infinite}
+  .seatpill .sp-load{
+    min-width:16px; text-align:center; padding:0 5px; border-radius:999px;
+    background:var(--plate); border:1px solid var(--seam); color:var(--bone); font-size:9px;
+  }
+  .orch-activity{border:1px solid var(--seam); border-radius:12px; background:var(--iron); overflow:hidden}
+  .orch-activity>summary{
+    cursor:pointer; padding:11px 14px; list-style:none;
+    font:700 9.5px var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--ash);
+  }
+  .orch-activity>summary::-webkit-details-marker{display:none}
+  .orch-activity>summary::before{content:"▸ "; color:var(--ember)}
+  .orch-activity[open]>summary::before{content:"▾ "}
+  .orch-activity .ledger{border:none; margin:0 6px 8px; max-height:280px}
+
+  /* Agent art rail — also rendered inside the Inspector drawer, which does NOT
+     inject the legacy _agentStyle string, so these MUST live in the global sheet
+     or the preview images render at natural 1024px and blow out the drawer. */
+  #insp-body img{max-width:100%; height:auto}            /* defensive catch-all */
+  .artrail{margin:4px 0 14px; padding:10px; background:var(--plate); border:1px solid var(--seam); border-radius:10px}
+  .artrail-h{font:9px var(--mono); color:var(--ash); text-transform:uppercase; letter-spacing:.14em; margin-bottom:9px}
+  .artscroll{display:flex; gap:10px; overflow-x:auto; padding-bottom:4px}
+  .artcard{flex:0 0 auto; width:150px}
+  .artpair{display:flex; gap:4px; align-items:center; background:var(--void); border-radius:8px; padding:5px}
+  .refthumb{width:46px; height:70px; object-fit:contain; opacity:.85; border-right:1px dashed var(--seam); padding-right:4px}
+  .candthumb{flex:1; min-width:0; height:70px; object-fit:contain; border-radius:5px}
+  .candthumb.spr-mount{display:grid; place-items:center; overflow:hidden; background:
+      linear-gradient(45deg,#0a0a0d 25%,transparent 25%,transparent 75%,#0a0a0d 75%) 0 0/12px 12px,
+      linear-gradient(45deg,#0a0a0d 25%,#101015 25%,#101015 75%,#0a0a0d 75%) 6px 6px/12px 12px}
+  .spr-play{border-radius:4px}
+  .artplay{color:var(--ember); font-size:8.5px; letter-spacing:.06em}
+  .artreact{display:flex; align-items:center; gap:5px; margin-top:6px}
+  .artreact .rx{
+    border:1px solid var(--seam); background:var(--void); cursor:pointer; border-radius:6px;
+    padding:2px 6px; font-size:12px; line-height:1; filter:grayscale(.5); opacity:.8;
+  }
+  .artreact .rx:hover{opacity:1; filter:none; border-color:#3a3a44}
+  .artreact .rx.up.on{border-color:#397e64; background:color-mix(in srgb,#75dcb1 16%,var(--void)); filter:none; opacity:1}
+  .artreact .rx.down.on{border-color:#7d4338; background:color-mix(in srgb,#ff9379 16%,var(--void)); filter:none; opacity:1}
+  .artreact .rx-note{
+    flex:1; min-width:0; background:var(--void); border:1px solid var(--seam); color:var(--bone);
+    font:9.5px var(--mono); padding:4px 7px; border-radius:6px; outline:none;
+  }
+  .artreact .rx-note:focus{border-color:var(--ember)}
+  .artreact .rx-note::placeholder{color:#4c4c58}
+  .artreact .rx-st{font:8px var(--mono); color:var(--ash); text-transform:uppercase; letter-spacing:.05em; flex:none}
+  .artmeta{font:10px var(--mono); margin:6px 0; color:var(--bone); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .artmodel{color:var(--ash); font-size:9px}
+  .artbadge{display:inline-block; width:14px}
+  .artbadge.s-approved{color:#75dcb1} .artbadge.s-rejected{color:#ff9379} .artbadge.s-candidate{color:#ffb23d}
+  #insp-body .steerbar{display:flex; gap:6px; margin:6px 0 10px}
+  #insp-body .steerin{flex:1; min-width:0; padding:7px 10px; background:var(--void); border:1px solid var(--seam); border-radius:8px; color:var(--bone); font:11px var(--mono)}
+  #insp-body .steerin:focus{outline:none; border-color:var(--ember)}
   .playpanel{min-height:240px; display:flex; align-items:stretch}
   #play-holder{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px}
   .playbtn{
@@ -274,6 +462,35 @@
   .feedback-controls select{background:var(--void);border:1px solid var(--seam);color:var(--bone);font-family:var(--mono);font-size:10px;padding:4px}
   .transcript{font-family:var(--mono);font-size:10px;color:var(--ash);max-height:220px;overflow:auto;border:1px solid var(--seam);padding:8px}
   @media(max-width:700px){.feedback-card{grid-template-columns:1fr}.feedback-card img{width:100%;height:200px}}
+
+  /* ---- Atlas: screens wired to their assets ---- */
+  .atlas-stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;font-family:var(--mono);font-size:10px}
+  .atlas-stats .chip{border:1px solid var(--seam);padding:5px 10px;border-radius:999px;color:var(--ash)}
+  .atlas-stats .chip b{color:var(--bone);margin-right:4px}
+  .atlas-stats .chip.bad{border-color:#7d4338;color:#ff9379}
+  .atlas-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;align-items:start}
+  .atlas-screen{border:1px solid var(--seam);background:var(--iron);border-radius:10px;overflow:hidden}
+  .atlas-screen>header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--seam)}
+  .atlas-screen>header .nm{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone)}
+  .atlas-screen>header .ct{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--ash)}
+  .atlas-kind{padding:7px 12px 2px;font-family:var(--mono);font-size:8.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ash)}
+  .atlas-node{display:flex;align-items:center;gap:8px;padding:4px 12px;cursor:pointer;border-left:2px solid transparent}
+  .atlas-node:hover{background:var(--void);border-left-color:var(--ember)}
+  .atlas-node .thumb{width:26px;height:26px;flex:none;border-radius:5px;background:var(--void);border:1px solid var(--seam);object-fit:contain;image-rendering:pixelated;display:grid;place-items:center;font-size:11px;color:var(--ash)}
+  .atlas-node .lb{flex:1;min-width:0;font-family:var(--mono);font-size:10.5px;color:var(--bone);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .atlas-node .bg{flex:none;font-family:var(--mono);font-size:8.5px;color:var(--ash)}
+  .atlas-node .bg.shared{color:var(--ember)}
+  .atlas-node.missing .lb{color:#ff9379}
+  .atlas-node .sheets{display:flex;gap:3px;flex:none}
+  .atlas-node .sheets img{width:18px;height:18px;border-radius:3px;border:1px solid var(--seam);object-fit:cover;image-rendering:pixelated}
+  .atlas-rails{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;margin-top:12px}
+  .atlas-rail{border:1px solid var(--seam);background:var(--iron);border-radius:10px}
+  .atlas-rail.dead{border-color:#5a4030}
+  .atlas-rail.miss{border-color:#7d4338}
+  .atlas-rail>header{padding:9px 12px;border-bottom:1px solid var(--seam);font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ash);display:flex;gap:8px;align-items:center}
+  .atlas-rail>header .qbtn{margin-left:auto}
+  .atlas-empty{padding:10px 12px;font-family:var(--mono);font-size:10px;color:var(--ash)}
+  .atlas-screen .pad-b{padding-bottom:8px}
 </style>
 <style id="ui-cleanup">
   :root{
@@ -497,44 +714,143 @@
   .view-heading p{max-width:520px;text-align:right}
   .workspace .artifact-grid{grid-template-columns:repeat(auto-fill,minmax(285px,1fr))}
   .workspace .artifact{background:#171d25}
-  .asset-groups{display:grid;gap:16px}
-  .asset-group{
-    overflow:hidden;border:1px solid var(--seam);border-radius:9px;background:#11171e;
+  /* ── Asset library: contact-sheet gallery ─────────────────────── */
+  .asset-lib{border:1px solid var(--seam);border-radius:12px;background:var(--iron);overflow:hidden}
+  .asset-toolbar{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:11px 13px;border-bottom:1px solid var(--seam);background:var(--plate);
   }
-  .asset-group-head{
-    display:flex;align-items:center;justify-content:space-between;gap:14px;
-    padding:12px 14px;border-bottom:1px solid var(--seam);background:#171e26;
+  .asset-search{
+    flex:1 1 220px;min-width:150px;padding:8px 12px;border-radius:8px;
+    border:1px solid var(--seam);background:var(--void);color:var(--bone);
+    font:12px var(--mono);outline:none;
   }
-  .asset-group-head h3{font-size:14px;font-weight:680}
+  .asset-search:focus{border-color:var(--ember)}
+  .asset-search::placeholder{color:#4c4c58}
+  .asset-filters{display:flex;gap:6px;flex-wrap:wrap}
+  .afilter{
+    padding:6px 11px;border-radius:999px;border:1px solid var(--seam);
+    background:transparent;color:var(--ash);cursor:pointer;
+    font:600 10px var(--mono);letter-spacing:.06em;white-space:nowrap;
+    display:inline-flex;align-items:center;gap:6px;transition:all .12s;
+  }
+  .afilter:hover{color:var(--bone);border-color:#3a3a44}
+  .afilter .n{opacity:.55;font-weight:700}
+  .afilter.active{color:var(--void);background:var(--bone);border-color:var(--bone)}
+  .afilter.active .n{opacity:.75}
+  .afilter[data-f="review"].active{background:var(--ember);border-color:var(--ember);color:var(--void)}
+  .afilter[data-f="approved"].active{background:#75dcb1;border-color:#75dcb1;color:var(--void)}
+  .afilter[data-f="rejected"].active{background:#ff9379;border-color:#ff9379;color:var(--void)}
+
+  .asset-scroll{max-height:calc(100vh - 250px);overflow-y:auto;padding:6px 14px 16px}
+  .asset-section-head{
+    display:flex;align-items:center;gap:10px;padding:14px 2px 9px;
+    font:700 9.5px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--ash);
+  }
+  .asset-section-head .n{color:#4c4c58}
+  .asset-section-head::after{content:"";flex:1;height:1px;background:var(--seam)}
+  .asset-grid{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(138px,1fr));gap:12px;
+  }
+  .asset-grid>.empty{grid-column:1/-1}
+  .asset-tile{
+    position:relative;border:1px solid var(--seam);border-radius:10px;overflow:hidden;
+    background:var(--plate);cursor:pointer;transition:border-color .15s,transform .15s;
+  }
+  .asset-tile:hover{border-color:#3a3a44;transform:translateY(-2px)}
+  .asset-tile.review{border-color:var(--ember-dim)}
+  .asset-tile.sel{border-color:var(--ember);box-shadow:0 0 0 1px var(--ember)}
+  .asset-thumb{
+    aspect-ratio:1/1;display:grid;place-items:center;overflow:hidden;
+    background:
+      linear-gradient(45deg,#0a0a0d 25%,transparent 25%,transparent 75%,#0a0a0d 75%) 0 0/16px 16px,
+      linear-gradient(45deg,#0a0a0d 25%,#101015 25%,#101015 75%,#0a0a0d 75%) 8px 8px/16px 16px;
+  }
+  .asset-thumb img{width:100%;height:100%;object-fit:contain}
+  .asset-thumb .none{font:9px var(--mono);color:#4c4c58}
+  .asset-cap{padding:8px 9px;display:flex;flex-direction:column;gap:5px;border-top:1px solid var(--seam)}
+  .asset-name{font:11px var(--mono);color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .asset-sub{display:flex;align-items:center;gap:6px;font:9px var(--mono);color:var(--ash)}
+  .sdot{width:7px;height:7px;border-radius:50%;flex:none}
+  .sdot.approved{background:#75dcb1}
+  .sdot.review{background:var(--ember);box-shadow:0 0 6px var(--ember)}
+  .sdot.rejected{background:#ff9379}
+  .asset-badge{
+    position:absolute;top:8px;right:8px;padding:2px 7px;border-radius:999px;
+    font:700 8.5px var(--mono);letter-spacing:.05em;background:var(--ember);color:var(--void);
+  }
+
+  /* ── detail drawer ────────────────────────────────────────────── */
+  .drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;opacity:0;transition:opacity .2s}
+  .drawer-backdrop.open{opacity:1}
+  .drawer-backdrop[hidden]{display:none}
+  .asset-drawer{
+    position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);z-index:60;
+    background:var(--iron);border-left:1px solid var(--seam);
+    box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column;
+    transform:translateX(100%);transition:transform .24s cubic-bezier(.4,0,.2,1);
+  }
+  .asset-drawer.open{transform:none}
+  .asset-drawer[hidden]{display:none}
+  .drawer-head{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+    padding:15px 18px;border-bottom:1px solid var(--seam);
+  }
+  .drawer-head h3{font:13px var(--mono);color:var(--bone);word-break:break-all;line-height:1.4}
+  .drawer-head .st{margin-top:6px;display:flex;align-items:center;gap:7px;font:9px var(--mono);color:var(--ash);text-transform:uppercase;letter-spacing:.1em}
+  .drawer-x{
+    border:1px solid var(--seam);background:transparent;color:var(--ash);
+    width:28px;height:28px;border-radius:7px;cursor:pointer;font-size:16px;flex:none;line-height:1;
+  }
+  .drawer-x:hover{color:var(--bone);border-color:#3a3a44}
+  .drawer-body{flex:1;overflow-y:auto;padding:16px 18px}
+  .drawer-sec{margin-bottom:16px}
+  details.drawer-fold{border:1px solid var(--seam);border-radius:8px;background:var(--void);margin-top:10px}
+  details.drawer-fold>summary{
+    cursor:pointer;padding:9px 11px;font:700 9px var(--mono);letter-spacing:.12em;
+    text-transform:uppercase;color:var(--ash);list-style:none;
+  }
+  details.drawer-fold>summary::-webkit-details-marker{display:none}
+  details.drawer-fold>summary::before{content:"▸ ";color:var(--ember)}
+  details.drawer-fold[open]>summary::before{content:"▾ "}
+  details.drawer-fold .fold-body{padding:0 11px 11px;font:10px/1.5 var(--mono);color:var(--ash);white-space:pre-wrap;word-break:break-word}
+
   .revision-tabs{display:flex;gap:5px;flex-wrap:wrap}
   .revision-tab{
-    padding:4px 8px;border:1px solid #34404d;border-radius:999px;background:transparent;
-    color:#82919e;font:9px var(--mono);cursor:pointer;
+    padding:4px 9px;border:1px solid var(--seam);border-radius:999px;background:transparent;
+    color:var(--ash);font:9px var(--mono);cursor:pointer;
   }
-  .revision-tab.active{border-color:var(--c-tech);color:#c7dfff;background:#192535}
-  .asset-compare{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--seam)}
-  .revision-pane{min-width:0;padding:14px;background:#11171e}
-  .revision-pane.candidate{background:#131a22}
+  .revision-tab:hover{color:var(--bone)}
+  .revision-tab.active{border-color:var(--ember);color:var(--bone);background:var(--ember-dim)}
+  .asset-compare{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--seam);border:1px solid var(--seam);border-radius:9px;overflow:hidden;margin-top:10px}
+  .revision-pane{min-width:0;padding:13px;background:var(--plate)}
+  .revision-pane.candidate{background:#1b1512}
   .revision-label{
-    display:flex;justify-content:space-between;gap:8px;margin-bottom:10px;
-    color:#7f8e9b;font:700 9px var(--mono);letter-spacing:.13em;text-transform:uppercase;
+    display:flex;justify-content:space-between;gap:8px;margin-bottom:9px;
+    color:var(--ash);font:700 8.5px var(--mono);letter-spacing:.13em;text-transform:uppercase;
   }
   .revision-preview{
-    width:100%;height:240px;display:grid;place-items:center;overflow:hidden;
-    border-radius:7px;background:#090d11;
+    width:100%;aspect-ratio:1/1;display:grid;place-items:center;overflow:hidden;
+    border-radius:7px;background:
+      linear-gradient(45deg,#0a0a0d 25%,transparent 25%,transparent 75%,#0a0a0d 75%) 0 0/14px 14px,
+      linear-gradient(45deg,#0a0a0d 25%,#101015 25%,#101015 75%,#0a0a0d 75%) 7px 7px/14px 14px;
   }
   .revision-preview img{width:100%;height:100%;object-fit:contain}
-  .revision-meta{display:grid;gap:7px;margin-top:12px;color:#8e9ca8;font:10px/1.45 var(--mono)}
-  .revision-meta strong{color:#dce3e9;font-weight:600}
+  .revision-meta{display:grid;gap:6px;margin-top:11px;color:var(--ash);font:9.5px/1.45 var(--mono)}
+  .revision-meta strong{color:var(--bone);font-weight:600}
   .revision-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
   .health-row{display:flex;gap:6px;flex-wrap:wrap}
   .health-good{color:#75dcb1;border-color:#397e64}
   .health-bad{color:#ff9379;border-color:#7d4338}
-  .asset-feedback{
-    padding:11px 14px;border-top:1px solid var(--seam);color:#81909d;
-    font:10px/1.5 var(--mono);
-  }
-  .asset-feedback-item{padding:4px 0}
+  .asset-feedback{margin-top:14px;color:var(--ash);font:10px/1.5 var(--mono)}
+  .asset-feedback strong{color:var(--bone)}
+  .asset-feedback-item{padding:5px 0;border-top:1px solid #1b1b22}
+  .asset-vault{margin-top:16px;border:1px solid var(--seam);border-radius:10px;background:var(--iron);overflow:hidden}
+  .asset-vault>summary{cursor:pointer;padding:12px 14px;font:700 9.5px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--ash);list-style:none}
+  .asset-vault>summary::-webkit-details-marker{display:none}
+  .asset-vault>summary::before{content:"▸ ";color:var(--ember)}
+  .asset-vault[open]>summary::before{content:"▾ "}
+  .asset-vault .vault-scroll{max-height:320px;overflow:auto;padding:0 4px 8px}
   .iteration-list{display:grid;gap:14px}
   .iteration-card{
     display:grid;grid-template-columns:190px minmax(0,1fr);overflow:hidden;
@@ -643,136 +959,409 @@
     .workspace .floor{grid-template-columns:1fr}
     .workspace .artifact-grid{grid-template-columns:1fr}
   }
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     COMMAND DECK — professional console rework (loaded last; overrides above)
+     Re-themes every existing component by redefining the shared tokens, then
+     replaces the scattered shell with a persistent rail + status bar + a
+     universal inspector drawer. Frontend only.
+     ═══════════════════════════════════════════════════════════════════════ */
+  :root{
+    /* Cool deep-slate console. One warm ember signal, used with restraint.
+       Muted semantic colors for status so the accent stays meaningful. */
+    --void:#0a0c11; --iron:#0e1117; --plate:#12161e; --plate2:#171c25;
+    --seam:#212734; --seam2:#2c3442;
+    --ash:#95a0b2; --ash2:#606b7d; --bone:#e9ecf3;
+    --ember:#ff6a3d; --ember-dim:#3a2018; --ember-soft:rgba(255,106,61,.14);
+    --good:#46c08a; --warn:#e4a63f; --bad:#e5645f; --info:#5aa2e6;
+    --mono:"Cascadia Code","JetBrains Mono","SF Mono",ui-monospace,Consolas,monospace;
+    --sans:"Segoe UI Variable Display","Segoe UI",Inter,system-ui,sans-serif;
+    --rail-w:224px; --insp-w:460px; --bar-h:54px;
+  }
+  body{
+    background:var(--void); background-image:none;   /* kill the busy dot grid */
+    font-family:var(--sans); -webkit-font-smoothing:antialiased;
+  }
+  ::selection{background:var(--ember-soft);color:var(--bone)}
+  /* thin, quiet scrollbars everywhere */
+  *::-webkit-scrollbar{width:10px;height:10px}
+  *::-webkit-scrollbar-thumb{background:#232a36;border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+  *::-webkit-scrollbar-thumb:hover{background:#333c4b;background-clip:padding-box}
+  *::-webkit-scrollbar-track{background:transparent}
+
+  /* hide the legacy shell chrome — the deck replaces it */
+  body > header{display:none}
+
+  .deck{display:grid; grid-template-columns:var(--rail-w) 1fr; height:100vh; overflow:hidden}
+
+  /* ── command rail ─────────────────────────────────────────────────────── */
+  .rail{
+    background:var(--iron); border-right:1px solid var(--seam);
+    display:flex; flex-direction:column; min-height:0; user-select:none;
+  }
+  .rail-brand{
+    display:flex; align-items:center; gap:11px; padding:16px 18px 14px;
+    border-bottom:1px solid var(--seam);
+  }
+  .rail-brand .mark{
+    font-family:var(--mono); font-size:17px; color:var(--ember); line-height:1;
+    letter-spacing:-1px;
+  }
+  .rail-brand .bn{font-size:12px; font-weight:700; letter-spacing:.22em; text-transform:uppercase; color:var(--bone)}
+  .rail-brand .bp{font-family:var(--mono); font-size:10px; color:var(--ash2); margin-top:2px}
+  .rail-nav{flex:1; overflow-y:auto; padding:12px 10px; min-height:0}
+  .rail-group{font-family:var(--mono); font-size:9px; letter-spacing:.24em; color:var(--ash2);
+    text-transform:uppercase; padding:14px 10px 6px}
+  .rail-item{
+    display:flex; align-items:center; gap:11px; width:100%; text-align:left;
+    padding:8px 11px; border:0; border-radius:8px; background:transparent;
+    color:var(--ash); font:inherit; font-size:13px; cursor:pointer; position:relative;
+  }
+  .rail-item:hover{background:var(--plate); color:var(--bone)}
+  .rail-item.active{background:var(--plate2); color:var(--bone)}
+  .rail-item.active::before{content:""; position:absolute; left:-10px; top:8px; bottom:8px;
+    width:3px; border-radius:0 3px 3px 0; background:var(--ember)}
+  .rail-item .ic{width:18px; text-align:center; font-family:var(--mono); font-size:14px; color:inherit; opacity:.9}
+  .rail-item .ct{margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--ash2);
+    background:var(--plate); border:1px solid var(--seam); border-radius:20px; padding:1px 7px; min-width:20px; text-align:center}
+  .rail-item.active .ct{border-color:var(--seam2)}
+  .rail-item .dot{margin-left:auto; width:7px; height:7px; border-radius:50%; background:var(--ember);
+    box-shadow:0 0 8px var(--ember); animation:deckthrob 1.4s infinite}
+  @keyframes deckthrob{50%{opacity:.4}}
+  .rail-foot{border-top:1px solid var(--seam); padding:12px 14px; font-family:var(--mono); font-size:10.5px; color:var(--ash2)}
+  .rail-foot .vrow{display:flex; align-items:center; gap:8px; line-height:1.7}
+  .rail-foot .vlamp{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 7px var(--good)}
+  .rail-foot .vlamp.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+  .rail-foot .vlamp.waiting{background:var(--warn);box-shadow:0 0 7px var(--warn)}
+
+  /* ── stage: status bar + scrolling body ──────────────────────────────── */
+  .stage{display:flex; flex-direction:column; min-width:0; min-height:0}
+  .statusbar{
+    height:var(--bar-h); flex:none; display:flex; align-items:center; gap:14px;
+    padding:0 22px; border-bottom:1px solid var(--seam); background:var(--iron);
+  }
+  .statusbar .crumb{font-size:15px; font-weight:650; color:var(--bone); letter-spacing:.01em}
+  .statusbar .crumb .sub{font-family:var(--mono); font-size:11px; color:var(--ash2); font-weight:400; margin-left:10px}
+  .statusbar .spacer{flex:1}
+  .schip{
+    display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11px;
+    color:var(--ash); padding:5px 11px; border:1px solid var(--seam); border-radius:8px; background:var(--plate);
+  }
+  .schip b{color:var(--bone); font-weight:600}
+  .schip .l{width:7px;height:7px;border-radius:50%;background:var(--good)}
+  .schip .l.warn{background:var(--warn)} .schip .l.bad{background:var(--bad)}
+  .stage-body{flex:1; overflow-y:auto; min-height:0; padding:22px 24px 60px}
+
+  /* deck sections replace .workspace-view visibility toggling */
+  .deck-view{display:none}
+  .deck-view.active{display:block; animation:deckfade .18s ease-out}
+  @keyframes deckfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .deck-view > .view-heading{margin-bottom:16px}
+  .deck-view .view-heading h2{font-size:19px; letter-spacing:0}
+  .deck-view .eyebrow{font-family:var(--mono); font-size:9.5px; letter-spacing:.24em; color:var(--ash2)}
+
+  /* generic card + control refresh (uses the retuned tokens) */
+  .qbtn{border-radius:8px; transition:background .12s,border-color .12s}
+  .col2{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+  @media(max-width:1100px){.col2{grid-template-columns:1fr}}
+  .dcard{background:var(--plate); border:1px solid var(--seam); border-radius:12px; padding:16px}
+  .dcard > h3{font-size:13px; color:var(--bone); margin:0 0 12px; display:flex; align-items:center; gap:8px}
+  .dcard > h3 .tag{margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--ash2)}
+
+  /* ── inspector drawer ─────────────────────────────────────────────────── */
+  .insp-scrim{position:fixed; inset:0; background:rgba(4,6,10,.5); opacity:0; pointer-events:none;
+    transition:opacity .2s; z-index:60}
+  .insp-scrim.open{opacity:1; pointer-events:auto}
+  .inspector{
+    position:fixed; top:0; right:0; height:100vh; width:min(var(--insp-w),94vw);
+    background:var(--iron); border-left:1px solid var(--seam2); z-index:61;
+    transform:translateX(100%); transition:transform .22s cubic-bezier(.4,0,.2,1);
+    display:flex; flex-direction:column; box-shadow:-24px 0 60px rgba(0,0,0,.45);
+  }
+  .inspector.open{transform:none}
+  .insp-head{display:flex; align-items:center; gap:12px; padding:15px 18px; border-bottom:1px solid var(--seam)}
+  .insp-head .it{font-size:14px; font-weight:650; color:var(--bone); flex:1; min-width:0;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .insp-head .ie{font-family:var(--mono); font-size:10px; color:var(--ash2); text-transform:uppercase; letter-spacing:.12em}
+  .insp-x{border:0; background:var(--plate); color:var(--ash); width:28px; height:28px; border-radius:7px; cursor:pointer; font-size:15px}
+  .insp-x:hover{background:var(--plate2); color:var(--bone)}
+  .insp-tabs{display:flex; gap:4px; padding:8px 14px 0; border-bottom:1px solid var(--seam)}
+  .insp-tab{padding:7px 12px; border:0; background:transparent; color:var(--ash2); font:inherit;
+    font-size:12px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px}
+  .insp-tab:hover{color:var(--bone)}
+  .insp-tab.active{color:var(--bone); border-bottom-color:var(--ember)}
+  .insp-body{flex:1; overflow-y:auto; padding:16px 18px; min-height:0}
+  .insp-body .kv{display:grid; grid-template-columns:120px 1fr; gap:6px 12px; font-size:12.5px; margin-bottom:14px}
+  .insp-body .kv .k{font-family:var(--mono); font-size:11px; color:var(--ash2)}
+  .insp-body .kv .v{color:var(--bone); word-break:break-word}
+  .insp-code{font-family:var(--mono); font-size:11.5px; line-height:1.6; white-space:pre-wrap; word-break:break-word;
+    background:var(--void); border:1px solid var(--seam); border-radius:8px; padding:12px 14px; color:#cdd6e4}
+  .insp-step{display:flex; gap:9px; padding:7px 0; border-bottom:1px solid #171c24; font-size:12.5px; line-height:1.5}
+  .insp-step .sg{font-family:var(--mono); font-size:11px; flex:none; width:60px; color:var(--ash2); text-transform:uppercase}
+  .insp-step.k-tool .sg{color:var(--info)} .insp-step.k-steer .sg{color:var(--ember)}
+  .insp-step.k-result .sg{color:var(--good)} .insp-step.k-say .sg{color:var(--ash)}
+  .insp-step .sx{color:var(--bone); word-break:break-word; min-width:0}
+  .insp-step .sx b{color:var(--bone)}
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     DALA — void + electric iris + saffron spark. Pure-black canvas, a single
+     violet accent, amber emphasis labels, white/ash type, generous radius,
+     float-on-void surfaces. Adapted for a dense console: legibility kept,
+     structure kept; borrowed the palette, radius, and "trust scale not weight"
+     type feel. Loaded last — wins. (Remaps the shared tokens → re-themes all.)
+     ═══════════════════════════════════════════════════════════════════════ */
+  :root{
+    --void:#000000; --iron:#050507; --plate:#0b0b0f; --plate2:#121218;
+    --seam:rgba(255,255,255,.075); --seam2:rgba(255,255,255,.14);
+    --ash:#9a9a9a; --ash2:#6a6a6a; --bone:#ffffff; --silver:#bdbdbd;
+    --ember:#8052ff; --ember-dim:#241a45; --ember-soft:rgba(128,82,255,.16);
+    --spark:#ffb829;
+    --good:#2fae90; --warn:#ffb829; --bad:#ff5d5d; --info:#8aa0ff;
+    --sans:"Inter","Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
+    --rail-w:236px; --insp-w:480px; --bar-h:60px;
+  }
+  body{background:#000; letter-spacing:-.005em}
+  ::selection{background:var(--ember-soft); color:#fff}
+
+  /* Type — quiet weight, scale + tracking carry hierarchy; amber labels. */
+  .deck-view > .view-heading h2{font-size:30px; font-weight:400; letter-spacing:-.03em; color:#fff; line-height:1.06}
+  .deck-view > .view-heading p{color:var(--silver); font-weight:300; font-size:14px}
+  .eyebrow, .deck-view .eyebrow{color:var(--spark); letter-spacing:.26em; font-weight:600}
+  .statusbar .crumb{font-weight:400; letter-spacing:-.01em; font-size:16px}
+
+  /* Rail — black, pill items, violet active wash. */
+  .rail{background:#000; border-right:1px solid var(--seam)}
+  .rail-brand{border-bottom:1px solid var(--seam)}
+  .rail-brand .mark{color:var(--ember)}
+  .rail-brand .bn{letter-spacing:.16em}
+  .rail-group{color:var(--ash2); letter-spacing:.28em}
+  .rail-item{border-radius:13px; font-weight:400}
+  .rail-item:hover{background:rgba(255,255,255,.04)}
+  .rail-item.active{background:rgba(128,82,255,.13); color:#fff}
+  .rail-item.active::before{background:var(--ember)}
+  .rail-item .ct{border-radius:9999px; background:rgba(255,255,255,.05); border-color:var(--seam); color:var(--ash)}
+  .rail-item .ic{color:var(--ash)}
+  .rail-item.active .ic{color:var(--ember)}
+  .rail-foot{border-top:1px solid var(--seam)}
+
+  /* Status bar + chips — pill, hairline, on void. */
+  .statusbar{background:#000; border-bottom:1px solid var(--seam)}
+  .schip{border-radius:9999px; background:rgba(255,255,255,.03); border:1px solid var(--seam); color:var(--ash)}
+  .schip .l{background:var(--good)} .schip .l.warn{background:var(--spark)} .schip .l.bad{background:var(--bad)}
+
+  /* Cards / panels — near-black, generous radius, whisper border (float on void). */
+  .dcard{background:#000; border:1px solid var(--seam); border-radius:20px; padding:22px}
+  .dcard > h3{font-weight:500; color:#fff; font-size:13px}
+  .stage-body{padding:26px 30px 72px}
+  .panel{background:#000; border:1px solid var(--seam); border-radius:20px}
+  .bay{background:#000; border:1px solid var(--seam); border-top:2px solid var(--sc,#8052ff); border-radius:16px}
+  .ledger{background:#000; border:1px solid var(--seam); border-radius:16px}
+
+  /* Buttons — pill; the violet primary is the sole filled accent. */
+  .qbtn, button.playbtn{border-radius:9999px}
+  .rail-item, .insp-x{border-radius:12px}
+
+  /* Inspector — off-black slab. */
+  .inspector{background:#050506; border-left:1px solid var(--seam2)}
+  .insp-tab.active{border-bottom-color:var(--ember)}
+  .insp-code{background:#000; border:1px solid var(--seam)}
+  .insp-step.k-steer .sg{color:var(--ember)} .insp-step.k-result .sg{color:var(--good)}
+
+  /* Overlays adopt the void. */
+  .review-shell, .side-card, .studio-layout{background:transparent}
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     PLATFORM THEME — dark + ember/coral (node-editor ready).
+     Reverts the light experiment. Keeps the dark surfaces from the block above
+     and re-points the single accent to a warm ember/coral — ties to the arcade
+     game and matches the n8n / Anthropic Workbench tool references. Node-editor
+     views (asset flow, agent flow) layer their own dot-grid canvas on top.
+     ═══════════════════════════════════════════════════════════════════════ */
+  :root{
+    --ember:#ff6a3d; --ember-dim:#3a2018; --ember-soft:rgba(255,106,61,.16);
+    --spark:#ffb23d;
+    --sans:"Inter","Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
+    --grid-dot:rgba(255,255,255,.05);
+  }
+  /* undo the iridescent-text brand mark; ember glyph instead */
+  .rail-brand .mark{background:none; -webkit-text-fill-color:var(--ember); color:var(--ember)}
 </style>
-</head>
 <body>
-<header>
-  <div class="sigil">⌐<span style="color:var(--bone)">|</span>¬</div>
-  <div class="masthead">
-    <h1>Builders Gate</h1>
-    <div class="sub" id="projline">connecting to the floor…</div>
-  </div>
-  <div class="integrity" id="integrity"><span class="lamp" id="lamp"></span><span id="lamptext">…</span></div>
-</header>
-
-<main class="app-shell">
-  <div class="studio-layout">
-    <section class="build-stage">
-      <div class="section-heading">
-        <div>
-          <span class="eyebrow">Current build</span>
-          <h2>Play, observe, iterate</h2>
-        </div>
-        <span class="stage-hint">The game is the primary artifact.</span>
+<div class="deck">
+  <nav class="rail" aria-label="Primary navigation">
+    <div class="rail-brand">
+      <span class="mark">⌐¬</span>
+      <div style="min-width:0">
+        <div class="bn">Builders Gate</div>
+        <div class="bp" id="projline">connecting…</div>
       </div>
-      <div class="panel playpanel">
-        <div class="ptbar">
-          <span class="lamp" id="pt-lamp"></span>
-          <span id="pt-msg">checking playtest gear…</span>
-          <input class="pt-goal" id="pt-goal" placeholder="Iteration goal" maxlength="160">
-          <select class="pt-target" id="pt-target" aria-label="Playtest target">
-            <option value="web">web build</option>
-            <option value="native">native Godot</option>
-          </select>
-          <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
-        </div>
-        <div id="play-holder">
-          <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
-          <div class="playhint">A/D move · Space jump · J/K punch · U/I kick · S block · L duck · F1 tuning</div>
-        </div>
-      </div>
-    </section>
+    </div>
+    <div class="rail-nav" id="rail-nav">
+      <div class="rail-group">Command</div>
+      <button class="rail-item" data-view="overview" onclick="setWorkspace('overview',this)"><span class="ic">◉</span> Overview</button>
+      <button class="rail-item" data-view="agents" onclick="setWorkspace('agents',this)"><span class="ic">⌁</span> Agents<span class="ct" id="rc-agents">0</span></button>
+      <div class="rail-group">Build</div>
+      <button class="rail-item" data-view="studio" onclick="setWorkspace('studio',this)"><span class="ic">⬡</span> Studio</button>
+      <button class="rail-item" data-view="seats" onclick="setWorkspace('seats',this)"><span class="ic">▤</span> Seat workspaces</button>
+      <button class="rail-item" data-view="playtests" onclick="setWorkspace('playtests',this)"><span class="ic">◈</span> Playtests<span class="ct" id="rc-pt">0</span></button>
+      <div class="rail-group">Library</div>
+      <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic">▧</span> Assets</button>
+      <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic">⊞</span> Atlas<span class="ct warn" id="rc-atlas" style="display:none">0</span></button>
+      <button class="rail-item" data-view="world" onclick="setWorkspace('world',this)"><span class="ic">✦</span> World bible</button>
+      <button class="rail-item" data-view="timeline" onclick="setWorkspace('timeline',this)"><span class="ic">⧗</span> Timeline</button>
+    </div>
+    <div class="rail-foot">
+      <div class="vrow"><span class="vlamp waiting" id="lamp"></span> <span id="lamptext">connecting…</span></div>
+    </div>
+  </nav>
 
-    <aside class="iteration-sidebar">
-      <section class="side-card">
-        <div class="side-head">
-          <div><span class="eyebrow">Evidence</span><h2>Playtest inbox</h2></div>
-          <span class="side-note">open to review</span>
-        </div>
-        <div class="panel compact-list" id="sessions"></div>
-      </section>
+  <div class="stage">
+    <div class="statusbar">
+      <div class="crumb" id="sb-crumb">Overview</div>
+      <div class="spacer"></div>
+      <div class="schip" id="sb-agents"><span class="l"></span> <b>0</b> live</div>
+      <div class="schip" id="sb-vault"><span class="l"></span> vault <b>—</b></div>
+    </div>
+    <div class="stage-body">
 
-      <section class="side-card dispatch-card">
-        <div class="side-head">
-          <div><span class="eyebrow">Next iteration</span><h2>Dispatch</h2></div>
-          <span class="side-note">agent work queue</span>
+      <section class="deck-view active" id="view-overview">
+        <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance — live agents, the queue, the build.</p></div>
+        <div class="ov-stats" id="ov-stats"></div>
+        <div class="col2" style="margin-bottom:16px">
+          <div class="dcard"><h3>Running now <span class="tag" id="ov-run-n"></span></h3><div id="ov-running"><div class="empty">nothing dispatched</div></div></div>
+          <div class="dcard"><h3>Recent activity</h3><div class="ledger" id="ov-activity" style="max-height:240px"><div class="empty">quiet</div></div></div>
         </div>
-        <div class="panel">
-          <div class="qadd">
-            <select id="q-seat" aria-label="Seat"></select>
-            <input id="q-title" placeholder="Describe the next change" maxlength="120">
-            <button id="q-go" onclick="addItem()">add</button>
+        <div class="view-heading" style="margin-bottom:12px"><div><span class="eyebrow">Current build</span><h2 style="font-size:19px">Play &amp; record</h2></div></div>
+        <div class="panel playpanel">
+          <div class="ptbar">
+            <span class="lamp" id="pt-lamp"></span>
+            <span id="pt-msg">checking playtest gear…</span>
+            <input class="pt-goal" id="pt-goal" placeholder="Iteration goal" maxlength="160">
+            <select class="pt-target" id="pt-target" aria-label="Playtest target">
+              <option value="web">web build</option>
+              <option value="native">native Godot</option>
+            </select>
+            <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
           </div>
-          <div class="compact-list" id="queue"></div>
-          <div id="agentview" style="display:none"></div>
+          <div id="play-holder">
+            <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
+            <div class="playhint">A/D move · Space jump · J/K punch · U/I kick · S block · L duck · F1 tuning</div>
+          </div>
         </div>
       </section>
-    </aside>
+
+      <section class="deck-view" id="view-agents">
+        <div class="view-heading"><div><span class="eyebrow">Orchestration</span><h2>Agents</h2></div><p>Dispatch work to a seat, then watch and steer it live.</p></div>
+        <div class="orch-composer">
+          <div class="orch-composer-row">
+            <select id="q-seat" aria-label="Seat"></select>
+            <input type="text" id="q-title" placeholder="Task title — a short imperative…" maxlength="120"
+                   onkeydown="if(event.key==='Enter')addItem()">
+            <button id="q-brief-toggle" class="qbtn ghost" onclick="toggleBrief()">＋ brief</button>
+            <button id="q-go" class="qbtn" onclick="addItem()">add to queue</button>
+          </div>
+          <div class="orch-brief" id="q-brief-wrap" hidden>
+            <textarea id="q-brief" placeholder="Brief — scope, constraints, and what 'done' looks like. The agent acts on this with no other context, so be specific: name the exact animations/assets/files, not 'all of them'."></textarea>
+            <div class="orch-brief-foot">
+              <span>priority<select id="q-priority"><option value="0">normal</option><option value="1">high</option></select></span>
+              <span class="hint">A precise brief is what keeps scope from ballooning — item 56 crashed on an empty one.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="orch-sec">
+          <div class="orch-sec-head">Active now <span class="n" id="orch-active-n">0</span></div>
+          <div class="orch-active" id="orch-active"></div>
+        </div>
+
+        <div class="orch-sec">
+          <div class="orch-sec-head">Pipeline</div>
+          <div class="orch-pipeline" id="orch-pipeline"></div>
+        </div>
+
+        <div class="orch-foot">
+          <div class="orch-seats" id="floor"></div>
+          <details class="orch-activity"><summary>Live activity</summary>
+            <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
+          </details>
+        </div>
+      </section>
+
+      <section class="deck-view" id="view-studio">
+        <div class="view-heading" style="margin-bottom:12px"><div><span class="eyebrow">Node studio</span><h2>Studio</h2></div><p>Visual node editors for asset generation, agent orchestration, and the game.</p></div>
+        <div class="seat-subnav" id="studio-subnav">
+          <button class="seat-tab active" data-flow="workflows" onclick="Studio.select('workflows')">⬡ Workflows</button>
+          <button class="seat-tab" data-flow="game" onclick="Studio.select('game')">⌖ Game editor</button>
+        </div>
+        <div id="studio-body" class="studio-body"><div class="empty">loading studio…</div></div>
+      </section>
+
+      <section class="deck-view" id="view-seats">
+        <div class="view-heading"><div><span class="eyebrow">Purpose-built workspaces</span><h2>Seat workspaces</h2></div><p>Each seat gets a workspace tuned to its craft.</p></div>
+        <div class="seat-subnav" id="seat-subnav"></div>
+        <div id="seat-body"><div class="empty">pick a seat</div></div>
+      </section>
+
+      <section class="deck-view" id="view-playtests">
+        <div class="view-heading"><div><span class="eyebrow">Evidence</span><h2>Playtests</h2></div><p>Recorded sessions — open one for video, transcript, telemetry, and the director's triage.</p></div>
+        <div class="dcard"><div class="compact-list" id="sessions"></div></div>
+      </section>
+
+      <section class="deck-view" id="view-assets">
+        <div class="view-heading"><div><span class="eyebrow">Library</span><h2>Assets</h2></div><button class="qbtn small ghost" onclick="fullAudit()">run integrity audit</button></div>
+        <div class="asset-lib">
+          <div class="asset-toolbar">
+            <input class="asset-search" id="asset-search" placeholder="Search assets…" oninput="onAssetSearch(this.value)">
+            <div class="asset-filters" id="asset-filters">
+              <button class="afilter active" data-f="all" onclick="setAssetFilter('all')">All <span class="n" data-c="all">0</span></button>
+              <button class="afilter" data-f="review" onclick="setAssetFilter('review')">To review <span class="n" data-c="review">0</span></button>
+              <button class="afilter" data-f="approved" onclick="setAssetFilter('approved')">Approved <span class="n" data-c="approved">0</span></button>
+              <button class="afilter" data-f="rejected" onclick="setAssetFilter('rejected')">Rejected <span class="n" data-c="rejected">0</span></button>
+            </div>
+          </div>
+          <div class="asset-scroll" id="asset-grid"><div class="empty">generated candidates appear here</div></div>
+        </div>
+        <details class="asset-vault"><summary>Tracked binaries · integrity</summary>
+          <div class="vault-scroll"><table id="vault"></table></div>
+        </details>
+        <div class="gallery" id="gallery" hidden></div>
+        <div class="drawer-backdrop" id="drawer-backdrop" hidden onclick="closeAssetDrawer()"></div>
+        <aside class="asset-drawer" id="asset-drawer" hidden></aside>
+      </section>
+
+      <section class="deck-view" id="view-world">
+        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Pillars, scope, cut line, and canon used by the pipeline.</p></div>
+        <div class="dcard"><div class="inner" id="world"></div></div>
+      </section>
+
+      <section class="deck-view" id="view-atlas">
+        <div class="view-heading"><div><span class="eyebrow">Project map</span><h2>Atlas</h2></div><p>Every screen wired to every asset it uses — derived live from the scenes, scripts, and SpriteFrames. Click any node to deploy a task on it.</p></div>
+        <div class="atlas-stats" id="atlas-stats"></div>
+        <div class="atlas-grid" id="atlas-grid"><div class="empty">scanning…</div></div>
+        <div class="atlas-rails" id="atlas-rails"></div>
+      </section>
+
+      <section class="deck-view" id="view-timeline">
+        <div class="view-heading"><div><span class="eyebrow">Causal history</span><h2>Iteration timeline</h2></div><p>Goal, snapshot, assets, evidence, decisions, and outcome per iteration.</p></div>
+        <div class="iteration-list" id="iterations"><div class="empty">the first recorded playtest creates an iteration</div></div>
+      </section>
+
+    </div>
   </div>
+</div>
 
-  <div class="workspace">
-    <nav class="workspace-tabs" aria-label="Workspace views">
-      <button class="workspace-tab active" data-view="review" onclick="setWorkspace('review',this)">Asset Lab</button>
-      <button class="workspace-tab" data-view="team" onclick="setWorkspace('team',this)">Agent floor</button>
-      <button class="workspace-tab" data-view="assets" onclick="setWorkspace('assets',this)">Raw vault</button>
-      <button class="workspace-tab" data-view="world" onclick="setWorkspace('world',this)">World bible</button>
-      <button class="workspace-tab" data-view="timeline" onclick="setWorkspace('timeline',this)">Iteration timeline</button>
-    </nav>
-
-    <section class="workspace-view active" id="view-review">
-      <div class="view-heading">
-        <div><span class="eyebrow">Revision workspace</span><h2>Asset Lab</h2></div>
-        <p>Compare approved assets with candidates, inspect provenance and integration, then decide.</p>
-      </div>
-      <div class="asset-groups" id="asset-groups"><div class="empty">generated candidates appear here grouped by logical asset</div></div>
-    </section>
-
-    <section class="workspace-view" id="view-team" hidden>
-      <div class="view-heading">
-        <div><span class="eyebrow">Production</span><h2>Agent floor</h2></div>
-        <p>Ownership, locks, queued feedback, and live work across all seven seats.</p>
-      </div>
-      <div class="floor" id="floor"></div>
-      <div class="ledger-block">
-        <h2>Live activity</h2>
-        <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
-      </div>
-    </section>
-
-    <section class="workspace-view" id="view-assets" hidden>
-      <div class="view-heading">
-        <div><span class="eyebrow">Library</span><h2>Asset vault</h2></div>
-        <button class="qbtn small ghost" onclick="fullAudit()">run integrity audit</button>
-      </div>
-      <div class="asset-workspace">
-        <section>
-          <h2>Recent renders</h2>
-          <div class="gallery" id="gallery"><div class="empty">renders appear here (blender_run with render=true)</div></div>
-        </section>
-        <section>
-          <h2>Tracked binaries</h2>
-          <div class="panel vault-scroll"><table id="vault"></table></div>
-        </section>
-      </div>
-    </section>
-
-    <section class="workspace-view" id="view-world" hidden>
-      <div class="view-heading">
-        <div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div>
-        <p>Pillars, scope, cut line, and canon used by the pipeline.</p>
-      </div>
-      <div class="panel world-panel"><div class="inner" id="world"></div></div>
-    </section>
-
-    <section class="workspace-view" id="view-timeline" hidden>
-      <div class="view-heading">
-        <div><span class="eyebrow">Causal history</span><h2>Iteration timeline</h2></div>
-        <p>Goal, snapshot, assets, evidence, decisions, queued changes, resulting work, and outcome.</p>
-      </div>
-      <div class="iteration-list" id="iterations"><div class="empty">the first recorded playtest creates an iteration</div></div>
-    </section>
+<div class="insp-scrim" id="insp-scrim" onclick="Inspector.close()"></div>
+<aside class="inspector" id="inspector" aria-hidden="true">
+  <div class="insp-head">
+    <div style="min-width:0;flex:1">
+      <div class="ie" id="insp-eyebrow"></div>
+      <div class="it" id="insp-title"></div>
+    </div>
+    <button class="insp-x" onclick="Inspector.close()" aria-label="Close">✕</button>
   </div>
-</main>
+  <div class="insp-tabs" id="insp-tabs"></div>
+  <div class="insp-body" id="insp-body"></div>
+</aside>
 
 <div id="lightbox" onclick="this.style.display='none'"><img id="lightimg" alt=""></div>
 <div class="review-overlay" id="review-overlay">
@@ -784,7 +1373,7 @@
     <div class="review-body" id="review-body"></div>
   </div>
 </div>
-<footer id="foot">builders gate · local floor · 127.0.0.1</footer>
+<footer id="foot" style="display:none">builders gate · local floor · 127.0.0.1</footer>
 
 <script>
 const SEATS = {
@@ -795,23 +1384,62 @@ const color = r => getComputedStyle(document.documentElement).getPropertyValue(`
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let lastActivityId = 0;
 
+const DECK_CRUMB = {
+  overview:"Overview", agents:"Agents", studio:"Studio", seats:"Seat workspaces",
+  playtests:"Playtests", assets:"Assets", atlas:"Atlas", world:"World bible",
+  timeline:"Timeline",
+};
 function setWorkspace(name, trigger){
-  const allowed = ["review","team","assets","world","timeline"];
-  const next = allowed.includes(name) ? name : "review";
-  document.querySelectorAll(".workspace-view").forEach(view => {
-    const active = view.id === `view-${next}`;
-    view.classList.toggle("active", active);
-    view.hidden = !active;
-  });
-  document.querySelectorAll(".workspace-tab").forEach(tab => {
-    const active = tab.dataset.view === next;
-    tab.classList.toggle("active", active);
-    tab.setAttribute("aria-selected", String(active));
-    tab.tabIndex = active ? 0 : -1;
-  });
+  const next = DECK_CRUMB[name] ? name : "overview";
+  document.querySelectorAll(".deck-view").forEach(view =>
+    view.classList.toggle("active", view.id === `view-${next}`));
+  document.querySelectorAll(".rail-item").forEach(item =>
+    item.classList.toggle("active", item.dataset.view === next));
+  const crumb = document.getElementById("sb-crumb");
+  if (crumb) crumb.textContent = DECK_CRUMB[next];
   try{ localStorage.setItem("bgate-workspace", next); }catch(e){}
-  if (trigger) trigger.focus();
+  if (next === "seats" && window.SeatShell) window.SeatShell.activate();
+  if (next === "studio" && window.Studio) window.Studio.activate();
+  if (next === "atlas" && window.Atlas) window.Atlas.activate();
+  if (next === "overview") refreshOverview();
+  const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
 }
+
+async function refreshOverview(){
+  const view = document.getElementById("view-overview");
+  if (!view || !view.classList.contains("active")) return;
+  try{
+    const [st, q, ag, arts, act] = await Promise.all([
+      fetch("/api/state").then(r=>r.json()).catch(()=>({})),
+      fetch("/api/queue").then(r=>r.json()).catch(()=>({items:[]})),
+      fetch("/api/agents").then(r=>r.json()).catch(()=>({agents:[]})),
+      fetch("/api/artifacts").then(r=>r.json()).catch(()=>({artifacts:[]})),
+      fetch("/api/activity?after_id=0").then(r=>r.json()).catch(()=>({events:[]})),
+    ]);
+    const items = q.items || [];
+    const live = (ag.agents || []).filter(a => a.state === "running");
+    const tiles = [
+      {n:live.length, l:"live agents", hot:live.length>0},
+      {n:items.filter(i=>i.status==="queued").length, l:"queued"},
+      {n:(arts.artifacts||[]).filter(a=>a.status==="candidate").length, l:"candidates"},
+      {n:(st.sessions||[]).length, l:"playtests"},
+      {n:(st.assets||[]).length, l:"tracked"},
+    ];
+    const stats = document.getElementById("ov-stats");
+    if (stats) stats.innerHTML = tiles.map(t=>`<div class="ov-tile ${t.hot?"hot":""}"><div class="n">${t.n}</div><div class="l">${t.l}</div></div>`).join("");
+    const byId = Object.fromEntries(items.map(i=>[i.id,i]));
+    const runN = document.getElementById("ov-run-n"); if (runN) runN.textContent = live.length || "";
+    const runEl = document.getElementById("ov-running");
+    if (runEl) runEl.innerHTML = live.length ? live.map(a=>{
+      const it = byId[a.item_id] || {};
+      return `<div class="ov-run-row" onclick="watchAgent(${a.item_id})"><span class="p"></span><span class="rt">${esc(it.title||("item "+a.item_id))}</span><span class="rs" style="color:${color(it.seat)}">${esc(it.seat||"")}</span></div>`;
+    }).join("") : `<div class="empty">nothing dispatched</div>`;
+    const evs = (act.events||[]).slice(-9).reverse();
+    const actEl = document.getElementById("ov-activity");
+    if (actEl) actEl.innerHTML = evs.length ? evs.map(e=>`<div class="line"><span class="who" style="color:${color(e.seat)}">${esc(e.seat||"")}</span><span class="what">${esc(e.summary||e.kind||"")}</span></div>`).join("") : `<div class="empty">quiet</div>`;
+  }catch(e){}
+}
+setInterval(refreshOverview, 4000);
 
 document.querySelector(".workspace-tabs")?.addEventListener("keydown", event => {
   if (!["ArrowLeft","ArrowRight"].includes(event.key)) return;
@@ -823,34 +1451,37 @@ document.querySelector(".workspace-tabs")?.addEventListener("keydown", event => 
   setWorkspace(next.dataset.view, next);
 });
 
-/* A seat is "at work" when it holds a lock or acted in the last 5 minutes. */
+/* A seat is "at work" only when it has a LIVE dispatched agent right now
+ * (window._liveSeats is refreshed by pollQueue from /api/agents). The old
+ * "acted in the last 5 minutes" heuristic showed a seat as working long after
+ * its agent finished, and a restart wiped it entirely — both misleading. */
 function isWorking(seat){
-  if (seat.locks.length) return true;
-  if (!seat.last_activity) return false;
-  return (Date.now() - Date.parse(seat.last_activity.at + "Z")) < 5 * 60 * 1000;
+  return !!(window._liveSeats && window._liveSeats.has(seat.role));
 }
 
 function renderFloor(seatsData){
-  document.getElementById("floor").innerHTML = seatsData.map(s => {
+  window._seats = seatsData;
+  const floor = document.getElementById("floor");
+  if (!floor) return;
+  const load = window._seatLoad || {};
+  floor.innerHTML = seatsData.map(s => {
     const working = isWorking(s);
+    const n = load[s.role] || 0;
     const doing = s.last_activity
-      ? `<span style="color:${color(s.role)}">${esc(s.last_activity.kind)}</span> · ${esc(s.last_activity.summary)}`
+      ? `${s.last_activity.kind}: ${s.last_activity.summary}`
       : "idle — no ledger entries yet";
-    return `
-    <div class="bay ${working ? "working" : ""}" style="--sc:${color(s.role)}">
-      <div class="head">
-        <span class="glyph">${SEATS[s.role]?.g ?? "•"}</span>
-        <span class="role" style="color:${color(s.role)}">${esc(s.role)}</span>
-        <span class="state">${working ? "at work" : "idle"}</span>
-      </div>
-      <div class="doing ${s.last_activity ? "" : "idle"}">${doing}</div>
-      <div class="locks">${s.locks.slice(0,3).map(l => `<div class="lock" title="${esc(l.path)}">${esc(l.path)}</div>`).join("")}</div>
-      <div class="foot">
-        <span>${s.locks.length ? s.locks.length + " held" : "no locks"}</span>
-        <span class="fb">queue <b>${s.promoted_feedback}</b></span>
-      </div>
-    </div>`;
+    return `<button class="seatpill ${working ? "on" : ""}" style="--sc:${color(s.role)}"
+        onclick="dispatchToSeat('${s.role}')" title="${esc(doing)}${s.locks.length ? " · " + s.locks.length + " locked" : ""}">
+      <span class="sp-glyph">${SEATS[s.role]?.g ?? "•"}</span>
+      <span class="sp-name">${esc(s.role)}</span>
+      ${working ? `<span class="sp-dot"></span>` : ""}
+      ${n ? `<span class="sp-load">${n}</span>` : ""}
+    </button>`;
   }).join("");
+}
+function dispatchToSeat(role){
+  if (seatSelect) seatSelect.value = role;
+  const t = document.getElementById("q-title"); if (t) t.focus();
 }
 
 function renderLedger(events, fresh){
@@ -873,7 +1504,7 @@ function renderLedger(events, fresh){
 let galleryKey = "";
 function renderGallery(previews){
   const g = document.getElementById("gallery");
-  if (!previews.length) return;
+  if (!g || !previews.length) return;
   // Rebuild ONLY when the set changes: replacing innerHTML on every poll
   // destroys <img> elements mid-load, so they never finish decoding.
   const key = previews.map(p => p.rel + ":" + p.mtime).join("|");
@@ -920,24 +1551,55 @@ function revisionPane(a,label,candidate=false){
     <div class="revision-meta">
       <div><strong>${esc(a.producer || "unknown producer")}</strong> · ${esc(a.model || a.kind)}</div>
       <div>${esc(a.profile || "no generation profile")} · refs ${a.refs?.length || 0}</div>
-      <div title="${esc(a.path)}">${esc(a.path)}</div>
       <div class="health-row">
         ${healthChip("consistency",a.consistency)}
         ${healthChip("engine import",a.engine_import)}
-        ${a.used_in_current_build ? `<span class="chip health-good">used in current build</span>` : `<span class="chip">not in current build</span>`}
+        ${a.used_in_current_build ? `<span class="chip health-good">in build</span>` : `<span class="chip">not in build</span>`}
       </div>
-      ${lock?.seat ? `<div>lock <strong>${esc(lock.seat)}</strong> · ${esc(lock.owner || "unowned")} · work ${lock.work_item_id || "—"}<br>
-        heartbeat ${esc(lock.heartbeat_at || "none")} · lease ${esc(lock.lease_expires_at || "none")}</div>` : `<div>unlocked</div>`}
-      ${a.work_item ? `<div>work #${a.work_item.id} · ${esc(a.work_item.status)}${a.work_item.result ? ` · ${esc(a.work_item.result)}` : ""}</div>` : ""}
-      ${a.review_note ? `<div>decision: ${esc(a.review_note)}</div>` : ""}
+      ${lock?.seat ? `<div>lock <strong>${esc(lock.seat)}</strong> · work ${lock.work_item_id || "—"}</div>` : ""}
+      ${a.work_item ? `<div>work #${a.work_item.id} · ${esc(a.work_item.status)}</div>` : ""}
     </div>
     ${candidate ? `<div class="revision-actions">
       <button class="qbtn small" onclick="reviewArtifact(${a.id},'approved')">approve</button>
-      <button class="qbtn small ghost" onclick="reviewArtifact(${a.id},'rejected')">reject with reason</button>
+      <button class="qbtn small ghost" onclick="reviewArtifact(${a.id},'rejected')">reject</button>
       <button class="qbtn small ghost" onclick="regenerateArtifact(${a.id})">regenerate</button>
       <button class="qbtn small ghost" onclick="reviewArtifact(${a.id},'superseded')">supersede</button>
     </div>` : ""}
   </div>`;
+}
+
+/* ── asset library: browse state + helpers ──────────────────────── */
+let assetFilter = "all";
+let assetSearch = "";
+let assetDrawerName = null;
+const IMG_RE = /\.(png|jpe?g|webp|svg)$/i;
+function assetCategory(name){
+  const n = (name || "").toLowerCase();
+  if (n.startsWith("_trial") || n.startsWith("trial")) return "trials";
+  if (/icon|portrait|\bhud\b/.test(n)) return "hud";
+  if (/arena|^bg_|background|stage|parallax|tileset/.test(n)) return "arenas & world";
+  if (n.includes("scoville")) return "scoville";
+  if (n.includes("tommy")) return "tommy";
+  return "misc";
+}
+const CAT_ORDER = ["scoville","tommy","arenas & world","hud","misc","trials"];
+function groupStatus(g){
+  if (g.approved) return "approved";
+  if (g.candidates && g.candidates.length) return "review";
+  return "rejected";
+}
+function groupThumb(g){
+  const pick = g.approved || (g.candidates && g.candidates[0]) || (g.revisions && g.revisions[g.revisions.length-1]);
+  return pick && IMG_RE.test(pick.path || "") ? pick.path : null;
+}
+function trunc(s,n){ s = String(s || ""); return s.length > n ? s.slice(0,n-1) + "…" : s; }
+
+function onAssetSearch(v){ assetSearch = (v || "").toLowerCase().trim(); renderAssetGrid(); }
+function setAssetFilter(f){
+  assetFilter = f;
+  document.querySelectorAll("#asset-filters .afilter").forEach(b =>
+    b.classList.toggle("active", b.dataset.f === f));
+  renderAssetGrid();
 }
 function selectAssetRevision(id){
   for (const group of assetGroupsState){
@@ -946,40 +1608,127 @@ function selectAssetRevision(id){
       break;
     }
   }
-  renderAssetWorkspace(assetGroupsState);
+  if (assetDrawerName) renderAssetDrawer();
 }
+
 function renderAssetWorkspace(groups){
   assetGroupsState = groups;
-  const box = document.getElementById("asset-groups");
+  // filter-chip counts
+  const counts = { all: groups.length, approved:0, review:0, rejected:0 };
+  groups.forEach(g => { counts[groupStatus(g)]++; });
+  document.querySelectorAll("#asset-filters .n").forEach(el => {
+    const c = el.dataset.c; if (counts[c] != null) el.textContent = counts[c];
+  });
+  renderAssetGrid();
+  if (assetDrawerName){
+    if (groups.some(g => g.logical_name === assetDrawerName)) renderAssetDrawer();
+    else closeAssetDrawer();
+  }
+}
+
+function renderAssetGrid(){
+  const box = document.getElementById("asset-grid");
+  if (!box) return;
+  let groups = assetGroupsState.slice();
+  if (assetFilter !== "all") groups = groups.filter(g => groupStatus(g) === assetFilter);
+  if (assetSearch) groups = groups.filter(g => g.logical_name.toLowerCase().includes(assetSearch));
   if (!groups.length){
-    box.innerHTML = `<div class="empty">generated candidates appear here grouped by logical asset</div>`;
+    box.innerHTML = `<div class="empty">no assets match this filter</div>`;
     return;
   }
-  box.innerHTML = groups.map(group => {
-    const selectedId = assetSelections[group.logical_name];
-    const selected = group.revisions.find(r => r.id === selectedId)
-      || group.candidates[0]
-      || group.revisions.find(r => r.id !== group.approved?.id)
-      || null;
-    return `<article class="asset-group">
-      <div class="asset-group-head">
-        <h3>${esc(group.logical_name)}</h3>
-        <div class="revision-tabs">${group.revisions.map(r =>
+  // bucket by category, preserve CAT_ORDER
+  const buckets = {};
+  groups.forEach(g => { (buckets[assetCategory(g.logical_name)] ||= []).push(g); });
+  const cats = CAT_ORDER.filter(c => buckets[c]).concat(
+    Object.keys(buckets).filter(c => !CAT_ORDER.includes(c)));
+  box.innerHTML = cats.map(cat => {
+    const tiles = buckets[cat].map(g => {
+      const st = groupStatus(g);
+      const thumb = groupThumb(g);
+      const nCand = (g.candidates || []).length;
+      const nRev = (g.revisions || []).length;
+      return `<div class="asset-tile ${st}${assetDrawerName === g.logical_name ? " sel" : ""}" onclick="openAssetDrawer('${esc(g.logical_name)}')">
+        ${nCand ? `<span class="asset-badge">${nCand} new</span>` : ""}
+        <div class="asset-thumb">${thumb
+          ? `<img src="/api/preview?rel=${encodeURIComponent(thumb)}" alt="${esc(g.logical_name)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'none',textContent:'no preview'}))">`
+          : `<span class="none">${esc(g.revisions?.[0]?.kind || "asset")}</span>`}</div>
+        <div class="asset-cap">
+          <div class="asset-name" title="${esc(g.logical_name)}">${esc(g.logical_name)}</div>
+          <div class="asset-sub"><span class="sdot ${st}"></span>${st === "review" ? "needs review" : st} · ${nRev} rev${nRev===1?"":"s"}</div>
+        </div>
+      </div>`;
+    }).join("");
+    return `<div class="asset-section">
+      <div class="asset-section-head">${esc(cat)} <span class="n">${buckets[cat].length}</span></div>
+      <div class="asset-grid">${tiles}</div>
+    </div>`;
+  }).join("");
+}
+
+/* ── detail drawer ──────────────────────────────────────────────── */
+function openAssetDrawer(name){
+  assetDrawerName = name;
+  document.getElementById("drawer-backdrop").hidden = false;
+  const d = document.getElementById("asset-drawer");
+  d.hidden = false;
+  renderAssetDrawer();
+  requestAnimationFrame(() => {
+    d.classList.add("open");
+    document.getElementById("drawer-backdrop").classList.add("open");
+  });
+  renderAssetGrid(); // refresh tile selection highlight
+}
+function closeAssetDrawer(){
+  assetDrawerName = null;
+  const d = document.getElementById("asset-drawer");
+  const b = document.getElementById("drawer-backdrop");
+  d.classList.remove("open"); b.classList.remove("open");
+  setTimeout(() => { d.hidden = true; b.hidden = true; }, 240);
+  renderAssetGrid();
+}
+function renderAssetDrawer(){
+  const d = document.getElementById("asset-drawer");
+  if (!d || !assetDrawerName) return;
+  const g = assetGroupsState.find(x => x.logical_name === assetDrawerName);
+  if (!g){ closeAssetDrawer(); return; }
+  const st = groupStatus(g);
+  const selectedId = assetSelections[g.logical_name];
+  const selected = g.revisions.find(r => r.id === selectedId)
+    || (g.candidates && g.candidates[0])
+    || g.revisions.find(r => r.id !== g.approved?.id)
+    || g.revisions[g.revisions.length-1]
+    || null;
+  const fold = (label, text) => text
+    ? `<details class="drawer-fold"><summary>${label}</summary><div class="fold-body">${esc(text)}</div></details>` : "";
+  d.innerHTML = `
+    <div class="drawer-head">
+      <div>
+        <h3>${esc(g.logical_name)}</h3>
+        <div class="st"><span class="sdot ${st}"></span>${st === "review" ? "needs review" : st} · ${g.revisions.length} revision${g.revisions.length===1?"":"s"}</div>
+      </div>
+      <button class="drawer-x" onclick="closeAssetDrawer()" title="Close">×</button>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-sec">
+        <div class="revision-tabs">${g.revisions.map(r =>
           `<button class="revision-tab ${selected?.id === r.id ? "active" : ""}" onclick="selectAssetRevision(${r.id})">r${r.revision} · ${esc(r.status)}</button>`
         ).join("")}</div>
-      </div>
-      <div class="asset-compare">
-        ${revisionPane(group.approved,"approved")}
-        ${revisionPane(selected,"comparison",selected?.status === "candidate")}
+        <div class="asset-compare">
+          ${revisionPane(g.approved,"approved")}
+          ${revisionPane(selected,"selected",selected?.status === "candidate")}
+        </div>
+        <div class="revision-meta" style="margin-top:11px"><div title="${esc(selected?.path||"")}">${esc(selected?.path||"")}</div></div>
+        ${fold("Generation prompt", selected?.prompt)}
+        ${fold("Work note", selected?.work_item?.result)}
+        ${selected?.review_note ? fold("Review decision", selected.review_note) : ""}
       </div>
       <div class="asset-feedback">
-        <strong>${group.feedback.length} linked playtest notes</strong>
-        ${group.feedback.slice(0,5).map(f =>
+        <strong>${g.feedback.length} linked playtest note${g.feedback.length===1?"":"s"}</strong>
+        ${g.feedback.slice(0,6).map(f =>
           `<div class="asset-feedback-item">session ${f.session_id} · ${esc(f.kind)} · ${esc(f.text)} · ${esc(f.status)}</div>`
         ).join("") || `<div class="asset-feedback-item">No playtest feedback linked to this asset.</div>`}
       </div>
-    </article>`;
-  }).join("");
+    </div>`;
 }
 async function reviewArtifact(id,status){
   const note = status === "rejected" ? (prompt("Reason for rejection (becomes precedent):") || "") : "";
@@ -1018,12 +1767,25 @@ function renderVault(assetsData, verify){
 }
 
 function renderWorld(bible, loreData){
+  // Explicit, labeled groups so nothing reads as inverted: PILLARS and IN-SCOPE
+  // tiers (full contrast, built now) sit above the cut line; DEFERRED tiers
+  // (below the line — not deleted) sit below, dimmed not struck; CANON is its
+  // own labeled section so the entity chips never read as "below the cut line".
   const w = [];
-  for (const p of bible.pillars) w.push(`<div class="pillar">${esc(p.title)}</div>`);
-  for (const s of bible.in_scope) w.push(`<div class="pillar" style="opacity:.75">${esc(s.title)}</div>`);
-  if (bible.cut_line) w.push(`<div class="cutline">— the cut line —</div>`);
-  for (const c of bible.cut) w.push(`<div class="cut-item">${esc(c.title)}</div>`);
+  if (bible.pillars.length){
+    w.push(`<div class="world-label">Pillars</div>`);
+    for (const p of bible.pillars) w.push(`<div class="pillar">${esc(p.title)}</div>`);
+  }
+  if (bible.in_scope.length){
+    w.push(`<div class="world-label">In scope — building now</div>`);
+    for (const s of bible.in_scope) w.push(`<div class="pillar">${esc(s.title)}</div>`);
+  }
+  if (bible.cut.length){
+    w.push(`<div class="cutline">— cut line · below is deferred —</div>`);
+    for (const c of bible.cut) w.push(`<div class="cut-item">${esc(c.title)}</div>`);
+  }
   if (loreData.canon.length){
+    w.push(`<div class="world-label">Canon</div>`);
     w.push(`<div class="canonrow">` + loreData.canon.map(e =>
       `<span class="entity" title="${esc(e.summary)}"><b>${esc(e.name)}</b> · ${esc(e.kind)}</span>`).join("") + `</div>`);
   }
@@ -1277,10 +2039,20 @@ async function linkFeedbackAsset(itemId){
   openSession(activeReviewSession); pollState();
 }
 
+function showOffline(reason){
+  // Blocker: the header must resolve to a DEFINITE state — never a permanent
+  // "connecting…". On failure, say so plainly and offer a retry action.
+  const pl = document.getElementById("projline");
+  if (pl) pl.innerHTML = `<b>Offline</b> · ${esc(reason)} · ` +
+    `<a href="#" onclick="pollState();return false" style="color:var(--ember)">retry</a>`;
+  setLamp(false, reason);
+  const chip = document.getElementById("sb-vault");   // not "drift" when we're offline
+  if (chip){ const b = chip.querySelector("b"); if (b) b.textContent = "offline"; }
+}
 async function pollState(){
   try{
     const r = await fetch("/api/state");
-    if (!r.ok){ setLamp(false, "no project"); return; }
+    if (!r.ok){ showOffline(r.status === 404 ? "no project — run project_init" : `server ${r.status}`); return; }
     const s = await r.json();
     document.getElementById("projline").innerHTML =
       `<b>${esc(s.project.name)}</b> · ${esc(s.project.engine)} ${esc(s.project.dimension)} · ${esc(s.root)}`;
@@ -1294,14 +2066,20 @@ async function pollState(){
     renderVault(s.assets, v);
     renderWorld(s.bible, s.lore);
     renderSessions(s.sessions);
+    const rcP = document.getElementById("rc-pt"); if (rcP) rcP.textContent = (s.sessions||[]).length;
     renderIterations(s.iterations || []);
     document.getElementById("foot").textContent =
       `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
-  }catch(e){ setLamp(false, "backend unreachable"); }
+  }catch(e){ showOffline("backend unreachable"); }
 }
 function setLamp(ok, text){
-  document.getElementById("lamp").className = "lamp" + (ok ? "" : " bad");
-  document.getElementById("lamptext").textContent = text;
+  const l = document.getElementById("lamp"); if (l) l.className = "vlamp" + (ok ? "" : " bad");
+  const t = document.getElementById("lamptext"); if (t) t.textContent = text;
+  const chip = document.getElementById("sb-vault");
+  if (chip){
+    const d = chip.querySelector(".l"); if (d) d.className = "l" + (ok ? "" : " bad");
+    const b = chip.querySelector("b"); if (b) b.textContent = ok ? "clean" : "drift";
+  }
 }
 async function pollActivity(){
   try{
@@ -1320,13 +2098,24 @@ Object.keys(SEATS).forEach(r => {
   seatSelect.appendChild(opt);
 });
 
+function toggleBrief(){
+  const w = document.getElementById("q-brief-wrap");
+  const t = document.getElementById("q-brief-toggle");
+  const opening = w.hidden;
+  w.hidden = !opening;
+  t.classList.toggle("on", opening);
+  if (opening) document.getElementById("q-brief").focus();
+}
 async function addItem(){
   const title = document.getElementById("q-title").value.trim();
   if (!title) return;
+  const brief = (document.getElementById("q-brief")?.value || "").trim();
+  const priority = parseInt(document.getElementById("q-priority")?.value || "0", 10) || 0;
   await fetch("/api/queue", {method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({seat: seatSelect.value, title})});
+    body: JSON.stringify({seat: seatSelect.value, title, brief, priority})});
   document.getElementById("q-title").value = "";
+  const b = document.getElementById("q-brief"); if (b) b.value = "";
   pollQueue();
 }
 
@@ -1344,48 +2133,435 @@ async function pollQueue(){
     const [qr, ar] = await Promise.all([fetch("/api/queue"), fetch("/api/agents")]);
     if (!qr.ok) return;
     const q = await qr.json();
-    const live = ar.ok ? (await ar.json()).agents.filter(a => a.state === "running")
-                          .map(a => a.item_id) : [];
-    document.getElementById("queue").innerHTML = q.items.slice(0, 14).map(i => `
-      <div class="qitem ${i.status}" id="work-${i.id}">
-        <span class="qseat" style="color:${color(i.seat)}">${esc(i.seat)}</span>
-        <span class="qtitle" title="${esc(i.brief || i.title)}">${esc(i.title)}</span>
-        <span class="qstat">${esc(i.status)}${live.includes(i.id) ? " ●" : ""}</span>
-        ${i.status === "queued" ? `<button class="qbtn small" onclick="dispatchItem(${i.id})">dispatch</button>` : ""}
-        ${i.status !== "queued" ? `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">watch</button>` : ""}
-        ${live.includes(i.id) ? `<button class="qbtn small ghost" onclick="stopItem(${i.id})">stop</button>` : ""}
-      </div>`).join("") ||
-      `<div class="empty">queue is empty — promoted playtest feedback lands here automatically</div>`;
+    const items = q.items || [];
+    const agents = ar.ok ? (await ar.json()).agents : [];
+    const live = agents.filter(a => a.state === "running").map(a => a.item_id);
+    const liveSet = new Set(live);
+    // Steer consumption feedback: the backend now reports how many injected
+    // steers the agent has actually READ (echoed back into its log). Flip the
+    // oldest still-"queued" chips to "applied" so a steer stops looking like
+    // it vanished into a black hole.
+    window._agentMeta = {};
+    agents.forEach(a => {
+      window._agentMeta[a.item_id] = a;
+      const chips = (window._steers && window._steers[a.item_id]) || [];
+      const consumed = (a.steers || 0) - (a.steers_pending || 0);
+      let seen = 0;
+      chips.forEach(c => {
+        if (c.state === "queued" || c.state === "applied"){
+          seen += 1;
+          if (c.state === "queued" && seen <= consumed) c.state = "applied";
+        }
+      });
+      const lat = (a.steer_latency_s || []);
+      if (lat.length) window._steerLat = lat[lat.length - 1];
+    });
+    // Seats that have a live agent right now — drives the floor "at work" dot.
+    window._liveSeats = new Set(items.filter(i => liveSet.has(i.id)).map(i => i.seat));
+    // Per-seat queued load for the seat strip badges.
+    const load = {};
+    items.forEach(i => { if (i.status === "queued") load[i.seat] = (load[i.seat] || 0) + 1; });
+    window._seatLoad = load;
+    if (window._seats) renderFloor(window._seats);   // refresh strip load/dots live
+    const rcA = document.getElementById("rc-agents"); if (rcA) rcA.textContent = live.length;
+    const sbA = document.getElementById("sb-agents");
+    if (sbA){ sbA.querySelector("b").textContent = live.length;
+      sbA.querySelector(".l").className = "l" + (live.length ? " warn" : ""); }
+
+    // Work items whose output is a candidate awaiting review (done → Review lane).
+    const reviewIds = new Set();
+    (assetGroupsState || []).forEach(g => (g.candidates || []).forEach(c => {
+      const wid = c.work_item && c.work_item.id; if (wid) reviewIds.add(wid);
+    }));
+
+    // Fetch live-agent activity (few, so cheap) for the Active-now step tickers.
+    const acts = {};
+    await Promise.all(items.filter(i => liveSet.has(i.id)).map(async i => {
+      try { acts[i.id] = await (await fetch(`/api/agent-activity/${i.id}`)).json(); }
+      catch(e){ acts[i.id] = null; }
+    }));
+
+    renderActive(items, liveSet, acts);
+    renderPipeline(items, liveSet, reviewIds);
     if (_watching != null) refreshAgentView();
   }catch(e){}
 }
 
+function _lastStep(act){
+  const steps = (act && act.steps) || [];
+  for (let k = steps.length - 1; k >= 0; k--){
+    const s = steps[k];
+    if (s.kind === "tool") return `⚙ <b>${esc(s.name || "tool")}</b> ${esc(s.hint || "")}`;
+    if (s.kind === "result") return `→ ${esc(s.text || "")}`;
+    if (s.kind === "say" || s.kind === "steer") return esc(s.text || "");
+  }
+  return act ? "starting up…" : "connecting…";
+}
+
+function renderActive(items, liveSet, acts){
+  renderActive._last = [items, liveSet, acts];
+  const box = document.getElementById("orch-active");
+  const nEl = document.getElementById("orch-active-n");
+  if (!box) return;
+  const liveItems = items.filter(i => liveSet.has(i.id));
+  if (nEl){ nEl.textContent = liveItems.length; nEl.className = "n" + (liveItems.length ? " live" : ""); }
+  if (!liveItems.length){
+    box.innerHTML = `<div class="empty-card">No agents running. Dispatch a queued item below, or add work above and send it to a seat.</div>`;
+    return;
+  }
+  // Preserve whatever the user is typing into a steer box across the 3s poll.
+  const focused = document.activeElement;
+  let keepId = null, keepVal = "", keepCaret = 0;
+  if (focused && focused.classList && focused.classList.contains("steerin") && focused.id.startsWith("steer-inline-")){
+    keepId = focused.id.slice("steer-inline-".length); keepVal = focused.value; keepCaret = focused.selectionStart;
+  }
+  box.innerHTML = liveItems.map(i => {
+    const c = color(i.seat); const act = acts[i.id];
+    return `<div class="ac-card" style="--sc:${c}">
+      <div class="ac-head">
+        <span class="ac-glyph" style="color:${c}">${SEATS[i.seat]?.g ?? "•"}</span>
+        <span class="ac-seat" style="color:${c}">${esc(i.seat)}</span>
+        <span class="ac-id">#${i.id}</span>
+        <span class="ac-live">${(() => {
+          const m = (window._agentMeta || {})[i.id];
+          const s = m && m.last_output_s;
+          if (s == null) return "● working";
+          if (s > 300) return `⚠ no output ${Math.floor(s/60)}m`;
+          return `● working · output ${s < 60 ? s + "s" : Math.floor(s/60) + "m"} ago`;
+        })()}</span>
+      </div>
+      <div class="ac-title" title="${esc(i.brief || i.title)}">${esc(i.title)}</div>
+      <div class="ac-step">${_lastStep(act)}</div>
+      <div class="ac-foot">
+        <span class="ac-steps">${(act && act.step_count) || 0} steps</span>
+        <div class="ac-actions">
+          <button class="qbtn small ghost" onclick="watchAgent(${i.id})">expand</button>
+          <button class="qbtn small ghost" onclick="stopItem(${i.id})">stop</button>
+        </div>
+      </div>
+      ${_steerChips(i.id)}
+      <div class="ac-steer">
+        <input class="steerin" id="steer-inline-${i.id}" placeholder="steer this agent…"
+               onkeydown="if(event.key==='Enter')steerInline(${i.id})">
+        <button class="qbtn small" id="steerbtn-${i.id}" onclick="steerInline(${i.id})">steer</button>
+      </div>
+    </div>`;
+  }).join("");
+  if (keepId){
+    const el = document.getElementById(`steer-inline-${keepId}`);
+    if (el){ el.value = keepVal; el.focus(); try { el.setSelectionRange(keepCaret, keepCaret); } catch(e){} }
+  }
+}
+renderActive._refresh = function(){ if (renderActive._last) renderActive.apply(null, renderActive._last); };
+window._steers = window._steers || {};   // id -> [{text, state}]
+function _steerChips(id){
+  const list = (window._steers[id] || []).slice(-4);
+  if (!list.length) return "";
+  return `<div class="ac-pending">${list.map(s => {
+    const ic = s.state === "error" ? "⚠" : s.state === "applied" ? "✓" : s.state === "sending" ? "…" : "🧭";
+    const st = s.state === "sending" ? "sending" : s.state === "error" ? ("failed — " + esc(s.err || "?"))
+             : s.state === "applied" ? ("applied" + (window._steerLat ? ` · ${window._steerLat}s` : ""))
+             : "queued · agent reads it when its current step ends";
+    return `<div class="steerchip ${s.state}"><span class="sc-ic">${ic}</span>`
+         + `<span class="sc-txt" title="${esc(s.text)}">${esc(s.text)}</span>`
+         + `<span class="sc-st">${st}</span></div>`;
+  }).join("")}</div>`;
+}
+async function _sendSteer(id, text, inputEl){
+  text = (text || "").trim();
+  if (!text) return;
+  if (inputEl) inputEl.value = "";
+  const entry = { text, state: "sending" };
+  (window._steers[id] = window._steers[id] || []).push(entry);
+  const btn = document.getElementById(`steerbtn-${id}`); if (btn) btn.textContent = "sent";
+  renderActive._refresh && renderActive._refresh();   // paint the optimistic chip now
+  try {
+    const r = await (await fetch(`/api/queue/${id}/steer`, {method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({text})})).json();
+    entry.state = r.ok ? "queued" : "error"; entry.err = r.error;
+  } catch(e){ entry.state = "error"; entry.err = String(e); }
+  renderActive._refresh && renderActive._refresh();
+  // A queued steer lands at the agent's next turn; clear the chip once that's
+  // almost certainly happened (errors linger a bit so they're seen).
+  const ttl = entry.state === "error" ? 9000 : 18000;
+  setTimeout(() => {
+    const a = window._steers[id]; if (!a) return;
+    const k = a.indexOf(entry); if (k >= 0) a.splice(k, 1);
+    renderActive._refresh && renderActive._refresh();
+  }, ttl);
+  if (window.Inspector && Inspector.el && Inspector.el().classList.contains("open")) Inspector.render();
+}
+function steerInline(id){
+  _sendSteer(id, (document.getElementById(`steer-inline-${id}`) || {}).value,
+             document.getElementById(`steer-inline-${id}`));
+}
+
+function _pchip(i, liveSet, actions){
+  const c = color(i.seat); const isLive = liveSet.has(i.id);
+  return `<div class="pchip ${isLive ? "live" : ""}" id="work-${i.id}" style="--sc:${c}">
+    <div class="pchip-top">
+      <span class="pchip-seat" style="color:${c}">${esc(i.seat)}</span>
+      <span class="pchip-id">#${i.id}${isLive ? " ●" : ""}</span>
+    </div>
+    <div class="pchip-title" title="${esc(i.brief || i.title)}">${esc(i.title)}</div>
+    ${actions ? `<div class="pchip-act">${actions}</div>` : ""}
+  </div>`;
+}
+function _lane(cls, label, laneItems, liveSet, chipActions, cap){
+  cap = cap || 12;
+  const shown = laneItems.slice(0, cap);
+  const body = shown.map(i => _pchip(i, liveSet, chipActions ? chipActions(i) : "")).join("")
+    || `<div class="empty">—</div>`;
+  const more = laneItems.length > cap ? `<div class="lane-more">+${laneItems.length - cap} more</div>` : "";
+  return `<div class="lane ${cls}">
+    <div class="lane-head"><span>${label}</span><span class="lc">${laneItems.length}</span></div>
+    <div class="lane-body">${body}${more}</div>
+  </div>`;
+}
+function renderPipeline(items, liveSet, reviewIds){
+  const box = document.getElementById("orch-pipeline");
+  if (!box) return;
+  const queued  = items.filter(i => i.status === "queued");
+  const running = items.filter(i => liveSet.has(i.id));
+  const doneAll = items.filter(i => i.status === "done" && !liveSet.has(i.id));
+  const review  = doneAll.filter(i => reviewIds.has(i.id));
+  const done    = doneAll.filter(i => !reviewIds.has(i.id));
+  const failed  = items.filter(i => i.status === "failed");
+
+  let lanes = "";
+  lanes += _lane("queued", "Queued", queued, liveSet,
+    i => `<button class="qbtn small" onclick="dispatchItem(${i.id})">dispatch</button>`);
+  lanes += _lane("running", "Running", running, liveSet,
+    i => `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">expand</button>`);
+  lanes += _lane("review", "Review", review, liveSet,
+    i => `<button class="qbtn small ghost" onclick="setWorkspace('assets')">review</button>`);
+  lanes += _lane("done", "Done", done, liveSet,
+    i => `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">log</button>`);
+  if (failed.length) lanes += _lane("failed", "Failed", failed, liveSet,
+    i => `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">log</button>`);
+  box.innerHTML = lanes;
+}
+
+/* ── inspector drawer: full detail + full-scroll history ─────────────── */
+const Inspector = {
+  el(){ return document.getElementById("inspector"); },
+  _poll:null, _tab:0, _tabs:[], _id:null,
+  open(){ this.el().classList.add("open"); this.el().setAttribute("aria-hidden","false");
+    document.getElementById("insp-scrim").classList.add("open"); },
+  close(){ this.el().classList.remove("open"); this.el().setAttribute("aria-hidden","true");
+    document.getElementById("insp-scrim").classList.remove("open");
+    if (this._poll){ clearInterval(this._poll); this._poll=null; } this._id=null; },
+  head(eyebrow,title){ document.getElementById("insp-eyebrow").textContent=eyebrow;
+    document.getElementById("insp-title").textContent=title; },
+  setTabs(tabs){ this._tabs=tabs; this._tab=0;
+    document.getElementById("insp-tabs").innerHTML = tabs.map((t,i)=>
+      `<button class="insp-tab ${i===0?"active":""}" onclick="Inspector.tab(${i})">${esc(t.label)}</button>`).join("");
+    this.render(); },
+  tab(i){ this._tab=i;
+    document.querySelectorAll("#insp-tabs .insp-tab").forEach((b,j)=>b.classList.toggle("active",j===i));
+    this.render(); },
+  render(){ const t=this._tabs[this._tab]; if (t) t.render(document.getElementById("insp-body")); },
+
+  async agent(id){
+    this._id=id; this.open(); this.head("Agent · item #"+id, "loading…");
+    const activity = { label:"Activity", render: async (body)=>{
+      const a = await fetch(`/api/agent-activity/${id}`).then(r=>r.json()).catch(()=>({steps:[],running:false}));
+      this.head(`Agent · item #${id}`, (a.running?"● working":"finished")+` · ${a.step_count||0} steps`);
+      const steer = a.running ? `<div class="steerbar" style="margin-bottom:12px">
+          <input id="steer-input" class="steerin" placeholder="steer this agent — e.g. that pose is off-model, regenerate against the ref"
+                 onkeydown="if(event.key==='Enter')steerAgent(${id})">
+          <button class="qbtn small" onclick="steerAgent(${id})">steer</button></div>` : "";
+      const rows = (a.steps||[]).map(s=>{
+        const k = s.kind==="tool"?"k-tool":s.kind==="result"?"k-result":s.kind==="steer"?"k-steer":"k-say";
+        const label = s.kind==="tool"?(s.name||"tool"):s.kind;
+        const txt = s.kind==="tool" ? `<b>${esc(s.name)}</b> <span style="color:var(--ash)">${esc(s.hint||"")}</span>` : esc(s.text||"");
+        return `<div class="insp-step ${k}"><span class="sg">${esc(label)}</span><span class="sx">${txt}</span></div>`;
+      }).join("") || '<div class="empty">no activity yet — the agent is starting up</div>';
+      const fin = a.final ? `<div class="insp-code" style="margin-top:12px;border-color:var(--good)">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""})\n${esc(a.final.text||"")}</div>` : "";
+      const art = await renderArtRail(id, a.running);
+      body.innerHTML = steer + art + `<div class="asteps" style="max-height:none">${rows}</div>` + fin;
+      SpriteAnim.mountAll(body);
+    }};
+    const rawlog = { label:"Raw log", render: async (body)=>{
+      body.innerHTML = '<div class="empty">loading full log…</div>';
+      const d = await fetch(`/api/agent-log/${id}?tail=2000`).then(r=>r.json()).catch(()=>({lines:[]}));
+      body.innerHTML = `<div class="insp-code">${esc((d.lines||[]).join("\n")) || "empty log"}</div>`;
+    }};
+    this.setTabs([activity, rawlog]);
+    if (this._poll) clearInterval(this._poll);
+    this._poll = setInterval(()=>{ if (this._tab===0 && this.el().classList.contains("open")) this.render(); }, 3000);
+  },
+};
+window.Inspector = Inspector;
+
 /* ── live agent activity view ────────────────────────────────────────── */
 let _watching = null;
-function watchAgent(id){
-  _watching = (_watching === id) ? null : id;   // toggle
-  const v = document.getElementById("agentview");
-  if (_watching == null){ v.style.display = "none"; return; }
-  v.style.display = "block";
-  v.innerHTML = `<div class="empty">opening agent #${id}…</div>`;
-  refreshAgentView();
-}
+function watchAgent(id){ Inspector.agent(id); }
 async function refreshAgentView(){
   if (_watching == null) return;
   try{
     const a = await (await fetch(`/api/agent-activity/${_watching}`)).json();
-    const icon = {tool:"⚙", say:"", result:"→"};
     const rows = a.steps.map(s => {
       if (s.kind === "tool") return `<div class="astep atool">⚙ <b>${esc(s.name)}</b> <span>${esc(s.hint)}</span></div>`;
       if (s.kind === "result") return `<div class="astep ares">→ ${esc(s.text)}</div>`;
+      if (s.kind === "steer") return `<div class="astep asteer">🧭 <b>steer</b> ${esc(s.text)}</div>`;
       return `<div class="astep asay">${esc(s.text)}</div>`;
     }).join("");
     const head = `<div class="ahead">agent #${_watching} · ${a.running ? '<span class="alive">● working</span>' : 'finished'} · ${a.step_count||0} steps <button class="qbtn small ghost" onclick="watchAgent(${_watching})">close</button></div>`;
     const fin = a.final ? `<div class="afinal">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""}): ${esc(a.final.text)}</div>` : "";
-    document.getElementById("agentview").innerHTML = head + `<div class="asteps">${rows || '<div class="empty">no activity yet — the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
+    const steer = a.running ? `<div class="steerbar">
+        <input id="steer-input" class="steerin" placeholder="steer this agent — e.g. that pose is off-model, regenerate against the ref"
+               onkeydown="if(event.key==='Enter')steerAgent(${_watching})">
+        <button class="qbtn small" onclick="steerAgent(${_watching})">steer</button>
+      </div>` : "";
+    const art = await renderArtRail(_watching, a.running);
+    const av = document.getElementById("agentview");
+    av.innerHTML =
+      _agentStyle + head + steer + art +
+      `<div class="asteps">${rows || '<div class="empty">no activity yet — the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
+    SpriteAnim.mountAll(av);
     const box = document.querySelector(".asteps"); if (box) box.scrollTop = box.scrollHeight;
   }catch(e){}
 }
+
+async function steerAgent(id, prefill){
+  const inp = document.getElementById("steer-input");
+  await _sendSteer(id, prefill != null ? prefill : (inp ? inp.value : ""), inp);
+}
+
+/* Like/dislike a produced sprite. Fans out server-side: dispositions the
+   artifact, saves a durable art preference the next agent reads, and (dislike, or
+   any note) steers the live agent to course-correct now. */
+window._reacted = window._reacted || {};
+async function reactArt(artId, verdict, itemId){
+  const noteEl = document.getElementById(`rxnote-${artId}`);
+  const note = noteEl ? noteEl.value.trim() : "";
+  window._reacted[artId] = { verdict, status: "…" };
+  const bar = noteEl ? noteEl.closest(".artreact") : null;
+  if (bar){ bar.classList.add("reacted");
+    bar.querySelectorAll(".rx").forEach(b => b.classList.remove("on"));
+    const b = bar.querySelector(".rx." + (verdict === "like" ? "up" : "down")); if (b) b.classList.add("on"); }
+  const setSt = t => { const s = bar && bar.querySelector(".rx-st"); if (s) s.textContent = t; };
+  setSt("…");
+  try {
+    const r = await (await fetch(`/api/artifacts/${artId}/react`, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({verdict, note, item_id: itemId})})).json();
+    const st = r.steered ? "steered + saved" : r.saved_preference ? "saved" : "done";
+    window._reacted[artId].status = st; setSt(st);
+    // if it steered the live agent, surface it as a queued-steer chip on its card
+    if (r.steered && window._steers){
+      (window._steers[itemId] = window._steers[itemId] || []).push({
+        text: (verdict === "dislike" ? "👎 " : "👍 ") + (note || ("feedback on " + (r.artifact||artId))),
+        state: "queued" });
+      renderActive._refresh && renderActive._refresh();
+    }
+    if (noteEl) noteEl.value = "";
+  } catch(e){ window._reacted[artId].status = "failed"; setSt("failed"); }
+}
+
+/* Sprite-sheet player: plays a horizontal N-frame sheet in place so you can SEE
+   the animation (a static strip tells you nothing). Reusable — mount any element
+   with class .spr-mount and data-rel / data-count / data-fps. */
+const SpriteAnim = {
+  _ivs: [],
+  mountAll(container){
+    if (!container) return;
+    // the container was just re-rendered — kill prior timers before remounting
+    this._ivs.forEach(clearInterval); this._ivs = [];
+    container.querySelectorAll(".spr-mount").forEach(el =>
+      this.mount(el, el.dataset.rel, +el.dataset.fps || 8, +el.dataset.count || 0));
+  },
+  mount(el, rel, fps, count){
+    if (!el || !rel) return;
+    const img = new Image();
+    img.onload = () => {
+      const H = el.clientHeight || 78;
+      const N = count > 1 ? count
+        : Math.max(1, Math.round(img.naturalWidth / img.naturalHeight * 240 / 160));
+      const dispW = Math.round(H * (img.naturalWidth / N) / img.naturalHeight);
+      const play = document.createElement("div");
+      play.className = "spr-play";
+      play.style.cssText = `width:${dispW}px;height:${H}px;`
+        + `background-image:url('${img.src}');background-repeat:no-repeat;`
+        + `background-size:${dispW * N}px ${H}px;`;
+      el.innerHTML = ""; el.appendChild(play);
+      let k = 0;
+      const tick = () => { play.style.backgroundPositionX = (-k * dispW) + "px"; k = (k + 1) % N; };
+      tick();
+      const iv = setInterval(tick, 1000 / Math.max(1, fps));
+      this._ivs.push(iv);
+    };
+    img.onerror = () => { el.style.opacity = ".15"; };
+    img.src = "/api/preview?rel=" + encodeURIComponent(rel);
+  },
+};
+window.SpriteAnim = SpriteAnim;
+
+/* Art consistency rail: the renders THIS agent produced, each next to the
+   reference it was drawn against, with a one-click off-model steer. */
+async function renderArtRail(itemId, running){
+  let arts = [];
+  try{
+    const d = await (await fetch("/api/artifacts")).json();
+    arts = (d.artifacts||[]).filter(x => x.work_item_id === itemId);
+  }catch(e){ return ""; }
+  if (!arts.length) return "";
+  arts.sort((a,b)=> (b.id||0)-(a.id||0));
+  const refRel = r => {
+    if (!r) return null;
+    r = String(r).replace(/\\/g,"/");
+    if (r.includes("/")) { const i = r.indexOf(".bgate"); return i>=0 ? r.slice(i) : null; }
+    return `.bgate/refs/${r}.png`;               // bare ref name -> conventional path
+  };
+  const cards = arts.slice(0,12).map(x => {
+    const cand = `/api/preview?rel=${encodeURIComponent(x.path)}`;
+    const rr = refRel((x.refs||[])[ (x.refs||[]).length>1 ? x.refs.length-1 : 0 ]);
+    const refImg = rr ? `<img class="refthumb" src="/api/preview?rel=${encodeURIComponent(rr)}" title="reference: ${esc(String((x.refs||[]).join(', ')))}">` : "";
+    const badge = x.status==="approved" ? "✓" : x.status==="rejected" ? "✕" : "•";
+    // frame count for the animated preview: from the sheet's metadata if present
+    const frames = (x.metadata && x.metadata.frames) || {};
+    const count = Object.keys(frames).length;
+    const offmsg = `Candidate "${x.logical_name}" (rev ${x.revision}) is OFF-MODEL / off-style. Regenerate it against the pinned reference — match silhouette, palette, cel-shaded 16-bit style exactly. Do NOT self-approve; run consistency_check before accepting.`;
+    // Animated player if it's a multi-frame sprite sheet; static image otherwise.
+    const preview = count > 1
+      ? `<div class="candthumb spr-mount" data-rel="${esc(x.path)}" data-count="${count}" data-fps="8" title="${esc(x.logical_name)} · ▶ ${count}f"></div>`
+      : `<img class="candthumb" src="${cand}" title="${esc(x.logical_name)} · ${esc(x.model||'')}">`;
+    return `<div class="artcard">
+      <div class="artpair">
+        ${refImg}
+        ${preview}
+      </div>
+      <div class="artmeta"><span class="artbadge s-${esc(x.status)}">${badge}</span> ${esc(x.logical_name)}${count>1?` <span class="artplay">▶ ${count}f</span>`:""} <span class="artmodel">${esc(x.producer||'')}</span></div>
+      ${(() => { const rx = (window._reacted||{})[x.id];
+        return `<div class="artreact ${rx?'reacted':''}">
+          <button class="rx up ${rx&&rx.verdict==='like'?'on':''}" title="like — keep as reference" onclick="reactArt(${x.id},'like',${itemId})">👍</button>
+          <button class="rx down ${rx&&rx.verdict==='dislike'?'on':''}" title="dislike — course-correct now + save preference" onclick="reactArt(${x.id},'dislike',${itemId})">👎</button>
+          <input class="rx-note" id="rxnote-${x.id}" placeholder="feedback → steers + saves" onkeydown="if(event.key==='Enter')reactArt(${x.id},'dislike',${itemId})">
+          <span class="rx-st">${rx?esc(rx.status||''):''}</span>
+        </div>`; })()}
+    </div>`;
+  }).join("");
+  return `<div class="artrail"><div class="artrail-h">renders this agent produced · ref ▏ candidate (playing)</div>
+    <div class="artscroll">${cards}</div></div>`;
+}
+
+const _agentStyle = `<style>
+  .steerbar{display:flex;gap:6px;margin:6px 0 10px}
+  .steerin{flex:1;padding:7px 10px;background:#12141a;border:1px solid #2b3a44;border-radius:8px;color:#e6e8ee;font:inherit}
+  .steerin:focus{outline:none;border-color:#3b7f9e}
+  .astep.asteer{background:#1c2733;border-left:3px solid #3b7f9e;color:#cfe6f0;padding-left:8px}
+  .artrail{margin:4px 0 12px;padding:10px;background:#101319;border:1px solid #222833;border-radius:10px}
+  .artrail-h{font-size:11px;color:#8a93a2;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+  .artscroll{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+  .artcard{flex:0 0 auto;width:168px}
+  .artpair{display:flex;gap:4px;align-items:center;background:#0b0d12;border-radius:8px;padding:4px}
+  .refthumb{width:52px;height:78px;object-fit:contain;opacity:.85;border-right:1px dashed #333a46;padding-right:4px}
+  .candthumb{flex:1;height:78px;object-fit:contain;border-radius:4px}
+  .artmeta{font-size:12px;margin:5px 0;color:#cfd3db;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .artmodel{color:#6b7280;font-size:10px}
+  .artbadge{display:inline-block;width:15px}.artbadge.s-approved{color:#5fd08a}.artbadge.s-rejected{color:#e06666}.artbadge.s-candidate{color:#e0a13b}
+</style>`;
 
 async function loadGame(){
   const holder = document.getElementById("play-holder");
@@ -1516,8 +2692,9 @@ async function ptPoll(){
   }catch(e){}
 }
 
-let initialWorkspace = "review";
-try{ initialWorkspace = localStorage.getItem("bgate-workspace") || "review"; }catch(e){}
+let initialWorkspace = "overview";
+try{ initialWorkspace = localStorage.getItem("bgate-workspace") || "overview"; }catch(e){}
+if (!DECK_CRUMB[initialWorkspace]) initialWorkspace = "overview";
 setWorkspace(initialWorkspace);
 
 ptPoll().then(ptPreflight);
@@ -1529,6 +2706,57 @@ pollState(); pollActivity(); pollQueue();
 setInterval(pollState, 3000);
 setInterval(pollActivity, 2000);
 setInterval(pollQueue, 3500);
+</script>
+
+<style>
+  .seat-subnav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--seam);padding-bottom:10px}
+  .seat-tab{padding:7px 13px;background:var(--plate);border:1px solid var(--seam);border-radius:9px;color:var(--ash);cursor:pointer;font:inherit;font-size:13px}
+  .seat-tab:hover{background:var(--plate2);color:var(--bone)}
+  .seat-tab.active{background:var(--ember-soft);border-color:var(--ember);color:var(--bone)}
+  #seat-body{min-height:300px}
+  .ws-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:900px){.ws-cols{grid-template-columns:1fr}}
+  .ws-card{background:var(--plate);border:1px solid var(--seam);border-radius:12px;padding:14px}
+  .ws-card h3{margin:0 0 10px;font-size:13px;color:var(--bone)}
+  /* Studio node-editor host fills the viewport below the sub-nav */
+  .studio-body{height:calc(100vh - 240px);min-height:480px;position:relative}
+  /* Overview command dashboard */
+  .ov-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px;margin-bottom:16px}
+  .ov-tile{background:var(--plate);border:1px solid var(--seam);border-radius:12px;padding:14px 16px}
+  .ov-tile .n{font-size:26px;font-weight:600;color:var(--bone);line-height:1}
+  .ov-tile .l{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ash2);margin-top:7px}
+  .ov-tile.hot .n{color:var(--ember)}
+  .ov-run-row{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:7px;background:var(--void);border:1px solid var(--seam);border-radius:9px;cursor:pointer}
+  .ov-run-row:hover{border-color:var(--ember)}
+  .ov-run-row .p{width:7px;height:7px;border-radius:50%;background:var(--ember);box-shadow:0 0 7px var(--ember);animation:deckthrob 1.4s infinite;flex:none}
+  .ov-run-row .rt{flex:1;font-size:12.5px;color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ov-run-row .rs{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.06em}
+</style>
+<!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
+<script src="/static/nodecanvas.js"></script>
+<script src="/static/flows.js"></script>
+<script src="/static/flow_game.js"></script>
+<script src="/static/wf.js"></script>
+<script src="/static/wf_steps_asset.js"></script>
+<script src="/static/wf_steps_world.js"></script>
+<script src="/static/wf_steps_3d.js"></script>
+<script src="/static/wf_steps_agent.js"></script>
+<script src="/static/seats/_core.js"></script>
+<script src="/static/seats/director.js"></script>
+<script src="/static/seats/gameplay.js"></script>
+<script src="/static/seats/tech.js"></script>
+<script src="/static/seats/art.js"></script>
+<script src="/static/seats/audio.js"></script>
+<script src="/static/seats/qa.js"></script>
+<script src="/static/seats/narrative.js"></script>
+<script src="/static/atlas.js"></script>
+<script>
+  // If the dashboard restored the seats view on load, build its sub-nav once
+  // modules have registered.
+  window.addEventListener("load", () => {
+    if (window.SeatShell && document.getElementById("view-seats") &&
+        !document.getElementById("view-seats").hidden) SeatShell.activate();
+  });
 </script>
 </body>
 </html>

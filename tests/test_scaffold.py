@@ -167,9 +167,15 @@ class TestWebTelemetryContract:
             / "templates" / "shared" / "addons" / "bgate"
             / "bgate_telemetry.gd"
         ).read_text(encoding="utf-8")
-        assert "bgate_session" in telemetry
-        assert "/api/playtest/%s/events" in telemetry
+        # The proven web transport (commit 1ffb46d): a web build has no env var,
+        # so it DISCOVERS the active recording by polling the same-origin app at
+        # /api/playtest/status, then POSTs batched events to that session's
+        # /api/playtest/<id>/events. This test used to assert the retired
+        # bgate_session/%s global-handoff design; guard the real contract.
         assert 'OS.has_feature("web")' in telemetry
+        assert "/api/playtest/status" in telemetry        # discovers the active session
+        assert "_web_session" in telemetry                # posts to the discovered session id
+        assert "/api/playtest/%d/events" in telemetry     # the per-session events endpoint
         assert "SCHEMA_VERSION := 1" in telemetry
         assert '"schema": SCHEMA_VERSION' in telemetry
 

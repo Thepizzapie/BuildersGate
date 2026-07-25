@@ -258,10 +258,17 @@ class TestFromPoseImages:
                                        name="t", frame_size=(160, 240))
         assert got["ok"] is True and got["failed"] == []
         assert _png_size(got["sheet"]) == (320, 240)
+        # Feet sit on the GROUND LINE, not the absolute bottom edge: the
+        # assembler reserves an fh*0.035 margin below (QA caught feet clipped at
+        # the bottom row). Assert the character reaches that ground line and the
+        # reserved margin below it stays clear.
+        ground = max(3, round(240 * 0.035))
+        ground_row = 240 - ground - 1
         for path in got["frames"].values():
             frame = Image.open(path)
             alpha = frame.getchannel("A")
-            assert max(alpha.getpixel((x, 239)) for x in range(0, 160, 4)) > 0
+            assert max(alpha.getpixel((x, ground_row)) for x in range(0, 160, 4)) > 0
+            assert max(alpha.getpixel((x, 239)) for x in range(0, 160, 4)) == 0
 
         tres = Path(got["tres"]).read_text(encoding="utf-8")
         assert '&"idle"' in tres and '&"jab"' in tres

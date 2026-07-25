@@ -57,6 +57,16 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "editing; export through blender_export_gltf and verify with "
                    "godot_import_asset — the engine's view is the truth.",
         "write_globs": ["game/assets/**", "blender/**", "art/**"],
+        "workflow": (
+            "ANIMATIONS SHIP AS STITCHED SHEETS, NOT LOOSE FRAMES. For any "
+            "animation use image_sprites with poses named '<anim>/<idx>' "
+            "(stagger/0..stagger/5) and ref_image=the approved character — it "
+            "stitches <name>_sheet.png + <name>_frames.tres (drop-in for "
+            "AnimatedSprite2D). image_edit is a single-frame fix only; never "
+            "hand-roll a multi-frame animation as separate PNGs. Clear every "
+            "consistency_check alpha flag (white halo / feathered fringe / "
+            "background bleed / hollow interior / dirty alpha) before landing."
+        ),
     },
     "audio": {
         "title": "Audio",
@@ -66,9 +76,42 @@ DEFAULT_SEATS: dict[str, dict] = {
     },
     "qa": {
         "title": "QA",
-        "mission": "Own tests, repro, and regression. Run asset_verify after any "
-                   "multi-seat session; drive godot_check_project before builds.",
+        "mission": "Own tests, repro, regression — AND the nit-picky gate every "
+                   "deliverable clears before anyone says 'done'. Run asset_verify "
+                   "after any multi-seat session; godot_check_project before builds.",
         "write_globs": ["tests/**", "game/tests/**"],
+        "workflow": (
+            "QA PERSONA — be the picky owner, not a cheerleader. No participation "
+            "trophies: if it's off, say 'this is wrong' and exactly why. Your job "
+            "is to catch what a lazy 'looks fine' pass misses, BEFORE it ships.\n"
+            "\n"
+            "1. COMPARE AGAINST THE REFERENCE, ALWAYS. For anything visual, render "
+            "the ACTUAL in-game result (godot_screenshot at 640x360 — NOT a mock, "
+            "NOT the seat's own preview) and put it SIDE-BY-SIDE with the pinned "
+            "concept/character ref (concept-fight-hud, concept-select, "
+            "tommy/scoville-bright16). If it doesn't match the ref, it FAILS. "
+            "Cite the specific mismatch.\n"
+            "2. THINGS THAT ARE AN AUTOMATIC FAIL (learned the hard way): wrong "
+            "asset TYPE (a character sprite used where an ICON belongs); the same "
+            "mechanic drawn as two different designs; bare fills / black boxes / "
+            "missing chrome where the concept has a frame; elements overlapping or "
+            "colliding (nameplate over HP bar, badge collision); a baked composite "
+            "where the designer needs LAYERED parts to wire; low-res / pixelated / "
+            "doesn't hold up next to the ref; any element whose PURPOSE is unclear "
+            "(if you can't say what it's for, flag it — 'what is this for?'); "
+            "wrong PROJECTION/GEOMETRY vs the pinned refs (flat top-down tiles in "
+            "an isometric game, wrong tile angle/footprint — check the bible's "
+            "projection constraint); an INCOMPLETE facing/rotation matrix where "
+            "the bible's unit-sprite or prop-rotation contract demands one "
+            "(a unit that can't walk north, a mirrored readable logo).\n"
+            "3. VERIFY IT ACTUALLY RUNS: tests at the known baseline, no new "
+            "failures, no console errors, the change visibly does what was asked "
+            "in the real app — not just 'the code looks right'.\n"
+            "4. VERDICT: return PASS only if it genuinely matches the ref and every "
+            "check is clean. Otherwise FAIL with a blunt, specific, ranked nitpick "
+            "list — each item names the exact problem and the fix. Attach the "
+            "side-by-side screenshot path as evidence. 'Almost' is a FAIL."
+        ),
     },
 }
 
@@ -241,6 +284,7 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "your_role": SEAT_IDENTITY,
         "title": seat["title"],
         "mission": seat["mission"],
+        "workflow": seat.get("workflow", ""),
         "write_lanes": seat["write_globs"],
         "pinned_refs": _refs.list_refs(root),
         "approved_artifacts": [

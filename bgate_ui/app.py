@@ -9,12 +9,14 @@ Run: bgate serve [--port 7788]   (from anywhere inside a project, or BGATE_ROOT)
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from bgate_core import (
     activity, artifacts, assets, bible, db, iterations, lore, playtest,
@@ -22,8 +24,29 @@ from bgate_core import (
 )
 from bgate_core import queue as _queue
 from bgate_ui import dispatch as _dispatch
+from bgate_ui import qa_gate as _qa_gate
+from bgate_ui import routes as _routes
 
 app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None)
+
+
+@app.on_event("startup")
+def _start_qa_gate() -> None:
+    # Auto-QA gate: agent-completed maker items get a nit-picky QA review
+    # before they count. Fail-safe — a missing project just means no gate.
+    try:
+        _qa_gate.start(str(_root()))
+    except Exception:
+        pass
+    # Sweep seat agents orphaned by a previous server run (their claude.exe
+    # trees outlive the server that spawned them).
+    try:
+        swept = _dispatch.reap_orphans(str(_root()))
+        if swept.get("killed"):
+            activity.log(str(_root()), "dispatch",
+                         f"reaped {len(swept['killed'])} orphaned agent(s)")
+    except Exception:
+        pass
 _verify_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -67,7 +90,27 @@ def _root() -> Path:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
-    return (_STATIC / "index.html").read_text(encoding="utf-8")
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+    # The per-seat JS modules change often; a browser that caches them shows
+    # stale code after an edit (this bit us with the art lightbox fix). Stamp
+    # each module src with the newest seat-file mtime so the browser refetches
+    # exactly when something changed, and caches otherwise.
+    try:
+        bust = str(int(max(p.stat().st_mtime
+                           for p in _STATIC.rglob("*.js"))))
+    except ValueError:
+        bust = str(int(time.time()))
+    html = re.sub(r'(/static/[\w/-]+\.js)', r"\1?v=" + bust, html)
+    return html
+
+
+# Per-seat workspace JS modules live under static/ and load as /static/seats/*.js.
+# StaticFiles is part of starlette (ships with FastAPI) — no new dependency.
+app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
+# Per-feature endpoints (reference system, art-QA, godot workspace, etc.) live in
+# bgate_ui/routes/*.py and register themselves here.
+_registered_routes = _routes.register(app)
 
 
 @app.get("/api/state")
@@ -189,6 +232,46 @@ def queue_add(payload: dict) -> dict:
                       priority=int(payload.get("priority", 0)))
 
 
+@app.get("/api/screenmap")
+def screenmap_view() -> dict:
+    """Atlas: the auto-derived graph of every screen and every asset it uses.
+    Derived fresh per call from the .tscn/.gd/.tres sources — no manifest."""
+    from bgate_core import screenmap as _screenmap
+    return _screenmap.scan(_root())
+
+
+@app.get("/api/queue/wait")
+def queue_wait(ids: str, timeout_s: int = 600) -> dict:
+    """LONG-POLL: block until any of the given items reaches done/failed.
+
+    ids is comma-separated ("101,105"). This is the anti-sleep-poll: an
+    orchestrator fires ONE background request per dispatch batch and gets
+    woken the moment an agent self-reports (or dies and gets reaped) instead
+    of guessing check-in intervals. Runs in FastAPI's threadpool, so blocking
+    here doesn't stall the event loop; check interval is 2s against the DB,
+    which every completion path writes through (queue.set_status).
+    """
+    import time as _time
+    want = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not want:
+        return {"error": "ids must be a comma-separated list of item ids"}
+    deadline = _time.monotonic() + max(5, min(int(timeout_s), 1800))
+    root = _root()
+    while True:
+        statuses = {}
+        for i in want:
+            try:
+                statuses[i] = _queue.get(root, i)["status"]
+            except LookupError:
+                statuses[i] = "missing"
+        finished = {i: s for i, s in statuses.items()
+                    if s in ("done", "failed", "missing")}
+        if finished or _time.monotonic() >= deadline:
+            return {"finished": finished, "statuses": statuses,
+                    "timed_out": not finished}
+        _time.sleep(2.0)
+
+
 @app.post("/api/queue/{item_id}/dispatch")
 def queue_dispatch(item_id: int, payload: Optional[dict] = None) -> dict:
     payload = payload or {}
@@ -199,6 +282,12 @@ def queue_dispatch(item_id: int, payload: Optional[dict] = None) -> dict:
 @app.post("/api/queue/{item_id}/stop")
 def queue_stop(item_id: int) -> dict:
     return _dispatch.stop(item_id)
+
+
+@app.post("/api/queue/{item_id}/steer")
+def queue_steer(item_id: int, payload: dict) -> dict:
+    """Inject a live course-correction into a running agent (no restart)."""
+    return _dispatch.steer(str(_root()), item_id, payload.get("text", ""))
 
 
 @app.post("/api/queue/import-orbit")
@@ -241,6 +330,84 @@ def artifact_review(artifact_id: int, payload: dict) -> dict:
             _root(), artifact_id, payload.get("status", ""), payload.get("note", ""))
     except (LookupError, ValueError) as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/api/artifacts/{artifact_id}/react")
+def artifact_react(artifact_id: int, payload: dict) -> dict:
+    """Like/dislike a produced artifact and fan the feedback out three ways:
+      1. disposition — like -> approved, dislike -> rejected (with the note);
+      2. durable art-seat preference note (future agents read it in seat_brief);
+      3. if a live agent is working the item, steer it to course-correct NOW.
+    Payload: {verdict: 'like'|'dislike', note?: str, item_id?: int}."""
+    root = _root()
+    verdict = (payload.get("verdict") or "").lower()
+    note = (payload.get("note") or "").strip()
+    item_id = payload.get("item_id")
+    try:
+        art = artifacts.get(root, artifact_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    name = art.get("logical_name") or f"artifact {artifact_id}"
+    out = {"ok": True, "verdict": verdict, "artifact": name}
+
+    # 1. disposition
+    status = {"like": "approved", "dislike": "rejected"}.get(verdict, "")
+    if status:
+        try:
+            artifacts.review(root, artifact_id, status, note); out["reviewed"] = status
+        except Exception as exc:
+            out["review_error"] = str(exc)
+
+    # 2. durable preference the next art agent reads in seat_brief
+    if verdict:
+        body = (("KEEP / on-model" if verdict == "like" else "AVOID / off-model")
+                + f" — {name}" + (f": {note}" if note else "")
+                + f" (via live like/dislike).")
+        try:
+            seats.post_note(root, "art", "ART PREFERENCE — " + body, topic="art-feedback")
+            out["saved_preference"] = True
+        except Exception as exc:
+            out["note_error"] = str(exc)
+
+    # 3. live course-correction — dislike always steers; a like only steers if it
+    #    carries a note (a bare like is just a keeper, no need to interrupt).
+    if item_id and (verdict == "dislike" or note):
+        icon = "👎 disliked" if verdict == "dislike" else "👍 liked"
+        msg = (f"DIRECTOR FEEDBACK on {name}: {icon}."
+               + (f" {note}." if note else "")
+               + (" Regenerate that animation to fix it (re-run image_sprites for it);"
+                  " do NOT self-approve." if verdict == "dislike" else ""))
+        try:
+            r = _dispatch.steer(str(root), int(item_id), msg)
+            out["steered"] = bool(r.get("ok")); out["steer"] = r
+        except Exception as exc:
+            out["steer_error"] = str(exc)
+    return out
+
+
+@app.post("/api/artifacts/{artifact_id}/restore")
+def artifact_restore(artifact_id: int) -> dict:
+    """Make an older revision current again. Generations overwrite the stable
+    sheet path, so old versions live only in the per-revision archive; this copies
+    that archived render back over the live sheet file the game reads."""
+    import shutil
+    from bgate_core import activity
+    root = _root()
+    try:
+        art = artifacts.get(root, artifact_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    arch = (art.get("metadata") or {}).get("preview")
+    if not arch or not Path(arch).is_file():
+        raise HTTPException(400, "no archived snapshot for this revision to restore")
+    dst = Path(root) / art["path"]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(arch, dst)
+    activity.log(root, "artifact",
+                 f"restored r{art['revision']} of {art['logical_name']} -> {art['path']}",
+                 ref=str(artifact_id))
+    return {"ok": True, "restored_revision": art["revision"],
+            "logical_name": art["logical_name"], "path": art["path"]}
 
 
 @app.get("/api/assets/workspace")

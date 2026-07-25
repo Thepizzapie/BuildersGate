@@ -1,0 +1,528 @@
+/* Tech seat workspace — engine health / build / resources / perf.
+ *
+ * Deliberately NOT the gameplay seat: gameplay edits scenes and scripts to make
+ * the game feel good; tech keeps the engine honest — is Godot reachable, is the
+ * web build current, does the project still compile, how heavy are the meshes,
+ * and what is the dispatched tech agent actually doing right now.
+ *
+ * MODULE CONTRACT: window.SeatWS.tech = { label, glyph, render(container,bg), refresh() }.
+ * Everything is guarded; render() must never throw even with Godot unavailable
+ * or an empty project.
+ */
+(function () {
+  window.SeatWS = window.SeatWS || {};
+
+  // ---- module state (per-render) -----------------------------------------
+  const S = {
+    bg: null,
+    root: null,        // the workspace root element for this render
+    tree: null,        // last /api/godot/files payload
+    godotOk: false,
+    building: false,   // web export in flight
+    checking: false,   // build check in flight
+    inspecting: false,
+    running: false,    // gdscript run in flight
+    itemId: null,      // active tech work item
+    lastActivitySig: "", // dedup activity re-render
+  };
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(2) + " MB";
+  }
+  function fmtAgo(mtime) {
+    const s = Date.now() / 1000 - (Number(mtime) || 0);
+    if (!isFinite(s) || s < 0) return "";
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+  const esc = (s) => (S.bg ? S.bg.esc(s) : String(s == null ? "" : s));
+
+  // A safe $ within our own root only (never touches another seat's DOM).
+  function $(sel) { return S.root ? S.root.querySelector(sel) : null; }
+
+  // ---- markup -------------------------------------------------------------
+  const STYLE = `
+  <style>
+  .tech-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+  .tech-wrap .tech-span2{grid-column:1 / -1}
+  @media(max-width:1080px){.tech-wrap{grid-template-columns:1fr}.tech-wrap .tech-span2{grid-column:auto}}
+  .tech-card{background:#101319;border:1px solid #1e232c;border-radius:12px;padding:14px 16px}
+  .tech-card h3{margin:0 0 10px;font-size:13px;font-weight:600;color:#e6e8ee;display:flex;align-items:center;gap:8px}
+  .tech-card h3 .tech-sub{margin-left:auto;font-weight:400;font-size:11px;color:#6b7280}
+  .tech-lamp{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4a5160;flex:none}
+  .tech-lamp.ok{background:#3fbf7f;box-shadow:0 0 6px rgba(63,191,127,.6)}
+  .tech-lamp.bad{background:#e0574c;box-shadow:0 0 6px rgba(224,87,76,.5)}
+  .tech-lamp.warn{background:#e2b13c}
+  .tech-row{display:flex;align-items:center;gap:10px;font-size:12px;color:#aeb6c2;padding:4px 0}
+  .tech-row b{color:#e6e8ee;font-weight:600}
+  .tech-kv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#8a93a2;word-break:break-all}
+  .tech-btn{padding:7px 13px;background:#16202a;border:1px solid #2b4a58;border-radius:8px;color:#cfe6f0;font:inherit;font-size:12px;cursor:pointer;transition:background .15s}
+  .tech-btn:hover{background:#1c2b38}
+  .tech-btn:disabled{opacity:.5;cursor:default}
+  .tech-btn.primary{background:#193240;border-color:#3b7f9e;color:#dff0f7}
+  .tech-btn.big{padding:10px 18px;font-size:13px;font-weight:600;width:100%}
+  .tech-btn.danger{background:#2a1717;border-color:#5a2a2a;color:#f0b3b3}
+  .tech-spin{display:inline-block;width:12px;height:12px;border:2px solid #3b7f9e;border-top-color:transparent;border-radius:50%;animation:tech-rot .7s linear infinite;vertical-align:-1px}
+  @keyframes tech-rot{to{transform:rotate(360deg)}}
+  .tech-out{margin-top:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;background:#0a0d12;border:1px solid #1a1f28;border-radius:8px;padding:10px;max-height:260px;overflow:auto;white-space:pre-wrap;color:#aeb6c2}
+  .tech-ok{color:#8fe0b4}.tech-err{color:#f0a9a2}.tech-warn{color:#e2c05a}
+  .tech-pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid #2b3340;color:#aeb6c2}
+  .tech-pill.g{background:#12241a;border-color:#274a34;color:#8fe0b4}
+  .tech-pill.r{background:#241414;border-color:#4a2727;color:#f0a9a2}
+  .tech-pill.y{background:#241f10;border-color:#4a3d1c;color:#e2c05a}
+  .tech-select,.tech-input,.tech-ta{background:#0c0f14;border:1px solid #263040;border-radius:8px;color:#e6e8ee;font:inherit;font-size:12px;padding:7px 9px}
+  .tech-ta{width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical;min-height:120px}
+  .tech-tree{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;max-height:340px;overflow:auto;line-height:1.7}
+  .tech-node{cursor:default;color:#8a93a2;user-select:none}
+  .tech-node .tf{cursor:pointer;color:#bcd2dc}
+  .tech-node .tf:hover{color:#e6e8ee;text-decoration:underline}
+  .tech-node .tsz{color:#5a6472;font-size:10px;margin-left:6px}
+  .tech-dir{color:#7d8797}
+  .tech-mesh{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;font-size:11.5px;padding:6px 0;border-bottom:1px solid #171c24}
+  .tech-mesh b{color:#e6e8ee}
+  .tech-empty{color:#6b7280;font-size:12px;padding:8px 0;font-style:italic}
+  .tech-meta{font-size:11px;color:#6b7280;margin:2px 0 8px}
+  .tech-flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .tech-act{font-size:11.5px;line-height:1.5;border-left:2px solid #263040;padding:3px 0 3px 10px;margin:5px 0;color:#aeb6c2}
+  .tech-act .an{color:#8fbfe0;font-weight:600}
+  .tech-act.k-say{border-color:#3b7f9e;color:#cdd6e2}
+  .tech-act.k-tool{border-color:#4a5a3a}
+  .tech-act.k-result{border-color:#2b3340;color:#8a93a2}
+  .tech-act.k-steer{border-color:#7a5a2a;color:#e2c05a}
+  </style>`;
+
+  function shell() {
+    return `${STYLE}
+    <div class="tech-wrap">
+      <div class="tech-card" id="tech-engine"><h3><span class="tech-lamp" id="tech-engine-lamp"></span> Engine &amp; build <span class="tech-sub" id="tech-engine-sub">loading…</span></h3><div id="tech-engine-body"><div class="tech-empty">checking Godot…</div></div></div>
+
+      <div class="tech-card" id="tech-check"><h3><span class="tech-lamp"></span> Build check <span class="tech-sub">headless import — does it compile</span></h3>
+        <button class="tech-btn primary big" id="tech-check-btn">Run build check</button>
+        <div id="tech-check-out"></div></div>
+
+      <div class="tech-card tech-span2" id="tech-inspect"><h3><span class="tech-lamp"></span> Resource inspector <span class="tech-sub">scene structure &amp; triangle budget</span></h3>
+        <div class="tech-flex">
+          <select class="tech-select" id="tech-res-sel" style="flex:1;min-width:220px"><option value="">— loading resources —</option></select>
+          <button class="tech-btn primary" id="tech-inspect-btn">Inspect in engine</button>
+        </div>
+        <div class="tech-meta">.tscn scenes load in-engine and report real mesh/tri counts. .tres may not be a scene.</div>
+        <div id="tech-inspect-out"></div></div>
+
+      <div class="tech-card" id="tech-files"><h3><span class="tech-lamp"></span> Project files <span class="tech-sub" id="tech-files-sub"></span></h3>
+        <div class="tech-tree" id="tech-tree"><div class="tech-empty">loading tree…</div></div>
+        <div id="tech-file-view"></div></div>
+
+      <div class="tech-card" id="tech-run"><h3><span class="tech-lamp"></span> GDScript runner <span class="tech-sub">headless perf / diagnostic probe</span></h3>
+        <textarea class="tech-ta" id="tech-script" spellcheck="false">extends SceneTree
+
+func _init():
+	print("hello from headless godot")
+	print("OS: ", OS.get_name())
+	quit()
+</textarea>
+        <div class="tech-flex" style="margin-top:8px">
+          <button class="tech-btn primary" id="tech-run-btn">Run script</button>
+          <span class="tech-meta" style="margin:0">must extend SceneTree and call quit()</span>
+        </div>
+        <div id="tech-run-out"></div></div>
+
+      <div class="tech-card tech-span2" id="tech-agent"><h3><span class="tech-lamp"></span> Live tech agent <span class="tech-sub" id="tech-agent-sub">no active item</span></h3>
+        <div class="tech-flex">
+          <select class="tech-select" id="tech-item-sel" style="flex:1;min-width:220px"><option value="">— pick a tech work item —</option></select>
+        </div>
+        <div id="tech-agent-body"><div class="tech-empty">Select a tech work item to watch its dispatched agent.</div></div></div>
+    </div>`;
+  }
+
+  // ---- section 1: engine + build status ----------------------------------
+  async function loadEngine() {
+    const body = $("#tech-engine-body");
+    const lamp = $("#tech-engine-lamp");
+    const sub = $("#tech-engine-sub");
+    if (!body) return;
+    let g = null, p = null;
+    try { g = await S.bg.get("/api/godot/status"); } catch (e) { g = { available: false, reason: e.message }; }
+    try { p = await S.bg.get("/api/play/status"); } catch (e) { p = { stale: true, reason: e.message }; }
+    if (!$("#tech-engine-body")) return; // re-rendered underneath us
+    S.godotOk = !!(g && g.available);
+    if (lamp) lamp.className = "tech-lamp " + (S.godotOk ? "ok" : "bad");
+    if (sub) sub.textContent = S.godotOk ? (g.version || "available") : "unavailable";
+
+    const stale = !!(p && p.stale);
+    const buildPill = !p ? "" : (p.built === false
+      ? `<span class="tech-pill r">no build — ${esc(p.reason || "never exported")}</span>`
+      : (stale ? `<span class="tech-pill y">stale — source newer than build</span>`
+               : `<span class="tech-pill g">current</span>`));
+    const buildMeta = p && p.build_mtime
+      ? `<div class="tech-meta">built ${esc(fmtAgo(p.build_mtime))} · source ${esc(fmtAgo(p.source_mtime))}</div>` : "";
+
+    body.innerHTML = `
+      <div class="tech-row"><span class="tech-lamp ${S.godotOk ? "ok" : "bad"}"></span>
+        <b>Godot</b> ${S.godotOk ? esc(g.version || "detected") : `<span class="tech-err">${esc(g.reason || "not found")}</span>`}</div>
+      ${S.godotOk && g.path ? `<div class="tech-kv">${esc(g.path)}</div>` : ""}
+      ${g && g.project ? `<div class="tech-row"><b>Project</b> <span class="tech-kv">${esc(g.project)}</span></div>`
+                       : `<div class="tech-row"><span class="tech-lamp bad"></span> no godot project</div>`}
+      <div class="tech-row" style="margin-top:6px"><b>Web build</b> ${buildPill}</div>
+      ${buildMeta}
+      <div class="tech-flex" style="margin-top:8px">
+        <button class="tech-btn ${stale ? "primary" : ""}" id="tech-rebuild-btn" ${S.godotOk ? "" : "disabled"}>Rebuild web export</button>
+        <span class="tech-meta" style="margin:0">~15s headless export</span>
+      </div>
+      <div id="tech-rebuild-out"></div>`;
+    const rb = $("#tech-rebuild-btn");
+    if (rb) rb.onclick = rebuild;
+  }
+
+  async function rebuild() {
+    if (S.building) return;
+    const btn = $("#tech-rebuild-btn");
+    const out = $("#tech-rebuild-out");
+    S.building = true;
+    if (btn) { btn.disabled = true; btn.innerHTML = `<span class="tech-spin"></span> exporting…`; }
+    if (out) out.innerHTML = `<div class="tech-out">Exporting Web build — this takes ~15s…</div>`;
+    let r;
+    try { r = await S.bg.post("/api/play/rebuild"); } catch (e) { r = { ok: false, error: e.message }; }
+    S.building = false;
+    if (!$("#tech-rebuild-out")) return;
+    if (r && r.ok) {
+      if (out) out.innerHTML = `<div class="tech-out tech-ok">Build OK — index.pck ${fmtBytes(r.bytes)}${r.wasm ? " · wasm " + fmtBytes(r.wasm) : ""}</div>`;
+      S.bg.toast("web export rebuilt");
+      loadEngine();
+    } else {
+      const msg = (r && (r.error || r.detail)) || "export failed";
+      if (out) out.innerHTML = `<div class="tech-out tech-err">${esc(msg)}</div>`;
+      if (btn) { btn.disabled = false; btn.textContent = "Rebuild web export"; }
+      S.bg.toast("rebuild failed", true);
+    }
+  }
+
+  // ---- section 2: build check --------------------------------------------
+  async function runCheck() {
+    if (S.checking) return;
+    const btn = $("#tech-check-btn");
+    const out = $("#tech-check-out");
+    S.checking = true;
+    if (btn) { btn.disabled = true; btn.innerHTML = `<span class="tech-spin"></span> importing…`; }
+    if (out) out.innerHTML = `<div class="tech-out">Running headless import…</div>`;
+    let r;
+    try { r = await S.bg.post("/api/godot/check"); } catch (e) { r = { ok: false, error: e.message }; }
+    S.checking = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Run build check"; }
+    if (!$("#tech-check-out")) return;
+    if (r && r.error && r.exit_code === undefined) {
+      out.innerHTML = `<div class="tech-out tech-err">${esc(r.error)}</div>`;
+      return;
+    }
+    const errs = (r && r.errors) || [];
+    const head = r && r.ok
+      ? `<span class="tech-pill g">BUILD OK</span>`
+      : `<span class="tech-pill r">${errs.length || "1"} error${errs.length === 1 ? "" : "s"}</span>`;
+    let html = `<div class="tech-flex" style="margin:8px 0"><span class="tech-lamp ${r && r.ok ? "ok" : "bad"}"></span>${head}`;
+    if (r && r.seconds != null) html += `<span class="tech-meta" style="margin:0">${esc(r.seconds)}s · exit ${esc(r.exit_code)}</span>`;
+    html += `</div>`;
+    if (errs.length) {
+      html += `<div class="tech-out tech-err">` + errs.map((e) => esc(typeof e === "string" ? e : JSON.stringify(e))).join("\n") + `</div>`;
+    } else if (r && r.output) {
+      html += `<div class="tech-out">${esc(String(r.output).slice(-2000))}</div>`;
+    }
+    out.innerHTML = html;
+  }
+
+  // ---- section 3+4: file tree + resource picker --------------------------
+  function flattenResources(nodes, acc) {
+    (nodes || []).forEach((n) => {
+      if (n.dir) flattenResources(n.children, acc);
+      else if (/\.(tscn|tres)$/i.test(n.name)) acc.push(n);
+    });
+    return acc;
+  }
+  function renderTree(nodes, depth) {
+    if (!nodes || !nodes.length) return depth === 0 ? `<div class="tech-empty">empty project</div>` : "";
+    return nodes.map((n) => {
+      const pad = "  ".repeat(depth);
+      if (n.dir) {
+        return `<div class="tech-node"><span class="tech-dir">${esc(pad)}▸ ${esc(n.name)}/</span></div>` + renderTree(n.children, depth + 1);
+      }
+      return `<div class="tech-node">${esc(pad)}<span class="tf" data-rel="${esc(n.rel)}">${esc(n.name)}</span><span class="tsz">${fmtBytes(n.bytes)}</span></div>`;
+    }).join("");
+  }
+
+  async function loadFiles() {
+    let r;
+    try { r = await S.bg.get("/api/godot/files?kind=all"); } catch (e) { r = { tree: [], error: e.message }; }
+    S.tree = r;
+    const treeEl = $("#tech-tree");
+    const sub = $("#tech-files-sub");
+    const sel = $("#tech-res-sel");
+    if (treeEl) {
+      if (r && r.error) treeEl.innerHTML = `<div class="tech-empty">could not load files: ${esc(r.error)}</div>`;
+      else treeEl.innerHTML = renderTree(r.tree, 0);
+      treeEl.querySelectorAll(".tf").forEach((el) => { el.onclick = () => openFile(el.dataset.rel); });
+    }
+    const resources = flattenResources(r && r.tree, []);
+    if (sub) sub.textContent = r && r.tree ? `${countFiles(r.tree)} files` : "";
+    if (sel) {
+      sel.innerHTML = resources.length
+        ? `<option value="">— pick a .tscn / .tres —</option>` + resources.map((n) => `<option value="${esc(n.rel)}">${esc(n.rel)}</option>`).join("")
+        : `<option value="">no scenes/resources found</option>`;
+    }
+  }
+  function countFiles(nodes) {
+    let c = 0;
+    (nodes || []).forEach((n) => { c += n.dir ? countFiles(n.children) : 1; });
+    return c;
+  }
+
+  async function openFile(rel) {
+    const view = $("#tech-file-view");
+    if (!view || !rel) return;
+    view.innerHTML = `<div class="tech-out">loading ${esc(rel)}…</div>`;
+    let r;
+    try { r = await S.bg.get("/api/godot/file?rel=" + encodeURIComponent(rel)); }
+    catch (e) { r = { error: e.message }; }
+    if (!$("#tech-file-view")) return;
+    if (!r || r.error || r.text == null) {
+      view.innerHTML = `<div class="tech-out tech-err">${esc((r && r.error) || "unreadable")}</div>`;
+      return;
+    }
+    view.innerHTML = `<div class="tech-meta">${esc(rel)} · ${fmtBytes(r.bytes)}${r.truncated ? " · truncated" : ""}</div><div class="tech-out">${esc(r.text)}</div>`;
+  }
+
+  async function inspectRes() {
+    if (S.inspecting) return;
+    const sel = $("#tech-res-sel");
+    const out = $("#tech-inspect-out");
+    const rel = sel && sel.value;
+    if (!rel) { S.bg.toast("pick a resource first", true); return; }
+    const resPath = /^res:\/\//.test(rel) ? rel : "res://" + rel;
+    S.inspecting = true;
+    const btn = $("#tech-inspect-btn");
+    if (btn) { btn.disabled = true; btn.innerHTML = `<span class="tech-spin"></span> inspecting…`; }
+    if (out) out.innerHTML = `<div class="tech-out">Loading ${esc(rel)} in engine…</div>`;
+    let r;
+    try { r = await S.bg.post("/api/godot/inspect", { res_path: resPath }); }
+    catch (e) { r = { ok: false, error: e.message }; }
+    S.inspecting = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Inspect in engine"; }
+    if (!$("#tech-inspect-out")) return;
+    if (!r || !r.ok) {
+      out.innerHTML = `<div class="tech-out tech-err">${esc((r && (r.error || r.stderr)) || "inspect failed")}</div>`;
+      return;
+    }
+    const meshes = r.meshes || [];
+    let html = `<div class="tech-flex" style="margin:8px 0">
+      <span class="tech-pill">root <b>${esc(r.root)}</b></span>
+      <span class="tech-pill">${esc(r.root_type)}</span>
+      <span class="tech-pill">${meshes.length} mesh${meshes.length === 1 ? "" : "es"}</span>
+      <span class="tech-pill ${r.total_tris > 100000 ? "y" : "g"}">${Number(r.total_tris || 0).toLocaleString()} tris total</span>
+    </div>`;
+    if (meshes.length) {
+      html += `<div style="margin-top:6px"><div class="tech-mesh" style="color:#6b7280;border-color:#263040"><b>mesh</b><b>surfaces</b><b>tris</b></div>`;
+      html += meshes.map((m) => {
+        const aabb = (m.aabb_size || []).map((v) => Number(v).toFixed(1)).join(" × ");
+        return `<div class="tech-mesh"><span><b>${esc(m.name)}</b>${aabb ? `<span class="tsz">${esc(aabb)}</span>` : ""}</span>
+          <span>${(m.surfaces || []).length}</span>
+          <span class="${m.tris > 50000 ? "tech-warn" : ""}">${Number(m.tris || 0).toLocaleString()}</span></div>`;
+      }).join("");
+      html += `</div>`;
+    } else {
+      html += `<div class="tech-empty">no 3D meshes in this scene (2D/UI scene or resource)</div>`;
+    }
+    out.innerHTML = html;
+  }
+
+  // ---- section 5: gdscript runner ----------------------------------------
+  async function runScript() {
+    if (S.running) return;
+    const ta = $("#tech-script");
+    const out = $("#tech-run-out");
+    const btn = $("#tech-run-btn");
+    const script = ta ? ta.value : "";
+    if (!script.trim()) { S.bg.toast("script is empty", true); return; }
+    S.running = true;
+    if (btn) { btn.disabled = true; btn.innerHTML = `<span class="tech-spin"></span> running…`; }
+    if (out) out.innerHTML = `<div class="tech-out">Running headless…</div>`;
+    let r;
+    try { r = await S.bg.post("/api/godot/run", { script: script }); }
+    catch (e) { r = { ok: false, error: e.message }; }
+    S.running = false;
+    if (btn) { btn.disabled = false; btn.textContent = "Run script"; }
+    if (!$("#tech-run-out")) return;
+    if (r && r.error && r.exit_code === undefined) {
+      out.innerHTML = `<div class="tech-out tech-err">${esc(r.error)}${r.hint ? "\n" + esc(r.hint) : ""}</div>`;
+      return;
+    }
+    const errs = (r && r.errors) || [];
+    let html = `<div class="tech-flex" style="margin:8px 0"><span class="tech-lamp ${r && r.ok ? "ok" : "bad"}"></span>
+      <span class="tech-pill ${r && r.ok ? "g" : "r"}">${r && r.ok ? "OK" : "errors"}</span>
+      <span class="tech-meta" style="margin:0">${r && r.seconds != null ? esc(r.seconds) + "s · " : ""}exit ${esc(r && r.exit_code)}</span></div>`;
+    if ((r && r.stdout || "").trim()) html += `<div class="tech-out">${esc(r.stdout)}</div>`;
+    if (errs.length) html += `<div class="tech-out tech-err">` + errs.map((e) => esc(typeof e === "string" ? e : JSON.stringify(e))).join("\n") + `</div>`;
+    else if ((r && r.stderr || "").trim()) html += `<div class="tech-out tech-warn">${esc(r.stderr)}</div>`;
+    out.innerHTML = html;
+  }
+
+  // ---- section 6: live tech agent ----------------------------------------
+  async function loadItems() {
+    const sel = $("#tech-item-sel");
+    if (!sel) return;
+    let r;
+    try { r = await S.bg.get("/api/queue"); } catch (e) { r = { items: [] }; }
+    const items = ((r && r.items) || []).filter((i) => i.seat === "tech");
+    const active = S.bg.activeItem;
+    // Prefer a tech item; fall back to the shared active item if it's a tech one.
+    if (!S.itemId && items.some((i) => i.id === active)) S.itemId = active;
+    sel.innerHTML = items.length
+      ? `<option value="">— pick a tech work item —</option>` + items.map((i) =>
+          `<option value="${i.id}" ${i.id === S.itemId ? "selected" : ""}>#${i.id} · ${esc(i.status)} · ${esc(i.title)}</option>`).join("")
+      : `<option value="">no tech work items queued</option>`;
+    if (S.itemId) loadAgent(true);
+  }
+
+  async function loadAgent(force) {
+    const sub = $("#tech-agent-sub");
+    const body = $("#tech-agent-body");
+    if (!body) return;
+    if (!S.itemId) {
+      if (sub) sub.textContent = "no active item";
+      body.innerHTML = `<div class="tech-empty">Select a tech work item to watch its dispatched agent.</div>`;
+      return;
+    }
+    let r;
+    try { r = await S.bg.get("/api/agent-activity/" + S.itemId); }
+    catch (e) { r = { steps: [], running: false, error: e.message }; }
+    const steps = (r && r.steps) || [];
+    const sig = S.itemId + ":" + (r && r.running) + ":" + (r && r.step_count) + ":" + ((r && r.final && r.final.subtype) || "");
+    if (!force && sig === S.lastActivitySig) return; // no change; skip re-render (keeps steer box focus)
+    S.lastActivitySig = sig;
+    if (sub) sub.textContent = r && r.running ? "agent running" : (r && r.final ? "finished" : "idle / not dispatched");
+
+    let feed = "";
+    if (steps.length) {
+      feed = steps.map((s) => {
+        if (s.kind === "tool") return `<div class="tech-act k-tool"><span class="an">${esc(s.name)}</span>${s.hint ? " " + esc(s.hint) : ""}</div>`;
+        if (s.kind === "result") return `<div class="tech-act k-result">${esc(s.text)}</div>`;
+        if (s.kind === "steer") return `<div class="tech-act k-steer">↳ steer: ${esc(s.text)}</div>`;
+        return `<div class="tech-act k-say">${esc(s.text)}</div>`;
+      }).join("");
+    } else if (r && r.error) {
+      feed = `<div class="tech-empty">could not read activity: ${esc(r.error)}</div>`;
+    } else {
+      feed = `<div class="tech-empty">No agent activity yet. Dispatch this item to start.</div>`;
+    }
+    const fin = r && r.final;
+    const finHtml = fin ? `<div class="tech-out ${fin.subtype === "success" ? "tech-ok" : "tech-err"}" style="margin-top:8px">
+      final (${esc(fin.subtype)})${fin.turns != null ? " · " + esc(fin.turns) + " turns" : ""}${fin.cost != null ? " · $" + Number(fin.cost).toFixed(3) : ""}
+      ${fin.text ? "\n" + esc(fin.text) : ""}</div>` : "";
+
+    const running = !!(r && r.running);
+    body.innerHTML = `
+      <div class="tech-flex" style="margin:6px 0 10px">
+        <span class="tech-lamp ${running ? "ok" : (fin ? "warn" : "")}"></span>
+        <span class="tech-pill ${running ? "g" : ""}">item #${S.itemId}</span>
+        ${running
+          ? `<button class="tech-btn danger" id="tech-stop-btn">Stop agent</button>`
+          : `<button class="tech-btn primary" id="tech-dispatch-btn">Dispatch</button>`}
+      </div>
+      <div id="tech-feed" style="max-height:300px;overflow:auto">${feed}</div>
+      ${finHtml}
+      <div class="tech-flex" style="margin-top:10px">
+        <input class="tech-input" id="tech-steer" placeholder="steer the agent (live course-correction)…" style="flex:1;min-width:200px" ${running ? "" : "disabled"}>
+        <button class="tech-btn" id="tech-steer-btn" ${running ? "" : "disabled"}>Steer</button>
+      </div>`;
+
+    const feedEl = $("#tech-feed");
+    if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
+    const stopB = $("#tech-stop-btn"); if (stopB) stopB.onclick = stopAgent;
+    const dispB = $("#tech-dispatch-btn"); if (dispB) dispB.onclick = dispatchAgent;
+    const steerB = $("#tech-steer-btn");
+    const steerI = $("#tech-steer");
+    if (steerB) steerB.onclick = steerAgent;
+    if (steerI) steerI.onkeydown = (e) => { if (e.key === "Enter") steerAgent(); };
+  }
+
+  async function dispatchAgent() {
+    if (!S.itemId) return;
+    const btn = $("#tech-dispatch-btn");
+    if (btn) { btn.disabled = true; btn.innerHTML = `<span class="tech-spin"></span> dispatching…`; }
+    let r;
+    try { r = await S.bg.post("/api/queue/" + S.itemId + "/dispatch"); }
+    catch (e) { r = { ok: false, error: e.message }; }
+    if (r && (r.ok || r.dispatched || r.status)) S.bg.toast("dispatched #" + S.itemId);
+    else S.bg.toast((r && r.error) || "dispatch failed", true);
+    S.lastActivitySig = "";
+    loadAgent(true);
+  }
+
+  async function stopAgent() {
+    if (!S.itemId) return;
+    let r;
+    try { r = await S.bg.post("/api/queue/" + S.itemId + "/stop"); }
+    catch (e) { r = { ok: false, error: e.message }; }
+    if (r && r.ok) S.bg.toast("stopped #" + S.itemId);
+    else S.bg.toast((r && r.error) || "stop failed", true);
+    S.lastActivitySig = "";
+    loadAgent(true);
+  }
+
+  async function steerAgent() {
+    if (!S.itemId) return;
+    const inp = $("#tech-steer");
+    const text = inp ? inp.value.trim() : "";
+    if (!text) return;
+    if (inp) inp.value = "";
+    let r;
+    try { r = await S.bg.post("/api/queue/" + S.itemId + "/steer", { text: text }); }
+    catch (e) { r = { ok: false, error: e.message }; }
+    if (r && r.ok) S.bg.toast("steer sent");
+    else S.bg.toast((r && r.error) || "steer failed", true);
+    S.lastActivitySig = "";
+    loadAgent(true);
+  }
+
+  // ---- module contract ----------------------------------------------------
+  window.SeatWS.tech = {
+    label: "Tech",
+    glyph: "⚙",
+    render(container, bg) {
+      try {
+        S.bg = bg;
+        S.root = container;
+        S.tree = null;
+        S.lastActivitySig = "";
+        // keep S.itemId across re-renders so the watched agent survives a refresh
+        container.innerHTML = shell();
+
+        const cb = container.querySelector("#tech-check-btn"); if (cb) cb.onclick = runCheck;
+        const ib = container.querySelector("#tech-inspect-btn"); if (ib) ib.onclick = inspectRes;
+        const rb = container.querySelector("#tech-run-btn"); if (rb) rb.onclick = runScript;
+        const isel = container.querySelector("#tech-item-sel");
+        if (isel) isel.onchange = () => {
+          S.itemId = isel.value ? Number(isel.value) : null;
+          S.lastActivitySig = "";
+          if (S.itemId) { try { bg.setActiveItem(S.itemId); } catch (e) {} }
+          loadAgent(true);
+        };
+
+        loadEngine();
+        loadFiles();
+        loadItems();
+      } catch (e) {
+        try { container.innerHTML = `<div class="tech-empty">tech workspace failed to render: ${esc(e.message)}</div>`; } catch (_) {}
+        if (window.console) console.error("tech.render", e);
+      }
+    },
+    refresh() {
+      try {
+        if (!S.root || !document.body.contains(S.root)) return;
+        // Only the live-agent feed benefits from polling; the rest is on-demand.
+        if (S.itemId) loadAgent(false);
+      } catch (e) { /* never throw from refresh */ }
+    },
+  };
+})();

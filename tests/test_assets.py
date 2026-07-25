@@ -161,7 +161,8 @@ class TestDriftDetection:
 
     def test_unhashed_unlocked_asset_is_not_healthy(self, root):
         path = root / "assets" / "candidate.png"
-        assets.lock(root, path, "art")
+        assets.lock(root, path, "art")  # lock-before-create: DB-only, no dirs
+        path.parent.mkdir()  # the writer owns directory creation, not the lock
         path.write_bytes(b"candidate")
         assets.force_release(root, path)
 
