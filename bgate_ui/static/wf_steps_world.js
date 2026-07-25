@@ -12,41 +12,27 @@
  */
 (function () {
   if (!window.WF || typeof WF.registerStep !== "function") return;
+  if (!window.NodeCanvas || !NodeCanvas.w) return;
 
-  const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  // the node holds its own parameters; the inspector keeps the prose
+  const w = NodeCanvas.w;
+
   const cfg = (n, k, d) => (n && n.config && n.config[k] != null && n.config[k] !== "") ? n.config[k] : d;
 
   const WORLD = "var(--c-audio)";   // world green
   const TECH = "var(--c-tech)";     // engine/assembly blue
 
-  /* small inline config helpers — node.id is known at render time, wire straight to WF.set */
-  const rowText = (id, field, label, val, ph) =>
-    `<div class="wf-row"><label>${esc(label)}</label>` +
-    `<input value="${esc(val)}" placeholder="${esc(ph || "")}" ` +
-    `oninput="WF.set('${id}','${field}',this.value)"></div>`;
-  const rowNum = (id, field, label, val, min, max) =>
-    `<div class="wf-row"><label>${esc(label)}</label>` +
-    `<input type="number" value="${esc(val)}" min="${min}" max="${max}" style="width:66px" ` +
-    `oninput="WF.set('${id}','${field}',this.value)"></div>`;
-  const rowSel = (id, field, label, val, opts) =>
-    `<div class="wf-row"><label>${esc(label)}</label><select ` +
-    `onchange="WF.set('${id}','${field}',this.value)">` +
-    opts.map(o => `<option value="${esc(o)}"${o === val ? " selected" : ""}>${esc(o)}</option>`).join("") +
-    `</select></div>`;
 
   /* ---- world.background — background / environment art ------------------- */
   WF.registerStep({
     type: "world.background", category: "world", label: "Background art", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
     defaults: { scene: "sprout stadium", style: "painterly pixel", mood: "dusk" },
-    ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "bg" }] }),
-    body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "scene", "scene…"))}</b></div>` +
-      `<div class="wf-b-tag">${esc(cfg(n, "style", "style"))} · ${esc(cfg(n, "mood", "dusk"))}</div>`,
-    config: n => `<div class="wf-insp-p">The stage background / environment plate this workflow paints.</div>` +
-      rowText(n.id, "scene", "Scene", cfg(n, "scene", ""), "e.g. sprout stadium") +
-      rowText(n.id, "style", "Style", cfg(n, "style", ""), "e.g. painterly pixel") +
-      rowSel(n.id, "mood", "Mood", cfg(n, "mood", "dusk"), ["day", "dusk", "night"]),
+    ports: () => ({ in: [{ id: "i", label: "context" }], out: [{ id: "o", label: "bg", type: "image" }] }),
+    body: n => w.text(n, "scene", { label: "Scene", placeholder: "sprout stadium" }) +
+      w.text(n, "style", { label: "Style", placeholder: "painterly pixel" }) +
+      w.select(n, "mood", { label: "Mood", options: ["day", "dusk", "night"], value: "dusk" }),
+    config: () => `<div class="wf-insp-p">The stage background / environment plate this workflow paints. Scene, style and mood are set on the node — the mood drives the lighting the art seat paints to.</div>`,
     toBrief: (n) => `Generate the ${cfg(n, "scene", "stage")} background in ${cfg(n, "style", "the house")} style, ` +
       `${cfg(n, "mood", "dusk")} lighting, for: ${cfg(n, "scene", "the stage")}.`,
   });
@@ -56,11 +42,9 @@
     type: "world.parallax", category: "world", label: "Parallax layers", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
     defaults: { layers: 3 },
-    ports: () => ({ in: [{ id: "i", label: "background" }], out: [{ id: "o", label: "layers" }] }),
-    body: n => `<div class="wf-b-note">${esc(cfg(n, "layers", 3))} parallax layers</div>` +
-      `<div class="wf-b-tag">far → near</div>`,
-    config: n => `<div class="wf-insp-p">Splits the background into depth layers that scroll at different speeds.</div>` +
-      rowSel(n.id, "layers", "Layers", String(cfg(n, "layers", 3)), ["2", "3", "4"]),
+    ports: () => ({ in: [{ id: "i", label: "background", type: "image" }], out: [{ id: "o", label: "layers", type: "image" }] }),
+    body: n => w.number(n, "layers", { label: "Layers", min: 2, max: 4, value: 3, hint: "far → near" }),
+    config: () => `<div class="wf-insp-p">Splits the background into depth layers that scroll at different speeds. Two reads flat, four is as much parallax as a fighting-game stage can carry before it distracts.</div>`,
     toBrief: (n) => {
       const L = Math.max(2, Math.min(4, parseInt(cfg(n, "layers", 3), 10) || 3));
       return `Split/generate ${L} parallax layers (far → near) for the incoming background, ` +
@@ -73,12 +57,10 @@
     type: "world.tileset", category: "world", label: "Tileset", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
     defaults: { theme: "market stalls", tileCount: 12 },
-    ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "tiles" }] }),
-    body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "theme", "theme…"))}</b></div>` +
-      `<div class="wf-b-tag">~${esc(cfg(n, "tileCount", 12))} tiles</div>`,
-    config: n => `<div class="wf-insp-p">A set of repeatable environment tiles / props for the stage floor and walls.</div>` +
-      rowText(n.id, "theme", "Theme", cfg(n, "theme", ""), "e.g. market stalls") +
-      rowNum(n.id, "tileCount", "Tiles", cfg(n, "tileCount", 12), 4, 64),
+    ports: () => ({ in: [{ id: "i", label: "context" }], out: [{ id: "o", label: "tiles", type: "image" }] }),
+    body: n => w.text(n, "theme", { label: "Theme", placeholder: "market stalls" }) +
+      w.number(n, "tileCount", { label: "Tiles", min: 4, max: 64, value: 12 }),
+    config: () => `<div class="wf-insp-p">A set of repeatable environment tiles / props for the stage floor and walls. Every piece has to tile seamlessly with its neighbours — that is the whole job.</div>`,
     toBrief: (n) => `Generate a ${cfg(n, "theme", "stage")} tileset of ~${cfg(n, "tileCount", 12)} ` +
       `repeatable, seamlessly-tiling pieces (floor, walls, edge caps).`,
   });
@@ -88,11 +70,10 @@
     type: "world.props", category: "world", label: "Prop set", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
     defaults: { kind: "crowd", count: 6 },
-    ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "props" }] }),
-    body: n => `<div class="wf-b-note">${esc(cfg(n, "count", 6))} × ${esc(cfg(n, "kind", "props"))}</div>`,
-    config: n => `<div class="wf-insp-p">Foreground / background props — crowd, banners, hazards — that dress the stage.</div>` +
-      rowSel(n.id, "kind", "Kind", cfg(n, "kind", "crowd"), ["crowd", "banners", "hazards", "foliage"]) +
-      rowNum(n.id, "count", "Count", cfg(n, "count", 6), 1, 32),
+    ports: () => ({ in: [{ id: "i", label: "stage" }], out: [{ id: "o", label: "props", type: "image" }] }),
+    body: n => w.select(n, "kind", { label: "Kind", options: ["crowd", "banners", "hazards", "foliage"], value: "crowd" }) +
+      w.number(n, "count", { label: "Count", min: 1, max: 32, value: 6 }),
+    config: () => `<div class="wf-insp-p">Foreground / background props — crowd, banners, hazards — that dress the stage. They inherit the background's palette and mood, so wire this after the background.</div>`,
     toBrief: (n) => `Generate a set of ${cfg(n, "count", 6)} ${cfg(n, "kind", "prop")} pieces ` +
       `(fore/background dressing) matched to the stage palette and mood.`,
   });
@@ -102,11 +83,11 @@
     type: "world.stage", category: "world", label: "Assemble stage", glyph: "⛰", accent: TECH,
     agentSeat: "tech",
     defaults: { scene: "Sprout Stadium" },
-    ports: () => ({ in: [{ id: "i", label: "assets" }] }),   // SINK — in only
-    body: n => `<div class="wf-b-note">→ Godot scene</div>` +
-      `<div class="wf-b-tag">${esc(cfg(n, "scene", "stage"))}</div>`,
-    config: n => `<div class="wf-insp-p">Assembles background + parallax + props into a selectable Godot stage scene.</div>` +
-      rowText(n.id, "scene", "Scene name", cfg(n, "scene", ""), "e.g. Sprout Stadium"),
+    // SINK — in only, and untyped: it swallows every kind of stage asset.
+    ports: () => ({ in: [{ id: "i", label: "assets" }] }),
+    body: n => w.note("→ Godot scene") +
+      w.text(n, "scene", { label: "Scene", placeholder: "Sprout Stadium" }),
+    config: () => `<div class="wf-insp-p">Assembles background + parallax + props into a selectable Godot stage scene. Runs on the tech seat.</div>`,
     toBrief: (n) => `Assemble the background, parallax layers, and props into a Godot stage scene ` +
       `named "${cfg(n, "scene", "Stage")}" and wire it as a selectable arena.`,
   });
@@ -130,7 +111,7 @@
           { from: ["task", "o"], to: ["bg", "i"] },
           { from: ["bg", "o"], to: ["para", "i"] },
           { from: ["para", "o"], to: ["props", "i"] },
-          { from: ["props", "o"], to: ["cons", "i"] },
+          { from: ["props", "o"], to: ["cons", "candidate"] },
           { from: ["cons", "o"], to: ["stage", "i"] },
         ],
       };

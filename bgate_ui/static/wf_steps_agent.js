@@ -16,8 +16,11 @@
  */
 (function () {
   if (!window.WF || typeof WF.registerStep !== "function") return;
+  if (!window.NodeCanvas || !NodeCanvas.w) return;
   try {
 
+    // widgets live ON the node; the inspector keeps the prose
+    const w = NodeCanvas.w;
     const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const cfg = (n, k, d) => (n && n.config && n.config[k] != null && n.config[k] !== "") ? n.config[k] : d;
@@ -32,22 +35,8 @@
     const C_AUDIO = "var(--c-audio)";
     const C_QA = "var(--c-qa)";
 
-    /* ---- inline config helpers — node.id known at render, wire to WF.set --- */
-    const rowSel = (id, field, label, val, opts) =>
-      `<div class="wf-row"><label>${esc(label)}</label><select ` +
-      `onchange="WF.set('${id}','${field}',this.value)">` +
-      opts.map(o => {
-        const v = (typeof o === "object") ? o.v : o, t = (typeof o === "object") ? o.t : o;
-        return `<option value="${esc(v)}"${String(v) === String(val) ? " selected" : ""}>${esc(t)}</option>`;
-      }).join("") + `</select></div>`;
-    const rowNum = (id, field, label, val, min, max) =>
-      `<div class="wf-row"><label>${esc(label)}</label>` +
-      `<input type="number" value="${esc(val)}" min="${min}" max="${max}" style="width:66px" ` +
-      `oninput="WF.set('${id}','${field}',this.value)"></div>`;
-    const rowBool = (id, field, label, val) =>
-      `<div class="wf-row"><label>${esc(label)}</label>` +
-      `<input type="checkbox"${onoff(val) ? " checked" : ""} ` +
-      `onchange="WF.set('${id}','${field}',this.checked)"></div>`;
+    /* {v,t} choice lists -> the {value,label} shape the node widgets want */
+    const opts = list => list.map(o => (o && typeof o === "object") ? { value: o.v, label: o.t } : o);
 
     /* the seat a step runs on, shown as a small tag on the node card */
     const seatTag = seat => `<div class="wf-b-tag">seat · ${esc(seat)}</div>`;
@@ -69,10 +58,10 @@
       type: "agent.director", category: "agent", label: "Director agent", glyph: "◆", accent: C_DIRECTOR,
       agentSeat: "director",
       defaults: { split: true },
-      ports: () => ({ in: [{ id: "i", label: "task" }], out: [{ id: "o", label: "plan" }] }),
-      body: n => `<div class="wf-b-note">${onoff(cfg(n, "split", true)) ? "break into subtasks" : "route as one task"}</div>` + seatTag("director"),
-      config: n => `<div class="wf-insp-p">The Director reads the task and delegates it to the right seats — optionally breaking it into subtasks first.</div>` +
-        rowBool(n.id, "split", "Break into subtasks", cfg(n, "split", true)),
+      /* A plan is still a task — one per seat — so it plugs into any seat step. */
+      ports: () => ({ in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "plan", type: "task" }] }),
+      body: n => w.toggle(n, "split", { label: "Split", value: true, hint: "break into per-seat subtasks" }) + seatTag("director"),
+      config: () => `<div class="wf-insp-p">The Director reads the task and delegates it to the right seats — optionally breaking it into subtasks first.</div>`,
       toBrief: (n, wf) => `Analyze the task — "${taskText(wf)}" — and delegate it to the right seats` +
         (onoff(cfg(n, "split", true)) ? ", first breaking it into ordered subtasks per seat (art / gameplay / tech / qa)." : " as a single coordinated task."),
     });
@@ -89,14 +78,12 @@
       type: "agent.art", category: "agent", label: "Art agent", glyph: "▲", accent: C_ART,
       agentSeat: "art",
       defaults: { focus: "edit-existing", strictness: "high", variants: 3, useAnchor: true },
-      ports: () => ({ in: [{ id: "i", label: "task" }], out: [{ id: "o", label: "art" }] }),
-      body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "focus", "edit-existing"))}</b> · ${esc(cfg(n, "strictness", "high"))} consistency</div>` +
-        `<div class="wf-b-tag">${esc(cfg(n, "variants", 3))} variant(s) · anchor ${onoff(cfg(n, "useAnchor", true)) ? "on" : "off"}</div>` + seatTag("art"),
-      config: n => `<div class="wf-insp-p">The Art seat does the visual work for the task. This is where you tune <b>how</b> the art agent produces a consistent result — the hardest part of the pipeline.</div>` +
-        rowSel(n.id, "focus", "Focus", cfg(n, "focus", "edit-existing"), ART_FOCUS) +
-        rowSel(n.id, "strictness", "Consistency", cfg(n, "strictness", "high"), ART_STRICT) +
-        rowNum(n.id, "variants", "Variants", cfg(n, "variants", 3), 1, 8) +
-        rowBool(n.id, "useAnchor", "Anchor to reference", cfg(n, "useAnchor", true)) +
+      ports: () => ({ in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "art", type: "image" }] }),
+      body: n => w.select(n, "focus", { label: "Focus", options: opts(ART_FOCUS), value: "edit-existing" }) +
+        w.select(n, "strictness", { label: "Consistency", options: opts(ART_STRICT), value: "high" }) +
+        w.number(n, "variants", { label: "Variants", min: 1, max: 8, value: 3 }) +
+        w.toggle(n, "useAnchor", { label: "Anchor", value: true }) + seatTag("art"),
+      config: () => `<div class="wf-insp-p">The Art seat does the visual work for the task. The node is where you tune <b>how</b> the art agent produces a consistent result — the hardest part of the pipeline.</div>` +
         `<div class="wf-insp-p" style="margin-top:10px">` +
         `<b>Focus</b> picks the art job. <b>Consistency</b> sets how hard the agent locks to the existing style/anchor before a variant passes. ` +
         `<b>Variants</b> is how many versions to produce for review. <b>Anchor</b> feeds the existing element as the reference so an edit stays on-model.</div>`,
@@ -114,12 +101,12 @@
       type: "agent.gameplay", category: "agent", label: "Gameplay agent", glyph: "◈", accent: C_GAMEPLAY,
       agentSeat: "gameplay",
       defaults: { area: "tuning", verify: true },
-      ports: () => ({ in: [{ id: "i", label: "task" }], out: [{ id: "o", label: "change" }] }),
-      body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "area", "tuning"))}</b></div>` +
-        `<div class="wf-b-tag">verify ${onoff(cfg(n, "verify", true)) ? "on" : "off"}</div>` + seatTag("gameplay"),
-      config: n => `<div class="wf-insp-p">The Gameplay seat implements the mechanical change for the task — timing, hit-detection, behavior.</div>` +
-        rowSel(n.id, "area", "Area", cfg(n, "area", "tuning"), GP_AREA) +
-        rowBool(n.id, "verify", "Verify after change", cfg(n, "verify", true)),
+      /* out is untyped: a code change is not one of the asset types, and it
+         feeds probes, QA and gates alike. */
+      ports: () => ({ in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "change" }] }),
+      body: n => w.select(n, "area", { label: "Area", options: opts(GP_AREA), value: "tuning" }) +
+        w.toggle(n, "verify", { label: "Verify", value: true }) + seatTag("gameplay"),
+      config: () => `<div class="wf-insp-p">The Gameplay seat implements the mechanical change for the task — timing, hit-detection, behavior. <b>Verify</b> makes the seat re-check its own change before handing off.</div>`,
       toBrief: (n, wf) => `Implement the gameplay change (${cfg(n, "area", "tuning")}) for the task — "${taskText(wf)}"; ` +
         `verify=${onoff(cfg(n, "verify", true))}.`,
     });
@@ -133,10 +120,11 @@
       type: "agent.tech", category: "agent", label: "Tech agent", glyph: "⬡", accent: C_TECH,
       agentSeat: "tech",
       defaults: { task: "rig" },
+      /* deliberately untyped both ways — the tech seat takes whatever needs
+         wiring into the engine and hands back whatever it wired. */
       ports: () => ({ in: [{ id: "i", label: "in" }], out: [{ id: "o", label: "out" }] }),
-      body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "task", "rig"))}</b></div>` + seatTag("tech"),
-      config: n => `<div class="wf-insp-p">The Tech seat handles engine-side work — rigging, import, build, performance.</div>` +
-        rowSel(n.id, "task", "Task", cfg(n, "task", "rig"), TECH_TASK),
+      body: n => w.select(n, "task", { label: "Task", options: opts(TECH_TASK), value: "rig" }) + seatTag("tech"),
+      config: () => `<div class="wf-insp-p">The Tech seat handles engine-side work — rigging, import, build, performance.</div>`,
       toBrief: (n, wf) => `Do the tech work (${cfg(n, "task", "rig")}) for the task — "${taskText(wf)}" — ` +
         `and wire the result into the Godot project.`,
     });
@@ -151,9 +139,8 @@
       agentSeat: "qa",
       defaults: { mode: "playtest" },
       ports: () => ({ in: [{ id: "i", label: "change" }], out: [{ id: "o", label: "verdict" }] }),
-      body: n => `<div class="wf-b-note">QA · <b>${esc(cfg(n, "mode", "playtest"))}</b></div>` + seatTag("qa"),
-      config: n => `<div class="wf-insp-p">The QA seat verifies the change and returns a pass/fail verdict.</div>` +
-        rowSel(n.id, "mode", "Mode", cfg(n, "mode", "playtest"), QA_MODE),
+      body: n => w.select(n, "mode", { label: "Mode", options: opts(QA_MODE), value: "playtest" }) + seatTag("qa"),
+      config: () => `<div class="wf-insp-p">The QA seat verifies the change and returns a pass/fail verdict.</div>`,
       toBrief: (n, wf) => `QA the change for the task — "${taskText(wf)}" — via ${cfg(n, "mode", "playtest")}, and report pass/fail with findings.`,
     });
 
@@ -163,10 +150,9 @@
       type: "agent.narrative", category: "agent", label: "Narrative agent", glyph: "✦", accent: C_NARRATIVE,
       agentSeat: "narrative",
       defaults: { focus: "dialogue" },
-      ports: () => ({ in: [{ id: "i", label: "task" }], out: [{ id: "o", label: "text" }] }),
-      body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "focus", "dialogue"))}</b></div>` + seatTag("narrative"),
-      config: n => `<div class="wf-insp-p">The Narrative seat writes dialogue, lore, or story beats consistent with the canon.</div>` +
-        rowSel(n.id, "focus", "Focus", cfg(n, "focus", "dialogue"), NAR_FOCUS),
+      ports: () => ({ in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "text", type: "text" }] }),
+      body: n => w.select(n, "focus", { label: "Focus", options: opts(NAR_FOCUS), value: "dialogue" }) + seatTag("narrative"),
+      config: () => `<div class="wf-insp-p">The Narrative seat writes dialogue, lore, or story beats consistent with the canon.</div>`,
       toBrief: (n, wf) => `Write the ${cfg(n, "focus", "dialogue")} for the task — "${taskText(wf)}" — consistent with the game's canon/lore.`,
     });
 
@@ -176,10 +162,9 @@
       type: "agent.audio", category: "agent", label: "Audio agent", glyph: "♪", accent: C_AUDIO,
       agentSeat: "audio",
       defaults: { focus: "sfx" },
-      ports: () => ({ in: [{ id: "i", label: "task" }], out: [{ id: "o", label: "audio" }] }),
-      body: n => `<div class="wf-b-note"><b>${esc(cfg(n, "focus", "sfx"))}</b></div>` + seatTag("audio"),
-      config: n => `<div class="wf-insp-p">The Audio seat produces SFX, music, or a stinger cue for the task.</div>` +
-        rowSel(n.id, "focus", "Focus", cfg(n, "focus", "sfx"), AUD_FOCUS),
+      ports: () => ({ in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "audio", type: "audio" }] }),
+      body: n => w.select(n, "focus", { label: "Focus", options: opts(AUD_FOCUS), value: "sfx" }) + seatTag("audio"),
+      config: () => `<div class="wf-insp-p">The Audio seat produces SFX, music, or a stinger cue for the task.</div>`,
       toBrief: (n, wf) => `Produce the ${cfg(n, "focus", "sfx")} for the task — "${taskText(wf)}" — matched to the game's palette and mood.`,
     });
 
@@ -190,9 +175,8 @@
       agentSeat: "qa",
       defaults: { kind: "runtime" },
       ports: () => ({ in: [{ id: "change", label: "change" }], out: [{ id: "o", label: "pass" }] }),
-      body: n => `<div class="wf-b-note">test: <b>${esc(cfg(n, "kind", "runtime"))}</b></div>` + seatTag("qa"),
-      config: n => `<div class="wf-insp-p">Drives the game and verifies the change actually works before it passes downstream.</div>` +
-        rowSel(n.id, "kind", "Kind", cfg(n, "kind", "runtime"), TEST_KIND),
+      body: n => w.select(n, "kind", { label: "Probe", options: opts(TEST_KIND), value: "runtime" }) + seatTag("qa"),
+      config: () => `<div class="wf-insp-p">Drives the game and verifies the change actually works before it passes downstream.</div>`,
       toBrief: (n, wf) => `Drive the game headless and verify the change for the task — "${taskText(wf)}" — actually works ` +
         `(${cfg(n, "kind", "runtime")} probe); report pass/fail.`,
     });
@@ -219,7 +203,7 @@
           ],
           edges: [
             { from: ["task", "o"], to: ["art", "i"] },
-            { from: ["art", "o"], to: ["cons", "i"] },
+            { from: ["art", "o"], to: ["cons", "candidate"] },
             { from: ["cons", "o"], to: ["gp", "i"] },
             { from: ["gp", "o"], to: ["test", "change"] },
             { from: ["test", "o"], to: ["gate", "i"] },
@@ -268,7 +252,7 @@
           ],
           edges: [
             { from: ["task", "o"], to: ["art", "i"] },
-            { from: ["art", "o"], to: ["cons", "i"] },
+            { from: ["art", "o"], to: ["cons", "candidate"] },
             { from: ["cons", "o"], to: ["tech", "i"] },
             { from: ["tech", "o"], to: ["gate", "i"] },
           ],

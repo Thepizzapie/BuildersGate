@@ -566,6 +566,32 @@ def telemetry_contract() -> dict:
                 "can act on instead of a vibe it has to guess at."),
         "flush": ("flush on a timer. Godot buffers, and a crash would lose exactly "
                   "the events that explain the crash."),
+        "for_causal_chains": {
+            "what": ("Three optional conventions that let `causal_chains` "
+                     "reconstruct WHY an action failed, not just that it did. "
+                     "Nothing here is required, and none of it is specific to "
+                     "any genre — it is the shape, not the vocabulary."),
+            "1_name_a_pipeline_with_a_shared_prefix": (
+                "Emit an action's stages under one prefix — e.g. "
+                "'<verb>_started' / '<verb>_failed' / '<verb>_succeeded'. The "
+                "shared prefix is what `causal_infer_spec` clusters on when "
+                "drafting a spec for a game it has never seen."),
+            "2_put_a_reason_on_every_failure": (
+                "data.reason names WHICH check rejected the action "
+                "('out_of_range', 'wrong_tool', 'blocked'). This is the single "
+                "highest-value field: because your checks run in a fixed order, "
+                "the reason that failed implies every earlier check PASSED, so "
+                "one string reconstructs the whole ladder."),
+            "3_identify_the_actor": (
+                "A short data field naming who acted ('player'/'enemy') when "
+                "more than one actor can act, so interleaved streams do not "
+                "cross. Any field name works; the spec records which."),
+            "then": ("run `causal_infer_spec` on a session THAT CONTAINS "
+                     "FAILURES to draft a spec, put its ladder in the order your "
+                     "code actually checks, and save it to "
+                     ".bgate/causal_specs.json. Gate order cannot be inferred "
+                     "from telemetry — it lives in your source."),
+        },
     }
 
 

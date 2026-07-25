@@ -2030,30 +2030,31 @@ def _telemetry_path(session: Optional[int], telemetry_path: str) -> str:
 
 
 @_tool
-def causal_chains(session: Optional[int] = None, telemetry_path: str = "",
-                  spec: str = "fighter_attack", actor: str = "",
+def causal_chains(spec: str, session: Optional[int] = None,
+                  telemetry_path: str = "", actor: str = "",
                   outcome: str = "", failed_gate: str = "", move: str = "",
                   limit: int = 40) -> dict:
-    """Why did that attack fail? The gate ladder, reconstructed from telemetry.
+    """Why did that action fail? The gate ladder, reconstructed from telemetry.
 
-    A log line says `punch_whiffed reason=facing`. A causal chain says the
-    attack was thrown, cleared the cooldown, paid stamina, reached contact,
-    PASSED the range gate at dist=104 vs reach=115, and then failed on facing —
-    which is a completely different bug from failing on range, and the raw
-    event cannot distinguish them.
+    A log line says `whiffed reason=facing`. A causal chain says the attack was
+    thrown, cleared its cooldown, reached contact, PASSED the range gate at
+    dist=104 vs reach=115, and only then failed on facing — a completely
+    different bug from failing on range, which the raw event cannot distinguish.
 
     Works on telemetry the game ALREADY emits: no engine, no new store, no
-    change to the game. The inference is sound because the gates run in a fixed
-    order, so the gate that failed implies every earlier one passed. Run
-    `causal_spec` to see the ladder that inference rests on.
+    change to the game. The inference is sound because resolution gates run in
+    a fixed order, so the gate that failed implies every earlier one passed.
 
-    Filter with actor ("player"/"opponent"), outcome ("landed", "whiffed",
-    "blocked", "refused", "ducked", "aborted", "dropped"), failed_gate
-    ("range_ok", "facing_ok", "elevation_ok", "guard_ok"), or move ("jab").
+    `spec` names one of THIS PROJECT's chain specs (see `causal_specs`). The
+    harness ships none — event kinds are your game's vocabulary, not Builders
+    Gate's. Draft one from a telemetry file with `causal_infer_spec`.
+
+    Filter with actor, outcome ("landed", "failed", "blocked", "refused",
+    "aborted", "dropped", "unresolved"), failed_gate, or move.
     """
     try:
         path = _telemetry_path(session, telemetry_path)
-        chains = _causal.chains_from_file(path, spec)
+        chains = _causal.chains_from_file(path, spec, _root())
         summary = _causal.summarize(chains)
         filtered = _causal.find(
             chains, actor=actor or None, outcome=outcome or None,
@@ -2071,17 +2072,58 @@ def causal_chains(session: Optional[int] = None, telemetry_path: str = "",
 
 
 @_tool
-def causal_spec(spec: str = "fighter_attack") -> dict:
-    """The gate ladder causal_chains asserts, and the source lines it mirrors.
+def causal_specs() -> dict:
+    """This project's chain specs, and whether each one's gate order is trusted.
 
-    Read this before trusting a chain. Every PASS in a chain is an INFERENCE
-    from gate ordering, not an observation — it is only sound while this ladder
-    matches the game's real resolution order. If someone reorders the gates in
-    the game, this is what has to change with them.
+    Read before trusting a chain. Every PASS in a chain is an INFERENCE from
+    gate ordering, not an observation — sound only while the ladder matches the
+    game's real resolution order. `order_verified: false` means nobody has
+    checked it against the source yet, and chains from it mark passed gates
+    with '~'.
     """
     try:
-        return {"ok": True, **_causal.describe_spec(spec),
-                "available": list(_causal.SPECS)}
+        specs = _causal.load_specs(_root())
+        if not specs:
+            return {"ok": True, "specs": {}, "count": 0,
+                    "hint": "none defined for this project — run "
+                            "causal_infer_spec against a telemetry file to "
+                            "draft one from the events your game emits."}
+        return {"ok": True, "count": len(specs),
+                "specs": {name: _causal.describe_spec(s)
+                          for name, s in specs.items()}}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def causal_infer_spec(session: Optional[int] = None, telemetry_path: str = "",
+                      name: str = "", family: str = "",
+                      save: bool = False) -> dict:
+    """Draft a chain spec by reading what your game actually emits.
+
+    Bootstraps `causal_chains` for a game the harness has never seen. Clusters
+    event kinds into pipelines by shared prefix, guesses the opener, finds the
+    actor field, and collects the `reason` values it observes.
+
+    It CANNOT infer the one thing that matters most: the ORDER of the gates.
+    Order is a property of your resolution code, not of its telemetry, and the
+    whole passed-gate inference rests on it. So the draft comes back
+    `order_verified: false` — open your resolution function, put the ladder in
+    the order it actually checks, add each gate's detail fields, then set
+    order_verified true. Until you do, chains mark passed gates with '~'.
+
+    save=True writes it to .bgate/causal_specs.json.
+    """
+    try:
+        path = _telemetry_path(session, telemetry_path)
+        result = _causal.infer_spec(_causal.read_events(path), name=name,
+                                    family=family)
+        if result.get("ok") and save:
+            spec_name = next(iter(result["spec"]))
+            spec = _causal.spec_from_dict(spec_name, result["spec"][spec_name])
+            result["saved"] = _causal.save_spec(_root(), spec)
+        result["telemetry"] = path
+        return result
     except Exception as exc:
         return _fail(exc)
 

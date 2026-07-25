@@ -306,6 +306,18 @@
           return this._statusChip(n.id) + body;
         },
         onSelect: n => this._inspect(n),
+        // A widget on the node IS the config now. Write it straight through to
+        // the stored workflow and save — never repaint the body, or the field
+        // the user is typing into disappears mid-keystroke.
+        onWidget: (n, field, value) => {
+          const w = (this._wf.nodes || []).find(x => x.id === n.id);
+          if (!w) return;
+          w.config = w.config || {};
+          w.config[field] = value;
+          this.persist();
+        },
+        onAction: (n, action, field) => this._nodeAction(n, action, field),
+        onReject: (why) => toast(why, true),
         onConnect: (from, to) => { this._wf.edges = nc.edges.slice(); this.persist(); },
         onNodeMove: n => { if (n) { const w = (this._wf.nodes || []).find(x => x.id === n.id); if (w) { w.x = n.x; w.y = n.y; } } this._wf.edges = nc.edges.slice(); this.persist(); },
         onNodeRemove: id => { this._wf.nodes = (this._wf.nodes || []).filter(n => n.id !== id); this._wf.edges = nc.edges.slice(); this.persist(); },
@@ -314,6 +326,32 @@
       this.refsLoad();      // thumbnails resolve through the pin registry
       if (this._api && this._api.setCanvas) this._api.setCanvas(nc);
     },
+    /* The +/- steppers and the seed dice. They mutate one field and repaint
+     * only that node's body, because nothing else on the canvas moved. */
+    _nodeAction(n, action, field) {
+      const w = (this._wf.nodes || []).find(x => x.id === n.id);
+      if (!w || !field) return;
+      w.config = w.config || {};
+      const el = this._nc && this._nc.host.querySelector(
+        `[data-node="${CSS.escape(n.id)}"] [data-w="${CSS.escape(field)}"]`);
+      const cur = Number(w.config[field] != null ? w.config[field] : (el ? el.value : 0)) || 0;
+      const step = el && el.step && el.step !== "any" ? Number(el.step) : 1;
+      let next = cur;
+      if (action === "inc") next = cur + step;
+      if (action === "dec") next = cur - step;
+      if (action === "reseed") next = Math.floor(Math.random() * 1e9);
+      if (el) {
+        if (el.min !== "" && next < Number(el.min)) next = Number(el.min);
+        if (el.max !== "" && next > Number(el.max)) next = Number(el.max);
+      }
+      w.config[field] = next;
+      if (n.config) n.config[field] = next;
+      // Set the input directly rather than re-rendering: the node may hold a
+      // half-typed prompt in the next field down.
+      if (el) el.value = next;
+      this.persist();
+    },
+
     // a stored workflow node -> a NodeCanvas node (pull ports/glyph from the step def)
     _toCanvasNode(n) {
       const def = this._stepDef(n.type);
