@@ -177,6 +177,224 @@
         ? `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” is not a pinned reference — this step would run against nothing.</div>` : "");
     },
 
+    /* ---- node media + money ---------------------------------------------
+       Two facts the node used to describe instead of show: the picture it
+       produced, and what it cost. Both are fetched ONCE per canvas load / run
+       tick into this cache — renderBody runs on every paint and must never do
+       I/O — and every body reads it synchronously.
+
+       Prices are never written in this file. They come from the imagegen
+       adapter's own table (GET /api/node/media -> prices), so an estimate on a
+       node and the charge it turns into cannot drift apart. */
+    _media: { assets: {}, prices: {}, defaultQuality: "medium", spend: {}, names: [],
+      at: 0, loading: null, sig: "" },
+
+    // the logical asset names the current canvas actually refers to
+    _mediaNames() {
+      const out = [];
+      const push = v => { const s = String(v || "").trim(); if (s && out.indexOf(s) === -1) out.push(s); };
+      ((this._wf && this._wf.nodes) || []).forEach(n => push(this.logicalFor(n)));
+      if (this._nc) { try { this._nc.nodes.forEach(n => push(this.logicalFor(n))); } catch (e) {} }
+      return out.slice(0, 60);
+    },
+
+    /* Which logical asset is this node about? Its own name first, then the
+       graph upstream — an animation node is about the character its anchor
+       names. A node that resolves to nothing renders the empty state; it never
+       invents a stand-in. */
+    logicalFor(node) {
+      if (!node) return "";
+      const KEYS = ["logicalName", "logical", "character", "asset", "ref", "subject", "scene", "theme"];
+      const own = (n) => {
+        const c = (n && n.config) || {};
+        for (let i = 0; i < KEYS.length; i++) {
+          const v = c[KEYS[i]];
+          if (v != null && String(v).trim()) {
+            // "tommy@r2" names revision 2 of tommy — the asset is still tommy
+            return this.refParse(String(v).trim()).name;
+          }
+        }
+        return "";
+      };
+      const mine = own(node);
+      if (mine) return mine;
+      const nc = this._nc; if (!nc) return "";
+      try {
+        const seen = {}; const stack = [node.id];
+        while (stack.length) {
+          const id = stack.pop();
+          if (seen[id]) continue; seen[id] = 1;
+          const n = nc.nodes.get(id);
+          if (n && n.id !== node.id) { const v = own(n); if (v) return v; }
+          (nc.edges || []).forEach(e => { if (e.to && e.to[0] === id) stack.push(e.from[0]); });
+        }
+      } catch (e) {}
+      return "";
+    },
+
+    mediaFor(name) {
+      const s = String(name || "").trim();
+      return (s && this._media.assets[s]) || null;
+    },
+    nodeMedia(node) { return this.mediaFor(this.logicalFor(node)); },
+
+    async mediaLoad(force) {
+      const now = Date.now();
+      if (!force && this._media.at && now - this._media.at < 8000) return this._media;
+      if (this._media.loading) return this._media.loading;
+      const names = this._mediaNames();
+      const q = "/api/node/media?candidates=4" + (names.length ? "&names=" + encodeURIComponent(names.join(",")) : "");
+      this._media.loading = get(q).then(r => {
+        const d = data(r);
+        this._media.loading = null;
+        this._media.at = Date.now();
+        if (!d) return this._media;
+        const sig = JSON.stringify([d.assets, d.prices, d.spend && d.spend.project_usd]);
+        this._media.prices = d.prices || {};
+        this._media.defaultQuality = d.default_quality || "medium";
+        this._media.assets = d.assets || {};
+        this._media.names = d.names || [];
+        this._media.spend = d.spend || {};
+        // Repaint only when something actually changed: a body whose HTML
+        // churns every tick fights whoever is using the node.
+        if (sig !== this._media.sig) {
+          this._media.sig = sig;
+          this._repaintNodes();
+          this._refreshCosts();
+        }
+        return this._media;
+      }).catch(() => { this._media.loading = null; return this._media; });
+      return this._media.loading;
+    },
+    _repaintNodes() {
+      if (!this._nc) return;
+      try { this._nc.nodes.forEach(n => this._nc._renderNode(n)); } catch (e) {}
+    },
+
+    /* A real picture of what this node produced. Returns the engine's empty
+       plate (never a fake placeholder, never a broken <img>) until a run has
+       actually made something. */
+    mediaImage(node, empty) {
+      const W = window.NodeCanvas && NodeCanvas.w;
+      const m = this.nodeMedia(node);
+      const latest = m && m.latest;
+      if (!W) return latest ? this.refImg(latest.rel) : "";
+      if (!latest) return W.image(null, { empty: empty || "nothing produced yet" });
+      return W.image("/api/preview?rel=" + encodeURIComponent(latest.rel),
+        { alt: latest.logical_name, caption: `${latest.logical_name} · r${latest.revision}` });
+    },
+    /* Where a node produced SEVERAL candidates, a capped strip beats one
+       arbitrary pick. One candidate degrades to the single image. */
+    mediaStrip(node, o) {
+      o = o || {};
+      const W = window.NodeCanvas && NodeCanvas.w;
+      const m = this.nodeMedia(node);
+      const list = ((m && m.candidates) || []).slice(0, o.cap || 4);
+      if (!list.length) return this.mediaImage(node, o.empty);
+      if (list.length === 1) return this.mediaImage(node, o.empty);
+      const more = (m.revisions || list.length) - list.length;
+      return `<div class="wf-strip">` + list.map(c =>
+        `<img src="/api/preview?rel=${encodeURIComponent(c.rel)}" loading="lazy"
+              title="${esc(c.logical_name)} r${esc(c.revision)}"
+              onerror="this.style.visibility='hidden'">`).join("") +
+        `</div><div class="wf-b-tag">${list.length} candidate${list.length === 1 ? "" : "s"}${
+          more > 0 ? ` · +${more} more` : ""}</div>`;
+    },
+    /* The pinned reference itself, captioned with the revision it is pinned at
+       — a reference node shows the anchor, it does not name it. */
+    refCard(value, empty) {
+      const W = window.NodeCanvas && NodeCanvas.w;
+      const q = this.refParse(value);
+      const rel = this.refRel(value);
+      if (!W) return rel ? this.refImg(value) : "";
+      if (!rel) return W.image(null, { empty: empty || "pick a pinned reference" });
+      const pin = this.refPin(q.name);
+      const rev = q.revision || (pin && pin.revision) || 1;
+      return W.image("/api/preview?rel=" + encodeURIComponent(rel),
+        { alt: q.name, caption: `${q.name} · r${rev}` });
+    },
+
+    /* ---- money ---------------------------------------------------------- */
+    fmtUsd(u) {
+      const v = Math.abs(Number(u) || 0);
+      return "$" + (v >= 1 ? v.toFixed(2) : v.toFixed(3));
+    },
+    prices() { return this._media.prices || {}; },
+    /* What this step would cost to run, from the adapter's price table.
+       A step declares `imageCost(node) -> {images, quality}`; steps that spend
+       nothing (assembly, Blender renders, gates) declare none and show no
+       estimate. Returns null when the price table has not loaded — an invented
+       fallback price is worse than no number. */
+    estimate(node) {
+      const def = this._stepDef(node && node.type);
+      if (!def || typeof def.imageCost !== "function") return null;
+      let spec = null; try { spec = def.imageCost(node); } catch (e) { return null; }
+      const images = Math.max(0, Math.floor(Number(spec && spec.images) || 0));
+      if (!images) return null;
+      const prices = this.prices();
+      const q = String((spec && spec.quality) || this._media.defaultQuality || "medium");
+      const unit = prices[q] != null ? prices[q] : prices[this._media.defaultQuality];
+      if (unit == null) return null;
+      return { usd: images * unit, images, quality: q, unit };
+    },
+    /* The chip in the node's title bar. Real spend REPLACES the estimate once
+       money has actually moved, and says which it is. */
+    costLabel(node) {
+      // Only a step that actually buys images carries a money chip. A gate or a
+      // stitching step inheriting the asset's bill would read as if the gate had
+      // spent it — the ledger is per asset, the chip must not lie about who.
+      const def = this._stepDef(node && node.type);
+      if (!def || typeof def.imageCost !== "function") return "";
+      const m = this.nodeMedia(node);
+      const est = this.estimate(node);
+      const spent = m && Number(m.usd) > 0 ? Number(m.usd) : 0;
+      if (spent) return `${this.fmtUsd(spent)} spent`;
+      if (est) return `~${this.fmtUsd(est.usd)} est`;
+      return "";
+    },
+    _refreshCosts() {
+      if (this._nc) {
+        try {
+          this._nc.nodes.forEach(n => {
+            const label = this.costLabel(n);
+            if (n.cost !== label) { n.cost = label; this._nc._renderNode(n); }
+          });
+        } catch (e) {}
+      }
+      this._renderTotals();
+    },
+    /* What the whole workflow is about to cost, and what it has cost. Real
+       spend is summed over DISTINCT logical assets — two nodes working the same
+       character have one bill between them, not two. */
+    totals() {
+      let est = 0, hasEst = false;
+      const seen = {}; let spent = 0;
+      const nodes = [];
+      if (this._nc) { try { this._nc.nodes.forEach(n => nodes.push(n)); } catch (e) {} }
+      if (!nodes.length) ((this._wf && this._wf.nodes) || []).forEach(n => nodes.push(n));
+      nodes.forEach(n => {
+        const e = this.estimate(n);
+        if (e) { est += e.usd; hasEst = true; }
+        const name = this.logicalFor(n);
+        const m = this.mediaFor(name);
+        if (name && m && !seen[name]) { seen[name] = 1; spent += Number(m.usd) || 0; }
+      });
+      return { estimate: est, hasEstimate: hasEst, spent,
+        project: Number((this._media.spend || {}).project_usd) || 0 };
+    },
+    _renderTotals() {
+      const el = document.getElementById("wf-total"); if (!el) return;
+      const t = this.totals();
+      const bits = [];
+      if (t.hasEstimate) bits.push(`~${this.fmtUsd(t.estimate)} est`);
+      if (t.spent > 0) bits.push(`${this.fmtUsd(t.spent)} spent`);
+      if (!bits.length) { el.hidden = true; el.textContent = ""; return; }
+      el.hidden = false;
+      el.textContent = bits.join(" · ");
+      el.title = `Estimated from the image adapter's own price table; spent is the recorded ledger for these assets.`
+        + (t.project ? ` Project to date: ${this.fmtUsd(t.project)}.` : "");
+    },
+
     /* ---- library landing ------------------------------------------------ */
     async open(host, api) {
       this._api = api || {};
@@ -252,6 +470,7 @@
           <button class="qbtn small ghost" onclick="Studio.select('workflows')">← library</button>
           <input class="wf-name" id="wf-name" value="${esc(wf.name)}" onchange="WF._wf.name=this.value;WF.persist()">
           <span class="wf-cat">${esc(wf.category || "custom")}</span>
+          <span class="wf-total" id="wf-total" hidden></span>
           <div style="flex:1"></div>
           <button class="qbtn small ghost" onclick="WF.saveAsNode()">save as reusable node</button>
           <button class="qbtn small ghost" onclick="WF.save()">save</button>
@@ -314,7 +533,17 @@
           if (!w) return;
           w.config = w.config || {};
           w.config[field] = value;
+          // Keep the canvas node's own config in step. A node built from a
+          // template starts with a FRESH defaults object, so without this the
+          // next repaint would render the defaults over what was just typed —
+          // and the cost estimate would price a count nobody set.
+          n.config = n.config || {};
+          n.config[field] = value;
           this.persist();
+          // The estimate is live: change the variant count and the title bar
+          // moves. Only the head is touched here (the body is focus-guarded by
+          // the engine), so the field being typed into is never disturbed.
+          this._refreshCosts();
         },
         onAction: (n, action, field) => this._nodeAction(n, action, field),
         onReject: (why) => toast(why, true),
@@ -324,6 +553,7 @@
       });
       nc.mount(); nc.fit(); this._nc = nc;
       this.refsLoad();      // thumbnails resolve through the pin registry
+      this.mediaLoad(true); // one batch read: produced artifacts, spend, prices
       if (this._api && this._api.setCanvas) this._api.setCanvas(nc);
     },
     /* The +/- steppers and the seed dice. They mutate one field and repaint
@@ -350,15 +580,22 @@
       // half-typed prompt in the next field down.
       if (el) el.value = next;
       this.persist();
+      this._refreshCosts();     // one more variant is more money, live
     },
 
     // a stored workflow node -> a NodeCanvas node (pull ports/glyph from the step def)
     _toCanvasNode(n) {
       const def = this._stepDef(n.type);
       const ports = def.ports ? def.ports(n) : { in: [{ id: "i" }], out: [{ id: "o" }] };
-      return { id: n.id, type: n.type, config: n.config || Object.assign({}, def.defaults || {}),
+      // A template node arrives without a config; give the stored node the SAME
+      // object the canvas node holds, so a widget edit, the body, and the cost
+      // estimate can never read three different values.
+      if (!n.config) n.config = Object.assign({}, def.defaults || {});
+      const cn = { id: n.id, type: n.type, config: n.config,
         glyph: def.glyph || "◇", title: n.title || def.label || n.type, accent: def.accent || "var(--ember)",
         x: n.x != null ? n.x : 80, y: n.y != null ? n.y : 80, w: n.w || 220, ports, data: n.data };
+      cn.cost = this.costLabel(cn);
+      return cn;
     },
     addStep(type) {
       let def = this.steps[type];
@@ -455,13 +692,18 @@
       const byId = {}; (run.nodes || []).forEach(n => byId[n.node_id] = n);
       this._runNodes = byId;
       const before = {}; ((prev && prev.nodes) || []).forEach(n => before[n.node_id] = n.status);
+      let moved = false;
       if (this._nc) {
         (run.nodes || []).forEach(n => {
           if (before[n.node_id] === n.status) return;      // repaint only what moved
+          moved = true;
           const cn = this._nc.nodes.get(n.node_id);
           if (cn) { cn.badge = STATUS_LABEL[n.status] || n.status; this._nc._renderNode(cn); }
         });
       }
+      // A step that finished has produced pictures and spent money: re-read the
+      // batch once per movement, not once per node and not every tick.
+      if (moved) this.mediaLoad(true);
       this._renderRun();
     },
     _statusChip(nodeId) {
@@ -549,9 +791,15 @@
       + `<textarea class="wf-ta" placeholder="e.g. Scoville's hit-detection fires from behind" oninput="WF.set('${n.id}','text',this.value)">${esc((n.config && n.config.text) || "")}</textarea>` });
   WF.registerStep({ type: "input.reference", category: "input", label: "Reference", glyph: "▦", accent: "var(--c-art)",
     kind: "passive", defaults: { ref: "" }, ports: () => ({ out: [{ id: "o", label: "ref" }] }),
-    body: n => (n.config && n.config.ref)
-      ? (WF.refImg(n.config.ref) || `<div class="wf-b-note">${esc(n.config.ref)} — not a pinned reference</div>`)
-      : `<div class="wf-b-note">pick a reference</div>`,
+    /* THE PICTURE, captioned with the revision it is pinned at — a reference
+       step that renders a text field naming a file is a step you cannot check
+       by looking at it. A name that resolves to no pin says so. */
+    body: n => {
+      const ref = (n.config && n.config.ref) || "";
+      if (!ref) return WF.refCard("", "pick a pinned reference");
+      if (!WF.refRel(ref)) return WF.refCard("", `“${ref}” is not a pinned reference`);
+      return WF.refCard(ref, "");
+    },
     config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference — the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`
       + WF.refPicker(n.id, "ref", (n.config && n.config.ref) || "") });
   WF.registerStep({ type: "control.gate", category: "control", label: "Review gate", glyph: "⏛", accent: "var(--warn)",
@@ -623,6 +871,13 @@
       .wf-b-note{font-size:11.5px;color:var(--ash);line-height:1.4}
       .wf-b-img{width:100%;height:78px;object-fit:contain;background:#000;border-radius:6px}
       .wf-b-tag{font-family:var(--mono);font-size:10px;color:var(--ash2)}
+      /* candidate strip: what a node produced, capped — several small truths
+         beat one arbitrary pick */
+      .wf-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:4px;margin:2px 0 4px}
+      .wf-strip img{width:100%;height:46px;object-fit:cover;background:#000;border:1px solid var(--seam);border-radius:5px}
+      /* the workflow's money, on the builder chrome */
+      .wf-total{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--ash);
+        border:1px solid var(--seam);border-radius:20px;padding:2px 9px;white-space:nowrap}
     `;
     document.head.appendChild(s);
   }

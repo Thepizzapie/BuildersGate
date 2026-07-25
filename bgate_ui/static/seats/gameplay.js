@@ -10,6 +10,7 @@
  * Everything is guarded; nothing here may throw uncaught.
  */
 (function () {
+  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
   window.SeatWS = window.SeatWS || {};
 
   const DEFAULT_SCRIPT =
@@ -51,7 +52,7 @@ func _init():
 
   const gp = {
     label: "Gameplay",
-    glyph: "⌖",
+    glyph: BGICON("gameplay"),
 
     render(container, bg) {
       S.bg = bg;

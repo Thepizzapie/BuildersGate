@@ -9,6 +9,7 @@
  * Nothing here may throw uncaught — every fetch is guarded, every handler wrapped.
  */
 (function () {
+  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
   "use strict";
 
   // Shared mutable state for this seat (single instance while mounted).
@@ -107,7 +108,7 @@
       `<style>${STYLE}</style>
        <div class="dir-wrap">
          <section class="dir-sec">
-           <h3 class="dir-sec-h">◆ Live agent board
+           <h3 class="dir-sec-h">${BGICON("agents")} Live agent board
              <span class="dir-count" id="dir-agent-count"></span>
              <span class="dir-spacer"></span>
              <button class="dir-btn dir-sm" onclick="DirCtl.refreshNow()">refresh</button>
@@ -480,5 +481,5 @@
   window.DirCtl = DirCtl;
 
   window.SeatWS = window.SeatWS || {};
-  window.SeatWS.director = { label: "Director", glyph: "◆", render, refresh };
+  window.SeatWS.director = { label: "Director", glyph: BGICON("director"), render, refresh };
 })();

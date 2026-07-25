@@ -9,11 +9,12 @@
  * `bg` is window.BGWS. Never touch another seat's DOM; never throw uncaught.
  */
 (function () {
+  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
   window.SeatWS = window.SeatWS || {};
 
   const AUD = {
     label: "Audio",
-    glyph: "♪",
+    glyph: BGICON("audio"),
     _bg: null,
     _root: null,
     _sounds: [],   // [{rel,name,bytes}] from /api/audio/list
@@ -33,11 +34,11 @@
             <span class="aud-todo">TODO: waveform view, generation, in-engine hookup.</span>
           </div>
           <div class="aud-card" id="aud-lib">
-            <div class="aud-h">♪ Sound library <span class="aud-sub" id="aud-lib-count"></span></div>
+            <div class="aud-h">${BGICON("audio")} Sound library <span class="aud-sub" id="aud-lib-count"></span></div>
             <div id="aud-lib-body"><div class="aud-empty">loading…</div></div>
           </div>
           <div class="aud-card" id="aud-cues">
-            <div class="aud-h">▤ Cue sheet <span class="aud-sub">which sound plays when</span>
+            <div class="aud-h">${BGICON("timeline")} Cue sheet <span class="aud-sub">which sound plays when</span>
               <span class="aud-actions">
                 <button class="aud-btn" id="aud-cue-add">+ row</button>
                 <button class="aud-btn aud-primary" id="aud-cue-save">save</button>
@@ -46,7 +47,7 @@
             <div id="aud-cue-body"><div class="aud-empty">loading…</div></div>
           </div>
           <div class="aud-card" id="aud-agent">
-            <div class="aud-h">◈ Live audio agent</div>
+            <div class="aud-h">${BGICON("agents")} Live audio agent</div>
             <div id="aud-agent-body"><div class="aud-empty">loading…</div></div>
           </div>
         </div>`;

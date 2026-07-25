@@ -26,11 +26,25 @@
   // A real picture on the node, not a note describing one. WF.refRel resolves
   // the pinned revision + real suffix; an unresolved name renders the empty
   // plate rather than a broken <img>.
-  const refImage = (name, empty) => {
-    const rel = (name && WF.refRel) ? WF.refRel(name) : "";
-    return w.image(rel ? "/api/preview?rel=" + encodeURIComponent(rel) : "",
-      { alt: name || "", caption: name || "", empty: empty || "no reference" });
-  };
+  const refImage = (name, empty) => WF.refCard(name, empty || "no reference");
+
+  /* What this step ACTUALLY produced, once a run has produced it. Reads WF's
+     one batch cache (fetched per canvas load / run tick) — renderBody runs on
+     every paint and must never do I/O. Before a run there is nothing to show,
+     so it falls back to the real upstream reference if there is one, and to the
+     empty plate otherwise. Never a fake placeholder. */
+  const produced = (n, empty) => WF.mediaImage(n, empty);
+  const producedStrip = (n, empty, cap) => WF.mediaStrip(n, { empty: empty, cap: cap || 4 });
+  // produced output if a run made any, else the real reference behind it
+  const producedOrRef = (n, refName, empty) =>
+    (WF.nodeMedia(n) && WF.nodeMedia(n).latest) ? produced(n, empty)
+      : (refName && WF.refRel(refName) ? refImage(refName) : produced(n, empty));
+
+  // The quality tier the estimate is priced at. The tiers are the adapter's
+  // (imagegen QUALITIES); the PRICES are never written here — WF reads them
+  // from the adapter's own table.
+  const QUALITY = ["low", "medium", "high"];
+  const qualityOf = n => String(cfg(n, "quality", "medium"));
   // Walk the graph backwards from a node to the character on its upstream anchor,
   // so animation/edit nodes can preview the character they're working from.
   function upstreamCharacter(node) {
@@ -108,18 +122,21 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "art.concept", category: "asset", label: "Concept art", glyph: "✎", accent: "var(--c-art)",
-    defaults: { style: "painterly key art", count: 4 },
+    defaults: { style: "painterly key art", count: 4, quality: "medium" },
     ports() { return { in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "concepts", type: "image" }] }; },
     body(n) {
-      return w.text(n, "style", { label: "Style", placeholder: "painterly key art, 16-bit pixel" })
-        + w.number(n, "count", { label: "Variants", min: 1, max: 6, value: 4 });
+      return producedStrip(n, "no concepts yet — run to generate")
+        + w.text(n, "style", { label: "Style", placeholder: "painterly key art, 16-bit pixel" })
+        + w.number(n, "count", { label: "Variants", min: 1, max: 6, value: 4 })
+        + w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" });
     },
     config() {
-      return `<div class="wf-insp-p">Explore the look before committing. Generates several concept images in one style for the task — style and variant count are on the node.</div>`;
+      return `<div class="wf-insp-p">Explore the look before committing. Generates several concept images in one style for the task — style, variant count and quality tier are on the node, and the title bar prices them from the image adapter's own table.</div>`;
     },
     agentSeat: "art",
+    imageCost(n) { return { images: +cfg(n, "count", 4) || 0, quality: qualityOf(n) }; },
     toBrief(n, wf) {
-      return `Generate ${+cfg(n, "count", 4)} concept images in ${cfg(n, "style", "a cohesive style")} for: ${taskText(wf)}.`;
+      return `Generate ${+cfg(n, "count", 4)} concept images at ${qualityOf(n)} quality in ${cfg(n, "style", "a cohesive style")} for: ${taskText(wf)}.`;
     },
   });
 
@@ -128,17 +145,20 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "art.anchor", category: "asset", label: "Character anchor", glyph: "▦", accent: "var(--c-art)",
-    defaults: { character: "", pose: "idle", strictness: "high", transparent: true },
+    defaults: { character: "", pose: "idle", strictness: "high", transparent: true, quality: "medium" },
     ports() {
       return { in: [{ id: "task", label: "task", type: "task" }, { id: "ref", label: "ref", type: "ref" }],
         out: [{ id: "o", label: "anchor", type: "image" }] };
     },
     body(n) {
       const c = cfg(n, "character", "");
-      return refImage(c, "pick a character")
+      // the anchor it PRODUCED once a run has made one; until then the pinned
+      // reference it is anchored to (a real image either way)
+      return producedOrRef(n, c, c ? "no anchor produced yet" : "pick a character")
         + w.select(n, "character", { label: "Character", options: charOptions(c) })
         + w.text(n, "pose", { label: "Pose", placeholder: "idle" })
         + w.select(n, "strictness", { label: "Consistency", options: ["low", "med", "high"], value: "high" })
+        + w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" })
         + w.toggle(n, "transparent", { label: "Alpha", value: true });
     },
     config(n) {
@@ -147,9 +167,10 @@
         + `<div class="wf-b-note" style="margin-top:8px">Higher strictness rejects more off-model output — use <b>high</b> for hero characters.</div>`;
     },
     agentSeat: "art",
+    imageCost(n) { return { images: 1, quality: qualityOf(n) }; },
     toBrief(n, wf) {
       const c = cfg(n, "character", "the character");
-      return `Produce the on-model canonical anchor frame for ${c} (${cfg(n, "pose", "idle")} pose${cfg(n, "transparent", true) ? ", transparent background" : ""}) that every animation frame will anchor to. Hold consistency at ${cfg(n, "strictness", "high")} strictness. Task context: ${taskText(wf)}.`;
+      return `Produce the on-model canonical anchor frame for ${c} (${cfg(n, "pose", "idle")} pose${cfg(n, "transparent", true) ? ", transparent background" : ""}) at ${qualityOf(n)} quality, that every animation frame will anchor to. Hold consistency at ${cfg(n, "strictness", "high")} strictness. Task context: ${taskText(wf)}.`;
     },
   });
 
@@ -158,31 +179,39 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "art.animation", category: "asset", label: "Animation frames", glyph: "◈", accent: "var(--c-art)",
-    defaults: { frameList: "windup,strike,recover", frames: 6, variantsPerFrame: 2, conditioning: "anchor+prev", fps: 12 },
+    defaults: { frameList: "windup,strike,recover", frames: 6, variantsPerFrame: 2, conditioning: "anchor+prev", fps: 12, quality: "medium" },
     ports() { return { in: [{ id: "anchor", label: "anchor", type: "image" }], out: [{ id: "o", label: "frames", type: "frames" }] }; },
     body(n) {
       const fl = (n.config && n.config.frameList || "").trim();
-      return refImage(upstreamCharacter(n), "no upstream anchor")
+      const made = WF.nodeMedia(n);
+      // the frames it produced (a capped strip — this step makes many), else
+      // the anchor it will be working from
+      return (made && made.latest ? producedStrip(n, "no frames yet")
+              : refImage(upstreamCharacter(n), "no upstream anchor"))
         + w.text(n, "frameList", { label: "Frames", placeholder: "windup,strike,recover" })
         + (fl ? w.note(`${frameCount(n)} named frames`)
               : w.number(n, "frames", { label: "Count", min: 1, max: 24, value: 6 }))
         + w.number(n, "variantsPerFrame", { label: "Variants", min: 1, max: 4, value: 2 })
-        + w.select(n, "conditioning", { label: "Condition", options: ["anchor", "anchor+prev"], value: "anchor+prev" });
+        + w.select(n, "conditioning", { label: "Condition", options: ["anchor", "anchor+prev"], value: "anchor+prev" })
+        + w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" });
     },
     config(n) {
       return `<div class="wf-insp-p">The flagship step. Each frame is conditioned on the anchor (and optionally the previous frame) so the character stays on-model across the whole animation. Multiple <b>variants per frame</b> are generated so a human can pick the best one.</div>`
         + `<div class="wf-insp-p">Name the frames on the node (comma-separated) or clear that field and set a plain count.</div>`
         + numRow(n, "fps", "Playback fps", 12, 1, 60)
-        + `<div class="wf-b-note" style="margin-top:8px">Total candidates: <b>${frameCount(n) * (+cfg(n, "variantsPerFrame", 2) || 1)}</b> images (${frameCount(n)} frames × ${+cfg(n, "variantsPerFrame", 2)} variants).</div>`;
+        + `<div class="wf-b-note" style="margin-top:8px">Total candidates: <b>${frameCount(n) * (+cfg(n, "variantsPerFrame", 2) || 1)}</b> images (${frameCount(n)} frames × ${+cfg(n, "variantsPerFrame", 2)} variants) — the number the node's price estimate multiplies.</div>`;
     },
     agentSeat: "art",
+    imageCost(n) {
+      return { images: frameCount(n) * (+cfg(n, "variantsPerFrame", 2) || 1), quality: qualityOf(n) };
+    },
     toBrief(n, wf) {
       const fl = (n.config && n.config.frameList || "").trim();
       const frames = fl ? fl : `${+cfg(n, "frames", 6)} frames`;
       const cond = cfg(n, "conditioning", "anchor+prev") === "anchor+prev"
         ? "conditioned on BOTH the character anchor and the previous frame"
         : "conditioned on the character anchor";
-      return `Generate the animation frames (${frames}) at ${+cfg(n, "fps", 12)}fps. Every frame must be ${cond} so the character stays perfectly on-model — never re-imagine the character. Produce ${+cfg(n, "variantsPerFrame", 2)} variant(s) of EACH frame so the best can be selected. Task: ${taskText(wf)}.`;
+      return `Generate the animation frames (${frames}) at ${+cfg(n, "fps", 12)}fps, ${qualityOf(n)} quality. Every frame must be ${cond} so the character stays perfectly on-model — never re-imagine the character. Produce ${+cfg(n, "variantsPerFrame", 2)} variant(s) of EACH frame so the best can be selected. Task: ${taskText(wf)}.`;
     },
   });
 
@@ -191,19 +220,21 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "art.edit", category: "asset", label: "Edit frame", glyph: "✂", accent: "var(--c-art)",
-    defaults: { instruction: "", keepAnchor: true },
+    defaults: { instruction: "", keepAnchor: true, quality: "medium" },
     ports() { return { in: [{ id: "frame", label: "frame", type: "image" }], out: [{ id: "o", label: "edited", type: "image" }] }; },
     body(n) {
-      return refImage(upstreamCharacter(n), "no upstream anchor")
+      return producedOrRef(n, upstreamCharacter(n), "no upstream anchor")
         + w.text(n, "instruction", { label: "Edit", rows: 3, placeholder: "straighten the sword arm, brighten the rim light" })
+        + w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" })
         + w.toggle(n, "keepAnchor", { label: "On anchor", value: true });
     },
     config() {
       return `<div class="wf-insp-p">Targeted edit of one incoming frame — fix a hand, recolor, adjust silhouette — without regenerating from scratch. Write the instruction on the node; <b>On anchor</b> holds the edit to the canonical design instead of letting the model re-imagine the character.</div>`;
     },
     agentSeat: "art",
+    imageCost(n) { return { images: 1, quality: qualityOf(n) }; },
     toBrief(n, wf) {
-      return `Edit the incoming frame: ${cfg(n, "instruction", "apply the requested change")}.${cfg(n, "keepAnchor", true) ? " Keep it on-model against the character anchor — do not drift from the canonical design." : ""} Task: ${taskText(wf)}.`;
+      return `Edit the incoming frame at ${qualityOf(n)} quality: ${cfg(n, "instruction", "apply the requested change")}.${cfg(n, "keepAnchor", true) ? " Keep it on-model against the character anchor — do not drift from the canonical design." : ""} Task: ${taskText(wf)}.`;
     },
   });
 
@@ -261,7 +292,12 @@
     /* Untyped by design: whatever the upstream produced is what a human picks
        between, and the chosen one is the same kind of thing. */
     ports() { return { in: [{ id: "i", label: "candidates" }], out: [{ id: "o", label: "chosen" }] }; },
-    body() { return w.note("blocks until a human picks") + w.tag("human gate"); },
+    /* The candidates it is actually choosing between — a picker with nothing to
+       look at is a dialog box. Resolved from the upstream step's asset. */
+    body(n) {
+      return producedStrip(n, "nothing to pick yet")
+        + w.note("blocks until a human picks") + w.tag("human gate");
+    },
     config() {
       return `<div class="wf-insp-p">A human-in-the-loop gate, and a real one: the run <b>stops here</b> — nothing downstream is queued — until a person approves it from the run bar (having picked their variant in the art workspace) or rejects it, which fails the run. An agent cannot open it. No options.</div>`;
     },
@@ -275,7 +311,10 @@
     defaults: { fps: 12, layout: "horizontal" },
     ports() { return { in: [{ id: "frames", label: "frames", type: "frames" }], out: [{ id: "o", label: "sheet", type: "sheet" }] }; },
     body(n) {
-      return w.select(n, "layout", { label: "Layout", options: ["horizontal", "vertical", "grid"], value: "horizontal" })
+      // the assembled sheet itself once one exists (stitching spends no money,
+      // so this step carries no estimate — only a real figure if one is recorded)
+      return produced(n, "no sheet assembled yet")
+        + w.select(n, "layout", { label: "Layout", options: ["horizontal", "vertical", "grid"], value: "horizontal" })
         + w.number(n, "fps", { label: "fps", min: 1, max: 60, value: 12 });
     },
     config() {

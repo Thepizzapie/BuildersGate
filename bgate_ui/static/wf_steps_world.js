@@ -19,6 +19,15 @@
 
   const cfg = (n, k, d) => (n && n.config && n.config[k] != null && n.config[k] !== "") ? n.config[k] : d;
 
+  /* Real plates on the node once a run has painted them — read from WF's one
+     batch cache (a body must never do I/O). Before that: the empty plate, not a
+     stand-in image. */
+  const produced = (n, empty) => WF.mediaImage(n, empty);
+  const producedStrip = (n, empty) => WF.mediaStrip(n, { empty: empty, cap: 4 });
+  // priced from the image adapter's table (WF fetches it) — never from here
+  const qualityOf = n => String(cfg(n, "quality", "medium"));
+  const QUALITY = ["low", "medium", "high"];
+
   const WORLD = "var(--c-audio)";   // world green
   const TECH = "var(--c-tech)";     // engine/assembly blue
 
@@ -27,23 +36,28 @@
   WF.registerStep({
     type: "world.background", category: "world", label: "Background art", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
-    defaults: { scene: "sprout stadium", style: "painterly pixel", mood: "dusk" },
+    defaults: { scene: "sprout stadium", style: "painterly pixel", mood: "dusk", quality: "medium" },
     ports: () => ({ in: [{ id: "i", label: "context" }], out: [{ id: "o", label: "bg", type: "image" }] }),
-    body: n => w.text(n, "scene", { label: "Scene", placeholder: "sprout stadium" }) +
+    body: n => produced(n, "no plate painted yet") +
+      w.text(n, "scene", { label: "Scene", placeholder: "sprout stadium" }) +
       w.text(n, "style", { label: "Style", placeholder: "painterly pixel" }) +
-      w.select(n, "mood", { label: "Mood", options: ["day", "dusk", "night"], value: "dusk" }),
-    config: () => `<div class="wf-insp-p">The stage background / environment plate this workflow paints. Scene, style and mood are set on the node — the mood drives the lighting the art seat paints to.</div>`,
+      w.select(n, "mood", { label: "Mood", options: ["day", "dusk", "night"], value: "dusk" }) +
+      w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" }),
+    config: () => `<div class="wf-insp-p">The stage background / environment plate this workflow paints. Scene, style, mood and quality are set on the node — the mood drives the lighting the art seat paints to, and the quality tier is what the node's price estimate is drawn at.</div>`,
+    imageCost: (n) => ({ images: 1, quality: qualityOf(n) }),
     toBrief: (n) => `Generate the ${cfg(n, "scene", "stage")} background in ${cfg(n, "style", "the house")} style, ` +
-      `${cfg(n, "mood", "dusk")} lighting, for: ${cfg(n, "scene", "the stage")}.`,
+      `${cfg(n, "mood", "dusk")} lighting, at ${qualityOf(n)} quality, for: ${cfg(n, "scene", "the stage")}.`,
   });
 
   /* ---- world.parallax — parallax layers for depth ----------------------- */
   WF.registerStep({
     type: "world.parallax", category: "world", label: "Parallax layers", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
-    defaults: { layers: 3 },
+    defaults: { layers: 3, quality: "medium" },
     ports: () => ({ in: [{ id: "i", label: "background", type: "image" }], out: [{ id: "o", label: "layers", type: "image" }] }),
-    body: n => w.number(n, "layers", { label: "Layers", min: 2, max: 4, value: 3, hint: "far → near" }),
+    body: n => producedStrip(n, "no layers yet") +
+      w.number(n, "layers", { label: "Layers", min: 2, max: 4, value: 3, hint: "far → near" }),
+    imageCost: (n) => ({ images: Math.max(2, Math.min(4, parseInt(cfg(n, "layers", 3), 10) || 3)), quality: qualityOf(n) }),
     config: () => `<div class="wf-insp-p">Splits the background into depth layers that scroll at different speeds. Two reads flat, four is as much parallax as a fighting-game stage can carry before it distracts.</div>`,
     toBrief: (n) => {
       const L = Math.max(2, Math.min(4, parseInt(cfg(n, "layers", 3), 10) || 3));
@@ -56,10 +70,13 @@
   WF.registerStep({
     type: "world.tileset", category: "world", label: "Tileset", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
-    defaults: { theme: "market stalls", tileCount: 12 },
+    defaults: { theme: "market stalls", tileCount: 12, quality: "medium" },
     ports: () => ({ in: [{ id: "i", label: "context" }], out: [{ id: "o", label: "tiles", type: "image" }] }),
-    body: n => w.text(n, "theme", { label: "Theme", placeholder: "market stalls" }) +
+    body: n => producedStrip(n, "no tiles yet") +
+      w.text(n, "theme", { label: "Theme", placeholder: "market stalls" }) +
       w.number(n, "tileCount", { label: "Tiles", min: 4, max: 64, value: 12 }),
+    // 64 tiles is real money — the node says so before the run, not after
+    imageCost: (n) => ({ images: +cfg(n, "tileCount", 12) || 0, quality: qualityOf(n) }),
     config: () => `<div class="wf-insp-p">A set of repeatable environment tiles / props for the stage floor and walls. Every piece has to tile seamlessly with its neighbours — that is the whole job.</div>`,
     toBrief: (n) => `Generate a ${cfg(n, "theme", "stage")} tileset of ~${cfg(n, "tileCount", 12)} ` +
       `repeatable, seamlessly-tiling pieces (floor, walls, edge caps).`,
@@ -69,10 +86,12 @@
   WF.registerStep({
     type: "world.props", category: "world", label: "Prop set", glyph: "⛰", accent: WORLD,
     agentSeat: "art",
-    defaults: { kind: "crowd", count: 6 },
+    defaults: { kind: "crowd", count: 6, quality: "medium" },
     ports: () => ({ in: [{ id: "i", label: "stage" }], out: [{ id: "o", label: "props", type: "image" }] }),
-    body: n => w.select(n, "kind", { label: "Kind", options: ["crowd", "banners", "hazards", "foliage"], value: "crowd" }) +
+    body: n => producedStrip(n, "no props yet") +
+      w.select(n, "kind", { label: "Kind", options: ["crowd", "banners", "hazards", "foliage"], value: "crowd" }) +
       w.number(n, "count", { label: "Count", min: 1, max: 32, value: 6 }),
+    imageCost: (n) => ({ images: +cfg(n, "count", 6) || 0, quality: qualityOf(n) }),
     config: () => `<div class="wf-insp-p">Foreground / background props — crowd, banners, hazards — that dress the stage. They inherit the background's palette and mood, so wire this after the background.</div>`,
     toBrief: (n) => `Generate a set of ${cfg(n, "count", 6)} ${cfg(n, "kind", "prop")} pieces ` +
       `(fore/background dressing) matched to the stage palette and mood.`,

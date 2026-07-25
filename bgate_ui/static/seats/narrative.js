@@ -9,6 +9,7 @@
  * MODULE CONTRACT (see _core.js). Vanilla JS only, no deps. Never throws.
  */
 (function () {
+  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
   "use strict";
 
   var CANVAS_W = 5000, CANVAS_H = 3600;   // logical board size (scrollable)
@@ -35,7 +36,7 @@
 
   var N = {
     label: "Narrative",
-    glyph: "¶",
+    glyph: BGICON("narrative"),
     _bg: null,
     _root: null,          // container el
     _state: null,         // {panels:[], edges:[]}
@@ -82,7 +83,7 @@
             '<button class="nar-btn nar-danger" data-act="del">✕ Delete</button>' +
             '<span class="nar-sep"></span>' +
             '<button class="nar-btn" data-act="canon" title="Check the selected panel (or the whole board) against established canon">⚖ Canon check</button>' +
-            '<button class="nar-btn" data-act="lore" title="Bind this panel to a canon entity, or promote it into one">◈ Lore…</button>' +
+            '<button class="nar-btn" data-act="lore" title="Bind this panel to a canon entity, or promote it into one">' + BGICON("world") + ' Lore…</button>' +
             '<button class="nar-btn" data-act="sync" title="Every board arrow between two bound panels becomes a lore edge">⛓ Sync links</button>' +
             '<button class="nar-btn" data-act="work" title="Turn this panel into a work item a seat can be dispatched on">→ Queue work</button>' +
             '<button class="nar-btn" data-act="save">↺ Save</button>' +
@@ -98,7 +99,7 @@
               "</svg>" +
               '<div class="nar-empty" id="nar-empty" hidden>' +
                 '<div class="nar-empty-inner">' +
-                  '<div class="nar-empty-glyph">¶</div>' +
+                  '<div class="nar-empty-glyph">' + BGICON("narrative") + '</div>' +
                   "<p>No panels yet — storyboard the game's beats here.</p>" +
                   '<p class="nar-empty-sub">Panels are draggable cards (title + text + optional image); Link mode draws the arrows between them. Start with:</p>' +
                   '<div class="nar-presets">' +
@@ -325,7 +326,7 @@
           '<span class="nar-grip">☰</span>' +
           '<span class="nar-badge">' + bg.esc(p.kind || "beat") + "</span>" +
           (p.lore ? '<span class="nar-badge nar-canon" title="bound to canon entity ' +
-            bg.esc(p.lore) + '">◈ ' + bg.esc(p.lore) + "</span>" : "") +
+            bg.esc(p.lore) + '">' + BGICON("world") + ' ' + bg.esc(p.lore) + "</span>" : "") +
           (p.work_item_id ? '<span class="nar-badge nar-work" title="queued as work item #' +
             p.work_item_id + '">#' + p.work_item_id + "</span>" : "") +
         "</div>" +

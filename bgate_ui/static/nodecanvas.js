@@ -18,12 +18,20 @@
  *     renderBody(node) -> html string,          // inner content of a card
  *     onSelect(node|null), onConnect(from,to), onNodeMove(node),
  *     onWidget(node, field, value),             // a widget changed
+ *     onNodeChange(node, what),                 // collapsed / resized / noted
  *     onReject(reason, from, to),               // a refused connection
  *     accent: "var(--ember)",
+ *     minimap: false,                           // suppress the overview map
  *   });
  *   nc.mount();
  *
  * Build bodies with the widget helpers: NodeCanvas.w.number(n, "count", {...}).
+ *
+ * CANVAS AFFORDANCES. A graph you can only pan is a graph you get lost in, so
+ * the canvas carries the four things a node editor is unusable without: an
+ * overview minimap, collapsible nodes, resizable nodes, and free-text note
+ * nodes (`{kind:"note"}`) to document the wiring. All of them are additive —
+ * none touches a node body, because the body is where the user is typing.
  */
 (function () {
   const NS = "http://www.w3.org/2000/svg";
@@ -65,8 +73,14 @@
       this._drag = null;      // { id, sx, sy, ox, oy } while moving a node
       this._panning = null;   // { x, y } while panning
       this._link = null;      // { from:[node,port], type, x, y } while wiring
+      this._resize = null;    // { id, sx, sy, ow, oh } while resizing a node
+      this._marq = null;      // { x0, y0, x, y, add } while box-selecting
+      this._map = null;       // { drag } while dragging the minimap viewport
       this._raf = null;
+      this._mraf = null;      // separate rAF for the minimap — it repaints on
+                              // pan/zoom/drag and must never do so per mousemove
       this._paint = new Map();  // node id -> last painted signature
+      this.selection = new Set();  // multi-select; `sel` stays the primary id
     }
 
     mount() {
@@ -80,6 +94,8 @@
           </marker>
         </defs></svg>
         <div class="nc-world"></div>
+        <div class="nc-marq" hidden></div>
+        <div class="nc-map" hidden><canvas class="nc-map-c"></canvas></div>
         <div class="nc-toolbar">
           <button class="nc-tb" data-a="fit" title="Fit to view">⊡</button>
           <button class="nc-tb" data-a="zin" title="Zoom in">＋</button>
@@ -90,7 +106,11 @@
       this.$svg = h.querySelector(".nc-edges");
       this.$world = h.querySelector(".nc-world");
       this.$zoom = h.querySelector(".nc-zoom");
+      this.$marq = h.querySelector(".nc-marq");
+      this.$map = h.querySelector(".nc-map");
+      this.$mapc = h.querySelector(".nc-map-c");
       this._bindCanvas();
+      this._bindMinimap();
       this._renderAll();
       return this;
     }
@@ -110,6 +130,7 @@
       if (!this.nodes.has(id)) return;
       this.nodes.delete(id);
       this._paint.delete(id);
+      this.selection.delete(id);
       this.edges = this.edges.filter(e => e.from[0] !== id && e.to[0] !== id);
       const el = this._el(id); if (el) el.remove();
       if (this.sel === id) { this.sel = null; if (this.o.onSelect) this.o.onSelect(null); }
@@ -151,6 +172,7 @@
         el.dataset.node = n.id;
         el.innerHTML = `
           <div class="nc-head" data-drag="${esc(n.id)}">
+            <button class="nc-caret" title="collapse">▼</button>
             <span class="nc-ico"></span>
             <span class="nc-title"></span>
             <span class="nc-cost"></span>
@@ -160,15 +182,19 @@
             <div class="nc-ports nc-in"></div>
             <div class="nc-ports nc-out"></div>
           </div>
-          <div class="nc-body"></div>`;
+          <div class="nc-body"></div>
+          <div class="nc-size" title="resize"></div>`;
         this.$world.appendChild(el);
       }
 
       el.style.left = n.x + "px";
       el.style.top = n.y + "px";
-      el.style.width = (n.w || 240) + "px";
+      el.style.width = (n.w || (n.kind === "note" ? 240 : 240)) + "px";
       el.style.setProperty("--nc-a", n.accent || this.o.accent || "var(--ember)");
-      el.classList.toggle("sel", n.id === this.sel);
+      el.classList.toggle("sel", n.id === this.sel || this.selection.has(n.id));
+      el.classList.toggle("nc-collapsed", !!n.collapsed);
+      el.classList.toggle("nc-note-node", n.kind === "note");
+      el.querySelector(".nc-caret").textContent = n.collapsed ? "▶" : "▼";
       if (n.status) el.dataset.status = n.status; else delete el.dataset.status;
 
       const head = el.querySelector(".nc-head");
@@ -181,22 +207,38 @@
       badge.textContent = n.badge || "";
       badge.style.display = n.badge ? "" : "none";
 
-      const sig = JSON.stringify([n.ports && n.ports.in, n.ports && n.ports.out]);
+      // A note is an annotation, not a step: it carries no ports at all, so it
+      // can never be wired and never blocks a drag across the graph.
+      const note = n.kind === "note";
+      const sig = JSON.stringify(note ? "note" : [n.ports && n.ports.in, n.ports && n.ports.out]);
       if (this._paint.get(n.id + ":ports") !== sig) {
         this._paint.set(n.id + ":ports", sig);
-        el.querySelector(".nc-in").innerHTML = this._ports(n, "in");
-        el.querySelector(".nc-out").innerHTML = this._ports(n, "out");
+        el.querySelector(".nc-in").innerHTML = note ? "" : this._ports(n, "in");
+        el.querySelector(".nc-out").innerHTML = note ? "" : this._ports(n, "out");
       }
 
       if (wantBody) {
         const body = el.querySelector(".nc-body");
-        const html = (this.o.renderBody && this.o.renderBody(n)) || n.body || "";
+        const html = note ? this._noteBody(n)
+          : ((this.o.renderBody && this.o.renderBody(n)) || n.body || "");
         const focused = body.contains(document.activeElement);
         if (!focused && this._paint.get(n.id + ":body") !== html) {
           this._paint.set(n.id + ":body", html);
           body.innerHTML = html;
         }
+        // Height is a style, never a repaint — a note can be resized while its
+        // textarea holds the caret.
+        if (note) {
+          const ta = body.querySelector(".nc-note-ta");
+          if (ta) ta.style.height = (n.h || 110) + "px";
+        }
       }
+    }
+
+    _noteBody(n) {
+      const v = (n.config && n.config.text) || n.text || "";
+      return `<textarea class="nc-w nc-note-ta" data-w="text"
+                placeholder="${esc(n.placeholder || "note…")}">${esc(v)}</textarea>`;
     }
 
     _ports(n, side) {
@@ -257,6 +299,20 @@
      * different height. The DOM knows where the dot is; ask it. */
     _portPos(nodeId, portId, side) {
       const el = this._el(nodeId);
+      const nn = this.nodes.get(nodeId);
+      // A collapsed node hides its dots. Its links must not vanish with them —
+      // route every edge to the side of the title bar instead, which is what
+      // makes collapsing safe to do on a wired graph.
+      if (nn && nn.collapsed && el) {
+        const head = el.querySelector(".nc-head");
+        if (head) {
+          const r = head.getBoundingClientRect(), hb = this.host.getBoundingClientRect();
+          const list = (nn.ports && nn.ports[side]) || [];
+          const p = list.find(x => x.id === portId) || {};
+          return { x: (side === "out" ? r.right : r.left) - hb.left,
+                   y: r.top - hb.top + r.height / 2, color: typeColor(p.type) };
+        }
+      }
       const dot = el && el.querySelector(
         `.nc-port-${side}[data-port="${CSS.escape(portId)}"] .nc-dot`);
       if (dot) {
@@ -284,6 +340,92 @@
       this.$grid.style.backgroundPosition = `${this.pan.x}px ${this.pan.y}px`;
       this.$grid.style.backgroundSize = `${24 * this.zoom}px ${24 * this.zoom}px`;
       if (this.$zoom) this.$zoom.textContent = Math.round(this.zoom * 100) + "%";
+      this._scheduleMap();
+    }
+
+    /* ---- minimap --------------------------------------------------------
+     * An overview of the whole graph with the viewport as a draggable frame —
+     * the only way to know where you are once the graph outgrows the screen.
+     * It is a <canvas>, not DOM: a repaint is one draw call, so it can ride the
+     * same rAF as the transform and never touches a node (nothing it does can
+     * disturb a focused widget). */
+    _bindMinimap() {
+      if (this.o.minimap === false || !this.$map) return;
+      const toGraph = (e) => {
+        const g = this._mapGeom(); if (!g) return null;
+        const r = this.$mapc.getBoundingClientRect();
+        return { x: g.minx + (e.clientX - r.left) / g.s, y: g.miny + (e.clientY - r.top) / g.s };
+      };
+      const centerOn = (p) => {
+        const r = this.host.getBoundingClientRect();
+        this.pan.x = r.width / 2 - p.x * this.zoom;
+        this.pan.y = r.height / 2 - p.y * this.zoom;
+        this._scheduleTransform();
+      };
+      this.$map.addEventListener("mousedown", e => {
+        const p = toGraph(e); if (!p) return;
+        e.preventDefault(); e.stopPropagation();
+        this._map = { on: true };
+        centerOn(p);
+      });
+      this.$map.addEventListener("wheel", e => e.stopPropagation());
+      this._mapMove = (e) => {
+        if (!this.host.isConnected) { window.removeEventListener("mousemove", this._mapMove); return; }
+        if (this._map) { const p = toGraph(e); if (p) centerOn(p); }
+      };
+      window.addEventListener("mousemove", this._mapMove);
+      window.addEventListener("mouseup", () => { this._map = null; });
+    }
+
+    /** Graph bbox + scale for the minimap, or null when there is nothing to show. */
+    _mapGeom() {
+      const ns = [...this.nodes.values()];
+      if (!ns.length || !this.$mapc) return null;
+      const r = this.host.getBoundingClientRect();
+      const hOf = (n) => { const el = this._el(n.id); return el ? el.offsetHeight : 120; };
+      // the viewport is part of the bounds, so panning off into empty space
+      // still shows you where you went
+      const vx = -this.pan.x / this.zoom, vy = -this.pan.y / this.zoom;
+      const xs = ns.map(n => n.x).concat([vx]);
+      const ys = ns.map(n => n.y).concat([vy]);
+      const xe = ns.map(n => n.x + (n.w || 240)).concat([vx + r.width / this.zoom]);
+      const ye = ns.map(n => n.y + hOf(n)).concat([vy + r.height / this.zoom]);
+      const minx = Math.min(...xs) - 40, miny = Math.min(...ys) - 40;
+      const maxx = Math.max(...xe) + 40, maxy = Math.max(...ye) + 40;
+      const cw = this.$mapc.width, ch = this.$mapc.height;
+      const s = Math.min(cw / Math.max(1, maxx - minx), ch / Math.max(1, maxy - miny));
+      return { minx, miny, maxx, maxy, s, cw, ch, r };
+    }
+
+    _scheduleMap() {
+      if (this.o.minimap === false || !this.$map || this._mraf) return;
+      this._mraf = requestAnimationFrame(() => { this._mraf = null; this._drawMap(); });
+    }
+
+    _drawMap() {
+      const c = this.$mapc; if (!c) return;
+      const host = this.host.getBoundingClientRect();
+      // a thumbnail on a postage-stamp canvas is noise, not navigation
+      const tiny = host.width < 380 || host.height < 260 || this.nodes.size < 2;
+      this.$map.hidden = tiny;
+      if (tiny) return;
+      if (c.width !== 168) { c.width = 168; c.height = 112; }
+      const g = this._mapGeom(); if (!g) return;
+      const ctx = c.getContext("2d"); if (!ctx) return;
+      const px = (x) => (x - g.minx) * g.s, py = (y) => (y - g.miny) * g.s;
+      ctx.clearRect(0, 0, g.cw, g.ch);
+      for (const n of this.nodes.values()) {
+        const el = this._el(n.id);
+        const h = el ? el.offsetHeight : 120;
+        const on = n.id === this.sel || this.selection.has(n.id);
+        ctx.fillStyle = n.kind === "note" ? "rgba(255,209,102,.28)"
+          : on ? "rgba(255,122,60,.85)" : "rgba(154,163,178,.55)";
+        ctx.fillRect(px(n.x), py(n.y), Math.max(2, (n.w || 240) * g.s), Math.max(2, h * g.s));
+      }
+      ctx.strokeStyle = "rgba(255,255,255,.75)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(px(-this.pan.x / this.zoom) + .5, py(-this.pan.y / this.zoom) + .5,
+        Math.max(4, (g.r.width / this.zoom) * g.s), Math.max(4, (g.r.height / this.zoom) * g.s));
     }
 
     /* ---- interaction ---------------------------------------------------- */
@@ -307,6 +449,7 @@
       }, { passive: false });
 
       h.addEventListener("mousedown", e => {
+        if (e.target.closest(".nc-map") || e.target.closest(".nc-toolbar")) return;
         // A widget owns its own pointer: no node drag, no pan, no deselect.
         if (e.target.closest(".nc-w")) {
           const node = e.target.closest(".nc-node");
@@ -314,16 +457,41 @@
           e.stopPropagation();
           return;
         }
+        const nodeEl = e.target.closest(".nc-node");
+        if (e.target.closest(".nc-caret")) {
+          e.preventDefault(); e.stopPropagation();
+          if (nodeEl) this.toggleCollapse(nodeEl.dataset.node);
+          return;
+        }
+        if (e.target.closest(".nc-size")) {
+          e.preventDefault(); if (nodeEl) this._startResize(nodeEl.dataset.node, e);
+          return;
+        }
         const port = e.target.closest(".nc-port-out");
         if (port) { this._startLink(port, e); e.preventDefault(); return; }
         const drag = e.target.closest("[data-drag]");
-        if (drag) { this._startNodeDrag(drag.dataset.drag, e); e.preventDefault(); return; }
-        const node = e.target.closest(".nc-node");
-        if (node) { this.select(node.dataset.node); return; }
+        if (drag) {
+          if (e.shiftKey) this._toggleSel(drag.dataset.drag);
+          this._startNodeDrag(drag.dataset.drag, e); e.preventDefault(); return;
+        }
+        if (nodeEl) {
+          if (e.shiftKey) this._toggleSel(nodeEl.dataset.node);
+          else this.select(nodeEl.dataset.node);
+          return;
+        }
+        // Empty canvas: plain drag still pans (that is the muscle memory).
+        // A modifier — or the right button — draws a marquee instead.
+        if (e.button === 2 || e.shiftKey || e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          this._startMarquee(e, e.shiftKey || e.ctrlKey || e.metaKey);
+          return;
+        }
         this.select(null);
         this._panning = { x: e.clientX - this.pan.x, y: e.clientY - this.pan.y };
         h.classList.add("nc-panning");
       });
+      // right-drag is a marquee, so suppress the menu it would otherwise open
+      h.addEventListener("contextmenu", e => { if (this._marqDidRun) { e.preventDefault(); this._marqDidRun = false; } });
 
       // Widget changes never repaint the body — that is the point.
       const onEdit = (e) => {
@@ -356,10 +524,12 @@
       window.addEventListener("mouseup", e => this._onUp(e));
       this._onKey = (e) => {
         if (!this.host.isConnected) { window.removeEventListener("keydown", this._onKey); return; }
-        if ((e.key === "Delete" || e.key === "Backspace") && this.sel) {
+        if ((e.key === "Delete" || e.key === "Backspace") && (this.sel || this.selection.size)) {
           const t = document.activeElement;
           if (t && (/INPUT|TEXTAREA|SELECT/.test(t.tagName) || t.isContentEditable)) return;
-          e.preventDefault(); this.removeNode(this.sel);
+          e.preventDefault();
+          const ids = this.selection.size ? [...this.selection] : [this.sel];
+          ids.forEach(id => this.removeNode(id));
         }
       };
       window.addEventListener("keydown", this._onKey);
@@ -371,8 +541,97 @@
 
     _startNodeDrag(id, e) {
       const n = this.nodes.get(id); if (!n) return;
-      this.select(id);
-      this._drag = { id, sx: e.clientX, sy: e.clientY, ox: n.x, oy: n.y };
+      if (!this.selection.has(id)) this.select(id);
+      // Dragging any member of a selection drags the whole selection — that is
+      // what multi-select is FOR; moving them one at a time is the thing it fixes.
+      const ids = this.selection.size > 1 && this.selection.has(id) ? [...this.selection] : [id];
+      const items = ids.map(i => this.nodes.get(i)).filter(Boolean)
+        .map(nn => ({ n: nn, ox: nn.x, oy: nn.y }));
+      this._drag = { id, sx: e.clientX, sy: e.clientY, ox: n.x, oy: n.y, items };
+    }
+
+    _startResize(id, e) {
+      const n = this.nodes.get(id); if (!n) return;
+      const el = this._el(id);
+      this._resize = { id, sx: e.clientX, sy: e.clientY,
+                       ow: n.w || (el ? el.offsetWidth : 240),
+                       oh: n.h || (n.kind === "note" ? 110 : 0) };
+    }
+
+    _startMarquee(e, add) {
+      const r = this.host.getBoundingClientRect();
+      if (e.button === 2) this._marqDidRun = true;
+      this._marq = { x0: e.clientX - r.left, y0: e.clientY - r.top,
+                     x: e.clientX - r.left, y: e.clientY - r.top, add };
+      if (!add) this._clearSel();
+      this._paintMarquee();
+    }
+    _paintMarquee() {
+      const m = this._marq, el = this.$marq; if (!el) return;
+      if (!m) { el.hidden = true; return; }
+      el.hidden = false;
+      el.style.left = Math.min(m.x0, m.x) + "px";
+      el.style.top = Math.min(m.y0, m.y) + "px";
+      el.style.width = Math.abs(m.x - m.x0) + "px";
+      el.style.height = Math.abs(m.y - m.y0) + "px";
+    }
+    /** Everything the marquee's screen rect covers, in graph coords. */
+    _marqueeHits() {
+      const m = this._marq; if (!m) return [];
+      const gx = (x) => (x - this.pan.x) / this.zoom, gy = (y) => (y - this.pan.y) / this.zoom;
+      const x1 = gx(Math.min(m.x0, m.x)), x2 = gx(Math.max(m.x0, m.x));
+      const y1 = gy(Math.min(m.y0, m.y)), y2 = gy(Math.max(m.y0, m.y));
+      return [...this.nodes.values()].filter(n => {
+        const el = this._el(n.id);
+        const h = el ? el.offsetHeight / this.zoom : 120;
+        return n.x < x2 && n.x + (n.w || 240) > x1 && n.y < y2 && n.y + h > y1;
+      }).map(n => n.id);
+    }
+
+    /* ---- collapse / resize / selection (public-ish) ---------------------- */
+    /** Collapse to the title bar. Class-only: the body is hidden, never rebuilt,
+     *  so half-typed text inside it survives the fold. */
+    toggleCollapse(id, force) {
+      const n = this.nodes.get(id); if (!n) return;
+      n.collapsed = force === undefined ? !n.collapsed : !!force;
+      const el = this._el(id);
+      if (el) {
+        el.classList.toggle("nc-collapsed", !!n.collapsed);
+        const c = el.querySelector(".nc-caret");
+        if (c) c.textContent = n.collapsed ? "▶" : "▼";
+      }
+      this._renderEdges(); this._scheduleMap();
+      this._changed(n, "collapsed");
+    }
+
+    /** One node's selected state, without disturbing the rest. */
+    _toggleSel(id) {
+      if (!this.selection.size && this.sel) this.selection.add(this.sel);
+      if (this.selection.has(id) && this.selection.size > 1) this.selection.delete(id);
+      else this.selection.add(id);
+      this.sel = this.selection.size === 1 ? [...this.selection][0] : (this.selection.has(id) ? id : this.sel);
+      this._paintSel();
+      if (this.o.onSelect) this.o.onSelect(this.nodes.get(this.sel) || null);
+    }
+    selectMany(ids, add) {
+      if (!add) this.selection.clear();
+      (ids || []).forEach(i => this.nodes.has(i) && this.selection.add(i));
+      this.sel = this.selection.size ? [...this.selection][this.selection.size - 1] : null;
+      this._paintSel();
+      if (this.o.onSelect) this.o.onSelect(this.sel ? this.nodes.get(this.sel) : null);
+    }
+    selected() { return [...this.selection]; }
+    _clearSel() { this.selection.clear(); this._paintSel(); }
+    _paintSel() {
+      this.$world.querySelectorAll(".nc-node").forEach(el =>
+        el.classList.toggle("sel", el.dataset.node === this.sel || this.selection.has(el.dataset.node)));
+      this._scheduleMap();
+    }
+
+    /** The host's chance to persist a structural edit (collapse / resize / note). */
+    _changed(n, what) {
+      if (this.o.onNodeChange) this.o.onNodeChange(n, what);
+      else if (this.o.onNodeMove) this.o.onNodeMove(n);
     }
     _startLink(portEl, e) {
       const r = this.host.getBoundingClientRect();
@@ -392,13 +651,33 @@
         this.pan = { x: e.clientX - this._panning.x, y: e.clientY - this._panning.y };
         this._scheduleTransform(); return;
       }
-      if (this._drag) {
-        const n = this.nodes.get(this._drag.id); if (!n) return;
-        n.x = this._drag.ox + (e.clientX - this._drag.sx) / this.zoom;
-        n.y = this._drag.oy + (e.clientY - this._drag.sy) / this.zoom;
+      if (this._resize) {
+        const n = this.nodes.get(this._resize.id); if (!n) return;
         const el = this._el(n.id);
-        if (el) { el.style.left = n.x + "px"; el.style.top = n.y + "px"; }
-        this._renderEdges(); return;
+        n.w = Math.max(160, Math.min(760, this._resize.ow + (e.clientX - this._resize.sx) / this.zoom));
+        if (el) el.style.width = n.w + "px";
+        if (n.kind === "note") {
+          n.h = Math.max(48, Math.min(700, this._resize.oh + (e.clientY - this._resize.sy) / this.zoom));
+          const ta = el && el.querySelector(".nc-note-ta");
+          if (ta) ta.style.height = n.h + "px";
+        }
+        this._renderEdges(); this._scheduleMap(); return;
+      }
+      if (this._marq) {
+        const r = this.host.getBoundingClientRect();
+        this._marq.x = e.clientX - r.left; this._marq.y = e.clientY - r.top;
+        this._paintMarquee();
+        this.selectMany(this._marqueeHits(), this._marq.add);
+        return;
+      }
+      if (this._drag) {
+        const dx = (e.clientX - this._drag.sx) / this.zoom, dy = (e.clientY - this._drag.sy) / this.zoom;
+        for (const it of this._drag.items) {
+          it.n.x = it.ox + dx; it.n.y = it.oy + dy;
+          const el = this._el(it.n.id);
+          if (el) { el.style.left = it.n.x + "px"; el.style.top = it.n.y + "px"; }
+        }
+        this._renderEdges(); this._scheduleMap(); return;
       }
       if (this._link) {
         const r = this.host.getBoundingClientRect();
@@ -408,7 +687,16 @@
     }
     _onUp(e) {
       if (this._panning) { this._panning = null; this.host.classList.remove("nc-panning"); }
-      if (this._drag) { const n = this.nodes.get(this._drag.id); this._drag = null; if (n && this.o.onNodeMove) this.o.onNodeMove(n); }
+      if (this._resize) {
+        const n = this.nodes.get(this._resize.id); this._resize = null;
+        if (n) this._changed(n, "resize");
+      }
+      if (this._marq) { this._marq = null; this._paintMarquee(); }
+      if (this._drag) {
+        const items = this._drag.items || [];
+        this._drag = null;
+        if (this.o.onNodeMove) items.forEach(it => this.o.onNodeMove(it.n));
+      }
       if (this._link) {
         const tgt = e.target.closest(".nc-port-in");
         if (tgt) {
@@ -442,9 +730,11 @@
     }
 
     select(id) {
-      if (this.sel === id) return;
+      if (this.sel === id && this.selection.size <= 1) return;
       this.sel = id;
-      this.$world.querySelectorAll(".nc-node").forEach(el => el.classList.toggle("sel", el.dataset.node === id));
+      this.selection.clear();
+      if (id) this.selection.add(id);
+      this._paintSel();
       if (this.o.onSelect) this.o.onSelect(id ? this.nodes.get(id) : null);
     }
 
@@ -457,17 +747,29 @@
       this.zoom = z2;
       this._applyTransform(); this._renderEdges();
     }
-    fit() {
-      const ns = [...this.nodes.values()]; if (!ns.length) return;
+    /* Fit what matters, at a size you can read.
+     *
+     * Fitting a 7-node chain of TALL widget-bearing nodes to BOTH axes landed
+     * at 30% — a picture of a graph, not a graph you can use. So: fit the
+     * selection when there is one, fit WIDTH first, and never go below a
+     * readable floor; if the graph is then taller than the viewport, align its
+     * top and let the user scroll rather than shrinking the text away. */
+    fit(opts) {
+      const o = opts || {};
+      const pool = (this.selection.size ? [...this.selection].map(i => this.nodes.get(i)).filter(Boolean) : null);
+      const ns = (pool && pool.length ? pool : [...this.nodes.values()]);
+      if (!ns.length) return;
+      const floor = o.min != null ? o.min : (this.o.fitMin != null ? this.o.fitMin : 0.55);
       const hOf = (n) => { const el = this._el(n.id); return el ? el.offsetHeight : 200; };
       const minx = Math.min(...ns.map(n => n.x)) - 40, miny = Math.min(...ns.map(n => n.y)) - 40;
       const maxx = Math.max(...ns.map(n => n.x + (n.w || 240))) + 40;
       const maxy = Math.max(...ns.map(n => n.y + hOf(n))) + 40;
+      const gw = Math.max(1, maxx - minx), gh = Math.max(1, maxy - miny);
       const r = this.host.getBoundingClientRect();
-      const z = Math.min(1.3, r.width / (maxx - minx), r.height / (maxy - miny));
-      this.zoom = Math.max(0.3, z);
-      this.pan.x = (r.width - (maxx - minx) * this.zoom) / 2 - minx * this.zoom;
-      this.pan.y = (r.height - (maxy - miny) * this.zoom) / 2 - miny * this.zoom;
+      const z = Math.max(floor, Math.min(1.3, r.width / gw, r.height / gh));
+      this.zoom = z;
+      this.pan.x = (r.width - gw * z) / 2 - minx * z;
+      this.pan.y = gh * z > r.height ? 24 - miny * z : (r.height - gh * z) / 2 - miny * z;
       this._applyTransform(); this._renderEdges();
     }
   }
@@ -564,6 +866,15 @@
     tag(text) { return `<span class="nc-tag">${esc(text)}</span>`; },
   };
 
+  /** A comment node. Ports are meaningless on it, so it declares none. */
+  NodeCanvas.noteNode = function (o) {
+    o = o || {};
+    return { id: o.id || ("note_" + Math.random().toString(36).slice(2, 8)),
+             kind: "note", type: "note", title: o.title || "note", glyph: "✎",
+             x: o.x || 40, y: o.y || 40, w: o.w || 240, h: o.h || 110,
+             config: { text: o.text || "" } };
+  };
+
   NodeCanvas.w = w;
   NodeCanvas.typeColor = typeColor;
   NodeCanvas.typesCompatible = typesCompatible;
@@ -647,6 +958,29 @@
       .nc-zoom{font-family:var(--mono);font-size:11px;color:var(--ash);min-width:40px;text-align:center}
       .nc-host.nc-panning{cursor:grabbing}
       .nc-host.nc-panning .nc-world{pointer-events:none}
+
+      /* collapse / resize / marquee / minimap / notes */
+      .nc-caret{width:14px;height:14px;flex:none;border:0;background:transparent;color:var(--ash);
+                font-size:8px;line-height:1;cursor:pointer;padding:0;opacity:.7}
+      .nc-caret:hover{color:var(--bone);opacity:1}
+      .nc-node.nc-collapsed{width:auto!important;min-width:150px}
+      .nc-node.nc-collapsed .nc-io,.nc-node.nc-collapsed .nc-body,.nc-node.nc-collapsed .nc-size{display:none}
+      .nc-node.nc-collapsed .nc-head{border-bottom:0;border-radius:12px}
+      .nc-size{position:absolute;right:0;bottom:0;width:14px;height:14px;cursor:nwse-resize;opacity:0;
+               background:linear-gradient(135deg,transparent 50%,var(--nc-a) 50%);border-radius:0 0 11px 0}
+      .nc-node:hover .nc-size,.nc-node.sel .nc-size{opacity:.55}
+      .nc-size:hover{opacity:1!important}
+      .nc-note-node{background:color-mix(in srgb,#ffd166 8%,var(--plate,#14161c));z-index:0}
+      .nc-world .nc-node{z-index:1}
+      .nc-world .nc-note-node{z-index:0}
+      .nc-note-node .nc-body{padding:7px}
+      .nc-note-ta{width:100%;box-sizing:border-box;resize:none;background:transparent;border:0;
+                  color:var(--bone);font-size:11.5px;line-height:1.5;font-family:inherit;outline:none}
+      .nc-marq{position:absolute;border:1px solid var(--nc-a,#ff7a3c);background:rgba(255,122,60,.10);
+               border-radius:3px;pointer-events:none;z-index:4}
+      .nc-map{position:absolute;right:12px;bottom:12px;z-index:5;background:rgba(10,12,15,.82);
+              border:1px solid var(--seam);border-radius:8px;padding:4px;cursor:crosshair;line-height:0}
+      .nc-map canvas{display:block;width:168px;height:112px;border-radius:5px}
     `;
     document.head.appendChild(s);
   }

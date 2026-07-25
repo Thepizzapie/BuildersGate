@@ -22,6 +22,7 @@
  * and a failed fetch renders its error message — never an empty panel.
  */
 (function () {
+  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
   window.SeatWS = window.SeatWS || {};
 
   // Documented thresholds. These live in one place so a chip's colour and the
@@ -34,7 +35,7 @@
 
   const A = {
     label: "Art",
-    glyph: "▲",
+    glyph: BGICON("art"),
 
     // --- module state (survives refresh ticks) ---------------------------
     _bg: null,
@@ -71,7 +72,7 @@
             <div class="art-pick" id="art-picker"></div>
             <div class="art-cols">
               <div class="art-side">
-                <div class="art-card"><div class="art-h">▲ References &amp; anchoring</div>
+                <div class="art-card"><div class="art-h">${BGICON("reference")} References &amp; anchoring</div>
                   <div id="art-refs"></div></div>
                 <div class="art-card"><div class="art-h">⧉ Flow map — assets rigged into Godot</div>
                   <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div></div>
@@ -97,7 +98,7 @@
         };
         // fix the stray glyph typo in a way that can't break: overwrite header text
         const labH = this._els.lab.querySelector(".art-h");
-        if (labH) labH.textContent = "◎ Iteration lab";
+        if (labH) labH.innerHTML = BGICON("consistency") + " Iteration lab";
 
         // react to shared active-item changes from other seats
         if (this._onItem) window.removeEventListener("bgws-item", this._onItem);
@@ -460,7 +461,7 @@
         const m = this._groupMap();
         const names = this._logicalNames();
         if (!names.length) {
-          host.innerHTML = `<div class="art-h">◎ Iteration lab</div>
+          host.innerHTML = `<div class="art-h">${BGICON("consistency")} Iteration lab</div>
             <div class="art-empty">No artifacts yet. When the art seat produces candidate images they appear here — every revision as a thumbnail, each beside the reference it was drawn against.</div>`;
           return;
         }
@@ -475,7 +476,7 @@
         if (!full && sig === this._detailSig) { this._renderLabList(m, names); return; }
         this._detailSig = sig;
 
-        host.innerHTML = `<div class="art-h">◎ Iteration lab</div>
+        host.innerHTML = `<div class="art-h">${BGICON("consistency")} Iteration lab</div>
           <div class="art-lab">
             <div class="art-list" id="art-list"></div>
             <div class="art-detail" id="art-detail"></div>

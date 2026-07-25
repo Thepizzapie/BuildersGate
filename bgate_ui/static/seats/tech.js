@@ -10,6 +10,7 @@
  * or an empty project.
  */
 (function () {
+  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
   window.SeatWS = window.SeatWS || {};
 
   // ---- module state (per-render) -----------------------------------------
@@ -488,7 +489,7 @@ func _init():
   // ---- module contract ----------------------------------------------------
   window.SeatWS.tech = {
     label: "Tech",
-    glyph: "⚙",
+    glyph: BGICON("tech"),
     render(container, bg) {
       try {
         S.bg = bg;

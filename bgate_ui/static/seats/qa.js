@@ -13,7 +13,7 @@
 window.SeatWS = window.SeatWS || {};
 window.SeatWS.qa = {
   label: "QA",
-  glyph: "✓",
+  glyph: (window.BGIcon ? BGIcon("qa", { size: 15 }) : ""),
 
   // --- module state -------------------------------------------------------
   _bg: null,

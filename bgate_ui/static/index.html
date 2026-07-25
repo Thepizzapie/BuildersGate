@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Builders Gate</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <style>
   /* ── tokens ──────────────────────────────────────────────────────────────
      ONE token block. Four themes used to stack in this file — foundry, then a
@@ -845,8 +846,7 @@
     border-bottom:1px solid var(--seam);
   }
   .rail-brand .mark{
-    font-family:var(--mono); font-size:17px; color:var(--ember); line-height:1;
-    letter-spacing:-1px;
+    display:flex; align-items:center; color:var(--bone); line-height:0;
   }
   .rail-brand .bn{font-size:12px; font-weight:700; letter-spacing:.22em; text-transform:uppercase; color:var(--bone)}
   .rail-brand .bp{font-family:var(--mono); font-size:10px; color:var(--ash2); margin-top:2px}
@@ -862,7 +862,7 @@
   .rail-item.active{background:var(--plate2); color:var(--bone)}
   .rail-item.active::before{content:""; position:absolute; left:-10px; top:8px; bottom:8px;
     width:3px; border-radius:0 3px 3px 0; background:var(--ember)}
-  .rail-item .ic{width:18px; text-align:center; font-family:var(--mono); font-size:14px; color:inherit; opacity:.9}
+  .rail-item .ic{display:flex;align-items:center;justify-content:center;width:18px;flex:none}
   .rail-item .ct{margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--ash2);
     background:var(--plate); border:1px solid var(--seam); border-radius:20px; padding:1px 7px; min-width:20px; text-align:center}
   .rail-item.active .ct{border-color:var(--seam2)}
@@ -960,7 +960,7 @@
   /* Rail — black, pill items, violet active wash. */
   .rail{background:#000; border-right:1px solid var(--seam)}
   .rail-brand{border-bottom:1px solid var(--seam)}
-  .rail-brand .mark{color:var(--ember)}
+  .rail-brand .mark{color:var(--bone)}
   .rail-brand .bn{letter-spacing:.16em}
   .rail-group{color:var(--ash2); letter-spacing:.28em}
   .rail-item{border-radius:13px; font-weight:400}
@@ -968,7 +968,7 @@
   .rail-item.active{background:rgba(128,82,255,.13); color:#fff}
   .rail-item.active::before{background:var(--ember)}
   .rail-item .ct{border-radius:9999px; background:rgba(255,255,255,.05); border-color:var(--seam); color:var(--ash)}
-  .rail-item .ic{color:var(--ash)}
+  .rail-item .ic{display:flex;align-items:center;justify-content:center;width:18px;flex:none}
   .rail-item.active .ic{color:var(--ember)}
   .rail-foot{border-top:1px solid var(--seam)}
 
@@ -1086,7 +1086,7 @@
     .rail-group{padding:12px 0 5px; text-align:center; font-size:0}
     .rail-group::after{content:"···"; font-size:9px; letter-spacing:.2em}
     .rail-item{justify-content:center; padding:10px 0; gap:0; font-size:0}
-    .rail-item .ic{font-size:15px; width:auto}
+    .rail-item .ic{display:flex;align-items:center;justify-content:center;width:18px;flex:none}
     .rail-item.active::before{left:-6px}
     .rail-foot{padding:12px 0; text-align:center}
     .stage-body{padding:20px 18px 56px}
@@ -1125,7 +1125,7 @@
 <div class="deck">
   <nav class="rail" aria-label="Primary navigation">
     <div class="rail-brand">
-      <span class="mark">⌐¬</span>
+      <span class="mark" data-icon="logo" data-icon-size="26"></span>
       <div style="min-width:0">
         <div class="bn">Builders Gate</div>
         <div class="bp" id="projline">connecting…</div>
@@ -1133,17 +1133,17 @@
     </div>
     <div class="rail-nav" id="rail-nav">
       <div class="rail-group">Command</div>
-      <button class="rail-item" data-view="overview" onclick="setWorkspace('overview',this)"><span class="ic">◉</span> Overview</button>
-      <button class="rail-item" data-view="agents" onclick="setWorkspace('agents',this)"><span class="ic">⌁</span> Agents<span class="ct" id="rc-agents">0</span></button>
+      <button class="rail-item" data-view="overview" onclick="setWorkspace('overview',this)"><span class="ic" data-icon="overview"></span> Overview</button>
+      <button class="rail-item" data-view="agents" onclick="setWorkspace('agents',this)"><span class="ic" data-icon="agents"></span> Agents<span class="ct" id="rc-agents">0</span></button>
       <div class="rail-group">Build</div>
-      <button class="rail-item" data-view="studio" onclick="setWorkspace('studio',this)"><span class="ic">⬡</span> Studio</button>
-      <button class="rail-item" data-view="seats" onclick="setWorkspace('seats',this)"><span class="ic">▤</span> Seat workspaces</button>
-      <button class="rail-item" data-view="playtests" onclick="setWorkspace('playtests',this)"><span class="ic">◈</span> Playtests<span class="ct" id="rc-pt">0</span></button>
+      <button class="rail-item" data-view="studio" onclick="setWorkspace('studio',this)"><span class="ic" data-icon="studio"></span> Studio</button>
+      <button class="rail-item" data-view="seats" onclick="setWorkspace('seats',this)"><span class="ic" data-icon="seats"></span> Seat workspaces</button>
+      <button class="rail-item" data-view="playtests" onclick="setWorkspace('playtests',this)"><span class="ic" data-icon="playtests"></span> Playtests<span class="ct" id="rc-pt">0</span></button>
       <div class="rail-group">Library</div>
-      <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic">▧</span> Assets</button>
-      <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic">⊞</span> Atlas<span class="ct warn" id="rc-atlas" style="display:none">0</span></button>
-      <button class="rail-item" data-view="world" onclick="setWorkspace('world',this)"><span class="ic">✦</span> World bible</button>
-      <button class="rail-item" data-view="timeline" onclick="setWorkspace('timeline',this)"><span class="ic">⧗</span> Timeline</button>
+      <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic" data-icon="assets"></span> Assets</button>
+      <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic" data-icon="atlas"></span> Atlas<span class="ct warn" id="rc-atlas" style="display:none">0</span></button>
+      <button class="rail-item" data-view="world" onclick="setWorkspace('world',this)"><span class="ic" data-icon="world"></span> World bible</button>
+      <button class="rail-item" data-view="timeline" onclick="setWorkspace('timeline',this)"><span class="ic" data-icon="timeline"></span> Timeline</button>
     </div>
     <div class="rail-foot">
       <div class="vrow"><span class="vlamp waiting" id="lamp"></span> <span id="lamptext">connecting…</span></div>
@@ -1315,7 +1315,7 @@
      it rather than sitting in a panel behind nine empty nav items. -->
 <div class="firstrun" id="firstrun" hidden>
   <div class="fr-card">
-    <div class="fr-mark">◉</div>
+    <div class="fr-mark" data-icon="logo" data-icon-size="40"></div>
     <h1>Builders Gate</h1>
     <p class="fr-hint" id="fr-hint">No project here yet.</p>
     <form class="fr-form" id="fr-form" onsubmit="createProject(event)">
@@ -1344,9 +1344,11 @@
 
 <script>
 const SEATS = {
-  director:{g:"◆"}, narrative:{g:"¶"}, gameplay:{g:"⌖"}, tech:{g:"⚙"},
-  art:{g:"▲"}, audio:{g:"♪"}, qa:{g:"✓"},
+  director:{g:"director"}, narrative:{g:"narrative"}, gameplay:{g:"gameplay"}, tech:{g:"tech"},
+  art:{g:"art"}, audio:{g:"audio"}, qa:{g:"qa"},
 };
+// Icon by name, safe before icons.js has parsed. SEATS[x].g is a NAME now.
+const ICO = (n, size) => (window.BGIcon && BGIcon.has(n)) ? BGIcon(n, { size: size || 14 }) : "";
 const color = r => getComputedStyle(document.documentElement).getPropertyValue(`--c-${r}`) || "#888";
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let lastActivityId = 0;
@@ -1463,6 +1465,21 @@ const DECK_CRUMB = {
   playtests:"Playtests", assets:"Assets", atlas:"Atlas", world:"World bible",
   timeline:"Timeline",
 };
+/* Hand the view to whichever module owns it.
+ *
+ * Kept separate from setWorkspace because of WHEN it has to run. The restore
+ * call fires from an inline script that sits ABOVE the module <script> tags,
+ * so on a reload into Studio (or Seats, Atlas, World) window.Studio did not
+ * exist yet and the guard skipped it silently — the panel sat on "loading
+ * studio…" until you clicked the rail item it was already on. Now the same
+ * function runs again once the modules have registered. */
+function activateWorkspace(name){
+  const owners = { seats: "SeatShell", studio: "Studio", atlas: "Atlas", world: "World" };
+  const mod = window[owners[name]];
+  if (mod && typeof mod.activate === "function") { mod.activate(); return true; }
+  return !owners[name];   // a view with no module is already "activated"
+}
+
 function setWorkspace(name, trigger){
   const next = DECK_CRUMB[name] ? name : "overview";
   document.querySelectorAll(".deck-view").forEach(view =>
@@ -1472,10 +1489,7 @@ function setWorkspace(name, trigger){
   const crumb = document.getElementById("sb-crumb");
   if (crumb) crumb.textContent = DECK_CRUMB[next];
   try{ localStorage.setItem("bgate-workspace", next); }catch(e){}
-  if (next === "seats" && window.SeatShell) window.SeatShell.activate();
-  if (next === "studio" && window.Studio) window.Studio.activate();
-  if (next === "atlas" && window.Atlas) window.Atlas.activate();
-  if (next === "world" && window.World) window.World.activate();
+  activateWorkspace(next);
   if (next === "overview"){ refreshOverview(); ptPreflight(false); }
   const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
 }
@@ -1551,7 +1565,7 @@ function renderFloor(seatsData){
       : "idle — no ledger entries yet";
     return `<button class="seatpill ${working ? "on" : ""}" style="--sc:${color(s.role)}"
         onclick="dispatchToSeat('${s.role}')" title="${esc(doing)}${s.locks.length ? " · " + s.locks.length + " locked" : ""}">
-      <span class="sp-glyph">${SEATS[s.role]?.g ?? "•"}</span>
+      <span class="sp-glyph">${ICO(SEATS[s.role]?.g, 15)}</span>
       <span class="sp-name">${esc(s.role)}</span>
       ${working ? `<span class="sp-dot"></span>` : ""}
       ${n ? `<span class="sp-load">${n}</span>` : ""}
@@ -2442,7 +2456,7 @@ function _lastStep(act){
   const steps = (act && act.steps) || [];
   for (let k = steps.length - 1; k >= 0; k--){
     const s = steps[k];
-    if (s.kind === "tool") return `⚙ <b>${esc(s.name || "tool")}</b> ${esc(s.hint || "")}`;
+    if (s.kind === "tool") return `${ICO("tech")}<b>${esc(s.name || "tool")}</b> ${esc(s.hint || "")}`;
     if (s.kind === "result") return `→ ${esc(s.text || "")}`;
     if (s.kind === "say" || s.kind === "steer") return esc(s.text || "");
   }
@@ -2470,7 +2484,7 @@ function renderActive(items, liveSet, acts){
     const c = color(i.seat); const act = acts[i.id];
     return `<div class="ac-card" style="--sc:${c}">
       <div class="ac-head">
-        <span class="ac-glyph" style="color:${c}">${SEATS[i.seat]?.g ?? "•"}</span>
+        <span class="ac-glyph" style="color:${c}">${ICO(SEATS[i.seat]?.g, 14)}</span>
         <span class="ac-seat" style="color:${c}">${esc(i.seat)}</span>
         <span class="ac-id">#${i.id}</span>
         <span class="ac-live">${(() => {
@@ -2661,7 +2675,7 @@ async function refreshAgentView(){
   try{
     const a = await (await fetch(`/api/agent-activity/${_watching}`)).json();
     const rows = a.steps.map(s => {
-      if (s.kind === "tool") return `<div class="astep atool">⚙ <b>${esc(s.name)}</b> <span>${esc(s.hint)}</span></div>`;
+      if (s.kind === "tool") return `<div class="astep atool">${ICO("tech")}<b>${esc(s.name)}</b> <span>${esc(s.hint)}</span></div>`;
       if (s.kind === "result") return `<div class="astep ares">→ ${esc(s.text)}</div>`;
       if (s.kind === "steer") return `<div class="astep asteer">🧭 <b>steer</b> ${esc(s.text)}</div>`;
       return `<div class="astep asay">${esc(s.text)}</div>`;
@@ -3048,6 +3062,9 @@ let initialWorkspace = "overview";
 try{ initialWorkspace = localStorage.getItem("bgate-workspace") || "overview"; }catch(e){}
 if (!DECK_CRUMB[initialWorkspace]) initialWorkspace = "overview";
 setWorkspace(initialWorkspace);
+// The module scripts load below this one, so the restore above could not have
+// reached them. Ask again once they exist.
+document.addEventListener("DOMContentLoaded", () => activateWorkspace(initialWorkspace));
 
 ptPoll().then(() => ptPreflight(true));
 document.getElementById("pt-target")?.addEventListener("change", () => ptPreflight(true));
@@ -3118,6 +3135,7 @@ setInterval(pollQueue, 3500);
 <!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
 <script src="/static/nodecanvas.js"></script>
 <script src="/static/flows.js"></script>
+<script src="/static/icons.js"></script>
 <script src="/static/flow_game.js"></script>
 <!-- Both were written, finished, and never given a script tag — so nothing
      registered them and the Studio showed two flows instead of four. -->
@@ -3148,6 +3166,22 @@ setInterval(pollQueue, 3500);
     if (window.World &&
         document.getElementById("view-world")?.classList.contains("active")) World.activate();
   });
+</script>
+<script>
+  // Swap every [data-icon] placeholder for real geometry, then keep watching:
+  // panels render markup long after load, and an un-upgraded placeholder is an
+  // empty box rather than a wrong glyph.
+  (function () {
+    let queued = false;
+    const run = () => { queued = false; try { BGIcon.upgrade(document); } catch (e) {} };
+    // Coalesce: upgrade() writes DOM, which re-triggers the observer, and the
+    // panels rerender on a 3s poll. Scanning per mutation would put a full
+    // querySelectorAll on the critical path of every repaint.
+    const queue = () => { if (!queued) { queued = true; requestAnimationFrame(run); } };
+    run();
+    document.addEventListener("DOMContentLoaded", run);
+    new MutationObserver(queue).observe(document.body, { childList: true, subtree: true });
+  })();
 </script>
 </body>
 </html>

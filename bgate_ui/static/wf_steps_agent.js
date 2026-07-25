@@ -77,19 +77,27 @@
     WF.registerStep({
       type: "agent.art", category: "agent", label: "Art agent", glyph: "▲", accent: C_ART,
       agentSeat: "art",
-      defaults: { focus: "edit-existing", strictness: "high", variants: 3, useAnchor: true },
+      defaults: { focus: "edit-existing", strictness: "high", variants: 3, useAnchor: true, quality: "medium" },
       ports: () => ({ in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "art", type: "image" }] }),
-      body: n => w.select(n, "focus", { label: "Focus", options: opts(ART_FOCUS), value: "edit-existing" }) +
+      /* The art the seat actually produced, from WF's one batch cache — the
+         seat step is where a run's output lands, so it shows it. No I/O here:
+         renderBody runs on every paint. */
+      body: n => WF.mediaStrip(n, { empty: "no art produced yet", cap: 4 }) +
+        w.select(n, "focus", { label: "Focus", options: opts(ART_FOCUS), value: "edit-existing" }) +
         w.select(n, "strictness", { label: "Consistency", options: opts(ART_STRICT), value: "high" }) +
         w.number(n, "variants", { label: "Variants", min: 1, max: 8, value: 3 }) +
+        w.select(n, "quality", { label: "Quality", options: ["low", "medium", "high"], value: "medium" }) +
         w.toggle(n, "useAnchor", { label: "Anchor", value: true }) + seatTag("art"),
       config: () => `<div class="wf-insp-p">The Art seat does the visual work for the task. The node is where you tune <b>how</b> the art agent produces a consistent result — the hardest part of the pipeline.</div>` +
         `<div class="wf-insp-p" style="margin-top:10px">` +
         `<b>Focus</b> picks the art job. <b>Consistency</b> sets how hard the agent locks to the existing style/anchor before a variant passes. ` +
         `<b>Variants</b> is how many versions to produce for review. <b>Anchor</b> feeds the existing element as the reference so an edit stays on-model.</div>`,
+      // N variants through the image adapter — the node prices them from the
+      // adapter's own table (never a number written in this file)
+      imageCost: (n) => ({ images: +cfg(n, "variants", 3) || 0, quality: String(cfg(n, "quality", "medium")) }),
       toBrief: (n, wf) => `Do the art work for the task — "${taskText(wf)}" — with focus ${cfg(n, "focus", "edit-existing")}, ` +
         `anchoring=${onoff(cfg(n, "useAnchor", true))}, consistency ${cfg(n, "strictness", "high")}, ` +
-        `producing ${cfg(n, "variants", 3)} variant(s) for review.`,
+        `producing ${cfg(n, "variants", 3)} variant(s) at ${cfg(n, "quality", "medium")} quality for review.`,
     });
 
     /* ---- agent.gameplay — gameplay seat ---------------------------------- */

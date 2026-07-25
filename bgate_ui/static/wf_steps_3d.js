@@ -42,6 +42,14 @@
     return dflt;
   };
 
+  /* What this step produced, from WF's one batch cache (no I/O in a body).
+     A glTF or a .blend has no thumbnail — those steps get the empty plate
+     rather than a broken image, which is the honest picture of "exported, not
+     rendered". */
+  var produced = function (n, empty) { return WF.mediaImage(n, empty); };
+  var producedStrip = function (n, empty) { return WF.mediaStrip(n, { empty: empty, cap: 4 }); };
+  var qualityOf = function (n) { return String(cv(n, "quality", "medium")); };
+
   var C_ART = "var(--c-art)";
   var C_TECH = "var(--c-tech)";
   var GLYPH = "◳";
@@ -51,17 +59,22 @@
     type: "3d.concept", category: "3d", label: "3D concept / turnaround", glyph: GLYPH, accent: C_ART,
     agentSeat: "art",
     ports: function () { return { in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "concept", type: "image" }] }; },
-    defaults: { subject: "", style: "" },
+    defaults: { subject: "", style: "", quality: "medium" },
     body: function (n) {
-      return w.text(n, "subject", { label: "Subject", placeholder: "armored beetle" }) +
-        w.text(n, "style", { label: "Style", placeholder: "stylized PBR" });
+      return produced(n, "no concept yet — run to generate") +
+        w.text(n, "subject", { label: "Subject", placeholder: "armored beetle" }) +
+        w.text(n, "style", { label: "Style", placeholder: "stylized PBR" }) +
+        w.select(n, "quality", { label: "Quality", options: ["low", "medium", "high"], value: "medium" });
     },
+    // one painted concept sheet through the image adapter — priced from its table
+    imageCost: function (n) { return { images: 1, quality: qualityOf(n) }; },
     config: function () {
       return '<div class="wf-insp-p">Concept sheet + turnaround for the 3D model — what to build and its visual language. The Blender steps downstream read the subject from here.</div>';
     },
     toBrief: function (n, wf) {
       return "Concept + turnaround for a 3D model of " + cv(n, "subject", "the subject") +
-        " in " + cv(n, "style", "the target style") + " for: " + taskText(wf) + ".";
+        " in " + cv(n, "style", "the target style") + " at " + qualityOf(n) +
+        " quality for: " + taskText(wf) + ".";
     }
   });
 
@@ -93,7 +106,10 @@
     ports: function () { return { in: [{ id: "i", label: "model", type: "model" }], out: [{ id: "o", label: "gltf", type: "gltf" }] }; },
     defaults: { format: "glb", scale: 1 },
     body: function (n) {
-      return w.select(n, "format", { label: "Format", options: ["glb", "gltf"], value: "glb" }) +
+      // an export has a preview only if something rendered one; otherwise the
+      // empty plate says so — Blender/Godot work spends no API money either
+      return produced(n, "exported asset — no render to show") +
+        w.select(n, "format", { label: "Format", options: ["glb", "gltf"], value: "glb" }) +
         w.number(n, "scale", { label: "Scale", min: 0, step: 0.1, value: 1 });
     },
     config: function () {
@@ -112,7 +128,10 @@
     ports: function () { return { in: [{ id: "i", label: "model", type: "model" }], out: [{ id: "o", label: "sheet", type: "sheet" }] }; },
     defaults: { angles: 8, poses: "idle", frameSize: "160x240" },
     body: function (n) {
-      return w.number(n, "angles", { label: "Angles", min: 1, step: 1, value: 8 }) +
+      // rendered sheets, capped — Blender renders locally, so there is media
+      // here but never an API bill
+      return producedStrip(n, "no sheet rendered yet") +
+        w.number(n, "angles", { label: "Angles", min: 1, step: 1, value: 8 }) +
         w.text(n, "poses", { label: "Poses", placeholder: "idle, walk, attack" }) +
         w.text(n, "frameSize", { label: "Frame", placeholder: "160x240" });
     },

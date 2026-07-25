@@ -4,7 +4,7 @@
  * MODULE CONTRACT — each static/seats/<seat>.js does:
  *   window.SeatWS = window.SeatWS || {};
  *   window.SeatWS.art = {
- *     label: "Art", glyph: "▲",
+ *     label: "Art",
  *     render(container, bg) { ... },   // build the workspace into `container`
  *     refresh() { ... },               // optional; called ~every 3s while active
  *   };
@@ -51,7 +51,13 @@
       return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
     },
     seats: ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"],
-    glyphs: { director: "◆", narrative: "¶", gameplay: "⌖", tech: "⚙", art: "▲", audio: "♪", qa: "✓" },
+    // Real geometry, one grid, one stroke weight — see icons.js. These used to
+    // be seven unrelated Unicode glyphs (◆ ¶ ⌖ ⚙ ▲ ♪ ✓) resolved by whatever
+    // symbol font the OS had, so no two sat on the same baseline.
+    glyphs: new Proxy({}, {
+      get: (_t, seat) => (window.BGIcon && BGIcon.has(seat))
+        ? BGIcon(seat, { size: 15 }) : "",
+    }),
     toast(msg, bad) {
       let t = document.getElementById("bgws-toast");
       if (!t) {

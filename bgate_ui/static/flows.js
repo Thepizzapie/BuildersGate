@@ -24,11 +24,11 @@
   };
   // Flows this file implements itself — the fallback when a module is absent.
   const BUILTIN = {
-    asset: { label: "Asset flow", glyph: "⬡" },
-    agent: { label: "Agent flow", glyph: "⌁" },
-    game: { label: "Game editor", glyph: "⌖" },
+    asset: { label: "Asset flow", icon: "assets" },
+    agent: { label: "Agent flow", icon: "agents" },
+    game: { label: "Game editor", icon: "gameplay" },
   };
-  const CORE = { workflows: { label: "Workflows", glyph: "⬡" } };
+  const CORE = { workflows: { label: "Workflows", icon: "studio" } };
 
   function loadScript(src) {
     return new Promise(resolve => {
@@ -53,7 +53,7 @@
         .concat(Object.keys(reg).filter(id => !(id in CORE) && !(id in BUILTIN)));
       return ids.map(id => {
         const meta = reg[id] || BUILTIN[id] || CORE[id] || {};
-        return { id, label: meta.label || id, glyph: meta.glyph || "◇" };
+        return { id, label: meta.label || id, icon: meta.icon || "note" };
       });
     },
     _ensureModules() {
@@ -76,7 +76,7 @@
       if (!nav) return;
       nav.innerHTML = this.flows().map(f =>
         `<button class="seat-tab ${f.id === this._flow ? "active" : ""}" data-flow="${esc(f.id)}"
-           onclick="Studio.select('${esc(f.id)}')">${esc(f.glyph)} ${esc(f.label)}</button>`).join("");
+           onclick="Studio.select('${esc(f.id)}')">${window.BGIcon ? BGIcon(f.icon, { size: 14 }) : ""}${esc(f.label)}</button>`).join("");
     },
     select(flow) {
       const ids = this.flows().map(f => f.id);
