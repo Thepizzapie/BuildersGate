@@ -16,13 +16,86 @@ from typing import Iterator, Optional
 DB_DIRNAME = ".bgate"
 DB_FILENAME = "game.db"
 
+# How long a writer waits for the lock before giving up. Agent runs are long and
+# bursty; 10s comfortably covers the worst contention we see with 8 seats live.
+BUSY_TIMEOUT_MS = 10_000
+
 _local = threading.local()
+
+
+def _work_item_rebuild(conn: sqlite3.Connection) -> None:
+    """Rebuild work_item: widen the status CHECK to allow 'cancelled', and add
+    the accountability/ceiling columns.
+
+    A plain ALTER cannot touch a CHECK constraint, so this is SQLite's documented
+    12-step table rebuild. Both pragmas matter: since 3.25 a RENAME rewrites the
+    REFERENCES clauses in child tables to follow the new name, so without
+    ``legacy_alter_table`` task_ref/asset/artifact_revision end up pointing at
+    ``work_item_old`` and lose their parent when it is dropped.
+    """
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("ALTER TABLE work_item RENAME TO work_item_old")
+        conn.execute("""
+            CREATE TABLE work_item (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                seat        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                brief       TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'queued'
+                                CHECK (status IN
+                                    ('queued','dispatched','done','failed','cancelled')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                source      TEXT NOT NULL DEFAULT 'manual',
+                source_ref  TEXT NOT NULL DEFAULT '',
+                result      TEXT NOT NULL DEFAULT '',
+                -- 0011 additions
+                actor         TEXT NOT NULL DEFAULT '',
+                scope_tier_id INTEGER REFERENCES bible_section(id) ON DELETE SET NULL,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                num_turns     INTEGER NOT NULL DEFAULT 0,
+                max_cost_usd  REAL,
+                max_runtime_s INTEGER,
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                base_commit   TEXT NOT NULL DEFAULT '',
+                branch        TEXT NOT NULL DEFAULT '',
+                worktree      TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            INSERT INTO work_item
+                (id, seat, title, brief, status, priority, source, source_ref,
+                 result, created_at, updated_at)
+            SELECT id, seat, title, brief, status, priority, source, source_ref,
+                   result, created_at, updated_at
+            FROM work_item_old
+        """)
+        conn.execute("DROP TABLE work_item_old")
+        conn.execute("CREATE INDEX idx_work_status ON work_item(status, priority DESC, id)")
+        conn.commit()
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise RuntimeError(f"work_item rebuild broke {len(broken)} references")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 # ---------------------------------------------------------------------------
 # Schema. Forward-only: append, never rewrite.
+#
+# An entry is either a SQL script or a callable(conn) — callables exist for the
+# table rebuilds SQLite cannot express as an ALTER.
 # ---------------------------------------------------------------------------
-_MIGRATIONS: list[str] = [
+_MIGRATIONS: list = [
     # 0001 — project identity, design bible, lore graph, canon facts, assets.
     """
     CREATE TABLE project (
@@ -397,6 +470,160 @@ _MIGRATIONS: list[str] = [
         UNIQUE (seat, key)
     );
     """,
+    # 0011 — accountability and ceilings.
+    #
+    # The QA audit's three converged blockers all need schema: nobody could answer
+    # "who approved this", "what did tonight cost", or "which scope tier is this
+    # work under". Everything here exists to make those answerable.
+    #
+    # actor: the human (or agent) responsible for a row. Agents stamp
+    #   'agent:item-<id>'; a dashboard session stamps the OS/studio identity.
+    #   `approved` now demands a non-agent actor — see artifacts.review.
+    # spend_*: dispatch is the only thing in the product that can spend money
+    #   unboundedly, so cost lands on the item and rolls up into a budget the
+    #   dispatcher checks BEFORE spawning.
+    # scope_tier_id: the cut line only has teeth if work points at a tier.
+    # workflow_run / job: the two long-running-operation models the UI needs to
+    #   render progress instead of blocking a request.
+    _work_item_rebuild,
+    """
+    -- Accountability. Free-form so a studio can put an SSO subject here later.
+    ALTER TABLE activity ADD COLUMN actor TEXT NOT NULL DEFAULT '';
+    ALTER TABLE artifact_revision ADD COLUMN reviewed_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE asset ADD COLUMN lock_actor TEXT NOT NULL DEFAULT '';
+
+    -- Repro steps. The QA seat had nowhere to type what the mic did not catch.
+    ALTER TABLE playtest_item ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE playtest_item ADD COLUMN repro_steps TEXT NOT NULL DEFAULT '';
+
+    -- Pinned references become versioned, like artifacts: the row points at the
+    -- newest revision and every artifact records the hash it actually resolved.
+    ALTER TABLE ref_pin ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE ref_pin ADD COLUMN hash TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ref_pin ADD COLUMN updated_at TEXT;
+
+    CREATE TABLE ref_pin_revision (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        revision    INTEGER NOT NULL,
+        path        TEXT NOT NULL,
+        hash        TEXT NOT NULL DEFAULT '',
+        note        TEXT NOT NULL DEFAULT '',
+        actor       TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (name, revision)
+    );
+
+    -- Money. One row per spend event, plus a budget the dispatcher enforces.
+    CREATE TABLE spend_event (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL DEFAULT 'agent'
+                         CHECK (kind IN ('agent','image','audio','other')),
+        work_item_id INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        logical_name TEXT NOT NULL DEFAULT '',
+        usd          REAL NOT NULL DEFAULT 0,
+        detail       TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_spend_created ON spend_event(created_at);
+    CREATE INDEX idx_spend_item ON spend_event(work_item_id);
+
+    CREATE TABLE spend_budget (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        per_item_usd  REAL NOT NULL DEFAULT 5,
+        per_day_usd   REAL NOT NULL DEFAULT 25,
+        per_project_usd REAL NOT NULL DEFAULT 250,
+        max_runtime_s INTEGER NOT NULL DEFAULT 1800,
+        max_concurrent INTEGER NOT NULL DEFAULT 4,
+        enforced      INTEGER NOT NULL DEFAULT 1,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    INSERT INTO spend_budget (id) VALUES (1);
+
+    -- Workflow runs: the node canvas needs somewhere to paint status from.
+    CREATE TABLE workflow_run (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL DEFAULT '',
+        seat        TEXT NOT NULL DEFAULT '',
+        graph_json  TEXT NOT NULL DEFAULT '{}',
+        status      TEXT NOT NULL DEFAULT 'running'
+                        CHECK (status IN ('running','passed','failed','cancelled')),
+        actor       TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE workflow_run_node (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id       INTEGER NOT NULL REFERENCES workflow_run(id) ON DELETE CASCADE,
+        node_id      TEXT NOT NULL,
+        kind         TEXT NOT NULL DEFAULT '',
+        label        TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending','queued','running','passed','failed','skipped')),
+        work_item_id INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        detail       TEXT NOT NULL DEFAULT '',
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (run_id, node_id)
+    );
+    CREATE INDEX idx_wf_node_run ON workflow_run_node(run_id);
+
+    -- Generic async job, so a 90-second Godot import stops holding an HTTP
+    -- request open. The playtest processing worker is the pattern being reused.
+    CREATE TABLE job (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind        TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'queued'
+                        CHECK (status IN ('queued','running','done','failed','cancelled')),
+        progress    REAL NOT NULL DEFAULT 0,
+        stage       TEXT NOT NULL DEFAULT '',
+        request_json TEXT NOT NULL DEFAULT '{}',
+        result_json TEXT NOT NULL DEFAULT '{}',
+        error       TEXT NOT NULL DEFAULT '',
+        actor       TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_job_status ON job(status, id DESC);
+
+    -- QA bot expectations + the last run kept as a baseline to diff against.
+    CREATE TABLE qa_bot_run (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        bot         TEXT NOT NULL,
+        verdict     TEXT NOT NULL DEFAULT 'unknown'
+                        CHECK (verdict IN ('pass','fail','error','unknown')),
+        expectations_json TEXT NOT NULL DEFAULT '[]',
+        results_json TEXT NOT NULL DEFAULT '[]',
+        samples_json TEXT NOT NULL DEFAULT '{}',
+        build_ref   TEXT NOT NULL DEFAULT '',
+        is_baseline INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_qa_bot_run ON qa_bot_run(bot, id DESC);
+
+    -- Waiters on a locked asset, so 'who is blocked on this .blend' is visible.
+    CREATE TABLE asset_waiter (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        asset_path  TEXT NOT NULL,
+        seat        TEXT NOT NULL,
+        owner       TEXT NOT NULL DEFAULT '',
+        since       TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (asset_path, owner)
+    );
+
+    -- Advisory locks on text paths. Binaries lock because they cannot merge;
+    -- two agents in overlapping lanes editing one .gd is last-write-wins, which
+    -- is the same problem with a friendlier failure mode.
+    CREATE TABLE path_lease (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        path        TEXT NOT NULL UNIQUE,
+        seat        TEXT NOT NULL DEFAULT '',
+        owner       TEXT NOT NULL DEFAULT '',
+        acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at  TEXT
+    );
+    CREATE INDEX idx_path_lease_owner ON path_lease(owner);
+    """,
 ]
 
 
@@ -428,6 +655,12 @@ def connect(root: str | os.PathLike[str]) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
+    # WAL gives us concurrent readers, not concurrent writers. The dashboard
+    # threadpool, the qa_gate daemon, N completion watchers, the playtest worker
+    # and every spawned agent's own MCP server all write this file — without a
+    # busy timeout the loser of any race gets an instant "database is locked"
+    # and an agent's finished work is dropped on the floor.
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     _migrate(conn)
 
     cache[key] = conn
@@ -436,9 +669,31 @@ def connect(root: str | os.PathLike[str]) -> sqlite3.Connection:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    for i, script in enumerate(_MIGRATIONS[version:], start=version + 1):
-        conn.executescript(script)
+    """Apply pending migrations under an exclusive lock.
+
+    Every process that opens the DB runs this. Unguarded, two starting at once
+    both read user_version=N and both replay migration N+1, and the second one
+    dies on 'table already exists' — taking a dashboard or an agent's MCP server
+    down at startup. The lock serialises them; the re-read inside it means the
+    loser sees the winner's work and does nothing.
+    """
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= len(_MIGRATIONS):
+        return  # fast path: no lock, no write, nothing pending
+
+    conn.execute("BEGIN EXCLUSIVE")
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        pending = list(enumerate(_MIGRATIONS[version:], start=version + 1))
+        conn.commit()  # callables manage their own transactions
+    except Exception:
+        conn.rollback()
+        raise
+
+    for i, step in pending:
+        if callable(step):
+            step(conn)
+        else:
+            conn.executescript(step)
         conn.execute(f"PRAGMA user_version = {i}")
         conn.commit()
 

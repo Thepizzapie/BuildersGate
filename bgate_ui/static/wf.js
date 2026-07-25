@@ -4,7 +4,11 @@
  * a graph of typed STEPS (inputs, asset-generation, agents, control/QA) on the
  * NodeCanvas engine. Step types + starter templates are contributed by plugin
  * files (wf_steps_*.js) via WF.registerStep / WF.registerTemplate. This core owns
- * the library, the builder UI, persistence, and Run (translate → dispatch agents).
+ * the library, the builder UI, persistence, and Run — which compiles the graph
+ * (the step registry lives here, in the browser) and hands it to the server as a
+ * PERSISTED run: one queue item per agent step, gates that block on a human, and
+ * node statuses polled back onto the canvas. Reload the page and the run is still
+ * there, because it never lived in this file.
  *
  * STEP CONTRACT (register from a plugin file):
  *   WF.registerStep({
@@ -17,7 +21,15 @@
  *     config(node, ctx){ return "<html>"; },    // inspector config UI (ctx.commit(node) to persist)
  *     agentSeat:"art",                          // seat that runs this step (for Run); optional
  *     toBrief(node, wf){ return "brief text"; },// this step's agent brief for Run; optional
+ *     kind:"agent"|"gate"|"consistency"|"passive", // what the RUN does with it; optional
  *   });
+ *
+ * `kind` is how a step behaves once the workflow is actually running: an agent
+ * step becomes a queue item, a gate BLOCKS the run until a human approves it, a
+ * consistency step has its threshold enforced against recorded scores, a passive
+ * step just carries data. Omit it and the server derives it (gate/consistency by
+ * type, agent from agentSeat) — it re-derives either way, so a step type cannot
+ * lie its way past a gate.
  *
  * TEMPLATE CONTRACT:
  *   WF.registerTemplate({ id, name, category, hint, build(){ return {nodes,edges}; } });
@@ -41,8 +53,17 @@
     { id: "saved", label: "Saved workflows" },
   ];
 
+  // API envelope: {ok:true,data} | {ok:false,error:{code,message}}. Unwrap once
+  // here so every call site deals in payloads, not envelopes.
+  const data = r => (r && r.ok && r.data !== undefined) ? r.data : null;
+  const errMsg = r => (r && r.error && r.error.message) || "request failed";
+
+  const STATUS_LABEL = { pending: "waiting", queued: "queued", running: "running",
+    passed: "passed", failed: "failed", skipped: "skipped" };
+
   const WF = {
     steps: {}, templates: [], _nc: null, _wf: null, _saved: [], _api: null, _saveT: null,
+    _run: null, _runNodes: null, _pollT: null,
 
     registerStep(def) { if (def && def.type) this.steps[def.type] = def; },
     registerTemplate(t) { if (t && t.id) this.templates.push(t); },
@@ -132,6 +153,7 @@
           <button class="qbtn small ghost" onclick="WF.save()">save</button>
           <button class="qbtn small" onclick="WF.run()">▶ Run workflow</button>
         </div>
+        <div class="wf-runbar" id="wf-runbar" hidden></div>
         <div class="wf-main">
           <div class="wf-palette" id="wf-palette"></div>
           <div class="wf-canvas" id="wf-canvas"></div>
@@ -140,6 +162,17 @@
       </div>`;
       this._renderPalette();
       this._mountCanvas();
+      this._attachRun();
+    },
+    /* A run lives on the server, so reopening the builder (or reloading the
+       page entirely) re-attaches to whatever is still in flight. */
+    async _attachRun() {
+      clearTimeout(this._pollT);          // never let the last workflow's poll paint this one
+      this._run = null; this._runNodes = null;
+      const wfId = this._wf && this._wf.id; if (!wfId) return;
+      const run = data(await get("/api/workflows/runs/latest?workflow_id=" + encodeURIComponent(wfId)));
+      if (!run || !run.id) { this._renderRun(); return; }
+      this._track(run.id);
     },
     _renderPalette() {
       const pal = document.getElementById("wf-palette"); if (!pal) return;
@@ -162,7 +195,12 @@
       const nodes = (this._wf.nodes || []).map(n => this._toCanvasNode(n));
       const nc = new NodeCanvas(host, {
         nodes, edges: (this._wf.edges || []).slice(), accent: "var(--ember)",
-        renderBody: n => { try { return this._stepDef(n.type).body ? this._stepDef(n.type).body(n) : ""; } catch (e) { return ""; } },
+        // The card body is the step's own preview with the LIVE run status
+        // chipped on top — the canvas is where a run reports, not a console.
+        renderBody: n => {
+          let body = ""; try { body = this._stepDef(n.type).body ? this._stepDef(n.type).body(n) : ""; } catch (e) {}
+          return this._statusChip(n.id) + body;
+        },
         onSelect: n => this._inspect(n),
         onConnect: (from, to) => { this._wf.edges = nc.edges.slice(); this.persist(); },
         onNodeMove: n => { if (n) { const w = (this._wf.nodes || []).find(x => x.id === n.id); if (w) { w.x = n.x; w.y = n.y; } } this._wf.edges = nc.edges.slice(); this.persist(); },
@@ -226,30 +264,116 @@
       toast("saved — now a reusable node in the palette");
     },
 
-    /* ---- run: hand the ordered workflow to the director to orchestrate --- */
-    async run() {
-      const wf = this._serialize();
+    /* ---- run ------------------------------------------------------------ */
+    /* The workflow is COMPILED here (the step registry lives in the browser)
+       and EXECUTED on the server: one persisted run, one queue item per agent
+       step, gates that actually block. The canvas then paints itself from the
+       run's node statuses. */
+    _compile(wf) {
       const order = this._topoOrder(wf);
-      const steps = order.map(id => wf.nodes.find(n => n.id === id)).filter(Boolean);
-      const agentSteps = steps.filter(n => this._stepDef(n.type).agentSeat);
-      if (!agentSteps.length) { toast("no agent/generation steps to run", true); return; }
-      const taskNode = wf.nodes.find(n => n.type === "input.task");
-      const taskText = (taskNode && taskNode.config && taskNode.config.text) || "(no task text — see the workflow name)";
-      const plan = steps.map((n, i) => {
+      const nodes = order.map(id => wf.nodes.find(n => n.id === id)).filter(Boolean).map(n => {
         const def = this._stepDef(n.type);
-        const seat = def.agentSeat ? `[${def.agentSeat}]` : "[gate/data]";
         let brief = ""; try { brief = def.toBrief ? def.toBrief(n, wf) : ""; } catch (e) {}
-        return `${i + 1}. ${def.label} ${seat}${brief ? " — " + brief : ""}`;
-      }).join("\n");
-      const brief =
-        `Execute the workflow "${wf.name}" for this task/complaint:\n"${taskText}"\n\n` +
-        `Run the steps IN ORDER below. For each AGENT step, carry out (or queue_add + dispatch) that seat's work with the given brief. ` +
-        `For a consistency/test/review gate, do not proceed until it passes; a FAIL means loop back and redo the prior art/gameplay step, then re-check. ` +
-        `Keep the task/complaint as the north star and report what each step produced.\n\nSteps:\n${plan}\n\n` +
-        `When the whole workflow is satisfied, queue_complete with a summary of the run.`;
-      const item = await post("/api/queue", { seat: "director", title: `Run: ${wf.name}`.slice(0, 80), brief, priority: 4, source: "workflow" });
-      if (item && item.id) { await post(`/api/queue/${item.id}/dispatch`, {}); toast(`workflow handed to the director (item #${item.id})`); }
-      else toast("could not start workflow", true);
+        return { id: n.id, type: n.type, label: n.title || def.label || n.type,
+          seat: def.agentSeat || "", kind: def.kind || "", brief, config: n.config || {} };
+      });
+      return { workflow: { id: wf.id, name: wf.name, category: wf.category },
+        name: wf.name, nodes, edges: (wf.edges || []).slice() };
+    },
+    async run() {
+      await this.save(true);                     // the run snapshots what is saved
+      const wf = this._serialize();
+      const plan = this._compile(wf);
+      if (!plan.nodes.some(n => n.seat || n.kind === "consistency")) { toast("no agent/generation steps to run", true); return; }
+      if (this._run && this._run.status === "running") { toast("this workflow is already running", true); return; }
+      const res = await post("/api/workflows/runs", Object.assign({ dispatch: true }, plan));
+      const run = data(res);
+      if (!run) { toast(errMsg(res), true); return; }
+      toast(`run #${run.id} started`);
+      this._paint(run);
+      this._track(run.id);
+    },
+    /* poll the run cheaply: the tick returns node statuses only, never the graph */
+    _track(runId) {
+      clearTimeout(this._pollT);
+      const tick = async () => {
+        const bar = document.getElementById("wf-runbar");
+        if (!bar || !bar.isConnected) return;              // left the builder
+        const run = data(await post(`/api/workflows/runs/${runId}/advance`, {}));
+        if (!run) return;
+        this._paint(run);
+        if (run.status === "running") this._pollT = setTimeout(tick, 2500);
+      };
+      tick();
+    },
+    _paint(run) {
+      const prev = this._run;
+      this._run = run;
+      const byId = {}; (run.nodes || []).forEach(n => byId[n.node_id] = n);
+      this._runNodes = byId;
+      const before = {}; ((prev && prev.nodes) || []).forEach(n => before[n.node_id] = n.status);
+      if (this._nc) {
+        (run.nodes || []).forEach(n => {
+          if (before[n.node_id] === n.status) return;      // repaint only what moved
+          const cn = this._nc.nodes.get(n.node_id);
+          if (cn) { cn.badge = STATUS_LABEL[n.status] || n.status; this._nc._renderNode(cn); }
+        });
+      }
+      this._renderRun();
+    },
+    _statusChip(nodeId) {
+      const n = this._runNodes && this._runNodes[nodeId];
+      if (!n) return "";
+      const label = STATUS_LABEL[n.status] || n.status;
+      return `<div class="wf-st wf-st-${esc(n.status)}" title="${esc(n.detail || "")}">${esc(label)}</div>`;
+    },
+    _renderRun() {
+      const bar = document.getElementById("wf-runbar"); if (!bar) return;
+      const run = this._run;
+      if (!run) { bar.hidden = true; bar.innerHTML = ""; return; }
+      bar.hidden = false;
+      const c = run.counts || {};
+      const done = (c.passed || 0) + (c.skipped || 0) + (c.failed || 0);
+      const total = (run.nodes || []).length;
+      const gates = (run.nodes || []).filter(n => n.kind === "gate" && n.status === "running");
+      const failed = (run.nodes || []).filter(n => n.status === "failed");
+      const live = (run.nodes || []).find(n => n.status === "queued" || n.status === "running");
+      let html = `<div class="wf-run-head">
+        <span class="wf-run-dot wf-st-${esc(run.status === "running" ? "running" : run.status === "passed" ? "passed" : run.status)}"></span>
+        <b>Run #${run.id}</b> <span class="wf-run-s">${esc(run.status)}</span>
+        <span class="wf-run-s">${done}/${total} steps</span>
+        ${live && live.kind !== "gate" ? `<span class="wf-run-s">now: ${esc(live.label)}${live.work_item_id ? ` · item #${live.work_item_id}` : ""}</span>` : ""}
+        <div style="flex:1"></div>
+        ${run.status === "running" ? `<button class="qbtn small ghost" onclick="WF.cancelRun()">cancel run</button>` : ""}
+      </div>`;
+      gates.forEach(g => {
+        html += `<div class="wf-gate">
+          <span class="wf-gate-g">⏛</span>
+          <span><b>${esc(g.label)}</b> is holding this run — a human has to decide.</span>
+          <div style="flex:1"></div>
+          <button class="qbtn small" onclick="WF.resolveGate('${esc(g.node_id)}','approve')">approve</button>
+          <button class="qbtn small ghost" onclick="WF.resolveGate('${esc(g.node_id)}','reject')">reject</button>
+        </div>`;
+      });
+      failed.forEach(f => {
+        html += `<div class="wf-fail"><b>${esc(f.label)}</b> — ${esc(f.detail || "failed")}</div>`;
+      });
+      bar.innerHTML = html;
+    },
+    async resolveGate(nodeId, decision) {
+      if (!this._run) return;
+      const note = decision === "reject" ? (prompt("Why is this rejected?") || "") : "";
+      const res = await post(`/api/workflows/runs/${this._run.id}/nodes/${encodeURIComponent(nodeId)}/approve`, { decision, note });
+      const run = data(res);
+      if (!run) { toast(errMsg(res), true); return; }
+      toast(decision === "approve" ? "gate approved" : "gate rejected");
+      this._paint(run);
+      if (run.status === "running") this._track(run.id);
+    },
+    async cancelRun() {
+      if (!this._run) return;
+      const run = data(await post(`/api/workflows/runs/${this._run.id}/cancel`, {}));
+      if (run) { clearTimeout(this._pollT); this._paint(run); toast("run cancelled"); }
     },
     _topoOrder(wf) {
       const ids = wf.nodes.map(n => n.id);
@@ -265,18 +389,25 @@
   window.WF = WF;
 
   /* base universal steps so the builder is usable before plugins load */
+  /* The task text is the run's north star: every step's brief quotes it. It used
+     to be bound to a function declared in an inline <script> inside innerHTML —
+     which the browser never executes — so the handler was undefined, nothing was
+     ever stored, and EVERY workflow ran against "(no task text)". It binds to
+     WF.set now, like every other field in the builder. */
   WF.registerStep({ type: "input.task", category: "input", label: "Task / complaint", glyph: "◎", accent: "var(--spark)",
-    defaults: { text: "" }, ports: () => ({ out: [{ id: "o", label: "task" }] }),
+    kind: "passive", defaults: { text: "" }, ports: () => ({ out: [{ id: "o", label: "task" }] }),
     body: n => `<div class="wf-b-note">${esc((n.config && n.config.text) || "the user's request…")}</div>`,
-    config: (n, ctx) => `<div class="wf-insp-p">The task or complaint this workflow addresses.</div><textarea class="wf-ta" oninput="n_taskset(this.value)" placeholder="e.g. Scoville's hit-detection fires from behind">${esc((n.config && n.config.text) || "")}</textarea><script>window.n_taskset=function(v){n=WF._nc.nodes.get('${n.id}');if(n){n.config=n.config||{};n.config.text=v;WF.persist();}}<\/script>` });
+    config: (n) => `<div class="wf-insp-p">The task or complaint this workflow addresses. Every step's brief quotes it.</div>`
+      + `<textarea class="wf-ta" placeholder="e.g. Scoville's hit-detection fires from behind" oninput="WF.set('${n.id}','text',this.value)">${esc((n.config && n.config.text) || "")}</textarea>` });
   WF.registerStep({ type: "input.reference", category: "input", label: "Reference", glyph: "▦", accent: "var(--c-art)",
-    defaults: { ref: "" }, ports: () => ({ out: [{ id: "o", label: "ref" }] }),
+    kind: "passive", defaults: { ref: "" }, ports: () => ({ out: [{ id: "o", label: "ref" }] }),
     body: n => (n.config && n.config.ref) ? `<img class="wf-b-img" src="/api/preview?rel=${encodeURIComponent(".bgate/refs/" + n.config.ref + ".png")}" onerror="this.style.opacity=.12">` : `<div class="wf-b-note">pick a reference</div>`,
-    config: (n, ctx) => `<div class="wf-insp-p">A reference image / anchor for downstream steps.</div>` });
+    config: (n, ctx) => `<div class="wf-insp-p">A reference image / anchor for downstream steps.</div>`
+      + `<div class="wf-row" style="flex-direction:column;align-items:stretch"><label style="margin-bottom:5px">Reference name</label><input type="text" style="width:100%" placeholder="a pinned ref, e.g. scoville" value="${esc((n.config && n.config.ref) || "")}" oninput="WF.set('${n.id}','ref',this.value)"></div>` });
   WF.registerStep({ type: "control.gate", category: "control", label: "Review gate", glyph: "⏛", accent: "var(--warn)",
-    defaults: { mode: "human" }, ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "ok" }] }),
-    body: n => `<div class="wf-b-note">pause for ${esc((n.config && n.config.mode) || "human")} approval</div>`,
-    config: (n) => `<div class="wf-insp-p">Holds until approved — human review or an automatic check.</div>` });
+    kind: "gate", defaults: {}, ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "ok" }] }),
+    body: () => `<div class="wf-b-note">blocks until a human approves</div>`,
+    config: () => `<div class="wf-insp-p">A real stop. When the run reaches this step it halts — no downstream step is queued — until a person approves or rejects it from the run bar above the canvas (or the pending-gates list). <b>Only a human can open it</b>; an agent calling the approval endpoint is refused. Rejecting fails the run.</div>` });
 
   if (!document.getElementById("wf-style")) {
     const s = document.createElement("style"); s.id = "wf-style";
@@ -301,6 +432,20 @@
       .wf-name{background:transparent;border:1px solid transparent;border-radius:7px;color:var(--bone);font:inherit;font-size:14px;font-weight:600;padding:5px 8px;min-width:160px}
       .wf-name:hover,.wf-name:focus{border-color:var(--seam);background:var(--void);outline:none}
       .wf-cat{font-family:var(--mono);font-size:10px;color:var(--ash2);text-transform:uppercase;letter-spacing:.08em}
+      /* run state */
+      .wf-runbar{border:1px solid var(--seam);border-bottom:0;background:var(--void);padding:8px 10px;display:flex;flex-direction:column;gap:7px}
+      .wf-run-head{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--bone)}
+      .wf-run-dot{width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 22%,transparent)}
+      .wf-run-s{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ash)}
+      .wf-gate{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--bone);background:var(--plate);border:1px solid var(--warn);border-radius:9px;padding:7px 10px}
+      .wf-gate-g{color:var(--warn);font-size:14px}
+      .wf-fail{font-size:12px;color:var(--bone);background:var(--plate);border:1px solid var(--bad);border-radius:9px;padding:7px 10px}
+      .wf-st{display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;padding:1px 7px;border:1px solid currentColor;border-radius:20px;margin-bottom:7px}
+      .wf-st-pending,.wf-st-skipped{color:var(--ash2)}
+      .wf-st-queued{color:var(--spark)}
+      .wf-st-running{color:var(--ember)}
+      .wf-st-passed{color:var(--good)}
+      .wf-st-failed,.wf-st-cancelled{color:var(--bad)}
       .wf-main{flex:1;display:flex;border:1px solid var(--seam);border-radius:0 0 12px 12px;overflow:hidden;min-height:0}
       .wf-palette{width:186px;flex:none;background:var(--iron);border-right:1px solid var(--seam);padding:12px 10px;overflow-y:auto}
       .wf-pal-cat{font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash2);margin:12px 0 6px}

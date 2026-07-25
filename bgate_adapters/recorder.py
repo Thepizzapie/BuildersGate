@@ -18,9 +18,10 @@ import sys
 import threading
 import time
 import wave
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
@@ -32,6 +33,12 @@ MIC_CHANNELS = 1
 # ~3e-3) failed the passive check unless you happened to be talking during it.
 # 5e-5 clears any live mic's noise floor while still catching true silence.
 SILENCE_PEAK = 0.00005
+
+# How much of the live signal the meter remembers. Seconds, not samples: the
+# point is "have you said anything recently", and the alternative — keeping the
+# whole take in memory to measure it — is a 20-minute array we already have on
+# disk. ~2s of 512-sample blocks at 16 kHz.
+LEVEL_WINDOW_S = 2.0
 
 
 class RecorderError(RuntimeError):
@@ -173,6 +180,72 @@ def list_windows(filter_text: str = "") -> list[dict]:
     return rows
 
 
+def resolve_window(window_title: Optional[str] = None, *,
+                   hints: Sequence[str] = ()) -> dict:
+    """Decide what gdigrab actually points at, and say so out loud.
+
+    gdigrab with no title records the ENTIRE DESKTOP — your inbox, your editor,
+    whatever else was open — and every frame in the resulting bug report shows
+    it. Worse, a title that no longer matches (the game was closed, or renamed)
+    used to be indistinguishable from asking for the desktop on purpose.
+
+    So: an explicit title that matches nothing RAISES, with the list of windows
+    that do exist. No title falls back to the desktop, but the caller is handed
+    the reason rather than left to assume.
+
+    gdigrab matches the title exactly, so we return the real title off the
+    window rather than the substring the user typed.
+    """
+    if sys.platform != "win32":
+        # gdigrab is Windows-only anyway; there is nothing to enumerate against.
+        return {"title": window_title, "whole_desktop": window_title is None,
+                "matches": [],
+                "note": "window enumeration is Windows-only — title passed through "
+                        "unchecked"}
+    try:
+        visible = list_windows()
+    except Exception as exc:                  # powershell missing/blocked
+        return {"title": window_title, "whole_desktop": window_title is None,
+                "matches": [],
+                "note": f"could not enumerate windows ({exc}) — target unverified"}
+
+    def _match(needle: str) -> list[dict]:
+        low = needle.lower()
+        return [w for w in visible
+                if low in w["title"].lower() or low in w["process"].lower()]
+
+    if window_title:
+        matches = _match(window_title)
+        if not matches:
+            titles = ", ".join(repr(w["title"]) for w in visible[:12]) or "(none)"
+            raise RecorderError(
+                f"no visible window matches {window_title!r} — start the game "
+                f"first, or pick from the open windows: {titles}. "
+                "Refusing to silently record the whole desktop instead."
+            )
+        exact = [w for w in matches if w["title"] == window_title]
+        chosen = (exact or matches)[0]
+        return {"title": chosen["title"], "whole_desktop": False,
+                "matches": matches,
+                "note": f"capturing {chosen['title']!r} ({chosen['process']})"}
+
+    for hint in hints:
+        if not hint:
+            continue
+        matches = _match(hint)
+        if matches:
+            chosen = matches[0]
+            return {"title": chosen["title"], "whole_desktop": False,
+                    "matches": matches,
+                    "note": f"auto-targeted {chosen['title']!r} from the project "
+                            f"name {hint!r}"}
+
+    return {"title": None, "whole_desktop": True, "matches": visible,
+            "note": ("capturing the WHOLE DESKTOP — no window was named and none "
+                     "matched the project name. Everything else on screen will "
+                     "be in the recording.")}
+
+
 # ---------------------------------------------------------------------------
 # Recording
 # ---------------------------------------------------------------------------
@@ -185,18 +258,31 @@ class Recording:
     started_at: float = 0.0
     video_started_at: float = 0.0
     audio_started_at: float = 0.0
+    window_title: Optional[str] = None
+    window_note: str = ""
+    mic_name: str = ""
     _proc: Optional[subprocess.Popen] = None
     _stream: object = None
     _frames: list = field(default_factory=list)
     _stop: threading.Event = field(default_factory=threading.Event)
     _err: list = field(default_factory=list)
+    # Live meter. Written from the audio callback, read from the HTTP thread —
+    # hence the lock. A deque of per-block peaks, not the audio itself.
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _peaks: deque = field(default_factory=lambda: deque(maxlen=256))
+    _rmss: deque = field(default_factory=lambda: deque(maxlen=256))
+    _samples: int = 0
+    _last_signal_at: float = 0.0
 
 
 def start(out_dir: str | Path, *, window_title: Optional[str] = None,
-          mic_device: Optional[int] = None, fps: int = 30) -> Recording:
+          window_hints: Sequence[str] = (), mic_device: Optional[int] = None,
+          fps: int = 30) -> Recording:
     """Begin capturing. Raises rather than returning a doomed session.
 
-    window_title  gdigrab target. None captures the full desktop.
+    window_title  gdigrab target. Must match a visible window or this raises.
+    window_hints  tried in order when no title is given; the desktop is the
+                  last resort, and rec.window_note says which happened.
     mic_device    sounddevice input index. Probed first — a silent mic aborts.
     """
     import numpy as np
@@ -214,10 +300,17 @@ def start(out_dir: str | Path, *, window_title: Optional[str] = None,
     mic_device = probe["device"]
 
     ffmpeg = find_ffmpeg()
+    # Raises when an explicit title matches nothing — before a frame is written.
+    window = resolve_window(window_title, hints=window_hints)
+    window_title = window["title"]
+
     rec = Recording(out_dir=out)
     rec.video_path = out / "session.mp4"
     rec.audio_path = out / "session.wav"
     rec.started_at = time.time()
+    rec.window_title = window_title
+    rec.window_note = window["note"]
+    rec.mic_name = probe.get("name", "")
 
     # --- video ---------------------------------------------------------
     target = f"title={window_title}" if window_title else "desktop"
@@ -249,12 +342,68 @@ def start(out_dir: str | Path, *, window_title: Optional[str] = None,
         if status:
             rec._err.append(str(status))
         rec._frames.append(indata.copy())
+        # Meter the block here — it is already in cache, and the alternative is
+        # re-scanning a growing array on every status poll.
+        peak = float(np.max(np.abs(indata))) if frames else 0.0
+        rms = float(np.sqrt(np.mean(indata ** 2))) if frames else 0.0
+        now = time.time()
+        with rec._lock:
+            rec._peaks.append(peak)
+            rec._rmss.append(rms)
+            rec._samples += int(frames)
+            if peak >= SILENCE_PEAK:
+                rec._last_signal_at = now
 
     rec._stream = sd.InputStream(samplerate=MIC_RATE, channels=MIC_CHANNELS,
                                  device=mic_device, dtype="float32", callback=on_audio)
     rec._stream.start()
     rec.audio_started_at = time.time()
+    rec._last_signal_at = rec.audio_started_at
     return rec
+
+
+def level(rec: Recording) -> dict:
+    """What the mic is hearing right now, for the live status panel.
+
+    peak/rms are over the last ~LEVEL_WINDOW_S of audio, not the whole take, so
+    the meter tracks the voice instead of slowly averaging it away.
+    silent_for_s is the one number that matters: past ~20s of digital silence
+    the session is recording nothing and should be stopped, not discovered dead
+    at transcription time.
+    """
+    blocks = max(1, int(LEVEL_WINDOW_S * MIC_RATE / 512))
+    with rec._lock:
+        peaks = list(rec._peaks)[-blocks:]
+        rmss = list(rec._rmss)[-blocks:]
+        samples = rec._samples
+        last_signal = rec._last_signal_at
+    captured_s = round(samples / MIC_RATE, 2)
+    peak = round(max(peaks), 6) if peaks else 0.0
+    rms = round(sum(rmss) / len(rmss), 6) if rmss else 0.0
+    started = rec.audio_started_at or rec.started_at or time.time()
+    silent_for = round(max(0.0, time.time() - (last_signal or started)), 2)
+    out = {
+        "ok": True,
+        "peak": peak,
+        "rms": rms,
+        "captured_s": captured_s,
+        "elapsed_s": round(max(0.0, time.time() - (rec.started_at or time.time())), 2),
+        "silent_for_s": silent_for,
+        "signal": peak >= SILENCE_PEAK,
+        "threshold": SILENCE_PEAK,
+        "window_s": LEVEL_WINDOW_S,
+        "device": rec.mic_name,
+        "window_title": rec.window_title,
+        "whole_desktop": rec.window_title is None,
+        "warnings": rec._err[-3:],
+    }
+    if not peaks:
+        out["warning"] = ("no audio blocks have arrived at all — the input "
+                          "stream opened but is delivering nothing")
+    elif not out["signal"]:
+        out["warning"] = (f"digital silence for {silent_for:.0f}s — check the mic "
+                          "is unmuted and selected before you lose the session")
+    return out
 
 
 def stop(rec: Recording, timeout: int = 60) -> dict:

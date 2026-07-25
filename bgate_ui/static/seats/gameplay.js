@@ -42,6 +42,9 @@ func _init():
     selItem: null,        // chosen work item id
     activityKey: null,    // last-rendered activity signature (dedupe)
     running: false,       // a run/check is in flight
+    // null = not yet known. The F1 hint below the play frame is only allowed to
+    // promise the tuning overlay once we've SEEN the addon in this project.
+    hasTuner: null,
   };
 
   function esc(s) { return S.bg ? S.bg.esc(s) : String(s == null ? "" : s); }
@@ -171,7 +174,7 @@ func _init():
       <div class="gp-card">
         <h4>Play alongside <button class="gp-btn alt" id="gp-play-reload" style="padding:3px 9px">reload build</button></h4>
         <iframe class="gp-frame" id="gp-play" src="about:blank" title="playable build"></iframe>
-        <div class="gp-hint">Live build — <b>F1</b> opens the in-game live tuning panel.</div>
+        <div class="gp-hint" id="gp-play-hint">Live build — checking for the tuning overlay…</div>
       </div>
     </div>
   </div>
@@ -181,12 +184,12 @@ func _init():
     <div class="gp-row" style="margin-top:0">
       <select class="gp-sel" id="gp-item" style="flex:1;min-width:220px"></select>
       <button class="gp-btn alt" id="gp-dispatch">Dispatch</button>
-      <button class="gp-btn danger" id="gp-stop">Stop</button>
+      <button class="gp-btn danger" id="gp-stop" disabled title="no live agent to stop">Stop</button>
     </div>
     <div class="gp-feed" id="gp-feed"><div class="gp-empty">pick a gameplay work item</div></div>
     <div class="gp-row">
-      <input class="gp-in" id="gp-steer" placeholder="steer the agent (course-correct, no restart)…" style="flex:1;min-width:220px">
-      <button class="gp-btn" id="gp-steer-btn">Steer</button>
+      <input class="gp-in" id="gp-steer" placeholder="no live agent — dispatch one to steer it" style="flex:1;min-width:220px" disabled>
+      <button class="gp-btn" id="gp-steer-btn" disabled title="no live agent to steer">Steer</button>
     </div>
   </div>
 </div>`;
@@ -243,8 +246,15 @@ func _init():
     if (host) host.innerHTML = '<div class="gp-empty">loading scripts…</div>';
     let data;
     try { data = await S.bg.get("/api/godot/files?kind=.gd"); }
-    catch (e) { if (host) host.innerHTML = `<div class="gp-empty">could not list scripts — ${esc(e && e.message)}</div>`; return; }
+    catch (e) {
+      // Unknown, not absent: don't claim F1 is missing because a fetch failed.
+      S.hasTuner = null; renderPlayHint();
+      if (host) host.innerHTML = `<div class="gp-empty">could not list scripts — ${esc(e && e.message)}</div>`;
+      return;
+    }
     S.tree = (data && data.tree) || [];
+    S.hasTuner = treeRels(S.tree).some(r => TUNER_REL.test(r));
+    renderPlayHint();
     if (!host) return;
     if (!S.tree.length) {
       host.innerHTML = '<div class="gp-empty">no .gd scripts found in the project</div>';
@@ -379,6 +389,58 @@ func _init():
     if (f) { try { f.src = "/play/?t=" + Date.now(); } catch (e) {} }
   }
 
+  // The overlay is an addon that ships with the scaffold. A project that
+  // predates it — or one someone stripped — has no F1, and saying otherwise is
+  // exactly the kind of advertised-but-absent affordance we're fixing.
+  const TUNER_REL = /(^|\/)addons\/bgate\/bgate_tuner\.gd$/i;
+
+  function treeRels(nodes, out) {
+    out = out || [];
+    (nodes || []).forEach(n => {
+      if (!n) return;
+      if (n.dir) treeRels(n.children, out);
+      else if (n.rel) out.push(String(n.rel).replace(/\\/g, "/"));
+    });
+    return out;
+  }
+
+  function renderPlayHint() {
+    const el = q("gp-play-hint");
+    if (!el) return;
+    if (S.hasTuner === true) {
+      el.innerHTML = "Live build — <b>F1</b> opens the live tuning overlay: " +
+                     "every <code>@export</code> in the scene, applied as you drag, " +
+                     "and kept for the next boot.";
+    } else if (S.hasTuner === false) {
+      el.textContent = "Live build — no tuning overlay in this project " +
+                       "(addons/bgate/bgate_tuner.gd is missing; rescaffold to get it).";
+    } else {
+      el.textContent = "Live build — checking for the tuning overlay…";
+    }
+  }
+
+  /* Stop and Steer act on a RUNNING process. With no live agent they used to
+   * sit enabled and fail at the API — a control that looks available and isn't
+   * is worse than one that's greyed out. */
+  function setAgentControls(live) {
+    const stop = q("gp-stop"), btn = q("gp-steer-btn"), inp = q("gp-steer");
+    const on = !!live;
+    if (stop) {
+      stop.disabled = !on;
+      stop.title = on ? `stop pid ${live.pid}` : "no live agent to stop";
+    }
+    if (btn) {
+      btn.disabled = !on;
+      btn.title = on ? "course-correct without restarting" : "no live agent to steer";
+    }
+    if (inp) {
+      inp.disabled = !on;
+      inp.placeholder = on ? "steer the agent (course-correct, no restart)…"
+                           : "no live agent — dispatch one to steer it";
+      if (!on) inp.value = "";
+    }
+  }
+
   /* ---- live agent ------------------------------------------------------- */
   async function loadQueue() {
     let data;
@@ -390,6 +452,7 @@ func _init():
     if (!sel) return;
     if (!S.items.length) {
       sel.innerHTML = '<option value="">no gameplay work items queued</option>';
+      setAgentControls(null);
       renderFeed({ steps: [], running: false, final: null }, true);
       return;
     }
@@ -405,7 +468,7 @@ func _init():
   }
 
   async function pollAgent() {
-    if (!S.selItem) return;
+    if (!S.selItem) { setAgentControls(null); return; }
     // refresh the live agent table (cheap) then this item's activity.
     try {
       const a = await S.bg.get("/api/agents");
@@ -415,6 +478,7 @@ func _init():
     const item = (S.items || []).find(i => i.id === S.selItem);
     const badge = q("gp-agent-badge");
     const live = liveAgentFor(S.selItem);
+    setAgentControls(live);
     if (badge) {
       if (live) { badge.className = "gp-badge live"; badge.textContent = `● live · pid ${live.pid}`; }
       else if (item && item.status === "dispatched") { badge.className = "gp-badge"; badge.textContent = "dispatched"; }
@@ -471,6 +535,7 @@ func _init():
 
   async function stopItem() {
     if (!S.selItem) return;
+    if (!liveAgentFor(S.selItem)) { S.bg.toast("no live agent to stop", true); return; }
     let r;
     try { r = await S.bg.post(`/api/queue/${S.selItem}/stop`, {}); }
     catch (e) { r = { ok: false, error: (e && e.message) }; }
@@ -482,6 +547,7 @@ func _init():
     const inp = q("gp-steer");
     const text = inp ? inp.value.trim() : "";
     if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
+    if (!liveAgentFor(S.selItem)) { S.bg.toast("no live agent to steer", true); return; }
     if (!text) return;
     let r;
     try { r = await S.bg.post(`/api/queue/${S.selItem}/steer`, { text }); }

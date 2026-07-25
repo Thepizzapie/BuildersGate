@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from . import db, search
+from . import activity, db, search
 from .util import rows
 
 KINDS = ("pillar", "loop", "scope_tier", "cut_line", "constraint", "reference")
@@ -50,10 +50,86 @@ def update(root: str | os.PathLike[str], section_id: int, *, title: str | None =
     return get(root, section_id)
 
 
-def remove(root: str | os.PathLike[str], section_id: int) -> None:
+def dependents(root: str | os.PathLike[str], section_id: int) -> list[dict]:
+    """Work items filed under this section. The FK is ON DELETE SET NULL, so a
+    plain delete would quietly untier live work and every one of those items
+    would stop being checkable against the cut line — silently in scope."""
+    conn = db.connect(root)
+    return rows(conn.execute(
+        "SELECT id, seat, title, status FROM work_item WHERE scope_tier_id = ? "
+        "ORDER BY id", (section_id,)))
+
+
+def remove(root: str | os.PathLike[str], section_id: int, *,
+           reassign_to: int | None = None, force: bool = False) -> dict:
+    """Delete a section. Work items pointing at it must be dealt with first.
+
+    Three ways, all explicit: nothing points at it and it just goes; pass
+    ``reassign_to`` and the work moves to another tier; pass ``force`` and the
+    work is untiered on purpose, which is recorded rather than assumed.
+    """
+    section = get(root, section_id)
+    linked = dependents(root, section_id)
+    if linked and reassign_to is None and not force:
+        raise ValueError(
+            f"{len(linked)} work item(s) are filed under {section['title']!r} "
+            f"(ids {[i['id'] for i in linked]}) — pass reassign_to to move them "
+            "to another tier, or force to untier them deliberately"
+        )
+    if reassign_to is not None:
+        target = get(root, reassign_to)
+        if target["kind"] != "scope_tier":
+            raise ValueError(
+                f"reassign_to must be a scope_tier, not a {target['kind']}")
+        if target["id"] == section_id:
+            raise ValueError("cannot reassign work to the section being deleted")
     with db.tx(root) as conn:
+        if reassign_to is not None:
+            conn.execute("UPDATE work_item SET scope_tier_id = ?, "
+                         "updated_at = datetime('now') WHERE scope_tier_id = ?",
+                         (reassign_to, section_id))
         conn.execute("DELETE FROM bible_section WHERE id = ?", (section_id,))
         search.drop(conn, _ref(section_id))
+    if linked:
+        where = f"moved to section {reassign_to}" if reassign_to is not None else "untiered"
+        activity.log(root, "bible",
+                     f"deleted {section['kind']} {section['title'][:60]!r}; "
+                     f"{len(linked)} work item(s) {where}",
+                     ref=str(section_id))
+    return {"deleted": section, "work_items": linked,
+            "reassigned_to": reassign_to, "untiered": bool(linked and reassign_to is None)}
+
+
+def reorder(root: str | os.PathLike[str], kind: str, order: list[int]) -> list[dict]:
+    """Rewrite the ranks of one kind to the given id order, 1..N, atomically.
+
+    Rank order IS the scope decision for tiers and the cut line, so a half-applied
+    reorder is a wrong cut line, not a cosmetic glitch. BEGIN IMMEDIATE takes the
+    write lock before the read that validates the ids, so two concurrent reorders
+    serialize instead of each rewriting from a stale view.
+    """
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+    ids = [int(i) for i in order]
+    if len(set(ids)) != len(ids):
+        raise ValueError("order contains duplicate section ids")
+    with db.tx(root) as conn:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        existing = [int(r["id"]) for r in conn.execute(
+            "SELECT id FROM bible_section WHERE kind = ? ORDER BY rank, id",
+            (kind,)).fetchall()]
+        missing = set(ids) - set(existing)
+        if missing:
+            raise ValueError(f"not {kind} sections of this project: {sorted(missing)}")
+        # Anything the caller left out keeps its relative order after the listed
+        # ids — a partial reorder must not drop sections off the end of the bible.
+        final = ids + [i for i in existing if i not in set(ids)]
+        for rank, section_id in enumerate(final, start=1):
+            conn.execute("UPDATE bible_section SET rank = ?, "
+                         "updated_at = datetime('now') WHERE id = ?",
+                         (rank, section_id))
+    return list_sections(root, kind)
 
 
 def get(root: str | os.PathLike[str], section_id: int) -> dict:

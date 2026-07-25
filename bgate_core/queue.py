@@ -16,23 +16,32 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from . import activity, db, iterations, seats as _seats
+from . import activity, db, iterations, scope as _scope, seats as _seats
 from .util import rows
 
-STATUSES = ("queued", "dispatched", "done", "failed")
+# 'cancelled' is a human calling work off — distinct from 'failed', which is an
+# agent (or the watchdog) reporting it could not finish. Only the second is
+# worth reopening; the audit needs to tell them apart.
+STATUSES = ("queued", "dispatched", "done", "failed", "cancelled")
 
 
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
-        priority: int = 0, source: str = "manual", source_ref: str = "") -> dict:
+        priority: int = 0, source: str = "manual", source_ref: str = "",
+        scope_tier_id: Optional[int] = None) -> dict:
     if seat not in _seats.DEFAULT_SEATS:
         raise ValueError(f"unknown seat {seat!r}; seats are {tuple(_seats.DEFAULT_SEATS)}")
     if not title.strip():
         raise ValueError("a work item needs a title")
+    # The cut line only means something if work cannot be filed under it.
+    # OutOfScope subclasses ValueError, so every caller that already maps
+    # ValueError -> 400 reports this correctly without knowing about scope.
+    _scope.enforce(root, scope_tier_id)
     with db.tx(root) as conn:
         cur = conn.execute(
-            "INSERT INTO work_item (seat, title, brief, priority, source, source_ref) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (seat, title.strip(), brief, priority, source, source_ref),
+            "INSERT INTO work_item (seat, title, brief, priority, source, "
+            "source_ref, scope_tier_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (seat, title.strip(), brief, priority, source, source_ref,
+             scope_tier_id),
         )
         item_id = int(cur.lastrowid)
     activity.log(root, "queue", f"queued for {seat}: {title.strip()[:80]}",
@@ -50,7 +59,9 @@ def get(root: str | os.PathLike[str], item_id: int) -> dict:
 
 def update(root: str | os.PathLike[str], item_id: int, *,
            title: Optional[str] = None, brief: Optional[str] = None,
-           seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
+           seat: Optional[str] = None, priority: Optional[int] = None,
+           max_cost_usd: Optional[float] = None,
+           max_runtime_s: Optional[int] = None) -> dict:
     """Edit an existing item in place, without changing its status/lineage.
 
     This is how a reviewer enriches a ticket: e.g. the video-watching director
@@ -71,6 +82,17 @@ def update(root: str | os.PathLike[str], item_id: int, *,
         sets.append("seat = ?"); params.append(seat)
     if priority is not None:
         sets.append("priority = ?"); params.append(int(priority))
+    # Per-item ceilings override the project budget for one expensive item —
+    # editable here so raising them is a deliberate edit, not a dispatch flag
+    # nobody sees again.
+    if max_cost_usd is not None:
+        if float(max_cost_usd) <= 0:
+            raise ValueError("max_cost_usd must be positive")
+        sets.append("max_cost_usd = ?"); params.append(float(max_cost_usd))
+    if max_runtime_s is not None:
+        if int(max_runtime_s) <= 0:
+            raise ValueError("max_runtime_s must be positive")
+        sets.append("max_runtime_s = ?"); params.append(int(max_runtime_s))
     if not sets:
         return get(root, item_id)
     params.append(item_id)
@@ -94,8 +116,10 @@ def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
     if seat:
         sql += " AND seat = ?"
         params.append(seat)
+    # Live work first, then finished, then the abandoned — a cancelled item is
+    # not a result anyone is waiting on, so it sinks below done/failed.
     sql += " ORDER BY CASE status WHEN 'queued' THEN 0 WHEN 'dispatched' THEN 1 "
-    sql += "ELSE 2 END, priority DESC, id"
+    sql += "WHEN 'cancelled' THEN 3 ELSE 2 END, priority DESC, id"
     return rows(conn.execute(sql, params))
 
 
@@ -157,6 +181,48 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
             "work_item", str(item_id), f"Work item {item_id} -> {status}",
             {"status": status, "result": result[:2000], "seat": item["seat"]})
     return item
+
+
+def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
+    """Send a done/failed item back to 'queued' for another round.
+
+    Retrying failed work is the most common motion in an agent runner, and the
+    reason is the whole payload: it is APPENDED to the brief so the next agent
+    reads exactly what to fix rather than repeating the run that failed.
+    ``attempts`` counts the rounds, which is what makes a loop visible.
+    """
+    item = get(root, item_id)
+    if item["status"] not in ("done", "failed", "cancelled"):
+        raise ValueError(f"item {item_id} is {item['status']!r} — only "
+                         "done/failed/cancelled items can be reopened")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("reason is required — say exactly what to fix")
+    stamp = ("\n\n--- REOPENED (attempt %d) ---\n" % (item["attempts"] + 2)) + reason
+    update(root, item_id, brief=(item["brief"] or "") + stamp[:3000])
+    with db.tx(root) as conn:
+        conn.execute("UPDATE work_item SET attempts = attempts + 1 WHERE id = ?",
+                     (item_id,))
+    return set_status(root, item_id, "queued", result=f"reopened: {reason[:1900]}")
+
+
+# Columns dispatch owns: they describe the RUN, not the request, so they are
+# deliberately out of update()'s reach — a reviewer editing a brief must not be
+# able to rewrite what a run cost or where it branched from.
+_RUN_FIELDS = ("actor", "base_commit", "branch", "worktree", "num_turns",
+               "total_cost_usd", "max_cost_usd", "max_runtime_s")
+
+
+def set_run_fields(root: str | os.PathLike[str], item_id: int, **fields) -> dict:
+    """Stamp dispatch/completion facts onto an item. Unknown keys are ignored."""
+    sets = {k: v for k, v in fields.items() if k in _RUN_FIELDS and v is not None}
+    if not sets:
+        return get(root, item_id)
+    assignments = ", ".join(f"{k} = ?" for k in sets)
+    with db.tx(root) as conn:
+        conn.execute(f"UPDATE work_item SET {assignments} WHERE id = ?",
+                     [*sets.values(), item_id])
+    return get(root, item_id)
 
 
 def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:

@@ -224,17 +224,23 @@ def _glob_re(pattern: str) -> re.Pattern:
     return re.compile("^" + "".join(out) + "$")
 
 
-def can_write(root: str | os.PathLike[str], role: str, path: str) -> dict:
+def can_write(root: str | os.PathLike[str], role: str, path: str,
+              owner: str = "") -> dict:
     """May this seat write this path? The oracle a PreToolUse hook asks.
 
-    Two independent gates, both must pass:
+    Three independent gates, all must pass:
       1. Lane — the path matches one of the seat's write_globs. Fails CLOSED for
          an unknown or disabled seat: no identity, no writes.
-      2. Lock — a binary locked by ANOTHER seat is off-limits even in-lane.
-         Being allowed to touch game/assets/** does not excuse stomping the
-         .blend that art currently holds.
+      2. Lock — a binary locked by another EXECUTION is off-limits even in-lane.
+         Comparing seats alone was not enough: two agents dispatched into the
+         same seat both passed the gate on the same .blend, which is exactly the
+         collision locking exists to prevent. ``owner`` is the execution
+         identity (BGATE_LOCK_OWNER, i.e. item-<id>); a caller that cannot name
+         one does not get to write over a lock that has an owner.
+      3. Lease — an advisory claim another execution holds on a text path.
     """
     rel = str(path).replace("\\", "/").lstrip("/")
+    owner = (owner or "").strip()
     seats = roles_for(root)
     seat = seats.get(role)
     if seat is None:
@@ -249,12 +255,33 @@ def can_write(root: str | os.PathLike[str], role: str, path: str) -> dict:
         entry = assets.get(root, rel)
     except (LookupError, ValueError):
         entry = None
-    if entry and entry["lock_seat"] and entry["lock_seat"] != role:
-        return {"allowed": False, "role": role, "path": rel,
-                "reason": f"locked by seat {entry['lock_seat']!r} since "
-                          f"{entry['lock_at']} — binary assets don't merge"}
+    if entry and entry["lock_seat"]:
+        held_owner = (entry["lock_owner"] or "").strip()
+        if entry["lock_seat"] != role:
+            return {"allowed": False, "role": role, "path": rel,
+                    "owner": held_owner,
+                    "reason": f"locked by seat {entry['lock_seat']!r} since "
+                              f"{entry['lock_at']} — binary assets don't merge"}
+        if held_owner and held_owner != owner:
+            return {"allowed": False, "role": role, "path": rel,
+                    "owner": held_owner,
+                    "reason": f"locked by {held_owner} (same seat {role!r}, "
+                              f"different execution) since {entry['lock_at']} — "
+                              "one binary, one editor"}
 
-    return {"allowed": True, "role": role, "path": rel}
+    try:
+        lease = assets.path_lease_for(root, rel)
+    except (LookupError, ValueError, RuntimeError):
+        lease = None
+    if lease and (lease["owner"] or "") != owner:
+        return {"allowed": False, "role": role, "path": rel,
+                "owner": lease["owner"],
+                "reason": f"leased by {lease['owner']} (seat "
+                          f"{lease['seat'] or '?'}) since {lease['acquired_at']} "
+                          f"until {lease['expires_at'] or 'forever'} — that run "
+                          "is editing this file right now"}
+
+    return {"allowed": True, "role": role, "path": rel, "owner": owner}
 
 
 # ---------------------------------------------------------------------------

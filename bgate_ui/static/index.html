@@ -1330,8 +1330,9 @@
       </section>
 
       <section class="deck-view" id="view-world">
-        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Pillars, scope, cut line, and canon used by the pipeline.</p></div>
-        <div class="dcard"><div class="inner" id="world"></div></div>
+        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible, hold the cut line, and keep the fiction honest. Everything here is authored by you — the pipeline reads it.</p></div>
+        <div class="seat-subnav" id="world-subnav"></div>
+        <div id="world-root"><div class="empty">loading world…</div></div>
       </section>
 
       <section class="deck-view" id="view-atlas">
@@ -1373,6 +1374,35 @@
     <div class="review-body" id="review-body"></div>
   </div>
 </div>
+<!-- First run. The whole shell is meaningless without a project, so this covers
+     it rather than sitting in a panel behind nine empty nav items. -->
+<div class="firstrun" id="firstrun" hidden>
+  <div class="fr-card">
+    <div class="fr-mark">◉</div>
+    <h1>Builders Gate</h1>
+    <p class="fr-hint" id="fr-hint">No project here yet.</p>
+    <form class="fr-form" id="fr-form" onsubmit="createProject(event)">
+      <label>Project name
+        <input id="fr-name" placeholder="Ember Run" maxlength="80" autocomplete="off" oninput="frPath()">
+      </label>
+      <label>Pitch <span class="opt">optional</span>
+        <input id="fr-pitch" placeholder="one line — what is this game?" maxlength="200" autocomplete="off">
+      </label>
+      <div class="fr-kinds" role="radiogroup" aria-label="Starting template">
+        <button type="button" class="fr-kind on" data-kind="2d" onclick="pickKind(this)">
+          <b>2D</b><span>Side-on platformer slice — player, ground, ledge, jump/land telemetry.</span>
+        </button>
+        <button type="button" class="fr-kind" data-kind="3d" onclick="pickKind(this)">
+          <b>3D</b><span>First-person slice — capsule player, ground, block, jump/land telemetry.</span>
+        </button>
+      </div>
+      <div class="fr-where" id="fr-where"></div>
+      <button class="fr-go" id="fr-go" type="submit">Create project</button>
+      <div class="fr-err" id="fr-err" hidden></div>
+    </form>
+    <p class="fr-alt">Same thing from a terminal: <code>bgate init &lt;name&gt; --kind 2d</code> — it prints the path it created.</p>
+  </div>
+</div>
 <footer id="foot" style="display:none">builders gate · local floor · 127.0.0.1</footer>
 
 <script>
@@ -1401,6 +1431,7 @@ function setWorkspace(name, trigger){
   if (next === "seats" && window.SeatShell) window.SeatShell.activate();
   if (next === "studio" && window.Studio) window.Studio.activate();
   if (next === "atlas" && window.Atlas) window.Atlas.activate();
+  if (next === "world" && window.World) window.World.activate();
   if (next === "overview") refreshOverview();
   const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
 }
@@ -1766,32 +1797,9 @@ function renderVault(assetsData, verify){
     (rows || `<tr><td colspan="4" style="color:#4c4c58">nothing tracked yet — asset_track / asset_lock</td></tr>`);
 }
 
-function renderWorld(bible, loreData){
-  // Explicit, labeled groups so nothing reads as inverted: PILLARS and IN-SCOPE
-  // tiers (full contrast, built now) sit above the cut line; DEFERRED tiers
-  // (below the line — not deleted) sit below, dimmed not struck; CANON is its
-  // own labeled section so the entity chips never read as "below the cut line".
-  const w = [];
-  if (bible.pillars.length){
-    w.push(`<div class="world-label">Pillars</div>`);
-    for (const p of bible.pillars) w.push(`<div class="pillar">${esc(p.title)}</div>`);
-  }
-  if (bible.in_scope.length){
-    w.push(`<div class="world-label">In scope — building now</div>`);
-    for (const s of bible.in_scope) w.push(`<div class="pillar">${esc(s.title)}</div>`);
-  }
-  if (bible.cut.length){
-    w.push(`<div class="cutline">— cut line · below is deferred —</div>`);
-    for (const c of bible.cut) w.push(`<div class="cut-item">${esc(c.title)}</div>`);
-  }
-  if (loreData.canon.length){
-    w.push(`<div class="world-label">Canon</div>`);
-    w.push(`<div class="canonrow">` + loreData.canon.map(e =>
-      `<span class="entity" title="${esc(e.summary)}"><b>${esc(e.name)}</b> · ${esc(e.kind)}</span>`).join("") + `</div>`);
-  }
-  if (!w.length) w.push(`<div class="empty" style="padding:4px 0">no bible yet — bible_add pillars and scope tiers</div>`);
-  document.getElementById("world").innerHTML = w.join("");
-}
+/* The World view is a WRITE surface now (bible editor, draggable cut line, lore
+ * graph) and lives in static/world.js — the read-only chip list that used to be
+ * rendered here was the producer's whole complaint. */
 
 function renderIterations(items){
   const box = document.getElementById("iterations");
@@ -2049,11 +2057,86 @@ function showOffline(reason){
   const chip = document.getElementById("sb-vault");   // not "drift" when we're offline
   if (chip){ const b = chip.querySelector("b"); if (b) b.textContent = "offline"; }
 }
+/* ── first run ───────────────────────────────────────────────────────────
+ * The absence case. /api/state answers 200 {project:null,hint} now, so this
+ * branch is REACHABLE — it used to be dead code behind a 503 that only ever
+ * rendered "Offline · server 503" on a machine that had never had a project.
+ * The legacy 404/503 shapes are still handled: an older backend must not fall
+ * through to the offline card either. */
+let firstRunKind = "2d";
+let firstRunCwd = "";
+
+function pickKind(btn){
+  firstRunKind = btn.dataset.kind;
+  document.querySelectorAll(".fr-kind").forEach(b => b.classList.toggle("on", b === btn));
+}
+function frPath(){
+  const el = document.getElementById("fr-where"); if (!el) return;
+  const name = (document.getElementById("fr-name")?.value || "").trim();
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!firstRunCwd || !slug){ el.textContent = ""; return; }
+  const sep = firstRunCwd.includes("\\") ? "\\" : "/";
+  el.textContent = `will be created at  ${firstRunCwd}${sep}${slug}`;
+}
+async function showFirstRun(hint){
+  const box = document.getElementById("firstrun"); if (!box) return;
+  const h = document.getElementById("fr-hint");
+  if (h && hint) h.textContent = hint;
+  const pl = document.getElementById("projline");
+  if (pl) pl.textContent = "no project yet";
+  setLamp(false, "no project yet");
+  if (!box.hidden) return;
+  box.hidden = false;
+  document.getElementById("fr-name")?.focus();
+  try{
+    const body = await (await fetch("/api/project")).json();
+    firstRunCwd = (body && body.data && body.data.cwd) || "";
+    frPath();
+  }catch(e){}
+}
+function hideFirstRun(){
+  const box = document.getElementById("firstrun");
+  if (box && !box.hidden) box.hidden = true;
+}
+async function createProject(event){
+  event.preventDefault();
+  const name = (document.getElementById("fr-name").value || "").trim();
+  const err = document.getElementById("fr-err");
+  const go = document.getElementById("fr-go");
+  if (!name){ err.textContent = "give it a name first"; err.hidden = false; return; }
+  err.hidden = true; go.disabled = true; go.textContent = "creating…";
+  try{
+    const r = await fetch("/api/project", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({name, kind: firstRunKind,
+        pitch: (document.getElementById("fr-pitch").value || "").trim()})});
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || body.ok === false){
+      err.textContent = (body.error && body.error.message) || `create failed · ${r.status}`;
+      err.hidden = false; go.disabled = false; go.textContent = "Create project";
+      return;
+    }
+    // The dashboard token is minted per project and this page was served before
+    // the project existed, so the fetch shim is carrying nothing. Reload.
+    go.textContent = "created — opening " + ((body.data && body.data.root) || "");
+    location.reload();
+  }catch(e){
+    err.textContent = "backend unreachable"; err.hidden = false;
+    go.disabled = false; go.textContent = "Create project";
+  }
+}
+
 async function pollState(){
   try{
     const r = await fetch("/api/state");
-    if (!r.ok){ showOffline(r.status === 404 ? "no project — run project_init" : `server ${r.status}`); return; }
+    if (r.status === 404 || r.status === 503){
+      showFirstRun("no project here yet — name one below");
+      return;
+    }
+    if (!r.ok){ showOffline(`server ${r.status}`); return; }
     const s = await r.json();
+    if (!s || !s.project){ showFirstRun(s && s.hint); return; }
+    hideFirstRun();
     document.getElementById("projline").innerHTML =
       `<b>${esc(s.project.name)}</b> · ${esc(s.project.engine)} ${esc(s.project.dimension)} · ${esc(s.root)}`;
     const v = s.verify;
@@ -2064,7 +2147,6 @@ async function pollState(){
     renderGallery(s.previews);
     renderAssetWorkspace(s.asset_groups || []);
     renderVault(s.assets, v);
-    renderWorld(s.bible, s.lore);
     renderSessions(s.sessions);
     const rcP = document.getElementById("rc-pt"); if (rcP) rcP.textContent = (s.sessions||[]).length;
     renderIterations(s.iterations || []);
@@ -2731,6 +2813,31 @@ setInterval(pollQueue, 3500);
   .ov-run-row .p{width:7px;height:7px;border-radius:50%;background:var(--ember);box-shadow:0 0 7px var(--ember);animation:deckthrob 1.4s infinite;flex:none}
   .ov-run-row .rt{flex:1;font-size:12.5px;color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ov-run-row .rs{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.06em}
+
+  /* First run — the absence of a project, made actionable. */
+  .firstrun{position:fixed;inset:0;z-index:9000;background:var(--void);display:flex;align-items:center;justify-content:center;padding:28px;overflow:auto}
+  .firstrun[hidden]{display:none}
+  .fr-card{width:min(560px,100%);background:var(--plate);border:1px solid var(--seam);border-radius:16px;padding:30px 32px;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+  .fr-mark{color:var(--ember);font-size:24px;line-height:1}
+  .fr-card h1{margin:10px 0 4px;font-size:22px;color:var(--bone);font-weight:600;letter-spacing:-.01em}
+  .fr-hint{margin:0 0 20px;color:var(--ash);font-size:13px;line-height:1.5}
+  .fr-form label{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ash2);margin-bottom:14px}
+  .fr-form label .opt{color:var(--seam2);letter-spacing:.06em}
+  .fr-form input{display:block;width:100%;margin-top:7px;padding:10px 12px;background:var(--void);border:1px solid var(--seam);border-radius:9px;color:var(--bone);font:inherit;font-size:14px;letter-spacing:normal;text-transform:none}
+  .fr-form input:focus{outline:none;border-color:var(--ember)}
+  .fr-kinds{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+  @media(max-width:520px){.fr-kinds{grid-template-columns:1fr}}
+  .fr-kind{text-align:left;padding:12px 13px;background:var(--void);border:1px solid var(--seam);border-radius:11px;color:var(--ash);cursor:pointer;font:inherit}
+  .fr-kind:hover{border-color:var(--seam2);color:var(--bone)}
+  .fr-kind.on{border-color:var(--ember);background:var(--ember-soft)}
+  .fr-kind b{display:block;color:var(--bone);font-size:13px;margin-bottom:4px}
+  .fr-kind span{display:block;font-size:11.5px;line-height:1.4}
+  .fr-where{font-family:var(--mono);font-size:11px;color:var(--ash2);min-height:16px;margin-bottom:14px;word-break:break-all}
+  .fr-go{width:100%;padding:12px;background:var(--ember);border:0;border-radius:10px;color:#fff;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+  .fr-go:disabled{opacity:.6;cursor:default}
+  .fr-err{margin-top:12px;padding:10px 12px;border:1px solid var(--bad);border-radius:9px;color:var(--bad);font-size:12.5px}
+  .fr-alt{margin:20px 0 0;padding-top:18px;border-top:1px solid var(--seam);color:var(--ash2);font-size:12px}
+  .fr-alt code{font-family:var(--mono);color:var(--ash);background:var(--void);padding:2px 6px;border-radius:5px}
 </style>
 <!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
 <script src="/static/nodecanvas.js"></script>
@@ -2750,12 +2857,16 @@ setInterval(pollQueue, 3500);
 <script src="/static/seats/qa.js"></script>
 <script src="/static/seats/narrative.js"></script>
 <script src="/static/atlas.js"></script>
+<script src="/static/world.js"></script>
 <script>
   // If the dashboard restored the seats view on load, build its sub-nav once
   // modules have registered.
   window.addEventListener("load", () => {
     if (window.SeatShell && document.getElementById("view-seats") &&
         !document.getElementById("view-seats").hidden) SeatShell.activate();
+    // Same for the world view — setWorkspace ran before world.js was parsed.
+    if (window.World &&
+        document.getElementById("view-world")?.classList.contains("active")) World.activate();
   });
 </script>
 </body>

@@ -1,0 +1,204 @@
+name: CI
+
+# This repository had no CI at all, which is precisely how a wheel that
+# contained no JavaScript and no scaffold templates shipped unnoticed. Two
+# jobs: the suite, and a wheel smoke that installs the built artifact into a
+# clean venv and uses it from OUTSIDE the source tree — the only way to prove
+# the package data is really in there.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  tests:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    # Windows is the development platform and the gate. Linux is informational
+    # for now: parts of the product shell out to Windows tooling (taskkill,
+    # tasklist), and the tests that do skip cleanly — but the rest of the suite
+    # has never been run there. Flip continue-on-error off once it is green.
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run the suite
+        shell: bash
+        # -m 'not slow' skips the tests that hit real Blender/whisper and the
+        # in-suite wheel build (the wheel is built for real in wheel-smoke).
+        run: python -m pytest -m "not slow" -q
+
+  wheel-smoke:
+    name: wheel smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist .
+
+      - name: Inspect the wheel contents
+        shell: bash
+        # Fails BEFORE installing, with a readable diff, when a data file that
+        # exists in the source tree did not make it into the artifact.
+        run: |
+          python - <<'PY'
+          import pathlib, sys, zipfile
+
+          wheel = sorted(pathlib.Path("dist").glob("*.whl"))[-1]
+          names = set(zipfile.ZipFile(wheel).namelist())
+          print(f"{wheel.name}: {len(names)} entries")
+
+          expected = set()
+          for src, prefix in (("bgate_ui/static", "bgate_ui/static"),
+                              ("templates", "templates"),
+                              ("bgate_engine/schemas", "bgate_engine/schemas")):
+              for p in pathlib.Path(src).rglob("*"):
+                  if p.is_file() and "__pycache__" not in p.parts:
+                      expected.add(p.as_posix())
+
+          missing = sorted(expected - names)
+          if missing:
+              print("MISSING FROM WHEEL:")
+              for m in missing:
+                  print("  -", m)
+              sys.exit(1)
+
+          js = [n for n in names if n.endswith(".js")]
+          assert js, "no JavaScript in the wheel"
+          assert not [n for n in names if n.endswith(".pyc")], "bytecode shipped"
+          assert not [n for n in names if n.startswith("tests/")], "tests shipped"
+          print(f"ok: {len(expected)} data files present, {len(js)} JS modules")
+          PY
+
+      - name: Install into a clean venv
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/clean"
+          if [ -d "$RUNNER_TEMP/clean/Scripts" ]; then
+            echo "VENV_PY=$RUNNER_TEMP/clean/Scripts/python" >> "$GITHUB_ENV"
+          else
+            echo "VENV_PY=$RUNNER_TEMP/clean/bin/python" >> "$GITHUB_ENV"
+          fi
+
+      - name: pip install the wheel
+        shell: bash
+        run: |
+          "$VENV_PY" -m pip install --upgrade pip
+          "$VENV_PY" -m pip install dist/*.whl
+
+      - name: Use the INSTALLED package (never the source tree)
+        shell: bash
+        # cwd is a scratch dir and the venv has no path to the checkout, so an
+        # import that resolves to the repo is impossible — this exercises what
+        # `pip install builders-gate` actually gives a user.
+        run: |
+          mkdir -p "$RUNNER_TEMP/scratch"
+          cd "$RUNNER_TEMP/scratch"
+          "$VENV_PY" - <<'PY'
+          import pathlib, tempfile
+
+          import bgate_core.scaffold as scaffold
+          import bgate_ui
+
+          here = pathlib.Path(scaffold.__file__).resolve()
+          assert "site-packages" in here.parts, f"imported from {here}"
+
+          # 1. the scaffolder finds its templates and stamps a real project
+          assert scaffold.TEMPLATES_DIR.is_dir(), scaffold.TEMPLATES_DIR
+          for t in scaffold.list_templates():
+              assert t["available"], t
+
+          dest = pathlib.Path(tempfile.mkdtemp()) / "game"
+          res = scaffold.new_project(dest, "Wheel Smoke", kind="2d")
+          assert (dest / "project.godot").is_file(), res
+          assert (dest / "addons/bgate/bgate_telemetry.gd").is_file(), res
+          assert "Wheel Smoke" in (dest / "project.godot").read_text(encoding="utf-8")
+          print("scaffolded:", res["files"])
+
+          # 2. the MCP tool the dashboard calls agrees
+          from bgate_mcp.server import godot_templates
+          kinds = {t["kind"]: t["available"] for t in godot_templates()["templates"]}
+          assert kinds == {"2d": True, "3d": True}, kinds
+
+          # 3. the dashboard's frontend is actually on disk
+          static = pathlib.Path(bgate_ui.__file__).parent / "static"
+          js = sorted(p.name for p in static.rglob("*.js"))
+          assert (static / "index.html").is_file(), "no index.html"
+          assert len(js) >= 10, js
+          assert (static / "seats").is_dir(), "per-seat panels missing"
+          assert sorted(p.name for p in (static / "seats").glob("*.js")), "no seat panels"
+          print(f"static: index.html + {len(js)} JS modules")
+
+          # 4. engine schemas
+          schemas = scaffold.TEMPLATES_DIR.parent / "bgate_engine" / "schemas"
+          assert list(schemas.glob("*.json")), "engine schemas missing"
+
+          # 5. the console script and the app import
+          import bgate_cli.main  # noqa: F401
+          from bgate_ui.app import app
+          assert any(getattr(r, "path", "") == "/api/state" for r in app.routes)
+          print("wheel smoke OK")
+          PY
+
+      - name: The dashboard serves its JS from the installed package
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/scratch"
+          "$VENV_PY" -m pip install httpx
+          "$VENV_PY" - <<'PY'
+          import os, pathlib, tempfile
+
+          root = pathlib.Path(tempfile.mkdtemp())
+          from bgate_core import project
+          project.init(root, "Wheel Smoke", pitch="served from the wheel")
+          os.environ["BGATE_ROOT"] = str(root)
+          os.environ["BGATE_NO_AUTH"] = "1"
+
+          from fastapi.testclient import TestClient
+          from bgate_ui.app import app
+
+          with TestClient(app) as c:
+              assert c.get("/").status_code == 200
+              static = pathlib.Path(__import__("bgate_ui").__file__).parent / "static"
+              for p in sorted(static.rglob("*.js")):
+                  rel = p.relative_to(static).as_posix()
+                  res = c.get(f"/static/{rel}")
+                  assert res.status_code == 200, f"/static/{rel} -> {res.status_code}"
+              print("every /static/**/*.js served 200 from the installed wheel")
+          PY

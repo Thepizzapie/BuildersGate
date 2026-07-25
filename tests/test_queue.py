@@ -251,7 +251,7 @@ class TestPlayRoute:
     def test_no_build_is_a_clear_404(self, client):
         got = client.get("/play/")
         assert got.status_code == 404
-        assert "export" in got.json()["detail"]
+        assert "export" in got.json()["error"]["message"]
 
 
 class TestStaleBuildGuard:

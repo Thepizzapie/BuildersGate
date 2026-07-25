@@ -6,13 +6,31 @@
  *   3. Flow map                — hand-rolled SVG: which assets are rigged into Godot
  *   4. Iteration lab           — filmstrip of every candidate revision, each shown
  *                                side-by-side with the reference it was drawn against,
- *                                with approve / reject / regenerate per card
+ *                                with approve / reject / regenerate per card,
+ *                                batch triage, and a compare lightbox
  *   5. Art-QA reviewer control — dispatch an INDEPENDENT qa reviewer + live activity
  *
- * Contract: never throw uncaught (would blank the seat). Everything is guarded.
+ * The technical-art-lead blocker this answers: "one image next to one reference
+ * at 260px and a prompt() box is not enough evidence to sign off on art that
+ * ships." So: any two frames can be stacked with an opacity slider, a CSS
+ * `difference` blend and a computed palette delta; animations loop at their
+ * .tres fps; twelve frames are approved in one keystroke with one shared
+ * reason; every candidate carries what it cost and what the consistency and
+ * sequence machinery already measured about it.
+ *
+ * Contract: never throw uncaught (would blank the seat). Everything is guarded,
+ * and a failed fetch renders its error message — never an empty panel.
  */
 (function () {
   window.SeatWS = window.SeatWS || {};
+
+  // Documented thresholds. These live in one place so a chip's colour and the
+  // tooltip that explains it can never disagree.
+  const T = {
+    SIMILARITY: 0.55,   // docs/character-consistency.md — <0.55 vs the ref = drift
+    PALETTE_DRIFT: 30,  // consistency_check palette_note — >30 = color drift likely
+    IDENTITY: 78,       // server _CONSISTENCY_FLOOR — vision identity score 0-100
+  };
 
   const A = {
     label: "Art",
@@ -30,12 +48,22 @@
     _refItem: undefined,   // itemId the RefManager is currently mounted for
     _detailSig: "",        // signature of the rendered detail (skip needless re-render)
     _onItem: null,         // bound window-event handler
+    _onKey: null,          // bound document keydown handler
+    _sel: null,            // Set of artifact ids selected for batch triage
+    _cmp: null,            // [artifactId, artifactId] picked for compare
+    _focusId: null,        // filmstrip cursor (j/k)
+    _strip: [],            // artifact ids in filmstrip order
+    _cost: { by_logical: {}, prices: {} },
+    _animTimer: null,      // looping SpriteFrames preview
 
     // --- entry -----------------------------------------------------------
     render(container, bg) {
       try {
         this._bg = bg;
         this._detailSig = "";
+        this._sel = new Set();
+        this._cmp = [];
+        this._focusId = null;
         try { this._logical = localStorage.getItem("art-logical") || null; } catch (e) {}
         container.innerHTML = STYLE + `
           <div class="art-root">
@@ -72,6 +100,12 @@
         this._onItem = () => { try { this._syncItem(); } catch (e) {} };
         window.addEventListener("bgws-item", this._onItem);
 
+        // keyboard triage — bound once, guarded so it never fires while the
+        // user is typing a reason into a textarea.
+        if (this._onKey) document.removeEventListener("keydown", this._onKey);
+        this._onKey = (e) => { try { this._key(e); } catch (err) {} };
+        document.addEventListener("keydown", this._onKey);
+
         this._els.lightbox.addEventListener("click", () => this._closeLightbox());
 
         this._loadAll(true);
@@ -90,17 +124,44 @@
       } catch (e) { console.error("[art] refresh", e); }
     },
 
+    // --- response shape helpers ------------------------------------------
+    // New route modules answer {ok:true,data}; app.py's older endpoints answer a
+    // bare payload. Both are normal here — neither may produce a blank panel.
+    _data(r) {
+      if (r && typeof r === "object" && r.ok === true && "data" in r) return r.data;
+      return r;
+    },
+    _err(r) {
+      if (!r) return "no response from the server";
+      if (r.ok === false || r.error) {
+        const e = r.error;
+        if (!e) return "request failed";
+        if (typeof e === "string") return e;
+        return e.message || e.code || "request failed";
+      }
+      return null;
+    },
+
     // --- data ------------------------------------------------------------
     async _loadAll(full) {
       const bg = this._bg;
-      const [arts, ws, queue] = await Promise.all([
+      const [arts, ws, queue, cost] = await Promise.all([
         bg.get("/api/artifacts").catch(() => ({ artifacts: [] })),
         bg.get("/api/assets/workspace").catch(() => ({ groups: [] })),
         bg.get("/api/queue").catch(() => ({ items: [] })),
+        bg.get("/api/art/cost").catch(() => null),
       ]);
       this._arts = (arts && arts.artifacts) || [];
       this._groups = (ws && ws.groups) || [];
       this._queueArt = ((queue && queue.items) || []).filter(i => i && i.seat === "art");
+      const c = this._data(cost);
+      if (c && typeof c === "object" && !this._err(cost)) {
+        this._cost = {
+          by_logical: c.by_logical || {},
+          prices: c.prices || {},
+          totals: c.totals || null,
+        };
+      }
 
       this._renderPicker();
       this._renderFlow();
@@ -134,6 +195,26 @@
       return names;
     },
 
+    _art(id) { return this._arts.find(a => a && a.id === id) || null; },
+    _meta(a) { return (a && a.metadata) || {}; },
+    _money(n) {
+      const v = Number(n);
+      if (!isFinite(v) || v <= 0) return "$0.00";
+      return "$" + (v < 0.01 ? v.toFixed(3) : v.toFixed(2));
+    },
+    _price(quality) {
+      const p = this._cost.prices || {};
+      const v = p[quality];
+      return typeof v === "number" ? v : (typeof p.medium === "number" ? p.medium : 0);
+    },
+    // The adapter's own quality keys — never a price list invented here. If the
+    // endpoint has not answered yet, fall back to the names only (the estimate
+    // then reads $0.00 rather than a made-up number).
+    _qualities() {
+      const keys = Object.keys(this._cost.prices || {});
+      return keys.length ? keys : ["low", "medium", "high", "auto"];
+    },
+
     // --- 1. active-item picker ------------------------------------------
     _renderPicker() {
       const bg = this._bg, el = this._els.picker;
@@ -143,10 +224,14 @@
           `<option value="${i.id}" ${i.id === active ? "selected" : ""}>#${i.id} · ${bg.esc((i.title || "").slice(0, 60))} · ${bg.esc(i.status || "")}</option>`)
       ).join("");
       const item = this._queueArt.find(i => i.id === active);
+      const tot = this._cost.totals || null;
+      const spent = tot && tot.by_kind && typeof tot.by_kind.image === "number"
+        ? `<span class="art-spend" title="every image this project has bought, from the spend ledger">image spend ${this._money(tot.by_kind.image)}</span>` : "";
       el.innerHTML = `
         <label class="art-pl">Focus item</label>
         <select class="art-sel" id="art-item-sel">${opts}</select>
         ${item ? `<label class="art-chk"><input type="checkbox" id="art-itemonly" ${this._itemOnly ? "checked" : ""}> only this item's assets</label>` : ""}
+        ${spent}
         <button class="art-btn art-primary" id="art-review-all" title="Dispatch an independent QA reviewer over every current candidate">Run QA review · all candidates</button>`;
       const sel = el.querySelector("#art-item-sel");
       if (sel) sel.onchange = () => { bg.setActiveItem(sel.value || null); };
@@ -252,6 +337,9 @@
       this._logical = name;
       try { localStorage.setItem("art-logical", name); } catch (e) {}
       this._detailSig = "";
+      this._sel = new Set();
+      this._cmp = [];
+      this._focusId = null;
       this._renderFlow();
       this._renderLab(true);
     },
@@ -267,11 +355,14 @@
             <div class="art-empty">No artifacts yet. When the art seat produces candidate images they appear here — every revision as a thumbnail, each beside the reference it was drawn against.</div>`;
           return;
         }
-        // signature: re-render detail only when the selected group's state changed
+        // signature: re-render detail only when the selected group's state
+        // changed. Selection/compare/focus are deliberately NOT in it — they are
+        // synced in place so a half-typed reason survives a refresh tick.
         const grp = m[this._logical] || [];
         const sig = this._logical + "|" + grp.map(a =>
           a.id + ":" + a.status + ":" + this._verdictSig(a)).join(",") +
-          "|rv:" + Object.keys(this._reviewers).join(",");
+          "|rv:" + Object.keys(this._reviewers).join(",") +
+          "|$:" + (this._cost.by_logical || {})[this._logical];
         if (!full && sig === this._detailSig) { this._renderLabList(m, names); return; }
         this._detailSig = sig;
 
@@ -297,9 +388,13 @@
         const approved = g.some(a => a.status === "approved" || a.status === "integrated");
         const cand = g.filter(a => a.status === "candidate").length;
         const dot = approved ? "var(--good)" : (cand ? "var(--warn)" : "var(--ash2)");
+        const jitter = g.some(a => this._seqFlags(a).length);
+        const usd = (this._cost.by_logical || {})[n];
         return `<button class="art-lrow ${n === this._logical ? "sel" : ""}" data-logical="${bg.esc(n)}">
           <span class="art-dot" style="background:${dot}"></span>
           <span class="art-lname">${bg.esc(n)}</span>
+          ${jitter ? '<span class="art-ljit" title="a multi-frame animation on this asset has adjacent-frame height jitter">⚡</span>' : ""}
+          ${usd ? `<span class="art-lusd" title="spent on this asset">${this._money(usd)}</span>` : ""}
           <span class="art-lcount">${g.length}${cand ? " · " + cand + "c" : ""}</span>
         </button>`;
       }).join("");
@@ -333,6 +428,122 @@
       return refs.map(r => this._projRel(r)).filter(Boolean);
     },
 
+    // ---- evidence chips -------------------------------------------------
+    _chip(txt, col, title, cls) {
+      const bg = this._bg;
+      return `<span class="art-badge ${cls || ""}" style="color:${col};border-color:${col}"
+        title="${bg.esc(title || "")}">${bg.esc(txt)}</span>`;
+    },
+
+    /* metadata.consistency — written by consistency_check (palette drift +
+     * alpha tripwires + composite) or by the vision identity pass inside
+     * image_sprites (per-frame 0-100 scores). Both shapes render; unknown
+     * shapes render whatever numbers they do carry rather than nothing. */
+    _consChips(a) {
+      const c = this._meta(a).consistency;
+      if (!c || typeof c !== "object") return "";
+      const out = [];
+      if (c.palette_drift != null && isFinite(Number(c.palette_drift))) {
+        const d = Number(c.palette_drift);
+        out.push(this._chip(`palette Δ ${d}`, d > T.PALETTE_DRIFT ? "var(--bad)" : "var(--good)",
+          c.palette_note || `advisory: >${T.PALETTE_DRIFT} = color drift likely; a low value does NOT prove identity`,
+          "art-cons"));
+      }
+      ["palette_similarity", "similarity", "unicom", "score_ratio"].forEach(k => {
+        const v = c[k];
+        if (typeof v === "number" && v >= 0 && v <= 1) {
+          out.push(this._chip(`${k.replace(/_/g, " ")} ${v.toFixed(2)}`,
+            v < T.SIMILARITY ? "var(--bad)" : "var(--good)",
+            `tripwire: <${T.SIMILARITY} against the neutral reference reads as drift`, "art-cons"));
+        }
+      });
+      if (typeof c.min === "number") {
+        out.push(this._chip(`identity min ${c.min}`, c.min < T.IDENTITY ? "var(--bad)" : "var(--good)",
+          `vision identity score 0-100 across the set; <${T.IDENTITY} = noticeable drift`, "art-cons"));
+      }
+      if (Array.isArray(c.flagged) && c.flagged.length) {
+        out.push(this._chip(`drift: ${c.flagged.join(", ")}`, "var(--bad)",
+          "frames the identity pass flagged for a regenerate", "art-cons"));
+      }
+      const al = c.alpha || {};
+      if (Array.isArray(al.flags) && al.flags.length) {
+        out.push(this._chip(`alpha ✕ ${al.flags.length}`, "var(--bad)", al.flags.join("\n"), "art-cons"));
+      } else if (al.clean === true) {
+        out.push(this._chip("alpha clean", "var(--good)",
+          "no white halo / bleed / dirty alpha / hollow measured", "art-cons"));
+      }
+      if (Array.isArray(al.review) && al.review.length) {
+        out.push(this._chip("alpha · look", "var(--warn)", al.review.join("\n"), "art-cons"));
+      }
+      if (c.auto_fail === true) {
+        out.push(this._chip("AUTO-FAIL", "var(--bad)",
+          "an alpha tripwire fired — this frame must not land", "art-cons"));
+      }
+      if (c.ok === false && c.error) {
+        out.push(this._chip("check errored", "var(--ash2)", String(c.error), "art-cons"));
+      }
+      return out.join("");
+    },
+
+    /* metadata.sequence — sprites._sequence_flags: per-animation adjacent-frame
+     * height jitter. Written by image_sprites (painted path). */
+    _seqFlags(a) {
+      const s = this._meta(a).sequence;
+      if (!s || typeof s !== "object") return [];
+      return Array.isArray(s.flags) ? s.flags : [];
+    },
+    _seqChips(a) {
+      const s = this._meta(a).sequence;
+      if (!s || typeof s !== "object") return "";
+      const flags = this._seqFlags(a);
+      if (!flags.length) {
+        return Array.isArray(s.flagged)
+          ? this._chip("motion steady", "var(--good)",
+              "no adjacent-frame height jitter above the 18% advisory", "art-cons")
+          : "";
+      }
+      return flags.map(f => this._chip(
+        `jitter: ${f.anim} ±${Math.round((Number(f.max_adjacent_height_jump) || 0) * 100)}%`,
+        "var(--warn)",
+        `the drawn character height pops between adjacent frames of ${f.anim}` +
+        (Array.isArray(f.height_range) ? ` (${f.height_range.join("–")}px)` : "") +
+        " — advisory: a human should look, not an auto-reject",
+        "art-cons")).join("");
+    },
+
+    _costChip(a) {
+      const m = this._meta(a);
+      const bits = [];
+      if (typeof m.estimated_usd === "number" && m.estimated_usd > 0) bits.push("~" + this._money(m.estimated_usd));
+      if (typeof m.seconds === "number" && m.seconds > 0) bits.push(m.seconds.toFixed(1) + "s");
+      if (!bits.length) return "";
+      const calls = m.image_calls ? ` over ${m.image_calls} image calls` : "";
+      return this._chip(bits.join(" · "), "var(--ash)",
+        `estimated spend and wall-clock latency for this revision${calls}`, "art-cost");
+    },
+
+    // ---- animations available for the looping preview -------------------
+    _anims(a) {
+      const m = this._meta(a);
+      const frames = m.frames && typeof m.frames === "object" ? m.frames : null;
+      if (!frames) return {};
+      const by = {};
+      Object.keys(frames).forEach(pose => {
+        const rel = this._projRel(frames[pose]);
+        if (!rel) return;
+        const cut = pose.indexOf("/");
+        const anim = cut === -1 ? pose : pose.slice(0, cut);
+        const idx = cut === -1 ? 0 : parseInt(pose.slice(cut + 1), 10) || 0;
+        (by[anim] = by[anim] || []).push({ idx, rel });
+      });
+      Object.keys(by).forEach(k => by[k].sort((x, y) => x.idx - y.idx));
+      return by;
+    },
+    _fps(a) {
+      const f = Number(this._meta(a).fps);
+      return isFinite(f) && f > 0 ? f : 8;   // sprites' own default
+    },
+
     _renderDetail(m) {
       const bg = this._bg;
       const host = this._els.lab.querySelector("#art-detail");
@@ -340,6 +551,11 @@
       const name = this._logical;
       const g = (m[name] || []).slice();   // newest first (already sorted)
       if (!g.length) { host.innerHTML = '<div class="art-empty">pick an asset on the left</div>'; return; }
+
+      this._strip = g.map(a => a.id);
+      this._cmp = (this._cmp || []).filter(id => this._strip.indexOf(id) !== -1);
+      this._sel = new Set([...(this._sel || [])].filter(id => this._strip.indexOf(id) !== -1));
+      if (this._strip.indexOf(this._focusId) === -1) this._focusId = this._strip[0] || null;
 
       const badge = (s) => {
         const col = { candidate: "var(--warn)", approved: "var(--good)", integrated: "var(--good)",
@@ -356,13 +572,19 @@
           title="${bg.esc(qa.reasons || "")}">QA ${bg.esc(qa.verdict || "?")}${sc}</span>`;
       };
 
-      // filmstrip = every revision thumbnail
+      // filmstrip = every revision thumbnail; clicking picks it for compare
       const strip = g.map(a => {
         const rel = this._revRel(a);
-        return `<div class="art-frame" data-id="${a.id}" title="r${a.revision} · ${bg.esc(a.status)}">
+        return `<div class="art-frame" data-id="${a.id}" title="r${a.revision} · ${bg.esc(a.status)} — click to pick for compare">
           <img src="${bg.preview(rel)}" onerror="this.style.opacity=.15" alt="">
-          <span class="art-fr-r">r${a.revision}</span></div>`;
+          <span class="art-fr-r">r${a.revision}</span>
+          <span class="art-fr-c"></span>
+          <button class="art-fr-z" data-zoom="${a.id}" title="open full size">⤢</button>
+        </div>`;
       }).join("");
+
+      // any revision with per-pose frames can be played back at its .tres fps
+      const playable = g.filter(a => Object.keys(this._anims(a)).length);
 
       // candidate/revision cards (candidates first, then the rest)
       const order = g.slice().sort((a, b) => {
@@ -375,13 +597,18 @@
         const refThumbs = refs.length
           ? refs.map(r => `<img class="art-refimg" src="${bg.preview(r)}" onerror="this.style.opacity=.15" data-prev="${bg.esc(r)}" alt="ref">`).join("")
           : '<div class="art-noref">no reference on record</div>';
-        const isCand = a.status === "candidate";
-        return `<div class="art-cand">
+        const cons = this._meta(a).consistency || {};
+        const composite = this._projRel(cons.composite);
+        const evid = this._consChips(a) + this._seqChips(a);
+        return `<div class="art-cand" data-card="${a.id}">
           <div class="art-cand-top">
+            <label class="art-cbxw" title="select for batch triage">
+              <input type="checkbox" class="art-cbx" data-id="${a.id}"></label>
             <span class="art-rev">r${a.revision}</span>
-            ${badge(a.status)}${qaBadge(a)}
+            ${badge(a.status)}${qaBadge(a)}${this._costChip(a)}
             <span class="art-model">${bg.esc(a.model || a.producer || "")}</span>
           </div>
+          ${evid ? `<div class="art-evid">${evid}</div>` : ""}
           <div class="art-compare">
             <div class="art-side-img">
               <div class="art-caplabel">candidate</div>
@@ -392,6 +619,10 @@
               <div class="art-caplabel">reference${refs.length > 1 ? "s" : ""}</div>
               <div class="art-refrow">${refThumbs}</div>
             </div>
+            ${composite ? `<div class="art-side-img art-compside">
+              <div class="art-caplabel">consistency composite</div>
+              <img class="art-refimg art-compimg" src="${bg.preview(composite)}" onerror="this.style.opacity=.15" data-prev="${bg.esc(composite)}" alt="composite">
+            </div>` : ""}
           </div>
           <div class="art-actions">
             <button class="art-btn art-ok" data-act="approve" data-id="${a.id}" ${a.status === "approved" ? "disabled" : ""}>Approve</button>
@@ -399,31 +630,198 @@
             <button class="art-btn" data-act="regen" data-id="${a.id}">Regenerate</button>
             <button class="art-btn" data-act="restore" data-id="${a.id}" title="Make this revision the live sheet the game uses">Restore</button>
           </div>
+          <div class="art-askhost"></div>
         </div>`;
       }).join("");
 
       const reviewerId = this._reviewers[name];
+      const usd = (this._cost.by_logical || {})[name];
       host.innerHTML = `
         <div class="art-detail-head">
           <div class="art-dtitle">${bg.esc(name)}</div>
+          <span class="art-hcost" title="every image call charged to this logical asset, from the spend ledger">${usd ? this._money(usd) : "$0.00"} spent</span>
           <button class="art-btn art-primary" id="art-review-one">Run independent QA review</button>
+        </div>
+        <div class="art-striptools">
+          <span class="art-muted">click two frames to compare · <b>j</b>/<b>k</b> move · <b>a</b> approve · <b>r</b> reject · <b>Esc</b> close</span>
+          ${playable.length ? `<select class="art-sel art-small" id="art-playpick">
+            ${playable.map(a => `<option value="${a.id}">r${a.revision} · ${this._fps(a)} fps</option>`).join("")}
+          </select><button class="art-btn" id="art-play">▶ Loop animation</button>` : ""}
+          <button class="art-btn art-primary" id="art-cmp" disabled>Compare</button>
         </div>
         <div class="art-strip">${strip}</div>
         <div id="art-qa-activity">${reviewerId ? '<div class="art-muted">QA reviewer dispatched — activity loading…</div>' : ""}</div>
+        <div class="art-bar" id="art-bar" hidden>
+          <div class="art-barrow">
+            <b id="art-bar-n">0 selected</b>
+            <button class="art-btn art-ok" data-batch="approve" id="art-bar-ok">Approve</button>
+            <button class="art-btn art-no" data-batch="reject" id="art-bar-no">Reject</button>
+            <span class="art-barsep"></span>
+            <label class="art-barlbl">candidates
+              <input type="number" class="art-num" id="art-bar-count" min="1" max="12" value="1"></label>
+            <label class="art-barlbl">quality
+              <select class="art-sel art-small" id="art-bar-q">
+                ${this._qualities().map(q =>
+                  `<option value="${bg.esc(q)}" ${q === "medium" ? "selected" : ""}>${bg.esc(q)}${
+                    this._price(q) ? " · " + this._money(this._price(q)) : ""}</option>`).join("")}
+              </select></label>
+            <span class="art-est" id="art-bar-est" title="candidate count × selected frames × the adapter's own per-image price">~$0.00</span>
+            <button class="art-btn" data-batch="regen" id="art-bar-regen">Regenerate</button>
+            <span class="art-barsep"></span>
+            <button class="art-btn" id="art-bar-clear">clear</button>
+          </div>
+          <textarea class="art-ta" id="art-bar-reason" rows="2"
+            placeholder="one shared reason — applied to every selected frame (what's off-model? what should improve?)"></textarea>
+        </div>
         <div class="art-cards">${cards}</div>`;
 
       // wire actions
-      host.querySelectorAll(".art-frame img, .art-prodimg, .art-refimg").forEach(img =>
+      host.querySelectorAll(".art-prodimg, .art-refimg").forEach(img =>
         img.addEventListener("click", (e) => {
           e.stopPropagation();
           const src = img.dataset.prev ? bg.preview(img.dataset.prev) : img.src;
           this._openLightbox(src);
         }));
+      host.querySelectorAll(".art-frame").forEach(f => {
+        f.addEventListener("click", (e) => {
+          if (e.target && e.target.classList.contains("art-fr-z")) return;
+          this._pickCompare(Number(f.dataset.id));
+        });
+      });
+      host.querySelectorAll(".art-fr-z").forEach(b =>
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const a = this._art(Number(b.dataset.zoom));
+          if (a) this._openLightbox(bg.preview(this._revRel(a)));
+        }));
+      host.querySelectorAll(".art-cbx").forEach(cb =>
+        cb.addEventListener("change", () => this._toggleSel(Number(cb.dataset.id), cb.checked)));
       const one = host.querySelector("#art-review-one");
       if (one) one.onclick = () => this._runReview({ logical_name: name }, name, one);
       host.querySelectorAll(".art-actions button").forEach(b =>
         b.addEventListener("click", () => this._cardAction(b.dataset.act, Number(b.dataset.id), b)));
+      const cmp = host.querySelector("#art-cmp");
+      if (cmp) cmp.onclick = () => this._openCompare();
+      const play = host.querySelector("#art-play");
+      if (play) play.onclick = () => {
+        const pick = host.querySelector("#art-playpick");
+        this._openAnim(Number(pick && pick.value));
+      };
+      host.querySelectorAll("[data-batch]").forEach(b =>
+        b.addEventListener("click", () => this._batch(b.dataset.batch, b)));
+      const clear = host.querySelector("#art-bar-clear");
+      if (clear) clear.onclick = () => { this._sel = new Set(); this._syncSel(); };
+      ["#art-bar-count", "#art-bar-q"].forEach(sel => {
+        const el = host.querySelector(sel);
+        if (el) el.addEventListener("input", () => this._syncSel());
+      });
+
+      this._syncSel();
+      this._syncStrip();
       if (reviewerId) this._pollReviewer();
+    },
+
+    // ---- selection + compare picking (synced in place, never re-rendered) --
+    _toggleSel(id, on) {
+      if (!id) return;
+      if (on) this._sel.add(id); else this._sel.delete(id);
+      this._syncSel();
+    },
+    _syncSel() {
+      const host = this._els && this._els.lab.querySelector("#art-detail");
+      if (!host) return;
+      const n = this._sel.size;
+      const bar = host.querySelector("#art-bar");
+      if (bar) bar.hidden = n === 0;
+      const label = host.querySelector("#art-bar-n");
+      if (label) label.textContent = `${n} selected`;
+      const ok = host.querySelector("#art-bar-ok");
+      if (ok) ok.textContent = `Approve ${n}`;
+      const no = host.querySelector("#art-bar-no");
+      if (no) no.textContent = `Reject ${n}`;
+      const rg = host.querySelector("#art-bar-regen");
+      if (rg) rg.textContent = `Regenerate ${n}`;
+      const cnt = Math.max(1, Number((host.querySelector("#art-bar-count") || {}).value) || 1);
+      const q = (host.querySelector("#art-bar-q") || {}).value || "medium";
+      const est = host.querySelector("#art-bar-est");
+      if (est) {
+        est.textContent = "~" + this._money(n * cnt * this._price(q));
+        est.title = `${n} frame(s) × ${cnt} candidate(s) × ${this._money(this._price(q))} per image at ${q} quality`;
+      }
+      host.querySelectorAll(".art-cbx").forEach(cb => {
+        const on = this._sel.has(Number(cb.dataset.id));
+        cb.checked = on;
+        const card = cb.closest(".art-cand");
+        if (card) card.classList.toggle("sel", on);
+      });
+    },
+    _pickCompare(id) {
+      if (!id) return;
+      this._focusId = id;
+      const i = this._cmp.indexOf(id);
+      if (i !== -1) this._cmp.splice(i, 1);
+      else { this._cmp.push(id); if (this._cmp.length > 2) this._cmp.shift(); }
+      this._syncStrip();
+    },
+    _syncStrip() {
+      const host = this._els && this._els.lab.querySelector("#art-detail");
+      if (!host) return;
+      host.querySelectorAll(".art-frame").forEach(f => {
+        const id = Number(f.dataset.id);
+        const i = this._cmp.indexOf(id);
+        f.classList.toggle("cmp", i !== -1);
+        f.classList.toggle("focus", id === this._focusId);
+        const tag = f.querySelector(".art-fr-c");
+        if (tag) tag.textContent = i === -1 ? "" : (i === 0 ? "A" : "B");
+      });
+      const btn = host.querySelector("#art-cmp");
+      if (btn) {
+        btn.disabled = this._cmp.length !== 2;
+        const revs = this._cmp.map(id => { const a = this._art(id); return a ? "r" + a.revision : "?"; });
+        btn.textContent = this._cmp.length === 2 ? `Compare ${revs[0]} ⇄ ${revs[1]}` : "Compare";
+      }
+    },
+
+    // ---- inline reason prompt (replaces every prompt()) -------------------
+    _ask(host, opts) {
+      const bg = this._bg;
+      opts = opts || {};
+      return new Promise(resolve => {
+        try {
+          const old = host.querySelector(".art-ask");
+          if (old) old.remove();
+          const row = document.createElement("div");
+          row.className = "art-ask";
+          row.innerHTML = `
+            <div class="art-asklabel">${bg.esc(opts.label || "reason")}</div>
+            ${opts.confirmOnly ? "" : `<textarea class="art-ta" rows="2"
+              placeholder="${bg.esc(opts.placeholder || "")}">${bg.esc(opts.value || "")}</textarea>`}
+            <div class="art-askbtns">
+              <button class="art-btn art-primary" data-a="ok">${bg.esc(opts.ok || "confirm")}</button>
+              <button class="art-btn" data-a="no">cancel</button>
+              <span class="art-muted">Ctrl+Enter confirms · Esc cancels</span>
+            </div>`;
+          host.appendChild(row);
+          const ta = row.querySelector("textarea");
+          const done = (v) => { try { row.remove(); } catch (e) {} resolve(v); };
+          row.querySelector('[data-a="ok"]').onclick = () => done(ta ? ta.value : "");
+          row.querySelector('[data-a="no"]').onclick = () => done(null);
+          if (ta) {
+            ta.focus();
+            ta.setSelectionRange(ta.value.length, ta.value.length);
+            ta.addEventListener("keydown", e => {
+              e.stopPropagation();
+              if (e.key === "Escape") { e.preventDefault(); done(null); }
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); done(ta.value); }
+            });
+          }
+          row.scrollIntoView({ block: "nearest" });
+        } catch (e) { resolve(null); }
+      });
+    },
+    _askHost(id) {
+      const host = this._els && this._els.lab.querySelector(`.art-cand[data-card="${id}"] .art-askhost`);
+      return host || (this._els && this._els.lab.querySelector("#art-detail"));
     },
 
     async _cardAction(act, id, btn) {
@@ -431,30 +829,166 @@
       if (!id) return;
       try {
         if (act === "approve") {
-          btn.disabled = true;
-          const r = await bg.post(`/api/artifacts/${id}/review`, { status: "approved" });
-          if (r && r.error) { bg.toast(r.error, true); btn.disabled = false; }
-          else { bg.toast("approved"); this._detailSig = ""; this._loadAll(false); }
+          await this._approve([id], "");
         } else if (act === "reject") {
-          const note = prompt("Reject reason (what's off-model?):");
+          const note = await this._ask(this._askHost(id), {
+            label: "Reject — what's off-model?", ok: "reject",
+            placeholder: "e.g. head is a size larger than the reference; line weight thickened",
+          });
           if (note == null) return;
-          const r = await bg.post(`/api/artifacts/${id}/review`, { status: "rejected", note });
-          if (r && r.error) bg.toast(r.error, true);
-          else { bg.toast("rejected"); this._detailSig = ""; this._loadAll(false); }
+          await this._reject([id], note);
         } else if (act === "regen") {
-          const reason = prompt("Regenerate — what should improve?", "produce a stronger candidate");
+          const reason = await this._ask(this._askHost(id), {
+            label: "Regenerate — what should improve?", ok: "queue regenerate",
+            value: "produce a stronger candidate",
+          });
           if (reason == null) return;
-          const r = await bg.post(`/api/artifacts/${id}/regenerate`, { reason });
-          if (r && r.error) bg.toast(r.error, true);
-          else bg.toast("regeneration queued (item #" + (r.id || "?") + ")");
+          await this._regen([id], reason, 1);
         } else if (act === "restore") {
-          if (!confirm("Restore this revision as the live sheet the game uses?")) return;
+          const go = await this._ask(this._askHost(id), {
+            label: "Restore this revision as the live sheet the game uses?",
+            ok: "restore", confirmOnly: true,
+          });
+          if (go == null) return;
           btn.disabled = true;
           const r = await bg.post(`/api/artifacts/${id}/restore`, {});
-          if (r && r.error) { bg.toast(r.error, true); btn.disabled = false; }
-          else { bg.toast("restored r" + (r.restored_revision ?? "") + " as the live sheet"); this._detailSig = ""; this._loadAll(false); }
+          const err = this._err(r);
+          if (err) { bg.toast(err, true); btn.disabled = false; }
+          else { bg.toast("restored r" + (r.restored_revision ?? "") + " as the live sheet"); this._reload(); }
         }
       } catch (e) { bg.toast("action failed", true); console.error("[art] action", e); }
+    },
+
+    _reload() { this._detailSig = ""; this._loadAll(false); },
+
+    // ---- the three review verbs, batch-shaped ---------------------------
+    async _approve(ids, note) {
+      const bg = this._bg;
+      let done = 0, firstErr = null;
+      for (const id of ids) {
+        const r = await bg.post(`/api/artifacts/${id}/review`, { status: "approved", note: note || "" });
+        // Approval is human-only server-side; a 403 comes back as a real
+        // sentence and must be shown, not swallowed into a blank panel.
+        const err = this._err(r);
+        if (err) { if (!firstErr) firstErr = err; } else done++;
+      }
+      if (firstErr) bg.toast(done ? `${done} approved · ${firstErr}` : firstErr, true);
+      else bg.toast(done === 1 ? "approved" : `approved ${done}`);
+      this._sel = new Set();
+      this._reload();
+    },
+    async _reject(ids, note) {
+      const bg = this._bg;
+      let done = 0, firstErr = null;
+      for (const id of ids) {
+        const r = await bg.post(`/api/artifacts/${id}/review`, { status: "rejected", note: note || "" });
+        const err = this._err(r);
+        if (err) { if (!firstErr) firstErr = err; } else done++;
+      }
+      if (firstErr) bg.toast(done ? `${done} rejected · ${firstErr}` : firstErr, true);
+      else bg.toast(done === 1 ? "rejected" : `rejected ${done}`);
+      this._sel = new Set();
+      this._reload();
+    },
+    async _regen(ids, reason, count) {
+      const bg = this._bg;
+      const n = Math.max(1, Number(count) || 1);
+      const brief = n > 1
+        ? `${reason || "produce a stronger candidate"} — produce ${n} fresh candidates to choose between.`
+        : (reason || "produce a stronger candidate");
+      let done = 0, firstErr = null;
+      for (const id of ids) {
+        const r = await bg.post(`/api/artifacts/${id}/regenerate`, { reason: brief });
+        const err = this._err(r);
+        if (err) { if (!firstErr) firstErr = err; } else done++;
+      }
+      if (firstErr) bg.toast(done ? `${done} queued · ${firstErr}` : firstErr, true);
+      else bg.toast(`regeneration queued for ${done} frame${done === 1 ? "" : "s"}`);
+      this._sel = new Set();
+      this._reload();
+    },
+
+    async _batch(act, btn) {
+      const bg = this._bg;
+      const ids = [...this._sel];
+      if (!ids.length) return;
+      const host = this._els.lab.querySelector("#art-detail");
+      const ta = host && host.querySelector("#art-bar-reason");
+      const reason = (ta && ta.value || "").trim();
+      if ((act === "reject" || act === "regen") && !reason) {
+        bg.toast("a shared reason is required — say what's wrong once, it applies to all " + ids.length, true);
+        if (ta) ta.focus();
+        return;
+      }
+      try {
+        if (btn) btn.disabled = true;
+        if (act === "approve") await this._approve(ids, reason);
+        else if (act === "reject") await this._reject(ids, reason);
+        else if (act === "regen") {
+          const cnt = Number((host.querySelector("#art-bar-count") || {}).value) || 1;
+          await this._regen(ids, reason, cnt);
+        }
+      } catch (e) { bg.toast("batch action failed", true); console.error("[art] batch", e); }
+      finally { if (btn) btn.disabled = false; }
+    },
+
+    // ---- keyboard triage -------------------------------------------------
+    _typing() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = (el.tagName || "").toUpperCase();
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+    },
+    _active() {
+      const view = document.getElementById("view-seats");
+      if (!view || view.hidden) return false;
+      if (window.SeatShell && window.SeatShell.current !== "art") return false;
+      return !!(this._els && this._els.lab && this._els.lab.isConnected);
+    },
+    _key(e) {
+      if (!this._active()) return;
+      if (e.key === "Escape") {
+        // Escape works even from a field: it is the universal "get me out".
+        if (this._els.lightbox && !this._els.lightbox.hidden) { this._closeLightbox(); e.preventDefault(); }
+        else if (this._sel && this._sel.size) { this._sel = new Set(); this._syncSel(); e.preventDefault(); }
+        else if (this._cmp && this._cmp.length) { this._cmp = []; this._syncStrip(); e.preventDefault(); }
+        return;
+      }
+      if (this._typing() || e.ctrlKey || e.metaKey || e.altKey) return;
+      const strip = this._strip || [];
+      if (!strip.length) return;
+      const at = Math.max(0, strip.indexOf(this._focusId));
+      if (e.key === "j" || e.key === "J") {
+        this._focusId = strip[Math.min(strip.length - 1, at + 1)];
+        this._syncStrip(); this._scrollToFocus(); e.preventDefault();
+      } else if (e.key === "k" || e.key === "K") {
+        this._focusId = strip[Math.max(0, at - 1)];
+        this._syncStrip(); this._scrollToFocus(); e.preventDefault();
+      } else if (e.key === "a" || e.key === "A") {
+        e.preventDefault();
+        const ids = this._sel.size ? [...this._sel] : (this._focusId ? [this._focusId] : []);
+        if (ids.length) this._approve(ids, "");
+      } else if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        const ids = this._sel.size ? [...this._sel] : (this._focusId ? [this._focusId] : []);
+        if (!ids.length) return;
+        const host = this._sel.size
+          ? this._els.lab.querySelector("#art-detail")
+          : this._askHost(ids[0]);
+        this._ask(host, {
+          label: `Reject ${ids.length} frame${ids.length === 1 ? "" : "s"} — one shared reason`,
+          ok: "reject", placeholder: "what's off-model?",
+        }).then(note => { if (note != null) this._reject(ids, note); });
+      } else if (e.key === " " && this._focusId) {
+        e.preventDefault();
+        this._toggleSel(this._focusId, !this._sel.has(this._focusId));
+      }
+    },
+    _scrollToFocus() {
+      try {
+        const el = this._els.lab.querySelector(`.art-frame[data-id="${this._focusId}"]`);
+        if (el) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } catch (e) {}
     },
 
     async _runReview(body, key, btn) {
@@ -462,13 +996,15 @@
       try {
         if (btn) { btn.disabled = true; btn.textContent = "dispatching…"; }
         const r = await bg.post("/api/art-qa/review", body);
-        if (!r || r.ok === false || r.error) {
-          bg.toast((r && r.error) || "QA review failed", true);
+        const err = this._err(r);
+        if (err) {
+          bg.toast(err, true);
         } else {
-          bg.toast(`QA reviewer dispatched (${r.candidate_count || 0} candidates)`);
-          if (r.review_item_id) {
-            if (key === "__all__") this._reviewers["__all__"] = r.review_item_id;
-            else this._reviewers[key] = r.review_item_id;
+          const d = this._data(r) || r;
+          bg.toast(`QA reviewer dispatched (${d.candidate_count || 0} candidates)`);
+          if (d.review_item_id) {
+            if (key === "__all__") this._reviewers["__all__"] = d.review_item_id;
+            else this._reviewers[key] = d.review_item_id;
             this._detailSig = "";
             this._renderLab(true);
             this._pollReviewer();
@@ -489,7 +1025,8 @@
       const id = this._reviewers[this._logical] || this._reviewers["__all__"];
       if (!host || !id) return;
       try {
-        const act = await bg.get(`/api/agent-activity/${id}`).catch(() => null);
+        const raw = await bg.get(`/api/agent-activity/${id}`).catch(() => null);
+        const act = this._data(raw);
         if (!act) { host.innerHTML = ""; return; }
         const steps = (act.steps || []).slice(-8);
         const running = act.running;
@@ -506,16 +1043,188 @@
       } catch (e) { /* leave prior content */ }
     },
 
-    // --- lightbox --------------------------------------------------------
+    // --- lightbox: single / compare / animation ---------------------------
     _openLightbox(src) {
       const lb = this._els.lightbox;
       if (!lb) return;
+      this._stopAnim();
       lb.innerHTML = `<img src="${src}" alt=""><div class="art-lbx">✕ click anywhere to close</div>`;
       lb.hidden = false;
     },
     _closeLightbox() {
       const lb = this._els.lightbox;
+      this._stopAnim();
       if (lb) { lb.hidden = true; lb.innerHTML = ""; }
+    },
+    _stopAnim() {
+      if (this._animTimer) { clearInterval(this._animTimer); this._animTimer = null; }
+    },
+
+    /* Visual diff. Two frames stacked in the same box: an opacity slider for a
+     * dissolve and a `mix-blend-mode: difference` toggle that turns every pixel
+     * that MOVED black-on-not-black. Plus the palette delta, computed the same
+     * way the server's histogram tripwire computes it, so the number in the UI
+     * and the number in the ledger mean the same thing. */
+    _openCompare() {
+      const bg = this._bg, lb = this._els.lightbox;
+      if (!lb || this._cmp.length !== 2) return;
+      const [a, b] = this._cmp.map(id => this._art(id));
+      if (!a || !b) { bg.toast("those revisions are no longer loaded", true); return; }
+      this._stopAnim();
+      const srcA = bg.preview(this._revRel(a)), srcB = bg.preview(this._revRel(b));
+      lb.innerHTML = `
+        <div class="art-lbwrap" id="art-lbwrap">
+          <div class="art-lbhead">
+            <b>r${a.revision}</b> <span class="art-muted">${bg.esc(a.status)}</span>
+            <span class="art-vs">⇄</span>
+            <b>r${b.revision}</b> <span class="art-muted">${bg.esc(b.status)}</span>
+            <span class="art-lbdelta" id="art-delta">palette …</span>
+          </div>
+          <div class="art-cmpstage" id="art-cmpstage">
+            <img id="art-cmpa" src="${srcA}" alt="A">
+            <img id="art-cmpb" src="${srcB}" alt="B" style="opacity:.5">
+          </div>
+          <div class="art-lbctl">
+            <label class="art-barlbl">overlay r${b.revision}
+              <input type="range" id="art-op" min="0" max="100" value="50"></label>
+            <label class="art-barlbl"><input type="checkbox" id="art-diff"> difference blend</label>
+            <button class="art-btn" id="art-swap">swap A/B</button>
+            <button class="art-btn" id="art-lbclose">✕ close</button>
+          </div>
+        </div>`;
+      lb.hidden = false;
+      const wrap = lb.querySelector("#art-lbwrap");
+      if (wrap) wrap.addEventListener("click", e => e.stopPropagation());
+      const imgA = lb.querySelector("#art-cmpa"), imgB = lb.querySelector("#art-cmpb");
+      const op = lb.querySelector("#art-op"), diff = lb.querySelector("#art-diff");
+      const stage = lb.querySelector("#art-cmpstage");
+      op.addEventListener("input", () => { imgB.style.opacity = String(Number(op.value) / 100); });
+      diff.addEventListener("change", () => {
+        stage.classList.toggle("diff", diff.checked);
+        if (diff.checked) { imgB.style.opacity = "1"; op.value = "100"; }
+      });
+      lb.querySelector("#art-swap").onclick = () => {
+        this._cmp.reverse(); this._syncStrip(); this._openCompare();
+      };
+      lb.querySelector("#art-lbclose").onclick = () => this._closeLightbox();
+      this._paletteDelta(imgA, imgB, lb.querySelector("#art-delta"));
+    },
+
+    /* Histogram intersection over opaque pixels, 4 bits per channel — the same
+     * shape as the server's _palette_hist/_hist_intersect. 1.0 = identical
+     * palettes; the documented tripwire is <0.55. Same-origin images, so the
+     * canvas is never tainted; any failure reports itself rather than lying. */
+    _paletteDelta(imgA, imgB, out) {
+      if (!out) return;
+      const bg = this._bg;
+      const hist = (img) => {
+        const c = document.createElement("canvas");
+        const n = 128;
+        c.width = n; c.height = n;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.clearRect(0, 0, n, n);
+        ctx.drawImage(img, 0, 0, n, n);
+        const px = ctx.getImageData(0, 0, n, n).data;
+        const h = new Float64Array(4096);
+        let total = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          if (px[i + 3] <= 96) continue;
+          h[((px[i] >> 4) << 8) | ((px[i + 1] >> 4) << 4) | (px[i + 2] >> 4)] += 1;
+          total++;
+        }
+        if (!total) return null;
+        for (let i = 0; i < h.length; i++) h[i] /= total;
+        return h;
+      };
+      const run = () => {
+        try {
+          const ha = hist(imgA), hb = hist(imgB);
+          if (!ha || !hb) { out.textContent = "palette n/a (no opaque pixels)"; return; }
+          let inter = 0;
+          for (let i = 0; i < ha.length; i++) inter += Math.min(ha[i], hb[i]);
+          const v = Math.max(0, Math.min(1, inter));
+          const bad = v < T.SIMILARITY;
+          out.textContent = `palette match ${v.toFixed(3)} · Δ ${(1 - v).toFixed(3)}`;
+          out.style.color = bad ? "var(--bad)" : "var(--good)";
+          out.title = `histogram intersection of opaque pixels (1.00 = identical palettes). ` +
+            `Documented tripwire: <${T.SIMILARITY} reads as colour drift.`;
+        } catch (e) {
+          out.textContent = "palette delta unavailable";
+          out.style.color = "var(--ash)";
+          out.title = String(e && e.message || e);
+        }
+      };
+      let pending = 0;
+      [imgA, imgB].forEach(img => {
+        if (img.complete && img.naturalWidth) return;
+        pending++;
+        img.addEventListener("load", () => { if (--pending <= 0) run(); }, { once: true });
+        img.addEventListener("error", () => {
+          out.textContent = "palette delta unavailable (image failed to load)";
+        }, { once: true });
+      });
+      if (!pending) run();
+    },
+
+    /* Looping SpriteFrames-style playback at the .tres fps, from the per-pose
+     * frame files the sprite legs already record in metadata.frames. */
+    _openAnim(artifactId) {
+      const bg = this._bg, lb = this._els.lightbox;
+      const a = this._art(artifactId);
+      if (!lb || !a) return;
+      const anims = this._anims(a);
+      const names = Object.keys(anims).sort();
+      if (!names.length) { bg.toast("this revision has no per-frame files to play", true); return; }
+      const fps = this._fps(a);
+      this._stopAnim();
+      lb.innerHTML = `
+        <div class="art-lbwrap" id="art-lbwrap">
+          <div class="art-lbhead">
+            <b>r${a.revision}</b> <span class="art-muted">looping at ${fps} fps (from the .tres)</span>
+            <span class="art-lbdelta" id="art-animlbl"></span>
+          </div>
+          <div class="art-animstage"><img id="art-animimg" alt=""></div>
+          <div class="art-lbctl">
+            ${names.map(n => `<button class="art-btn art-animpick" data-anim="${bg.esc(n)}">${bg.esc(n)} · ${anims[n].length}f</button>`).join("")}
+            <button class="art-btn" id="art-animpause">⏸ pause</button>
+            <button class="art-btn" id="art-lbclose">✕ close</button>
+          </div>
+        </div>`;
+      lb.hidden = false;
+      const wrap = lb.querySelector("#art-lbwrap");
+      if (wrap) wrap.addEventListener("click", e => e.stopPropagation());
+      const img = lb.querySelector("#art-animimg");
+      const lbl = lb.querySelector("#art-animlbl");
+      const pause = lb.querySelector("#art-animpause");
+      lb.querySelector("#art-lbclose").onclick = () => this._closeLightbox();
+
+      let current = names[0], i = 0, playing = true;
+      const paint = () => {
+        const fr = anims[current];
+        if (!fr || !fr.length) return;
+        i = i % fr.length;
+        img.src = bg.preview(fr[i].rel);
+        if (lbl) lbl.textContent = `${current} — frame ${i + 1}/${fr.length}`;
+      };
+      const tick = () => { if (!playing) return; i++; paint(); };
+      const start = () => {
+        this._stopAnim();
+        this._animTimer = setInterval(tick, Math.max(40, 1000 / fps));
+      };
+      lb.querySelectorAll(".art-animpick").forEach(b => b.addEventListener("click", e => {
+        e.stopPropagation();
+        current = b.dataset.anim; i = 0; playing = true;
+        if (pause) pause.textContent = "⏸ pause";
+        paint(); start();
+      }));
+      if (pause) pause.onclick = () => {
+        playing = !playing;
+        pause.textContent = playing ? "⏸ pause" : "▶ play";
+      };
+      // preload so the first loop isn't a slideshow of blanks
+      names.forEach(n => anims[n].forEach(f => { const p = new Image(); p.src = bg.preview(f.rel); }));
+      paint();
+      start();
     },
   };
 
@@ -531,11 +1240,16 @@
     .art-primary{background:var(--plate2);border-color:var(--ember);color:var(--ember)}
     .art-ok{color:var(--good);border-color:var(--good)}
     .art-no{color:var(--bad);border-color:var(--bad)}
+    .art-ta{width:100%;box-sizing:border-box;padding:7px 9px;background:var(--plate2);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;resize:vertical}
+    .art-ta:focus{outline:none;border-color:var(--ember)}
+    .art-num{width:56px;padding:5px 7px;background:var(--plate2);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:12px}
     /* picker */
     .art-pick{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--plate);border:1px solid var(--seam);border-radius:12px;padding:12px 14px;margin-bottom:14px}
     .art-pl{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ash)}
     .art-sel{padding:6px 9px;background:var(--plate2);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;max-width:420px}
+    .art-sel.art-small{padding:4px 7px;font-size:11px}
     .art-chk{font-size:12px;color:var(--ash);display:flex;align-items:center;gap:6px;cursor:pointer}
+    .art-spend{font-size:11px;color:var(--ember);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;font-variant-numeric:tabular-nums}
     #art-review-all{margin-left:auto}
     /* columns */
     .art-cols{display:flex;gap:14px;align-items:flex-start}
@@ -557,33 +1271,60 @@
     .art-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
     .art-lname{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .art-lcount{color:var(--ash);font-size:10px}
+    .art-ljit{color:var(--warn);font-size:10px}
+    .art-lusd{color:var(--ash);font-size:10px;font-variant-numeric:tabular-nums}
     .art-detail{flex:1;min-width:0}
     @media(max-width:720px){.art-lab{flex-direction:column}.art-list{width:100%;flex:none;flex-direction:row;flex-wrap:wrap}}
     .art-detail-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
     .art-dtitle{font-size:15px;font-weight:600;color:var(--bone);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .art-hcost{font-size:12px;color:var(--ember);border:1px solid var(--seam);border-radius:6px;padding:3px 9px;font-variant-numeric:tabular-nums;white-space:nowrap}
     /* filmstrip */
+    .art-striptools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px}
+    .art-striptools .art-muted{flex:1;min-width:180px}
     .art-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px;margin-bottom:12px;border-bottom:1px solid var(--seam)}
     .art-frame{position:relative;flex:0 0 auto;width:78px;height:78px;border:1px solid var(--seam);border-radius:8px;overflow:hidden;background:var(--void);cursor:pointer}
-    .art-frame img{width:100%;height:100%;object-fit:contain}
+    .art-frame:hover{border-color:var(--ash2)}
+    .art-frame.focus{border-color:var(--bone);box-shadow:0 0 0 1px var(--bone) inset}
+    .art-frame.cmp{border-color:var(--ember);box-shadow:0 0 0 2px var(--ember) inset}
+    .art-frame img{width:100%;height:100%;object-fit:contain;pointer-events:none}
     .art-fr-r{position:absolute;bottom:2px;right:3px;font-size:9px;background:rgba(0,0,0,.65);color:var(--bone);padding:1px 4px;border-radius:4px}
+    .art-fr-c{position:absolute;bottom:2px;left:3px;font-size:9px;color:var(--ember);font-weight:700}
+    .art-fr-z{position:absolute;top:2px;right:2px;width:17px;height:17px;padding:0;border:0;border-radius:4px;background:rgba(0,0,0,.6);color:var(--bone);font-size:10px;line-height:1;cursor:zoom-in}
     /* candidate cards */
     .art-cards{display:flex;flex-direction:column;gap:12px}
     .art-cand{background:var(--plate);border:1px solid var(--seam);border-radius:10px;padding:12px}
+    .art-cand.sel{border-color:var(--ember)}
     .art-cand-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+    .art-cbxw{display:flex;align-items:center;cursor:pointer}
     .art-rev{font-weight:600;color:var(--bone)}
     .art-model{color:var(--ash);font-size:11px;margin-left:auto}
     .art-badge{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border:1px solid;border-radius:5px;padding:1px 6px}
     .art-qab{cursor:help}
-    .art-compare{display:flex;align-items:stretch;gap:10px}
+    .art-cons,.art-cost{cursor:help;text-transform:none;letter-spacing:0}
+    .art-evid{display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 10px}
+    .art-compare{display:flex;align-items:stretch;gap:10px;flex-wrap:wrap}
     .art-side-img{flex:1;min-width:0}
     .art-side-img.art-refs{flex:1}
+    .art-side-img.art-compside{flex:0 0 auto}
     .art-caplabel{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ash);margin-bottom:4px}
     .art-prodimg{width:100%;max-height:260px;object-fit:contain;background:var(--void);border:1px solid var(--seam);border-radius:8px;cursor:zoom-in;display:block}
     .art-vs{align-self:center;color:var(--ash2);font-size:11px;font-style:italic}
     .art-refrow{display:flex;gap:6px;flex-wrap:wrap}
     .art-refimg{width:96px;height:120px;object-fit:contain;background:var(--void);border:1px solid var(--ember);border-radius:8px;cursor:zoom-in}
+    .art-compimg{width:150px;border-color:var(--seam2)}
     .art-noref{color:var(--ash);font-size:11px;border:1px dashed var(--seam);border-radius:8px;padding:12px;text-align:center}
-    .art-actions{display:flex;gap:8px;margin-top:10px}
+    .art-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+    /* inline ask (replaces prompt/confirm) */
+    .art-ask{margin-top:10px;padding:10px;border:1px solid var(--ember);border-radius:9px;background:var(--plate2)}
+    .art-asklabel{font-size:11px;color:var(--ember);margin-bottom:6px}
+    .art-askbtns{display:flex;gap:8px;align-items:center;margin-top:7px;flex-wrap:wrap}
+    /* batch bar */
+    .art-bar{position:sticky;top:0;z-index:5;background:var(--plate2);border:1px solid var(--ember);border-radius:10px;padding:10px;margin-bottom:12px}
+    .art-bar[hidden]{display:none}
+    .art-barrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+    .art-barlbl{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ash)}
+    .art-barsep{width:1px;height:18px;background:var(--seam)}
+    .art-est{font-size:12px;color:var(--ember);font-variant-numeric:tabular-nums;cursor:help}
     /* qa activity */
     .art-qapanel{background:var(--plate);border:1px solid var(--seam);border-radius:9px;padding:10px;margin-bottom:12px}
     .art-qah{font-size:11px;color:var(--ember);margin-bottom:6px}
@@ -598,8 +1339,18 @@
     /* lightbox */
     .art-lightbox{position:fixed;inset:0;background:rgba(4,6,9,.9);z-index:9998;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:zoom-out;padding:24px}
     .art-lightbox[hidden]{display:none}
-    .art-lightbox img{max-width:92vw;max-height:86vh;object-fit:contain;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}
+    .art-lightbox>img{max-width:92vw;max-height:86vh;object-fit:contain;border-radius:8px;box-shadow:0 10px 60px rgba(0,0,0,.6)}
     .art-lbx{margin-top:14px;color:var(--ash);font-size:12px}
+    .art-lbwrap{cursor:default;display:flex;flex-direction:column;gap:10px;align-items:stretch;max-width:94vw}
+    .art-lbhead{display:flex;align-items:center;gap:10px;color:var(--bone);font-size:13px;flex-wrap:wrap}
+    .art-lbdelta{margin-left:auto;font-size:12px;font-variant-numeric:tabular-nums;cursor:help}
+    .art-lbctl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--plate);border:1px solid var(--seam);border-radius:10px;padding:10px 12px}
+    .art-cmpstage,.art-animstage{position:relative;width:min(88vw,900px);height:min(72vh,700px);background:var(--void);border:1px solid var(--seam);border-radius:10px;overflow:hidden}
+    .art-cmpstage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+    .art-cmpstage.diff{background:#000}
+    .art-cmpstage.diff img{mix-blend-mode:difference}
+    .art-cmpstage.diff img:first-child{mix-blend-mode:normal}
+    .art-animstage img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated}
   </style>`;
 
   window.SeatWS.art = A;

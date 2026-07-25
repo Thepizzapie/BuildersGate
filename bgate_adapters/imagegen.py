@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Model routing. DIRECTOR DIRECTIVE (2026-07-20): gpt-image-2 is BANNED —
 # gpt-image-1 for everything (gpt-image-1-mini acceptable for cheap drafts via
@@ -38,6 +39,32 @@ def price_per_image(quality: str = "medium") -> float:
     """Estimated $ for one generation at `quality`; unknown values price as
     medium rather than raising — an estimate must never block the work."""
     return IMAGE_PRICE_USD.get(quality, IMAGE_PRICE_USD["medium"])
+
+
+def cost_meta(result: dict) -> dict:
+    """The two numbers a caller pins into artifact metadata at register time.
+
+    Kept here so every leg spells them the same way — the art UI reads exactly
+    these keys off ``metadata`` and renders "18.4s · ~$0.042" per candidate.
+    """
+    return {"seconds": (result or {}).get("seconds"),
+            "estimated_usd": (result or {}).get("estimated_usd")}
+
+
+def _account(result: dict, root: Any, logical_name: str,
+             work_item_id: Optional[int], detail: str) -> None:
+    """Write the estimated spend to the ledger. Best-effort by construction:
+    losing a ledger row must never lose the image that was paid for."""
+    if not root or not result.get("ok"):
+        return
+    try:
+        from bgate_core import spend
+
+        spend.record(root, float(result.get("estimated_usd") or 0.0),
+                     kind="image", work_item_id=work_item_id,
+                     logical_name=logical_name or "", detail=detail)
+    except Exception:
+        pass
 
 
 def _model_for(transparent: bool) -> str:
@@ -99,11 +126,18 @@ def _reject_multi_pose(prompt: str, allow_multi: bool) -> dict | None:
 
 def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
              quality: str = "medium", transparent: bool = False,
-             allow_multi: bool = False, timeout: float = 300.0) -> dict:
+             allow_multi: bool = False, timeout: float = 300.0,
+             root: Any = None, logical_name: str = "",
+             work_item_id: Optional[int] = None) -> dict:
     """Generate one image to out_path. Returns {ok, path, bytes, ...} or an error.
 
     transparent=True requests a transparent background (PNG alpha) — right for
     portraits/cards that composite over game art; wrong for full backdrops.
+
+    Every result carries ``seconds`` (wall clock the call actually took) and
+    ``estimated_usd`` (from IMAGE_PRICE_USD — the one price table). Pass ``root``
+    to also append the spend to the project ledger, keyed by ``logical_name`` so
+    the art lab can show a running total per asset.
     """
     if size not in SIZES:
         raise ValueError(f"size must be one of {SIZES}, got {size!r}")
@@ -131,20 +165,28 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
         kwargs["background"] = "transparent"
         kwargs["output_format"] = "png"
 
+    started = time.monotonic()
     try:
         result = client.images.generate(**kwargs)
     except Exception as exc:
         # API errors (quota, content policy, bad key) come back as facts the
         # agent can act on — sanitized by the SDK, no key material inside.
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "seconds": round(time.monotonic() - started, 2),
+                "estimated_usd": 0.0}
 
-    return _save(result, out_path, model, size, quality, transparent)
+    saved = _save(result, out_path, model, size, quality, transparent,
+                  seconds=round(time.monotonic() - started, 2))
+    _account(saved, root, logical_name or Path(out_path).stem, work_item_id,
+             f"generate {size} {quality}" + (" transparent" if transparent else ""))
+    return saved
 
 
 def edit(prompt: str, ref_paths: list[str], out_path: str, *,
          size: str = "1024x1024", quality: str = "medium",
          transparent: bool = False, allow_multi: bool = False,
-         timeout: float = 300.0) -> dict:
+         timeout: float = 300.0, root: Any = None, logical_name: str = "",
+         work_item_id: Optional[int] = None) -> dict:
     """Generate an image CONDITIONED ON reference image(s) — the consistency
     primitive. A fresh generation invents a new character every time; an edit
     against a reference keeps the same one. This is how sprite poses stay the
@@ -172,6 +214,7 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
     client = OpenAI(timeout=timeout)
     model = _model_for(transparent)  # same routing as generate() — keep in sync
     handles = [open(ref, "rb") for ref in ref_paths]
+    started = time.monotonic()
     try:
         kwargs = {
             "model": model,
@@ -191,19 +234,26 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
                                         image=kwargs["image"], prompt=prompt,
                                         size=size, n=1)
         except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                    "seconds": round(time.monotonic() - started, 2),
+                    "estimated_usd": 0.0}
     finally:
         for handle in handles:
             handle.close()
 
-    return _save(result, out_path, model, size, quality, transparent)
+    saved = _save(result, out_path, model, size, quality, transparent,
+                  seconds=round(time.monotonic() - started, 2))
+    _account(saved, root, logical_name or Path(out_path).stem, work_item_id,
+             f"edit {size} {quality} ({len(ref_paths)} ref)")
+    return saved
 
 
 def _save(result, out_path: str, model: str, size: str, quality: str,
-          transparent: bool) -> dict:
+          transparent: bool, seconds: Optional[float] = None) -> dict:
     datum = result.data[0]
     if not getattr(datum, "b64_json", None):
-        return {"ok": False, "error": "API returned no image payload"}
+        return {"ok": False, "error": "API returned no image payload",
+                "seconds": seconds, "estimated_usd": 0.0}
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -212,6 +262,8 @@ def _save(result, out_path: str, model: str, size: str, quality: str,
         "ok": True,
         "path": str(out),
         "bytes": out.stat().st_size,
+        "seconds": seconds,
+        "estimated_usd": price_per_image(quality),
         "model": model,
         "size": size,
         "quality": quality,

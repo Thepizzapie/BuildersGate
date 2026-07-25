@@ -21,12 +21,25 @@ from pathlib import Path
 from typing import Optional
 
 from bgate_core import assets as _assets
+from bgate_core import gitwork as _git
 from bgate_core import queue as _queue
+from bgate_core import scope as _scope
+from bgate_core import spend as _spend
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 _live: dict[int, dict] = {}
 _lock = threading.Lock()
+
+
+def _refuse(code: str, message: str, **detail) -> dict:
+    """A refusal the UI can both show and switch on.
+
+    dispatch() answers plain dicts (app.py returns them verbatim) and callers
+    already read ``error`` as a sentence, so the machine-readable ``code`` rides
+    alongside rather than replacing it — the string stays a string.
+    """
+    return {"ok": False, "error": message, "code": code, "detail": detail}
 
 
 def _user_msg(text: str) -> str:
@@ -193,18 +206,84 @@ def _prompt_for(item: dict) -> str:
     )
 
 
+def _live_count() -> int:
+    return sum(1 for e in _live.values() if e["proc"].poll() is None)
+
+
 def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
-             model: Optional[str] = None) -> dict:
-    """Spawn a Claude session against a queued item. One per item."""
+             model: Optional[str] = None, max_runtime_s: Optional[int] = None,
+             max_cost_usd: Optional[float] = None,
+             allow_dirty: Optional[bool] = None,
+             actor: str = "") -> dict:
+    """Spawn a Claude session against a queued item. One per item.
+
+    Four things must be true before a process exists: the CLI is there, the item
+    is dispatchable, the fleet is under its concurrency cap, and the projected
+    cost fits the budget. Then the git boundary is captured — without a
+    base_commit nothing downstream can show or undo what the agent did.
+    """
     claude = find_claude()
     if not claude:
         return {"ok": False, "error": "claude CLI not found on PATH"}
     item = _queue.get(root, item_id)
     if item["status"] != "queued":
         return {"ok": False, "error": f"item {item_id} is {item['status']}, not queued"}
+
+    # The cut line, enforced at the last possible moment. queue.add refuses to
+    # FILE work below the line, but the line moves — an item queued legitimately
+    # can be retroactively out of scope by the time anyone dispatches it, and
+    # spending an agent on it is exactly the gold-plating the tier system exists
+    # to stop.
+    verdict = _scope.check(root, item["scope_tier_id"])
+    if not verdict["allowed"]:
+        return _refuse("out_of_scope", verdict["reason"], **{
+            k: v for k, v in verdict.items()
+            if k in ("tier", "cut_line", "cut_line_rank")},
+            scope_code=verdict["code"])
     with _lock:
         if item_id in _live and _live[item_id]["proc"].poll() is None:
             return {"ok": False, "error": f"item {item_id} already has a live agent"}
+        # Server-side, because the dashboard's "dispatch all" loops every queued
+        # item with no cap of its own — 20 agents is 20 claude trees, each with
+        # its own MCP children, on one laptop.
+        cap = int(_spend.budget(root).get("max_concurrent") or 0)
+        running = _live_count()
+        if cap and running >= cap:
+            return _refuse("concurrency_limit",
+                           f"{running} agents already running — the cap is {cap}",
+                           running=running, max_concurrent=cap)
+
+    # Ceilings: the item's own overrides win, then this call's, then the budget.
+    ceiling_usd = float(max_cost_usd or _spend.item_ceiling(root, item) or 0)
+    ceiling_s = int(max_runtime_s or _spend.runtime_ceiling(root, item) or 0)
+    verdict = _spend.check(root, projected_usd=ceiling_usd)
+    if not verdict["allowed"]:
+        return _refuse("budget_exceeded", verdict["reason"],
+                       projected_usd=ceiling_usd, **{
+                           k: v for k, v in verdict.items()
+                           if k in ("scope", "spent", "ceiling")})
+
+    # The git boundary. A run dispatched on top of uncommitted work produces a
+    # diff that cannot tell the agent's edits from the human's, so mixing them
+    # has to be asked for.
+    if allow_dirty is None:
+        allow_dirty = os.environ.get("BGATE_ALLOW_DIRTY", "").strip().lower() in {
+            "1", "true", "yes", "on"}
+    state = _git.dirty(root)
+    if state["available"] and state["dirty"] and not allow_dirty:
+        return _refuse("dirty_tree",
+                       f"{len(state['paths'])} uncommitted change(s) in the tree — "
+                       "commit or stash first, or dispatch with allow_dirty",
+                       paths=state["paths"][:50])
+    base_commit = _git.head(root) if state["available"] else ""
+    branch, worktree = "", ""
+    cwd = str(root)
+    if base_commit and _git.isolation_enabled():
+        made = _git.make_worktree(root, item_id, base=base_commit)
+        if not made["available"]:
+            return _refuse("worktree_failed", made["reason"])
+        branch, worktree = made["branch"], made["worktree"]
+        cwd = worktree
 
     log_dir = Path(root) / ".bgate" / "agents"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -243,10 +322,11 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     import time as _time
     log_handle.write((json.dumps({"type": "bgate_run_start",
                                   "item_id": item_id,
+                                  "base_commit": base_commit,
                                   "ts": _time.time()}) + "\n").encode("utf-8"))
     log_handle.flush()
     run_start_pos = log_handle.tell()
-    proc = subprocess.Popen(args, cwd=str(root), env=env,
+    proc = subprocess.Popen(args, cwd=cwd, env=env,
                             stdin=subprocess.PIPE, stdout=log_handle,
                             stderr=log_handle, creationflags=_NO_WINDOW)
     # Deliver the task as the first streamed user message, then leave stdin open.
@@ -260,14 +340,67 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
                           "stdin": proc.stdin, "steers": [], "stdin_closed": False,
                           "log_scan_pos": run_start_pos,
-                          "run_start_pos": run_start_pos}
+                          "run_start_pos": run_start_pos,
+                          "cost_scan_pos": run_start_pos,
+                          "started_at": _time.monotonic(),
+                          "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd,
+                          "base_commit": base_commit, "cwd": cwd,
+                          "branch": branch, "worktree": worktree}
     _queue.set_status(root, item_id, "dispatched")
+    _queue.set_run_fields(root, item_id, base_commit=base_commit, branch=branch,
+                          worktree=worktree, actor=actor or None,
+                          max_cost_usd=ceiling_usd or None,
+                          max_runtime_s=ceiling_s or None)
     _record_pid(root, proc.pid, item_id)
     # The streamed session waits on stdin forever; close it once the agent
     # self-reports so it exits even when no dashboard is polling /api/agents.
     threading.Thread(target=_watch_completion, args=(root, item_id),
                      daemon=True).start()
-    return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path)}
+    return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path),
+            "base_commit": base_commit, "branch": branch, "worktree": worktree,
+            "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd}
+
+
+def _observed_cost(entry: dict) -> float:
+    """The highest ``total_cost_usd`` the CLI has reported THIS run.
+
+    The session only prints cost at result boundaries, so this is a step
+    function, not a live meter — it trips at the first boundary past the
+    ceiling, which still bounds the damage. Incremental tail read (own cursor,
+    separate from the steer scanner's) so polling a 10MB log costs nothing."""
+    best = float(entry.get("cost_usd", 0.0))
+    try:
+        with open(entry["log"], "rb") as fh:
+            fh.seek(entry.get("cost_scan_pos", entry.get("run_start_pos", 0)))
+            chunk = entry.get("cost_scan_rem", b"") + fh.read()
+            entry["cost_scan_pos"] = fh.tell()
+    except OSError:
+        return best
+    lines = chunk.split(b"\n")
+    entry["cost_scan_rem"] = lines.pop()  # possibly-partial last line
+    for line in lines:
+        if b"total_cost_usd" not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        val = ev.get("total_cost_usd") if isinstance(ev, dict) else None
+        if isinstance(val, (int, float)) and float(val) > best:
+            best = float(val)
+    entry["cost_usd"] = best
+    return best
+
+
+def _trip(root: str, item_id: int, entry: dict, reason: str) -> None:
+    """A budget the agent blew through: kill the tree and say why on the item."""
+    _kill_tree(entry["proc"].pid)
+    _unrecord_pid(root, entry["proc"].pid)
+    try:
+        _queue.set_status(root, item_id, "failed", result=reason)
+    except LookupError:
+        pass
+    _finalize(root, item_id, entry)
 
 
 def _watch_completion(root: str, item_id: int, poll_s: float = 4.0,
@@ -276,7 +409,12 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 4.0,
     process reaches EOF and exits — then make SURE it exits. EOF alone proved
     unreliable (agents wedged on child MCP servers piled up 14 orphaned
     claude.exe at peak), so after a grace period the process tree is killed;
-    the item is already done, nothing of value is lost."""
+    the item is already done, nothing of value is lost.
+
+    This is also the wall clock. The kill grace above only starts once the item
+    ALREADY reached done/failed, which is no help against the failure that
+    actually costs money: an agent that never self-reports and runs all night.
+    Runtime and cost are checked every poll from the moment it spawned."""
     import time
     while True:
         time.sleep(poll_s)
@@ -286,7 +424,23 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 4.0,
                 return
             if entry["proc"].poll() is not None:
                 _unrecord_pid(root, entry["proc"].pid)
+                _finalize(root, item_id, entry)
                 return  # already gone; status() will reap the table entry
+
+            # The ceilings, enforced from spawn — not from completion.
+            limit_s = int(entry.get("max_runtime_s") or 0)
+            if limit_s and time.monotonic() - entry["started_at"] >= limit_s:
+                _trip(root, item_id, entry,
+                      f"killed: exceeded the {limit_s // 60}-minute runtime budget")
+                return
+            limit_usd = float(entry.get("max_cost_usd") or 0)
+            if limit_usd:
+                spent = _observed_cost(entry)
+                if spent > limit_usd:
+                    _trip(root, item_id, entry,
+                          f"killed: spent ${spent:.2f} against a "
+                          f"${limit_usd:.2f} ceiling")
+                    return
             if not entry.get("stdin_closed"):
                 try:
                     if _queue.get(root, item_id)["status"] in ("done", "failed"):
@@ -310,6 +464,60 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 4.0,
                 _kill_tree(entry["proc"].pid)
                 _unrecord_pid(root, entry["proc"].pid)
                 return
+
+
+def run_record_path(root: str, item_id: int) -> Path:
+    """Where a finished run's git fingerprint lives (see :func:`_finalize`)."""
+    return Path(root) / ".bgate" / "agents" / f"item-{item_id}.run.json"
+
+
+def read_run_record(root: str, item_id: int) -> dict:
+    try:
+        return json.loads(run_record_path(root, item_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _finalize(root: str, item_id: int, entry: dict) -> None:
+    """Bank what the run cost and what it touched, exactly once.
+
+    Cost used to be parsed off the final result event and handed to an ephemeral
+    JSON response — nothing summed it, so no one could answer what a night of
+    fan-out cost. It now lands on the item and in the spend ledger.
+
+    The fingerprint is the other half of revert: hashes of every path this run
+    changed, taken the moment it ended. Revert compares against it and refuses
+    rather than discarding an edit someone made afterwards."""
+    if entry.get("finalized"):
+        return
+    entry["finalized"] = True
+    try:
+        final = read_activity(root, item_id).get("final") or {}
+        cost = final.get("cost")
+        turns = final.get("turns")
+        if turns:
+            _queue.set_run_fields(root, item_id, num_turns=int(turns))
+        if isinstance(cost, (int, float)) and cost > 0:
+            # spend.record also increments work_item.total_cost_usd — one write,
+            # one truth; do not add it a second time here.
+            _spend.record(root, float(cost), kind="agent", work_item_id=item_id,
+                          detail=f"agent session for item {item_id}")
+    except Exception:
+        pass
+    base = entry.get("base_commit") or ""
+    if not base:
+        return
+    try:
+        scope = _git.touched(entry.get("cwd") or root, base)
+        if scope["available"]:
+            record = {"base_commit": base, "branch": entry.get("branch", ""),
+                      "worktree": entry.get("worktree", ""),
+                      "paths": _git.fingerprint(entry.get("cwd") or root,
+                                                scope["paths"])}
+            run_record_path(root, item_id).write_text(
+                json.dumps(record), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _pids_path(root: str) -> Path:
@@ -510,6 +718,7 @@ def status(root: str) -> list[dict]:
                             result=f"session exited {code} without self-reporting")
                 except LookupError:
                     pass
+                _finalize(root, item_id, entry)
                 _unrecord_pid(root, entry["proc"].pid)
                 del _live[item_id]
                 out.append({"item_id": item_id, "state": "exited", "code": code})

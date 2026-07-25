@@ -7,20 +7,31 @@ copies the file into ``.bgate/refs/`` (durable, travels with the project),
 names it, and surfaces it in every seat brief — so every art agent starts from
 the same anchors instead of re-deriving or, worse, re-generating them.
 
+Pins are VERSIONED, like artifact revisions. Re-pinning used to overwrite the
+file in place, which quietly rewrote history: every artifact that recorded
+"generated against tommy-ref" now pointed at a different image, and no card
+could be trusted as evidence. Each pin now lands as ``<slug>.rN<suffix>``, the
+ref_pin row points at the newest, and ref_pin_revision keeps every older one
+resolvable (by ``name@rN``) and hashed.
+
 resolve() lets image tools accept a pin NAME anywhere they accept a path.
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
 
-from . import activity, db
+from . import activity, assets, db
 from .util import rows, slugify
 
 REFS_DIRNAME = "refs"
 KINDS = ("character", "style", "ui", "concept")
+
+# "tommy-ref@r2" / "tommy-ref@2" — how a caller asks for an older revision.
+_AT_REVISION = re.compile(r"^(?P<name>.+?)@r?(?P<revision>\d+)$")
 
 
 def _refs_dir(root: str | os.PathLike[str]) -> Path:
@@ -28,11 +39,12 @@ def _refs_dir(root: str | os.PathLike[str]) -> Path:
 
 
 def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
-        kind: str = "style", note: str = "") -> dict:
-    """Pin a reference: copy it into .bgate/refs/ under a canonical name.
+        kind: str = "style", note: str = "", actor: Optional[str] = None) -> dict:
+    """Pin a reference: copy it into .bgate/refs/ as a new numbered revision.
 
-    Re-pinning an existing name replaces its file — that's the intended way to
-    upgrade an anchor (the name stays stable, everything referencing it follows).
+    Re-pinning an existing name upgrades the anchor — the name stays stable and
+    everything referencing it follows — but the previous revision keeps its own
+    file, so anything generated against it can still be shown.
     """
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
@@ -40,22 +52,51 @@ def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
     if not src.is_file():
         raise FileNotFoundError(f"no file at {src_path}")
     slug = slugify(name)
+    who = actor if actor is not None else activity.current_actor()
+
+    conn = db.connect(root)
+    previous = conn.execute(
+        "SELECT * FROM ref_pin WHERE name = ?", (slug,)).fetchone()
+    top = conn.execute(
+        "SELECT COALESCE(MAX(revision), 0) FROM ref_pin_revision WHERE name = ?",
+        (slug,)).fetchone()[0]
+    revision = max(int(top or 0),
+                   int(previous["revision"] or 1) if previous else 0) + 1
 
     dest_dir = _refs_dir(root)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{slug}{src.suffix.lower()}"
+    dest = dest_dir / f"{slug}.r{revision}{src.suffix.lower()}"
     shutil.copy2(src, dest)
+    digest = assets.file_hash(dest)
 
     with db.tx(root) as conn:
+        # A pin made before versioning has no revision row; record it now so its
+        # history does not start at r2 out of nowhere.
+        if previous and not top:
+            old = Path(previous["path"])
+            conn.execute(
+                "INSERT OR IGNORE INTO ref_pin_revision "
+                "(name, revision, path, hash, note) VALUES (?, ?, ?, ?, ?)",
+                (slug, int(previous["revision"] or 1), previous["path"],
+                 assets.file_hash(old) if old.is_file() else "",
+                 previous["note"] or ""))
         conn.execute(
             """
-            INSERT INTO ref_pin (name, path, kind, note) VALUES (?, ?, ?, ?)
+            INSERT INTO ref_pin (name, path, kind, note, revision, hash, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT (name) DO UPDATE SET
-                path = excluded.path, kind = excluded.kind, note = excluded.note
+                path = excluded.path, kind = excluded.kind, note = excluded.note,
+                revision = excluded.revision, hash = excluded.hash,
+                updated_at = excluded.updated_at
             """,
-            (slug, str(dest), kind, note),
+            (slug, str(dest), kind, note, revision, digest),
         )
-    activity.log(root, "ref_pin", f"pinned reference {slug!r} ({kind})", ref=str(dest))
+        conn.execute(
+            "INSERT INTO ref_pin_revision (name, revision, path, hash, note, actor) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (slug, revision, str(dest), digest, note, (who or "")[:120]))
+    activity.log(root, "ref_pin", f"pinned reference {slug!r} r{revision} ({kind})",
+                 ref=str(dest), actor=who)
     return get(root, slug)
 
 
@@ -65,6 +106,34 @@ def get(root: str | os.PathLike[str], name: str) -> dict:
     if row is None:
         raise LookupError(f"no pinned reference {name!r}")
     return dict(row)
+
+
+def history(root: str | os.PathLike[str], name: str) -> list[dict]:
+    """Every revision of a pin, newest first. Pre-versioning pins report the one
+    revision the ref_pin row itself carries."""
+    slug = slugify(name)
+    conn = db.connect(root)
+    recorded = rows(conn.execute(
+        "SELECT * FROM ref_pin_revision WHERE name = ? "
+        "ORDER BY revision DESC", (slug,)))
+    if recorded:
+        return recorded
+    current = conn.execute(
+        "SELECT * FROM ref_pin WHERE name = ?", (slug,)).fetchone()
+    if current is None:
+        raise LookupError(f"no pinned reference {name!r}")
+    return [{"name": slug, "revision": int(current["revision"] or 1),
+             "path": current["path"], "hash": current["hash"] or "",
+             "note": current["note"] or "", "actor": "",
+             "created_at": current["updated_at"] or ""}]
+
+
+def get_revision(root: str | os.PathLike[str], name: str, revision: int) -> dict:
+    """One historical revision — what an old artifact was actually drawn against."""
+    for entry in history(root, name):
+        if int(entry["revision"]) == int(revision):
+            return entry
+    raise LookupError(f"{slugify(name)!r} has no revision r{revision}")
 
 
 def list_refs(root: str | os.PathLike[str], kind: Optional[str] = None) -> list[dict]:
@@ -125,9 +194,19 @@ def profile_get(root: str | os.PathLike[str], name: str) -> Optional[dict]:
 def resolve(root: str | os.PathLike[str], name_or_path: str) -> str:
     """A pin name -> its file path; an existing path passes through untouched.
 
+    ``name@r2`` resolves an older revision, which is how a review screen shows
+    what a past artifact was really generated against.
+
     Missing on both counts raises — silently generating against a nonexistent
     reference produces an unconditioned image that LOOKS like a result.
     """
+    at = _AT_REVISION.match(str(name_or_path).strip())
+    if at:
+        try:
+            return get_revision(root, at.group("name"),
+                                int(at.group("revision")))["path"]
+        except LookupError:
+            pass
     try:
         return get(root, name_or_path)["path"]
     except LookupError:

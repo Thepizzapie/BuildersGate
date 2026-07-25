@@ -1,7 +1,17 @@
 """Builders Gate MCP server (FastMCP, stdio).
 
-Every tool resolves the project from BGATE_ROOT or the cwd by walking up for a
-.bgate dir, so an agent working inside a game repo never passes paths around.
+Every tool takes an optional `project_dir` and resolves the project from it,
+then BGATE_ROOT, then the cwd by walking up for a .bgate dir — so an agent
+working inside a game repo never has to pass paths around, but a fleet sharing
+one server can always be explicit.
+
+There used to be a module-level `_ACTIVE_ROOT` that project_select mutated, and
+which every tool read. That made "which game does this call affect" a function
+of call ORDER: two agents on one server, one selects project A, the other
+selects B, and the first one's next write lands in B. Deleted. The per-call
+`project_dir` travels with the call, and the fallback for a call that omits it
+is a contextvar bound for the duration of THAT call only — nothing a concurrent
+call can reach in.
 
 Tool errors return a dict with an "error" key rather than raising: a raised
 exception inside a tool call reads to the model as a broken server, while an
@@ -9,12 +19,16 @@ error payload reads as a fact it can act on.
 """
 from __future__ import annotations
 
+import contextvars
+import functools
+import inspect
 import json as _json
 import os
 from pathlib import Path as _Path
-from typing import Optional
+from typing import Annotated, Callable, Optional
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
@@ -38,23 +52,84 @@ from bgate_core import search as _search
 mcp = FastMCP("builders-gate")
 
 
-# Runtime project override (set by project_select). Env vars are frozen at
-# server spawn, so a session whose cwd is a DIFFERENT repo could never reach
-# its project — this is the switch that fixes that.
-_ACTIVE_ROOT: Optional[str] = None
+_PROJECT_DIR_DOC = (
+    "Absolute path to the Builders Gate project root (the directory holding "
+    ".bgate). Omit it and the server falls back to BGATE_ROOT, then to walking "
+    "up from the working directory. Pass it explicitly whenever more than one "
+    "project could be in play — it is the only way a call is guaranteed to land "
+    "in the game you mean."
+)
+
+# The per-call project override. A ContextVar, deliberately: it is set on the
+# way into ONE tool call and reset on the way out, so it cannot be observed by
+# any other call. The module-level `_ACTIVE_ROOT` this replaces could — that was
+# the race, and this is the whole reason the contextvar exists.
+_CALL_ROOT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "bgate_call_root", default=None)
+
+
+def _root_hint() -> Optional[str]:
+    """The root this call was given, if any — before falling back to discovery."""
+    return _CALL_ROOT.get() or (os.environ.get("BGATE_ROOT") or None)
 
 
 def _root() -> str:
-    """The active project root: project_select > BGATE_ROOT > walk up from cwd.
+    """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
     Also loads the project's .env (once) so secrets live with the project."""
-    override = _ACTIVE_ROOT or os.environ.get("BGATE_ROOT")
-    root = override if override else str(_project.require_root())
+    override = _root_hint()
+    if override:
+        root = override
+    else:
+        try:
+            root = str(_project.require_root())
+        except LookupError as exc:
+            # core's own hint still points at project_select, which no longer
+            # switches anything. Restate it in terms of what actually works now.
+            raise LookupError(
+                f"{exc} Pass project_dir=<absolute path to the project root> on "
+                "this call, or export BGATE_ROOT, or run project_init to create "
+                "one here.") from None
     try:
         from bgate_core import envfile
         envfile.load_project_env(root)
     except Exception:
         pass
     return root
+
+
+def _tool(fn: Callable) -> Callable:
+    """Register a function as an MCP tool, with `project_dir` bolted on.
+
+    Every tool gets the same optional trailing parameter rather than 70-odd
+    hand-edited signatures, and the wrapper binds it into `_CALL_ROOT` for the
+    duration of the call so the existing `_root()` bodies need no change. The
+    binding is reset in a finally — a tool that raises must not leave its root
+    behind for the next call on this thread.
+    """
+    signature = inspect.signature(fn, eval_str=True)
+    if "project_dir" in signature.parameters:
+        # Guard, not politeness: a tool carrying its own `project_dir` meaning
+        # something else (an ENGINE project, say) would silently shadow the
+        # project root and put the ambiguity right back. Rename that parameter.
+        raise TypeError(
+            f"{fn.__name__} already declares 'project_dir'; the name is reserved "
+            "for the Builders Gate project root on every tool")
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        given = (kwargs.pop("project_dir", None) or "").strip() or None
+        token = _CALL_ROOT.set(given)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _CALL_ROOT.reset(token)
+
+    wrapper.__signature__ = signature.replace(
+        parameters=[*signature.parameters.values(), inspect.Parameter(
+            "project_dir", inspect.Parameter.KEYWORD_ONLY, default=None,
+            annotation=Annotated[Optional[str],
+                                 Field(default=None, description=_PROJECT_DIR_DOC)])])
+    return mcp.tool()(wrapper)
 
 
 def _fail(exc: Exception) -> dict:
@@ -106,6 +181,13 @@ def _archive_preview(src: str, label: str) -> Optional[str]:
         return None
 
 
+def _work_item_id() -> Optional[int]:
+    """The work item this session is executing, if any — the key the spend
+    ledger charges against."""
+    raw = os.environ.get("BGATE_WORK_ITEM", "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
 def _register_artifact(logical_name: str, path: str, *, producer: str,
                        model: str = "", prompt: str = "",
                        refs: Optional[list[str]] = None,
@@ -124,27 +206,37 @@ def _register_artifact(logical_name: str, path: str, *, producer: str,
 # ---------------------------------------------------------------------------
 # Project
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def project_init(name: str, pitch: str = "", engine: str = "godot",
                  dimension: str = "2d", root: Optional[str] = None) -> dict:
     """Create a Builders Gate project (.bgate/game.db) at root (default: cwd).
 
     engine: godot | none. dimension: 2d | 3d | 2d+3d. Safe to re-run.
+    root is where the project is CREATED; it wins over project_dir here, since
+    on this one tool the directory is the thing being made, not looked up.
     """
     try:
-        target = root or os.environ.get("BGATE_ROOT") or os.getcwd()
+        target = root or _root_hint() or os.getcwd()
         return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
     except Exception as exc:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def project_select(project: str = "") -> dict:
-    """Point this session at a Builders Gate project — by registered name or
-    absolute path. Fixes the "no .bgate project found" error when the session's
-    cwd is a different repo. Empty arg: report the active root + known projects.
+    """Resolve a Builders Gate project by registered name or path. DEPRECATED as
+    a mode switch — it no longer changes what later calls affect.
+
+    It used to latch the choice into a server-wide variable, which meant the
+    project a tool touched depended on who called project_select last. Now it
+    only ANSWERS: it verifies the project exists, registers it so it stays
+    discoverable, and hands back its absolute root. Feed that root to the
+    `project_dir` parameter that every tool carries (or export BGATE_ROOT before
+    spawning the server) — then the target of a call is written on the call.
+
+    Empty arg: report the root this session resolves to plus every known project.
+    Returns {active, known} or {active, project, use_project_dir, deprecated}.
     """
-    global _ACTIVE_ROOT
     try:
         known = _project.known_projects()
         if not project:
@@ -159,14 +251,50 @@ def project_select(project: str = "") -> dict:
             raise LookupError(
                 f"{project!r} is not a known project name or a project root. "
                 f"Known: {known}")
-        _ACTIVE_ROOT = str(_Path(root).resolve())
-        _project.register(_ACTIVE_ROOT)
-        return {"active": _ACTIVE_ROOT, "project": _project.get(_ACTIVE_ROOT)}
+        resolved = str(_Path(root).resolve())
+        _project.register(resolved)
+        return {"active": resolved, "project": _project.get(resolved),
+                "use_project_dir": resolved,
+                "deprecated": "project_select no longer switches the server's "
+                              "active project — pass project_dir=<active> on "
+                              "each tool call instead"}
     except Exception as exc:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
+def bgate_doctor(refresh: bool = False) -> dict:
+    """Can this machine actually do the work? One call, every dependency.
+
+    Run this FIRST, and any time a tool fails with "not found" — instead of
+    calling blender_status, godot_status, image_status, playtest_check and
+    playtest_devices one after another to assemble the same picture.
+
+    Nothing here opens the microphone, renders a frame, launches an engine or
+    downloads a model: playtest_check does open the mic (deliberately — a muted
+    mic is invisible any other way), so it stays the pre-SESSION check, not the
+    is-my-toolchain-here check. Results are cached a few seconds, so polling
+    this is cheap; pass refresh=True right after installing something.
+
+    Returns {blender, godot, ffmpeg, ffprobe, whisper, openai_key, python},
+    each {available: bool, path, version, min_required, reason}. `reason` is
+    filled in when available is False (missing, too old, or the probe hung) and
+    says what to install or which BGATE_* env var points at it. Never raises.
+    """
+    try:
+        from bgate_core import doctor as _doctor
+
+        root = None
+        try:
+            root = _root()  # only to pick up the project's .env for the API key
+        except Exception:
+            pass
+        return _doctor.check(root, refresh=bool(refresh))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def project_status() -> dict:
     """The project's identity plus a count of what's in the bible and lore."""
     try:
@@ -189,7 +317,7 @@ def project_status() -> dict:
 # ---------------------------------------------------------------------------
 # Design bible
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
     """Add a bible section.
 
@@ -203,7 +331,7 @@ def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def bible_update(section_id: int, title: Optional[str] = None,
                  body: Optional[str] = None, rank: Optional[int] = None) -> dict:
     """Update a bible section in place. Omitted fields keep their current value."""
@@ -213,7 +341,7 @@ def bible_update(section_id: int, title: Optional[str] = None,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def bible_read(kind: Optional[str] = None) -> dict:
     """Read the bible. No kind: the grouped overview with the scope cut applied."""
     try:
@@ -225,7 +353,7 @@ def bible_read(kind: Optional[str] = None) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def scope_check(rank: int) -> dict:
     """Is work at this rank above the cut line? Call before building anything."""
     try:
@@ -244,7 +372,7 @@ def scope_check(rank: int) -> dict:
 # ---------------------------------------------------------------------------
 # Lore
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def lore_add(kind: str, name: str, summary: str = "", body: str = "",
              status: str = "draft") -> dict:
     """Create a lore entity.
@@ -259,7 +387,7 @@ def lore_add(kind: str, name: str, summary: str = "", body: str = "",
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def lore_update(ref: str, summary: Optional[str] = None, body: Optional[str] = None,
                 status: Optional[str] = None) -> dict:
     """Update an entity by slug or name. Promote draft to canon with status='canon'."""
@@ -269,7 +397,7 @@ def lore_update(ref: str, summary: Optional[str] = None, body: Optional[str] = N
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def lore_brief(ref: str) -> dict:
     """Everything about one entity — record, facts, and edges. Read before writing it."""
     try:
@@ -278,7 +406,7 @@ def lore_brief(ref: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def lore_list(kind: Optional[str] = None, status: Optional[str] = None) -> dict:
     """List entities, optionally filtered by kind and/or status."""
     try:
@@ -287,7 +415,7 @@ def lore_list(kind: Optional[str] = None, status: Optional[str] = None) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def lore_link(src: str, rel: str, dst: str, note: str = "") -> dict:
     """Connect two entities. rel is free-form: 'rules', 'allied_with', 'born_in'."""
     try:
@@ -296,7 +424,7 @@ def lore_link(src: str, rel: str, dst: str, note: str = "") -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def lore_fact(ref: str, statement: str, source: str = "", locked: bool = False) -> dict:
     """Assert ONE atomic fact about an entity — canon_check compares against these.
 
@@ -312,7 +440,7 @@ def lore_fact(ref: str, statement: str, source: str = "", locked: bool = False) 
 # ---------------------------------------------------------------------------
 # Canon + recall
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def canon_check(text: str, entities: Optional[list[str]] = None) -> dict:
     """Check text against canon BEFORE it lands. Run on every narrative write.
 
@@ -327,7 +455,7 @@ def canon_check(text: str, entities: Optional[list[str]] = None) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def recall(query: str, limit: int = 10, kind: Optional[str] = None) -> dict:
     """Search the bible and lore. Call this BEFORE inventing anything."""
     try:
@@ -340,7 +468,7 @@ def recall(query: str, limit: int = 10, kind: Optional[str] = None) -> dict:
 # ---------------------------------------------------------------------------
 # Blender
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def blender_status() -> dict:
     """Is Blender available to this machine, and which version? Check before modeling."""
     try:
@@ -350,7 +478,7 @@ def blender_status() -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def blender_run(script: str, blend_file: Optional[str] = None, render: bool = False,
                 engine: str = "BLENDER_WORKBENCH", timeout: int = 180,
                 label: str = "") -> dict:
@@ -395,7 +523,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def blender_warmup(engine: str = "BLENDER_EEVEE_NEXT") -> dict:
     """Pay the GPU cold-start cost up front. Run once per machine boot.
 
@@ -413,7 +541,7 @@ def blender_warmup(engine: str = "BLENDER_EEVEE_NEXT") -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def blender_scene_stats(blend_file: str) -> dict:
     """Report an existing .blend without modifying it — objects, tris, materials."""
     try:
@@ -422,7 +550,7 @@ def blender_scene_stats(blend_file: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
                         script: str = "pass", timeout: int = 240) -> dict:
     """Export a .blend (or a bpy-script-built scene) to .glb for Godot.
@@ -439,7 +567,7 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
                     width: int = 128, height: int = 128,
                     engine: str = "BLENDER_EEVEE_NEXT", fps: float = 8.0,
@@ -476,7 +604,10 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
                 metadata={"poses": [p.get("name", "") for p in poses],
                           "frames": result.get("frames", {}),
                           "failed": result.get("failed", []),
-                          "engine": engine, "preview": archived or ""})
+                          "engine": engine, "preview": archived or "",
+                          "fps": fps,
+                          "animations": result.get("animations", {}),
+                          "sequence": result.get("sequence")})
             if artifact:
                 result["artifact"] = artifact
             _log("sprites", f"rendered {len(result['frames'])} sprite frames "
@@ -491,7 +622,7 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
 # ---------------------------------------------------------------------------
 # Painted art (gpt-image)
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def image_status() -> dict:
     """Is the painted-art leg (gpt-image) usable? Checks the key without exposing it."""
     try:
@@ -502,7 +633,7 @@ def image_status() -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                    quality: str = "medium", transparent: bool = False) -> dict:
     """Generate PAINTED art via gpt-image — portraits, select-screen cards,
@@ -522,7 +653,9 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         out = root / ".bgate_out" / "art" / filename
         from bgate_adapters import imagegen
         result = imagegen.generate(prompt, str(out), size=size, quality=quality,
-                                   transparent=transparent)
+                                   transparent=transparent, root=root,
+                                   logical_name=_Path(filename).stem,
+                                   work_item_id=_work_item_id())
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
             if archived:
@@ -532,7 +665,8 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                 model=result.get("model", ""), prompt=prompt,
                 metadata={"size": size, "quality": quality,
                           "transparent": transparent,
-                          "preview": archived or ""})
+                          "preview": archived or "",
+                          **imagegen.cost_meta(result)})
             if artifact:
                 result["artifact"] = artifact
             _log("art", f"generated painted art {filename} ({size}, {quality})",
@@ -542,7 +676,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def image_edit(prompt: str, ref_images: list[str], filename: str,
                size: str = "1024x1536", quality: str = "medium",
                transparent: bool = False) -> dict:
@@ -562,7 +696,9 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
         result = imagegen.edit(prompt, resolved, str(out), size=size,
-                               quality=quality, transparent=transparent)
+                               quality=quality, transparent=transparent,
+                               root=root, logical_name=_Path(filename).stem,
+                               work_item_id=_work_item_id())
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
             if archived:
@@ -572,7 +708,8 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
                 model=result.get("model", ""), prompt=prompt, refs=ref_images,
                 metadata={"resolved_refs": resolved, "size": size,
                           "quality": quality, "transparent": transparent,
-                          "preview": archived or ""})
+                          "preview": archived or "",
+                          **imagegen.cost_meta(result)})
             if artifact:
                 result["artifact"] = artifact
             _log("art", f"reference-edit {filename}", ref=archived or result["path"])
@@ -587,7 +724,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
 # holds framing/light/scale/background invariant, a parameter grid mints the
 # variants. See bgate_core/items.py for the taxonomy and the pure builders.
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def item_classes() -> dict:
     """The item-art taxonomy: the classes, their equip slot, and the variant
     axes. This IS the contract to drive item_generate / item_variants — read it
@@ -667,7 +804,9 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     rel = _items.rel_art_path(spec["item_class"], spec["name"])
     out = root / rel
     result = imagegen.generate(spec["prompt"], str(out), quality=quality,
-                               transparent=True)
+                               transparent=True, root=root,
+                               logical_name=spec["name"],
+                               work_item_id=_work_item_id())
     if not result.get("ok"):
         return {"ok": False, "name": spec["name"], "error": result.get("error"),
                 "prompt": spec["prompt"]}
@@ -677,7 +816,8 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
                        model=result.get("model", ""), prompt=spec["prompt"],
                        metadata={"item_class": spec["item_class"],
                                  "slot": spec["slot"], "params": spec["params"],
-                                 "preview": archived or ""})
+                                 "preview": archived or "",
+                                 **imagegen.cost_meta(result)})
     try:
         _assets.track(root, out)
     except Exception:
@@ -694,7 +834,7 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
             "preview": archived or result["path"]}
 
 
-@mcp.tool()
+@_tool
 def item_generate(item_class: str, name: str, descriptor: str,
                   material: str = "", element: str = "", tier: str = "",
                   quality: str = "medium", character: str = "",
@@ -738,7 +878,7 @@ def item_generate(item_class: str, name: str, descriptor: str,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def item_variants(item_class: str, base_name: str, descriptor: str,
                   materials: Optional[list[str]] = None,
                   elements: Optional[list[str]] = None,
@@ -791,7 +931,7 @@ def item_variants(item_class: str, base_name: str, descriptor: str,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
                          frame_size: Optional[list[int]] = None) -> dict:
     """Wrap a single item PNG into a 1-frame Godot SpriteFrames .tres so it drops
@@ -1031,7 +1171,7 @@ def _chroma_key(img, chroma, tol=125, despill=185):
     return img
 
 
-@mcp.tool()
+@_tool
 def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
@@ -1082,6 +1222,16 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # 1. The reference — the single source of who this character is.
         result: dict = {"poses_attempted": len(poses),
                         "profile_used": bool(profile)}
+        # Rolled-up spend/latency for the WHOLE set (ref + every pose edit,
+        # retries included). imagegen already charged the ledger per call; this
+        # is what the sheet artifact carries so a reviewer sees what it cost.
+        tally = {"estimated_usd": 0.0, "seconds": 0.0, "calls": 0}
+
+        def _tally(r: dict) -> dict:
+            tally["estimated_usd"] += float(r.get("estimated_usd") or 0.0)
+            tally["seconds"] += float(r.get("seconds") or 0.0)
+            tally["calls"] += 1
+            return r
         if ref_image:
             ref_path = _refs.resolve(root, str(ref_image))
         else:
@@ -1093,7 +1243,9 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "toe, neutral idle stance, centered, fully transparent "
                     "background, no text, no logo, no ground shadow.",
                     ref_path, size="1024x1536", quality=ref_quality,
-                    transparent=True)
+                    transparent=True, root=root, logical_name=name,
+                    work_item_id=_work_item_id())
+                _tally(r)
                 if r.get("ok"):
                     result["reference_preview"] = _archive_preview(
                         ref_path, f"ref-{name}")
@@ -1165,7 +1317,9 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 "that one flat color, NO gradient, NO shadow, NO other objects."
                 + identity,
                 refs, out_png, size="1024x1536", quality=quality,
-                transparent=False)
+                transparent=False, root=root, logical_name=name,
+                work_item_id=_work_item_id())
+            _tally(got)
             # STAGE 3 — key the chroma backdrop out to clean transparency.
             if got.get("ok"):
                 try:
@@ -1312,7 +1466,12 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                           "failed": assembled.get("failed", []),
                           "preview": archived or "",
                           "consistency": consistency,
-                          "sequence": assembled.get("sequence")})
+                          "sequence": assembled.get("sequence"),
+                          "fps": fps,
+                          "animations": assembled.get("animations", {}),
+                          "seconds": round(tally["seconds"], 2),
+                          "estimated_usd": round(tally["estimated_usd"], 4),
+                          "image_calls": tally["calls"]})
             if artifact:
                 assembled["artifact"] = artifact
                 # Record the check on the revision so the dashboard shows it and the
@@ -1343,7 +1502,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 # ---------------------------------------------------------------------------
 # Godot
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def godot_status() -> dict:
     """Is Godot available, and which version? Check before engine work."""
     try:
@@ -1353,8 +1512,8 @@ def godot_status() -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
-def godot_run(script: str, project_dir: Optional[str] = None,
+@_tool
+def godot_run(script: str, godot_project: Optional[str] = None,
               timeout: int = 120) -> dict:
     """Run a GDScript headless and capture its output.
 
@@ -1362,14 +1521,17 @@ def godot_run(script: str, project_dir: Optional[str] = None,
     `quit()` — without quit() it runs until the timeout. Returns stdout, stderr,
     and any parse/script errors (Godot prints SCRIPT ERROR and still exits 0, so
     check `errors`, not just the exit code).
+
+    godot_project is the GODOT project directory (the one holding project.godot),
+    not the Builders Gate root — that one is `project_dir`.
     """
     try:
-        return _godot.run_script(script, project_dir=project_dir, timeout=timeout)
+        return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
     except Exception as exc:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def godot_templates() -> dict:
     """What project templates are available to scaffold."""
     try:
@@ -1378,7 +1540,7 @@ def godot_templates() -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
                    force: bool = False) -> dict:
     """Create a runnable Godot project wired for playtesting.
@@ -1400,17 +1562,20 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
         return _fail(exc)
 
 
-@mcp.tool()
-def godot_check_project(project_dir: str, timeout: int = 180) -> dict:
-    """Import/validate a project headless — the 'does it still build' check."""
+@_tool
+def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
+    """Import/validate a project headless — the 'does it still build' check.
+
+    godot_project: the directory holding project.godot.
+    """
     try:
-        return _godot.check_project(project_dir, timeout=timeout)
+        return _godot.check_project(godot_project, timeout=timeout)
     except Exception as exc:
         return _fail(exc)
 
 
-@mcp.tool()
-def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
+@_tool
+def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "assets",
                        timeout: int = 240) -> dict:
     """Bring an asset (e.g. a Blender .glb) into a project and VERIFY the engine loads it.
 
@@ -1420,9 +1585,11 @@ def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets"
     imports with zero surfaces is a silent failure, and this catches it by
     checking the engine's view, not the file's presence. The end of the
     Blender→Godot round trip.
+
+    godot_project: the directory holding project.godot.
     """
     try:
-        result = _godot.import_asset(project_dir, src_path, dest_rel=dest_rel,
+        result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
                                      timeout=timeout)
         # Register the landed asset so asset_verify covers it from birth. Only
         # possible when the game project lives inside the bgate root.
@@ -1447,8 +1614,8 @@ def godot_import_asset(project_dir: str, src_path: str, dest_rel: str = "assets"
         return _fail(exc)
 
 
-@mcp.tool()
-def godot_screenshot(project_dir: str, at: float = 1.0, scene: Optional[str] = None,
+@_tool
+def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] = None,
                      label: str = "", timeout: int = 120) -> dict:
     """Run the ACTUAL game and capture the viewport to a PNG at `at` seconds.
 
@@ -1456,13 +1623,15 @@ def godot_screenshot(project_dir: str, at: float = 1.0, scene: Optional[str] = N
     what it LOOKS like. A game window appears briefly on the user's screen
     (rendering needs a display) and closes itself after the capture. The shot
     is archived to the preview gallery — check it before and after visual work.
+
+    godot_project: the directory holding project.godot.
     """
     try:
         out = str(_Path(_root()) / ".bgate_out" / "shot.png")
     except Exception:
         out = "bgate_shot.png"
     try:
-        result = _godot.screenshot(project_dir, out, at=at, scene=scene,
+        result = _godot.screenshot(godot_project, out, at=at, scene=scene,
                                    timeout=timeout)
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"shot-{label or 'game'}")
@@ -1476,15 +1645,17 @@ def godot_screenshot(project_dir: str, at: float = 1.0, scene: Optional[str] = N
         return _fail(exc)
 
 
-@mcp.tool()
-def godot_inspect_resource(project_dir: str, res_path: str, timeout: int = 180) -> dict:
+@_tool
+def godot_inspect_resource(godot_project: str, res_path: str, timeout: int = 180) -> dict:
     """Load a res:// resource in-engine and report what it actually became.
 
     Meshes, tri counts, per-surface UV/material, bounding box — the engine's
     view of an asset already in the project.
+
+    godot_project: the directory holding project.godot.
     """
     try:
-        return _godot.inspect_resource(project_dir, res_path, timeout=timeout)
+        return _godot.inspect_resource(godot_project, res_path, timeout=timeout)
     except Exception as exc:
         return _fail(exc)
 
@@ -1492,7 +1663,7 @@ def godot_inspect_resource(project_dir: str, res_path: str, timeout: int = 180) 
 # ---------------------------------------------------------------------------
 # Reference anchors
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
     """Pin an APPROVED image as a canonical reference anchor.
 
@@ -1509,7 +1680,7 @@ def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def ref_list(kind: Optional[str] = None) -> dict:
     """The pinned reference anchors. Check BEFORE generating character/style art."""
     try:
@@ -1518,7 +1689,7 @@ def ref_list(kind: Optional[str] = None) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def profile_set(name: str, traits: str, style: str, negative: str) -> dict:
     """Store a character's visual identity — written while LOOKING at the pinned
     reference, never from memory. Injected automatically into every
@@ -1533,7 +1704,7 @@ def profile_set(name: str, traits: str, style: str, negative: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def profile_get(name: str) -> dict:
     """A character's stored visual identity (or {missing: true})."""
     try:
@@ -1543,7 +1714,7 @@ def profile_get(name: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def consistency_check(candidate_path: str, character: str) -> dict:
     """Judge a generated frame against its character — from a BUILT comparison,
     never from memory. Composes reference | candidate side-by-side on a
@@ -1740,17 +1911,25 @@ def consistency_check(candidate_path: str, character: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
                    reasons: str = "") -> dict:
     """Record an INDEPENDENT art-QA reviewer's verdict on a candidate artifact.
 
     For the art-consistency reviewer (a seat that did NOT make the image) after
     it has run consistency_check and looked at the produced image beside its
-    reference. verdict 'pass' approves the revision; 'fail' rejects it. The
-    score (0-100 similarity) and reasons are stored on the revision under
-    metadata.qa_review so the dashboard can show why. This is what stops the art
-    seat from self-approving drift — the accept/reject is made here, by review.
+    reference. The score (0-100 similarity) and reasons are stored on the
+    revision under metadata.qa_review so the dashboard can show why.
+
+    verdict 'fail' REJECTS the revision outright — refusing to ship something is
+    a call a machine is allowed to make alone. verdict 'pass' does NOT approve
+    it: the pass is recorded and the revision stays a candidate, marked
+    machine-checked and queued for a human to approve in the dashboard. An LLM's
+    opinion is evidence; only a person promotes evidence to canon.
+
+    Returns {ok, artifact_id, verdict, score, status, awaiting_human,
+    logical_name, revision}. `status` is the revision's status AFTER the call:
+    'rejected' on fail, still 'candidate' on pass.
     """
     verdict = (verdict or "").strip().lower()
     if verdict not in ("pass", "fail"):
@@ -1758,25 +1937,24 @@ def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
     try:
         root = _root()
         art = _artifacts.get(root, int(artifact_id))
-        try:
-            score = max(0, min(100, int(score)))
-        except (TypeError, ValueError):
-            score = 0
-        _artifacts.record_check(root, art["path"], "qa_review", {
-            "verdict": verdict, "score": score, "reasons": reasons[:1000]})
-        status = "approved" if verdict == "pass" else "rejected"
-        reviewed = _artifacts.review(root, int(artifact_id), status,
-                                     note=f"art-QA {verdict} ({score}/100): {reasons[:400]}")
+        reviewed = _artifacts.qa_verdict(
+            root, int(artifact_id), passed=verdict == "pass", score=int(score or 0),
+            note=f"art-QA {verdict}: {reasons[:400]}")
+        awaiting = reviewed["status"] == "candidate"
         return {"ok": True, "artifact_id": int(artifact_id), "verdict": verdict,
-                "score": score, "status": reviewed["status"],
-                "logical_name": art["logical_name"], "revision": art["revision"]}
+                "score": max(0, min(int(score or 0), 100)),
+                "status": reviewed["status"], "awaiting_human": awaiting,
+                "logical_name": art["logical_name"], "revision": art["revision"],
+                **({"next": "a human approves this revision in the dashboard — "
+                            "art-QA cannot promote it to 'approved'"}
+                   if awaiting else {})}
     except LookupError as exc:
         return _fail(exc)
     except Exception as exc:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def ref_unpin(name: str) -> dict:
     """Remove a pin (the file itself is kept — deleting canon art is a human call)."""
     try:
@@ -1788,7 +1966,7 @@ def ref_unpin(name: str) -> dict:
 # ---------------------------------------------------------------------------
 # Assets — locks for the files git can't merge
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def asset_lock(path: str, seat: str) -> dict:
     """Claim a binary asset for one seat BEFORE editing it.
 
@@ -1804,7 +1982,7 @@ def asset_lock(path: str, seat: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def asset_release(path: str, seat: str, force: bool = False) -> dict:
     """Release a lock when the edit is done — records the new content hash.
 
@@ -1820,7 +1998,7 @@ def asset_release(path: str, seat: str, force: bool = False) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def asset_track(path: str) -> dict:
     """Register an existing file under its content hash (sha256)."""
     try:
@@ -1829,7 +2007,7 @@ def asset_track(path: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
     """List tracked assets, optionally by kind or only the locked ones."""
     try:
@@ -1839,7 +2017,7 @@ def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def asset_verify() -> dict:
     """Audit every tracked asset against disk — catches silent clobbers.
 
@@ -1856,7 +2034,7 @@ def asset_verify() -> dict:
 # ---------------------------------------------------------------------------
 # Iterations
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def iteration_status(limit: int = 10) -> dict:
     """Causal iteration history: snapshots, assets, playtests, decisions, work, outcome."""
     try:
@@ -1865,7 +2043,7 @@ def iteration_status(limit: int = 10) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def iteration_record_checks(status: str, summary: str = "",
                             checks: Optional[dict] = None) -> dict:
     """Attach automated-check results to the active iteration and next snapshot."""
@@ -1880,7 +2058,7 @@ def iteration_record_checks(status: str, summary: str = "",
 # ---------------------------------------------------------------------------
 # Playtest
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def playtest_devices(filter_text: str = "") -> dict:
     """List mic inputs and open windows — pick what to record before starting."""
     try:
@@ -1894,7 +2072,7 @@ def playtest_devices(filter_text: str = "") -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_check(mic_device: Optional[int] = None,
                    window_title: Optional[str] = None,
                    native: bool = False) -> dict:
@@ -1913,7 +2091,7 @@ def playtest_check(mic_device: Optional[int] = None,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_start(name: str, window_title: Optional[str] = None,
                    mic_device: Optional[int] = None, build_ref: str = "",
                    fps: int = 30, launch_native: bool = False,
@@ -1936,7 +2114,7 @@ def playtest_start(name: str, window_title: Optional[str] = None,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_stop(session_id: Optional[int] = None, model: str = "base",
                   transcribe_now: bool = True) -> dict:
     """Stop recording, then transcribe, align, and classify feedback.
@@ -1952,7 +2130,7 @@ def playtest_stop(session_id: Optional[int] = None, model: str = "base",
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_brief(session_id: int, include_transcript: bool = False,
                    window_s: float = 4.0) -> dict:
     """The session as agents should read it: video frames + feedback + telemetry.
@@ -1970,7 +2148,7 @@ def playtest_brief(session_id: int, include_transcript: bool = False,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_list(status: Optional[str] = None) -> dict:
     """List play sessions. status: recording | processing | ready | failed."""
     try:
@@ -1979,7 +2157,7 @@ def playtest_list(status: Optional[str] = None) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_promote(item_id: int, seat: Optional[str] = None,
                      kind: Optional[str] = None, ref: str = "") -> dict:
     """Accept a feedback item as real work, optionally re-routing it.
@@ -1993,7 +2171,7 @@ def playtest_promote(item_id: int, seat: Optional[str] = None,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_dismiss(item_id: int) -> dict:
     """Drop a feedback item — noise, or already handled."""
     try:
@@ -2002,7 +2180,7 @@ def playtest_dismiss(item_id: int) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def playtest_telemetry_contract() -> dict:
     """What the game must emit so spoken feedback becomes actionable numbers."""
     try:
@@ -2014,7 +2192,7 @@ def playtest_telemetry_contract() -> dict:
 # ---------------------------------------------------------------------------
 # Seats — stable roles, write lanes, and the blackboard
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def seat_list() -> dict:
     """The project's seats: role, mission, write lanes. Adopt one before working."""
     try:
@@ -2023,7 +2201,7 @@ def seat_list() -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def seat_brief(role: str) -> dict:
     """Everything a seat needs to start working, in one call.
 
@@ -2038,7 +2216,7 @@ def seat_brief(role: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def seat_can_write(role: str, path: str) -> dict:
     """May this seat write this path? Check BEFORE editing outside your obvious lane.
 
@@ -2052,7 +2230,7 @@ def seat_can_write(role: str, path: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def seat_configure(role: str, enabled: Optional[bool] = None,
                    write_globs: Optional[list[str]] = None,
                    mission: Optional[str] = None) -> dict:
@@ -2064,7 +2242,7 @@ def seat_configure(role: str, enabled: Optional[bool] = None,
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def seat_post_note(role: str, body: str, topic: str = "") -> dict:
     """Leave a note on the blackboard for other seats.
 
@@ -2077,7 +2255,7 @@ def seat_post_note(role: str, body: str, topic: str = "") -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
                limit: int = 20) -> dict:
     """Read the blackboard, newest first, optionally filtered by topic or role."""
@@ -2091,7 +2269,7 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
 # ---------------------------------------------------------------------------
 # Work queue
 # ---------------------------------------------------------------------------
-@mcp.tool()
+@_tool
 def queue_list(status: Optional[str] = None, seat: Optional[str] = None) -> dict:
     """The work queue. status: queued | dispatched | done | failed."""
     try:
@@ -2101,7 +2279,7 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None) -> dict
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def queue_add(seat: str, title: str, brief: str = "", priority: int = 0) -> dict:
     """Queue work for a seat. Use when your work uncovers work that isn't yours."""
     try:
@@ -2112,7 +2290,7 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0) -> dict
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
                  seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
     """Edit an existing work item in place (title/brief/seat/priority).
@@ -2130,7 +2308,7 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def queue_next(seat: str) -> dict:
     """The highest-priority queued item for a seat — what to work on next."""
     try:
@@ -2141,7 +2319,7 @@ def queue_next(seat: str) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
     """Close out a work item with an honest one-paragraph result.
 
@@ -2156,7 +2334,7 @@ def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
         return _fail(exc)
 
 
-@mcp.tool()
+@_tool
 def queue_reopen(item_id: int, reason: str) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 

@@ -199,19 +199,22 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "control.consistency", category: "control", label: "Consistency check", glyph: "◎", accent: "var(--c-qa)",
+    kind: "consistency",
     defaults: { threshold: 80 },
     ports() { return { in: [{ id: "candidate", label: "candidate" }], out: [{ id: "o", label: "passed" }] }; },
     body(n) {
       return `<div class="wf-b-note">reject off-model frames</div>
-        <div class="wf-b-tag">≥ ${+cfg(n, "threshold", 80)}% on-model</div>`;
+        <div class="wf-b-tag">enforced ≥ ${+cfg(n, "threshold", 80)}% on-model</div>`;
     },
     config(n) {
-      return `<div class="wf-insp-p">An <b>independent</b> art-QA pass (run by the QA seat, not the artist) that checks each candidate frame against its anchor/reference and rejects anything off-model. Independence is the point — the generator does not grade its own output.</div>`
-        + numRow(n, "threshold", "Pass threshold %", 80, 0, 100);
+      return `<div class="wf-insp-p">An <b>independent</b> art-QA pass (run by the QA seat, not the artist) that checks each candidate frame against its anchor/reference. Independence is the point — the generator does not grade its own output.</div>`
+        + numRow(n, "threshold", "Pass threshold %", 80, 0, 100)
+        + `<div class="wf-b-note" style="margin-top:8px">The threshold is <b>enforced by the run</b>, not just written into the brief: when the reviewer finishes, its recorded scores (one per candidate, from <code>art_qa_verdict</code>) are compared to it and the <b>worst</b> one decides. Below the line the step fails and the whole run fails — one off-model frame is an off-model sheet. A review that records no score at all cannot pass either.</div>`;
     },
     agentSeat: "qa",
     toBrief(n, wf) {
-      return `Independently review each incoming frame against its character anchor/reference. Reject any frame below ${+cfg(n, "threshold", 80)}% on-model — flag silhouette, palette, proportion and detail drift. You are the QA seat, independent of the artist. Task: ${taskText(wf)}.`;
+      const t = +cfg(n, "threshold", 80);
+      return `Independently review each incoming frame against its character anchor/reference. Score every candidate 0-100 on-model and record it with art_qa_verdict(artifact_id, verdict, score, reasons) — flag silhouette, palette, proportion and detail drift. The run enforces a ${t}% floor on the WORST score, so a score you do not record is a step that cannot pass. You are the QA seat, independent of the artist. Task: ${taskText(wf)}.`;
     },
   });
 
@@ -220,6 +223,7 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "control.variants", category: "control", label: "Variant fan-out", glyph: "⑃", accent: "var(--warn)",
+    kind: "passive",
     defaults: { count: 3 },
     body(n) {
       return `<div class="wf-b-note">fan → ${+cfg(n, "count", 3)}</div>
@@ -236,11 +240,12 @@
   /* ===================================================================== */
   WF.registerStep({
     type: "control.select", category: "control", label: "Select best", glyph: "☑", accent: "var(--warn)",
+    kind: "gate",
     defaults: {},
     ports() { return { in: [{ id: "i", label: "candidates" }], out: [{ id: "o", label: "chosen" }] }; },
-    body() { return `<div class="wf-b-note">human picks the best variant</div>`; },
+    body() { return `<div class="wf-b-note">blocks until a human picks</div>`; },
     config() {
-      return `<div class="wf-insp-p">A human-in-the-loop gate: pauses the run so a person chooses the best variant from the candidates before anything downstream proceeds. No options.</div>`;
+      return `<div class="wf-insp-p">A human-in-the-loop gate, and a real one: the run <b>stops here</b> — nothing downstream is queued — until a person approves it from the run bar (having picked their variant in the art workspace) or rejects it, which fails the run. An agent cannot open it. No options.</div>`;
     },
   });
 

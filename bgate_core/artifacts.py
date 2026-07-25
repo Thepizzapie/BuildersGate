@@ -3,6 +3,12 @@
 The asset registry answers "did this path drift?" Artifact revisions answer the
 iteration questions: what produced this candidate, what was approved, and which
 older candidate it superseded. Paths may be replaced; revision rows never are.
+
+Approval is the one decision in this pipeline that a model may not make. An
+agent can generate, judge, annotate and reject; promoting a candidate to canon
+takes a human, and the human's identity is stamped on the row. review() is
+where that is enforced — not in any one caller, because the audit's finding was
+precisely that a second caller walked around the first one's gate.
 """
 from __future__ import annotations
 
@@ -15,6 +21,9 @@ from . import activity, assets, db, iterations
 from .util import rows
 
 STATUSES = ("candidate", "approved", "rejected", "integrated", "superseded")
+
+# Statuses that put a candidate into the build. Only a human may set these.
+HUMAN_ONLY_STATUSES = ("approved", "integrated")
 
 
 def register(root: str | os.PathLike[str], logical_name: str,
@@ -35,6 +44,13 @@ def register(root: str | os.PathLike[str], logical_name: str,
     digest = tracked["hash"]
     size = tracked["bytes"]
     iteration_id = iterations.active_id(root)
+    # Freeze WHICH revision of each pinned reference this was drawn against.
+    # Pins are versioned now; without the hash, a re-pin silently rewrites the
+    # history of every artifact that claims to have been generated against it.
+    metadata = dict(metadata or {})
+    pins = _pin_snapshot(root, refs or [])
+    if pins:
+        metadata.setdefault("ref_pins", pins)
     with db.tx(root) as conn:
         revision = int(conn.execute(
             "SELECT COALESCE(MAX(revision), 0) + 1 FROM artifact_revision "
@@ -48,7 +64,7 @@ def register(root: str | os.PathLike[str], logical_name: str,
             """,
             (name, revision, rel, assets.kind_of(rel), digest, size,
              producer.strip(), model.strip(), prompt,
-             json.dumps(refs or []), json.dumps(metadata or {}),
+             json.dumps(refs or []), json.dumps(metadata),
              work_item_id, iteration_id),
         )
         artifact_id = int(cur.lastrowid)
@@ -90,10 +106,27 @@ def list_revisions(root: str | os.PathLike[str], *,
 
 
 def review(root: str | os.PathLike[str], artifact_id: int, status: str,
-           note: str = "") -> dict:
-    """Approve/reject/integrate a candidate and preserve the decision as case law."""
+           note: str = "", *, actor: Optional[str] = None) -> dict:
+    """Approve/reject/integrate a candidate and preserve the decision as case law.
+
+    Promotion is human-only and the reviewer is recorded. An agent calling this
+    with 'approved' is refused by name — the art-QA router exists to stop the
+    art seat approving its own drift, and a second agent doing it instead is the
+    same failure with an extra hop. Agents record their judgement with
+    :func:`qa_verdict`, which leaves the revision a candidate awaiting a human.
+    """
     if status not in STATUSES[1:]:
         raise ValueError(f"review status must be one of {STATUSES[1:]}")
+    who = actor if actor is not None else activity.current_actor()
+    if status in HUMAN_ONLY_STATUSES and not activity.is_human(who):
+        raise PermissionError(
+            f"{who or 'an unidentified caller'} is an agent and may not set "
+            f"status {status!r} — promoting a candidate to the build is a "
+            "human's call. Record the machine judgement with "
+            "artifacts.qa_verdict(root, artifact_id, passed=..., note=...) "
+            "(it stores metadata.qa_review and leaves the revision a candidate "
+            "for a human to approve), or review(..., 'rejected') to fail it."
+        )
     artifact = get(root, artifact_id)
     with db.tx(root) as conn:
         if status in ("approved", "integrated"):
@@ -106,12 +139,12 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
             )
         conn.execute(
             "UPDATE artifact_revision SET status = ?, review_note = ?, "
-            "reviewed_at = datetime('now') WHERE id = ?",
-            (status, note.strip()[:1000], artifact_id),
+            "reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?",
+            (status, note.strip()[:1000], (who or "")[:120], artifact_id),
         )
     activity.log(root, "artifact_review",
                  f"{artifact['logical_name']} r{artifact['revision']} -> {status}",
-                 ref=str(artifact_id))
+                 ref=str(artifact_id), actor=who)
     iteration_id = artifact.get("iteration_id") or iterations.active_id(root)
     if iteration_id:
         iterations.add_event(
@@ -119,6 +152,80 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
             f"{artifact['logical_name']} r{artifact['revision']} -> {status}",
             {"status": status, "reason": note.strip()})
     return get(root, artifact_id)
+
+
+def qa_verdict(root: str | os.PathLike[str], artifact_id: int, *, passed: bool,
+               note: str = "", score: int = 0, detail: Optional[dict] = None,
+               actor: Optional[str] = None) -> dict:
+    """An agent reviewer's judgement — the ceiling on what a model may decide.
+
+    A pass is NOT an approval: it records metadata.qa_review and leaves the
+    revision a candidate, so the dashboard can show 'machine-checked, awaiting
+    a human'. A fail is a real rejection, because refusing to ship something is
+    a decision an agent is allowed to make on its own.
+    """
+    artifact = get(root, artifact_id)
+    who = actor if actor is not None else activity.current_actor()
+    verdict = {"verdict": "pass" if passed else "fail",
+               "score": max(0, min(int(score or 0), 100)),
+               "reasons": note.strip()[:1000], "actor": who,
+               **(detail or {})}
+    metadata = artifact["metadata"]
+    metadata["qa_review"] = verdict
+    with db.tx(root) as conn:
+        conn.execute("UPDATE artifact_revision SET metadata_json = ? WHERE id = ?",
+                     (json.dumps(metadata), artifact_id))
+    activity.log(root, "artifact_qa",
+                 f"{artifact['logical_name']} r{artifact['revision']} qa "
+                 f"{verdict['verdict']} ({verdict['score']}/100)",
+                 ref=str(artifact_id), actor=who)
+    if not passed:
+        return review(root, artifact_id, "rejected", note, actor=who)
+    return get(root, artifact_id)
+
+
+# ---------------------------------------------------------------------------
+# Reference provenance
+# ---------------------------------------------------------------------------
+def _pin_snapshot(root: str | os.PathLike[str], names: list[str]) -> list[dict]:
+    """{name, revision, path, hash} for every ref that resolves to a pin."""
+    from . import refs as _refs
+
+    out = []
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        try:
+            pin = _refs.get(root, name)
+        except (LookupError, ValueError):
+            continue  # a raw path, not a pin — nothing to version
+        out.append({"name": pin["name"], "revision": int(pin["revision"] or 1),
+                    "path": pin["path"], "hash": pin["hash"] or ""})
+    return out
+
+
+def ref_drift(root: str | os.PathLike[str], artifact: dict) -> list[dict]:
+    """References that have moved on since this artifact was generated.
+
+    An artifact card whose anchor was re-pinned is no longer evidence of what it
+    claims: it was drawn against an image that is not what that name means now.
+    """
+    from . import refs as _refs
+
+    stale = []
+    for pin in (artifact.get("metadata") or {}).get("ref_pins") or []:
+        try:
+            current = _refs.get(root, pin.get("name", ""))
+        except (LookupError, ValueError):
+            stale.append({**pin, "current_revision": None,
+                          "detail": "the pin was removed"})
+            continue
+        if (current["hash"] or "") != (pin.get("hash") or ""):
+            stale.append({**pin, "current_revision": int(current["revision"] or 1),
+                          "detail": f"{pin.get('name')} is now r"
+                                    f"{int(current['revision'] or 1)} — this was "
+                                    f"generated against r{pin.get('revision', 1)}"})
+    return stale
 
 
 def workspace(root: str | os.PathLike[str]) -> list[dict]:
@@ -150,6 +257,7 @@ def workspace(root: str | os.PathLike[str]) -> list[dict]:
             "consistency": revision["metadata"].get("consistency", {}),
             "engine_import": revision["metadata"].get("engine_import", {}),
             "used_in_current_build": int(revision["id"]) in used_ids,
+            "ref_drift": ref_drift(root, revision),
             "lock": {
                 "seat": asset.get("lock_seat"),
                 "owner": asset.get("lock_owner", ""),

@@ -14,20 +14,28 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 from bgate_core import (
     activity, artifacts, assets, bible, db, iterations, lore, playtest,
-    project, seats,
+    project, scaffold, seats,
 )
 from bgate_core import queue as _queue
+from bgate_core.util import rows as _rows
+from bgate_ui import api as _api
 from bgate_ui import dispatch as _dispatch
 from bgate_ui import qa_gate as _qa_gate
 from bgate_ui import routes as _routes
 
 app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None)
+
+# One error envelope for every failure — see bgate_ui/api.py. Installed before
+# anything else so even a startup-time raise comes back as parseable JSON.
+_api.install_error_handlers(app)
 
 
 @app.on_event("startup")
@@ -88,6 +96,68 @@ def _root() -> Path:
     return root
 
 
+def _root_or_none() -> Optional[Path]:
+    """The root, or None when there is no project yet.
+
+    First run has to be reachable: the guard cannot demand a token from a
+    directory that has no .bgate to keep one in, and /api/state has to be able
+    to answer "no project" instead of 503-ing the whole page into an error card.
+    """
+    try:
+        return _root()
+    except HTTPException:
+        return None
+
+
+# Same-origin + bearer-token guard on every mutation. Added after the COI
+# middleware so it wraps it: a rejected request never reaches a handler.
+_api.install_guard(app, _root)
+
+
+# ---------------------------------------------------------------------------
+# Pagination, opt-in
+# ---------------------------------------------------------------------------
+# Every list endpoint here used to be unbounded, so a project past a few hundred
+# rows quietly stopped showing its own data. They are all bounded now — but the
+# dashboard and the seat modules read the BARE payload of these routes today
+# ({items: [...]}, {artifacts: [...]}, ...), and flipping all of them to the
+# {ok, data} envelope at once would blank the entire UI.
+#
+# So pagination is OPT-IN, keyed on whether the caller asked for it:
+#   no ?limit / ?offset  -> the historical shape, bounded by that endpoint's
+#                           legacy cap, with `page` added ALONGSIDE the existing
+#                           key (added keys break nobody; moved keys break all).
+#   ?limit or ?offset    -> the full envelope: {ok, data, page}.
+# Callers migrate one at a time by starting to send ?limit. When the last one
+# has, the legacy branch and this comment can go.
+
+def _listing(request: Request, page: _api.Page, key: str, fetch,
+             legacy_limit: int = _api.MAX_LIMIT) -> dict:
+    """Run ``fetch(limit, offset) -> (items, total)`` under whichever mode the
+    caller asked for. ``fetch`` takes the window so SQL-backed endpoints can push
+    LIMIT/OFFSET down instead of materialising the table and slicing it."""
+    explicit = "limit" in request.query_params or "offset" in request.query_params
+    window = page if explicit else _api.Page(limit=legacy_limit, offset=0)
+    items, total = fetch(window.limit, window.offset)
+    envelope = window.envelope(items, total)
+    if explicit:
+        return envelope
+    return {key: envelope["data"], "page": envelope["page"]}
+
+
+def _sql_page(root: Path, source: str, order: str, params, limit: int,
+              offset: int, decode=None) -> tuple[list[dict], int]:
+    """One window of a table plus its true total. ``source`` is everything after
+    FROM, WHERE clause included, so the COUNT counts exactly what the page pages."""
+    conn = db.connect(root)
+    total = conn.execute(
+        f"SELECT count(*) FROM {source}", tuple(params)).fetchone()[0]
+    window = _rows(conn.execute(
+        f"SELECT * FROM {source} ORDER BY {order} LIMIT ? OFFSET ?",
+        (*params, limit, offset)))
+    return ([decode(row) for row in window] if decode else window), int(total)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     html = (_STATIC / "index.html").read_text(encoding="utf-8")
@@ -101,7 +171,37 @@ def index() -> str:
     except ValueError:
         bust = str(int(time.time()))
     html = re.sub(r'(/static/[\w/-]+\.js)', r"\1?v=" + bust, html)
-    return html
+    return _inject_token(html)
+
+
+def _inject_token(html: str) -> str:
+    """Hand the page its dashboard token and make every fetch carry it.
+
+    Patching window.fetch here rather than editing each of the ~200 call sites
+    in the frontend: the token is an origin-wide requirement, and a wrapper is
+    the only way to apply it without a diff nobody could review. Same-origin
+    only — we never leak the token to a third-party URL.
+    """
+    root = _root_or_none()
+    if root is None:
+        return html  # no project yet: nothing to authenticate against
+    try:
+        token = _api.ensure_token(root)
+    except Exception:
+        return html
+    shim = (
+        "<script>window.BGATE_TOKEN=%r;(function(){const f=window.fetch;"
+        "window.fetch=function(input,init){init=init||{};"
+        "const url=typeof input==='string'?input:(input&&input.url)||'';"
+        "const sameOrigin=!/^https?:\\/\\//i.test(url)||url.startsWith(location.origin);"
+        "if(sameOrigin){const h=new Headers(init.headers||"
+        "(typeof input==='object'&&input.headers)||{});"
+        "h.set('X-Bgate-Token',window.BGATE_TOKEN);init.headers=h;}"
+        "return f(input,init);};})();</script>"
+    ) % token
+    if "</head>" in html:
+        return html.replace("</head>", shim + "</head>", 1)
+    return shim + html
 
 
 # Per-seat workspace JS modules live under static/ and load as /static/seats/*.js.
@@ -113,16 +213,38 @@ app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 _registered_routes = _routes.register(app)
 
 
+def _no_project(root: Optional[Path]) -> dict:
+    """The first-run answer: 200, ``project: null``, and a sentence to act on.
+
+    503-ing here was the audit's blocker in miniature — a fresh machine got an
+    error card and nine empty nav items, because the page had nothing to render
+    but the failure. The empty collections keep the shape the pollers already
+    read, so nothing downstream has to learn a second payload.
+    """
+    return {
+        "project": None,
+        "root": None if root is None else str(root),
+        "hint": "no Builders Gate project here yet — name one below, or run "
+                "`bgate init <name>` in a terminal",
+        "kinds": list(scaffold.KINDS),
+        "known": project.known_projects(),
+        "seats": [], "assets": [], "artifacts": [], "asset_groups": [],
+        "iterations": [], "sessions": [], "notes": [], "previews": [],
+    }
+
+
 @app.get("/api/state")
 def state() -> dict:
-    """Everything the dashboard shows, one poll."""
-    root = _root()
-    conn = db.connect(root)
+    """Everything the dashboard shows, one poll — or the absence of a project."""
+    root = _root_or_none()
+    if root is None:
+        return _no_project(None)
 
     try:
         proj = project.get(root)
     except LookupError:
-        raise HTTPException(503, f"no project initialized at {root}")
+        return _no_project(root)
+    conn = db.connect(root)
 
     seat_table = seats.roles_for(root)
     locked = assets.list_assets(root, locked_only=True)
@@ -191,9 +313,16 @@ def state() -> dict:
 
 
 @app.get("/api/activity")
-def activity_feed(after_id: int = 0, limit: int = 60) -> dict:
+def activity_feed(request: Request, after_id: int = 0,
+                  page: _api.Page = Depends()) -> dict:
     """The ticker. Poll with the last seen id for cheap incremental reads."""
-    return {"events": activity.recent(_root(), limit=limit, after_id=after_id)}
+    root = _root()
+    return _listing(
+        request, page, "events",
+        lambda limit, offset: _sql_page(
+            root, "activity WHERE id > ?", "id DESC", (after_id,),
+            limit, offset),
+        legacy_limit=60)
 
 
 @app.get("/api/preview")
@@ -216,13 +345,26 @@ def preview(rel: str) -> FileResponse:
 # The queue + dispatch: orchestration lives here now
 # ---------------------------------------------------------------------------
 @app.get("/api/queue")
-def queue_list(status: Optional[str] = None) -> dict:
+def queue_list(request: Request, status: Optional[str] = None,
+               page: _api.Page = Depends()) -> dict:
     # NOTE: promoted playtest feedback does NOT auto-become work items. That
     # dumped raw transcript fragments ("[add] Jump velocity negative 172.A")
     # straight into the queue as dispatchable tasks -- garbage that spawned
     # agents on sentence fragments. The director SYNTHESIZES promoted feedback
     # into a few coherent work items (queue_add) instead; a fragment is not a task.
-    return {"items": _queue.list_items(_root(), status=status)}
+    root = _root()
+    source = "work_item WHERE 1=1"
+    params: list = []
+    if status:
+        source += " AND status = ?"
+        params.append(status)
+    # Same ordering queue.list_items uses — actionable first, then priority.
+    order = ("CASE status WHEN 'queued' THEN 0 WHEN 'dispatched' THEN 1 "
+             "ELSE 2 END, priority DESC, id")
+    return _listing(
+        request, page, "items",
+        lambda limit, offset: _sql_page(
+            root, source, order, params, limit, offset))
 
 
 @app.post("/api/queue")
@@ -296,8 +438,12 @@ def queue_import_orbit() -> dict:
 
 
 @app.get("/api/agents")
-def agents() -> dict:
-    return {"agents": _dispatch.status(str(_root()))}
+def agents(request: Request, page: _api.Page = Depends()) -> dict:
+    # In-memory process table, not SQL — there is nothing to push a LIMIT into.
+    running = _dispatch.status(str(_root()))
+    return _listing(
+        request, page, "agents",
+        lambda limit, offset: (running[offset:offset + limit], len(running)))
 
 
 @app.get("/api/agent-log/{item_id}")
@@ -317,10 +463,28 @@ def agent_activity(item_id: int) -> dict:
 
 
 @app.get("/api/artifacts")
-def artifact_list(status: Optional[str] = None,
-                  logical_name: Optional[str] = None) -> dict:
-    return {"artifacts": artifacts.list_revisions(
-        _root(), status=status, logical_name=logical_name)}
+def artifact_list(request: Request, status: Optional[str] = None,
+                  logical_name: Optional[str] = None,
+                  page: _api.Page = Depends()) -> dict:
+    root = _root()
+    if status and status not in artifacts.STATUSES:
+        raise _api.bad_request(f"status must be one of {artifacts.STATUSES}",
+                               status=status)
+    source = "artifact_revision WHERE 1=1"
+    params: list = []
+    if logical_name:
+        source += " AND logical_name = ?"
+        params.append(logical_name)
+    if status:
+        source += " AND status = ?"
+        params.append(status)
+    return _listing(
+        request, page, "artifacts",
+        lambda limit, offset: _sql_page(
+            root, source, "created_at DESC, id DESC", params, limit, offset,
+            # The JSON columns need the same unpacking list_revisions does.
+            decode=artifacts._decode),
+        legacy_limit=100)
 
 
 @app.post("/api/artifacts/{artifact_id}/review")
@@ -411,8 +575,13 @@ def artifact_restore(artifact_id: int) -> dict:
 
 
 @app.get("/api/assets/workspace")
-def asset_workspace() -> dict:
-    return {"groups": artifacts.workspace(_root())}
+def asset_workspace(request: Request, page: _api.Page = Depends()) -> dict:
+    # workspace() folds revisions into logical groups in Python, so the window
+    # is applied to the folded result rather than to the underlying rows.
+    groups = artifacts.workspace(_root())
+    return _listing(
+        request, page, "groups",
+        lambda limit, offset: (groups[offset:offset + limit], len(groups)))
 
 
 @app.post("/api/artifacts/{artifact_id}/regenerate")
@@ -436,8 +605,20 @@ def artifact_link_feedback(artifact_id: int, item_id: int,
 
 
 @app.get("/api/iterations")
-def iteration_list(limit: int = 30) -> dict:
-    return {"iterations": iterations.list_iterations(_root(), limit=limit)}
+def iteration_list(request: Request, page: _api.Page = Depends()) -> dict:
+    root = _root()
+
+    def fetch(limit: int, offset: int) -> tuple[list[dict], int]:
+        conn = db.connect(root)
+        total = conn.execute("SELECT count(*) FROM iteration").fetchone()[0]
+        # Page the ids, then hydrate only that window — iterations.get pulls
+        # events and checks per row, which is far too expensive to do table-wide.
+        ids = [int(row[0]) for row in conn.execute(
+            "SELECT id FROM iteration ORDER BY id DESC LIMIT ? OFFSET ?",
+            (limit, offset))]
+        return [iterations.get(root, i) for i in ids], int(total)
+
+    return _listing(request, page, "iterations", fetch, legacy_limit=30)
 
 
 @app.get("/api/iterations/{iteration_id}")
@@ -605,6 +786,13 @@ def pt_status() -> dict:
             "telemetry_events": event_count,
             "native": bool(recording["game_cmd"]),
         }
+        # Mic level rides along on the poll the record button already makes —
+        # a dead mic has to be visible while the playthrough can still be saved,
+        # not discovered at transcription time when it is gone.
+        try:
+            recording_state["level"] = playtest.live_level(root, recording["id"])
+        except Exception:
+            recording_state["level"] = None
     return {
         "recording": recording_state,
         "processing": [
@@ -648,7 +836,8 @@ def pt_event(session_id: int, payload: dict) -> dict:
 
 
 @app.get("/api/playtest/{session_id}")
-def pt_review(session_id: int) -> dict:
+def pt_review(session_id: int, request: Request,
+              page: _api.Page = Depends()) -> dict:
     try:
         root = _root().resolve()
         result = playtest.brief(root, session_id, include_transcript=True)
@@ -674,23 +863,127 @@ def pt_review(session_id: int) -> dict:
             for group in artifacts.workspace(root)
             if group["approved"] or group["revisions"]
         ]
+        # The one list here that can run long is the feedback items. This is a
+        # detail view, not a list route — replacing the whole body with a bare
+        # list would drop session/transcript/asset_options — so the window is
+        # applied in place and described by `page`, in both modes.
+        found = result["items"]
+        windowed = _listing(request, page, "items",
+                            lambda limit, offset: (found[offset:offset + limit],
+                                                   len(found)))
+        result["items"] = windowed.get("items", windowed.get("data"))
+        result["page"] = windowed["page"]
         return result
     except LookupError as exc:
         raise HTTPException(404, str(exc))
 
 
+_RANGE_RE = re.compile(r"^bytes\s*=\s*(\d*)\s*-\s*(\d*)$")
+# 512 KiB: a seek should cost one read, and a session recording is hundreds of
+# megabytes — it never gets read into memory whole.
+_VIDEO_CHUNK = 512 * 1024
+
+
+def _parse_range(header: str, size: int):
+    """``(start, end)`` inclusive, ``None`` to serve the whole file, or the
+    string ``"unsatisfiable"``.
+
+    A unit we do not speak is ignored per RFC 7233 (fall through to a 200); a
+    *bytes* range we cannot honour is an error the player must see, or it silently
+    renders a seek as "no video".
+    """
+    header = (header or "").strip()
+    if not header:
+        return None
+    if not header.lower().startswith("bytes"):
+        return None
+    match = _RANGE_RE.match(header)
+    if not match:
+        return "unsatisfiable"  # malformed, or a multi-range we do not serve
+    first, last = match.group(1), match.group(2)
+    if not first and not last:
+        return "unsatisfiable"
+    if not first:
+        # Suffix form (bytes=-N): the final N bytes. Players use it to read the
+        # moov atom of a file whose index sits at the end.
+        wanted = int(last)
+        if wanted <= 0:
+            return "unsatisfiable"
+        return max(0, size - wanted), size - 1
+    start = int(first)
+    end = int(last) if last else size - 1
+    if start >= size or end < start:
+        return "unsatisfiable"
+    return start, min(end, size - 1)
+
+
+def _file_window(path: Path, start: int, end: int):
+    with path.open("rb") as handle:
+        handle.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            chunk = handle.read(min(_VIDEO_CHUNK, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+
+
 @app.get("/api/playtest/{session_id}/video")
-def pt_video(session_id: int) -> FileResponse:
+def pt_video(session_id: int, request: Request) -> Response:
+    """Serve the session recording with byte ranges.
+
+    Every timeline marker, moment dot and transcript line in the review overlay
+    is a seek, and a seek is a Range request. Without 206 support the browser
+    can only play from zero, so the whole review UI is a promise the transport
+    cannot keep.
+    """
     root = _root().resolve()
-    session = playtest.get(root, session_id)
-    path = Path(session["video_path"] or "").resolve()
+    try:
+        session = playtest.get(root, session_id)
+    except LookupError:
+        raise _api.not_found(f"no playtest session {session_id}",
+                             session_id=session_id)
+
+    raw = (session.get("video_path") or "").strip()
+    stage = (session.get("processing_stage") or session.get("status") or "").strip()
+    # A session with no recording is not a security event. It said "path escapes
+    # the project root" — alarming, and wrong: Path("") resolves to the cwd.
+    if not raw:
+        raise _api.not_found("this session has no video yet",
+                             session_id=session_id, stage=stage)
+
+    path = Path(raw).resolve()
     try:
         path.relative_to(root / ".bgate" / "playtests")
     except ValueError:
-        raise HTTPException(403, "video path escapes playtest storage")
+        raise _api.ApiError(403, "video path escapes playtest storage",
+                            code="forbidden")
     if not path.is_file():
-        raise HTTPException(404, "session has no playable video")
-    return FileResponse(path, media_type="video/mp4")
+        raise _api.not_found("this session has no video yet",
+                             session_id=session_id, stage=stage)
+
+    size = path.stat().st_size
+    headers = {"Accept-Ranges": "bytes"}
+    span = _parse_range(request.headers.get("range", ""), size)
+
+    if span == "unsatisfiable":
+        return JSONResponse(
+            status_code=416,
+            content=_api.error_body(416, "requested range not satisfiable",
+                                    code="range_not_satisfiable",
+                                    detail={"size": size}),
+            headers={**headers, "Content-Range": f"bytes */{size}"})
+
+    if span is None:
+        return FileResponse(path, media_type="video/mp4", headers=headers)
+
+    start, end = span
+    return StreamingResponse(
+        _file_window(path, start, end), status_code=206, media_type="video/mp4",
+        headers={**headers,
+                 "Content-Range": f"bytes {start}-{end}/{size}",
+                 "Content-Length": str(end - start + 1)})
 
 
 @app.post("/api/playtest/items/{item_id}/promote")
@@ -759,7 +1052,24 @@ def play_files(file_path: str = "") -> FileResponse:
 
 
 def serve(port: int = 7788) -> None:
+    """Run the dashboard, and SAY WHERE IT IS.
+
+    `python -m bgate_ui` printed literally nothing — no URL, no port, no project
+    — so the command that starts the product looked like a hang. uvicorn's own
+    banner is suppressed (log_level=warning) on purpose; this replaces it with
+    the two facts a person actually needs.
+    """
     import uvicorn
+
+    url = f"http://127.0.0.1:{port}"
+    root = _root_or_none()
+    print(f"builders gate · dashboard on {url}")
+    if root is None:
+        print("  no project here yet — open the URL and create one, "
+              "or run: bgate init <name>")
+    else:
+        print(f"  project: {root}")
+    print("  ctrl-c to stop")
 
     # 127.0.0.1 on purpose: this is a local window into a local store.
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

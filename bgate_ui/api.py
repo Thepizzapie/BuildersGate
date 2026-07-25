@@ -1,0 +1,361 @@
+"""The HTTP contract every route module shares.
+
+The QA audit's loudest cross-cutting finding: two mutually exclusive error
+conventions coexisted (FastAPI's ``{detail}`` at 4xx and ``200 {ok: false,
+error}``), so the frontend gave up and wrapped every fetch in
+``.catch(() => ({}))`` — which does not even fire on a 500, because a 500 body
+is still valid JSON. Every failure in the product rendered as a blank panel.
+
+One envelope, always::
+
+    {"ok": true,  "data": <payload>}
+    {"ok": false, "error": {"code": "not_found", "message": "...", "detail": {...}}}
+
+``code`` is machine-readable and stable; ``message`` is a sentence a human can
+act on. Handlers raise :class:`ApiError` (or any HTTPException — it is coerced)
+and never hand-roll an error body.
+
+Also here because every router needs it and nobody should re-derive it:
+pagination, the actor identity that makes reviews accountable, and the
+same-origin + bearer-token guard on the mutating surface.
+"""
+from __future__ import annotations
+
+import getpass
+import os
+import secrets
+import socket
+from pathlib import Path
+from typing import Any, Iterable, Optional, Sequence
+
+from fastapi import HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+# Stable codes. The UI switches on these; keep them and add rather than rename.
+CODES = {
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    409: "conflict",
+    413: "too_large",
+    415: "unsupported_media",
+    422: "unprocessable",
+    429: "rate_limited",
+    500: "internal",
+    503: "unavailable",
+    504: "timeout",
+}
+
+
+class ApiError(Exception):
+    """An error with a machine-readable code and a message worth showing.
+
+    ``detail`` carries structured context the UI can render — the conflicting
+    lock's owner, the budget that was exceeded, the field that failed.
+    """
+
+    def __init__(self, status: int, message: str, *,
+                 code: Optional[str] = None,
+                 detail: Optional[dict] = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.code = code or CODES.get(status, "error")
+        self.detail = detail or {}
+
+
+# Shorthands. These read better at the call site than ApiError(404, ...).
+def bad_request(msg: str, **detail: Any) -> ApiError:
+    return ApiError(400, msg, detail=detail or None)
+
+
+def not_found(msg: str, **detail: Any) -> ApiError:
+    return ApiError(404, msg, detail=detail or None)
+
+
+def conflict(msg: str, **detail: Any) -> ApiError:
+    return ApiError(409, msg, detail=detail or None)
+
+
+def forbidden(msg: str, **detail: Any) -> ApiError:
+    return ApiError(403, msg, detail=detail or None)
+
+
+def unavailable(msg: str, **detail: Any) -> ApiError:
+    return ApiError(503, msg, detail=detail or None)
+
+
+def ok(data: Any = None, **extra: Any) -> dict:
+    """Success envelope. ``extra`` lands beside ``data`` (page metadata, etc)."""
+    body: dict = {"ok": True, "data": data}
+    body.update(extra)
+    return body
+
+
+def error_body(status: int, message: str, *, code: Optional[str] = None,
+               detail: Optional[dict] = None) -> dict:
+    return {
+        "ok": False,
+        "error": {
+            "code": code or CODES.get(status, "error"),
+            "message": message,
+            "detail": detail or {},
+        },
+    }
+
+
+def install_error_handlers(app) -> None:
+    """Coerce every failure — ApiError, HTTPException, and the unexpected — into
+    the one envelope. Without the bare-Exception handler a stray KeyError still
+    escapes as an HTML traceback the UI cannot parse."""
+    from fastapi.exceptions import RequestValidationError
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    @app.exception_handler(ApiError)
+    async def _api_error(_request: Request, exc: ApiError):
+        return JSONResponse(
+            status_code=exc.status,
+            content=error_body(exc.status, exc.message, code=exc.code,
+                               detail=exc.detail),
+        )
+
+    # Starlette's HTTPException, not FastAPI's: an unmatched route raises the
+    # base class, so registering only the subclass leaves every 404 and 405 in
+    # the old {detail} shape — the exact inconsistency this module exists to end.
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(_request: Request, exc: StarletteHTTPException):
+        # Legacy raises across app.py pass through here and come out shaped
+        # like everything else, so the frontend needs exactly one code path.
+        detail = exc.detail
+        message = detail if isinstance(detail, str) else "request failed"
+        extra = None if isinstance(detail, str) else {"detail": detail}
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_body(exc.status_code, message, detail=extra),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(_request: Request, exc: RequestValidationError):
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        loc = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+        message = f"{loc or 'request'}: {first.get('msg', 'invalid')}"
+        return JSONResponse(
+            status_code=422,
+            content=error_body(422, message, detail={"errors": _jsonable(errors)}),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled(_request: Request, exc: Exception):
+        return JSONResponse(
+            status_code=500,
+            content=error_body(500, f"{type(exc).__name__}: {exc}"),
+        )
+
+
+def _jsonable(errors: Sequence[dict]) -> list[dict]:
+    """Pydantic v2 stuffs the offending exception object into ``ctx``, which is
+    not JSON-serialisable — stringify anything that is not a primitive."""
+    out = []
+    for err in errors:
+        out.append({k: (v if isinstance(v, (str, int, float, bool, type(None), list))
+                        else str(v))
+                    for k, v in err.items()})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+DEFAULT_LIMIT = 100
+MAX_LIMIT = 500
+
+
+class Page:
+    """Validated limit/offset. Every list endpoint takes one.
+
+    Unbounded list endpoints were silently truncating in the UI with no count
+    and no 'load more', so a project past a few hundred rows quietly stopped
+    showing its own data.
+    """
+
+    def __init__(self, limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+                 offset: int = Query(0, ge=0)) -> None:
+        self.limit = min(int(limit), MAX_LIMIT)
+        self.offset = max(0, int(offset))
+
+    def slice(self, rows: Sequence) -> list:
+        return list(rows[self.offset:self.offset + self.limit])
+
+    def envelope(self, items: Iterable, total: int) -> dict:
+        items = list(items)
+        nxt = self.offset + len(items)
+        return ok(items, page={
+            "limit": self.limit,
+            "offset": self.offset,
+            "total": int(total),
+            "next_offset": nxt if nxt < total else None,
+        })
+
+    def apply(self, rows: Sequence) -> dict:
+        """Slice an already-materialised list and wrap it. For endpoints backed
+        by a COUNT query, prefer ``envelope`` with the real total."""
+        return self.envelope(self.slice(rows), len(rows))
+
+
+# ---------------------------------------------------------------------------
+# Actor identity
+# ---------------------------------------------------------------------------
+
+AGENT_PREFIX = "agent:"
+
+
+def current_actor(request: Optional[Request] = None) -> str:
+    """Who is responsible for this call.
+
+    An agent's spawned session carries BGATE_ACTOR=agent:item-<id> in its env;
+    anything else is a human at the dashboard. This is what makes 'approved'
+    mean something — see :func:`is_human`.
+    """
+    env = os.environ.get("BGATE_ACTOR", "").strip()
+    if env:
+        return env
+    if request is not None:
+        header = (request.headers.get("x-bgate-actor") or "").strip()
+        if header and not header.startswith(AGENT_PREFIX):
+            return header[:120]
+    return local_identity()
+
+
+def local_identity() -> str:
+    """The machine's human identity, for a single-user local dashboard."""
+    configured = os.environ.get("BGATE_STUDIO_USER", "").strip()
+    if configured:
+        return configured[:120]
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = "unknown"
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "local"
+    return f"{user}@{host}"[:120]
+
+
+def is_human(actor: str) -> bool:
+    """An agent may propose; only a human may approve."""
+    return bool(actor) and not actor.startswith(AGENT_PREFIX)
+
+
+def require_human(actor: str, action: str = "approve") -> None:
+    if not is_human(actor):
+        raise forbidden(
+            f"{action} requires a human — {actor or 'an unidentified caller'} is an agent",
+            actor=actor, action=action)
+
+
+# ---------------------------------------------------------------------------
+# Auth: same-origin + a per-run bearer token
+# ---------------------------------------------------------------------------
+
+TOKEN_FILENAME = "ui-token"
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Everything the browser needs before it can present a token.
+_OPEN_PATHS = ("/static/", "/play/", "/api/preview", "/favicon")
+
+
+def token_path(root: Path) -> Path:
+    return Path(root) / ".bgate" / TOKEN_FILENAME
+
+
+def ensure_token(root: Path) -> str:
+    """Read (or mint) this project's dashboard token.
+
+    Written 0600 into .bgate/ — the same directory the DB lives in, which is
+    already gitignored, so the token never travels with the game repo.
+    """
+    path = token_path(root)
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    token = secrets.token_urlsafe(24)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass  # best effort; Windows ACLs do not map cleanly
+    return token
+
+
+def _auth_disabled() -> bool:
+    return os.environ.get("BGATE_NO_AUTH", "").strip().lower() in {
+        "1", "true", "yes", "on"}
+
+
+def dispatch_enabled() -> bool:
+    """A viewer-only deployment must not be able to spawn agents."""
+    return os.environ.get("BGATE_ALLOW_DISPATCH", "1").strip().lower() not in {
+        "0", "false", "no", "off"}
+
+
+def install_guard(app, root_fn) -> None:
+    """Reject cross-origin and unauthenticated mutations.
+
+    The dashboard binds to 127.0.0.1, which is not a security boundary: any page
+    in the browser can POST to localhost. Two cheap gates close it — the request
+    must be same-origin, and it must carry the token only something with read
+    access to .bgate/ could know.
+
+    Opt out with BGATE_NO_AUTH=1 for a scripted/CI run.
+    """
+
+    @app.middleware("http")
+    async def _guard(request: Request, call_next):
+        # Read the opt-out per request, not once at install time: the app is
+        # imported when a test module is first collected, which is before any
+        # fixture has had a chance to set the env var. Latching it here made the
+        # guard un-disableable from a fixture and 401'd unrelated tests.
+        if _auth_disabled() or request.method in _SAFE_METHODS:
+            return await call_next(request)
+        path = request.url.path
+        if any(path.startswith(p) for p in _OPEN_PATHS):
+            return await call_next(request)
+
+        site = request.headers.get("sec-fetch-site")
+        if site and site not in {"same-origin", "none"}:
+            return JSONResponse(status_code=403, content=error_body(
+                403, "cross-origin mutation refused", code="cross_origin"))
+
+        origin = request.headers.get("origin")
+        if origin:
+            host = request.headers.get("host", "")
+            if host and not origin.endswith(f"//{host}"):
+                return JSONResponse(status_code=403, content=error_body(
+                    403, f"origin {origin} is not this dashboard",
+                    code="cross_origin"))
+
+        try:
+            expected = ensure_token(root_fn())
+        except Exception:
+            expected = ""  # no project yet: first-run must still be reachable
+        if expected:
+            presented = (request.headers.get("x-bgate-token")
+                         or (request.headers.get("authorization", "")
+                             .removeprefix("Bearer ").strip()))
+            if not secrets.compare_digest(presented or "", expected):
+                return JSONResponse(status_code=401, content=error_body(
+                    401, "missing or stale dashboard token — reload the page",
+                    code="unauthorized"))
+
+        return await call_next(request)

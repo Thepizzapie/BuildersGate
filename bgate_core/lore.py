@@ -171,6 +171,70 @@ def all_facts(root: str | os.PathLike[str]) -> list[dict]:
     ))
 
 
+def all_links(root: str | os.PathLike[str]) -> list[dict]:
+    """Every edge in the graph, resolved to slugs on both ends."""
+    conn = db.connect(root)
+    return rows(conn.execute(
+        """
+        SELECT l.id, s.slug AS src, d.slug AS dst, l.rel, l.note
+          FROM lore_link l
+          JOIN lore_entity s ON s.id = l.src_id
+          JOIN lore_entity d ON d.id = l.dst_id
+         ORDER BY l.id
+        """
+    ))
+
+
+# Node geometry. The renderer (static/nodecanvas.js) owns pan/zoom but not
+# placement, so the graph ships laid out — one column per kind, in KINDS order —
+# rather than making every consumer invent its own layout.
+NODE_W = 240
+_COL_X, _ROW_Y, _MARGIN = 300, 150, 40
+
+
+def graph(root: str | os.PathLike[str], kind: str | None = None,
+          status: str | None = None) -> dict:
+    """The lore graph in the node-canvas shape: ``{nodes, edges}``.
+
+    Filtered edges are dropped, not dangled — an edge to a node that was filtered
+    out would render as a line into empty space.
+    """
+    entities = list_entities(root, kind=kind, status=status)
+    fact_counts = {int(r["entity_id"]): int(r["n"]) for r in db.connect(root).execute(
+        "SELECT entity_id, COUNT(*) AS n FROM canon_fact "
+        "WHERE entity_id IS NOT NULL GROUP BY entity_id").fetchall()}
+
+    nodes, column = [], {k: 0 for k in KINDS}
+    for entity in entities:
+        row = column[entity["kind"]]
+        column[entity["kind"]] = row + 1
+        nodes.append({
+            "id": entity["slug"],
+            "type": f"lore-{entity['kind']}",
+            "title": entity["name"],
+            "x": _MARGIN + KINDS.index(entity["kind"]) * _COL_X,
+            "y": _MARGIN + row * _ROW_Y,
+            "w": NODE_W,
+            "ports": {"in": [{"id": "in", "label": "from"}],
+                      "out": [{"id": "out", "label": "to"}]},
+            "entity_id": entity["id"],
+            "kind": entity["kind"],
+            "status": entity["status"],
+            "summary": entity["summary"],
+            "facts": fact_counts.get(entity["id"], 0),
+        })
+
+    keep = {n["id"] for n in nodes}
+    edges = [
+        {"id": link["id"], "from": [link["src"], "out"], "to": [link["dst"], "in"],
+         "rel": link["rel"], "note": link["note"]}
+        for link in all_links(root)
+        if link["src"] in keep and link["dst"] in keep
+    ]
+    return {"nodes": nodes, "edges": edges,
+            "kinds": list(KINDS), "statuses": list(STATUSES)}
+
+
 def brief(root: str | os.PathLike[str], ref: str | int) -> dict:
     """Everything a narrative agent needs about one entity, in one call."""
     entity = get_entity(root, ref)

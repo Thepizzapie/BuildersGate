@@ -23,11 +23,32 @@ bgate = "bgate_cli.main:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["bgate_core", "bgate_mcp", "bgate_adapters", "bgate_cli", "bgate_ui"]
+[tool.setuptools.packages.find]
+where = ["."]
+# bgate_engine and templates carry no .py at all — they are pure data trees that
+# scaffold.py / godot_templates resolve RELATIVE TO THE INSTALL ROOT
+# (bgate_core/../templates), so they must land next to the code packages in
+# site-packages. namespaces = true is what lets those __init__-less dirs be
+# collected; their contents come in via package-data below.
+include = [
+    "bgate_core*",
+    "bgate_mcp*",
+    "bgate_adapters*",
+    "bgate_cli*",
+    "bgate_ui*",
+    "bgate_engine",
+    "templates",
+]
+exclude = ["tests*", "docs*", "*.__pycache__"]
+namespaces = true
 
 [tool.setuptools.package-data]
-bgate_ui = ["static/*.html"]
+# A wheel with no JS is a dashboard where every /static/**/*.js 404s, and a
+# wheel with no templates/ is a scaffolder that raises FileNotFoundError. Both
+# shipped that way until CI started asserting otherwise (see .github/workflows).
+bgate_ui = ["static/**/*"]
+bgate_engine = ["*.md", "schemas/**/*"]
+templates = ["**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

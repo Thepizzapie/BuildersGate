@@ -13,6 +13,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 BGateTelemetry="*res://addons/bgate/bgate_telemetry.gd"
+BGateTuner="*res://addons/bgate/bgate_tuner.gd"
 
 [display]
 

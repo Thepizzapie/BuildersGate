@@ -31,6 +31,10 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 SESSIONS_DIRNAME = "playtests"
 
+# Heartbeat kinds that say nothing about a bug. fps ticks alone are 100+ per
+# minute; pasted into a ticket they bury the one event that explains the report.
+NOISE_KINDS = {"fps", "session_open", "session_close", "autoquit"}
+
 
 def _session_dir(root, session_id: int, slug: str) -> Path:
     return Path(root) / db.DB_DIRNAME / SESSIONS_DIRNAME / f"{session_id:04d}-{slug}"
@@ -95,17 +99,48 @@ def preflight(mic_device: Optional[int] = None, window_title: Optional[str] = No
         except Exception as exc:
             checks["native_game"] = {"ok": False, "reason": str(exc)}
 
-    if window_title:
-        matches = recorder.list_windows(window_title)
+    # Capture target. Unnamed, gdigrab grabs the WHOLE DESKTOP — every other
+    # window you had open ends up in the bug report's frames. Report what would
+    # actually be captured now, while it can still be changed.
+    hints = game_window_hints(root or ".")
+    try:
+        window = recorder.resolve_window(window_title, hints=hints)
         checks["window"] = {
-            "ok": bool(matches),
-            "matches": matches,
-            "reason": "" if matches else f"no visible window matching {window_title!r} "
-                                         "— start the game first",
+            "ok": True,
+            "title": window["title"],
+            "whole_desktop": window["whole_desktop"],
+            "matches": window["matches"],
+            "reason": window["note"],
         }
+    except Exception as exc:
+        checks["window"] = {"ok": False, "reason": str(exc),
+                            "matches": recorder.list_windows()}
 
     ready = all(c.get("ok", c.get("available", False)) for c in checks.values())
-    return {"ready": ready, "checks": checks}
+    out = {"ready": ready, "checks": checks}
+    out["windows"] = checks["window"].get("matches") or []
+    return out
+
+
+def game_window_hints(root: str | os.PathLike[str]) -> list[str]:
+    """Titles the game's window is likely to have, best first.
+
+    Godot names the window after `application/config/name` in project.godot, so
+    the project's own name is the one reliable hint we have without asking the
+    user to read their title bar.
+    """
+    hints: list[str] = []
+    config = Path(root) / "game" / "project.godot"
+    try:
+        for line in config.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip().startswith("config/name"):
+                name = line.split("=", 1)[1].strip().strip('"')
+                if name:
+                    hints.append(name)
+                break
+    except OSError:
+        pass
+    return hints
 
 
 def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str] = None,
@@ -137,7 +172,11 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
 
     out_dir = _session_dir(root, session_id, slug)
     try:
+        # Hints, not a default: the game window only exists if you started the
+        # game before hitting record. When it does, capture it instead of the
+        # whole desktop — nobody wants their inbox in a bug report's frames.
         rec = recorder.start(out_dir, window_title=window_title,
+                             window_hints=game_window_hints(root),
                              mic_device=mic_device, fps=fps)
     except Exception as exc:
         with db.tx(root) as conn:
@@ -189,6 +228,11 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
         "telemetry_path": str(telemetry),
         "env": {"BGATE_TELEMETRY": str(telemetry)},
         "native_launch": native,
+        "capture": {
+            "window_title": getattr(rec, "window_title", None),
+            "whole_desktop": getattr(rec, "window_title", None) is None,
+            "note": getattr(rec, "window_note", ""),
+        },
         "hint": "Launch the game with BGATE_TELEMETRY set to telemetry_path (the "
                 "BGate autoload reads it). Then play and TALK — say what you like "
                 "and what needs fixing, right when it happens.",
@@ -254,6 +298,32 @@ def stop(root: str | os.PathLike[str], session_id: Optional[int] = None, *,
     summary["transcript"] = transcribe_session(
         root, session_id, model=model, audio_offset_s=result["audio_offset_s"])
     return summary
+
+
+def live_level(root: str | os.PathLike[str],
+               session_id: Optional[int] = None) -> dict:
+    """Mic level of the session recording RIGHT NOW.
+
+    A playtest can record twenty minutes of digital silence and you only find
+    out at transcription time, when the playthrough is gone. The recorder's
+    audio callback already sees every block; this surfaces what it heard so the
+    UI can say "your mic is dead" while you can still do something about it.
+    """
+    from bgate_adapters import recorder
+
+    try:
+        session = _active(root, session_id)
+    except LookupError as exc:
+        return {"ok": False, "recording": False, "reason": str(exc)}
+    rec = _LIVE.get(int(session["id"]))
+    if rec is None:
+        return {"ok": False, "recording": False, "session_id": int(session["id"]),
+                "reason": "session is marked recording but this process holds no "
+                          "live recorder — the server restarted mid-session"}
+    level = recorder.level(rec)
+    level["session_id"] = int(session["id"])
+    level["recording"] = True
+    return level
 
 
 def launch_native_game(root: str | os.PathLike[str], session_id: int,
@@ -537,7 +607,7 @@ def telemetry_summary(root: str | os.PathLike[str], session_id: int) -> dict:
     moments: list[dict] = []
     fps_vals: list[float] = []
     by_kind: dict[str, int] = {}
-    NOISE = {"fps", "session_open", "session_close", "autoquit"}
+    NOISE = NOISE_KINDS
     for event in events:
         kind = event["kind"]
         by_kind[kind] = by_kind.get(kind, 0) + 1
@@ -584,6 +654,8 @@ def _ensure_filmstrip(session: dict) -> list[dict]:
     Idempotent: extract once into <video>/strip, reuse on later calls (the
     review endpoint is polled). Returns [] when there is no playable video.
     """
+    from bgate_adapters import recorder
+
     vp = session.get("video_path")
     if not vp or not Path(vp).is_file():
         return []
@@ -710,9 +782,59 @@ def brief(root: str | os.PathLike[str], session_id: int, *,
     return out
 
 
+_ITEM_FIELDS = ("notes", "repro_steps", "kind", "seat", "text")
+
+
+def get_item(root: str | os.PathLike[str], item_id: int) -> dict:
+    row = db.connect(root).execute(
+        "SELECT * FROM playtest_item WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"no playtest item {item_id}")
+    return dict(row)
+
+
+def update_item(root: str | os.PathLike[str], item_id: int, **fields) -> dict:
+    """Edit a feedback item — the mic did not catch everything.
+
+    Half of a bug report is what you did BEFORE the thing broke, and nobody
+    narrates that out loud mid-play. notes/repro_steps are where the human (or
+    the QA seat) writes it down afterwards; the rest is correcting a lexical
+    classifier that guessed the kind or the seat wrong.
+    """
+    unknown = set(fields) - set(_ITEM_FIELDS)
+    if unknown:
+        raise ValueError(f"cannot set {sorted(unknown)}; editable fields are "
+                         f"{list(_ITEM_FIELDS)}")
+    get_item(root, item_id)  # raises LookupError if it does not exist
+    if fields.get("seat") is not None and fields["seat"] not in feedback.SEATS:
+        raise ValueError(f"seat must be one of {feedback.SEATS}, got {fields['seat']!r}")
+    if fields.get("kind") is not None and fields["kind"] not in feedback.KINDS:
+        raise ValueError(f"kind must be one of {feedback.KINDS}, got {fields['kind']!r}")
+
+    sets = {k: v for k, v in fields.items() if v is not None}
+    if not sets:
+        return get_item(root, item_id)
+    if "text" in sets and not str(sets["text"]).strip():
+        raise ValueError("a feedback item cannot have empty text")
+    clause = ", ".join(f"{k} = ?" for k in sets)
+    with db.tx(root) as conn:
+        conn.execute(f"UPDATE playtest_item SET {clause} WHERE id = ?",
+                     (*[str(v) for v in sets.values()], item_id))
+    activity.log(root, "playtest", f"edited feedback item {item_id}: "
+                                   f"{', '.join(sorted(sets))}", ref=str(item_id))
+    return get_item(root, item_id)
+
+
 def promote(root: str | os.PathLike[str], item_id: int, *, seat: Optional[str] = None,
-            kind: Optional[str] = None, ref: str = "") -> dict:
-    """Accept a feedback item as real work. The human's call, never the model's."""
+            kind: Optional[str] = None, ref: str = "",
+            qa_confirm: bool = False) -> dict:
+    """Accept a feedback item as real work. The human's call, never the model's.
+
+    qa_confirm queues a PARALLEL 'qa' work item asking someone to reproduce the
+    bug and write the steps down. Opt-in, and deliberately not the fix itself:
+    promotion still authors no implementation work (see app.py's promote route),
+    but a bug nobody can reproduce is a bug nobody can close.
+    """
     conn = db.connect(root)
     row = conn.execute("SELECT * FROM playtest_item WHERE id = ?", (item_id,)).fetchone()
     if row is None:
@@ -738,8 +860,57 @@ def promote(root: str | os.PathLike[str], item_id: int, *, seat: Optional[str] =
             f"Promoted feedback to {seat or row['seat']}",
             {"disposition": "promoted", "kind": kind or row["kind"],
              "seat": seat or row["seat"]})
-    return dict(db.connect(root).execute(
-        "SELECT * FROM playtest_item WHERE id = ?", (item_id,)).fetchone())
+    out = get_item(root, item_id)
+    if qa_confirm:
+        out["qa_item"] = queue_repro_check(root, item_id)
+    return out
+
+
+def queue_repro_check(root: str | os.PathLike[str], item_id: int) -> dict:
+    """A 'qa' work item: reproduce this bug and write the steps down.
+
+    Idempotent — the QA workspace polls, and a second click must not fan out a
+    second identical task.
+    """
+    from . import queue
+
+    item = get_item(root, item_id)
+    existing = db.connect(root).execute(
+        "SELECT id, seat, title, status FROM work_item "
+        "WHERE source = 'playtest-repro' AND source_ref = ? ORDER BY id DESC LIMIT 1",
+        (str(item_id),)).fetchone()
+    if existing is not None:
+        return {**dict(existing), "existing": True}
+
+    session = get(root, int(item["session_id"]))
+    quote = item["text"].strip()
+    work = queue.add(
+        root, "qa",
+        title=f"Confirm + write repro: {quote[:70]}",
+        brief=(
+            f"A playtest bug was promoted and needs a REPRODUCTION before anyone "
+            f"is asked to fix it.\n\n"
+            f"Session {session['id']} ({session['name']}) @ {_clock(item['t'])}\n"
+            f"Build: {session['build_ref'] or 'unversioned'}\n"
+            f"Verbatim, as spoken during play:\n\n"
+            f"  \"{quote}\"\n\n"
+            f"Do this:\n"
+            f"1. Call `playtest_brief(session_id={session['id']})` and read item "
+            f"{item_id} — its frame and the telemetry around it are the evidence.\n"
+            f"2. Run the build and try to make it happen again.\n"
+            f"3. Write the exact steps into the item: PATCH "
+            f"/api/playtest/items/{item_id} with {{\"repro_steps\": \"...\"}} "
+            f"(numbered, from a fresh launch), and put what you could NOT "
+            f"reproduce in \"notes\".\n"
+            f"4. Complete this item saying whether it reproduces, on which build, "
+            f"and how reliably (e.g. '3/5 attempts').\n\n"
+            f"If it does not reproduce, say so plainly — that is a real result, "
+            f"not a failure. Do not guess at steps you did not actually perform."),
+        priority=2, source="playtest-repro", source_ref=str(item_id))
+    activity.log(root, "playtest",
+                 f"queued QA repro check for feedback item {item_id}",
+                 seat="qa", ref=str(item_id))
+    return {**work, "existing": False}
 
 
 def dismiss(root: str | os.PathLike[str], item_id: int) -> dict:
@@ -791,6 +962,277 @@ def _iteration_for_item(root: str | os.PathLike[str], item_id: int) -> Optional[
         "JOIN playtest_session s ON s.id = i.session_id WHERE i.id = ?",
         (item_id,)).fetchone()
     return int(row["iteration_id"]) if row and row["iteration_id"] else None
+
+
+# ---------------------------------------------------------------------------
+# Bug reports — the evidence, in a form you can paste into a tracker
+# ---------------------------------------------------------------------------
+# Everything a session captures used to die inside a SQLite file and an overlay:
+# to file the bug you found, you re-typed it by hand into a second tool. The
+# brief already holds ~90% of a real bug report — build, exact quote, the frame,
+# the telemetry around the moment. This just renders it.
+REPORT_MD_NAME = "report.md"
+REPORT_FRAMES_DIRNAME = "frames"
+
+
+def _clock(t: float) -> str:
+    """Session-clock seconds as mm:ss.ss — the timeline label, not a raw float."""
+    try:
+        t = max(float(t), 0.0)
+    except (TypeError, ValueError):
+        return "??:??"
+    return f"{int(t // 60):02d}:{t % 60:05.2f}"
+
+
+def _evidence_events(item: dict) -> list[dict]:
+    """The item's nearby telemetry, minus the heartbeats."""
+    return [e for e in item.get("events", []) if e.get("kind") not in NOISE_KINDS]
+
+
+def _item_markdown(index: int, item: dict, session: dict, *,
+                   window_s: float) -> str:
+    frame = item.get("frame_path") or ""
+    frame_name = Path(frame).name if frame else ""
+    lines = [
+        f"## {index}. {item['text'].strip().splitlines()[0][:100]}",
+        "",
+        f"- **Item**: `#{item['id']}` · **kind** `{item['kind']}` · "
+        f"**seat** `{item['seat']}` · **status** `{item['status']}`",
+        f"- **When**: {_clock(item['t'])} on the session clock "
+        f"(session {session['id']}, build `{session.get('build_ref') or 'unversioned'}`)",
+    ]
+    if frame_name:
+        lines.append(f"- **Frame**: `{REPORT_FRAMES_DIRNAME}/{frame_name}` "
+                     f"(source: `{frame}`)")
+    else:
+        lines.append("- **Frame**: none captured for this moment")
+    assets = [a["logical_name"] for a in item.get("assets", [])]
+    if assets:
+        lines.append(f"- **Assets named**: {', '.join(f'`{a}`' for a in assets)}")
+    lines += ["", "### Said during play (verbatim)", "",
+              "> " + item["text"].strip().replace("\n", "\n> "), ""]
+
+    lines += ["### Steps to reproduce", ""]
+    if item.get("repro_steps", "").strip():
+        lines += [item["repro_steps"].strip(), ""]
+    else:
+        lines += ["_Not written down yet — nobody has reproduced this._", ""]
+
+    if item.get("notes", "").strip():
+        lines += ["### Notes", "", item["notes"].strip(), ""]
+
+    events = _evidence_events(item)
+    lines += [f"### Telemetry within {window_s:g}s "
+              "(fps/heartbeat events removed)", ""]
+    if events:
+        lines += ["| t | event | data |", "| --- | --- | --- |"]
+        for event in events:
+            data = event.get("data")
+            payload = json.dumps(data, sort_keys=True) if data else ""
+            lines.append(f"| {_clock(event['t'])} | `{event['kind']}` | "
+                         f"{('`' + payload + '`') if payload else ''} |")
+        lines.append("")
+    else:
+        lines += ["_No game events landed near this moment — the build may not "
+                  "be emitting telemetry (see `playtest_telemetry_contract`)._", ""]
+
+    if frame_name:
+        lines += [f"![frame at {_clock(item['t'])}]"
+                  f"({REPORT_FRAMES_DIRNAME}/{frame_name})", ""]
+    return "\n".join(lines)
+
+
+def report(root: str | os.PathLike[str], session_id: int, *,
+           item_ids: Optional[list[int]] = None,
+           statuses: Optional[tuple[str, ...]] = ("promoted",),
+           window_s: float = 4.0) -> dict:
+    """Render a session's feedback as filable markdown bug reports.
+
+    item_ids selects exact items (the per-item "copy bug report" button);
+    otherwise every item in `statuses` — promoted by default, because an
+    unpromoted item is still someone thinking out loud.
+    """
+    data = brief(root, session_id, window_s=window_s)
+    session = data["session"]
+    iteration = data.get("iteration") or {}
+    items = data["items"]
+    if item_ids is not None:
+        wanted = {int(i) for i in item_ids}
+        items = [i for i in items if int(i["id"]) in wanted]
+        missing = wanted - {int(i["id"]) for i in items}
+        if missing:
+            raise LookupError(
+                f"item(s) {sorted(missing)} are not in session {session_id}")
+    elif statuses:
+        items = [i for i in items if i["status"] in statuses]
+
+    head = [
+        f"# Playtest bug report — {session['name']}",
+        "",
+        f"- **Session**: `{session['id']}` ({session['name']}), "
+        f"started {session.get('started_at') or 'unknown'}, "
+        f"{float(session.get('duration_s') or 0):.0f}s recorded",
+        f"- **Build**: `{session.get('build_ref') or 'unversioned'}`",
+    ]
+    if iteration:
+        head.append(
+            f"- **Iteration**: `{iteration['id']}` — commit "
+            f"`{(iteration.get('source_commit') or 'unversioned')[:12]}`"
+            + (f", export `{iteration['export_hash'][:12]}`"
+               if iteration.get("export_hash") else ""))
+    backed = ("yes" if data["telemetry_backed"]
+              else "NO — the build emitted no events")
+    head += [
+        f"- **Reports**: {len(items)}",
+        f"- **Telemetry-backed**: {backed}",
+        "",
+        "Frames are stills pulled from the recording at the moment each remark "
+        "was made. Timestamps are seconds from the start of the session, the "
+        "same clock the transcript and telemetry use.",
+        "",
+    ]
+    for warning in data.get("coverage_warnings", []):
+        head.append(f"> **{warning['kind']}** — {warning['message']}")
+    if data.get("coverage_warnings"):
+        head.append("")
+
+    body = [_item_markdown(n, item, session, window_s=window_s)
+            for n, item in enumerate(items, start=1)]
+    if not body:
+        body = ["_No items matched — promote the feedback you want filed first._",
+                ""]
+    markdown = "\n".join(head) + "\n---\n\n" + "\n---\n\n".join(body)
+
+    frames = []
+    seen: set[str] = set()
+    for item in items:
+        path = item.get("frame_path")
+        if not path or not Path(path).is_file():
+            continue
+        name = Path(path).name
+        if name in seen:
+            continue
+        seen.add(name)
+        frames.append({"name": name, "path": str(path), "item_id": item["id"]})
+
+    return {
+        "session_id": int(session["id"]),
+        "name": session["name"],
+        "markdown": markdown,
+        "frames": frames,
+        "items": [int(i["id"]) for i in items],
+        "missing_frames": len(items) - len(frames),
+    }
+
+
+def report_zip(root: str | os.PathLike[str], session_id: int, **kwargs) -> dict:
+    """The same report as a zip: markdown plus the frames it links.
+
+    Markdown alone links images nobody else can open. A zip is what actually
+    attaches to a ticket.
+    """
+    import io
+    import zipfile
+
+    rendered = report(root, session_id, **kwargs)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(REPORT_MD_NAME, rendered["markdown"])
+        for frame in rendered["frames"]:
+            try:
+                zf.write(frame["path"], f"{REPORT_FRAMES_DIRNAME}/{frame['name']}")
+            except OSError:
+                continue  # a frame that vanished must not lose the whole report
+    return {**rendered, "bytes": buf.getvalue(),
+            "filename": f"playtest-{session_id}-{slugify(rendered['name'])}.zip"}
+
+
+def item_report(root: str | os.PathLike[str], item_id: int, *,
+                window_s: float = 4.0) -> dict:
+    """One item's bug report — what the 'copy bug report' button copies."""
+    item = get_item(root, item_id)
+    return report(root, int(item["session_id"]), item_ids=[item_id],
+                  statuses=None, window_s=window_s)
+
+
+# ---------------------------------------------------------------------------
+# The QA seat's evidence stream
+# ---------------------------------------------------------------------------
+def qa_queue(root: str | os.PathLike[str], *, limit: int = 200) -> dict:
+    """Sessions + untriaged feedback, shaped for the QA workspace.
+
+    QA could see neither the session list nor the untriaged queue — triage items
+    routed to the director only, so the seat that owns reproduction had no way
+    in. This is that door: what was recorded, what nobody has judged yet, and
+    which promoted bugs are still missing repro steps.
+    """
+    conn = db.connect(root)
+    sessions = []
+    for row in rows(conn.execute(
+            "SELECT s.*, "
+            "  (SELECT count(*) FROM playtest_item i WHERE i.session_id = s.id) "
+            "    AS item_count, "
+            "  (SELECT count(*) FROM playtest_item i WHERE i.session_id = s.id "
+            "     AND i.status = 'new') AS untriaged_count, "
+            "  (SELECT count(*) FROM playtest_event e WHERE e.session_id = s.id) "
+            "    AS event_count "
+            "FROM playtest_session s ORDER BY s.id DESC LIMIT ?", (limit,))):
+        sessions.append({
+            "id": row["id"], "name": row["name"], "status": row["status"],
+            "started_at": row["started_at"], "ended_at": row["ended_at"],
+            "duration_s": row["duration_s"], "build_ref": row["build_ref"],
+            "iteration_id": row["iteration_id"],
+            "items": row["item_count"], "untriaged": row["untriaged_count"],
+            "telemetry_events": row["event_count"],
+            "has_video": bool(row["video_path"]
+                              and Path(row["video_path"]).is_file()),
+        })
+
+    def _shape(row: dict) -> dict:
+        return {
+            "id": row["id"], "session_id": row["session_id"],
+            "session_name": row["session_name"],
+            "t": row["t"], "clock": _clock(row["t"]),
+            "kind": row["kind"], "seat": row["seat"], "status": row["status"],
+            "text": row["text"], "notes": row["notes"],
+            "repro_steps": row["repro_steps"],
+            "has_repro": bool((row["repro_steps"] or "").strip()),
+            "frame_path": row["frame_path"],
+            "director_recommendation": row["director_recommendation"],
+        }
+
+    untriaged = [_shape(r) for r in rows(conn.execute(
+        "SELECT i.*, s.name AS session_name FROM playtest_item i "
+        "JOIN playtest_session s ON s.id = i.session_id "
+        "WHERE i.status = 'new' ORDER BY i.session_id DESC, i.t LIMIT ?",
+        (limit,)))]
+    # Promoted bugs with nothing written down: the QA seat's actual backlog.
+    needs_repro = [_shape(r) for r in rows(conn.execute(
+        "SELECT i.*, s.name AS session_name FROM playtest_item i "
+        "JOIN playtest_session s ON s.id = i.session_id "
+        "WHERE i.status = 'promoted' AND i.kind = 'fix' "
+        "AND trim(i.repro_steps) = '' ORDER BY i.session_id DESC, i.t LIMIT ?",
+        (limit,)))]
+    repro_checks = rows(conn.execute(
+        "SELECT id, title, status, source_ref, result, updated_at FROM work_item "
+        "WHERE source = 'playtest-repro' ORDER BY id DESC LIMIT ?", (limit,)))
+
+    return {
+        "sessions": sessions,
+        "untriaged": untriaged,
+        "needs_repro": needs_repro,
+        "repro_checks": repro_checks,
+        "counts": {
+            "sessions": len(sessions),
+            "untriaged": len(untriaged),
+            "needs_repro": len(needs_repro),
+            "open_repro_checks": sum(
+                1 for c in repro_checks if c["status"] in ("queued", "dispatched")),
+        },
+        "note": ("Untriaged items are raw speech, not agreed bugs. Reproduce "
+                 "before you file: write the steps onto the item so the fix "
+                 "seat is not guessing."),
+    }
 
 
 # ---------------------------------------------------------------------------
