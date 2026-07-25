@@ -43,9 +43,131 @@ def find_claude() -> Optional[str]:
     return str(fallback) if fallback.exists() else None
 
 
+# Seat-specific house rules injected UNCONDITIONALLY into the dispatch prompt —
+# the one channel every agent sees even if it skips seat_brief (item 56 did:
+# it hand-rolled 8 loose image_edit frames for an animation task and never
+# stitched a sheet). Keep these short and imperative.
+SEAT_RULES = {
+    "narrative": (
+        "NARRATIVE HOUSE RULE — NO FIRST-THOUGHT JOKES:\n"
+        "• Before landing ANY name/line/bark, generate 5 candidates and kill "
+        "every one that is the FIRST joke anyone would make on the premise "
+        "(the obvious pun, the meme format, the joke every parody of this "
+        "subject already made). Ship the one that surprises.\n"
+        "• Obey the project's OWN tone tests (read the tone guide / bible "
+        "before writing; if you wrote one this session, your content must "
+        "pass it — self-contradiction is an automatic fail). No winks, no "
+        "lampshading, no decade-old meme formats.\n"
+        "• Specificity beats snark: a line should only make sense in THIS "
+        "world. If it could be pasted into any generic parody of the genre, "
+        "cut it.\n"
+        "• Read every deliverable back OUT LOUD (to yourself) against the "
+        "tone tests before landing. Land fewer, better lines."
+    ),
+    "audio": (
+        "AUDIO HOUSE RULE — EVERY SYNTHESIZED ASSET SHIPS ITS RECIPE:\n"
+        "• Alongside each .wav/.ogg you synthesize, write a `<name>.synth.json` "
+        "sidecar capturing the FULL parametric recipe: wave type(s), ADSR, "
+        "pitch/glide, noise mix, filter, duration, sample rate — and for music "
+        "beds the complete note/step pattern per channel + tempo/key. Another "
+        "process must be able to re-render the identical asset from the recipe "
+        "alone (the upcoming Audio Studio edits these knobs and re-renders — "
+        "a .wav without its recipe is a dead end).\n"
+        "• Keep the synthesis code you used in the project's .bgate/ scratch "
+        "so the recipe->render path is reproducible."
+    ),
+    "art": (
+        "ART HOUSE RULE — ANIMATIONS ARE SINGLE-GEN SHEETS (identity by "
+        "construction), THEN SLICED:\n"
+        "• For ANY animation, generate the WHOLE animation as ONE image: "
+        "image_edit conditioned on the approved anchor ref, prompting 'an "
+        "N-frame <anim> animation sprite sheet of THIS EXACT character, N "
+        "poses side-by-side left-to-right in one row, evenly spaced, "
+        "transparent background, same character same colors in every frame'. "
+        "A model CANNOT drift identity inside one image — per-pose generation "
+        "drifted skin/outfit colors across frames and is now the FALLBACK, "
+        "not the default.\n"
+        "• Slice + normalize + emit the engine sheet with the pipeline: "
+        "python -c from bgate_adapters.sprites import from_painted_sheet — it "
+        "cuts the row into equal cells, alpha-trims, bottom-centers, and "
+        "writes <name>_sheet.png + <name>_frames.tres. Verify every cell "
+        "sliced cleanly (no half-characters: regenerate the sheet with a "
+        "stricter even-spacing instruction, don't hand-fix).\n"
+        "• Cross-sheet identity: every animation sheet conditions on the SAME "
+        "anchor ref, and you LOOK at all sheets side-by-side before landing — "
+        "same character, same colors across the whole set.\n"
+        "• image_edit single-frame fixes and per-pose image_sprites remain "
+        "available ONLY to repair one bad cell of an otherwise-good sheet.\n"
+        "• Before landing: run consistency_check on every frame AND clear its "
+        "alpha flags (no white halo, no feathered fringe, no background bleed, no "
+        "hollow interior, transparent = truly empty). Any alpha flag = do not land.\n"
+        "\n"
+        "HUD / UI CHROME SHIPS AS SEPARATE LAYERED PARTS, NEVER ONE BAKED "
+        "COMPOSITE:\n"
+        "• A UI element with dynamic or independently-driven sub-parts — a meter = "
+        "frame + segmented FILL + icon + counter badge; a health bar = frame + "
+        "FILL; a card = frame + portrait + label plate — MUST ship as SEPARATE "
+        "transparent PNGs, one per layer, NOT fused into a single image. The "
+        "scene/designer stacks and drives each independently: the fill depletes in "
+        "code BEHIND a hollow frame, segments light one by one, the icon/badge are "
+        "their own nodes. Gening the whole element in one go leaves nothing the "
+        "designer can wire — it is not shippable.\n"
+        "• Frames are HOLLOW: a fully transparent window where the code-driven fill "
+        "shows through. NEVER bake a colored fill into a frame. For every frame, "
+        "post the exact fill-window rect (x,y,w,h) in your seat note.\n"
+        "• Keep the parts on a consistent pixel grid / shared registration so they "
+        "stack cleanly at the target rect. A single composed PREVIEW mock is fine "
+        "FOR REVIEW, but the SHIPPED assets are the separate layers.\n"
+        "• Match the pinned concept: crop the target element out of the concept "
+        "ref, condition generation on that crop, and build your own "
+        "concept-vs-output comparison — iterate until it matches, don't ship "
+        "isolated bare bars.\n"
+        "\n"
+        "WORLD / ENVIRONMENT ASSETS ARE INDIVIDUAL GENS, NEVER A SLICED SCENE:\n"
+        "• Concept mocks are COMPOSITES — inspiration, not assets. A shippable "
+        "world asset is generated ON ITS OWN: one prop (desk, plant, vending "
+        "machine, printer shrine), one tile, one unit sprite per gen, "
+        "transparent background, consistent scale against the project's grid "
+        "(e.g. a 32px-tile world: props sized in tile multiples, characters to "
+        "their tile footprint). NEVER generate a full scene and cut pieces out "
+        "of it — sliced fragments have baked lighting/overlap and never "
+        "composite cleanly.\n"
+        "• Tilesets: gen each tile type separately (or a strict uniform grid "
+        "sheet where every cell is one clean tile), then assemble the atlas "
+        "with code — cells must be seamlessly tileable with their neighbors.\n"
+        "• Scale/registration discipline: every asset in a batch states its "
+        "intended pixel size; verify against the grid before landing so the "
+        "engine drops it in without per-asset fudging.\n"
+        "• ISO UNITS SHIP THE FULL FACING MATRIX: 2 generated base facings "
+        "(SE front-right + NE back-right) x every animation, named "
+        "<anim>_<facing> (idle_se, walk_ne, ...) through the standard sheet "
+        "pipeline; SW/NW are mirrored in-engine (flip_h), never generated. A "
+        "partial facing x anim matrix is an automatic fail — check the "
+        "project bible's unit-sprite contract before landing any unit.\n"
+        "• ISO PROPS DECLARE A ROTATION CLASS (see the project bible's "
+        "prop-rotation contract): SYMMETRIC = 1 gen reused; MIRRORABLE = 2 "
+        "gens + flip_h (NO text/logos/handedness); FULL = 4 gens (anything "
+        "with readable text/signage — mirrored text is an automatic fail). "
+        "All views of one prop conditioned on the SAME prop ref so it reads "
+        "as one object rotated; state the tile footprint per prop.\n"
+        "\n"
+        "DELIVERY FIDELITY — WHAT WAS APPROVED IS WHAT SHIPS:\n"
+        "• The engine-ready file you deliver must be a MECHANICAL derivation "
+        "of the approved artifact revision: trim, downscale, alpha-clean — "
+        "NOTHING ELSE. Never redraw, re-generate, or 'improve' an asset at "
+        "the delivery step; a delivered file whose content differs from its "
+        "approved source is an automatic reject (observed failure: floors "
+        "shipped with an invented X-bevel that existed in no approved rev).\n"
+        "• Name the source in your seat note per delivered file "
+        "(delivered X <- approved revision N) so the trail is auditable."
+    ),
+}
+
+
 def _prompt_for(item: dict) -> str:
     from bgate_core.seats import SEAT_IDENTITY
 
+    seat_rule = SEAT_RULES.get(item["seat"], "")
     return (
         SEAT_IDENTITY + "\n\n"
         f"You are the {item['seat'].upper()} seat of the Builders Gate game project "
@@ -53,7 +175,8 @@ def _prompt_for(item: dict) -> str:
         "NATIVELY — no runner scripts.\n\n"
         f"WORK ITEM #{item['id']} ({item['source']}): {item['title']}\n"
         f"{item['brief']}\n\n"
-        "Protocol, in order:\n"
+        + (seat_rule + "\n\n" if seat_rule else "")
+        + "Protocol, in order:\n"
         "1. seat_brief for your role — mission, lanes, bible, pinned refs, notes.\n"
         f"2. Read .bgate/progress/item-{item['id']}.jsonl if it exists (a "
         "predecessor's trail); append one JSON line "
@@ -93,6 +216,8 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         "BGATE_ROOT": str(root),
         "BGATE_WORK_ITEM": str(item_id),
         "BGATE_LOCK_OWNER": f"item-{item_id}",
+        # Director directive: gpt-image-2 is banned — force 1 for every gen.
+        "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL", "gpt-image-1"),
     }
     # stream-json OUTPUT makes claude emit one NDJSON event per step AS IT WORKS
     # (tool calls, messages) instead of buffering to the end -- that feeds the
@@ -111,6 +236,16 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         args += ["--model", model]
 
     log_handle = open(log_path, "ab")
+    # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
+    # view and the steer-echo scanner must only look at THIS run — the stale
+    # first-run result being shown as current, and old echoes falsely marking
+    # fresh steers consumed, were real observed bugs. Marker + byte offset.
+    import time as _time
+    log_handle.write((json.dumps({"type": "bgate_run_start",
+                                  "item_id": item_id,
+                                  "ts": _time.time()}) + "\n").encode("utf-8"))
+    log_handle.flush()
+    run_start_pos = log_handle.tell()
     proc = subprocess.Popen(args, cwd=str(root), env=env,
                             stdin=subprocess.PIPE, stdout=log_handle,
                             stderr=log_handle, creationflags=_NO_WINDOW)
@@ -123,8 +258,11 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
     with _lock:
         _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
-                          "stdin": proc.stdin, "steers": [], "stdin_closed": False}
+                          "stdin": proc.stdin, "steers": [], "stdin_closed": False,
+                          "log_scan_pos": run_start_pos,
+                          "run_start_pos": run_start_pos}
     _queue.set_status(root, item_id, "dispatched")
+    _record_pid(root, proc.pid, item_id)
     # The streamed session waits on stdin forever; close it once the agent
     # self-reports so it exits even when no dashboard is polling /api/agents.
     threading.Thread(target=_watch_completion, args=(root, item_id),
@@ -132,9 +270,13 @@ def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path)}
 
 
-def _watch_completion(root: str, item_id: int, poll_s: float = 4.0) -> None:
+def _watch_completion(root: str, item_id: int, poll_s: float = 4.0,
+                      exit_grace_s: float = 90.0) -> None:
     """Close the agent's stdin once it has queue_complete'd, so the waiting
-    process reaches EOF and exits — independent of any UI polling."""
+    process reaches EOF and exits — then make SURE it exits. EOF alone proved
+    unreliable (agents wedged on child MCP servers piled up 14 orphaned
+    claude.exe at peak), so after a grace period the process tree is killed;
+    the item is already done, nothing of value is lost."""
     import time
     while True:
         time.sleep(poll_s)
@@ -143,19 +285,120 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 4.0) -> None:
             if not entry:
                 return
             if entry["proc"].poll() is not None:
-                return  # already gone; status() will reap
-            if entry.get("stdin_closed"):
-                return
-            try:
-                if _queue.get(root, item_id)["status"] in ("done", "failed"):
-                    try:
-                        entry["stdin"].close()
-                    except OSError:
-                        pass
-                    entry["stdin_closed"] = True
+                _unrecord_pid(root, entry["proc"].pid)
+                return  # already gone; status() will reap the table entry
+            if not entry.get("stdin_closed"):
+                try:
+                    if _queue.get(root, item_id)["status"] in ("done", "failed"):
+                        try:
+                            entry["stdin"].close()
+                        except OSError:
+                            pass
+                        entry["stdin_closed"] = True
+                        entry["eof_at"] = time.monotonic()
+                except LookupError:
                     return
-            except LookupError:
+                continue
+            # stdin closed: give the process the grace period, then kill its
+            # whole tree (the agent's own MCP-server children orphan too).
+            # setdefault matters: status() (the dashboard poll) often closes
+            # stdin FIRST and doesn't stamp eof_at — without this, the default
+            # re-evaluated to now() every pass and the kill NEVER fired (the
+            # observed doom-loop zombie).
+            entry.setdefault("eof_at", time.monotonic())
+            if time.monotonic() - entry["eof_at"] >= exit_grace_s:
+                _kill_tree(entry["proc"].pid)
+                _unrecord_pid(root, entry["proc"].pid)
                 return
+
+
+def _pids_path(root: str) -> Path:
+    return Path(root) / ".bgate" / "agents" / "pids.json"
+
+
+def _record_pid(root: str, pid: int, item_id: int) -> None:
+    """Persist spawned-agent pids so a server restart can sweep survivors."""
+    import json, time
+    try:
+        path = _pids_path(root)
+        data = {}
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+        data[str(pid)] = {"item_id": item_id, "spawned_at": time.time()}
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _unrecord_pid(root: str, pid: int) -> None:
+    import json
+    try:
+        path = _pids_path(root)
+        if not path.is_file():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.pop(str(pid), None) is not None:
+            path.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _kill_tree(pid: int) -> None:
+    """Kill a process and its children (Windows: taskkill /T; else SIGKILL)."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, creationflags=_NO_WINDOW,
+                           timeout=15)
+        else:
+            os.kill(pid, 9)
+    except Exception:
+        pass
+
+
+def reap_orphans(root: str) -> dict:
+    """Sweep agents orphaned by a previous server run.
+
+    _live dies with the server process, but the spawned claude.exe trees do
+    not — they sit waiting on a pipe nobody will ever close. The pids ledger
+    survives restarts; anything in it that is not in the CURRENT _live and is
+    still a running claude process gets its tree killed."""
+    import json
+    killed, cleared = [], []
+    path = _pids_path(root)
+    if not path.is_file():
+        return {"killed": [], "cleared": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"killed": [], "cleared": ["unreadable ledger — reset"],
+                "reset": bool(path.write_text("{}", encoding="utf-8"))}
+    with _lock:
+        live_pids = {e["proc"].pid for e in _live.values()}
+    for pid_s, meta in list(data.items()):
+        pid = int(pid_s)
+        if pid in live_pids:
+            continue  # owned by this server run
+        # Verify it's still OUR kind of process before killing (pid reuse).
+        name = ""
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, creationflags=_NO_WINDOW,
+                timeout=15).stdout
+            name = out.split(",")[0].strip('" ').lower() if "," in out else ""
+        except Exception:
+            pass
+        if name.startswith("claude"):
+            _kill_tree(pid)
+            killed.append({"pid": pid, "item_id": meta.get("item_id")})
+        data.pop(pid_s)
+        cleared.append(pid)
+    try:
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+    return {"killed": killed, "cleared": cleared}
 
 
 def steer(root: str, item_id: int, text: str) -> dict:
@@ -175,8 +418,77 @@ def steer(root: str, item_id: int, text: str) -> dict:
             entry["stdin"].flush()
         except OSError as exc:
             return {"ok": False, "error": f"agent not accepting input: {exc}"}
-        entry["steers"].append(text)
+        import time as _time
+        entry["steers"].append({"text": text, "sent_at": _time.time(),
+                                "consumed_at": None})
     return {"ok": True, "item_id": item_id, "steers": len(entry["steers"])}
+
+
+def _scan_steer_echoes(entry: dict) -> None:
+    """Mark steers consumed by finding their --replay-user-messages echoes.
+
+    A steer lands in stdin instantly, but the model only READS it when the
+    current turn ends — that gap is the 'late to inject' feeling. The echo of
+    the injected user message in the output log is the moment of consumption,
+    so sent_at -> echo time IS the injection latency. Incremental tail read
+    (cursor per entry), so a 10MB log costs nothing per poll."""
+    import time as _time
+    pending = [s for s in entry.get("steers", ()) if isinstance(s, dict)
+               and s.get("consumed_at") is None]
+    if not pending:
+        return
+    try:
+        with open(entry["log"], "rb") as fh:
+            fh.seek(entry.get("log_scan_pos", 0))
+            chunk = entry.get("log_scan_rem", b"") + fh.read()
+            entry["log_scan_pos"] = fh.tell()
+    except OSError:
+        return
+    lines = chunk.split(b"\n")
+    entry["log_scan_rem"] = lines.pop()  # possibly-partial last line
+    now = _time.time()
+    for line in lines:
+        if b"STEER FROM THE DIRECTOR" not in line or b'"user"' not in line:
+            continue
+        for s in entry["steers"]:
+            if isinstance(s, dict) and s.get("consumed_at") is None:
+                s["consumed_at"] = now
+                break
+
+
+def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
+    """Seconds since the agent last produced ANY observable output — log write
+    or a file under .bgate_out / game assets. Long atomic MCP calls (a 30-min
+    image_sprites batch) log nothing until they return, which made healthy
+    agents look hung and got them manually killed; file mtimes are the real
+    heartbeat. Shallow capped scan, cheap enough for the dashboard poll."""
+    import time as _t
+    newest = 0.0
+    try:
+        newest = os.path.getmtime(entry["log"])
+    except OSError:
+        pass
+    budget = 400  # max entries visited — keep the poll snappy
+    stack = [(Path(root) / ".bgate_out", 0), (Path(root) / "game" / "assets", 0)]
+    while stack and budget > 0:
+        d, depth = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    budget -= 1
+                    if budget <= 0:
+                        break
+                    try:
+                        m = e.stat().st_mtime
+                        if m > newest:
+                            newest = m
+                        if e.is_dir() and depth < 2:
+                            stack.append((Path(e.path), depth + 1))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return int(_t.time() - newest) if newest else None
 
 
 def status(root: str) -> list[dict]:
@@ -198,6 +510,7 @@ def status(root: str) -> list[dict]:
                             result=f"session exited {code} without self-reporting")
                 except LookupError:
                     pass
+                _unrecord_pid(root, entry["proc"].pid)
                 del _live[item_id]
                 out.append({"item_id": item_id, "state": "exited", "code": code})
             else:
@@ -210,12 +523,23 @@ def status(root: str) -> list[dict]:
                         if item["status"] in ("done", "failed"):
                             entry["stdin"].close()
                             entry["stdin_closed"] = True
+                            import time as _t
+                            entry["eof_at"] = _t.monotonic()  # start the kill clock
                     except LookupError:
                         pass
                 _assets.heartbeat(root, f"item-{item_id}")
+                _scan_steer_echoes(entry)
+                steers = [s for s in entry.get("steers", ())
+                          if isinstance(s, dict)]
+                consumed = [s for s in steers if s.get("consumed_at")]
+                latencies = [round(s["consumed_at"] - s["sent_at"], 1)
+                             for s in consumed]
                 out.append({"item_id": item_id, "state": "running",
                             "pid": entry["proc"].pid, "log": entry["log"],
-                            "steers": len(entry.get("steers", []))})
+                            "steers": len(steers),
+                            "steers_pending": len(steers) - len(consumed),
+                            "steer_latency_s": latencies,
+                            "last_output_s": _last_output_age_s(root, entry)})
     return out
 
 
@@ -230,7 +554,16 @@ def read_activity(root: str, item_id: int, limit: int = 40) -> dict:
 
     steps: list[dict] = []
     final = None
-    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    # Only THIS run: the log appends across re-dispatches, and showing a prior
+    # run's final result as current was a real observed bug. Runs are separated
+    # by bgate_run_start markers written at dispatch time.
+    marker = text.rfind('"bgate_run_start"')
+    if marker != -1:
+        nl = text.find("\n", marker)
+        if nl != -1:
+            text = text[nl + 1:]
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue

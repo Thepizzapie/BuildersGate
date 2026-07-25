@@ -1,6 +1,7 @@
 """Project identity — the single row every other table hangs off."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,43 @@ from .util import slugify
 
 ENGINES = ("godot", "none")
 DIMENSIONS = ("2d", "3d", "2d+3d")
+
+# Machine-wide registry of every project ever init'ed/selected, so a session
+# whose cwd is NOWHERE NEAR the project (e.g. an MCP server spawned from a
+# different repo) can still find and select it by name. Best-effort JSON —
+# losing it only costs rediscovery, never data.
+REGISTRY_PATH = Path.home() / ".bgate" / "projects.json"
+
+
+def _read_registry() -> dict[str, str]:
+    try:
+        return {k: v for k, v in json.loads(
+            REGISTRY_PATH.read_text(encoding="utf-8")).items()
+            if (Path(v) / db.DB_DIRNAME / db.DB_FILENAME).exists()}
+    except Exception:
+        return {}
+
+
+def register(root: str | os.PathLike[str], name: str = "") -> None:
+    """Record root in the machine-wide registry (best-effort, never raises)."""
+    try:
+        resolved = str(Path(root).resolve())
+        if not name:
+            try:
+                name = get(resolved)["slug"]
+            except Exception:
+                name = Path(resolved).name
+        reg = _read_registry()
+        reg[name] = resolved
+        REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        REGISTRY_PATH.write_text(json.dumps(reg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def known_projects() -> dict[str, str]:
+    """{name: root} for every registered project that still exists on disk."""
+    return _read_registry()
 
 
 def init(root: str | os.PathLike[str], name: str, pitch: str = "",
@@ -36,6 +74,7 @@ def init(root: str | os.PathLike[str], name: str, pitch: str = "",
             """,
             (name, slugify(name), pitch, engine, dimension),
         )
+    register(root, slugify(name))
     return get(root)
 
 
@@ -51,8 +90,11 @@ def require_root(start: Optional[str | os.PathLike[str]] = None) -> Path:
     """Find the enclosing project or explain how to make one."""
     root = db.resolve_root(start)
     if root is None:
+        known = known_projects()
+        hint = (f" Known projects (use project_select): {known}"
+                if known else " Run project_init first.")
         raise LookupError(
-            f"no .bgate project found at or above {Path(start or os.getcwd()).resolve()} "
-            "— run project_init first"
+            f"no .bgate project found at or above {Path(start or os.getcwd()).resolve()}."
+            + hint
         )
     return root

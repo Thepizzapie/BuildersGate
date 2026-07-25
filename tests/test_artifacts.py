@@ -47,14 +47,12 @@ def test_workspace_groups_revisions_and_surfaces_review_evidence(root):
     assert group["candidates"][0]["lock"]["owner"] == f"item-{work['id']}"
     assert group["candidates"][0]["lock"]["heartbeat_at"]
 
-    artifacts.review(root, first["id"], "approved", "strong silhouette")
-    image.write_bytes(b"candidate-two")
-    second = artifacts.register(root, "hero", image, producer="image_edit")
-    artifacts.review(root, second["id"], "approved", "cleaner palette")
-
-    assert artifacts.get(root, first["id"])["status"] == "superseded"
-    assert artifacts.get(root, second["id"])["status"] == "approved"
-    assert artifacts.get(root, second["id"])["revision"] == 2
+    # Approving the newer candidate supersedes the previously-approved revision
+    # of the same logical name — the workspace's one-approved-at-a-time law.
+    artifacts.review(root, candidate["id"], "approved", "cleaner palette")
+    assert artifacts.get(root, approved["id"])["status"] == "superseded"
+    assert artifacts.get(root, candidate["id"])["status"] == "approved"
+    assert artifacts.get(root, candidate["id"])["revision"] == 2
 
 
 def test_rejection_keeps_case_law(root):

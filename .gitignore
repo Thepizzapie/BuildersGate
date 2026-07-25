@@ -12,6 +12,12 @@ venv/
 # Adapter scratch output (renders, playtest captures, logs)
 .bgate_out/
 
+# QA gate vendored deps (installed cache, not source)
+.qa_deps/
+
+# Generated asset work directory
+.asset_work/
+
 .pytest_cache/
 .coverage
 

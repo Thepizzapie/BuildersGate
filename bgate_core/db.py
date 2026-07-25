@@ -365,6 +365,38 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_feedback_asset ON playtest_item_asset(logical_name, item_id);
     """,
+    # 0010 — per-task anchored references + a generic per-seat workspace store.
+    #
+    # task_ref: references a user anchors to ONE work item, layered on top of the
+    #   global ref_pin set. `ref` holds a pin name or a project-relative path;
+    #   resolution (task_refs.resolve_for_task) returns task refs first, then the
+    #   global pins, so the task's anchors take priority for that task.
+    # workspace_doc: a small JSON blob keyed by (seat, key) — backs the seat
+    #   workspaces that need to persist free-form state (narrative storyboards,
+    #   art flow maps, qa bot rosters, sound cue sheets) without a table each.
+    """
+    CREATE TABLE task_ref (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_item_id INTEGER NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+        ref          TEXT NOT NULL,
+        kind         TEXT NOT NULL DEFAULT 'style'
+                         CHECK (kind IN ('character','style','ui','concept')),
+        note         TEXT NOT NULL DEFAULT '',
+        rank         INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (work_item_id, ref)
+    );
+    CREATE INDEX idx_task_ref_item ON task_ref(work_item_id, rank);
+
+    CREATE TABLE workspace_doc (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        seat       TEXT NOT NULL DEFAULT '',
+        key        TEXT NOT NULL,
+        data_json  TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (seat, key)
+    );
+    """,
 ]
 
 

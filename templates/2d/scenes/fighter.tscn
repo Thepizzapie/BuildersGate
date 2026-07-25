@@ -1,0 +1,35 @@
+[gd_scene load_steps=2 format=3 uid="uid://bgatefighter2d"]
+
+[ext_resource type="Script" path="res://scripts/gear_rig.gd" id="1_gearrig"]
+
+; Fighter — a body sprite (Base) plus one AnimatedSprite2D layer per equip slot.
+; All layers share the Base's animation clock via gear_rig.gd, so equipping a
+; SpriteFrames into a slot makes it ride the current animation with no extra
+; code. SpriteFrames are assigned at runtime (set_base / equip); the scene ships
+; the layer skeleton and their draw order only.
+
+[node name="Fighter" type="Node2D"]
+script = ExtResource("1_gearrig")
+
+[node name="Base" type="AnimatedSprite2D" parent="."]
+; z 0 — the driver every layer mirrors.
+
+[node name="Feet" type="AnimatedSprite2D" parent="."]
+z_index = -1
+visible = false
+
+[node name="BodyGear" type="AnimatedSprite2D" parent="."]
+z_index = 1
+visible = false
+
+[node name="Head" type="AnimatedSprite2D" parent="."]
+z_index = 5
+visible = false
+
+[node name="OffHand" type="AnimatedSprite2D" parent="."]
+z_index = 8
+visible = false
+
+[node name="MainHand" type="AnimatedSprite2D" parent="."]
+z_index = 10
+visible = false

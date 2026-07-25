@@ -78,37 +78,58 @@ def probe_mic(device: Optional[int] = None, seconds: float = 1.5) -> dict:
     except Exception as exc:
         return {"ok": False, "reason": f"audio deps unavailable: {exc}"}
 
-    if device is None:
+    # Try-order: the requested (or default) device first, then EVERY other input
+    # device. A wireless headset — usually the system default — sleeps/powers off
+    # and can no longer be OPENED even though it's still listed ("Invalid device"),
+    # so we fall through to an always-on wired mic instead of blocking recording.
+    preferred = device
+    order: list[int] = []
+    if preferred is not None:
+        order.append(preferred)
+    else:
         try:
-            device = sd.default.device[0]
+            d0 = sd.default.device[0]
         except Exception:
-            device = -1
-        if device is None or device == -1:
-            # No default set, but fall back to the first real input device
-            # rather than blocking — a connected-but-not-default mic is common.
-            candidates = list_inputs()
-            if not candidates:
-                return {"ok": False, "reason": "no input devices at all"}
-            device = candidates[0]["index"]
-
+            d0 = -1
+        if isinstance(d0, int) and d0 >= 0:
+            order.append(d0)
     try:
-        info = sd.query_devices(device)
-    except Exception as exc:
-        return {"ok": False, "device": device, "reason": f"no such device: {exc}"}
+        for d in list_inputs():
+            if d["index"] not in order:
+                order.append(d["index"])
+    except Exception:
+        pass
+    if not order:
+        return {"ok": False, "reason": "no input devices at all"}
 
-    try:
-        rec = sd.rec(int(seconds * MIC_RATE), samplerate=MIC_RATE,
-                     channels=1, device=device, dtype="float32")
-        sd.wait()
-    except Exception as exc:
-        return {"ok": False, "device": device, "name": info["name"],
-                "reason": f"device failed to open: {exc}"}
+    info = None
+    rec = None
+    last_err = None
+    for dev in order:
+        try:
+            info = sd.query_devices(dev)
+            rec = sd.rec(int(seconds * MIC_RATE), samplerate=MIC_RATE,
+                         channels=1, device=dev, dtype="float32")
+            sd.wait()
+        except Exception as exc:
+            last_err = exc
+            info = None
+            continue                      # this one's asleep/busy — try the next
+        device = dev
+        break
+    if rec is None or info is None:
+        return {"ok": False, "device": order[0],
+                "reason": f"no input device would open (tried {len(order)}): {last_err}"}
+    fell_back = preferred is not None and device != preferred
 
     peak = float(np.max(np.abs(rec)))
     rms = float(np.sqrt(np.mean(rec ** 2)))
     signal = peak >= SILENCE_PEAK
     out = {"ok": True, "device": device, "name": info["name"],
            "rms": rms, "peak": peak, "signal_detected": signal}
+    if fell_back:
+        out["warning"] = (f"requested mic wouldn't open (asleep/disconnected) — "
+                          f"fell back to {info['name']}.")
     if not signal:
         # Present and openable, but quiet during the probe — likely a
         # noise-gated headset (nothing to hear until you talk) or a muted mic.

@@ -99,6 +99,29 @@ def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
     return rows(conn.execute(sql, params))
 
 
+def _notify(root: str | os.PathLike[str], item: dict) -> None:
+    """Append a status-transition event to .bgate/notify.jsonl (best-effort).
+
+    The durable completion signal: dispatched agents flip their item via
+    queue_complete, the watcher/reap paths flip it on death — ALL of it lands
+    here, so an orchestrator (or the UI) can tail/long-poll one file instead of
+    sleep-polling the queue. Never raises — losing a ping must not break the
+    status change itself.
+    """
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+        path = os.path.join(str(root), ".bgate", "notify.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "item_id": item["id"], "status": item["status"],
+                "seat": item["seat"], "title": item["title"][:120],
+            }) + "\n")
+    except Exception:
+        pass
+
+
 def set_status(root: str | os.PathLike[str], item_id: int, status: str,
                result: str = "") -> dict:
     if status not in STATUSES:
@@ -113,6 +136,7 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
     item = get(root, item_id)
     activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
                  seat=item["seat"], ref=str(item_id))
+    _notify(root, item)
     iteration_id = None
     conn = db.connect(root)
     if item["source"] == "playtest" and item["source_ref"].isdigit():

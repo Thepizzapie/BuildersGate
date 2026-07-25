@@ -9,6 +9,7 @@ error payload reads as a fact it can act on.
 """
 from __future__ import annotations
 
+import json as _json
 import os
 from pathlib import Path as _Path
 from typing import Optional
@@ -30,16 +31,23 @@ from bgate_core import canon as _canon
 from bgate_core import db as _db
 from bgate_core import lore as _lore
 from bgate_core import iterations as _iterations
+from bgate_core import items as _items
 from bgate_core import project as _project
 from bgate_core import search as _search
 
 mcp = FastMCP("builders-gate")
 
 
+# Runtime project override (set by project_select). Env vars are frozen at
+# server spawn, so a session whose cwd is a DIFFERENT repo could never reach
+# its project — this is the switch that fixes that.
+_ACTIVE_ROOT: Optional[str] = None
+
+
 def _root() -> str:
-    """The active project root. BGATE_ROOT wins, else walk up from cwd.
+    """The active project root: project_select > BGATE_ROOT > walk up from cwd.
     Also loads the project's .env (once) so secrets live with the project."""
-    override = os.environ.get("BGATE_ROOT")
+    override = _ACTIVE_ROOT or os.environ.get("BGATE_ROOT")
     root = override if override else str(_project.require_root())
     try:
         from bgate_core import envfile
@@ -126,6 +134,34 @@ def project_init(name: str, pitch: str = "", engine: str = "godot",
     try:
         target = root or os.environ.get("BGATE_ROOT") or os.getcwd()
         return _project.init(target, name, pitch=pitch, engine=engine, dimension=dimension)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def project_select(project: str = "") -> dict:
+    """Point this session at a Builders Gate project — by registered name or
+    absolute path. Fixes the "no .bgate project found" error when the session's
+    cwd is a different repo. Empty arg: report the active root + known projects.
+    """
+    global _ACTIVE_ROOT
+    try:
+        known = _project.known_projects()
+        if not project:
+            active = None
+            try:
+                active = _root()
+            except Exception:
+                pass
+            return {"active": active, "known": known}
+        root = known.get(project, project)  # name wins, else treat as a path
+        if not (_Path(root) / _db.DB_DIRNAME / _db.DB_FILENAME).exists():
+            raise LookupError(
+                f"{project!r} is not a known project name or a project root. "
+                f"Known: {known}")
+        _ACTIVE_ROOT = str(_Path(root).resolve())
+        _project.register(_ACTIVE_ROOT)
+        return {"active": _ACTIVE_ROOT, "project": _project.get(_ACTIVE_ROOT)}
     except Exception as exc:
         return _fail(exc)
 
@@ -545,12 +581,462 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
         return _fail(exc)
 
 
+# ---------------------------------------------------------------------------
+# The item-art pipeline — item-as-object, class-templated, Codex-drivable.
+# Variants are cheap and classes are expensive: one prompt template per class
+# holds framing/light/scale/background invariant, a parameter grid mints the
+# variants. See bgate_core/items.py for the taxonomy and the pure builders.
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def item_classes() -> dict:
+    """The item-art taxonomy: the classes, their equip slot, and the variant
+    axes. This IS the contract to drive item_generate / item_variants — read it
+    before minting gear so names/slots line up with the equip/layer system."""
+    return {
+        "ok": True,
+        "classes": {
+            name: {"label": c["label"], "slot": c["slot"], "worn": c["worn"],
+                   "subject": c["subject"]}
+            for name, c in _items.ITEM_CLASSES.items()
+        },
+        "axes": {"material": "free text (e.g. iron, damascus steel, bone)",
+                 "element": list(_items.ELEMENTS),
+                 "tier": list(_items.TIERS)},
+        "slots": list(_items.SLOTS),
+    }
+
+
+def _item_style_clause(root: _Path, character: str) -> str:
+    """The cross-leg style rail: a character's stored visual profile -> the
+    style clause appended to every item prompt, so worn gear reads as the same
+    set as the body it hangs on. Same fallback chain image_sprites uses.
+    Naming a character with no profile raises — silently minting unstyled gear
+    would LOOK like a result."""
+    if not character.strip():
+        return ""
+    for key in (character, f"{character}-character"):
+        profile = _refs.profile_get(root, key)
+        if profile:
+            return profile.get("style", "")
+    raise ValueError(
+        f"no visual profile for {character!r} — set one with profile_set "
+        "(or drop the character param to mint unstyled)")
+
+
+def _index_item(root: _Path, man: dict) -> bool:
+    """Upsert one manifest into .bgate_out/items/_index.json — the one-shot
+    rollup the equip UI reads. Loose per-item manifests stay the source of
+    truth; a missing/corrupt index is rebuilt from them, never trusted."""
+    path = root / _items.INDEX_REL
+    index: dict = {}
+    try:
+        loaded = _json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict):
+            index = loaded
+    except Exception:
+        pass
+    if not index:  # first write or corrupt — rebuild from the loose manifests
+        index = {"items": {}}
+        for f in sorted(path.parent.glob("*.json")) if path.parent.is_dir() else []:
+            if f.name == path.name:
+                continue
+            try:
+                loose = _json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(loose, dict) and loose.get("name"):
+                index["items"][loose["name"]] = loose
+    _items.update_index(index, man)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(index, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False  # rollup is a cache; never a reason to lose a made item
+
+
+def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
+    """Generate one item from a variant spec, then archive + track + manifest.
+
+    A single spec (from items.plan_variants) carries its own prompt, so this is
+    pure I/O: paint it transparent, register provenance, track the binary so the
+    QA gate and dashboard see it, and drop the JSON bridge record the equip
+    system reads. Returns the per-item result; failures are reported, not raised,
+    so one bad variant never sinks a batch."""
+    from bgate_adapters import imagegen
+    rel = _items.rel_art_path(spec["item_class"], spec["name"])
+    out = root / rel
+    result = imagegen.generate(spec["prompt"], str(out), quality=quality,
+                               transparent=True)
+    if not result.get("ok"):
+        return {"ok": False, "name": spec["name"], "error": result.get("error"),
+                "prompt": spec["prompt"]}
+
+    archived = _archive_preview(result["path"], f"item-{spec['name']}")
+    _register_artifact(spec["name"], result["path"], producer="item_generate",
+                       model=result.get("model", ""), prompt=spec["prompt"],
+                       metadata={"item_class": spec["item_class"],
+                                 "slot": spec["slot"], "params": spec["params"],
+                                 "preview": archived or ""})
+    try:
+        _assets.track(root, out)
+    except Exception:
+        pass  # tracking is provenance, never a reason to lose a made file
+    man = _items.manifest(spec, rel)
+    man_path = root / _items.rel_manifest_path(spec["name"])
+    man_path.parent.mkdir(parents=True, exist_ok=True)
+    man_path.write_text(_json.dumps(man, indent=2), encoding="utf-8")
+    indexed = _index_item(root, man)
+    return {"ok": True, "name": spec["name"], "item_class": spec["item_class"],
+            "slot": spec["slot"], "sprite": rel,
+            "manifest": _items.rel_manifest_path(spec["name"]),
+            "indexed": indexed,
+            "preview": archived or result["path"]}
+
+
+@mcp.tool()
+def item_generate(item_class: str, name: str, descriptor: str,
+                  material: str = "", element: str = "", tier: str = "",
+                  quality: str = "medium", character: str = "",
+                  force: bool = False) -> dict:
+    """Mint ONE gear/item icon — transparent, class-templated, tracked.
+
+    item_class is one of item_classes() (main_hand, off_hand, head, body, feet,
+    consumable, throwable, ranged). descriptor names the item ("curved saber").
+    material/element/tier are the variant axes. `character` names a pinned ref
+    with a visual profile (profile_set) — its style is appended so worn gear
+    reads as the same set as the fighter it hangs on. An already-minted item
+    (manifest on disk) is skipped, not re-bought; force=true regenerates.
+    Costs real money per image (~$0.02-0.19 at `quality`). For a batch, use
+    item_variants. LOOK at the preview before importing into the game."""
+    try:
+        root = _Path(_root())
+        style_clause = _item_style_clause(root, character)
+        [spec] = _items.plan_variants(
+            item_class, name, descriptor,
+            materials=[material] if material else None,
+            elements=[element] if element else None,
+            tiers=[tier] if tier else None,
+            style_clause=style_clause)
+        if not force:
+            _, skipped = _items.split_existing(
+                [spec], lambda rel: (root / rel).is_file())
+            if skipped:
+                return {"ok": True, "name": spec["name"], "skipped": True,
+                        "manifest": _items.rel_manifest_path(spec["name"]),
+                        "estimated_cost_usd": 0.0,
+                        "note": "already minted — manifest exists; pass "
+                                "force=true to re-buy"}
+        res = _mint_item(root, spec, quality)
+        if res.get("ok"):
+            res["estimated_cost_usd"] = _items.estimate_cost(1, quality)
+            res["style_rail"] = bool(style_clause)
+            _log("art", f"minted {item_class} item {spec['name']}",
+                 ref=res["preview"])
+        return res
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def item_variants(item_class: str, base_name: str, descriptor: str,
+                  materials: Optional[list[str]] = None,
+                  elements: Optional[list[str]] = None,
+                  tiers: Optional[list[str]] = None,
+                  quality: str = "medium", limit: int = 12,
+                  character: str = "", force: bool = False) -> dict:
+    """Mint a BATCH of variants of one class from a parameter grid — the
+    cartesian product of the axes you pass, each a self-contained item.
+
+    This is the "plethora of gear, easily" engine: pass materials=[...],
+    tiers=[...], elements=[...] and get one on-set icon per combination.
+    `character` names a pinned ref with a visual profile — its style is woven
+    into every prompt so the whole set matches the fighter that wears it.
+    Already-minted variants (manifest on disk) are skipped and reported, so a
+    re-run finishes a batch instead of re-buying it; force=true re-buys.
+    Every image costs money, so `limit` caps what a run may BUY (default 12) —
+    the plan and its $ estimate are reported and refused if new images exceed
+    the cap, so you confirm the spend before it happens. LOOK at the set
+    before importing."""
+    try:
+        root = _Path(_root())
+        style_clause = _item_style_clause(root, character)
+        specs = _items.plan_variants(item_class, base_name, descriptor,
+                                     materials=materials, elements=elements,
+                                     tiers=tiers, style_clause=style_clause)
+        to_mint, skipped = (specs, []) if force else _items.split_existing(
+            specs, lambda rel: (root / rel).is_file())
+        estimate = _items.estimate_cost(len(to_mint), quality)
+        if len(to_mint) > max(1, limit):
+            return {"ok": False, "planned": len(specs),
+                    "to_buy": len(to_mint), "already_minted": len(skipped),
+                    "limit": limit, "estimated_cost_usd": estimate,
+                    "names": [s["name"] for s in to_mint],
+                    "error": f"grid needs {len(to_mint)} new images "
+                             f"(~${estimate:.2f} at {quality!r}, > limit "
+                             f"{limit}); raise limit to confirm the spend or "
+                             "narrow the axes"}
+        results = [_mint_item(root, s, quality) for s in to_mint]
+        made = [r for r in results if r.get("ok")]
+        _log("art", f"minted {len(made)}/{len(to_mint)} {item_class} variants "
+             f"of {base_name}"
+             + (f" ({len(skipped)} already on disk)" if skipped else ""))
+        return {"ok": all(r.get("ok") for r in results),
+                "class": item_class, "count": len(made),
+                "skipped": [s["name"] for s in skipped],
+                "estimated_cost_usd": estimate,
+                "style_rail": bool(style_clause),
+                "items": results}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
+                         frame_size: Optional[list[int]] = None) -> dict:
+    """Wrap a single item PNG into a 1-frame Godot SpriteFrames .tres so it drops
+    straight into an equip slot — the bridge from the item pipeline to the
+    equip/layer system (templates/2d gear_rig.gd).
+
+    A static held weapon/shield with one frame is the honest v1 for worn gear: it
+    shows in-hand and rides the fighter's facing, before the per-frame worn-gear
+    rig exists. sprite is a repo-relative or absolute PNG path. Emits the .tres
+    next to the sheet the equip layer will load from res://<res_dir>/."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, sprite)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no image at {rel}"}
+        from PIL import Image as _Img
+        with _Img.open(src) as im:
+            size = tuple(frame_size) if frame_size else im.size
+        slug = _items.slugify(name)
+        out_dir = src.parent
+        sheet_name = f"{slug}_sheet.png"
+        # The single frame IS the sheet — copy under the sheet name the tres
+        # expects, so the pair imports together like every other SpriteFrames.
+        from shutil import copyfile
+        copyfile(src, out_dir / sheet_name)
+        tres = _sprites._sprite_frames_tres(  # noqa: SLF001 — shared emitter
+            sheet_name, [("default", 1)], (int(size[0]), int(size[1])),
+            1.0, res_dir)
+        tres_rel = out_dir / f"{slug}_frames.tres"
+        tres_rel.write_text(tres, encoding="utf-8")
+        return {"ok": True, "tres": _assets.normalize_path(root, tres_rel),
+                "sheet": _assets.normalize_path(root, out_dir / sheet_name),
+                "animation": "default", "res_dir": res_dir}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# Frames the vision judge scores at/below this are flagged for regen.
+_CONSISTENCY_FLOOR = 78
+# Deterministic palette gates (opaque-pixel histograms, 4 bits/channel).
+# Measured on the failed PM-Paladin batch: adjacent same-character frames
+# intersect ~0.45; recolored frames vs their siblings crater to ~0.06; and
+# ref-vs-frame runs low (~0.1-0.3) even for GOOD frames because the ref's
+# rendering differs — so BATCH COHESION (each frame vs the batch median) is
+# the primary gate, and vs-ref only trips on catastrophic recolors.
+_PALETTE_COHESION_FLOOR = float(os.environ.get("BGATE_PALETTE_COHESION", "0.35"))
+_PALETTE_REF_FLOOR = float(os.environ.get("BGATE_PALETTE_FLOOR", "0.10"))
+
+
+def _palette_hist(path):
+    from PIL import Image as _Img
+    im = _Img.open(path).convert("RGBA")
+    im.thumbnail((160, 160))
+    h = [0.0] * 4096
+    n = 0
+    for r, g, b, a in im.getdata():
+        if a > 96:
+            h[(r >> 4) << 8 | (g >> 4) << 4 | (b >> 4)] += 1
+            n += 1
+    return [v / n for v in h] if n else h
+
+
+def _hist_intersect(a, b) -> float:
+    return sum(min(x, y) for x, y in zip(a, b))
+
+
+def _palette_similarity(ref_path, frame_path) -> float:
+    """Histogram intersection (0..1) of opaque-pixel colors."""
+    return _hist_intersect(_palette_hist(ref_path), _palette_hist(frame_path))
+
+
+def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
+    """Score generated frames against an approved reference for CHARACTER IDENTITY.
+
+    Cheap pixel metrics (palette, silhouette) can't judge "same character" pose-
+    invariantly, so this asks a vision model to score each frame 0-100 (identity
+    only — pose/expression ignored). frame_items: list of (label, path). Returns
+    {"ok": True, "frames": [{"label","score","reason","pass"}], "min", "flagged"}
+    or {"ok": False, "error": ...} — callers must treat failure as non-blocking.
+    """
+    import base64 as _b64, io as _io, json as _json
+    try:
+        from PIL import Image as _Img
+        from openai import OpenAI as _OpenAI
+
+        def _url(p):
+            im = _Img.open(p).convert("RGBA"); im.thumbnail((256, 256))
+            bg = _Img.new("RGBA", im.size, (255, 255, 255, 255)); bg.alpha_composite(im)
+            b = _io.BytesIO(); bg.convert("RGB").save(b, "PNG")
+            return "data:image/png;base64," + _b64.b64encode(b.getvalue()).decode()
+
+        labels = [lab for lab, _ in frame_items]
+        content = [{"type": "text", "text":
+            "The FIRST image is the APPROVED reference for a game character. The remaining "
+            "images are generated frames of ONE animation of that character. Pose, action "
+            "and expression WILL differ between frames — IGNORE those.\n"
+            "Judge TWO things:\n"
+            "(1) IDENTITY: score each frame 0-100 for being the SAME character as the "
+            "reference (body proportions, art style, line weight, palette, defining "
+            "features). <78 = noticeable drift.\n"
+            "(2) FRAME-TO-FRAME CONSISTENCY: the frames must also look consistent WITH "
+            "EACH OTHER — same build, proportions, weight, head size and style across the "
+            "set. Mark outlier=true for any frame whose PROPORTIONS/BUILD/STYLE visibly "
+            "differ from the majority of the other frames (e.g. suddenly buffer, rounder, "
+            "bigger head, different line weight), even if it still resembles the reference.\n"
+            "Respond ONLY as JSON {\"frames\":[{\"score\":0,\"outlier\":false,\"reason\":\"\"}...]} "
+            "in the SAME order as the frames, one entry per frame."}]
+        content.append({"type": "image_url", "image_url": {"url": _url(ref_path)}})
+        for _, p in frame_items:
+            content.append({"type": "image_url", "image_url": {"url": _url(p)}})
+
+        cli = _OpenAI()
+        r = cli.chat.completions.create(
+            model=os.environ.get("BGATE_VISION_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "user", "content": content}],
+            response_format={"type": "json_object"}, temperature=0)
+        raw = _json.loads(r.choices[0].message.content).get("frames", [])
+        # Deterministic palette gates — the vision judge kept passing
+        # outfit/skin recolors. Primary: cohesion of each frame against the
+        # BATCH MEDIAN histogram; secondary: catastrophic drift vs the ref.
+        try:
+            hists = [_palette_hist(p) for _, p in frame_items]
+            med = [sorted(col)[len(col) // 2] for col in zip(*hists)]
+            s = sum(med) or 1.0
+            med = [v / s for v in med]
+            ref_hist = _palette_hist(ref_path)
+            cohesion = [round(_hist_intersect(h, med), 3) for h in hists]
+            vs_ref = [round(_hist_intersect(h, ref_hist), 3) for h in hists]
+        except Exception:
+            cohesion = [None] * len(labels)
+            vs_ref = [None] * len(labels)
+        out = []
+        for i, lab in enumerate(labels):
+            e = raw[i] if i < len(raw) else {}
+            sc = int(e.get("score", 0))
+            outlier = bool(e.get("outlier", False))
+            coh, vr = cohesion[i], vs_ref[i]
+            pal_ok = ((coh is None or coh >= _PALETTE_COHESION_FLOOR)
+                      and (vr is None or vr >= _PALETTE_REF_FLOOR))
+            reason = str(e.get("reason", ""))[:160]
+            if not pal_ok:
+                reason = (f"PALETTE DRIFT (cohesion {coh} < "
+                          f"{_PALETTE_COHESION_FLOOR} or vs-ref {vr} < "
+                          f"{_PALETTE_REF_FLOOR}). " + reason)[:160]
+            # A frame passes only if it matches the reference, isn't a
+            # frame-to-frame outlier, AND holds the batch's palette.
+            out.append({"label": lab, "score": sc, "outlier": outlier,
+                        "palette_cohesion": coh, "palette_vs_ref": vr,
+                        "reason": reason,
+                        "pass": sc >= pass_floor and not outlier and pal_ok})
+        flagged = [f["label"] for f in out if not f["pass"]]
+        return {"ok": True, "frames": out, "floor": pass_floor,
+                "min": min((f["score"] for f in out), default=None),
+                "outliers": [f["label"] for f in out if f["outlier"]],
+                "flagged": flagged}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _reference_sanity(path):
+    """Structural gate for a freshly generated character reference — run BEFORE
+    spending one edit per pose conditioned on it. gpt-image sometimes returns an
+    'ok' result that is still unusable: a near-empty frame, or one whose
+    background never keyed to transparent (a fully-filled rectangle). Identity
+    can't be auto-judged with no ground truth, but 'is this a usable single
+    transparent figure' can. Catching it here caps a broken run at ~1 spend
+    instead of N poses that all inherit the flaw and all fail the pose gate.
+    Returns (ok: bool, reason: str). Any checker error is treated as PASS — this
+    must never block a good run; the per-pose consistency gate still runs after.
+    """
+    try:
+        from PIL import Image as _Img
+        im = _Img.open(path).convert("RGBA")
+        im.thumbnail((128, 128))
+        data = list(im.getdata())
+        n = len(data) or 1
+        opaque = sum(1 for _, _, _, a in data if a > 40)
+        cov = opaque / n
+        if cov < 0.04:
+            return False, (f"near-empty reference (opaque coverage {cov:.3f}) — "
+                           "the generation produced almost nothing")
+        if cov > 0.93:
+            return False, (f"background did not key to transparent (opaque "
+                           f"coverage {cov:.3f}) — the reference is a filled "
+                           "frame, not a cut-out character")
+        return True, f"coverage {cov:.3f}"
+    except Exception as exc:
+        return True, f"sanity check skipped: {type(exc).__name__}"
+
+
+# Chroma-key candidates. Generating on a solid backdrop the character never uses,
+# then keying it out, keeps white/light interiors (eyes) OPAQUE — gpt-image's
+# transparent mode punched those to holes. The color is chosen per character so it
+# never collides with the art (Tommy has green features -> green screen would eat
+# them; magenta wins).
+_CHROMA = [("magenta", (255, 0, 255)), ("green", (0, 255, 0)),
+           ("cyan", (0, 255, 255)), ("blue", (0, 64, 255)), ("yellow", (255, 235, 0))]
+
+
+def _pick_chroma(ref_path):
+    """Pick the chroma color FARTHEST from the character's own palette."""
+    try:
+        from PIL import Image as _Img
+        im = _Img.open(ref_path).convert("RGBA"); im.thumbnail((128, 128))
+        px = [(r, g, b) for r, g, b, a in im.getdata() if a > 60]
+        if not px:
+            return _CHROMA[0]
+        q = _Img.new("RGB", (len(px), 1)); q.putdata(px); q = q.quantize(10)
+        pal = q.getpalette()[:30]
+        doms = [tuple(pal[i * 3:i * 3 + 3]) for i in range(10)]
+        best, best_d = _CHROMA[0], -1.0
+        for nm, c in _CHROMA:
+            d = min(sum((a - b) ** 2 for a, b in zip(c, dom)) ** 0.5 for dom in doms)
+            if d > best_d:
+                best_d, best = d, (nm, c)
+        return best
+    except Exception:
+        return _CHROMA[0]
+
+
+def _chroma_key(img, chroma, tol=125, despill=185):
+    """Key a solid chroma backdrop to transparent, in place, with edge despill.
+    Distance-based; safe because the chroma is auto-picked far from the art."""
+    px = img.load(); W, H = img.size; cr, cg, cb = chroma
+    for y in range(H):
+        for x in range(W):
+            r, g, b, a = px[x, y]
+            if a == 0:
+                continue
+            d = ((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2) ** 0.5
+            if d < tol:
+                px[x, y] = (0, 0, 0, 0)
+            elif d < despill:                       # pull fringe away from the chroma
+                m = (r + g + b) // 3
+                px[x, y] = ((r + m) // 2, (g + m) // 2, (b + m) // 2, a)
+    return img
+
+
 @mcp.tool()
 def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
                   ref_quality: str = "high", fps: float = 8.0,
-                  res_dir: str = "assets/sprites") -> dict:
+                  res_dir: str = "assets/sprites", max_retries: int = 1) -> dict:
     """PAINTED sprite set via gpt-image — REFERENCE-FIRST for consistency.
 
     How it works (and why): a fresh generation invents a new character every
@@ -600,15 +1086,43 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             ref_path = _refs.resolve(root, str(ref_image))
         else:
             ref_path = str(art_dir / "reference.png")
-            ref = imagegen.generate(
-                character_prompt + " Exactly one character, full body head to "
-                "toe, neutral idle stance, centered, fully transparent "
-                "background, no text, no logo, no ground shadow.",
-                ref_path, size="1024x1536", quality=ref_quality, transparent=True)
+
+            def _gen_ref():
+                r = imagegen.generate(
+                    character_prompt + " Exactly one character, full body head to "
+                    "toe, neutral idle stance, centered, fully transparent "
+                    "background, no text, no logo, no ground shadow.",
+                    ref_path, size="1024x1536", quality=ref_quality,
+                    transparent=True)
+                if r.get("ok"):
+                    result["reference_preview"] = _archive_preview(
+                        ref_path, f"ref-{name}")
+                return r
+
+            ref = _gen_ref()
             if not ref.get("ok"):
                 return {"ok": False, "stage": "reference", **ref}
-            archived_ref = _archive_preview(ref_path, f"ref-{name}")
-            result["reference_preview"] = archived_ref
+            # REFERENCE GATE: validate the anchor and re-roll it BEFORE paying
+            # for N poses. A broken reference makes every pose broken — every one
+            # fails the pose gate, every one gets retried, and the run costs ~2N
+            # against garbage. Catch it here at ~1 spend. A passed-in ref_image is
+            # already approved and skips this.
+            ok_ref, ref_reason = _reference_sanity(ref_path)
+            rtries = max(0, int(max_retries))
+            while not ok_ref and rtries > 0:
+                rtries -= 1
+                ref = _gen_ref()
+                if not ref.get("ok"):
+                    return {"ok": False, "stage": "reference", **ref}
+                ok_ref, ref_reason = _reference_sanity(ref_path)
+            result["reference_gate"] = {"ok": ok_ref, "reason": ref_reason}
+            if not ok_ref:
+                return {"ok": False, "stage": "reference_gate",
+                        "reference": ref_path,
+                        "reference_preview": result.get("reference_preview"),
+                        "error": f"reference failed the structural gate: "
+                                 f"{ref_reason}. Not spending on poses against a "
+                                 "broken anchor — adjust character_prompt and retry."}
         result["reference"] = ref_path
 
         # 2. Each pose derives from the reference — same fighter, new stance.
@@ -626,9 +1140,47 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         for p in poses:
             anim_counts[p["name"].split("/", 1)[0]] = \
                 anim_counts.get(p["name"].split("/", 1)[0], 0) + 1
+        pose_desc: dict[str, str] = {}
+        # STAGE 1 — pick a chroma backdrop this character never uses.
+        chroma_name, chroma_rgb = _pick_chroma(ref_path)
+        result["chroma"] = chroma_name
+
+        def _edit_pose(desc, refs, out_png):
+            # STAGE 2 — generate the pose on a FLAT chroma backdrop (opaque), so
+            # white interiors (eyes) stay solid instead of being punched transparent.
+            got = imagegen.edit(
+                "This exact character from the reference image"
+                + (" (shown again in the other image(s) in different poses of "
+                   "the same motion)" if len(refs) > 1 else "")
+                + " — identical design, colors, face, and art style. CRITICAL: "
+                "keep the EXACT SAME BODY BUILD, musculature, height, weight, head "
+                "size and limb proportions as the reference in EVERY frame — do NOT "
+                "slim him down, bulk him up, change his muscle definition, or restyle "
+                "the body between frames; ONLY the pose changes"
+                f" — now in this stance: {desc}. ONE single full-body "
+                "character head to toe, exactly one figure, no text, no cropping of "
+                f"limbs. Place the character on a COMPLETELY FLAT SOLID pure "
+                f"{chroma_name} background (RGB {chroma_rgb[0]},{chroma_rgb[1]},"
+                f"{chroma_rgb[2]}), the entire background filled edge-to-edge with "
+                "that one flat color, NO gradient, NO shadow, NO other objects."
+                + identity,
+                refs, out_png, size="1024x1536", quality=quality,
+                transparent=False)
+            # STAGE 3 — key the chroma backdrop out to clean transparency.
+            if got.get("ok"):
+                try:
+                    from PIL import Image as _I
+                    im = _I.open(out_png).convert("RGBA")
+                    _chroma_key(im, chroma_rgb)
+                    im.save(out_png)
+                except Exception:
+                    pass
+            return got
+
         for pose in poses:
             pname = pose["name"]
             desc = pose.get("description", pname)
+            pose_desc[pname] = desc
             anim, _, idx = pname.partition("/")
             out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
             refs = [ref_path]
@@ -638,21 +1190,22 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 refs.append(anim_first[anim])
             if prev_frame:
                 refs.append(prev_frame)
-            got = imagegen.edit(
-                "This exact character from the reference image"
-                + (" (shown again in the other image(s) in different poses of "
-                   "the same motion)" if len(refs) > 1 else "")
-                + " — identical design, colors, proportions, face, and art "
-                f"style — now in this stance: {desc}. ONE single full-body "
-                "character head to toe, exactly one figure, fully transparent "
-                "background, no text, no cropping of limbs." + identity,
-                refs, out_png, size="1024x1536", quality=quality,
-                transparent=True)
+            got = _edit_pose(desc, refs, out_png)
             if got.get("ok"):
                 pose_files.append((pname, out_png))
                 prev_frame = out_png
                 if anim not in anim_first:
                     anim_first[anim] = out_png
+                # Register each pose as a candidate the moment it exists: the
+                # Assets gallery streams the batch live (reviewable mid-run)
+                # instead of going dark for a 30-minute silent mega-call.
+                try:
+                    _register_artifact(
+                        f"{name}_{pname.replace('/', '_')}", out_png,
+                        producer="image_sprites",
+                        prompt=str(desc)[:500])
+                except Exception:
+                    pass
             else:
                 pose_errors.append({"name": pname, "error": got.get("error")})
 
@@ -661,31 +1214,126 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "reference": ref_path,
                     "error": "every pose generation failed"}
 
-        # 3. Assemble into the standard engine contract.
-        assembled = _sp.from_pose_images(
-            pose_files, out_dir=str(root / ".bgate_out" / "sprites"), name=name,
-            frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps)
-        assembled.setdefault("failed", [])
-        assembled["failed"].extend(pose_errors)
+        # 3. Assemble + AUTO CONSISTENCY GATE, with bounded retry of flagged frames.
+        # The gate scores every frame vs the reference AND for frame-to-frame build
+        # drift; any flagged pose is re-rolled (on its rolling refs, not the bare
+        # anchor — see _rolling_refs) up to max_retries, keeping whichever roll
+        # scores best. This turns the gate from "detects drift" into "converges
+        # on a consistent sheet".
+        import shutil as _shutil
+        pose_order = [p for p, _ in pose_files]
+        pose_path = {p: fp for p, fp in pose_files}
+
+        def _rolling_refs(pname):
+            """Reconstruct the ANCHOR+ROLLING ref list a pose was first built
+            with, so a RETRY keeps motion continuity. Re-rolling on the bare
+            anchor (the old behavior) optimizes the gate's identity metric while
+            silently dropping the cross-frame conditioning — a re-rolled mid-cycle
+            frame could score better on identity yet pop out of the walk. The gate
+            doesn't measure motion, so nothing caught it. Rebuild: anchor, plus
+            the cycle's first frame for a closing frame, plus the previous frame."""
+            anim, _, idx = pname.partition("/")
+            refs = [ref_path]
+            if (idx.isdigit() and anim_counts.get(anim, 1) > 1
+                    and int(idx) == anim_counts[anim] - 1):
+                first = pose_path.get(f"{anim}/0")
+                if first and first not in refs:
+                    refs.append(first)
+            i = pose_order.index(pname)
+            if i > 0:
+                prev = pose_path.get(pose_order[i - 1])
+                if prev and prev not in refs:
+                    refs.append(prev)
+            return refs
+
+        def _assemble_and_gate():
+            asm = _sp.from_pose_images(
+                [(p, pose_path[p]) for p in pose_order],
+                out_dir=str(root / ".bgate_out" / "sprites"), name=name,
+                frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
+                ref_path=ref_path)
+            asm.setdefault("failed", [])
+            asm["failed"].extend(pose_errors)
+            cons = {"ok": False}
+            if asm.get("ok"):
+                fm = asm.get("frames", {})
+                cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
+            return asm, cons
+
+        assembled, consistency = _assemble_and_gate()
+        best_min = consistency.get("min") if consistency.get("ok") else None
+        tries = max(0, int(max_retries))
+        while (consistency.get("ok") and consistency.get("flagged") and tries > 0):
+            tries -= 1
+            flagged = list(consistency["flagged"])
+            backups = {}
+            for pname in flagged:
+                if pname not in pose_path or pname not in pose_desc:
+                    continue
+                bak = pose_path[pname] + ".bak"
+                try:
+                    _shutil.copy2(pose_path[pname], bak); backups[pname] = bak
+                except Exception:
+                    pass
+                # Re-roll WITH the rolling refs, not the bare anchor — keep motion
+                # continuity while the gate chases identity (see _rolling_refs).
+                _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
+            asm2, cons2 = _assemble_and_gate()
+            new_min = cons2.get("min") if cons2.get("ok") else None
+            if new_min is not None and (best_min is None or new_min > best_min):
+                best_min = new_min; assembled, consistency = asm2, cons2
+                for bak in backups.values():
+                    try: os.remove(bak)
+                    except Exception: pass
+            else:
+                for pname, bak in backups.items():   # revert: this roll was no better
+                    try: _shutil.copy2(bak, pose_path[pname]); os.remove(bak)
+                    except Exception: pass
+                assembled, consistency = _assemble_and_gate()
+
         assembled["reference"] = ref_path
+        assembled["chroma"] = result.get("chroma")
         if "reference_preview" in result:
             assembled["reference_preview"] = result["reference_preview"]
         if assembled.get("ok"):
             archived = _archive_preview(assembled["sheet"], f"painted-{name}")
             if archived:
                 assembled["preview"] = archived
+
+            frame_map = assembled.get("frames", {})
+            assembled["consistency"] = consistency
+            needs_review = bool(consistency.get("ok") and consistency.get("flagged"))
+
             artifact = _register_artifact(
                 name, assembled["sheet"], producer="image_sprites",
                 prompt=character_prompt,
                 refs=[str(ref_image)] if ref_image else [ref_path],
-                metadata={"poses": poses, "frames": assembled.get("frames", {}),
+                metadata={"poses": poses, "frames": frame_map,
                           "failed": assembled.get("failed", []),
-                          "preview": archived or ""})
+                          "preview": archived or "",
+                          "consistency": consistency,
+                          "sequence": assembled.get("sequence")})
             if artifact:
                 assembled["artifact"] = artifact
+                # Record the check on the revision so the dashboard shows it and the
+                # sheet stops reading as "NOT CHECKED · consistency".
+                try:
+                    _artifacts.record_check(_root(), assembled["sheet"], "consistency",
+                                            consistency)
+                except Exception:
+                    pass
+            cons_note = ""
+            if consistency.get("ok"):
+                cons_note = (f", consistency min {consistency.get('min')}"
+                             + (f" — REGEN {consistency['flagged']}" if consistency.get("flagged")
+                                else " (all pass)"))
+            seq = assembled.get("sequence") or {}
+            seq_note = (f", motion-jitter in {seq['flagged']}"
+                        if seq.get("flagged") else "")
             _log("sprites", f"painted sprite set {name!r} (reference-first): "
-                            f"{len(assembled['frames'])}/{len(poses)} poses"
-                            + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else ""),
+                            f"{len(frame_map)}/{len(poses)} poses"
+                            + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else "")
+                            + cons_note + seq_note,
                  ref=assembled["sheet"])
         return assembled
     except Exception as exc:
@@ -966,19 +1614,164 @@ def consistency_check(candidate_path: str, character: str) -> dict:
             checklist.insert(1, f"holds style: {profile['style'][:160]}")
             checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
 
+        # ALPHA / TRANSPARENCY TRIPWIRE (automated — the palette check above is
+        # blind to transparency because it samples only a>64). gpt-image leaves
+        # white halos, feathered fringes, opaque background bleed, dirty RGB under
+        # zero alpha, and hollow interiors that a checklist-by-eye keeps missing.
+        # These are measured, not guessed at, and any flag is a hard fail.
+        def _alpha_flags(path):
+            im = Image.open(path).convert("RGBA")
+            im.thumbnail((256, 256))
+            W, H = im.size
+            px = im.load()
+            border = border_op = soft = opaque = softc = whal = 0
+            dirty = transp = 0
+            xs0 = ys0 = 10 ** 9
+            xs1 = ys1 = -1
+            for y in range(H):
+                for x in range(W):
+                    r, g, b, a = px[x, y]
+                    edge = (x == 0 or y == 0 or x == W - 1 or y == H - 1)
+                    if edge:
+                        border += 1
+                        if a > 32:
+                            border_op += 1
+                    if a >= 224:
+                        opaque += 1
+                    if 24 < a < 224:
+                        soft += 1
+                    if 24 < a < 240:
+                        softc += 1
+                        if r > 228 and g > 228 and b > 228:
+                            whal += 1
+                    if a <= 8:
+                        transp += 1
+                        if r > 16 or g > 16 or b > 16:
+                            dirty += 1
+                    if a > 32:
+                        xs0 = min(xs0, x); xs1 = max(xs1, x)
+                        ys0 = min(ys0, y); ys1 = max(ys1, y)
+            border_opaque = border_op / max(1, border)
+            soft_ratio = soft / max(1, opaque + soft)
+            white_fringe = whal / max(1, softc)
+            dirty_alpha = dirty / max(1, transp)
+            # HOLLOW = transparent ENCLOSED by opaque (a real hole), not the open
+            # gaps between spread limbs. Flood-fill transparency inward from the
+            # frame border; whatever transparency it can't reach is enclosed.
+            seen = bytearray(W * H)
+            stack = []
+            for x in range(W):
+                for y in (0, H - 1):
+                    i = y * W + x
+                    if px[x, y][3] <= 16 and not seen[i]:
+                        seen[i] = 1; stack.append((x, y))
+            for y in range(H):
+                for x in (0, W - 1):
+                    i = y * W + x
+                    if px[x, y][3] <= 16 and not seen[i]:
+                        seen[i] = 1; stack.append((x, y))
+            while stack:
+                x, y = stack.pop()
+                for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if 0 <= nx < W and 0 <= ny < H:
+                        i = ny * W + nx
+                        if not seen[i] and px[nx, ny][3] <= 16:
+                            seen[i] = 1; stack.append((nx, ny))
+            enclosed = sum(1 for y in range(H) for x in range(W)
+                           if px[x, y][3] <= 16 and not seen[y * W + x])
+            hollow = enclosed / max(1, opaque)
+
+            # HARD flags (auto-fail): these read ~0 on a clean transparent sprite.
+            flags = []
+            if border_opaque > 0.06:
+                flags.append(f"background bleed: {border_opaque:.0%} of the frame "
+                             "border is opaque — sprite not isolated on transparency")
+            if white_fringe > 0.20:
+                flags.append(f"white halo: {white_fringe:.0%} of soft-edge pixels are "
+                             "near-white — feathered white fringe around the sprite")
+            if soft_ratio > 0.35:
+                flags.append(f"feathered alpha: {soft_ratio:.0%} soft/partial-alpha — "
+                             "edges aren't crisp (gpt-image halo)")
+            if dirty_alpha > 0.15:
+                flags.append(f"dirty alpha: {dirty_alpha:.0%} of transparent pixels "
+                             "carry nonzero RGB — clean RGB:=0 where alpha==0")
+            # SOFT (advisory): enclosed gaps can be legit (a curled arm), so flag
+            # for a human look rather than auto-failing.
+            review = []
+            if hollow > 0.05:
+                review.append(f"possible hole: {hollow:.0%} of the figure is "
+                              "transparent area ENCLOSED by the sprite — look for an "
+                              "empty/holed region (vs. intended open gaps)")
+            return {"border_opaque": round(border_opaque, 3),
+                    "white_fringe": round(white_fringe, 3),
+                    "soft_alpha": round(soft_ratio, 3),
+                    "dirty_alpha": round(dirty_alpha, 3),
+                    "hollow": round(hollow, 3),
+                    "flags": flags, "review": review, "clean": not flags}
+
+        try:
+            alpha = _alpha_flags(candidate_path)
+        except Exception as ae:
+            alpha = {"flags": [], "clean": None, "error": str(ae)}
+
+        checklist = (["ALPHA fail: " + f for f in alpha.get("flags", [])]
+                     + ["ALPHA look: " + f for f in alpha.get("review", [])]
+                     + checklist)
+
         result = {"composite": archived or str(out), "reference": ref_path,
                   "palette_drift": drift,
                   "palette_note": "advisory: >30 = color drift likely; low values "
                                   "do NOT prove identity",
+                  "alpha": alpha,
+                  "auto_fail": bool(alpha.get("flags")),
                   "checklist": checklist,
-                  "instruction": "LOOK at the composite. Verdict every checklist "
-                                 "line explicitly. Any fail = do not land."}
+                  "instruction": ("LOOK at the composite. Verdict every checklist "
+                                  "line explicitly. Any fail = do not land. If "
+                                  "alpha.flags is non-empty the frame AUTO-FAILS on "
+                                  "transparency (white halo / bleed / hollow / dirty "
+                                  "alpha) — regenerate; do not land it.")}
         try:
             _artifacts.record_check(
                 _root(), candidate_path, "consistency", result)
         except Exception:
             pass
         return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
+                   reasons: str = "") -> dict:
+    """Record an INDEPENDENT art-QA reviewer's verdict on a candidate artifact.
+
+    For the art-consistency reviewer (a seat that did NOT make the image) after
+    it has run consistency_check and looked at the produced image beside its
+    reference. verdict 'pass' approves the revision; 'fail' rejects it. The
+    score (0-100 similarity) and reasons are stored on the revision under
+    metadata.qa_review so the dashboard can show why. This is what stops the art
+    seat from self-approving drift — the accept/reject is made here, by review.
+    """
+    verdict = (verdict or "").strip().lower()
+    if verdict not in ("pass", "fail"):
+        return _fail(ValueError("verdict must be 'pass' or 'fail'"))
+    try:
+        root = _root()
+        art = _artifacts.get(root, int(artifact_id))
+        try:
+            score = max(0, min(100, int(score)))
+        except (TypeError, ValueError):
+            score = 0
+        _artifacts.record_check(root, art["path"], "qa_review", {
+            "verdict": verdict, "score": score, "reasons": reasons[:1000]})
+        status = "approved" if verdict == "pass" else "rejected"
+        reviewed = _artifacts.review(root, int(artifact_id), status,
+                                     note=f"art-QA {verdict} ({score}/100): {reasons[:400]}")
+        return {"ok": True, "artifact_id": int(artifact_id), "verdict": verdict,
+                "score": score, "status": reviewed["status"],
+                "logical_name": art["logical_name"], "revision": art["revision"]}
+    except LookupError as exc:
+        return _fail(exc)
     except Exception as exc:
         return _fail(exc)
 
@@ -1359,6 +2152,33 @@ def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
         from bgate_core import queue as _q
         return _q.set_status(_root(), item_id, "failed" if failed else "done",
                              result=result)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@mcp.tool()
+def queue_reopen(item_id: int, reason: str) -> dict:
+    """Send a done/failed item back to 'queued' for another round.
+
+    The QA gate's FAIL path: reason is the ranked nitpick list (specific
+    problems + fixes). It is APPENDED to the item's brief so the next
+    dispatched agent reads exactly what to fix, and recorded as the result.
+    """
+    try:
+        from bgate_core import queue as _q
+        root = _root()
+        item = _q.get(root, item_id)
+        if item["status"] not in ("done", "failed"):
+            raise ValueError(
+                f"item {item_id} is {item['status']!r} — only done/failed "
+                "items can be reopened")
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("reason is required — say exactly what to fix")
+        stamp = ("\n\n--- REOPENED (QA gate) ---\n" + reason)[:3000]
+        _q.update(root, item_id, brief=(item["brief"] or "") + stamp)
+        return _q.set_status(root, item_id, "queued",
+                             result=f"reopened: {reason[:1900]}")
     except Exception as exc:
         return _fail(exc)
 

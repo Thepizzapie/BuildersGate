@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bgate_engine/run_identifier",
+  "title": "RunIdentifier",
+  "description": "Fully identifies a deterministic simulation run. Any agent, human, or CI runner replays the exact session from this. The Python runtime is authoritative: given the same identifier it emits an identical event log and identical per-tick snapshots. Godot renders replays FROM this — it never re-simulates for a proof.",
+  "type": "object",
+  "required": ["world_revision", "runtime_version", "scene", "seed", "tick_rate", "input_schedule_hash", "asset_manifest_hash"],
+  "properties": {
+    "world_revision":      { "type": "integer", "description": "Canonical world revision the run simulates against." },
+    "runtime_version":     { "type": "string", "description": "bgate_engine sim version; a bump can legitimately change results." },
+    "scene":               { "type": "string", "examples": ["fight","training"] },
+    "seed":                { "type": "integer", "description": "Root seed. Named streams derive as hash(seed, stream_name)." },
+    "tick_rate":           { "type": "integer", "const": 60, "description": "Fixed step. Commodity Brawler is 60Hz (TICK=1/60)." },
+    "input_schedule_hash": { "type": "string", "pattern": "^sha256:", "description": "Hash of the per-tick input schedule (see input_schedule)." },
+    "asset_manifest_hash": { "type": "string", "pattern": "^sha256:", "description": "Hash of the resolved asset manifest; cosmetic asset swaps that change this are visible." }
+  },
+  "$defs": {
+    "input_schedule": {
+      "description": "The tick-indexed inputs injected into the run. Hashed into input_schedule_hash.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tick", "entity", "inputs"],
+        "properties": {
+          "tick":   { "type": "integer", "minimum": 0 },
+          "entity": { "type": "string", "examples": ["fighter.tommy"] },
+          "inputs": {
+            "type": "object",
+            "description": "Action edges/holds for this tick. Names match project.godot input actions.",
+            "examples": [{ "jab": "pressed", "move_right": "held" }]
+          }
+        }
+      }
+    },
+    "rng_streams": {
+      "description": "Named streams so cosmetic randomness never perturbs combat.",
+      "type": "array",
+      "items": { "type": "string" },
+      "examples": [["rng.cpu.decision","rng.combat.critical","rng.audio.pitch","rng.particles"]]
+    }
+  }
+}

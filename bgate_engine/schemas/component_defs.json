@@ -1,0 +1,90 @@
+{
+  "$comment": "Canonical component definitions for Commodity Brawler, derived field-by-field from ../haymaker/game/scripts/boxer.gd and fight.gd. Every field carries type + units + semantics so agents cannot produce structurally-valid nonsense. `schema.describe` returns one of these blocks. Authored tunables are in canonical (design) units; the runtime tick-counts them at action start.",
+  "version": "0.1.0",
+  "components": {
+    "Transform2D": {
+      "doc": "World placement + arcade auto-facing. Facing is deterministic sim state recomputed each tick from move input, NOT a free field for agents to set arbitrarily.",
+      "fields": {
+        "position": { "type": "array", "items": "number", "length": 2, "units": "pixels", "note": "[x, y] in 640x360 stage space." },
+        "facing":   { "type": "integer", "enum": [-1, 1], "note": "+1 faces +x, -1 faces -x. Runtime-computed; commits for an action's duration." }
+      }
+    },
+    "Movement": {
+      "doc": "Grounded walk + hand-rolled deterministic jump arc (no physics body).",
+      "fields": {
+        "walk_speed":    { "type": "number", "minimum": 0, "units": "pixels_per_second", "default": 62.0 },
+        "ring_min_x":    { "type": "number", "units": "pixels", "default": 90.0 },
+        "ring_max_x":    { "type": "number", "units": "pixels", "default": 550.0 },
+        "jump_velocity": { "type": "number", "units": "pixels_per_second", "default": -172.80, "note": "Negative moves UP. Peak = v^2/2g." },
+        "jump_gravity":  { "type": "number", "minimum": 0, "units": "pixels_per_second_squared", "default": 105.75 }
+      },
+      "derived": {
+        "peak_height_px": { "expr": "jump_velocity^2 / (2 * jump_gravity)", "note": "≈141px at defaults; asserted by test.jump_profile." },
+        "air_time_s":     { "expr": "2 * abs(jump_velocity) / jump_gravity" }
+      }
+    },
+    "Health": {
+      "doc": "Hit points. Damage resolves by STATE (see StateMachine/take_hit), not physics.",
+      "fields": {
+        "max_hp": { "type": "number", "minimum": 1, "units": "hp", "default": 100.0 },
+        "hp":     { "type": "number", "minimum": 0, "units": "hp", "runtime": true }
+      }
+    },
+    "Fighter": {
+      "doc": "Attack table + stamina economy. Costs/damage/reach per move; the anti-spam economy (fatigue, gassed, stagger, cooldown, cancel window) that four playtest sessions tuned.",
+      "fields": {
+        "jab_damage":        { "type": "number", "minimum": 0, "units": "hp",      "default": 4.0 },
+        "jab_reach":         { "type": "number", "minimum": 0, "units": "pixels",  "default": 115.0 },
+        "jab_cost":          { "type": "number", "minimum": 0, "units": "stamina", "default": 10.0 },
+        "jab_duration":      { "type": "number", "minimum": 0, "units": "seconds", "default": 0.36, "note": "Tick-counted at action start; contact fires at ~40%." },
+        "hook_damage":       { "type": "number", "minimum": 0, "units": "hp",      "default": 10.0 },
+        "hook_reach":        { "type": "number", "minimum": 0, "units": "pixels",  "default": 135.0 },
+        "hook_cost":         { "type": "number", "minimum": 0, "units": "stamina", "default": 27.0 },
+        "kick_light_damage": { "type": "number", "minimum": 0, "units": "hp",      "default": 6.0 },
+        "kick_light_reach":  { "type": "number", "minimum": 0, "units": "pixels",  "default": 130.0 },
+        "kick_heavy_damage": { "type": "number", "minimum": 0, "units": "hp",      "default": 13.0 },
+        "kick_heavy_reach":  { "type": "number", "minimum": 0, "units": "pixels",  "default": 150.0 },
+        "max_stamina":       { "type": "number", "minimum": 1, "units": "stamina", "default": 100.0 },
+        "stamina_regen":     { "type": "number", "minimum": 0, "units": "stamina_per_second", "default": 12.0 },
+        "repeat_fatigue_scale":        { "type": "number", "minimum": 0, "units": "multiplier", "default": 2.4, "note": "Cost compounds by (1+scale)^streak within the flurry window." },
+        "repeat_fatigue_window_ticks": { "type": "integer", "minimum": 0, "units": "ticks", "default": 45 },
+        "gassed_stamina_threshold":    { "type": "number", "minimum": 0, "units": "stamina", "default": 5.0 },
+        "gassed_stun_ticks":           { "type": "integer", "minimum": 0, "units": "ticks", "default": 40 },
+        "stagger_ticks":               { "type": "integer", "minimum": 0, "units": "ticks", "default": 30, "note": "Hard whiff punish; fully vulnerable." },
+        "attack_start_cooldown_ticks": { "type": "integer", "minimum": 0, "units": "ticks", "default": 10 },
+        "cancel_window_ticks":         { "type": "integer", "minimum": 0, "units": "ticks", "default": 14, "note": "Combo-link window opened at the contact tick." }
+      }
+    },
+    "Hitbox": {
+      "doc": "Resolution rule, NOT a physics shape. A hit lands iff: attacker in the move's reach AND facing the target AND target not blocking/ducking. The facing gate is the blind-side rule.",
+      "fields": {
+        "resolves_on": { "type": "string", "enum": ["contact_tick"], "default": "contact_tick", "note": "Contact fires once at ~40% of the attack." },
+        "range_rule":  { "type": "string", "const": "dist <= reach(move_type)" },
+        "facing_rule": { "type": "string", "const": "attacker_facing == sign(target_x - attacker_x)", "note": "_facing_ok() in fight.gd. Violating this while still applying damage = the blind-side bug." },
+        "guard_rule":  { "type": "string", "const": "BLOCK -> 0 damage; DUCK -> attacker whiffs" }
+      }
+    },
+    "StateMachine": {
+      "doc": "Fighter FSM. States are APPEND-ONLY (fight_test.gd hardcodes integer values: BLOCK==2, DUCK==3, KO==4). Runtime carries tick counters for each timed state.",
+      "fields": {
+        "state": { "type": "string", "runtime": true,
+          "enum": ["idle","punch","block","duck","ko","kick","jump","jump_kick","gassed","stagger"] }
+      },
+      "runtime_counters": [
+        "busy_total_ticks","busy_contact_ticks","busy_elapsed_ticks","busy_contact_fired",
+        "duck_ticks_left","gassed_ticks_left","stagger_ticks_left",
+        "attack_cooldown_ticks_left","repeat_streak","repeat_window_ticks_left",
+        "link_window_ticks_left","link_locked","jump_ground_y","jump_velocity_y","jump_kick_used","accum"
+      ],
+      "$comment": "runtime_counters mirror boxer.gd save_state()/load_state() exactly — the authoritative snapshot the Python runtime must reproduce."
+    },
+    "SpriteRig": {
+      "doc": "Presentation binding to an asset-graph SpriteRig2D. Required animation names gate export.",
+      "fields": {
+        "asset":              { "type": "string", "note": "asset-graph id, e.g. sprite.tommy_bright16" },
+        "required_animations":{ "type": "array", "items": "string",
+          "default": ["idle","walk","jab","hook","kick_light","kick_heavy","duck","block","jump","jump_kick","gassed","stagger","ko"] }
+      }
+    }
+  }
+}

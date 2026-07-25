@@ -16,14 +16,28 @@ import os
 from pathlib import Path
 from typing import Optional
 
-# Model routing, learned in production: gpt-image-2 paints opaque pieces well
-# but REJECTS background=transparent (400) and proved flaky on sprite work;
-# gpt-image-1 is the reliable choice wherever alpha matters. So the mode picks
-# the model — agents never have to remember which is which.
-DEFAULT_OPAQUE_MODEL = "gpt-image-2"
+# Model routing. DIRECTOR DIRECTIVE (2026-07-20): gpt-image-2 is BANNED —
+# gpt-image-1 for everything (gpt-image-1-mini acceptable for cheap drafts via
+# the env overrides below). gpt-image-2 also REJECTS background=transparent
+# (400) and proved flaky on sprite work, so this is consistency AND policy.
+DEFAULT_OPAQUE_MODEL = "gpt-image-1"
 DEFAULT_TRANSPARENT_MODEL = "gpt-image-1"
 SIZES = ("1024x1024", "1536x1024", "1024x1536", "auto")
 QUALITIES = ("low", "medium", "high", "auto")
+
+# Approximate per-image spend (gpt-image-1, 1024x1024) by quality — every leg
+# that spends through this adapter estimates from THIS table, so tools can
+# surface dollars (not counts) before a batch is confirmed. "auto" is billed
+# as whatever the API picks; estimate it as medium.
+IMAGE_PRICE_USD: dict[str, float] = {
+    "low": 0.011, "medium": 0.042, "high": 0.167, "auto": 0.042,
+}
+
+
+def price_per_image(quality: str = "medium") -> float:
+    """Estimated $ for one generation at `quality`; unknown values price as
+    medium rather than raising — an estimate must never block the work."""
+    return IMAGE_PRICE_USD.get(quality, IMAGE_PRICE_USD["medium"])
 
 
 def _model_for(transparent: bool) -> str:
