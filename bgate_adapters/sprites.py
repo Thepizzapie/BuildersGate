@@ -129,10 +129,21 @@ def from_painted_sheet(image_path: str, pose_names: list[str], *, out_dir: str,
     """
     from PIL import Image
 
+    from bgate_core import chroma as _chroma
+
     if not pose_names:
         raise ValueError("no pose names")
     if len(set(pose_names)) != len(pose_names):
         raise ValueError(f"duplicate pose names: {pose_names}")
+
+    # An OPAQUE sheet slices happily and produces frames with the model's
+    # background baked into every cell — the alpha-bbox trim finds the whole
+    # cell, coverage reads 1.0, nothing complains, and the fighter ships as a
+    # rectangle. That is the exact failure the keyable-background contract
+    # exists to prevent, so refuse the input rather than assemble it.
+    if _chroma.looks_unkeyed(image_path):
+        return {"ok": False, "failed": [], "source": str(image_path),
+                "error": "source sheet is fully opaque — " + _chroma.NO_ALPHA_HINT}
 
     src = Image.open(image_path).convert("RGBA")
     n = len(pose_names)
@@ -325,10 +336,19 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
     # whole set must share ONE scale so the character stays the SAME SIZE across
     # frames. The old per-frame fit-to-box scale grew/shrank him pose to pose
     # (a wider/taller silhouette got a smaller scale): the size-drift bug.
+    from bgate_core import chroma as _chroma
+
     trimmed_frames: list[tuple[str, "Image.Image"]] = []
     for pose, path in pose_files:
         if not Path(path).is_file():
             failed.append({"name": pose, "error": f"file missing: {path}"})
+            continue
+        # Same trap as the sheet path: a frame that was never keyed is a solid
+        # rectangle, trims to itself, and ships. Fail the FRAME, not the set —
+        # one unkeyed pose among ten is a re-roll, not a dead run.
+        if _chroma.looks_unkeyed(path):
+            failed.append({"name": pose,
+                           "error": "frame is fully opaque — " + _chroma.NO_ALPHA_HINT})
             continue
         img = Image.open(path).convert("RGBA")
         _close_interior_holes(img)   # gpt-image punches small interior regions

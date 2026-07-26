@@ -39,7 +39,18 @@
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const get = async p => { try { const r = await fetch(p); return r.ok ? r.json() : {}; } catch (e) { return {}; } };
-  const post = async (p, b) => { try { const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); return r.json().catch(() => ({ ok: r.ok })); } catch (e) { return { ok: false }; } };
+  /* The HTTP status rides along on __status so a call site can tell "this
+     server build does not have that endpoint" (404) from "the endpoint refused
+     you" — a missing route must read as a missing route, not a blank panel. */
+  const post = async (p, b) => {
+    try {
+      const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) });
+      const j = await r.json().catch(() => ({ ok: r.ok }));
+      if (j && typeof j === "object") { try { j.__status = r.status; } catch (e) {} }
+      return j;
+    } catch (e) { return { ok: false, __status: 0 }; }
+  };
+  const getX = async p => { try { const r = await fetch(p); const j = await r.json().catch(() => ({})); if (j && typeof j === "object") { try { j.__status = r.status; } catch (e) {} } return j; } catch (e) { return { __status: 0 }; } };
   const toast = (m, bad) => (window.BGWS ? BGWS.toast(m, bad) : console.log(m));
   const uid = (p) => p + "_" + Math.random().toString(36).slice(2, 8);
 
@@ -125,7 +136,16 @@
       const q = this.refParse(value);
       if (!q.name) return "";
       const pin = this.refPin(q.name);
-      if (!pin) { this.refsLoad(); return ""; }
+      if (!pin) {
+        // Not a pin. A project-relative path is a first-class reference now —
+        // the sprite sheet the game already loads is the truest style anchor
+        // there is, and it used to be unreachable from this node.
+        const raw = String(value || "").split("\\").join("/").trim();
+        if (/\.(png|jpe?g|webp)$/i.test(raw) && !raw.startsWith("/")
+            && !/^[A-Za-z]:/.test(raw)) return raw;
+        this.refsLoad();
+        return "";
+      }
       let p = String(pin.path || "").replace(/\\/g, "/");
       const cut = p.indexOf(".bgate/");
       if (cut !== -1) p = p.slice(cut);
@@ -145,37 +165,201 @@
        workflow that ran against nothing. */
     refPicker(nodeId, field, current) {
       const host = `wf-refpick-${nodeId}`;
-      this.refsLoad().then(() => this._paintRefPicker(host, nodeId, field));
+      this.sourcesLoad().then(() => this._paintRefPicker(host, nodeId, field));
       setTimeout(() => this._paintRefPicker(host, nodeId, field), 0);
-      return `<div class="wf-refpick" id="${host}"><div class="wf-b-note">loading pinned references…</div></div>
+      return `<div class="wf-refsearch">
+          <input type="search" placeholder="search pins, sprite sheets, artifacts…"
+            oninput="WF.sourceFilter('${nodeId}','${field}','${host}',this.value)">
+        </div>
+        <div class="wf-refpick" id="${host}"><div class="wf-b-note">loading references…</div></div>
         <div class="wf-row" style="flex-direction:column;align-items:stretch">
-          <label style="margin-bottom:5px">or name it (supports <code>name@r2</code>)</label>
-          <input type="text" style="width:100%" placeholder="a pinned ref, e.g. scoville"
+          <label style="margin-bottom:5px">or name it — a pin (<code>name@r2</code>), a path inside the project, or an artifact name</label>
+          <input type="text" style="width:100%" placeholder="class-it-guy · game/assets/characters/test_player/pm_paladin_idle.png"
             value="${esc(current || "")}" oninput="WF.set('${nodeId}','${field}',this.value)"></div>`;
+    },
+    /* Pins were the only source the picker knew, so the sprite sheets the game
+       actually ships — the best available evidence of the style — could not be
+       chosen. Three groups now, from one endpoint. */
+    _sources: { data: null, at: 0, loading: null, q: {} },
+    sourcesLoad(force, q) {
+      const now = Date.now();
+      const key = String(q || "");
+      if (!force && this._sources.data && !key && now - this._sources.at < 20000) {
+        return Promise.resolve(this._sources.data);
+      }
+      if (this._sources.loading && !key) return this._sources.loading;
+      const req = get("/api/refs/sources" + (key ? "?q=" + encodeURIComponent(key) : ""))
+        .then(r => {
+          const d = data(r) || { pins: [], sheets: [], artifacts: [] };
+          if (!key) { this._sources.data = d; this._sources.at = Date.now(); }
+          this._sources.loading = null;
+          return d;
+        })
+        .catch(() => { this._sources.loading = null; return { pins: [], sheets: [], artifacts: [], __error: 1 }; });
+      if (!key) this._sources.loading = req;
+      return req;
+    },
+    sourceFilter(nodeId, field, hostId, value) {
+      clearTimeout(this._sources._t);
+      this._sources._t = setTimeout(() => {
+        this._sources.q[hostId] = value;
+        this.sourcesLoad(true, value).then(d => {
+          this._sources.q[hostId + ":data"] = d;
+          this._paintRefPicker(hostId, nodeId, field);
+        });
+      }, 220);
     },
     _paintRefPicker(hostId, nodeId, field) {
       const host = document.getElementById(hostId);
       if (!host) return;
-      const list = this._refs.list || [];
-      if (!list.length) {
-        host.innerHTML = `<div class="wf-b-note">no pinned references yet — pin one from the art seat's anchoring panel, then it appears here.</div>`;
+      const d = this._sources.q[hostId + ":data"] || this._sources.data;
+      if (!d) { host.innerHTML = `<div class="wf-b-note">loading references…</div>`; return; }
+      if (d.__error) {
+        host.innerHTML = `<div class="wf-warn">could not read the project's references (GET /api/refs/sources) — name one by hand below</div>`;
         return;
       }
       const node = (this._wf && this._wf.nodes || []).find(n => n.id === nodeId);
-      const cur = (node && node.config && node.config[field]) || "";
-      const curName = this.refParse(cur).name.toLowerCase();
-      host.innerHTML = list.map(r => {
-        const rel = this.refRel(r.name);
-        const sel = String(r.name || "").toLowerCase() === curName;
-        return `<button class="wf-refcard ${sel ? "sel" : ""}" title="${esc(r.note || r.name)}"
-          onclick="WF.set('${nodeId}','${field}','${esc(r.name)}');WF._paintRefPicker('${hostId}','${nodeId}','${field}')">
-          ${rel ? `<img src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">` : `<span class="wf-refnone">?</span>`}
-          <span class="wf-refname">${esc(r.name)}</span>
-          <span class="wf-refmeta">${esc(r.kind || "")} · r${esc(r.revision || 1)}</span>
+      const cur = String((node && node.config && node.config[field]) || "");
+      const curKey = cur.toLowerCase();
+
+      const card = (item, meta) => {
+        const rel = item.rel || "";
+        const sel = String(item.value || "").toLowerCase() === curKey
+          || this.refParse(cur).name.toLowerCase() === String(item.value || "").toLowerCase();
+        return `<button class="wf-refcard ${sel ? "sel" : ""}" title="${esc(item.note || item.value)}"
+          onclick="WF.set('${nodeId}','${field}','${esc(item.value)}');WF._paintRefPicker('${esc(hostId)}','${nodeId}','${field}')">
+          ${rel ? `<img src="/api/preview?rel=${encodeURIComponent(rel)}" loading="lazy" onerror="this.style.opacity=.12">`
+                : `<span class="wf-refnone">?</span>`}
+          <span class="wf-refname">${esc(item.label || item.value)}</span>
+          <span class="wf-refmeta">${esc(meta(item))}</span>
         </button>`;
-      }).join("") + (curName && !this.refPin(curName)
-        ? `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” is not a pinned reference — this step would run against nothing.</div>` : "");
+      };
+
+      const groups = [
+        ["Pinned references", d.pins || [], r => `${r.kind || ""}${r.revision ? " · r" + r.revision : ""}`],
+        // The art the game loads today. Best evidence of the real style, and
+        // the thing you match a new animation against.
+        ["Sprite sheets in the project", d.sheets || [], r => r.note || ""],
+        ["Generated artifacts", d.artifacts || [], r => `r${r.revision || 1}${r.status ? " · " + r.status : ""}`],
+      ];
+      let html = "";
+      groups.forEach(([title, list, meta]) => {
+        if (!list.length) return;
+        html += `<div class="wf-refgroup">${esc(title)} <b>${list.length}</b></div>`
+          + `<div class="wf-refrow">${list.map(i => card(i, meta)).join("")}</div>`;
+      });
+      if (!html) {
+        html = `<div class="wf-b-note">nothing matched — pin a reference from the art seat, or name a path inside the project.</div>`;
+      }
+      const known = [].concat(d.pins || [], d.sheets || [], d.artifacts || [])
+        .some(i => String(i.value || "").toLowerCase() === curKey);
+      if (cur && !known && !this.refRel(cur)) {
+        html += `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact — this step would run against nothing.</div>`;
+      }
+      host.innerHTML = html;
     },
+
+    /* ---- quality tiers (the model ladder) -------------------------------
+       The user picks WHAT they are making and HOW GOOD it has to be; the
+       server owns which model that resolves to and what it costs. Nothing
+       about the ladder — no model name, no price, no kind — is written in this
+       file, because a catalogue duplicated in the browser drifts from the one
+       that actually gets charged.
+
+       The ladder is read once from GET /api/tiers. Where that route does not
+       exist the UI degrades honestly: the tier a node names is still stored and
+       still dispatched in its brief, the node says the ladder is unavailable,
+       and no model name or price is invented to fill the hole. */
+    _tiers: { at: 0, loading: null, ok: false, error: "", tiers: [], kinds: [],
+      ladders: {}, flat: {} },
+
+    tiersLoad(force) {
+      const t = this._tiers;
+      if (!force && t.at && Date.now() - t.at < 300000) return Promise.resolve(t);
+      if (t.loading) return t.loading;
+      t.loading = getX("/api/tiers").then(r => {
+        t.loading = null; t.at = Date.now();
+        const d = (r && r.ok && r.data !== undefined) ? r.data : (r && r.tiers ? r : null);
+        if (!d) {
+          t.ok = false;
+          t.error = (r && r.__status === 404)
+            ? "no tier ladder on this server (GET /api/tiers)"
+            : errMsg(r);
+          return t;
+        }
+        this._absorbTiers(d);
+        this._repaintNodes(); this._refreshCosts();
+        return t;
+      }).catch(() => { t.loading = null; t.ok = false; t.error = "tier ladder unreachable"; return t; });
+      return t.loading;
+    },
+    /* Accepts either shape the server may publish: a per-kind LIST of rungs, or
+       a per-kind MAP of tier -> rung. Flat rungs (a tier resolving to the same
+       model as the rung below) may arrive as `flat` on the rung or as a
+       per-kind list; both are normalised to one place. */
+    _absorbTiers(d) {
+      const t = this._tiers;
+      t.ok = true; t.error = "";
+      t.tiers = Array.isArray(d.tiers) ? d.tiers.map(String) : [];
+      const ladders = d.ladders || d.kinds || {};
+      t.ladders = {}; t.flat = {};
+      const norm = (kind, rung, tierName) => {
+        if (!rung || typeof rung !== "object") return null;
+        const tier = String(rung.tier || tierName || "");
+        const out = { kind: kind, tier: tier,
+          provider: String(rung.provider || ""), model: String(rung.model || ""),
+          usd: (rung.usd == null ? null : Number(rung.usd)),
+          note: String(rung.note || ""), flat: !!rung.flat };
+        return out.tier ? out : null;
+      };
+      if (Array.isArray(ladders)) { t.kinds = []; }
+      else {
+        Object.keys(ladders).forEach(kind => {
+          const raw = ladders[kind];
+          let rungs = [];
+          if (Array.isArray(raw)) rungs = raw.map(r => norm(kind, r)).filter(Boolean);
+          else if (raw && typeof raw === "object") {
+            const inner = Array.isArray(raw.rungs) ? raw.rungs : null;
+            if (inner) rungs = inner.map(r => norm(kind, r)).filter(Boolean);
+            else rungs = Object.keys(raw).map(k => norm(kind, raw[k], k)).filter(Boolean);
+            if (raw && Array.isArray(raw.flat)) t.flat[kind] = raw.flat.map(String);
+          }
+          t.ladders[kind] = rungs;
+        });
+        t.kinds = Array.isArray(d.kinds) && !d.kinds.length ? [] : Object.keys(t.ladders).sort();
+      }
+      if (d.flat && typeof d.flat === "object" && !Array.isArray(d.flat)) {
+        Object.keys(d.flat).forEach(k => { if (Array.isArray(d.flat[k])) t.flat[k] = d.flat[k].map(String); });
+      }
+      // A rung that duplicates the rung below is flat whether or not the server
+      // said so — the UI must never sell an upgrade that does not exist.
+      Object.keys(t.ladders).forEach(kind => {
+        const named = t.flat[kind] || [];
+        let prev = null;
+        t.ladders[kind].forEach(r => {
+          if (named.indexOf(r.tier) !== -1) r.flat = true;
+          if (prev && r.model && r.model === prev) r.flat = true;
+          prev = r.model || prev;
+        });
+        t.flat[kind] = t.ladders[kind].filter(r => r.flat).map(r => r.tier);
+      });
+      if (!t.tiers.length) {
+        const first = t.kinds[0];
+        t.tiers = first ? (t.ladders[first] || []).map(r => r.tier) : [];
+      }
+    },
+    tiersReady() { this.tiersLoad(); return !!this._tiers.ok; },
+    tiersError() { return this._tiers.error || ""; },
+    tierNames() { this.tiersLoad(); return (this._tiers.tiers || []).slice(); },
+    tierKinds() { this.tiersLoad(); return (this._tiers.kinds || []).slice(); },
+    tierLadder(kind) { this.tiersLoad(); return (this._tiers.ladders[String(kind || "")] || []).slice(); },
+    /* One rung: {provider,model,usd,note,flat} — or null when the ladder has
+       not loaded / does not know this pair. Null is a real answer here. */
+    tierResolve(kind, tier) {
+      const want = String(tier || "");
+      return this.tierLadder(kind).find(r => r.tier === want) || null;
+    },
+    tierFlat(kind) { this.tiersLoad(); return (this._tiers.flat[String(kind || "")] || []).slice(); },
 
     /* ---- node media + money ---------------------------------------------
        Two facts the node used to describe instead of show: the picture it
@@ -327,6 +511,15 @@
        fallback price is worse than no number. */
     estimate(node) {
       const def = this._stepDef(node && node.type);
+      /* A step whose price does NOT come from the imagegen quality table
+         (a model node prices from the tier ladder) reports the figure the
+         server gave it. It still never invents one: costUsd returns null when
+         the ladder has not loaded, and a null estimate shows no chip. */
+      if (def && typeof def.costUsd === "function") {
+        let usd = null; try { usd = def.costUsd(node); } catch (e) { usd = null; }
+        if (usd == null || !isFinite(Number(usd))) return null;
+        return { usd: Number(usd), images: 0, quality: "", unit: null };
+      }
       if (!def || typeof def.imageCost !== "function") return null;
       let spec = null; try { spec = def.imageCost(node); } catch (e) { return null; }
       const images = Math.max(0, Math.floor(Number(spec && spec.images) || 0));
@@ -344,7 +537,7 @@
       // stitching step inheriting the asset's bill would read as if the gate had
       // spent it — the ledger is per asset, the chip must not lie about who.
       const def = this._stepDef(node && node.type);
-      if (!def || typeof def.imageCost !== "function") return "";
+      if (!def || (typeof def.imageCost !== "function" && typeof def.costUsd !== "function")) return "";
       const m = this.nodeMedia(node);
       const est = this.estimate(node);
       const spent = m && Number(m.usd) > 0 ? Number(m.usd) : 0;
@@ -357,11 +550,25 @@
         try {
           this._nc.nodes.forEach(n => {
             const label = this.costLabel(n);
-            if (n.cost !== label) { n.cost = label; this._nc._renderNode(n); }
+            const badge = this._badgeFor(n, (this._runNodes && this._runNodes[n.id] || {}).status);
+            if (n.cost !== label || n.badge !== badge) {
+              n.cost = label; n.badge = badge; this._nc._renderNode(n);
+            }
           });
         } catch (e) {}
       }
       this._renderTotals();
+    },
+    /* What the title-bar badge says. A step may claim it — a model node's badge
+       IS its resolved model, which is the whole point of putting several of them
+       side by side — and then the run status is carried by the body's status
+       chip and the card's border instead of overwriting it. */
+    _badgeFor(node, runStatus) {
+      const def = this._stepDef(node && node.type);
+      let own = "";
+      if (def && typeof def.badge === "function") { try { own = String(def.badge(node) || ""); } catch (e) { own = ""; } }
+      if (own) return own;
+      return runStatus ? (STATUS_LABEL[runStatus] || runStatus) : (node && node.badge) || "";
     },
     /* What the whole workflow is about to cost, and what it has cost. Real
        spend is summed over DISTINCT logical assets — two nodes working the same
@@ -436,7 +643,15 @@
       const t = this.templates.find(x => x.id === id); if (!t) return;
       let built = { nodes: [], edges: [] };
       try { built = t.build() || built; } catch (e) { console.error(e); }
-      this.openWorkflow({ id: uid("wf"), name: t.name, category: t.category, fromTemplate: id, nodes: built.nodes, edges: built.edges });
+      // STABLE id per template, not uid(). A fresh random id every open meant
+      // a run started from a template was orphaned the moment you reopened it
+      // or reloaded the page: _attachRun looks a run up BY workflow id, so the
+      // new id matched nothing, nothing polled, and the card sat on the
+      // optimistic "running" it was given at click time — forever. Saving the
+      // workflow gives it its own identity; an unsaved template scratchpad
+      // should keep finding its own run.
+      this.openWorkflow({ id: "wf_tpl_" + id, name: t.name, category: t.category,
+                          fromTemplate: id, nodes: built.nodes, edges: built.edges });
     },
     async openSaved(id) {
       const d = await get("/api/workspace/studio/wf:" + id);
@@ -493,9 +708,21 @@
       clearTimeout(this._pollT);          // never let the last workflow's poll paint this one
       this._run = null; this._runNodes = null;
       const wfId = this._wf && this._wf.id; if (!wfId) return;
-      const run = data(await get("/api/workflows/runs/latest?workflow_id=" + encodeURIComponent(wfId)));
+      // Any run, not just a live one. Asking for running_only meant a finished
+      // or FAILED run vanished on reload: you reopened the builder, saw a blank
+      // canvas, and got no account of the run you had just paid for. The last
+      // run's outcome is exactly what a reopened builder should show.
+      const q = encodeURIComponent(wfId);
+      let run = data(await get(`/api/workflows/runs/latest?workflow_id=${q}`));
+      if (!run || !run.id) {
+        run = data(await get(
+          `/api/workflows/runs/latest?workflow_id=${q}&running_only=false`));
+      }
       if (!run || !run.id) { this._renderRun(); return; }
-      this._track(run.id);
+      // _track polls; a settled run is fetched once and painted, not polled.
+      if (run.status === "running") { this._track(run.id); return; }
+      const full = data(await get(`/api/workflows/runs/${run.id}`));
+      if (full) { this._run = full; this._paint(full); }
     },
     _renderPalette() {
       const pal = document.getElementById("wf-palette"); if (!pal) return;
@@ -553,12 +780,25 @@
       });
       nc.mount(); nc.fit(); this._nc = nc;
       this.refsLoad();      // thumbnails resolve through the pin registry
+      this.tiersLoad();     // the model ladder, from the server that owns it
       this.mediaLoad(true); // one batch read: produced artifacts, spend, prices
       if (this._api && this._api.setCanvas) this._api.setCanvas(nc);
     },
     /* The +/- steppers and the seed dice. They mutate one field and repaint
      * only that node's body, because nothing else on the canvas moved. */
     _nodeAction(n, action, field) {
+      // Anything that is not a stepper/dice belongs to the step type — a "run
+      // this node" button, a candidate pick, a compare fan-out. It travels the
+      // same [data-wact] path the engine already routes, so no step type ever
+      // needs its own event plumbing.
+      if (action !== "inc" && action !== "dec" && action !== "reseed") {
+        const def = this._stepDef(n.type);
+        if (def && typeof def.onAction === "function") {
+          try { def.onAction(n, action, field, this); }
+          catch (e) { toast(`${action} failed: ${e.message}`, true); }
+        }
+        return;
+      }
       const w = (this._wf.nodes || []).find(x => x.id === n.id);
       if (!w || !field) return;
       w.config = w.config || {};
@@ -595,6 +835,7 @@
         glyph: def.glyph || "◇", title: n.title || def.label || n.type, accent: def.accent || "var(--ember)",
         x: n.x != null ? n.x : 80, y: n.y != null ? n.y : 80, w: n.w || 220, ports, data: n.data };
       cn.cost = this.costLabel(cn);
+      cn.badge = this._badgeFor(cn, (this._runNodes && this._runNodes[cn.id] || {}).status);
       return cn;
     },
     addStep(type) {
@@ -606,6 +847,184 @@
       this._nc.addNode(this._toCanvasNode(n));
       this.persist();
     },
+    /* Clone a node beside itself, re-using its inputs.
+       This is what "compare these two models on the same input" is made of: the
+       sibling is wired to exactly the same upstream ports, so the only thing
+       that differs between the cards is what `overrides` changes. */
+    duplicateNode(id, overrides, o) {
+      o = o || {};
+      const nc = this._nc; if (!nc) return null;
+      const src = nc.nodes.get(id);
+      const stored = (this._wf.nodes || []).find(n => n.id === id);
+      if (!src && !stored) return null;
+      const base = src || stored;
+      const n = { id: uid("s"), type: base.type, title: o.title || stored && stored.title || "",
+        x: (base.x || 80) + (o.dx || 0), y: (base.y || 80) + (o.dy || 0),
+        config: Object.assign({}, (src && src.config) || (stored && stored.config) || {}, overrides || {}) };
+      (this._wf.nodes = this._wf.nodes || []).push(n);
+      nc.addNode(this._toCanvasNode(n));
+      // same inputs, same ports — a comparison whose inputs differ compares nothing
+      (nc.edges || []).slice().forEach(e => {
+        if (e.to && e.to[0] === id) nc.addEdge([e.from[0], e.from[1]], [n.id, e.to[1]]);
+      });
+      this._wf.edges = nc.edges.slice();
+      this.persist();
+      this._refreshCosts();
+      return n;
+    },
+
+    /* ---- one node at a time --------------------------------------------
+       The human drives the schedule: fan an input into several models, run
+       just those, look at what came back, pick one, THEN continue. That needs
+       a run to live in (a run is the only place node state is persisted), so
+       one is opened on demand WITHOUT dispatch — nothing else in the graph is
+       set going behind the user's back. */
+    _runNodeRow(nodeId) { return (this._runNodes && this._runNodes[nodeId]) || null; },
+    /* What a node PRODUCED, as the run recorded it: `{text}` from a step whose
+       summary is its output, `{artifacts:[…]}` from a generator, `{picked}`
+       from a resolved pick. Deliberately separate from the node's `detail` —
+       detail is prose for a human, output is the value the next node eats. */
+    nodeOutput(nodeId) {
+      const row = this._runNodeRow(nodeId);
+      const out = row && row.output;
+      return (out && typeof out === "object") ? out : {};
+    },
+    nodeText(nodeId) { return String(this.nodeOutput(nodeId).text || ""); },
+    nodeArtifacts(nodeId) {
+      const a = this.nodeOutput(nodeId).artifacts;
+      return Array.isArray(a) ? a : [];
+    },
+    nodePicked(nodeId) {
+      const p = this.nodeOutput(nodeId).picked;
+      return (p && typeof p === "object") ? p : null;
+    },
+    nodeStatus(nodeId) {
+      const row = this._runNodeRow(nodeId);
+      return (row && row.status) || "";
+    },
+    /* A produced file is registered project-relative, which is exactly what
+       /api/preview takes. Anything else renders the empty state rather than a
+       broken image. */
+    artUrl(path) {
+      const p = String(path || "").replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!p || /^[a-zA-Z]:/.test(p) || p.charAt(0) === "/" || p.indexOf("..") === 0) return "";
+      return "/api/preview?rel=" + encodeURIComponent(p);
+    },
+
+    /* The candidates a pick node is choosing between, as the RUN sees them —
+       every artifact its parent generators registered, with the model that made
+       each one. Read once per node per paint-cycle and cached, because
+       renderBody must never do I/O. */
+    _cands: { at: {}, by: {}, loading: {} },
+    candidatesFor(nodeId) {
+      const run = this._run;
+      if (!run || !run.id) return [];
+      const key = run.id + ":" + nodeId;
+      const now = Date.now();
+      if (!this._cands.loading[key] && (now - (this._cands.at[key] || 0) > 4000)) {
+        this._cands.loading[key] = 1;
+        this._cands.at[key] = now;
+        get(`/api/workflows/runs/${run.id}/nodes/${encodeURIComponent(nodeId)}/candidates`)
+          .then(r => {
+            this._cands.loading[key] = 0;
+            const list = data(r);
+            const before = JSON.stringify(this._cands.by[key] || []);
+            this._cands.by[key] = Array.isArray(list) ? list : [];
+            if (JSON.stringify(this._cands.by[key]) !== before) this._repaintNodes();
+          }).catch(() => { this._cands.loading[key] = 0; });
+      }
+      return this._cands.by[key] || [];
+    },
+    _missing(res, endpoint) {
+      return (res && res.__status === 404)
+        ? `this server has no ${endpoint} endpoint yet — the graph is saved, but nothing ran`
+        : errMsg(res);
+    },
+    /* Look at a picture properly.
+     *
+     * A candidate thumbnail is about 90px. Asking someone to choose between
+     * four generations at that size is asking them to guess, which defeats the
+     * pick node entirely — so any image in the Studio opens full size here.
+     * Click anywhere, or press Escape, to close. */
+    zoom(src) {
+      if (!src) { toast("no image to show", true); return; }
+      let box = document.getElementById("wf-zoom");
+      if (!box) {
+        box = document.createElement("div");
+        box.id = "wf-zoom";
+        box.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;"
+          + "align-items:center;justify-content:center;background:rgba(6,8,11,.92);"
+          + "cursor:zoom-out;padding:28px";
+        box.innerHTML = `<img style="max-width:96vw;max-height:92vh;object-fit:contain;
+             image-rendering:pixelated;border-radius:10px;
+             box-shadow:0 18px 60px rgba(0,0,0,.6)">`;
+        box.addEventListener("click", () => box.remove());
+        document.addEventListener("keydown", function esc(e) {
+          if (e.key === "Escape") {
+            const live = document.getElementById("wf-zoom");
+            if (live) live.remove();
+            document.removeEventListener("keydown", esc);
+          }
+        });
+        document.body.appendChild(box);
+      }
+      // pixelated: this project's art direction is pixel art, and a browser
+      // smoothing it on the way up is the one thing you must not judge it by.
+      box.querySelector("img").src = src;
+    },
+
+    async _ensureRun() {
+      if (this._run && this._run.status === "running") return this._run;
+      await this.save(true);
+      const plan = this._compile(this._serialize());
+      if (!plan.nodes.some(n => n.seat || n.kind === "consistency" || n.kind === "generate")) {
+        toast("no runnable step in this workflow", true); return null;
+      }
+      // manual: this run exists to host single-node executions. dispatch is off
+      // so opening it never starts work the user did not ask for.
+      const res = await post("/api/workflows/runs", Object.assign({ dispatch: false, manual: true }, plan));
+      const run = data(res);
+      if (!run) { toast(errMsg(res), true); return null; }
+      this._paint(run);
+      return run;
+    },
+    /* Run exactly one node. */
+    async runNode(nodeId) {
+      const nc = this._nc;
+      const cn = nc && nc.nodes.get(nodeId);
+      const run = await this._ensureRun();
+      if (!run) return null;
+      if (cn) { cn.status = "running"; cn.badge = this._badgeFor(cn, "running"); nc._renderNode(cn); }
+      const res = await post(
+        `/api/workflows/runs/${run.id}/nodes/${encodeURIComponent(nodeId)}/run`, {});
+      const out = data(res);
+      if (!out) {
+        if (cn) { cn.status = ""; nc._renderNode(cn); }
+        toast(this._missing(res, "per-node run (POST /api/workflows/runs/{run}/nodes/{node}/run)"), true);
+        return null;
+      }
+      if (out.nodes) this._paint(out); else { this.mediaLoad(true); this._repaintNodes(); }
+      this._track(run.id);
+      return out;
+    },
+    /* Resolve a pick node. `artifactId` empty means the human rejected every
+       candidate — a picker you cannot say no in is a rubber stamp. */
+    async pickCandidate(nodeId, artifactId) {
+      if (!this._run) { toast("nothing has run yet — run the model nodes first", true); return null; }
+      // The engine takes an artifact id, or an explicit refusal of all of them.
+      const body = artifactId ? { artifact_id: Number(artifactId) } : { reject: true };
+      const res = await post(
+        `/api/workflows/runs/${this._run.id}/nodes/${encodeURIComponent(nodeId)}/pick`, body);
+      const out = data(res);
+      if (!out) {
+        toast(this._missing(res, "pick (POST /api/workflows/runs/{run}/nodes/{node}/pick)"), true);
+        return null;
+      }
+      if (out.nodes) this._paint(out); else this._repaintNodes();
+      if (out.status === "running") this._track(out.id || this._run.id);
+      return out;
+    },
+
     _inspect(node) {
       const insp = document.getElementById("wf-insp"); if (!insp) return;
       if (!node) { insp.innerHTML = `<div class="wf-insp-empty">Select a step to configure it.</div>`; return; }
@@ -664,7 +1083,7 @@
       await this.save(true);                     // the run snapshots what is saved
       const wf = this._serialize();
       const plan = this._compile(wf);
-      if (!plan.nodes.some(n => n.seat || n.kind === "consistency")) { toast("no agent/generation steps to run", true); return; }
+      if (!plan.nodes.some(n => n.seat || n.kind === "consistency" || n.kind === "generate")) { toast("no agent/generation steps to run", true); return; }
       if (this._run && this._run.status === "running") { toast("this workflow is already running", true); return; }
       const res = await post("/api/workflows/runs", Object.assign({ dispatch: true }, plan));
       const run = data(res);
@@ -698,7 +1117,13 @@
           if (before[n.node_id] === n.status) return;      // repaint only what moved
           moved = true;
           const cn = this._nc.nodes.get(n.node_id);
-          if (cn) { cn.badge = STATUS_LABEL[n.status] || n.status; this._nc._renderNode(cn); }
+          if (cn) {
+            // The border carries the status on every node; the badge only does
+            // when the step has not claimed it for something more useful.
+            cn.status = n.status;
+            cn.badge = this._badgeFor(cn, n.status);
+            this._nc._renderNode(cn);
+          }
         });
       }
       // A step that finished has produced pictures and spent money: re-read the
@@ -796,8 +1221,8 @@
        by looking at it. A name that resolves to no pin says so. */
     body: n => {
       const ref = (n.config && n.config.ref) || "";
-      if (!ref) return WF.refCard("", "pick a pinned reference");
-      if (!WF.refRel(ref)) return WF.refCard("", `“${ref}” is not a pinned reference`);
+      if (!ref) return WF.refCard("", "pick a reference — a pin, a sprite sheet, or an artifact");
+      if (!WF.refRel(ref)) return WF.refCard("", `“${ref}” does not resolve to anything in this project`);
       return WF.refCard(ref, "");
     },
     config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference — the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`
@@ -860,6 +1285,11 @@
       .wf-row label{color:var(--ash);font-size:12px}
       .wf-row input,.wf-row select,.wf-ta{background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:12px;padding:6px 8px}
       .wf-ta{width:100%;min-height:60px;resize:vertical;margin-top:6px}
+      .wf-refgroup{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ash);margin:9px 0 5px}
+      .wf-refgroup b{color:var(--ember);font-weight:600}
+      .wf-refrow{display:flex;flex-wrap:wrap;gap:7px}
+      .wf-refsearch input{width:100%;background:var(--iron);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font-size:11.5px;padding:5px 8px;margin-bottom:4px}
+      .wf-refpick{max-height:280px;overflow:auto}
       .wf-refpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:7px;margin:8px 0}
       .wf-refcard{display:flex;flex-direction:column;gap:3px;padding:5px;background:var(--plate);border:1px solid var(--seam);border-radius:8px;cursor:pointer;color:var(--bone);font:inherit;text-align:left}
       .wf-refcard:hover{border-color:var(--ember)}
@@ -875,6 +1305,23 @@
          beat one arbitrary pick */
       .wf-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:4px;margin:2px 0 4px}
       .wf-strip img{width:100%;height:46px;object-fit:cover;background:#000;border:1px solid var(--seam);border-radius:5px}
+      /* per-node run + candidate picking (model comparison steps) */
+      .wf-act{display:flex;gap:6px;margin:7px 0 3px}
+      .wf-run1{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+        background:var(--iron);border:1px solid var(--seam);border-radius:7px;color:var(--bone);
+        font:inherit;font-size:11px;padding:5px 8px;cursor:pointer}
+      .wf-run1:hover{border-color:var(--ember);color:var(--ember)}
+      .wf-run1[disabled]{opacity:.5;cursor:default}
+      .wf-run1.ghost{flex:none}
+      .wf-cands{display:grid;grid-template-columns:repeat(auto-fit,minmax(64px,1fr));gap:5px;margin:5px 0}
+      .wf-cand{position:relative;padding:0;background:#000;border:1px solid var(--seam);
+        border-radius:6px;cursor:pointer;overflow:hidden;line-height:0}
+      .wf-cand img{width:100%;height:56px;object-fit:cover;display:block}
+      .wf-cand:hover{border-color:var(--ember)}
+      .wf-cand.won{border-color:var(--good);box-shadow:0 0 0 1px var(--good)}
+      .wf-cand-n{position:absolute;left:3px;bottom:3px;font-family:var(--mono);font-size:8.5px;
+        color:var(--bone);background:rgba(0,0,0,.65);border-radius:3px;padding:0 4px;line-height:1.5}
+      .wf-warn{font-size:10.5px;color:var(--warn);line-height:1.4;margin:4px 0}
       /* the workflow's money, on the builder chrome */
       .wf-total{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--ash);
         border:1px solid var(--seam);border-radius:20px;padding:2px 9px;white-space:nowrap}

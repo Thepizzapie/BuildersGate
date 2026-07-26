@@ -47,6 +47,15 @@ CAPABILITIES: dict[str, dict] = {
     "background": {"style_refs": True,  "sheet": False},
     "tile":       {"style_refs": True,  "sheet": False},
     "ui":         {"style_refs": False, "sheet": False},
+    # The rest of the pipeline already spoke these (chroma.KEYED_KINDS) while
+    # the ladder did not, so the node's "what are you making?" list was missing
+    # the thing this tool exists to make: a sprite sheet.
+    "sheet":      {"style_refs": True,  "sheet": True},   # several frames, one image
+    "gear":       {"style_refs": True,  "sheet": True},   # an aligned layer over a body sheet
+    "sprite":     {"style_refs": True,  "sheet": False},  # one frame
+    "portrait":   {"style_refs": True,  "sheet": False},
+    "prop":       {"style_refs": True,  "sheet": False},
+    "icon":       {"style_refs": True,  "sheet": False},
 }
 
 # (provider, model) per kind per tier. Two providers on purpose — gpt-image
@@ -85,6 +94,33 @@ LADDERS: dict[str, dict[str, tuple[str, str]]] = {
     "ui":         {"draft":    ("krea", "z-image"),
                    "standard": ("krea", "imagen-4-fast"),
                    "hero":     ("krea", "imagen-4")},
+
+    # Multi-frame work. Same floor as `animation` and for the same measured
+    # reason: nothing cheaper can lay out several frames in one image, so the
+    # cheap rungs are not offered rather than offered and disappointing.
+    "sheet":      {"draft":    ("krea", "krea-2-medium"),
+                   "standard": ("krea", "krea-2-large"),
+                   "hero":     ("krea", "krea-2-large")},
+    "gear":       {"draft":    ("krea", "krea-2-medium"),
+                   "standard": ("krea", "krea-2-large"),
+                   "hero":     ("krea", "krea-2-large")},
+
+    # Single frames that must stay on-model — identity matters, layout does not.
+    "sprite":     {"draft":    ("krea", "krea-2-medium"),
+                   "standard": ("krea", "krea-2-large"),
+                   "hero":     ("krea", "krea-2-large")},
+    "portrait":   {"draft":    ("krea", "krea-2-medium"),
+                   "standard": ("krea", "krea-2-large"),
+                   "hero":     ("krea", "krea-2-large")},
+
+    # Objects. Cheap sweeps are genuinely useful here — a prop that misses is
+    # thrown away, not re-anchored.
+    "prop":       {"draft":    ("krea", "flux-1-dev"),
+                   "standard": ("krea", "krea-2-medium"),
+                   "hero":     ("krea", "krea-2-large")},
+    "icon":       {"draft":    ("krea", "flux-1-dev"),
+                   "standard": ("krea", "krea-2-medium"),
+                   "hero":     ("krea", "krea-2-large")},
 }
 
 DEFAULT_TIER = "standard"

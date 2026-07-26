@@ -640,6 +640,17 @@ _MIGRATIONS: list = [
     """
     ALTER TABLE playtest_item ADD COLUMN t_end REAL NOT NULL DEFAULT 0;
     """,
+    # 0013 — what a workflow node PRODUCED, not just whether it finished.
+    #
+    # Only status was ever persisted, so a node could not hand anything to the
+    # next one: an LLM step that writes a prompt had nowhere to put the prompt,
+    # and a human picking between candidates had nowhere to put the choice. The
+    # value a node produced is small and heterogeneous (a string, a list of
+    # artifact ids, one chosen id), so it lands as one JSON blob rather than a
+    # column per shape.
+    """
+    ALTER TABLE workflow_run_node ADD COLUMN output_json TEXT NOT NULL DEFAULT '{}';
+    """,
 ]
 
 

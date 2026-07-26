@@ -115,6 +115,78 @@ def approve_gate(run_id: int, node_id: str, request: Request,
     return api.ok(run)
 
 
+@router.post("/runs/{run_id}/nodes/{node_id}/run")
+def run_one_node(run_id: int, node_id: str, request: Request,
+                 payload: Optional[dict] = None) -> dict:
+    """Run exactly this node and stop — the ▶ on a node card.
+
+    Nothing cascades: this is the step-by-step mode the multi-model comparison
+    needs, where a human fans out, looks, picks, and only then continues. A node
+    whose inputs are not satisfied is refused with which parent is missing
+    rather than started on nothing.
+    """
+    payload = payload or {}
+    r = root()
+    dispatch = payload.get("dispatch")
+    if dispatch is not None:
+        dispatch = bool(dispatch) and api.dispatch_enabled()
+    try:
+        run = _workflows.run_node(r, run_id, node_id,
+                                  actor=api.current_actor(request),
+                                  dispatch=dispatch)
+    except LookupError as exc:
+        raise api.not_found(str(exc), run_id=run_id, node_id=node_id)
+    except ValueError as exc:
+        raise api.conflict(str(exc), run_id=run_id, node_id=node_id)
+    return api.ok(run)
+
+
+@router.get("/runs/{run_id}/nodes/{node_id}/candidates")
+def node_candidates(run_id: int, node_id: str) -> dict:
+    """What a pick node is choosing between — a picker with nothing to look at
+    is a dialog box."""
+    try:
+        return api.ok(_workflows.candidates(root(), run_id, node_id))
+    except LookupError as exc:
+        raise api.not_found(str(exc), run_id=run_id, node_id=node_id)
+
+
+@router.post("/runs/{run_id}/nodes/{node_id}/pick")
+def pick_candidate(run_id: int, node_id: str, request: Request,
+                   payload: Optional[dict] = None) -> dict:
+    """Resolve a pick to a choice. body: ``{artifact_id}`` or ``{reject:true, note?}``.
+
+    Human-only at both layers — here, and again inside the engine. A machine
+    choosing which of its own outputs to promote is the failure the art-QA
+    router already exists to prevent.
+    """
+    payload = payload or {}
+    r = root()
+    actor = api.current_actor(request)
+    api.require_human(actor, "picking a workflow candidate")
+    reject = bool(payload.get("reject"))
+    artifact_id = payload.get("artifact_id")
+    if not reject:
+        try:
+            artifact_id = int(artifact_id)
+        except (TypeError, ValueError):
+            raise api.bad_request(
+                "artifact_id must be the id of one of this node's candidates "
+                "(or pass reject=true to refuse them all)")
+    try:
+        run = _workflows.pick(r, run_id, node_id,
+                              artifact_id=None if reject else artifact_id,
+                              reject=reject, actor=actor,
+                              note=str(payload.get("note") or ""))
+    except LookupError as exc:
+        raise api.not_found(str(exc), run_id=run_id, node_id=node_id)
+    except PermissionError as exc:
+        raise api.ApiError(403, str(exc), code="forbidden")
+    except ValueError as exc:
+        raise api.conflict(str(exc), run_id=run_id, node_id=node_id)
+    return api.ok(run)
+
+
 @router.post("/runs/{run_id}/nodes/{node_id}/observe")
 def observe_node(run_id: int, node_id: str, payload: dict,
                  request: Request) -> dict:
@@ -143,3 +215,9 @@ def observe_node(run_id: int, node_id: str, payload: dict,
 def pending_gates() -> dict:
     """Every gate currently blocking a live run — the approval inbox."""
     return api.ok(_workflows.pending_gates(root()))
+
+
+@router.get("/picks")
+def pending_picks() -> dict:
+    """Every pick currently blocking a live run, with its candidates."""
+    return api.ok(_workflows.pending_picks(root()))

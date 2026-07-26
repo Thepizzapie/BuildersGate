@@ -67,6 +67,7 @@ from bgate_core import bible as _bible
 from bgate_core import playtest as _playtest
 from bgate_core import scaffold as _scaffold
 from bgate_core import canon as _canon
+from bgate_core import chroma as _chroma
 from bgate_core import causal as _causal
 from bgate_core import db as _db
 from bgate_core import lore as _lore
@@ -834,6 +835,12 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     use this for one-off illustrated pieces. transparent=True for art that
     composites over the game; false for full backdrops.
 
+    transparent=True does NOT ask the API for alpha — measured, gpt-image
+    answers that request with a gradient. It runs the KEYABLE-BACKGROUND
+    contract instead: flat chroma backdrop, keyed out, then audited. A cut that
+    comes back haloed/bled FAILS with the flag rather than being handed back as
+    a sprite with dirty alpha.
+
     filename is relative to the project's .bgate_out/art/ (e.g. "tommy_portrait.png").
     The result is archived to the preview gallery — LOOK at it before importing
     into the game with godot_import_asset.
@@ -842,10 +849,11 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         root = _Path(_root())
         out = root / ".bgate_out" / "art" / filename
         from bgate_adapters import imagegen
-        result = imagegen.generate(prompt, str(out), size=size, quality=quality,
-                                   transparent=transparent, root=root,
-                                   logical_name=_Path(filename).stem,
-                                   work_item_id=_work_item_id())
+        result = _chroma.generate(prompt, str(out), provider="openai",
+                                  keyed=bool(transparent), size=size,
+                                  quality=quality, transparent=False, root=root,
+                                  logical_name=_Path(filename).stem,
+                                  work_item_id=_work_item_id())
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
             if archived:
@@ -855,6 +863,8 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                 model=result.get("model", ""), prompt=prompt,
                 metadata={"size": size, "quality": quality,
                           "transparent": transparent,
+                          "chroma": result.get("chroma"),
+                          "alpha": result.get("alpha"),
                           "preview": archived or "",
                           **imagegen.cost_meta(result)})
             if artifact:
@@ -877,18 +887,20 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
 
     ref_images: PINNED REFERENCE NAMES (see ref_list — preferred) or absolute
     paths. filename lands under the project's .bgate_out/art/. Result is
-    archived to the gallery — LOOK at it. Note: transparent output requires
-    gpt-image-1 (gpt-image-2 rejects it).
+    archived to the gallery — LOOK at it. transparent=True runs the
+    keyable-background contract (flat chroma backdrop -> keyed -> audited), not
+    the API's background=transparent, which does not reliably return alpha.
     """
     try:
         root = _Path(_root())
         out = root / ".bgate_out" / "art" / filename
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
-        result = imagegen.edit(prompt, resolved, str(out), size=size,
-                               quality=quality, transparent=transparent,
-                               root=root, logical_name=_Path(filename).stem,
-                               work_item_id=_work_item_id())
+        result = _chroma.generate(prompt, str(out), provider="openai",
+                                  keyed=bool(transparent), ref_paths=resolved,
+                                  size=size, quality=quality, transparent=False,
+                                  root=root, logical_name=_Path(filename).stem,
+                                  work_item_id=_work_item_id())
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"edit-{_Path(filename).stem}")
             if archived:
@@ -898,6 +910,8 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
                 model=result.get("model", ""), prompt=prompt, refs=ref_images,
                 metadata={"resolved_refs": resolved, "size": size,
                           "quality": quality, "transparent": transparent,
+                          "chroma": result.get("chroma"),
+                          "alpha": result.get("alpha"),
                           "preview": archived or "",
                           **imagegen.cost_meta(result)})
             if artifact:
@@ -986,26 +1000,34 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     """Generate one item from a variant spec, then archive + track + manifest.
 
     A single spec (from items.plan_variants) carries its own prompt, so this is
-    pure I/O: paint it transparent, register provenance, track the binary so the
-    QA gate and dashboard see it, and drop the JSON bridge record the equip
-    system reads. Returns the per-item result; failures are reported, not raised,
-    so one bad variant never sinks a batch."""
+    pure I/O: paint it on a keyable backdrop, key + audit it to real alpha,
+    register provenance, track the binary so the QA gate and dashboard see it,
+    and drop the JSON bridge record the equip system reads. Returns the per-item
+    result; failures are reported, not raised, so one bad variant never sinks a
+    batch.
+
+    Gear is a LAYER — it hangs on a fighter, so its background is not part of
+    the asset. That makes it sprite-shaped and it goes through the keyable
+    contract: the items STYLE clause asks for "fully transparent background",
+    which is a wish no model in either provider grants."""
     from bgate_adapters import imagegen
     rel = _items.rel_art_path(spec["item_class"], spec["name"])
     out = root / rel
-    result = imagegen.generate(spec["prompt"], str(out), quality=quality,
-                               transparent=True, root=root,
-                               logical_name=spec["name"],
-                               work_item_id=_work_item_id())
+    result = _chroma.generate(spec["prompt"], str(out), provider="openai",
+                              task_kind="item", quality=quality, root=root,
+                              logical_name=spec["name"],
+                              work_item_id=_work_item_id())
     if not result.get("ok"):
         return {"ok": False, "name": spec["name"], "error": result.get("error"),
-                "prompt": spec["prompt"]}
+                "alpha": result.get("alpha"), "prompt": spec["prompt"]}
 
     archived = _archive_preview(result["path"], f"item-{spec['name']}")
     _register_artifact(spec["name"], result["path"], producer="item_generate",
                        model=result.get("model", ""), prompt=spec["prompt"],
                        metadata={"item_class": spec["item_class"],
                                  "slot": spec["slot"], "params": spec["params"],
+                                 "chroma": result.get("chroma"),
+                                 "alpha": result.get("alpha"),
                                  "preview": archived or "",
                                  **imagegen.cost_meta(result)})
     try:
@@ -1313,77 +1335,16 @@ def _reference_sanity(path):
         return True, f"sanity check skipped: {type(exc).__name__}"
 
 
-# Chroma-key candidates. Generating on a solid backdrop the character never uses,
-# then keying it out, keeps white/light interiors (eyes) OPAQUE — gpt-image's
-# transparent mode punched those to holes. The color is chosen per character so it
-# never collides with the art (Tommy has green features -> green screen would eat
-# them; magenta wins).
-_CHROMA = [("magenta", (255, 0, 255)), ("green", (0, 255, 0)),
-           ("cyan", (0, 255, 255)), ("blue", (0, 64, 255)), ("yellow", (255, 235, 0))]
-
-
-def _pick_chroma(ref_path):
-    """Pick the chroma color FARTHEST from the character's own palette."""
-    try:
-        from PIL import Image as _Img
-        im = _Img.open(ref_path).convert("RGBA"); im.thumbnail((128, 128))
-        px = [(r, g, b) for r, g, b, a in im.getdata() if a > 60]
-        if not px:
-            return _CHROMA[0]
-        q = _Img.new("RGB", (len(px), 1)); q.putdata(px); q = q.quantize(10)
-        pal = q.getpalette()[:30]
-        doms = [tuple(pal[i * 3:i * 3 + 3]) for i in range(10)]
-        best, best_d = _CHROMA[0], -1.0
-        for nm, c in _CHROMA:
-            d = min(sum((a - b) ** 2 for a, b in zip(c, dom)) ** 0.5 for dom in doms)
-            if d > best_d:
-                best_d, best = d, (nm, c)
-        return best
-    except Exception:
-        return _CHROMA[0]
-
-
-def _chroma_key(img, chroma, tol=125, despill=185):
-    """Key a solid chroma backdrop to transparent, in place, with edge despill.
-    Distance-based; safe because the chroma is auto-picked far from the art.
-
-    Whole-band Pillow math, not a per-pixel loop. This runs on every generated
-    pose at 1024x1536 — 1.6M pixels, and the Python loop it replaces cost
-    seconds of pure interpreter time per frame while holding a worker thread.
-    Comparing SQUARED distance keeps it in integer bands (no sqrt, which
-    ImageMath has no function for) and the ordering is identical, so the same
-    pixels are keyed as before.
-    """
-    from PIL import Image as _I, ImageChops as _IC, ImageMath as _IM
-
-    # unsafe_eval is ImageMath.eval renamed in Pillow 10.3 (the old name warns).
-    ev = getattr(_IM, "unsafe_eval", None) or _IM.eval
-    cr, cg, cb = chroma
-    near, band = tol * tol, despill * despill
-    r, g, b, a = img.split()
-    d2 = ev("(r-cr)*(r-cr)+(g-cg)*(g-cg)+(b-cb)*(b-cb)",
-            r=r, g=g, b=b, cr=cr, cg=cg, cb=cb)
-    # *255: an ImageMath comparison yields 1, and a mask of 1 is a 1/255 blend —
-    # it looks like the key silently did almost nothing.
-    keyed = ev("convert((d2 < near) * 255, 'L')", d2=d2, near=near)
-    fringe = ev("convert(min(d2 >= near, d2 < band) * 255, 'L')",
-                d2=d2, near=near, band=band)
-    # int() before convert() so the halving floors exactly like the // it
-    # replaces — an F->L convert would be free to land a pixel one step off.
-    grey = ev("convert(int((r+g+b)/3), 'L')", r=r, g=g, b=b)
-    softened = _I.merge("RGB", tuple(
-        ev("convert(int((c+m)/2), 'L')", c=c, m=grey) for c in (r, g, b)))
-    img.paste(softened, (0, 0), fringe)
-    # RGB:=0 under the key, not just alpha:=0. Leaving the chroma color sitting
-    # under transparent pixels is exactly the "dirty alpha" consistency_check
-    # auto-fails on, and it fringes green/magenta the moment anything rescales.
-    img.paste((0, 0, 0, 0), (0, 0), keyed)
-    # Alpha LAST: the paste above is RGB-only in intent but Pillow promotes the
-    # source to RGBA, so anything written to alpha before it would be lost.
-    # Subtracting the 255-valued key mask clamps the keyed pixels to alpha 0 and
-    # leaves every other pixel's alpha exactly where it was.
-    img.putalpha(_IC.subtract(a, keyed))
-    return img
+# Chroma keying MOVED to bgate_core.chroma — it is a contract now, not a local
+# trick. Generating on a solid backdrop the character never uses and keying it
+# out is the ONLY way either provider yields alpha (gpt-image's transparent mode
+# returns gradients and punches eye-whites to holes; Krea has no alpha parameter
+# at all), so the picking + prompt clause + keying + audit had to live somewhere
+# both providers can reach. These names stay as thin aliases: the sprite tool
+# below and tests/test_mcp_adjust.py both call them.
+_CHROMA = _chroma.CHROMA
+_pick_chroma = _chroma.pick
+_chroma_key = _chroma.key
 
 
 @_tool
@@ -1485,35 +1446,59 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             ref_path = str(art_dir / "reference.png")
 
             def _gen_ref():
-                r = imagegen.generate(
+                # The anchor is sprite-shaped, so it goes through the keyable
+                # contract like every pose does. It used to ask gpt-image for
+                # background=transparent and take whatever came back — measured
+                # 2026-07-25, that is a brown gradient with holes where the eyes
+                # should be, and every pose then inherited a dirty anchor.
+                r = _chroma.generate(
                     character_prompt + " Exactly one character, full body head to "
-                    "toe, neutral idle stance, centered, fully transparent "
-                    "background, no text, no logo, no ground shadow.",
-                    ref_path, size="1024x1536", quality=ref_quality,
-                    transparent=True, root=root, logical_name=name,
-                    work_item_id=_work_item_id(), timeout=call_timeout)
+                    "toe, neutral idle stance, centered, no text, no logo, no "
+                    "ground shadow.",
+                    ref_path, provider="openai", task_kind="anchor",
+                    size="1024x1536", quality=ref_quality, root=root,
+                    logical_name=name, work_item_id=_work_item_id(),
+                    timeout=call_timeout)
                 _tally(r)
-                if r.get("ok"):
+                result["reference_chroma"] = r.get("chroma")
+                result["reference_alpha"] = r.get("alpha")
+                if r.get("ok") or r.get("rejected_path"):
+                    # Archive the preview even for an alpha rejection — the
+                    # whole value of failing loudly is that someone can LOOK at
+                    # the backdrop the model painted instead of guessing.
                     result["reference_preview"] = _archive_preview(
                         ref_path, f"ref-{name}")
                 return r
 
+            def _ref_gate(r):
+                """One verdict over both anchor gates: did the flat backdrop
+                actually key clean (chroma audit), and is this a cut-out figure
+                rather than a filled frame (structural sanity)?
+
+                A provider failure is NOT this gate's business — it returns
+                stage 'reference' below, because "the API refused" and "the
+                model painted something unusable" need different fixes.
+                """
+                if not r.get("ok"):
+                    return False, str(r.get("error") or "generation failed")
+                return _reference_sanity(ref_path)
+
             ref = _gen_ref()
-            if not ref.get("ok"):
+            if not ref.get("ok") and not ref.get("rejected_path"):
                 return {"ok": False, "stage": "reference", **ref}
             # REFERENCE GATE: validate the anchor and re-roll it BEFORE paying
             # for N poses. A broken reference makes every pose broken — every one
             # fails the pose gate, every one gets retried, and the run costs ~2N
             # against garbage. Catch it here at ~1 spend. A passed-in ref_image is
             # already approved and skips this.
-            ok_ref, ref_reason = _reference_sanity(ref_path)
+            ok_ref, ref_reason = _ref_gate(ref)
             rtries = max(0, int(max_retries))
             while not ok_ref and rtries > 0:
                 rtries -= 1
                 ref = _gen_ref()
-                if not ref.get("ok"):
+                if not ref.get("ok") and not ref.get("rejected_path"):
                     return {"ok": False, "stage": "reference", **ref}
-                ok_ref, ref_reason = _reference_sanity(ref_path)
+                ok_ref, ref_reason = _ref_gate(ref)
             result["reference_gate"] = {"ok": ok_ref, "reason": ref_reason}
             if not ok_ref:
                 return {"ok": False, "stage": "reference_gate",
@@ -1540,14 +1525,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             anim_counts[p["name"].split("/", 1)[0]] = \
                 anim_counts.get(p["name"].split("/", 1)[0], 0) + 1
         pose_desc: dict[str, str] = {}
-        # STAGE 1 — pick a chroma backdrop this character never uses.
-        chroma_name, chroma_rgb = _pick_chroma(ref_path)
-        result["chroma"] = chroma_name
+        # The keyable-background contract does the whole dance now — pick a key
+        # colour this character never uses, demand a flat backdrop of it, key it
+        # out, and AUDIT the cut. The audit is why a pose can now fail here: a
+        # frame with a halo or background bleed used to be shipped and only
+        # caught (maybe) at consistency_check, after the sheet was assembled.
+        result["chroma"] = _chroma.pick_report(ref_path)
 
         def _edit_pose(desc, refs, out_png):
-            # STAGE 2 — generate the pose on a FLAT chroma backdrop (opaque), so
-            # white interiors (eyes) stay solid instead of being punched transparent.
-            got = imagegen.edit(
+            got = _chroma.generate(
                 "This exact character from the reference image"
                 + (" (shown again in the other image(s) in different poses of "
                    "the same motion)" if len(refs) > 1 else "")
@@ -1558,24 +1544,13 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 "the body between frames; ONLY the pose changes"
                 f" — now in this stance: {desc}. ONE single full-body "
                 "character head to toe, exactly one figure, no text, no cropping of "
-                f"limbs. Place the character on a COMPLETELY FLAT SOLID pure "
-                f"{chroma_name} background (RGB {chroma_rgb[0]},{chroma_rgb[1]},"
-                f"{chroma_rgb[2]}), the entire background filled edge-to-edge with "
-                "that one flat color, NO gradient, NO shadow, NO other objects."
+                "limbs."
                 + identity,
-                refs, out_png, size="1024x1536", quality=quality,
-                transparent=False, root=root, logical_name=name,
+                out_png, provider="openai", task_kind="animation",
+                ref_paths=[str(r) for r in refs], size="1024x1536",
+                quality=quality, root=root, logical_name=name,
                 work_item_id=_work_item_id(), timeout=call_timeout)
             _tally(got)
-            # STAGE 3 — key the chroma backdrop out to clean transparency.
-            if got.get("ok"):
-                try:
-                    from PIL import Image as _I
-                    im = _I.open(out_png).convert("RGBA")
-                    _chroma_key(im, chroma_rgb)
-                    im.save(out_png)
-                except Exception:
-                    pass
             return got
 
         def _stop_reason(next_cost: float) -> str:
@@ -2258,102 +2233,14 @@ def consistency_check(candidate_path: str, character: str) -> dict:
             checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
 
         # ALPHA / TRANSPARENCY TRIPWIRE (automated — the palette check above is
-        # blind to transparency because it samples only a>64). gpt-image leaves
-        # white halos, feathered fringes, opaque background bleed, dirty RGB under
-        # zero alpha, and hollow interiors that a checklist-by-eye keeps missing.
-        # These are measured, not guessed at, and any flag is a hard fail.
-        def _alpha_flags(path):
-            im = Image.open(path).convert("RGBA")
-            im.thumbnail((256, 256))
-            W, H = im.size
-            px = im.load()
-            border = border_op = soft = opaque = softc = whal = 0
-            dirty = transp = 0
-            xs0 = ys0 = 10 ** 9
-            xs1 = ys1 = -1
-            for y in range(H):
-                for x in range(W):
-                    r, g, b, a = px[x, y]
-                    edge = (x == 0 or y == 0 or x == W - 1 or y == H - 1)
-                    if edge:
-                        border += 1
-                        if a > 32:
-                            border_op += 1
-                    if a >= 224:
-                        opaque += 1
-                    if 24 < a < 224:
-                        soft += 1
-                    if 24 < a < 240:
-                        softc += 1
-                        if r > 228 and g > 228 and b > 228:
-                            whal += 1
-                    if a <= 8:
-                        transp += 1
-                        if r > 16 or g > 16 or b > 16:
-                            dirty += 1
-                    if a > 32:
-                        xs0 = min(xs0, x); xs1 = max(xs1, x)
-                        ys0 = min(ys0, y); ys1 = max(ys1, y)
-            border_opaque = border_op / max(1, border)
-            soft_ratio = soft / max(1, opaque + soft)
-            white_fringe = whal / max(1, softc)
-            dirty_alpha = dirty / max(1, transp)
-            # HOLLOW = transparent ENCLOSED by opaque (a real hole), not the open
-            # gaps between spread limbs. Flood-fill transparency inward from the
-            # frame border; whatever transparency it can't reach is enclosed.
-            seen = bytearray(W * H)
-            stack = []
-            for x in range(W):
-                for y in (0, H - 1):
-                    i = y * W + x
-                    if px[x, y][3] <= 16 and not seen[i]:
-                        seen[i] = 1; stack.append((x, y))
-            for y in range(H):
-                for x in (0, W - 1):
-                    i = y * W + x
-                    if px[x, y][3] <= 16 and not seen[i]:
-                        seen[i] = 1; stack.append((x, y))
-            while stack:
-                x, y = stack.pop()
-                for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-                    if 0 <= nx < W and 0 <= ny < H:
-                        i = ny * W + nx
-                        if not seen[i] and px[nx, ny][3] <= 16:
-                            seen[i] = 1; stack.append((nx, ny))
-            enclosed = sum(1 for y in range(H) for x in range(W)
-                           if px[x, y][3] <= 16 and not seen[y * W + x])
-            hollow = enclosed / max(1, opaque)
-
-            # HARD flags (auto-fail): these read ~0 on a clean transparent sprite.
-            flags = []
-            if border_opaque > 0.06:
-                flags.append(f"background bleed: {border_opaque:.0%} of the frame "
-                             "border is opaque — sprite not isolated on transparency")
-            if white_fringe > 0.20:
-                flags.append(f"white halo: {white_fringe:.0%} of soft-edge pixels are "
-                             "near-white — feathered white fringe around the sprite")
-            if soft_ratio > 0.35:
-                flags.append(f"feathered alpha: {soft_ratio:.0%} soft/partial-alpha — "
-                             "edges aren't crisp (gpt-image halo)")
-            if dirty_alpha > 0.15:
-                flags.append(f"dirty alpha: {dirty_alpha:.0%} of transparent pixels "
-                             "carry nonzero RGB — clean RGB:=0 where alpha==0")
-            # SOFT (advisory): enclosed gaps can be legit (a curled arm), so flag
-            # for a human look rather than auto-failing.
-            review = []
-            if hollow > 0.05:
-                review.append(f"possible hole: {hollow:.0%} of the figure is "
-                              "transparent area ENCLOSED by the sprite — look for an "
-                              "empty/holed region (vs. intended open gaps)")
-            return {"border_opaque": round(border_opaque, 3),
-                    "white_fringe": round(white_fringe, 3),
-                    "soft_alpha": round(soft_ratio, 3),
-                    "dirty_alpha": round(dirty_alpha, 3),
-                    "hollow": round(hollow, 3),
-                    "flags": flags, "review": review, "clean": not flags}
-
+        # blind to transparency because it samples only a>64). White halos,
+        # feathered fringes, opaque background bleed, dirty RGB under zero alpha
+        # and hollow interiors are what a checklist-by-eye keeps missing. The
+        # measurements live in bgate_core.chroma.audit, which is the SAME code
+        # the keyable path gates on at generation time — a frame cannot pass one
+        # and fail the other.
         try:
-            alpha = _alpha_flags(candidate_path)
+            alpha = _chroma.audit(candidate_path)
         except Exception as ae:
             alpha = {"flags": [], "clean": None, "error": str(ae)}
 

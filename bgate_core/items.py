@@ -90,6 +90,54 @@ ITEM_CLASSES: dict[str, dict] = {
 
 SLOTS = tuple(dict.fromkeys(c["slot"] for c in ITEM_CLASSES.values()))
 
+# Placeholder proportions per class, as fractions of a sprite CELL's height.
+# Lives here rather than in bgate_core/gear.py because it is taxonomy, not
+# rendering: how long a thing reads in the hand is a property of the class, the
+# same way `framing` is. gear.py stamps whatever shape the class declares, so a
+# dagger placeholder never reads as a maul and a reviewer can tell at a glance
+# which slot an un-drawn action belongs to. (length, width) — width is the bar's
+# thickness across the grip.
+GEAR_SHAPES: dict[str, tuple[float, float]] = {
+    "main_hand": (0.42, 0.09),
+    "off_hand": (0.30, 0.13),   # shorter and stubbier: shield/buckler/dagger
+    "ranged": (0.50, 0.07),     # long and thin: bow/wand read as a line
+    "throwable": (0.16, 0.16),  # compact and roughly square, mid-tumble
+    "head": (0.18, 0.20),
+    "body": (0.26, 0.22),
+    "feet": (0.14, 0.18),
+    "consumable": (0.14, 0.12),
+}
+
+
+def gear_shape(item_class: str) -> tuple[float, float]:
+    """(length, width) of a class's placeholder glyph, in cell-height fractions."""
+    _class(item_class)
+    return GEAR_SHAPES.get(item_class, (0.35, 0.10))
+
+# Placeholder proportions per class, as fractions of a sprite CELL's height.
+# Lives here rather than in bgate_core/gear.py because it is taxonomy, not
+# rendering: how long a thing reads in the hand is a property of the class, the
+# same way `framing` is. gear.py stamps whatever shape the class declares, so a
+# dagger placeholder never reads as a maul and a reviewer can tell at a glance
+# which slot an un-drawn action belongs to. (length, width) — width is the bar's
+# thickness across the grip.
+GEAR_SHAPES: dict[str, tuple[float, float]] = {
+    "main_hand": (0.42, 0.09),
+    "off_hand": (0.30, 0.13),   # shorter and stubbier: shield/buckler/dagger
+    "ranged": (0.50, 0.07),     # long and thin: bow/wand read as a line
+    "throwable": (0.16, 0.16),  # compact and roughly square, mid-tumble
+    "head": (0.18, 0.20),
+    "body": (0.26, 0.22),
+    "feet": (0.14, 0.18),
+    "consumable": (0.14, 0.12),
+}
+
+
+def gear_shape(item_class: str) -> tuple[float, float]:
+    """(length, width) of a class's placeholder glyph, in cell-height fractions."""
+    _class(item_class)
+    return GEAR_SHAPES.get(item_class, (0.35, 0.10))
+
 # The INVARIANT clause every item in every class shares. This is the consistency
 # rail: hold framing, light, scale, and background constant so a class of
 # variants reads as one crafted set instead of a bag of unrelated pictures.

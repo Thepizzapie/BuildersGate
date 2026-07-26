@@ -19,6 +19,15 @@ The two APIs disagree on nearly everything, and this module owns the disagreemen
     style references, $0.07 with a moodboard. So the estimate has to read the
     request, not just the model name.
 
+NO MODEL HERE RETURNS ALPHA. Not one of them takes a transparency parameter —
+check `supports` below, there is nothing to pass. So a Krea sprite is only
+possible one way: generate on a flat chroma backdrop and key it out afterwards
+(bgate_core.chroma). That is not a Krea workaround, it is the whole pipeline's
+contract — gpt-image's own background="transparent" was measured returning a
+brown gradient — but for Krea it is the ONLY path to a usable sprite, so any
+caller here doing sprite/sheet/gear work must go through chroma.generate rather
+than calling this module directly.
+
 Everything here is stdlib — no SDK. One less dependency to pin, and the surface
 we use is four HTTP calls wide.
 """

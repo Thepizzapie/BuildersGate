@@ -139,8 +139,14 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
              work_item_id: Optional[int] = None) -> dict:
     """Generate one image to out_path. Returns {ok, path, bytes, ...} or an error.
 
-    transparent=True requests a transparent background (PNG alpha) — right for
-    portraits/cards that composite over game art; wrong for full backdrops.
+    transparent=True REQUESTS a transparent background (PNG alpha). Requests it —
+    does not get it. MEASURED 2026-07-25 on a 4-frame character sheet:
+    background="transparent" came back with a brown gradient behind the
+    character, and on the runs where it does key, white interiors (eye whites)
+    come back punched to holes. Anything that must actually composite over game
+    art goes through bgate_core.chroma instead — flat keyable backdrop, keyed
+    out, audited — and this flag stays only for callers that want to try the
+    provider's own mode and can live with whatever arrives.
 
     Every result carries ``seconds`` (wall clock the call actually took) and
     ``estimated_usd`` (from IMAGE_PRICE_USD — the one price table). Pass ``root``
