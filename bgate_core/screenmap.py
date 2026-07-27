@@ -28,6 +28,12 @@ from pathlib import Path
 _EXT_RE = re.compile(
     r'\[ext_resource\s+type="(?P<type>[^"]+)"[^\]]*?path="(?P<path>res://[^"]+)"')
 _RES_LIT_RE = re.compile(r'"(res://[^"]+?\.[A-Za-z0-9]{2,5})"')
+# A path BUILT at runtime — "res://assets/props/derived/%s.png" % p["sprite"].
+# These are not exotic: every data-driven loader in a real project reaches its
+# art this way, and matching only exact literals reported the entire prop and
+# gear library as dead. The template is resolved against what is actually on
+# disk, so it can only ever mark files that exist.
+_RES_TMPL_RE = re.compile(r'"(res://[^"]*%[sdfvx][^"]*\.[A-Za-z0-9]{2,5})"')
 
 _KIND_BY_TYPE = {
     "Texture2D": "texture", "CompressedTexture2D": "texture",
@@ -46,6 +52,15 @@ _KIND_BY_SUFFIX = {
 # addons) and non-asset trees stay out of the picture.
 _ORPHAN_SUFFIXES = (".png", ".webp", ".jpg", ".svg", ".wav", ".ogg", ".mp3",
                     ".tres")
+# Trees whose contents are not part of the game. .bgate_out holds the tool's own
+# scene/sheet backups — counting a backup .tscn as a screen would double every
+# screen in the map the first time anything was wired.
+_SKIP_DIRS = frozenset({".godot", ".bgate_out", ".bgate", ".git", ".asset_work",
+                        "export", "build", "__pycache__"})
+
+
+def _skip(p: Path) -> bool:
+    return bool(_SKIP_DIRS & set(p.parts))
 
 
 def _godot_dir(root: Path) -> Path | None:
@@ -77,6 +92,7 @@ def scan(root: str | os.PathLike[str]) -> dict:
     nodes: dict[str, dict] = {}
     edges: list[dict] = []
     seen_edges: set[tuple[str, str, str]] = set()
+    templates: list[tuple[str, str]] = []      # (owner node id, template path)
 
     def add_node(res_path: str, kind: str) -> str:
         disk = res_to_disk(res_path)
@@ -99,7 +115,7 @@ def scan(root: str | os.PathLike[str]) -> dict:
 
     # --- screens: every .tscn in the project (skip .godot cache) -------------
     screens = []
-    tscns = [p for p in gd.rglob("*.tscn") if ".godot" not in p.parts]
+    tscns = [p for p in gd.rglob("*.tscn") if not _skip(p)]
     screen_ids = {f"res://{p.relative_to(gd).as_posix()}" for p in tscns}
     for tscn in sorted(tscns):
         sid = f"res://{tscn.relative_to(gd).as_posix()}"
@@ -125,8 +141,9 @@ def scan(root: str | os.PathLike[str]) -> dict:
             disk = res_to_disk(sp)
             if not disk.is_file():
                 continue
-            for lit in set(_RES_LIT_RE.findall(
-                    disk.read_text(encoding="utf-8", errors="replace"))):
+            source = disk.read_text(encoding="utf-8", errors="replace")
+            templates += [(sid, t) for t in set(_RES_TMPL_RE.findall(source))]
+            for lit in set(_RES_LIT_RE.findall(source)):
                 if lit == sp or lit in screen_ids:
                     if lit in screen_ids and lit != sid:
                         add_edge(sid, lit, "script")
@@ -141,13 +158,15 @@ def scan(root: str | os.PathLike[str]) -> dict:
     covered = {res_to_disk(n) for n, node in nodes.items()
                if node["kind"] == "script"}
     for gdfile in gd.rglob("*.gd"):
-        if ".godot" in gdfile.parts or gdfile in covered:
+        if _skip(gdfile) or gdfile in covered:
             continue
-        lits = set(_RES_LIT_RE.findall(
-            gdfile.read_text(encoding="utf-8", errors="replace")))
-        if not lits:
+        source = gdfile.read_text(encoding="utf-8", errors="replace")
+        lits = set(_RES_LIT_RE.findall(source))
+        tmpls = set(_RES_TMPL_RE.findall(source))
+        if not lits and not tmpls:
             continue
         snid = add_node(f"res://{gdfile.relative_to(gd).as_posix()}", "script")
+        templates += [(snid, t) for t in tmpls]
         for lit in lits:
             if lit == snid:
                 continue
@@ -167,6 +186,30 @@ def scan(root: str | os.PathLike[str]) -> dict:
                                                       m.group("path")))
             add_edge(nid, tid, "tres")
 
+    # --- runtime-built paths: resolve the templates against disk -------------
+    # A loader that reaches its art through "res://.../%s.png" references every
+    # file the pattern can name. Resolving against what exists means this can
+    # only mark real files, never invent one, and the edge is tagged 'template'
+    # so a reader can tell a resolved pattern from a written literal.
+    for owner, template in templates:
+        tail = template[len("res://"):]
+        if ".." in tail:
+            continue
+        pattern = re.compile(
+            "^" + re.sub(r"%[sdfvx]", "[^/]+", re.escape(tail)
+                         .replace(r"\%", "%")) + "$")
+        parent = gd / Path(tail).parent
+        if not parent.is_dir():
+            continue
+        for p in sorted(parent.iterdir()):
+            if not p.is_file() or p.name.endswith(".import"):
+                continue
+            candidate = p.relative_to(gd).as_posix()
+            if not pattern.match(candidate):
+                continue
+            nid = add_node(f"res://{candidate}", _kind_for("", candidate))
+            add_edge(owner, nid, "template")
+
     # --- orphans: assets on disk that nothing references ---------------------
     # "Derived variant" carve-out: paths built at runtime by string concat
     # (bg_market.png -> bg_market_f1.png animation frames) never appear as
@@ -180,7 +223,7 @@ def scan(root: str | os.PathLike[str]) -> dict:
     if assets_dir.is_dir():
         for p in assets_dir.rglob("*"):
             if not (p.suffix.lower() in _ORPHAN_SUFFIXES and p.is_file()
-                    and ".godot" not in p.parts
+                    and not _skip(p)
                     and not p.name.endswith(".import")
                     and str(p) not in referenced_disk):
                 continue

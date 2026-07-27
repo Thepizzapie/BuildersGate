@@ -1,0 +1,370 @@
+"""The asset library as it actually exists on disk — families, sheets, and use.
+
+The Assets workspace was a flat wall of artifact revisions: one tile per
+generated image, in creation order, with no idea whether the thing was a whole
+sprite sheet or one pose out of twelve, and no idea whether the game loads it.
+That is three separate lies of omission on one screen.
+
+  * A sheet is not an image. ``pm_paladin_walk.png`` is twelve frames of a walk
+    cycle; showing it beside ``pm_paladin_idle.png`` as two peers of equal
+    weight hides that they are one character's animation set. So the unit here
+    is the FAMILY — every file in a directory that shares a name prefix — and
+    the tile shows the sheets, not a crop of one.
+  * "Approved" is not "shipping". An artifact can be approved, on disk, and
+    referenced by nothing; the engine will never load it. Usage is derived from
+    the same screen map Atlas uses, so a family says which screens reach it and
+    which of its files reach nothing.
+  * Rigged is not a guess. A family reports how many of its sheets carry a rig
+    sidecar, because an unlabelled sheet is one the gear pipeline has to guess
+    about.
+
+Everything here is read-only and derived. No manifest, no new database table,
+nothing to keep in sync — the same reason screenmap.py exists in this shape.
+
+FAMILY DETECTION. Within one directory, stems are grouped by the longest
+underscore-prefix that at least two of them share:
+
+    pm_paladin_idle, pm_paladin_walk, pm_paladin_ko   ->  pm_paladin
+    prop_copier_ne, prop_copier_se                    ->  prop_copier
+    prop_dead_plant                                   ->  prop_dead_plant
+
+Directory-scoped on purpose: ``pm_paladin_idle.png`` under characters/ and
+under items/main_hand/animations/ are a body sheet and a gear layer, not two
+revisions of one thing, and merging them would be worse than not grouping.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Iterable, Optional
+
+from bgate_core import rigmap, screenmap
+
+IMAGE_SUFFIXES = frozenset({".png", ".webp", ".jpg", ".jpeg", ".svg"})
+AUDIO_SUFFIXES = frozenset({".ogg", ".wav", ".mp3"})
+RESOURCE_SUFFIXES = frozenset({".tres"})
+COLLECTED = IMAGE_SUFFIXES | AUDIO_SUFFIXES | RESOURCE_SUFFIXES
+
+SKIP_DIRS = frozenset({".git", ".godot", ".bgate", ".bgate_out", ".asset_work",
+                       "__pycache__", "node_modules", "export", "build",
+                       ".pytest_cache", ".qa_deps", ".qa_run_project"})
+
+# A project with tens of thousands of scratch renders must not turn one panel
+# into a minute of stat() calls. Stated in the payload when it bites.
+SCAN_CAP = 8000
+
+
+def _skip(path: Path) -> bool:
+    return bool(SKIP_DIRS & set(path.parts))
+
+
+def _kind(suffix: str) -> str:
+    if suffix in IMAGE_SUFFIXES:
+        return "image"
+    if suffix in AUDIO_SUFFIXES:
+        return "audio"
+    return "resource"
+
+
+# ---------------------------------------------------------------------------
+# Family detection
+# ---------------------------------------------------------------------------
+def _prefixes(stem: str) -> list[str]:
+    """Every underscore-prefix of a stem, longest first, excluding the bare stem."""
+    parts = stem.split("_")
+    return ["_".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]
+
+
+# A sub-variant this small, sitting under a family this large, is a facet of
+# that family rather than a family of its own — coffeepot_flail_dual_wield_main
+# and _off are two frames of the coffeepot flail, not a second weapon.
+_ABSORB_SMALL = 2
+_ABSORB_INTO = 3
+
+
+def group_stems(stems: Iterable[str]) -> dict[str, str]:
+    """stem -> family label. Three rules, in order, each fixing a real misread.
+
+    1. LONGEST SHARED PREFIX. A stem joins the longest underscore-prefix that
+       at least one other stem also has. This is what separates ``prop_copier``
+       from ``prop_conference_table`` instead of piling both under ``prop``.
+
+    2. A ONE-WORD PREFIX IS A CATEGORY, NOT A NAME. ``prop_dead_plant``,
+       ``prop_trash_can`` and ``prop_water_cooler`` share only ``prop`` — the
+       directory's subject, not an asset's identity. When a family's label is a
+       single token and no member's variant is a single token either, it is a
+       bucket rather than a thing, and its members go back to their own names.
+       ``hero_idle`` + ``hero_walk`` stay as ``hero``: those variants ARE one
+       token, which is what a family's members look like.
+
+    3. ABSORB TINY SUB-FAMILIES. Rule 1 alone splits a weapon's two dual-wield
+       frames into their own family, because those two agree on a longer prefix
+       than the other eleven. A family of <=2 whose label extends a family of
+       >=3 is a facet of it, and gets merged back. This runs LAST: run before
+       rule 2 it pulled real two-facing families into the bucket it was about
+       to shred.
+    """
+    stems = list(stems)
+    counts: dict[str, int] = {}
+    for stem in stems:
+        for prefix in set(_prefixes(stem)):
+            counts[prefix] = counts.get(prefix, 0) + 1
+
+    out: dict[str, str] = {
+        stem: next((p for p in _prefixes(stem) if counts.get(p, 0) >= 2), stem)
+        for stem in stems}
+
+    def _members() -> dict[str, list[str]]:
+        by: dict[str, list[str]] = {}
+        for stem, label in out.items():
+            by.setdefault(label, []).append(stem)
+        return by
+
+    # 2 — dissolve buckets FIRST. Doing this after the absorb pass let a real
+    # two-facing family (prop_conference_table) get pulled into the ``prop``
+    # bucket and then shredded with it.
+    for label, stems_in in _members().items():
+        if "_" in label:
+            continue
+        if any("_" not in stem[len(label):].strip("_") for stem in stems_in):
+            continue
+        for stem in stems_in:
+            out[stem] = stem
+
+    # 3 — absorb tiny sub-families into the family they extend
+    members = _members()
+    for label in sorted(members, key=len, reverse=True):
+        if label not in members or len(members[label]) > _ABSORB_SMALL:
+            continue
+        host = next((h for h in members
+                     if h != label and label.startswith(h + "_")
+                     and len(members[h]) >= _ABSORB_INTO), None)
+        if host:
+            for stem in members[label]:
+                out[stem] = host
+            members[host] += members.pop(label)
+    return out
+
+
+def _category(rel: str) -> str:
+    """The bucket a family belongs to — the segment under ``assets/``."""
+    parts = Path(rel).parts
+    if "assets" in parts:
+        i = parts.index("assets")
+        if i + 1 < len(parts) - 1:
+            return parts[i + 1]
+        return "assets"
+    return parts[0] if len(parts) > 1 else "root"
+
+
+# ---------------------------------------------------------------------------
+# Usage, from the derived screen map
+# ---------------------------------------------------------------------------
+def usage_index(smap: dict) -> dict[str, list[str]]:
+    """res:// id -> the screen LABELS that reach it, directly or through a .tres.
+
+    A sheet referenced only by a SpriteFrames resource is still shipping: the
+    screen loads the .tres, the .tres loads the sheet. Following that hop is
+    the difference between "used by 3 screens" and a wall of false orphans.
+    """
+    if not smap or smap.get("error"):
+        return {}
+    nodes = smap.get("nodes") or {}
+    edges = smap.get("edges") or []
+    screen_ids = {s["id"] for s in smap.get("screens") or []}
+
+    direct: dict[str, set[str]] = {}
+    children: dict[str, list[str]] = {}
+    for e in edges:
+        if e["from"] in screen_ids:
+            direct.setdefault(e["to"], set()).add(e["from"])
+        else:
+            children.setdefault(e["from"], []).append(e["to"])
+
+    # One breadth-first pass per reached node, following .tres/derived chains.
+    reach: dict[str, set[str]] = {k: set(v) for k, v in direct.items()}
+    frontier = list(reach.items())
+    seen_pairs: set[tuple[str, str]] = set()
+    while frontier:
+        node, screens = frontier.pop()
+        for child in children.get(node, ()):
+            new = {s for s in screens if (child, s) not in seen_pairs}
+            if not new:
+                continue
+            for s in new:
+                seen_pairs.add((child, s))
+            reach.setdefault(child, set()).update(new)
+            frontier.append((child, reach[child]))
+
+    label = lambda sid: (nodes.get(sid) or {}).get("label") or sid
+    return {nid: sorted({label(s) for s in screens})
+            for nid, screens in reach.items()}
+
+
+# ---------------------------------------------------------------------------
+# The scan
+# ---------------------------------------------------------------------------
+def _res_root(root: Path) -> Optional[Path]:
+    for cand in (root, root / "game"):
+        if (cand / "project.godot").is_file():
+            return cand
+    hits = [p.parent for p in root.glob("*/project.godot")]
+    return hits[0] if hits else None
+
+
+def _dimensions(path: Path) -> tuple[Optional[int], Optional[int]]:
+    if path.suffix.lower() not in IMAGE_SUFFIXES:
+        return None, None
+    try:
+        from PIL import Image
+        with Image.open(path) as im:      # header only — no decode
+            return im.size
+    except Exception:
+        return None, None
+
+
+def scan(root: str | os.PathLike[str], *, smap: Optional[dict] = None) -> dict:
+    """Every asset family in the project, with sheets, rig state, and usage."""
+    root = Path(root).resolve()
+    if smap is None:
+        smap = screenmap.scan(root)
+    use = usage_index(smap)
+    gd = _res_root(root)
+
+    def res_of(path: Path) -> Optional[str]:
+        if gd is None:
+            return None
+        try:
+            return f"res://{path.relative_to(gd).as_posix()}"
+        except ValueError:
+            return None
+
+    # --- collect, bucketed by directory --------------------------------------
+    by_dir: dict[str, list[Path]] = {}
+    scanned = 0
+    truncated = False
+    for path in root.rglob("*"):
+        if scanned >= SCAN_CAP:
+            truncated = True
+            break
+        if path.suffix.lower() not in COLLECTED or not path.is_file():
+            continue
+        if _skip(path) or path.name.endswith(".import"):
+            continue
+        scanned += 1
+        by_dir.setdefault(path.parent.relative_to(root).as_posix(), []).append(path)
+
+    families: dict[str, dict] = {}
+    for dirrel, paths in by_dir.items():
+        labels = group_stems(p.stem for p in paths)
+        for path in paths:
+            label = labels[path.stem]
+            key = f"{dirrel}::{label}"
+            rel = path.relative_to(root).as_posix()
+            res = res_of(path)
+            fam = families.setdefault(key, {
+                "key": key, "label": label, "dir": dirrel,
+                "category": _category(rel),
+                "members": [], "used_by": [], "kinds": set(),
+            })
+            width, height = _dimensions(path)
+            # Audio carries its own two facts: how long it is, and whether the
+            # engine will loop it. The second one is invisible in every other
+            # view — it lives in a .import sidecar — and a music track that
+            # silently plays once is exactly what a library is for surfacing.
+            sound = None
+            if path.suffix.lower() in AUDIO_SUFFIXES:
+                try:
+                    from bgate_core import audiolab
+                    probe = audiolab.probe(path)
+                    loop = audiolab.loop_state(path, info=probe)
+                    sound = {"seconds": probe.get("seconds"),
+                             "sample_rate": probe.get("sample_rate"),
+                             "channels": probe.get("channels"),
+                             "loops": bool(loop.get("enabled")),
+                             "loop_supported": bool(loop.get("supported"))}
+                except Exception:
+                    sound = None
+            rig = None
+            if path.suffix.lower() in (".png", ".webp"):
+                side = rigmap.sidecar_path(path)
+                if side.is_file():
+                    try:
+                        data = rigmap.load(path)
+                        grid = data.get("grid") or {}
+                        rig = {
+                            "slots": rigmap.slots_used(data),
+                            "animations": [a["name"] for a in data["animations"]],
+                            "frames": (int(grid.get("cols", 0))
+                                       * int(grid.get("rows", 0))) or None,
+                        }
+                    except rigmap.RigError:
+                        rig = {"slots": [], "animations": [], "frames": None,
+                               "error": "sidecar unreadable"}
+            screens = use.get(res or "", [])
+            stat = path.stat()
+            fam["kinds"].add(_kind(path.suffix.lower()))
+            fam["members"].append({
+                "rel": rel,
+                "name": path.name,
+                # What distinguishes this member inside its family: the action,
+                # the facing, the variant. Empty when the family is one file.
+                "variant": path.stem[len(label):].strip("_") or path.stem,
+                "kind": _kind(path.suffix.lower()),
+                "width": width, "height": height,
+                "bytes": stat.st_size, "mtime": int(stat.st_mtime),
+                "res_path": res,
+                "editable": path.suffix.lower() in (".png", ".webp"),
+                "audio_editable": path.suffix.lower() in AUDIO_SUFFIXES,
+                "sound": sound,
+                "rig": rig,
+                "used_by": screens,
+                "in_use": bool(screens),
+            })
+
+    out = []
+    for fam in families.values():
+        members = sorted(fam["members"], key=lambda m: m["name"])
+        used_by = sorted({s for m in members for s in m["used_by"]})
+        images = [m for m in members if m["kind"] == "image"]
+        # The tile's picture: the widest image, because on a sheet-per-action
+        # family that is a whole sheet, and on a one-off it is the asset itself.
+        cover = max(images, key=lambda m: (m["width"] or 0) * (m["height"] or 0),
+                    default=None)
+        out.append({
+            "key": fam["key"], "label": fam["label"], "dir": fam["dir"],
+            "category": fam["category"],
+            "kinds": sorted(fam["kinds"]),
+            "members": members,
+            "count": len(members),
+            "cover": cover["rel"] if cover else None,
+            "cover_size": [cover["width"], cover["height"]] if cover else None,
+            "sheets": [m["rel"] for m in images],
+            "used_by": used_by,
+            "in_use": bool(used_by),
+            "unused": [m["rel"] for m in members if not m["used_by"]],
+            "rigged": sum(1 for m in members if m["rig"]),
+            "seconds": round(sum(m["sound"]["seconds"] for m in members
+                                 if m.get("sound") and m["sound"].get("seconds")), 2)
+            or None,
+            "loops": sum(1 for m in members
+                         if m.get("sound") and m["sound"]["loops"]),
+            "bytes": sum(m["bytes"] for m in members),
+            "mtime": max((m["mtime"] for m in members), default=0),
+        })
+    out.sort(key=lambda f: (f["category"].lower(), f["label"].lower()))
+
+    return {
+        "families": out,
+        "truncated": truncated,
+        "godot_dir": gd.relative_to(root).as_posix() if gd else None,
+        "map_error": smap.get("error") if smap else None,
+        "stats": {
+            "families": len(out),
+            "files": sum(f["count"] for f in out),
+            "in_use": sum(1 for f in out if f["in_use"]),
+            "unused": sum(1 for f in out if not f["in_use"]),
+            "rigged": sum(1 for f in out if f["rigged"]),
+            "categories": sorted({f["category"] for f in out}),
+        },
+    }

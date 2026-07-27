@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<meta name="description" content="{{TAGLINE}}">
+<meta property="og:title" content="{{TITLE}}">
+<meta property="og:description" content="{{TAGLINE}}">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="arcade.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="./">
+      {{MARK}}
+      <b>{{TITLE}}</b>
+    </a>
+    <nav>{{NAV}}</nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div class="label">{{KICKER}}</div>
+    <h1>{{TITLE}}</h1>
+    <p>{{TAGLINE}}</p>
+    <div class="count">
+      <div><b>{{GAME_COUNT}}</b>{{GAME_WORD}} playable in the browser</div>
+      <div><b>{{TOTAL_SIZE}}</b>total build size</div>
+      <div><b>{{UPDATED}}</b>last published</div>
+    </div>
+  </div>
+</section>
+
+<main class="wrap">
+  {{CARDS}}
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>{{FOOTER}}</p>
+    <p style="margin-left:auto">built with <a href="https://github.com/Thepizzapie/builders-gate">builders gate</a> · godot 4</p>
+  </div>
+</footer>
+
+</body>
+</html>

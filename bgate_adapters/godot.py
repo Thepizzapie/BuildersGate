@@ -174,6 +174,77 @@ def run_script(script: str, project_dir: Optional[str] = None,
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _template_dirs() -> list[Path]:
+    """Where Godot 4 keeps downloaded export templates, per platform."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", "")
+        roots = [Path(base) / "Godot"] if base else []
+    elif sys.platform == "darwin":
+        roots = [Path.home() / "Library" / "Application Support" / "Godot"]
+    else:
+        data = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        roots = [Path(data) / "godot", Path(data) / "Godot"]
+    return [r / "export_templates" for r in roots]
+
+
+def export_templates(platform: str = "web") -> dict:
+    """Are the export templates for this Godot's version installed?
+
+    Export templates are a SEPARATE ~1GB download from the editor, and without
+    them `--export-release` fails with an error most people read as "my preset
+    is wrong". It is the single most common reason a web build does not appear,
+    so it gets a real probe rather than a comment in a README.
+
+    Returns {available, path, version, reason}. Never raises.
+    """
+    try:
+        found = version().get("version", "")
+    except Exception as exc:
+        return {"available": False, "path": "", "version": "",
+                "reason": f"could not ask Godot its version ({exc})"}
+
+    # "4.7.1.stable.official.a13da4feb" -> "4.7.1.stable"; templates ship under
+    # <major.minor.patch>.<status>, and the patch is dropped when it is 0.
+    parts = found.split(".")
+    wanted: list[str] = []
+    if len(parts) >= 4:
+        wanted.append(".".join(parts[:4]))
+        if parts[2] == "0":
+            wanted.append(".".join(parts[:2] + parts[3:4]))
+
+    searched = [str(d) for d in _template_dirs()]
+    others: list[str] = []
+    for base in _template_dirs():
+        if not base.is_dir():
+            continue
+        for folder in sorted((d for d in base.iterdir() if d.is_dir()),
+                             reverse=True):
+            hits = sorted(p.name for p in folder.glob(f"{platform}*.zip"))
+            if not hits:
+                continue
+            if folder.name in wanted:
+                return {"available": True, "path": str(folder),
+                        "version": folder.name, "files": hits, "reason": ""}
+            others.append(folder.name)
+
+    # A near miss is worth naming: "you have 4.6.stable, Godot is 4.7.1.stable"
+    # is a 30-second fix, while a bare "not installed" sends people to the wrong
+    # place. Godot refuses to export against mismatched templates, so this is
+    # still unavailable.
+    if others:
+        return {"available": False, "path": "", "version": found,
+                "reason": f"{platform} export templates installed for "
+                          f"{', '.join(sorted(set(others)))} but Godot is "
+                          f"{found} — Godot refuses to export against a "
+                          "mismatched version. Install the matching set "
+                          "(Editor > Manage Export Templates)"}
+    return {"available": False, "path": "", "version": found,
+            "reason": f"no {platform} export templates for Godot {found}. "
+                      "Install them from the editor (Editor > Manage Export "
+                      "Templates > Download and Install), or drop the "
+                      f".tpz contents into one of: {', '.join(searched)}"}
+
+
 def check_project(project_dir: str, timeout: int = 180) -> dict:
     """Import/validate a project without opening the editor. The 'does it build'."""
     import time

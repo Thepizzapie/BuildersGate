@@ -42,6 +42,11 @@ def everything_present(monkeypatch):
                         lambda: {"available": True, "path": "C:/godot.exe"})
     monkeypatch.setattr("bgate_adapters.godot.version",
                         lambda: {"path": "C:/godot.exe", "version": "4.7.1.stable"})
+    monkeypatch.setattr("bgate_adapters.godot.export_templates",
+                        lambda platform="web": {
+                            "available": True, "path": "C:/templates/4.7.1.stable",
+                            "version": "4.7.1.stable", "files": ["web_release.zip"],
+                            "reason": ""})
     monkeypatch.setattr("bgate_adapters.transcribe.available",
                         lambda: {"available": True, "python": "C:/py.exe",
                                  "version": "1.2.1"})
@@ -56,6 +61,10 @@ def nothing_present(monkeypatch):
                         lambda: {"available": False, "reason": "Blender not found."})
     monkeypatch.setattr("bgate_adapters.godot.available",
                         lambda: {"available": False, "reason": "Godot not found."})
+    monkeypatch.setattr("bgate_adapters.godot.export_templates",
+                        lambda platform="web": {
+                            "available": False, "path": "", "version": "",
+                            "reason": "no web export templates"})
     monkeypatch.setattr("bgate_adapters.transcribe.available",
                         lambda: {"available": False, "python": "C:/py.exe",
                                  "reason": "faster-whisper not installed"})
@@ -91,14 +100,44 @@ def test_present_binaries_report_available_with_a_path(everything_present):
 
 def test_absent_binaries_report_a_reason_not_an_exception(nothing_present):
     report = doctor.check()
-    for name in ("blender", "godot", "ffmpeg", "ffprobe", "whisper", "openai_key"):
+    for name in ("blender", "godot", "godot_web_templates", "ffmpeg", "ffprobe",
+                 "whisper", "openai_key"):
         row = report[name]
         assert row["available"] is False, name
         assert row["reason"], name
         assert row["path"] in ("", "C:/py.exe"), name
     # python is the interpreter running this — it is always there.
     assert report["python"]["available"]
-    assert "6 unavailable" in doctor.summary(report)
+    assert "7 unavailable" in doctor.summary(report)
+
+
+def test_export_templates_must_match_the_editor_version(monkeypatch, tmp_path):
+    """A near miss is the common case and the confusing one.
+
+    Godot refuses to export against templates from another version, and the
+    error it prints reads like a broken preset — so this reports unavailable
+    AND names the versions, rather than saying 'not installed' about a
+    directory that visibly contains web templates.
+    """
+    from bgate_adapters import godot
+
+    installed = tmp_path / "export_templates" / "4.6.stable"
+    installed.mkdir(parents=True)
+    (installed / "web_release.zip").write_bytes(b"zip")
+    monkeypatch.setattr(godot, "_template_dirs",
+                        lambda: [tmp_path / "export_templates"])
+    monkeypatch.setattr(godot, "version",
+                        lambda: {"path": "C:/godot.exe", "version": "4.7.1.stable"})
+
+    probe = godot.export_templates("web")
+    assert probe["available"] is False
+    assert "4.6.stable" in probe["reason"] and "4.7.1.stable" in probe["reason"]
+
+    (installed.parent / "4.7.1.stable").mkdir()
+    (installed.parent / "4.7.1.stable" / "web_release.zip").write_bytes(b"zip")
+    probe = godot.export_templates("web")
+    assert probe["available"] is True
+    assert probe["version"] == "4.7.1.stable"
 
 
 def test_a_binary_below_the_minimum_counts_as_unavailable(everything_present,

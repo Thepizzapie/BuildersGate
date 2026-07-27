@@ -1,0 +1,25 @@
+# Cloudflare Pages reads this file. Netlify uses the same format; other hosts
+# ignore it harmlessly.
+#
+# COOP + COEP switch on cross-origin isolation, which is what unlocks
+# SharedArrayBuffer — i.e. THREADED Godot web builds. The preset this repo ships
+# exports without threads on purpose (it runs on hosts that cannot set headers,
+# and on iOS Safari), so the site does not depend on these. They are here so
+# that flipping variant/thread_support=true in export_presets.cfg and
+# re-publishing Just Works instead of turning into a hosting migration.
+#
+# The cost of COEP require-corp: every cross-origin subresource now needs its
+# own CORP/CORS header. This site is entirely self-hosted, so nothing breaks —
+# but if you add an external font, embed, or analytics script and it silently
+# fails to load, this is why.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Build artifacts are large and keep their filenames across publishes, so they
+# are revalidated rather than cached forever — a stale index.wasm is a player
+# playing last week's game and reporting bugs you already fixed.
+/games/*
+  Cache-Control: public, max-age=600, must-revalidate

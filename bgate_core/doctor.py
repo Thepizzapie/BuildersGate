@@ -38,7 +38,8 @@ from typing import Callable, Optional
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # The order is the report order — cheap/local first, subprocess-spawning last.
-CHECKS = ("python", "openai_key", "ffmpeg", "ffprobe", "blender", "godot", "whisper")
+CHECKS = ("python", "openai_key", "ffmpeg", "ffprobe", "blender", "godot",
+          "godot_web_templates", "whisper")
 
 # What the code in this repo actually assumes, not aspirational floors.
 # blender: the default warmup engine is BLENDER_EEVEE_NEXT, which is 4.2+.
@@ -51,6 +52,7 @@ MIN_REQUIRED = {
     "ffprobe": "",
     "blender": "4.2",
     "godot": "4.0",
+    "godot_web_templates": "",
     "whisper": "0.10",
 }
 
@@ -205,6 +207,23 @@ def _probe_godot() -> dict:
     return _finish("godot", found.get("path", ""), found.get("version", ""))
 
 
+def _probe_godot_web_templates() -> dict:
+    """The Web export templates — what stands between a finished game and a URL.
+
+    Separate from the `godot` row because they are a separate ~1GB download and
+    a separate failure: the editor runs fine, `bgate publish` produces nothing,
+    and the error Godot prints reads like a broken preset.
+    """
+    from bgate_adapters import godot
+
+    probe = godot.export_templates("web")
+    if not probe.get("available"):
+        return _missing("godot_web_templates",
+                        probe.get("reason", "web export templates not installed"))
+    return _row(available=True, path=probe.get("path", ""),
+                version=probe.get("version", ""))
+
+
 def _probe_whisper() -> dict:
     """Is faster-whisper importable by the interpreter that will run it.
 
@@ -228,6 +247,7 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "ffprobe": _probe_ffprobe,
     "blender": _probe_blender,
     "godot": _probe_godot,
+    "godot_web_templates": _probe_godot_web_templates,
     "whisper": _probe_whisper,
 }
 

@@ -86,6 +86,23 @@ def get(root: str | os.PathLike[str]) -> dict:
     return dict(row)
 
 
+def game_dir(root: str | os.PathLike[str]) -> Optional[Path]:
+    """Where this project's Godot project.godot actually lives, or None.
+
+    Two entrypoints disagree about the layout: godot_scaffold (MCP) writes into
+    ``<root>/game``, while ``bgate init`` and the dashboard's new-project route
+    write straight into ``<root>``. Everything downstream that hardcoded one of
+    the two silently did nothing for projects made the other way — the web
+    export was unreachable for every CLI-created project for exactly that
+    reason. Ask here instead of guessing.
+    """
+    base = Path(root)
+    for candidate in (base / "game", base):
+        if (candidate / "project.godot").is_file():
+            return candidate
+    return None
+
+
 def require_root(start: Optional[str | os.PathLike[str]] = None) -> Path:
     """Find the enclosing project or explain how to make one."""
     root = db.resolve_root(start)

@@ -25,6 +25,11 @@ def _godot() -> str | None:
         return None
 
 
+def _game(root: str | os.PathLike[str]) -> Path | None:
+    from bgate_core import project
+    return project.game_dir(root)
+
+
 def _newest_source_mtime(game_dir: Path) -> float:
     """Newest mtime among things a build depends on — scripts, scenes, assets,
     project config. Ignores the .godot cache and the export output itself."""
@@ -41,9 +46,9 @@ def _newest_source_mtime(game_dir: Path) -> float:
 
 def status(root: str | os.PathLike[str]) -> dict:
     """Is there a build, and is it current with the source?"""
-    game = Path(root) / "game"
+    game = _game(root)
     pck = Path(root) / "export" / "web" / "index.pck"
-    if not (game / "project.godot").exists():
+    if game is None:
         return {"built": False, "stale": True, "reason": "no game project"}
     if not pck.exists():
         return {"built": False, "stale": True, "reason": "never exported"}
@@ -55,12 +60,15 @@ def status(root: str | os.PathLike[str]) -> dict:
 
 def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
     """Export the Web build from current source. What /play serves next."""
-    game = Path(root) / "game"
-    if not (game / "project.godot").exists():
+    game = _game(root)
+    if game is None:
         return {"ok": False, "error": "no game project at this root"}
     if not (game / "export_presets.cfg").exists():
-        return {"ok": False, "error": "no export_presets.cfg — the tech seat "
-                                      "must create the Web preset first"}
+        return {"ok": False, "error": "no export_presets.cfg — copy the Web "
+                                      "preset the scaffold ships "
+                                      "(templates/shared/export_presets.cfg) "
+                                      "into the game dir, or add one in the "
+                                      "editor under Project > Export"}
     godot = _godot()
     if not godot:
         return {"ok": False, "error": "Godot not found (set BGATE_GODOT)"}

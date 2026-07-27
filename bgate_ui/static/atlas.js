@@ -227,5 +227,9 @@ window.Atlas = (() => {
     }
   } catch (e) {}
 
-  return { activate, deploy, deployCleanup, showDead, showMissing, badge };
+  return { activate, deploy, deployCleanup, showDead, showMissing, badge,
+           /* The scan other panels need. `ensure` is the one to call from a
+              module that may run before Atlas was ever opened — `map` is only
+              populated once something has loaded it. */
+           ensure: load, get map(){ return map; } };
 })();
