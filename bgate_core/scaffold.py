@@ -73,7 +73,10 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
             rel = item.relative_to(source)
             out = target / rel
             out.parent.mkdir(parents=True, exist_ok=True)
-            if item.suffix in (".godot", ".tscn", ".gd", ".cfg", ".svg"):
+            # .md is in here for templates/shared/CLAUDE.md, which greets the
+            # user's Claude session by the project's real name — a briefing that
+            # says __PROJECT_NAME__ reads as a broken tool on first contact.
+            if item.suffix in (".godot", ".tscn", ".gd", ".cfg", ".svg", ".md"):
                 text = item.read_text(encoding="utf-8").replace(_NAME_TOKEN, name)
                 out.write_text(text, encoding="utf-8")
             else:

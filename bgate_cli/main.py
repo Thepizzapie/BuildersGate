@@ -2,6 +2,11 @@
 
     bgate init NAME [--kind 2d|3d] [--dir DIR] [--pitch TEXT] [--force]
                                 create a project + a runnable game, and print where
+    bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json]
+                                point Builders Gate at a game you ALREADY have.
+                                Never scaffolds, never overwrites. (default: .)
+    bgate use [DIR|NAME]        make a project the active one for later commands
+    bgate projects [--json]     list known projects and which one is active
     bgate serve [--port 7788]   run the dashboard
     bgate publish [--out DIR]   build the arcade: every game, as a static site
     bgate doctor [DIR] [--json] check every external dependency in one pass
@@ -176,6 +181,169 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     print(f"  cd {root}")
     print("  bgate serve            open the dashboard on this project")
     print("  bgate doctor           check the toolchain (godot, blender, ...)")
+    return 0
+
+
+def _mb(n: int) -> str:
+    return f"{n / (1024 * 1024):.1f}MB"
+
+
+def adopt_project(directory: str = "", name: str = "", pitch: str = "",
+                  kind: str = "", as_json: bool = False) -> int:
+    """Adopt an EXISTING game and print what we understood about it.
+
+    The printout is not decoration. The person running this has months of work
+    in the directory and is being asked to trust a tool that just wrote to it;
+    showing that we found their project.godot, counted their scenes and got the
+    dimension right is the only evidence available at this point that we read
+    the project rather than replaced it.
+    """
+    from bgate_core import adopt as _adopt
+    from bgate_core import project
+
+    target = Path(directory).expanduser().resolve() if directory else Path.cwd()
+
+    if kind and kind not in project.DIMENSIONS:
+        print(f"error: --kind must be one of {'|'.join(project.DIMENSIONS)}, "
+              f"got {kind!r}")
+        return 2
+
+    try:
+        report = _adopt.adopt(target, name=name, pitch=pitch,
+                              dimension=kind or None)
+    except FileExistsError as exc:
+        print(f"error: {exc}")
+        return 1
+    except (NotADirectoryError, ValueError) as exc:
+        print(f"error: {exc}")
+        return 2
+
+    if as_json:
+        print(json.dumps(report, indent=2))
+        return 0
+
+    found = report["detected"]
+    proj = report["project"]
+    verb = "re-adopted" if report["already_adopted"] else "adopted"
+    print(f"{verb} {proj['name']} — {report['path']}")
+    print()
+    if found["godot"]:
+        version = f" {found['godot_version']}" if found["godot_version"] else ""
+        print(f"  godot{version}      {found['godot_dir']}")
+        if found["main_scene"]:
+            print(f"  main scene    {found['main_scene']}")
+    else:
+        print("  godot         NOT FOUND — no project.godot at or under this "
+              "directory,")
+        print("                so engine was recorded as 'none' and the godot_* "
+              "tools")
+        print("                will stay unavailable until one exists.")
+    evidence = found["dimension_evidence"]
+    print(f"  dimension     {proj['dimension']}  "
+          f"({evidence['3d_nodes']} 3D nodes / {evidence['2d_nodes']} 2D nodes "
+          "seen in scenes)")
+    print(f"  scenes        {found['scenes']}"
+          + (f"   biggest: {', '.join(found['biggest_scenes'][:3])}"
+             if found["biggest_scenes"] else ""))
+    print(f"  scripts       {found['scripts']}")
+    print(f"  assets        {found['images']} images, {found['audio']} audio, "
+          f"{found['models']} models")
+    print(f"  size          {found['files']} files, {_mb(found['bytes'])}")
+    if found["top_dirs"]:
+        print(f"  layout        {', '.join(found['top_dirs'][:10])}")
+    print()
+    for label, row in report["written"].items():
+        if row.get("error"):
+            print(f"  !     {label}: {row['error']}")
+        else:
+            print(f"  {row['action'].ljust(9)} {row['path']}")
+    print()
+    if not proj.get("pitch"):
+        print("no pitch recorded — the bible starts empty without one. Set it:")
+        print(f'  bgate adopt "{report["path"]}" --pitch "what this game is"')
+        print()
+    print("next:")
+    print(f"  cd {report['path']}")
+    print("  bgate doctor           check the toolchain (godot, blender, ...)")
+    print("  bgate serve            open the dashboard on this project")
+    print("  read CLAUDE.md         it tells your Claude session how to work here")
+    return 0
+
+
+def use_project(token: str = "", as_json: bool = False) -> int:
+    """Make a project the active one, persistently.
+
+    Persistently, and OUTSIDE the repo (~/.bgate/active.json): the alternative
+    people were left with was exporting BGATE_ROOT in every shell, which is
+    invisible, per-terminal, and the first thing anyone forgets.
+    """
+    from bgate_core import project
+
+    target = token or "."
+    try:
+        resolved = _resolve_project(target)
+    except LookupError as exc:
+        print(f"error: {exc}")
+        return 2
+    try:
+        root = project.set_active(resolved)
+        record = project.get(root)
+    except LookupError as exc:
+        print(f"error: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps({"active": str(root), "project": record}, indent=2))
+        return 0
+    print(f"active project: {record['name']} ({record['slug']})")
+    print(str(root))
+    print()
+    print("this is what `bgate serve`, `bgate doctor` and the MCP tools will")
+    print("use when nothing more specific says otherwise. An explicit")
+    print("project_dir=... on a tool call, BGATE_ROOT, or standing inside a")
+    print("different project all still win over it, in that order.")
+    return 0
+
+
+def list_projects(as_json: bool = False) -> int:
+    """Every known project, with the active one marked."""
+    from bgate_core import db, project
+
+    known = project.known_projects()
+    active = project.active_root()
+    here = db.resolve_root()
+
+    rows = []
+    for name, path in sorted(known.items()):
+        try:
+            record = project.get(path)
+            title, dimension = record["name"], record["dimension"]
+        except Exception:  # a project whose DB is unreadable still gets listed
+            title, dimension = name, "?"
+        rows.append({
+            "slug": name, "name": title, "path": path, "dimension": dimension,
+            "active": active is not None and Path(path) == active,
+            "cwd": here is not None and Path(path) == here,
+        })
+
+    if as_json:
+        print(json.dumps({"projects": rows,
+                          "active": str(active) if active else None}, indent=2))
+        return 0
+    if not rows:
+        print("no known projects.")
+        print()
+        print("  bgate init NAME     start a new game from a template")
+        print("  bgate adopt DIR     point Builders Gate at a game you already have")
+        return 0
+
+    width = max(len(row["name"]) for row in rows)
+    for row in rows:
+        mark = "*" if row["active"] else ("." if row["cwd"] else " ")
+        print(f"{mark} {row['name'].ljust(width)}  {row['dimension'].ljust(6)} "
+              f"{row['path']}")
+    print()
+    print("* active (bgate use)   . the project your cwd is inside")
     return 0
 
 
@@ -423,6 +591,35 @@ def main() -> int:
         return init_project(positional[0], kind=opt("--kind", "2d"),
                             dest=opt("--dir"), pitch=opt("--pitch"),
                             force="--force" in rest)
+
+    if cmd == "adopt":
+        rest = args[1:]
+
+        def opt(flag: str, default: str = "") -> str:
+            if flag in rest:
+                index = rest.index(flag) + 1
+                if index < len(rest):
+                    return rest[index]
+            return default
+
+        flagged = {"--name", "--pitch", "--kind"}
+        skip: set[int] = set()
+        for i, token in enumerate(rest):
+            if token in flagged:
+                skip.update({i, i + 1})
+        positional = [a for i, a in enumerate(rest)
+                      if i not in skip and not a.startswith("-")]
+        return adopt_project(positional[0] if positional else "",
+                             name=opt("--name"), pitch=opt("--pitch"),
+                             kind=opt("--kind"), as_json="--json" in rest)
+
+    if cmd in ("use", "switch", "select"):
+        positional = [a for a in args[1:] if not a.startswith("-")]
+        return use_project(positional[0] if positional else "",
+                           as_json="--json" in args)
+
+    if cmd == "projects":
+        return list_projects(as_json="--json" in args)
 
     if cmd == "publish":
         rest = args[1:]

@@ -16,6 +16,20 @@ def _no_dashboard_auth(monkeypatch):
     monkeypatch.setenv("BGATE_NO_AUTH", "1")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_dir(tmp_path_factory, monkeypatch):
+    """Keep the suite out of the developer's real ~/.bgate.
+
+    project.init() registers every project it makes, and `bgate use` writes an
+    active-project pointer that require_root() falls back to. Without this, a
+    test run rewrites the machine's registry, and — worse — a stale pointer left
+    by an earlier run silently satisfies a require_root() the test expected to
+    fail. BGATE_HOME exists precisely so that redirect is one env var.
+    """
+    monkeypatch.setenv("BGATE_HOME",
+                       str(tmp_path_factory.mktemp("bgate_home")))
+
+
 @pytest.fixture()
 def anyio_backend():
     return "asyncio"

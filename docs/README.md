@@ -1,11 +1,24 @@
 # docs/
 
-Findings from real production runs, and the audits. None of this is reference
-documentation — the reference is the [README](../README.md) and the tool
-docstrings. These are write-ups of things that went wrong, or design notes, kept
-because the reasoning is the useful part.
+Two kinds of document live here. **Onboarding** is written for someone arriving
+without context. **Findings** are write-ups of things that went wrong on real
+production runs, plus the audits — kept because the reasoning is the useful
+part, not as reference documentation. The reference is the
+[README](../README.md) and the tool docstrings.
 
 Every document is dated at the top and reflects the day it was written.
+
+## Onboarding
+
+New here, or never run an MCP server before? Read these three, in order.
+
+| Document | What it is |
+|---|---|
+| [start-here.md](start-here.md) | The front door. What problem this solves, what an MCP server is, this project's vocabulary defined once, what actually happens when you dispatch an agent, and a first-session walkthrough. Assumes nothing. |
+| [faq.md](faq.md) | The questions people actually asked, answered against the code — how the character art was really made, whether it works for 3D (honestly), what it costs, why it felt slow, and pointing it at a game you already have. |
+| [glossary.md](glossary.md) | Every term this project uses in a narrow sense — seat, lane, lock, dispatch, cut line, pin, canon, evidence — a sentence or two each. |
+
+## Findings and audits
 
 | Document | What it is |
 |---|---|

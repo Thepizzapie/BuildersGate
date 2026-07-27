@@ -21,14 +21,21 @@ IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
 
 
 def root() -> Path:
-    """The active project root — BGATE_ROOT wins, else walk up from cwd."""
+    """The active project root — BGATE_ROOT, else walk up from cwd, else
+    whatever `bgate use` last pointed at. Same order as the MCP server's
+    _root(); the `bgate use` pointer is last so that running the dashboard from
+    inside a project still means that project."""
     override = os.environ.get("BGATE_ROOT")
     if override:
         return Path(override)
     resolved = db.resolve_root()
     if resolved is None:
+        from bgate_core import project
+        resolved = project.active_root()
+    if resolved is None:
         raise HTTPException(503, "no .bgate project at or above the cwd — "
-                                 "run the dashboard from inside a game project")
+                                 "run the dashboard from inside a game project, "
+                                 "or pick one with `bgate use <dir>`")
     return resolved
 
 

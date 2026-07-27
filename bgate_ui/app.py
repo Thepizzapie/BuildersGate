@@ -283,8 +283,13 @@ def _root() -> Path:
         return Path(override)
     root = db.resolve_root()
     if root is None:
+        # Last, below the cwd walk-up, so `bgate use` is a default and never an
+        # override — see bgate_ui/deps.root() for the same order.
+        root = project.active_root()
+    if root is None:
         raise _api.unavailable("no .bgate project at or above the cwd — "
-                               "run the dashboard from inside a game project")
+                               "run the dashboard from inside a game project, "
+                               "or pick one with `bgate use <dir>`")
     return root
 
 

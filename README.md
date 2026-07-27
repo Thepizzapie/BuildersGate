@@ -29,6 +29,14 @@ another MCP client) who want an agent fleet to build a real, playable game and
 want to keep the steering wheel. If you want a chat that writes a design
 document, this is far too much machinery.
 
+> **New to this?** Everything below is reference. If you have never run an MCP
+> server, start at **[`docs/start-here.md`](docs/start-here.md)** — it assumes
+> nothing and defines the vocabulary once. The
+> **[FAQ](docs/faq.md)** answers the questions people actually ask: how the
+> character art was really made, whether this works for 3D (honestly), what it
+> costs, and how to point it at a Godot game you already have. Unfamiliar term?
+> **[`docs/glossary.md`](docs/glossary.md)**.
+
 ## Project status
 
 Honest version, 2026-07-27, first public release. This is a solo project that
@@ -37,9 +45,15 @@ has built real games on one machine, and it shows in both directions.
 **Works, and is exercised by the test suite and by daily use:** the MCP server
 and its tools; seats, lanes, asset locks and the PreToolUse hook; the Godot
 adapter (headless run/check, import with in-engine inspection, screenshots,
-scaffolds); the Blender adapter and the glTF round trip; both image providers;
+scaffolds); both image providers;
 the dashboard; playtest capture through to a joined brief; `bgate publish`;
 `bgate doctor`. CI runs the suite plus a clean-venv wheel smoke test.
+
+**Works, but not covered by CI:** the Blender adapter and the glTF round trip.
+They are exercised by daily use and by tests that drive a real Blender — but
+those tests are `slow`-marked or skip when Blender is absent, so the CI badge
+above says nothing about them. Treat 3D as the less-travelled path; see
+[docs/faq.md](docs/faq.md) for exactly how much thinner it is than 2D.
 
 **Half-built, and named as such:** the audio seat's workspace is a deliberate v1
 (sound library, playback, cue sheet — the UI says so in a banner). The
@@ -103,7 +117,7 @@ and its status header says which.
   autoloads already wired
 - **Painted-art leg (optional)** — portraits/UI/backdrops and reference-first
   sprite sets with pinned reference anchors, from **two** providers: OpenAI
-  `gpt-image` and Krea's ~20-model catalogue, chosen per asset and per quality tier
+  `gpt-image` and Krea's 14-model catalogue, chosen per asset and per quality tier
 - **Asset registry** — content hashes + per-file locks for binaries (they don't
   merge), with a drift detector that names silent clobbers
 - **Playtest mode** — record the game window + your voice, whisper-transcribe,
@@ -195,6 +209,42 @@ absolute path it wrote to — into a NEW directory named after the project, not
 whatever directory you were standing in. There is no "make a project" step
 hidden inside an MCP session any more; if you would rather start in the browser,
 `bgate serve` with no project shows a first-run screen that posts the same call.
+
+### Already have a game? `bgate adopt`
+
+`bgate init` scaffolds into an EMPTY directory. If you already have a Godot
+project — months of work, your own layout — adopt it instead:
+
+```bash
+cd my-existing-game
+bgate adopt --pitch "what this game is"   # or: bgate adopt path/to/game
+```
+
+Adoption is additive only. It never copies a template file and never rewrites a
+byte you wrote. It creates `.bgate/game.db`, merges the API-key ignore rules
+into your existing `.gitignore` inside a marked block, appends a `CLAUDE.md`
+briefing the same way, and prints what it detected — Godot version, main scene,
+2D vs 3D, scene/script/asset counts — so you can see it read your project rather
+than replaced it. Safe to re-run: the second run refreshes the marked blocks in
+place instead of stacking a second copy.
+
+Both `init` and `adopt` stamp a **`CLAUDE.md`** into the project. That file is
+the instructions for the Claude Code session working in *your game*: what a seat
+is, how a work item is created and closed, what the bible and lore are for, the
+art pipeline, and what not to do. It is the first thing to read.
+
+### Switching between projects
+
+```bash
+bgate projects                    # every known project, * marks the active one
+bgate use emberfall               # by registered name, or by directory
+```
+
+`bgate use` writes a pointer to `~/.bgate/active.json` (user-scoped, never in the
+repo), so `bgate serve`, `bgate doctor` and the MCP tools pick it up without you
+exporting `BGATE_ROOT` in every shell. It is the LOWEST-priority answer on
+purpose — an explicit `project_dir=` on a tool call wins, then `BGATE_ROOT`,
+then standing inside a project directory, and only then the pointer.
 
 To let agents drive it, register the MCP server and install the enforcement hook:
 
@@ -672,9 +722,13 @@ otherwise. Linux is `continue-on-error` — see [Platform support](#platform-sup
 
 ## Docs
 
-[`docs/`](docs/) is write-ups of things that went wrong on real production runs,
-plus the audits. [`docs/README.md`](docs/README.md) indexes them with a line each.
-Two are worth flagging directly:
+[`docs/`](docs/) is onboarding plus write-ups of things that went wrong on real
+production runs and the audits. [`docs/README.md`](docs/README.md) indexes them
+with a line each.
+
+Start with [`docs/start-here.md`](docs/start-here.md) if you are new, and
+[`docs/faq.md`](docs/faq.md) for the character-art process, the honest 3D
+answer, and costs. Two of the findings are worth flagging directly:
 
 - [`docs/gap-analysis.md`](docs/gap-analysis.md) — where the pipeline can improve
   tenfold, every gap backed by something that actually happened and what it cost.
