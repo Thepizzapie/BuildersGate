@@ -1183,7 +1183,14 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
 
 
 # Frames the vision judge scores at/below this are flagged for regen.
-_CONSISTENCY_FLOOR = 78
+#
+# Raised 78 -> 90 by the director, on evidence: an 8-frame IT-rogue idle came
+# back "no outliers, min 80" while the hoodie shifted teal -> dark -> teal, the
+# yellow hair streak moved and changed shape, and the head size wandered
+# between frames. A floor that passes that is not a gate, it is a formality.
+# The cost is more re-rolls per run; the thing it buys is that a PASS means
+# something when a human looks at the sheet.
+_CONSISTENCY_FLOOR = 90
 # Deterministic palette gates (opaque-pixel histograms, 4 bits/channel).
 # Measured on the failed PM-Paladin batch: adjacent same-character frames
 # intersect ~0.45; recolored frames vs their siblings crater to ~0.06; and
@@ -1237,6 +1244,12 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
             return "data:image/png;base64," + _b64.b64encode(b.getvalue()).decode()
 
         labels = [lab for lab, _ in frame_items]
+        # The threshold is INTERPOLATED, never written twice. It used to be the
+        # literal "78" here while the constant was separate, so raising the
+        # constant to 90 left the judge still calibrating to 78: nothing could
+        # reach the new bar, every frame re-rolled to no purpose, and one
+        # 8-frame run burned 24 image calls and $1.01 to ship a sheet where
+        # 8/8 frames were flagged.
         content = [{"type": "text", "text":
             "The FIRST image is the APPROVED reference for a game character. The remaining "
             "images are generated frames of ONE animation of that character. Pose, action "
@@ -1244,7 +1257,9 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
             "Judge TWO things:\n"
             "(1) IDENTITY: score each frame 0-100 for being the SAME character as the "
             "reference (body proportions, art style, line weight, palette, defining "
-            "features). <78 = noticeable drift.\n"
+            f"features). Score {pass_floor} or above ONLY when the frame could sit beside "
+            f"the reference in the same sheet with no visible difference in build, palette "
+            f"or line weight; below {pass_floor} means drift a player would notice.\n"
             "(2) FRAME-TO-FRAME CONSISTENCY: the frames must also look consistent WITH "
             "EACH OTHER — same build, proportions, weight, head size and style across the "
             "set. Mark outlier=true for any frame whose PROPORTIONS/BUILD/STYLE visibly "
@@ -1354,8 +1369,18 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_quality: str = "high", fps: float = 8.0,
                   res_dir: str = "assets/sprites", max_retries: int = 1,
                   max_cost_usd: float = 0.0, timeout: int = 300,
-                  max_seconds: int = 1800) -> dict:
-    """PAINTED sprite set via gpt-image — REFERENCE-FIRST for consistency.
+                  max_seconds: int = 1800, provider: str = "openai",
+                  model: str = "", ref_strength: float = 0.6) -> dict:
+    """PAINTED sprite set — REFERENCE-FIRST for consistency.
+
+    provider: "openai" (gpt-image, default) or "krea". They condition on the
+    reference in genuinely different ways, and it changes what you get:
+    gpt-image EDITS the reference image, which holds identity hard but drags
+    the reference's own lighting along; krea takes it as a STYLE REFERENCE at
+    `ref_strength`, which follows an art style more faithfully and holds a
+    specific face less. Pick per job; `model` names the exact model within the
+    provider (see bgate_adapters.krea.MODELS) or defaults per provider.
+
 
     How it works (and why): a fresh generation invents a new character every
     time, and asking for many poses in one image comes back misaligned. So:
@@ -1455,7 +1480,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     character_prompt + " Exactly one character, full body head to "
                     "toe, neutral idle stance, centered, no text, no logo, no "
                     "ground shadow.",
-                    ref_path, provider="openai", task_kind="anchor",
+                    ref_path, provider=provider, model=model,
+                    task_kind="anchor",
                     size="1024x1536", quality=ref_quality, root=root,
                     logical_name=name, work_item_id=_work_item_id(),
                     timeout=call_timeout)
@@ -1546,8 +1572,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 "character head to toe, exactly one figure, no text, no cropping of "
                 "limbs."
                 + identity,
-                out_png, provider="openai", task_kind="animation",
+                out_png, provider=provider, model=model,
+                task_kind="animation",
                 ref_paths=[str(r) for r in refs], size="1024x1536",
+                # gpt-image EDITS the reference, so strength is meaningless to
+                # it and chroma ignores the argument. Krea instead conditions on
+                # style references at a weight, and that weight is the whole
+                # difference between "same character, new pose" and "a picture
+                # that vaguely rhymes with the reference".
+                ref_strength=ref_strength,
                 quality=quality, root=root, logical_name=name,
                 work_item_id=_work_item_id(), timeout=call_timeout)
             _tally(got)
@@ -1746,6 +1779,31 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 cons_note = (f", consistency min {consistency.get('min')}"
                              + (f" — REGEN {consistency['flagged']}" if consistency.get("flagged")
                                 else " (all pass)"))
+            # THE GATE HAS TO GATE. Retries are exhausted by this point, so a
+            # sheet still carrying flagged frames is the best this run will do
+            # — and shipping it as ok=True is how "no outliers, min 80" reached
+            # a human as if it meant on-model, for a sheet whose every frame the
+            # judge had rejected.
+            #
+            # The sheet, the preview and the artifact all still exist: the work
+            # is paid for either way and is worth looking at. What changes is
+            # that the CALLER is told this failed, with the scores, instead of
+            # having to read `consistency` to discover it.
+            if consistency.get("ok") and consistency.get("flagged"):
+                worst = sorted(
+                    ((f.get("score"), f.get("label")) for f in consistency.get("frames", [])
+                     if f.get("label") in set(consistency["flagged"])))[:3]
+                assembled["ok"] = False
+                assembled["stage"] = "consistency"
+                assembled["error"] = (
+                    f"{len(consistency['flagged'])}/{len(consistency.get('frames', []))} "
+                    f"frames are off-model after {max_retries} retries "
+                    f"(floor {_CONSISTENCY_FLOOR}, best {consistency.get('min')}); "
+                    f"worst: {', '.join(f'{lab} {sc}' for sc, lab in worst)}. "
+                    "The sheet and preview were kept for inspection but MUST NOT be "
+                    "installed as-is — tighten character_prompt on the drifting "
+                    "detail, or lower the floor if this is as good as the model gets.")
+
             seq = assembled.get("sequence") or {}
             seq_note = (f", motion-jitter in {seq['flagged']}"
                         if seq.get("flagged") else "")

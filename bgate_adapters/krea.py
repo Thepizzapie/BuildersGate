@@ -137,6 +137,109 @@ MODELS: dict[str, dict] = {
         "note": "Cheapest by 20x and the fastest. Realistic, low diversity — "
                 "a sweep model, not a finishing one.",
     },
+
+    # ---- reference EDIT models -------------------------------------------
+    # The two above condition on a reference as STYLE: they follow a look but
+    # owe nothing to a pose. Measured on the party idles, krea-2-medium drew a
+    # face in seven of eight frames when four of them were specified as back
+    # views. The models below EDIT a supplied image instead, which is what
+    # "same character, now facing away" actually needs.
+    "gpt-image": {
+        # gpt-image through Krea, so it bills the Krea key rather than a
+        # separate OpenAI one. Same model that holds character identity best in
+        # the reference-first chain.
+        "path": "/generate/image/openai/gpt-image",
+        "usd": 0.03,
+        "sizing": "pixels",
+        "style_refs": True,
+        # A PLAIN array of urls, not {url, strength} objects — the only model
+        # here that does it that way, hence `ref_plain`.
+        "ref_field": "image_urls",
+        "ref_plain": True,
+        "ref_max": 15,
+        "supports": {"quality", "styles", "style_images"},
+        "note": "Edits the reference rather than styling from it: the best "
+                "identity hold for anchored pose work, and cheaper here than "
+                "calling OpenAI directly.",
+    },
+    "nano-banana-pro": {
+        "path": "/generate/image/google/nano-banana-pro",
+        "usd": 0.15,
+        "sizing": "pixels",
+        "style_refs": True,
+        # Takes BOTH: image_urls (plain, edit-style) and style_images
+        # (weighted). The docs are explicit that image_urls WINS and
+        # style_images is ignored when both are sent, so only one is used.
+        "ref_field": "image_urls",
+        "ref_plain": True,
+        "supports": {"styles", "style_images", "resolution"},
+        "note": "Dearest here by 2x. Image prompts override style images.",
+    },
+    "nano-banana-2": {
+        "path": "/generate/image/google/nano-banana-2",
+        "usd": 0.06,
+        "sizing": "pixels",
+        "style_refs": True,
+        "ref_field": "image_urls",
+        "ref_plain": True,
+        "supports": {"styles", "style_images", "resolution"},
+        "note": "A quarter of Pro's price with the same reference contract.",
+    },
+    "seedream-5-lite": {
+        "path": "/generate/image/bytedance/seedream-5-lite",
+        "usd": 0.04,
+        "sizing": "pixels",
+        "style_refs": True,
+        "ref_field": "style_images",
+        "ref_max": 14,
+        "ref_range": (-2.0, 2.0),
+        "supports": {"seed", "style_images"},
+        "note": "Weighted style refs only — styling, not editing.",
+    },
+    "ideogram-3": {
+        "path": "/generate/image/ideogram/ideogram-3",
+        # $0.063 plain, $0.1575 once character references are attached — the
+        # only model here that charges 2.5x for the thing we actually want.
+        "usd": 0.063,
+        "usd_with_style_refs": 0.1575,
+        "sizing": "pixels",
+        "style_refs": True,
+        # The ONLY model in this catalogue with a field meaning "keep THIS
+        # character", as opposed to "borrow this look". Worth testing against
+        # the party idles for exactly that reason.
+        "ref_field": "character_reference_images",
+        "ref_plain": True,
+        "supports": {"seed", "style_images", "character_reference_images"},
+        "note": "Dedicated character-reference field; priced 2.5x when used.",
+    },
+    "flux-1.1-pro": {
+        "path": "/generate/image/bfl/flux-1.1-pro",
+        "usd": 0.06,
+        "sizing": "pixels",
+        "style_refs": False,
+        # 256..1440 per side, tighter than everything else here.
+        "supports": {"seed"},
+        "note": "Prompt-only, and capped at 1440px a side. No anchoring.",
+    },
+    "imagen-4-ultra": {
+        "path": "/generate/image/google/imagen-4-ultra",
+        "usd": 0.063,
+        "sizing": "pixels",
+        "style_refs": False,
+        "supports": {"seed"},
+        "note": "Prompt-only. Imagen-4's finish tier, still no references.",
+    },
+    "flux-kontext": {
+        "path": "/generate/image/bfl/flux-1-kontext-dev",
+        "usd": 0.04,
+        "sizing": "pixels",
+        "style_refs": True,
+        "ref_field": "style_images",
+        "ref_range": (-2.0, 2.0),
+        "supports": {"seed", "steps", "guidance_scale", "image_url", "strength"},
+        "note": "Kontext is an EDIT model — pass the frame to change as "
+                "image_url with a low strength to keep the character.",
+    },
 }
 DEFAULT_MODEL = "krea-2-large"
 
@@ -292,7 +395,7 @@ def _request(path: str, key: str, *, payload: Optional[dict] = None,
 def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
            seed: Optional[int] = None, style_refs: Optional[list[dict]] = None,
            image_url: str = "", strength: Optional[float] = None,
-           creativity: str = "", root: Any = None,
+           creativity: str = "", quality: str = "", root: Any = None,
            timeout: float = 60.0) -> dict:
     """Start a generation. Returns the job envelope with `job_id`."""
     key = api_key(root)
@@ -314,6 +417,8 @@ def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
 
     if seed is not None and "seed" in spec["supports"]:
         payload["seed"] = int(seed)
+    if quality and "quality" in spec["supports"]:
+        payload["quality"] = quality
     if creativity:
         if "creativity" not in spec["supports"]:
             raise KreaError(f"{model} has no creativity control — that is krea-2 only")
@@ -335,11 +440,17 @@ def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
         field = spec.get("ref_field", "image_style_references")
         cap = int(spec.get("ref_max", 10))
         usable = [r for r in style_refs if r.get("url")]
-        payload[field] = [
-            {"url": r["url"],
-             "strength": max(lo, min(hi, float(r.get("strength", default))))}
-            for r in usable[:cap]
-        ]
+        if spec.get("ref_plain"):
+            # gpt-image takes bare urls under `image_urls` and has no per-image
+            # strength: they are edit inputs, not weighted style hints. Sending
+            # {url, strength} objects here is a 422.
+            payload[field] = [r["url"] for r in usable[:cap]]
+        else:
+            payload[field] = [
+                {"url": r["url"],
+                 "strength": max(lo, min(hi, float(r.get("strength", default))))}
+                for r in usable[:cap]
+            ]
         dropped = len(usable) - cap
         if dropped > 0:
             payload["_dropped_refs"] = dropped  # stripped below; caller-visible
@@ -415,7 +526,7 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
              size: str = "1024x1024", seed: Optional[int] = None,
              style_refs: Optional[list[dict]] = None, image_url: str = "",
              strength: Optional[float] = None, creativity: str = "",
-             timeout: float = 300.0, root: Any = None) -> dict:
+             quality: str = "", timeout: float = 300.0, root: Any = None) -> dict:
     """Submit, wait, download. The whole three-step dance as one call.
 
     Shaped to match imagegen.generate's return so the art pipeline does not care
@@ -425,7 +536,8 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
     try:
         job = submit(prompt, model=model, size=size, seed=seed,
                      style_refs=style_refs, image_url=image_url,
-                     strength=strength, creativity=creativity, root=root)
+                     strength=strength, creativity=creativity,
+                     quality=quality, root=root)
         job_id = job.get("job_id") or job.get("id")
         if not job_id:
             raise KreaError(f"Krea did not return a job id: {str(job)[:200]}")

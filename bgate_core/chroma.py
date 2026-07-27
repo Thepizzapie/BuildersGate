@@ -529,6 +529,7 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
             result = krea.generate(prompt, str(out_path),
                                    model=model or krea.DEFAULT_MODEL, size=size,
                                    seed=seed, style_refs=refs or None,
+                                   quality=quality,
                                    timeout=timeout, root=root)
         elif provider in ("openai", "gpt-image", "imagegen"):
             if ref_paths:
