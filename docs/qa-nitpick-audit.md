@@ -1,5 +1,34 @@
 # Builders Gate — QA nitpick audit (FE + BE)
 
+> ## Status: 2026-07-27 — historical. Much of this is FIXED. Read this header first.
+>
+> This audit was written against `main` @ `1344575` on 2026-07-25 and is kept
+> because its reasoning is worth reading. **It is not a current vulnerability
+> inventory, and several findings below describe holes that are closed.** The
+> body has deliberately not been edited — an audit rewritten after the fact
+> stops being evidence — so treat every finding as "true on 2026-07-25" and
+> check it against the code before acting on it.
+>
+> Resolved since, each verifiable in the tree:
+>
+> | Finding | Now |
+> |---|---|
+> | "no CORSMiddleware, no auth, no Origin check and no CSRF token anywhere in `bgate_ui`" (~line 241) | Mutations require a per-project bearer token from `.bgate/ui-token` **and** a same-origin check **and** a Host allowlist that rejects non-loopback names (DNS rebinding). See `bgate_ui/api.py`. |
+> | Top-10 #2 — no `PRAGMA busy_timeout` | Set on every connection (`bgate_core/db.py`). |
+> | Top-10 #3 — `art_qa_verdict('pass')` approves art with no human | A pass records evidence and leaves the revision a **candidate**; only `fail` is terminal (`bgate_mcp/server.py`, `art_qa_verdict`). |
+> | Top-10 #4 — broken packaging, no CI | `package-data` ships `static/**/*`, `templates/**`, engine schemas; CI runs the suite on Windows+Linux plus a clean-venv wheel smoke (`.github/workflows/ci.yml`). |
+> | Top-10 #7 — no spend or wall-clock ceiling | Spend ledger and pre-dispatch budget ceilings (`bgate_core/spend.py`), watchdog kill on runtime/cost. |
+> | Top-10 #8 — hook ignores Bash | The PreToolUse matcher is `Bash\|Write\|Edit\|MultiEdit\|NotebookEdit` (`bgate_cli/main.py`). |
+> | "gates that do not gate" — the cut line consults nothing | `queue.add` calls `scope.enforce` and refuses work filed under a cut tier (`bgate_core/queue.py`). |
+> | "asset leases written but never compared against the clock" | Expired leases are reclaimed on read (`bgate_core/assets.py`). |
+> | "no diff surface, no revert" | Runs are spawned on a captured base commit with a scoped revert (`bgate_core/gitwork.py`, `bgate_ui/routes/queue_ops.py`). |
+>
+> **Still open, honestly:** the UI-polish and error-envelope themes below are
+> only partly worked, and the "this has only ever run on one game on one
+> machine" observation still stands. If you find something here that is still
+> broken, a report is welcome — see [SECURITY.md](../SECURITY.md) for anything
+> security-shaped and [CONTRIBUTING.md](../CONTRIBUTING.md) for everything else.
+
 _8 game-developer personas audited assigned surfaces of the app as a static code review, then a synthesis pass deduped and ranked. 145 raw findings -> 30 to add, 77 to adjust, 10 themes._
 
 Date: 2026-07-25 · Branch: `main` @ `1344575`

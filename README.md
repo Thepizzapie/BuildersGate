@@ -1,10 +1,92 @@
 # Builders Gate
 
-An agentic game development pipeline over MCP. Design bible, lore canon, agent
-seats, and headless Blender/Godot adapters — so a fleet of agents can plan, build,
-and actually *playtest* a game instead of just writing about one.
+[![CI](https://github.com/Thepizzapie/BuildersGate/actions/workflows/ci.yml/badge.svg)](https://github.com/Thepizzapie/BuildersGate/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![Platform: Windows primary](https://img.shields.io/badge/platform-Windows%20primary-lightgrey)](#platform-support)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Local-first: one SQLite file per game project, no daemon, no cloud.
+**A game development pipeline that a fleet of AI agents can actually operate.**
+
+You install it, run `bgate init`, and you have a runnable Godot game plus a local
+dashboard. From there, agents drive the work through ~80 MCP tools: a director
+writes the design bible and draws a cut line; a narrative seat adds lore that a
+deterministic canon check gates; an art seat generates sprites against pinned
+references and locks the binaries while it edits them; a gameplay seat writes
+GDScript, runs the game headless, and takes a screenshot to see what it did. Then
+you play the build yourself, talking out loud, and your voice comes back as
+classified feedback joined to the game's own telemetry on one clock.
+
+The point is not that agents write code. It is that the pipeline **refuses** —
+out-of-scope work, a spend ceiling, a locked file, an agent trying to approve its
+own art. Approval is human-only throughout: an agent records a verdict, it does
+not sign off.
+
+Local-first: one SQLite file per game project, no daemon, no cloud, no build step
+in the frontend.
+
+**Who it is for:** solo developers and small teams running Claude Code (or
+another MCP client) who want an agent fleet to build a real, playable game and
+want to keep the steering wheel. If you want a chat that writes a design
+document, this is far too much machinery.
+
+## Project status
+
+Honest version, 2026-07-27, first public release. This is a solo project that
+has built real games on one machine, and it shows in both directions.
+
+**Works, and is exercised by the test suite and by daily use:** the MCP server
+and its tools; seats, lanes, asset locks and the PreToolUse hook; the Godot
+adapter (headless run/check, import with in-engine inspection, screenshots,
+scaffolds); the Blender adapter and the glTF round trip; both image providers;
+the dashboard; playtest capture through to a joined brief; `bgate publish`;
+`bgate doctor`. CI runs the suite plus a clean-venv wheel smoke test.
+
+**Half-built, and named as such:** the audio seat's workspace is a deliberate v1
+(sound library, playback, cue sheet — the UI says so in a banner). The
+dashboard's error surfacing is uneven; a failed mutation still sometimes renders
+as nothing happening (see [`docs/ui-ux-audit.md`](docs/ui-ux-audit.md)). Godot
+version detection reports "unknown" on some builds.
+
+**A proposal, not a product:** [`bgate_engine/`](bgate_engine/) is a design note
+with JSON schemas and **no runtime code** — nothing in the repository imports it.
+Its central claim (a second authoritative simulation in Python) was **withdrawn**
+after its own §16.4 experiment came back negative against two other titles. It
+ships because the schemas are packaged data and the reasoning is worth reading,
+not because it is a direction.
+
+**Provenance to weigh:** most of this was proven against a small number of games
+on one Windows machine. [`docs/qa-nitpick-audit.md`](docs/qa-nitpick-audit.md) is
+a harsh self-audit of exactly that; its top-10 blockers have since been worked,
+and its status header says which.
+
+## Contents
+
+**Getting it running**
+[Requirements](#requirements) ·
+[Platform support](#platform-support) ·
+[Setup](#setup-once) ·
+[Building a game with it](#building-a-game-with-it--the-loop)
+
+**The surfaces**
+[What's in the box](#whats-in-the-box) ·
+[The dashboard](#the-dashboard) ·
+[Seats](#seats) ·
+[Asset locking](#asset-locking) ·
+[Blender → Godot](#the-blender--godot-round-trip) ·
+[Templates](#templates) ·
+[Publishing](#publishing--the-arcade) ·
+[Playtest mode](#playtest-mode)
+
+**How it works, and what it cost to learn**
+[Layout](#layout) ·
+[The concepts that carry the design](#the-concepts-that-carry-the-design) ·
+[Gotchas found the hard way](#gotchas-found-the-hard-way) ·
+[Choices worth knowing](#choices-worth-knowing)
+
+**Meta**
+[Working on Builders Gate itself](#working-on-builders-gate-itself) ·
+[Docs](#docs) ·
+[Contributing, security, licence](#contributing-security-licence)
 
 ## What's in the box
 
@@ -19,8 +101,9 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 - **Godot adapter** — headless run/check, asset import with engine inspection,
   live game screenshots, project scaffolds with telemetry and F1 live-tuning
   autoloads already wired
-- **Painted-art leg (optional)** — gpt-image portraits/UI/backdrops and
-  reference-first sprite sets, with pinned reference anchors
+- **Painted-art leg (optional)** — portraits/UI/backdrops and reference-first
+  sprite sets with pinned reference anchors, from **two** providers: OpenAI
+  `gpt-image` and Krea's ~20-model catalogue, chosen per asset and per quality tier
 - **Asset registry** — content hashes + per-file locks for binaries (they don't
   merge), with a drift detector that names silent clobbers
 - **Playtest mode** — record the game window + your voice, whisper-transcribe,
@@ -29,6 +112,9 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 - **Dashboard** — nine views over the same store: overview, live agents you can
   steer mid-run, node editors, per-seat workspaces, playtests, assets, the
   project atlas, the world bible, and the iteration timeline
+- **The arcade** — `bgate publish` turns every game on the machine into a static
+  site with a page per game (real controls, read from the input map) and gets it
+  under the host's per-file limit, which Godot 4's 38MB wasm otherwise breaks
 - **Gates with teeth** — the cut line refuses out-of-scope work, a spend budget
   refuses an agent that would blow the ceiling, watchdogs kill a wedged run, and
   approval is human-only: an agent records a verdict, it does not sign off
@@ -36,15 +122,48 @@ Local-first: one SQLite file per game project, no daemon, no cloud.
 ## Requirements
 
 - Python 3.11+ (`pip install -e .` pulls mcp/fastapi/uvicorn/Pillow/openai)
+- An MCP client to drive it — [Claude Code](https://claude.com/claude-code) is
+  what it is developed against
 - [Godot 4.x](https://godotengine.org) — portable exe is fine; discovery checks
-  common install dirs, or set `BGATE_GODOT`
-- [Blender 4.x](https://blender.org) (optional, for the 3D leg) — or set `BGATE_BLENDER`
-- An OpenAI API key (optional, for painted art) — put `OPENAI_API_KEY=...` in a
-  `.env` at your game project's root; `.env` and `.env.*` are gitignored here
-  (they were not, for a while, which is how following these instructions
-  committed a key). Loaded per-project, never logged
+  common install dirs, or set `BGATE_GODOT`. Add the **Web export templates** if
+  you want `bgate publish` (a separate ~1 GB download from the editor)
+- [Blender 4.2+](https://blender.org) (optional, for the 3D leg) — or set
+  `BGATE_BLENDER`
+- `ffmpeg` + `ffprobe` on PATH (optional) — screen capture, frame extraction,
+  reading a recording's duration back
 - `faster-whisper` + `sounddevice` (optional, for playtest transcription):
   `pip install -e ".[stt,record]"`
+
+### API keys — two image providers, either or both
+
+The art seat needs at least one. Copy [`.env.example`](.env.example) to `.env`
+**at your game project's root** and fill in what you have:
+
+| Variable | Provider | What it buys |
+|---|---|---|
+| `OPENAI_API_KEY` | OpenAI `gpt-image` | Portraits, UI, backdrops, reference-first sprite sets. Prices by quality tier. |
+| `KREA_API_KEY` | [Krea](https://krea.ai) | A catalogue of ~20 models (Flux, Imagen, Nano Banana, Krea-2) behind one key, with `image_style_references` as first-class input — which is exactly what the art seat's pinned anchors are. Prices per model, per request. |
+
+Neither returns usable transparency (measured: `background="transparent"` came
+back as a brown gradient), so sprite work goes through the chroma-key path in
+`bgate_core/chroma.py` either way — see the module docstring in
+`bgate_adapters/krea.py` for the full comparison.
+
+`.env` and `.env.*` are gitignored here **and** in every project `bgate init`
+stamps out (they were not, for a while, which is how following these
+instructions committed a key). Keys are loaded per-project and never logged.
+
+Note that `bgate doctor` currently probes `OPENAI_API_KEY` only — a Krea-only
+setup will show `MISS openai_key` and exit 1 while working fine.
+
+### Platform support
+
+**Windows is the supported platform.** It is what everything is developed and
+verified on. **Linux is best-effort:** CI runs the suite there but marks it
+`continue-on-error`, because parts of the product shell out to Windows tooling
+(`taskkill`, `tasklist`); the tests that need it skip cleanly, the rest has
+simply never been depended on there. **macOS is untested.** Reports from Linux
+and macOS are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 `bgate doctor` answers all of the above in one pass and exits 1 if anything is
 unavailable — it is the line a setup script or a CI step runs instead of
@@ -55,12 +174,21 @@ reports `{available, path, version, min_required, reason}`.
 ## Setup (once)
 
 ```bash
-pip install -e .                          # from this repo
+git clone https://github.com/Thepizzapie/BuildersGate
+cd BuildersGate
+pip install -e .                          # or: pip install -e ".[dev,stt,record]"
+
 bgate doctor                              # python/key/ffmpeg/blender/godot/whisper
 bgate init emberfall --kind 2d            # a project AND a runnable game
 cd emberfall
+                                          # optional: drop a .env here with your
+                                          # image key — see .env.example
 bgate serve                               # dashboard on http://127.0.0.1:7788
 ```
+
+`bgate doctor` exits 1 if **anything** on the list is unavailable, which is the
+right behaviour for a CI step and a slightly alarming one for a human: you only
+need Python and Godot for the core loop. Read the rows, not the exit code.
 
 `bgate init` creates `.bgate/game.db`, unpacks the Godot template, and prints the
 absolute path it wrote to — into a NEW directory named after the project, not
@@ -183,7 +311,7 @@ Seven stable game-dev identities — director, narrative, gameplay, tech, art,
 audio, qa. A seat is an identity a working agent **adopts**, not a spawned
 process; there is never a per-task registration.
 
-```
+```text
 seat_brief(role)            # mission, lanes, bible, canon, promoted feedback, locks, notes
 seat_can_write(role, path)  # the write oracle — two gates, both must pass
 seat_post_note / seat_notes # the blackboard between seats
@@ -203,7 +331,7 @@ playtest feedback routed to that seat, and who holds which binaries.
 
 Binary files don't merge — two agents editing one `.blend` loses someone's work.
 
-```
+```text
 asset_lock(path, seat)      # claim BEFORE editing; a held lock errors, not queues
    …edit…
 asset_release(path, seat)   # frees it and records the new content hash
@@ -222,7 +350,7 @@ from **Setup** — but verify makes violations visible even without it.
 The spine: an agent models in Blender, exports glTF, and the asset lands usable
 in Godot — verified in the engine, not just on disk.
 
-```
+```text
 blender_export_gltf(out.glb, script=…)   # build + export; modifiers APPLIED
 godot_import_asset(project, out.glb)      # copy in, import, load in-engine
    → engine_view: {total_tris, meshes:[{tris, has_uv, material, aabb}]}
@@ -242,7 +370,7 @@ scale (shears children) — each cheap to catch here, expensive to debug in-engi
 
 ## Templates
 
-```
+```bash
 bgate init emberfall --kind 2d                # or 3d — the usual way in
 godot_scaffold(name="Emberfall", kind="2d")   # the same slice, from an agent
 godot_check_project(dest)                     # import + validate headless
@@ -269,11 +397,86 @@ hook, no file access, no overlay.
 Without `BGATE_TELEMETRY` set, the autoload is completely inert — open the game
 normally and nothing is written.
 
+## Publishing — the arcade
+
+One command turns every game on this machine into a static site anyone can play
+in a browser.
+
+```bash
+bgate publish                          # -> ./arcade, ready to deploy
+bgate publish --dry-run                # what would ship, and what would not
+bgate publish --serve                  # preview it exactly as the host serves it
+bgate publish --project emberfall      # just this one (repeatable)
+```
+
+It finds projects through the machine-wide registry (`~/.bgate/projects.json`),
+re-exports any game whose Web build is older than its source, and writes:
+
+```text
+arcade/index.html                    the grid
+arcade/games/<slug>/index.html       title, description, real controls, the embed
+arcade/games/<slug>/build/           the Godot Web export, verbatim
+arcade/_headers                      COOP/COEP + the compression rules below
+arcade/games.json                    machine-readable index of what shipped
+```
+
+**Every game gets a page, not just a canvas.** Controls come from the project's
+own input map — the same reader the dashboard uses — so the keys listed are the
+keys bound, and a game with no custom actions says so instead of inventing a
+scheme.
+
+Per-game copy lives in `<project>/.bgate/site.json` and overrides the store:
+
+```json
+{ "title": "Salt Circuit", "tagline": "The loser draws the track.",
+  "description": "Two cars, one pencil.\n\nLast place draws the next 200m.",
+  "tags": ["racing", "2 players"], "cover": "art/cover.png",
+  "credits": "Music placeholder.", "order": 1, "hidden": false }
+```
+
+Site-wide settings (title, author, links) come from `arcade.json` in the cwd, or
+`--config`. A nonexistent or malformed file degrades to defaults rather than
+aborting a build that is otherwise fine.
+
+### The 25 MiB problem, handled
+
+Godot 4's release `index.wasm` is ~38 MiB. **Cloudflare Pages and Workers reject
+any asset over 25 MiB**, so a naive deploy of any Godot 4 web build fails — after
+the upload, not before it. `bgate publish` measures every file against the
+target host's ceiling and gzips the ones that break it *under their original
+names*, emitting the matching `Content-Encoding` rules into `_headers`. 37.7 MiB
+becomes 9.6 MiB and the browser unwraps it at the transport layer.
+
+```bash
+bgate publish --host cloudflare   # 25 MiB/file, pre-compress  (default)
+bgate publish --host netlify      # 25 MiB/file, pre-compress
+bgate publish --host github       # 100 MiB/file, no compression needed
+bgate publish --host itch         # 1 GB/file
+bgate publish --host none         # ship the bytes as they are
+```
+
+A file still over the limit *after* compression is reported as an error with the
+URL and the size, because the alternative is finding out from a failed deploy.
+
+`--serve` reads the generated `_headers` and applies it, so the preview is the
+deployment: a plain `python -m http.server` would hand the browser gzip bytes
+labelled `application/wasm` and the game would die at the loader.
+
+The shipped Web preset (`templates/shared/export_presets.cfg`) exports
+**without threads** on purpose — threaded builds need cross-origin isolation on
+the host, which is exactly the thing free static hosts and iOS Safari do not
+reliably give you. `_headers` still sets COOP/COEP, so flipping
+`variant/thread_support=true` later is a re-export, not a hosting migration.
+
+`bgate doctor` checks for the Web export templates specifically: they are a
+separate ~1 GB download from the editor, and without them the export fails with
+an error that reads like a broken preset.
+
 ## Playtest mode
 
 Play the game, talk out loud, get an agent-readable brief.
 
-```
+```text
 playtest_check    → preflight: ffmpeg, mic SIGNAL, transcriber, target window
 playtest_start    → snapshots the iteration; records game + voice
    …play, and say what you like / what needs fixing…
@@ -303,31 +506,21 @@ the complete causal history.
 
 ## Layout
 
-```
-bgate_cli/        the `bgate` console script: init, serve, doctor, hook
+```text
+bgate_cli/        the `bgate` console script: init, serve, publish, doctor, hook
 bgate_core/       db, project, bible, lore, canon, scope, spend, queue,
                   workflows, artifacts, playtest, iterations, git, search
 bgate_mcp/        FastMCP server (stdio)
 bgate_adapters/   blender, godot, imagegen, sprites, recorder, transcribe
 bgate_ui/         dashboard backend + routes/ + the single-page static/ front end
+bgate_site/       `bgate publish`: the static arcade + its theme/
 templates/        Godot project skeletons (2d, 3d, shared autoloads)
 bgate_engine/     a design proposal + JSON schemas — no runtime code, nothing
-                  imports it. See bgate_engine/DESIGN.md for its actual status
-docs/             findings from real production runs, and the QA audits
+                  imports it. See bgate_engine/README.md for its actual status
+docs/             findings from real production runs, and the audits — docs/README.md
+                  indexes them; docs/history/ is archived handoff notes
 tests/
 ```
-
-## Working on Builders Gate itself
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ -q
-```
-
-CI runs the suite plus a clean-venv wheel smoke test, because the failure it
-exists to catch is invisible under `pip install -e .`: a wheel that shipped no
-JavaScript and no `templates/` produced a dashboard of 404s and a scaffolder that
-raised `FileNotFoundError`, and nothing had ever verified otherwise.
 
 ## The concepts that carry the design
 
@@ -451,10 +644,56 @@ across a pause "it" is anyone's guess.
 
 ## Choices worth knowing
 
-- **SQLite over Postgres** — Forge projects are per-game and often throwaway. A
-  daemon per game is a tax with no return. `.bgate/game.db` travels with the repo.
+- **SQLite over Postgres** — Builders Gate projects are per-game and often
+  throwaway. A daemon per game is a tax with no return. `.bgate/game.db` travels
+  with the repo.
 - **GDScript over .NET** — the agent loop is edit → headless run → result. .NET
   puts a compile step between every iteration, and GDScript is what the models
   have actually absorbed from Godot's docs and forums.
 - **FTS5 over embeddings, for now** — no daemon, no model download, no cold start.
   Semantic recall can layer in behind the same `find()` signature later.
+
+## Working on Builders Gate itself
+
+```bash
+pip install -e ".[dev]"
+python -m pytest -m "not slow" -q
+```
+
+`-m "not slow"` deselects the tests that drive real Blender and real whisper (and
+the in-suite wheel build). It is what CI runs; drop it only if you have both
+installed and want to wait.
+
+CI runs that suite on Windows and Linux, plus a clean-venv wheel smoke test,
+because the failure it exists to catch is invisible under `pip install -e .`: a
+wheel that shipped no JavaScript and no `templates/` produced a dashboard of 404s
+and a scaffolder that raised `FileNotFoundError`, and nothing had ever verified
+otherwise. Linux is `continue-on-error` — see [Platform support](#platform-support).
+
+## Docs
+
+[`docs/`](docs/) is write-ups of things that went wrong on real production runs,
+plus the audits. [`docs/README.md`](docs/README.md) indexes them with a line each.
+Two are worth flagging directly:
+
+- [`docs/gap-analysis.md`](docs/gap-analysis.md) — where the pipeline can improve
+  tenfold, every gap backed by something that actually happened and what it cost.
+- [`docs/qa-nitpick-audit.md`](docs/qa-nitpick-audit.md) — an eight-persona audit
+  that took the product apart. **Historical**: much of it is fixed, and its
+  status header says which. Read the header before believing a finding.
+
+## Contributing, security, licence
+
+Feedback is worth more here than patches — especially "it did not run on my
+machine" and "this gate can be walked around". See
+[CONTRIBUTING.md](CONTRIBUTING.md) for what to include in a report and
+[CHANGELOG.md](CHANGELOG.md) for the release state.
+
+This tool executes arbitrary GDScript, shells out, and spawns agent sessions with
+edit permissions. [SECURITY.md](SECURITY.md) states plainly what the localhost
+guards do protect against (a browser page reaching your dashboard, including via
+DNS rebinding) and what they do not (a hostile local user, a network deployment,
+untrusted input to the adapters). Report vulnerabilities privately through GitHub
+Security Advisories, not a public issue.
+
+MIT — see [LICENSE](LICENSE).

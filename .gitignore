@@ -26,6 +26,11 @@ venv/
 # Generated asset work directory
 .asset_work/
 
+# `bgate publish` output. Its default target is ./arcade in whatever directory
+# you ran it from, which is this one often enough to matter — and it contains a
+# whole Godot web export.
+arcade/
+
 .pytest_cache/
 .coverage
 

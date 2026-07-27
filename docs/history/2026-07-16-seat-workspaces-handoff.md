@@ -1,4 +1,18 @@
-# Overnight build — per-seat workspaces, reference system, art-QA reviewer
+# Archived: overnight build handoff — per-seat workspaces, reference system, art-QA reviewer
+
+> **Archived 2026-07-27. Historical document — do not read as current state.**
+>
+> This is the handoff note an agent fleet left after one overnight run, written
+> to the repo owner in the second person. It is kept because it is an honest
+> record of what a multi-agent run produces and how it reports itself, not
+> because any of it is still true.
+>
+> What changed since: the branch it describes as "nothing is committed" was
+> merged in `1344575` (PR #1) on 2026-07-18, and much of what it lists has been
+> reworked twice since — the art-QA verdict path no longer lets an agent
+> approve, and the seat workspaces have moved on. For current state read the
+> [README](../../README.md); for what was still wrong afterwards read
+> [qa-nitpick-audit.md](../qa-nitpick-audit.md).
 
 Branch: **`feat/seat-workspaces`** (off `06ebd0e`). **Nothing is committed** — the
 whole thing is uncommitted in the working tree for you to review, per your ask.
