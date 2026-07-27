@@ -2,6 +2,10 @@
 name = "builders-gate"
 version = "0.1.0"
 description = "Agentic game development pipeline — design bible, lore canon, and DCC/engine adapters over MCP."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Thepizzapie" }]
+keywords = ["gamedev", "mcp", "godot", "blender", "agents"]
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.2.0",
@@ -15,6 +19,10 @@ dependencies = [
 dev = ["pytest>=8.0", "httpx>=0.27"]
 stt = ["faster-whisper>=1.0"]
 record = ["sounddevice>=0.4", "numpy>=1.26"]
+
+[project.urls]
+Homepage = "https://github.com/Thepizzapie/BuildersGate"
+Issues = "https://github.com/Thepizzapie/BuildersGate/issues"
 
 [project.scripts]
 bgate = "bgate_cli.main:main"
@@ -35,6 +43,7 @@ include = [
     "bgate_mcp*",
     "bgate_adapters*",
     "bgate_cli*",
+    "bgate_site*",
     "bgate_ui*",
     "bgate_engine",
     "templates",
@@ -47,8 +56,16 @@ namespaces = true
 # wheel with no templates/ is a scaffolder that raises FileNotFoundError. Both
 # shipped that way until CI started asserting otherwise (see .github/workflows).
 bgate_ui = ["static/**/*"]
+# Same failure mode as the dashboard's JS: a wheel with no theme/ is a publish
+# that writes an index.html with no stylesheet next to it.
+bgate_site = ["theme/*"]
 bgate_engine = ["*.md", "schemas/**/*"]
-templates = ["**/*"]
+# `**/*` DOES NOT MATCH DOTFILES, and templates/shared/.gitignore is the file
+# that stops a user committing their API key in the project this scaffolds.
+# It has to be named explicitly or the wheel ships without it and the fix
+# only works from a source checkout -- the same class of bug as the wheel
+# that shipped with no JavaScript.
+templates = ["**/*", "**/.gitignore"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

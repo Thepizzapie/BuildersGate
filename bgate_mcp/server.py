@@ -100,6 +100,28 @@ def _root_hint() -> Optional[str]:
     return _CALL_ROOT.get() or (os.environ.get("BGATE_ROOT") or None)
 
 
+def _art_out(root, filename: str):
+    """`<root>/.bgate_out/art/<filename>`, CONTAINED.
+
+    An MCP tool argument is not user input in the usual sense -- it is model
+    output, and a model can be steered by anything it has read: a lore entry, a
+    playtest transcript, a file name in someone else's repo. `filename` used to
+    be joined straight onto the art directory, so "../../../.ssh/authorized_keys"
+    wrote attacker-chosen bytes wherever the desktop user could write. Every
+    filesystem route in bgate_ui already resolves-and-contains; this is the same
+    discipline on the model's side of the fence.
+    """
+    base = (_Path(root) / ".bgate_out" / "art").resolve()
+    out = (base / filename).resolve()
+    try:
+        out.relative_to(base)
+    except ValueError:
+        raise ValueError(
+            f"filename must stay inside .bgate_out/art — refusing {filename!r}"
+        ) from None
+    return out
+
+
 def _root() -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
     Also loads the project's .env (once) so secrets live with the project."""
@@ -847,7 +869,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     """
     try:
         root = _Path(_root())
-        out = root / ".bgate_out" / "art" / filename
+        out = _art_out(root, filename)
         from bgate_adapters import imagegen
         result = _chroma.generate(prompt, str(out), provider="openai",
                                   keyed=bool(transparent), size=size,
@@ -893,7 +915,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     """
     try:
         root = _Path(_root())
-        out = root / ".bgate_out" / "art" / filename
+        out = _art_out(root, filename)
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
         result = _chroma.generate(prompt, str(out), provider="openai",

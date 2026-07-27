@@ -31,8 +31,25 @@ venv/
 
 # Godot
 .godot/
+# Export presets are per-machine (they carry absolute template paths once the
+# editor touches them), so a game project's own is ignored — but the one the
+# scaffold STAMPS OUT is source, and ignoring it shipped a wheel that could not
+# export anything.
 export_presets.cfg
+!templates/shared/export_presets.cfg
 
 # Blender
 *.blend1
 *.blend2
+
+# Editor/agent launch config carries absolute interpreter paths and a
+# BGATE_ROOT pointing at whatever project the author happened to be building.
+# Ship .claude/launch.json.example instead.
+.claude/
+!.claude/launch.json.example
+
+# Screenshot fallback: bgate_mcp/server.py writes into the CWD when the project
+# root cannot be resolved, which litters the source tree with captures of
+# whatever was on screen. Ignored so a `git add -A` before a release cannot
+# sweep the author's desktop into the repo.
+bgate_shot_*.png

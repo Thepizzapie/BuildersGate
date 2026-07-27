@@ -111,3 +111,57 @@ class TestActor:
             api.require_human("agent:item-3", "approve")
         assert caught.value.status == 403
         assert "agent:item-3" in caught.value.message
+
+
+class TestHostGate:
+    """DNS rebinding, which every other check in the guard is blind to.
+
+    The origin and sec-fetch-site checks both compare the request against
+    whatever Host it carries, so a page on evil.com that rebinds its own DNS to
+    127.0.0.1 satisfies BOTH -- the browser genuinely believes it is
+    same-origin, which also means it is allowed to read the response. It then
+    fetches `/`, a safe method and therefore exempt from the token, scrapes
+    window.BGATE_TOKEN out of the HTML, and has the whole mutating surface --
+    including POST /api/godot/run, which is arbitrary GDScript, which is a shell.
+
+    The Host gate is the only thing that sees this, because it checks the name
+    the client ASKED FOR rather than comparing the request to itself.
+    """
+
+    def test_a_rebound_host_is_refused(self, guarded):
+        client, token = guarded
+        got = client.post("/api/queue", json={"seat": "tech", "title": "x"},
+                          headers={"X-Bgate-Token": token,
+                                   "Host": "evil.example:7788",
+                                   "Origin": "http://evil.example:7788",
+                                   "Sec-Fetch-Site": "same-origin"})
+        assert got.status_code == 403
+        assert got.json()["error"]["code"] == "bad_host"
+
+    def test_the_gate_also_covers_reads(self, guarded):
+        """`/` hands out the token, and GET is exempt from every other check.
+
+        A rebinding attack never needs to mutate anything through the front
+        door -- it only needs to READ one page. If the Host gate stopped at
+        mutations it would be decorative.
+        """
+        client, _ = guarded
+        got = client.get("/", headers={"Host": "evil.example:7788"})
+        assert got.status_code == 403
+
+    def test_a_rebound_host_is_refused_even_with_auth_disabled(self, guarded,
+                                                              monkeypatch):
+        """BGATE_NO_AUTH is a CI convenience; it is not a reason to answer to
+        a name the user never typed."""
+        client, _ = guarded
+        monkeypatch.setenv("BGATE_NO_AUTH", "1")
+        got = client.post("/api/queue", json={"seat": "tech", "title": "x"},
+                          headers={"Host": "evil.example:7788"})
+        assert got.status_code == 403
+
+    def test_localhost_still_works(self, guarded):
+        client, token = guarded
+        for host in ("127.0.0.1:7788", "localhost:7788"):
+            got = client.post("/api/queue", json={"seat": "tech", "title": host},
+                              headers={"X-Bgate-Token": token, "Host": host})
+            assert got.status_code < 400, (host, got.status_code, got.text)

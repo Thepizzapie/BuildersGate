@@ -25,7 +25,7 @@ Every evaluator hit these because the chrome is on every screen.
 2. **`0 live` pill (×3).** Green dot at zero reads "running" when nothing is; no
    noun — live *what*? → **CHANGE**: "0 agents live", neutral gray at 0, green ≥1.
 3. **Raw filesystem path in header/sidebar, clipped mid-string (×4).**
-   `C:\Users\adria\Desktop\downsizing` — noise/leak, cut with no ellipsis.
+   `C:\path\to\your\game\project` — noise/leak, cut with no ellipsis.
    → **CHANGE**: drop it (keep project name + engine), or start-truncate + tooltip.
 4. **Right-aligned low-contrast monospace subtitle is each page's only purpose
    statement (×2)**, floating far from the left heading across a wide empty middle.

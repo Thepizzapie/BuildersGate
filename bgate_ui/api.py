@@ -287,6 +287,21 @@ def require_human(actor: str, action: str = "approve") -> None:
 
 TOKEN_FILENAME = "ui-token"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+# The only names this dashboard will answer to. Anything else in the Host header
+# means the client did not type "localhost" -- it resolved some other name to
+# this machine, which is the shape of a DNS rebinding attack. Kept as a set of
+# HOSTNAMES, port stripped by the caller, so a user who runs on a non-default
+# port does not have to be enumerated here.
+#
+# "testserver" is Starlette's in-process TestClient default. It is on the list
+# deliberately and it is not a hole: an attacker's page has to reach this
+# process through a browser, which means resolving a name through DNS, and
+# "testserver" is not a registrable public name -- nobody can make a browser
+# send it. Leaving it off instead would have meant the suite could only run with
+# the gate disabled, and a security control the tests never exercise is one that
+# breaks silently.
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "testserver"}
 # Everything the browser needs before it can present a token.
 _OPEN_PATHS = ("/static/", "/play/", "/api/preview", "/favicon")
 
@@ -342,6 +357,30 @@ def install_guard(app, root_fn) -> None:
 
     @app.middleware("http")
     async def _guard(request: Request, call_next):
+        # THE HOST GATE COMES FIRST, AND IT IS NOT OPTIONAL -- not even under
+        # BGATE_NO_AUTH, because the whole point is that it closes a hole the
+        # other two checks cannot see.
+        #
+        # DNS REBINDING. Every other gate here reasons about ORIGIN RELATIVE TO
+        # HOST: `sec-fetch-site: same-origin` and `origin == host` both compare
+        # the request against whatever Host it happens to carry. An attacker
+        # page on evil.com:7788 that rebinds its own DNS to 127.0.0.1 satisfies
+        # both -- the browser genuinely believes it is same-origin, so it will
+        # also let the page READ the response. From there it fetches `/`, which
+        # is a safe method and therefore exempt, scrapes window.BGATE_TOKEN out
+        # of the HTML, and owns the entire mutating surface. That surface
+        # includes POST /api/godot/run, which executes arbitrary GDScript, which
+        # is OS.execute(), which is a shell as the desktop user.
+        #
+        # Binding to 127.0.0.1 does not help: the browser is on the machine. The
+        # fix is to check the name the client ASKED FOR, which a rebinding
+        # attack cannot forge without giving up the same-origin illusion it
+        # depends on.
+        host = (request.headers.get("host") or "").strip().lower()
+        if host and host.rsplit(":", 1)[0].strip("[]") not in _LOOPBACK_HOSTS:
+            return JSONResponse(status_code=403, content=error_body(
+                403, "request Host is not loopback", code="bad_host"))
+
         # Read the opt-out per request, not once at install time: the app is
         # imported when a test module is first collected, which is before any
         # fixture has had a chance to set the env var. Latching it here made the

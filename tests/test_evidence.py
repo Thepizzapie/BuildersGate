@@ -7,6 +7,7 @@ a real engine, so those tests skip without Godot rather than mocking the boundar
 in the boundary.
 """
 from __future__ import annotations
+import os
 
 import json
 
@@ -179,7 +180,12 @@ class TestGuards:
 # --- live capture (needs the real engine + a display) ----------------------
 
 
-HAYMAKER = r"C:\Users\adria\Desktop\haymaker\game"
+# A REAL PROJECT TO POINT AT, supplied by the environment rather than hardcoded.
+# These tests only mean anything against a project that actually exists on disk,
+# and hardcoding one names a private directory and makes the test dead for every
+# other reader. Unset -> skipped, which is the correct outcome for a stranger.
+_REAL_PROJECT = os.environ.get("BGATE_TEST_PROJECT", "")
+HAYMAKER = os.path.join(_REAL_PROJECT, "game") if _REAL_PROJECT else ""
 
 
 @pytest.mark.skipif(not godot.available()["available"],

@@ -12,6 +12,7 @@ would be testing the wrong thing. One integration test at the end loads a real
 project's spec from disk.
 """
 from __future__ import annotations
+import os
 
 import json
 
@@ -499,7 +500,12 @@ def test_find_filters_by_gate():
 # --- integration with a real project ---------------------------------------
 
 
-HAYMAKER = r"C:\Users\adria\Desktop\haymaker"
+# A REAL PROJECT TO POINT AT, supplied by the environment rather than hardcoded.
+# These tests only mean anything against a project that actually exists on disk,
+# and hardcoding one names a private directory and makes the test dead for every
+# other reader. Unset -> skipped, which is the correct outcome for a stranger.
+_REAL_PROJECT = os.environ.get("BGATE_TEST_PROJECT", "")
+HAYMAKER = _REAL_PROJECT
 
 
 def test_a_real_project_spec_loads_and_declares_its_source():
