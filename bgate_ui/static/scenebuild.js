@@ -36,21 +36,21 @@ window.SceneBuild = (() => {
   /* Colour carries the role, so a scene reads at a glance before any label is
      legible. These are the same eight buckets the server classifies into. */
   const ROLE = {
-    character:{ g:"☻", c:"#ff9f43", label:"characters" },
-    enemy:    { g:"☠", c:"#ff6a3d", label:"enemies" },
-    prop:     { g:"▤", c:"#c9a227", label:"props" },
-    item:     { g:"⚔", c:"#ffd166", label:"items" },
-    layer:    { g:"▦", c:"#2ec4b6", label:"layers" },
-    visual:   { g:"▧", c:"#4aa3ff", label:"visuals" },
-    collision:{ g:"⬡", c:"#7c8695", label:"collision" },
-    controller:{g:"⌁", c:"#9a7bff", label:"controllers" },
-    camera:   { g:"◉", c:"#57c7ff", label:"camera" },
-    audio:    { g:"♪", c:"#ff6ec7", label:"audio" },
-    fx:       { g:"✦", c:"#b06bff", label:"fx" },
-    ui:       { g:"⊞", c:"#8bd450", label:"ui" },
-    marker:   { g:"✜", c:"#7c8695", label:"markers" },
-    instance: { g:"⬢", c:"#57c7ff", label:"instances" },
-    node:     { g:"·", c:"#7c8695", label:"nodes" },
+    character:{ g:"☻", c:"var(--warn)", label:"characters" },
+    enemy:    { g:"☠", c:"var(--bad)", label:"enemies" },
+    prop:     { g:"▤", c:"var(--warn-line)", label:"props" },
+    item:     { g:"⚔", c:"var(--warn)", label:"items" },
+    layer:    { g:"▦", c:"var(--accent)", label:"layers" },
+    visual:   { g:"▧", c:"var(--text)", label:"visuals" },
+    collision:{ g:"⬡", c:"var(--text-3)", label:"collision" },
+    controller:{g:"⌁", c:"var(--c-narrative)", label:"controllers" },
+    camera:   { g:"◉", c:"var(--text)", label:"camera" },
+    audio:    { g:"♪", c:"var(--c-narrative)", label:"audio" },
+    fx:       { g:"✦", c:"var(--c-narrative)", label:"fx" },
+    ui:       { g:"⊞", c:"var(--good)", label:"ui" },
+    marker:   { g:"✜", c:"var(--text-3)", label:"markers" },
+    instance: { g:"⬢", c:"var(--text)", label:"instances" },
+    node:     { g:"·", c:"var(--text-3)", label:"nodes" },
   };
   const roleOf = r => ROLE[r] || ROLE.node;
 
@@ -113,7 +113,7 @@ window.SceneBuild = (() => {
       ".sb-b{padding:6px 10px;background:var(--plate);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;cursor:pointer}",
       ".sb-b:hover:not(:disabled){border-color:var(--ember)}",
       ".sb-b:disabled{opacity:.45;cursor:default}",
-      ".sb-b.go{background:var(--ember);color:#111;border-color:var(--ember);font-weight:600}",
+      ".sb-b.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
       ".sb-b.bad:hover{border-color:var(--bad);color:var(--bad)}",
       ".sb-b.wide{width:100%;margin-bottom:6px}",
       ".sb-chip{font-family:var(--mono);font-size:9.5px;padding:4px 9px;border:1px solid var(--seam);border-radius:999px;color:var(--ash);cursor:pointer;background:none;display:inline-flex;gap:5px;align-items:center}",
@@ -125,18 +125,24 @@ window.SceneBuild = (() => {
       ".sb-note{font-size:11px;color:var(--ash);line-height:1.5;margin-bottom:8px}",
       ".sb-note b{color:var(--bone)}",
       ".sb-warn{color:var(--warn)}",
+      // The panel's one honest dead-end: what the file holds when it holds
+      // nothing you can edit here.
+      ".sb-state{border:1px solid var(--warn-line);border-radius:8px;padding:8px 10px;margin-bottom:10px;background:var(--void)}",
+      ".sb-state .hd{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--warn);margin-bottom:5px}",
+      ".sb-state p{font-size:11px;color:var(--ash);line-height:1.5;margin:0}",
+      ".sb-state b{color:var(--bone)}",
       ".sb-row{display:flex;align-items:center;gap:6px;margin-bottom:5px}",
       ".sb-row label{font-family:var(--mono);font-size:9.5px;color:var(--ash2);flex:none;width:64px}",
       ".sb-row .sb-in{flex:1;min-width:0}",
       // node bodies
       ".sb-nb{font-family:var(--mono);font-size:10px;color:var(--ash);line-height:1.5}",
       ".sb-nb .ty{color:var(--ash2);font-size:9px;letter-spacing:.08em;text-transform:uppercase}",
-      ".sb-nb .sc{color:#9a7bff;word-break:break-all;font-size:9px}",
+      ".sb-nb .sc{color:var(--c-narrative);word-break:break-all;font-size:9px}",
       ".sb-nb .res{display:flex;gap:6px;align-items:center;margin-top:6px;padding:4px;border:1px solid var(--seam);border-radius:6px;background:var(--void)}",
-      ".sb-nb .res img{width:44px;height:34px;object-fit:contain;image-rendering:pixelated;background:#000;border-radius:4px;flex:none}",
+      ".sb-nb .res img{width:44px;height:34px;object-fit:contain;image-rendering:pixelated;background:var(--bg);border-radius:4px;flex:none}",
       ".sb-nb .res .k{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px}",
       ".sb-nb .res .k b{color:var(--bone);display:block}",
-      ".sb-nb .res.missing{border-color:#7d4338}",
+      ".sb-nb .res.missing{border-color:var(--bad-line)}",
       ".sb-nb audio{width:100%;height:26px;margin-top:5px}",
       ".sb-nb .acts{display:flex;gap:4px;margin-top:6px}",
       ".sb-nb .acts button{flex:1;padding:3px;background:var(--plate);border:1px solid var(--seam);border-radius:5px;color:var(--bone);font:inherit;font-size:9.5px;cursor:pointer}",
@@ -155,7 +161,7 @@ window.SceneBuild = (() => {
       ".sb-drawer>summary:hover{color:var(--bone)}",
       ".sb-pal button{font-family:var(--mono);font-size:9.5px;padding:3px 8px;border:1px solid var(--seam);border-radius:6px;background:var(--plate);color:var(--bone);cursor:pointer}",
       ".sb-pal button:hover{border-color:var(--ember)}",
-      ".sb-modal{position:fixed;inset:0;z-index:1300;background:rgba(4,5,7,.88);display:flex;align-items:center;justify-content:center;padding:38px}",
+      ".sb-modal{position:fixed;inset:0;z-index:1300;background:var(--overlay);display:flex;align-items:center;justify-content:center;padding:38px}",
       ".sb-mbox{background:var(--iron);border:1px solid var(--seam);border-radius:12px;width:min(740px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}",
       ".sb-mhd{padding:11px 14px;border-bottom:1px solid var(--seam);font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--bone)}",
       ".sb-mbd{padding:14px;overflow-y:auto}",
@@ -163,7 +169,7 @@ window.SceneBuild = (() => {
       ".sb-diff{background:var(--void);border:1px solid var(--seam);border-radius:7px;padding:9px;font-family:var(--mono);font-size:9.5px;color:var(--ash);white-space:pre-wrap;max-height:300px;overflow:auto}",
       ".sb-pick{display:flex;align-items:center;gap:9px;padding:6px 9px;border-radius:7px;cursor:pointer;font-family:var(--mono);font-size:10.5px;color:var(--bone)}",
       ".sb-pick:hover{background:var(--plate)}",
-      ".sb-pick img{width:40px;height:32px;object-fit:contain;image-rendering:pixelated;background:#000;border-radius:4px;border:1px solid var(--seam);flex:none}",
+      ".sb-pick img{width:40px;height:32px;object-fit:contain;image-rendering:pixelated;background:var(--bg);border-radius:4px;border:1px solid var(--seam);flex:none}",
       ".sb-pick .m{margin-left:auto;color:var(--ash2);font-size:9px}",
     ].join("\n");
     document.head.appendChild(s);
@@ -332,10 +338,15 @@ window.SceneBuild = (() => {
     side();
   }
 
-  function setSurface(next){
-    surface = next === "graph" ? "graph" : "viewport";
+  /* Leaving the viewport tears down SceneView, which throws away anything staged
+     there. unmount() asks about that and returns false when the answer is no —
+     an answer this used to discard, so it asked the question and switched
+     regardless. Nothing may change until it comes back true. */
+  async function setSurface(next){
+    const want = next === "graph" ? "graph" : "viewport";
+    if (want === "graph" && window.SceneView && !(await SceneView.unmount())) return;
+    surface = want;
     try { localStorage.setItem("bgate-scene-surface", surface); } catch (e) {}
-    if (window.SceneView && surface === "graph") SceneView.unmount();
     render();
   }
 
@@ -368,22 +379,87 @@ window.SceneBuild = (() => {
     } finally { selecting = false; }
   }
 
+  /* WHAT THE FILE ACTUALLY HOLDS, when the answer is "nothing you can edit".
+   *
+   * Two nodes in every tile-based scene are dead ends for an editor, and until
+   * now the inspector offered its usual six property rows for both of them as
+   * if they were ordinary: a TileMapLayer, whose tiles are packed bytes rather
+   * than nodes, and an empty container that a script fills with add_child when
+   * the game runs. Setting `position` on the second one is not wrong exactly —
+   * it is just about to be overwritten, which is worse than being refused.
+   *
+   * So say which it is, name the script where the file names one, and put the
+   * properties behind a fold so the panel stops implying they are the point.
+   */
+  const CONTAINER_TYPES = new Set(["Node", "Node2D", "Node3D", "CanvasLayer",
+    "YSort", "Control", "ParallaxBackground", "ParallaxLayer"]);
+
+  /* The script that fills a container: its own, else the nearest ancestor with
+     one. That is the end of what the FILE knows — anything further would be a
+     guess dressed as a fact. */
+  function fillerOf(n){
+    let node = n;
+    for (let i = 0; i < 12 && node; i++){
+      if (node.script) return { script: node.script, on: node.path };
+      if (node.parent === null || node.parent === undefined) return null;
+      node = data.nodes.find(x => x.path === (node.parent || "."));
+    }
+    return null;
+  }
+
+  function fileState(n){
+    if (!n || n.path === ".") return null;
+    if (n.type === "TileMapLayer" || n.type === "TileMap")
+      return { kind: "tiles", head: "this layer holds tiles, not nodes",
+        body: `Its cells are packed bytes on the layer itself, so there is `
+          + `nothing inside <b>${E(n.name)}</b> to select, name or script. `
+          + `Builders Gate can move, hide and re-skin the layer; adding or `
+          + `removing individual tiles is the game's own tile pipeline.` };
+    if (!CONTAINER_TYPES.has(n.type)) return null;
+    if (data.nodes.some(x => x.parent === n.path)) return null;
+    if ((n.resources || []).some(r => r.property !== "script")) return null;
+    const f = fillerOf(n);
+    return { kind: "runtime", head: "empty in the file, filled at run time",
+      body: f
+        ? `<b>${E(n.name)}</b> has no children here. <b>${
+            E(f.script.split("/").pop())}</b>${f.on === n.path ? ""
+            : ` on <b>${E(f.on === "." ? (data.root || "the root") : f.on)}</b>`
+          } builds its contents with add_child when the game runs, so anything `
+          + `you set on it is what the script starts from — not what you see `
+          + `in play.`
+        : `<b>${E(n.name)}</b> has no children in this file and no script here `
+          + `or above it says what fills it. Whatever appears inside it comes `
+          + `from code somewhere else in the project.` };
+  }
+
   function side(){
     const el = document.getElementById("sb-side");
     if (!el) return;
     const n = sel && data.nodes.find(x => x.path === sel);
     if (!n) return el.innerHTML = overview();
 
+    const state = fileState(n);
     const shown = new Set(COMMON.map(c => c.key));
     const others = Object.entries(n.properties || {})
       .filter(([k]) => !shown.has(k) && k !== "script");
     const res = (n.resources || []).filter(r => r.property !== "script");
     const info = roleOf(n.role);
+    const propsHtml = COMMON.map(c => `<div class="sb-row">
+        <label title="${E(c.hint)}">${E(c.key)}</label>
+        <input class="sb-in" id="sb-p-${E(c.key)}" placeholder="${E(c.hint)}"
+               value="${E((n.properties || {})[c.key] || "")}">
+        <button class="sb-b" onclick="SceneBuild.setProp('${E(c.key)}')">set</button>
+      </div>`).join("")
+      + (others.length ? `<div class="sb-h">also set</div>${others.map(([k, v]) => `
+        <div class="sb-prop"><b>${E(k)}</b> ${E(v.length > 34 ? v.slice(0, 33) + "…" : v)}
+          <span class="x" title="clear" onclick="SceneBuild.clearProp('${E(k)}')">✕</span></div>`).join("")}` : "");
 
     el.innerHTML = `
       <div class="sb-h">${E(info.label.replace(/s$/, ""))}</div>
       <div class="sb-note"><b>${E(n.name)}</b> · ${E(n.type || "node")}<br>
         <span style="font-family:var(--mono);font-size:9.5px;color:var(--ash2)">${E(n.path)}</span></div>
+      ${state ? `<div class="sb-state">
+        <div class="hd">${E(state.head)}</div><p>${state.body}</p></div>` : ""}
       ${n.path !== "." ? `<div class="sb-row">
         <label>name</label>
         <input class="sb-in" id="sb-name" value="${E(n.name)}">
@@ -393,7 +469,7 @@ window.SceneBuild = (() => {
       ${res.length ? res.map(r => `
         <div class="sb-note" style="margin-bottom:6px">
           ${r.preview ? `<img src="/api/preview?rel=${encodeURIComponent(r.preview)}"
-             style="width:100%;background:#000;border-radius:6px;image-rendering:pixelated;margin-bottom:5px">` : ""}
+             style="width:100%;background:var(--bg);border-radius:6px;image-rendering:pixelated;margin-bottom:5px">` : ""}
           <b>${E(r.property)}</b> → ${E(r.path)}${r.exists ? "" : ` <span class="sb-warn">missing</span>`}
           <div style="display:flex;gap:5px;margin-top:5px">
             <button class="sb-b" onclick="SceneBuild.swapMenu('${E(n.path)}','${E(r.property)}')">swap…</button>
@@ -413,27 +489,72 @@ window.SceneBuild = (() => {
           onclick="SceneBuild.swapMenu('${E(n.path)}','script')">${n.script ? "swap script…" : "attach a script…"}</button></div>
       </div>
 
-      <div class="sb-h">properties</div>
-      ${COMMON.map(c => `<div class="sb-row">
-        <label title="${E(c.hint)}">${E(c.key)}</label>
-        <input class="sb-in" id="sb-p-${E(c.key)}" placeholder="${E(c.hint)}"
-               value="${E((n.properties || {})[c.key] || "")}">
-        <button class="sb-b" onclick="SceneBuild.setProp('${E(c.key)}')">set</button>
-      </div>`).join("")}
-      ${others.length ? `<div class="sb-h">also set</div>${others.map(([k, v]) => `
-        <div class="sb-prop"><b>${E(k)}</b> ${E(v.length > 34 ? v.slice(0, 33) + "…" : v)}
-          <span class="x" title="clear" onclick="SceneBuild.clearProp('${E(k)}')">✕</span></div>`).join("")}` : ""}
+      ${state && state.kind === "runtime"
+        ? `<details class="sb-drawer"><summary>properties — a script overwrites
+             what this node holds</summary>${propsHtml}</details>`
+        : `<div class="sb-h">properties</div>${propsHtml}`}
 
-      <details class="sb-drawer"><summary>add a child to ${E(n.name)}</summary>
-        ${(types.groups || []).map(g => `
-          <div class="sb-palh">${E(g.label)}</div>
-          <div class="sb-pal">${g.types.map(t =>
-            `<button title="add a ${E(t)} under ${E(n.name)}"
-              onclick="SceneBuild.addNode('${E(t)}')">${E(t)}</button>`).join("")}</div>`).join("")}
-      </details>
+      ${childDrawer(n, types)}
 
       ${n.path !== "." ? `<div class="sb-h">danger</div>
         <button class="sb-b bad wide" onclick="SceneBuild.remove()">delete this node</button>` : ""}`;
+  }
+
+  /* The "add a child" palette used to render identically under every node, so
+     a TileMapLayer called Walls offered the full ~40-type list. Godot lets you
+     parent anything anywhere, but a node under a tilemap inherits its
+     transform and is organisationally lost — the exact mistake bible #37 (one
+     editable thing = one named node) exists to prevent, offered by the tool
+     that is supposed to enforce it.
+
+     Not a blanket ban: a body REQUIRES a CollisionShape2D child, Path2D needs
+     PathFollow2D, and a Marker2D attachment point under a Sprite2D is normal.
+     So the palette is ordered by what the selected type actually wants, and
+     the cases where children are the wrong answer say so instead of hiding. */
+  const WANTS = {
+    CharacterBody2D: ["collision", "visual"], RigidBody2D: ["collision", "visual"],
+    StaticBody2D: ["collision", "visual"], Area2D: ["collision", "visual"],
+    Path2D: ["controller"],
+    Node2D: ["visual", "character", "controller"], Node: ["controller"],
+    CanvasLayer: ["ui", "visual"], ParallaxBackground: ["layer"],
+    Sprite2D: ["controller"], AnimatedSprite2D: ["controller"],
+  };
+  // Types whose content is data, not children.
+  const LEAFY = {
+    TileMapLayer: "Tiles live in this layer's own data, not as child nodes — a " +
+      "node you add here will NOT become a tile. Put objects in a Node2D " +
+      "container beside this layer, so each one can be selected and named.",
+    TileMap: "Tiles live in this node's own data, not as child nodes — a node " +
+      "you add here will NOT become a tile. Put objects in a Node2D container " +
+      "beside it.",
+    CollisionShape2D: "A collision shape is a leaf — its shape is a resource, " +
+      "not a child. Add siblings under the body instead.",
+    CollisionPolygon2D: "A collision polygon is a leaf — add siblings under " +
+      "the body instead.",
+  };
+
+  function childDrawer(n, types){
+    const groups = (types.groups || []);
+    const leafWhy = LEAFY[n.type];
+    const wanted = WANTS[n.type] || null;
+    // Preferred roles first, everything else after — never hidden, because the
+    // uncommon case is still legitimate and a palette that lies is worse.
+    const ordered = wanted
+      ? groups.slice().sort((a, b) => {
+          const ai = wanted.indexOf(a.role), bi = wanted.indexOf(b.role);
+          return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+        })
+      : groups;
+    const pal = ordered.map(g => {
+      const first = wanted && wanted[0] === g.role;
+      return `<div class="sb-palh">${E(g.label)}${first ? " · usually what you want here" : ""}</div>
+        <div class="sb-pal">${g.types.map(t =>
+          `<button title="add a ${E(t)} under ${E(n.name)}"
+            onclick="SceneBuild.addNode('${E(t)}')">${E(t)}</button>`).join("")}</div>`;
+    }).join("");
+    return `<details class="sb-drawer"><summary>add a child to ${E(n.name)}</summary>
+      ${leafWhy ? `<div class="sb-note sb-warn">${E(leafWhy)}</div>` : ""}
+      ${pal}</details>`;
   }
 
   function overview(){

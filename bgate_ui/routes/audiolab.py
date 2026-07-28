@@ -144,7 +144,7 @@ def lab_list(q: Optional[str] = None, limit: int = 300) -> dict:
             "channels": info.get("channels"),
             "loops": bool(loop.get("enabled")),
             "editable": path.suffix.lower() in audiolab.WRITABLE,
-            "has_session": audiolab.session_path(path).is_file(),
+            "has_session": audiolab.existing_session_path(path) is not None,
         })
     found.sort(key=lambda d: d["mtime"], reverse=True)
     return {"sounds": found[:limit], "count": len(found[:limit]),
@@ -195,11 +195,20 @@ def lab_save(payload: dict) -> dict:
 
     existed = target.is_file()
     expect = payload.get("mtime")
-    if existed and expect is not None and int(expect) != int(target.stat().st_mtime):
+    overwrite = bool(payload.get("overwrite"))
+    if existed and expect is not None and int(expect) != int(target.stat().st_mtime) \
+            and not overwrite:
         raise api.conflict("the file changed on disk since you opened it",
                            rel=payload.get("rel"),
                            on_disk=int(target.stat().st_mtime),
                            expected=int(expect))
+    # A "save as" onto a different path sends no mtime (JSON.stringify drops the
+    # undefined key), so the check above short-circuits and an unrelated sound
+    # would be replaced without a word. Make the caller say so out loud.
+    if existed and expect is None and not overwrite:
+        raise api.ApiError(409, f"{payload.get('rel')} already exists — "
+                                "pass overwrite:true to replace it",
+                           code="exists", detail={"rel": payload.get("rel")})
 
     backup = None
     if existed:

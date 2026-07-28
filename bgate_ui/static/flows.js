@@ -1,8 +1,13 @@
-/* Studio — three visual editors built on the NodeCanvas engine:
- *   asset : the generation pipeline (Reference + Prompt → Generate → Candidate)
- *   agent : orchestration (queued tasks → seats → live agents)
- *   game  : a Godot-style editor workspace (viewport + files + run)
+/* Studio — visual editors built on the NodeCanvas engine:
+ *   workflows : the workflow builder (WF)
+ *   agent     : orchestration (queued tasks → seats → live agents)
  * Frontend only; wired to the existing endpoints. window.Studio is the dispatcher.
+ *
+ * Two flows were removed here. "Asset flow" duplicated the Assets library and
+ * the art seat, which both do the same generate-and-review loop with the real
+ * revision history behind it. "Game editor" could not edit anything — no save,
+ * no write path — it read the Godot tree, screenshotted, and dispatched queue
+ * items, all of which Playtests and Agents already do.
  */
 (function () {
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
@@ -18,15 +23,17 @@
      never added either, so nothing registered them. Loading is lazy and
      idempotent; a module that fails to load falls back to the built-in below. */
   const MODULES = {
-    asset: "/static/flow_asset.js",
     agent: "/static/flow_agent.js",
-    game: "/static/flow_game.js",
   };
   // Flows this file implements itself — the fallback when a module is absent.
   const BUILTIN = {
-    asset: { label: "Asset flow", icon: "assets" },
     agent: { label: "Agent flow", icon: "agents" },
-    game: { label: "Game editor", icon: "gameplay" },
+    // The sprite editor and the audio mixer were reachable only as fullscreen
+    // overlays launched from a small button on the Assets view. They are full
+    // editors, so they get tabs of their own; SpriteEdit.embed()/AudioLab.embed()
+    // render the same tools inline instead of over the page.
+    sprite: { label: "Sprite editor", icon: "art" },
+    audio: { label: "Audio mixer", icon: "audio" },
   };
   const CORE = { workflows: { label: "Workflows", icon: "studio" } };
 
@@ -86,6 +93,11 @@
       document.querySelectorAll("#studio-subnav .seat-tab").forEach(t => t.classList.toggle("active", t.dataset.flow === flow));
       const body = document.getElementById("studio-body");
       if (!body) return;
+      // Leaving a tab that hosted an embedded editor: hand it back its overlay
+      // behaviour, or the next launch from the Assets view would try to render
+      // into a container that is no longer on the page.
+      try { if (window.SpriteEdit && SpriteEdit.unembed) SpriteEdit.unembed(); } catch (e) {}
+      try { if (window.AudioLab && AudioLab.unembed) AudioLab.unembed(); } catch (e) {}
       body.innerHTML = ""; this._nc = null;
       try {
         if (flow === "workflows") {
@@ -105,118 +117,21 @@
                setCanvas: nc => { this._nc = nc; } };
     },
 
-    /* ══════════════════ ASSET FLOW ══════════════════ */
-    async asset(host) {
-      host.innerHTML = `<div class="st-wrap">
-        <div class="st-palette">
-          <div class="st-ph">Add node</div>
-          <button class="st-pi" data-add="reference">▦ Reference</button>
-          <button class="st-pi" data-add="prompt">✎ Prompt</button>
-          <button class="st-pi" data-add="model">✦ Generate</button>
-          <div class="st-ph" style="margin-top:16px">How it flows</div>
-          <div class="st-hint">Wire <b>Reference</b> + <b>Prompt</b> into <b>Generate</b>. Running Generate dispatches the art agent with your prompt and anchored refs; new <b>Candidate</b>s land on the right as it produces them.</div>
-        </div>
-        <div class="st-canvas" id="st-canvas"></div>
-        <div class="st-insp" id="st-insp"><div class="st-insp-empty">Select a node to inspect it.</div></div>
-      </div>`;
-      const [refs, arts] = await Promise.all([get("/api/refs"), get("/api/artifacts")]);
-      const refList = (refs.refs || []).slice(0, 3);
-      const cands = (arts.artifacts || []).filter(a => a.status === "candidate" || a.status === "approved").slice(0, 5);
-      const nodes = [], edges = [];
-      refList.forEach((r, i) => nodes.push({ id: "ref" + i, type: "reference", glyph: "▦", title: r.name, badge: r.kind, x: 30, y: 30 + i * 138, w: 176, data: r, ports: { out: [{ id: "o", label: "ref" }] } }));
-      const py = 30 + refList.length * 138 + 10;
-      nodes.push({ id: "prompt", type: "prompt", glyph: "✎", title: "Prompt", x: 30, y: py, w: 250, data: { text: "" }, ports: { out: [{ id: "o", label: "prompt" }] } });
-      nodes.push({ id: "model", type: "model", glyph: "✦", title: "Generate · gpt-image", badge: "run", x: 360, y: 150, w: 236, ports: { in: [{ id: "ref", label: "refs" }, { id: "prompt", label: "prompt" }], out: [{ id: "o", label: "image" }] } });
-      cands.forEach((a, i) => nodes.push({ id: "cand" + a.id, type: "candidate", glyph: "▣", title: a.logical_name, badge: a.status, x: 680, y: 30 + i * 150, w: 200, data: a, ports: { in: [{ id: "i", label: "in" }] } }));
-      refList.forEach((r, i) => edges.push({ from: ["ref" + i, "o"], to: ["model", "ref"] }));
-      edges.push({ from: ["prompt", "o"], to: ["model", "prompt"] });
-      if (cands[0]) edges.push({ from: ["model", "o"], to: ["cand" + cands[0].id, "i"] });
+    /* ══════════════════ SPRITE EDITOR ══════════════════ */
+    sprite(host) {
+      if (!window.SpriteEdit || !SpriteEdit.embed) {
+        host.innerHTML = `<div class="empty">sprite editor not loaded</div>`; return;
+      }
+      SpriteEdit.embed(host);
+    },
 
-      const nc = new NodeCanvas(document.getElementById("st-canvas"), {
-        nodes, edges, accent: "var(--ember)",
-        renderBody: n => this._assetBody(n),
-        onSelect: n => this._assetInspect(n),
-      });
-      nc.mount(); nc.fit(); this._nc = nc;
-      host.querySelectorAll(".st-pi").forEach(b => b.onclick = () => this._assetAdd(b.dataset.add));
-    },
-    // Pins are versioned files (<slug>.rN<suffix>) with a stored path, and the
-    // suffix is whatever was pinned — jpg and webp render blank if you assume
-    // .png. Always ask the ref for its own path.
-    refRel(ref) {
-      const p = String((ref && (ref.resolved_path || ref.path)) || "").replace(/\\/g, "/");
-      const cut = p.indexOf(".bgate/");
-      return cut === -1 ? p : p.slice(cut);
-    },
-    _assetBody(n) {
-      if (n.type === "reference") {
-        const rel = this.refRel(n.data);
-        return rel ? `<img class="st-thumb" src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">` : "";
+    /* ══════════════════ AUDIO MIXER ══════════════════ */
+    audio(host) {
+      if (!window.AudioLab || !AudioLab.embed) {
+        host.innerHTML = `<div class="empty">audio mixer not loaded</div>`; return;
       }
-      if (n.type === "candidate") {
-        return `<img class="st-thumb" src="/api/preview?rel=${encodeURIComponent(n.data.path)}" onerror="this.style.opacity=.12">`;
-      }
-      if (n.type === "prompt") return `<textarea class="st-ta" oninput="Studio._promptText=this.value" placeholder="Describe the asset to generate…">${esc(n.data.text || "")}</textarea>`;
-      if (n.type === "model") return `<button class="st-run" onclick="Studio.runGenerate(event)">▶ Run generate</button><div class="st-sub">dispatches the art agent</div>`;
-      return "";
+      AudioLab.embed(host);
     },
-    _assetInspect(n) {
-      const insp = document.getElementById("st-insp");
-      if (!insp) return;
-      if (!n) { insp.innerHTML = `<div class="st-insp-empty">Select a node to inspect it.</div>`; return; }
-      const kv = (k, v) => `<div class="st-kv"><span>${esc(k)}</span><span>${esc(v)}</span></div>`;
-      let body = `<div class="st-insp-h">${n.glyph} ${esc(n.title)}</div>`;
-      if (n.type === "candidate") {
-        const a = n.data;
-        body += `<img class="st-insp-img" src="/api/preview?rel=${encodeURIComponent(a.path)}" onerror="this.style.opacity=.12">`;
-        body += kv("status", a.status) + kv("revision", "r" + a.revision) + kv("model", a.model || "—") + kv("producer", a.producer || "—");
-        const qr = (a.metadata || {}).qa_review;
-        if (qr) body += kv("QA verdict", `${qr.verdict} · ${qr.score}/100`);
-        body += `<div class="st-insp-actions">
-          <button class="qbtn small" onclick="Studio.reviewCandidate(${a.id},'approved')">approve</button>
-          <button class="qbtn small ghost" onclick="Studio.reviewCandidate(${a.id},'rejected')">reject</button>
-          <button class="qbtn small ghost" onclick="Studio.regen(${a.id})">regenerate</button></div>`;
-      } else if (n.type === "reference") {
-        const rel = this.refRel(n.data);
-        if (rel) body += `<img class="st-insp-img" src="/api/preview?rel=${encodeURIComponent(rel)}" onerror="this.style.opacity=.12">`;
-        body += kv("name", n.data.name) + kv("revision", "r" + (n.data.revision || 1)) +
-                kv("kind", n.data.kind) + (n.data.note ? kv("note", n.data.note) : "");
-      } else if (n.type === "model") {
-        body += `<div class="st-insp-p">Connect references and a prompt, then run to dispatch the art seat. Candidates appear as the agent produces them.</div>`;
-      } else if (n.type === "prompt") {
-        body += `<div class="st-insp-p">The generation prompt. It becomes the art work item's brief.</div>`;
-      }
-      insp.innerHTML = body;
-    },
-    _assetAdd(type) {
-      if (!this._nc) return;
-      const id = type + "_" + Date.now().toString(36);
-      const base = { reference: { glyph: "▦", title: "Reference", w: 176, ports: { out: [{ id: "o", label: "ref" }] }, data: {} },
-        prompt: { glyph: "✎", title: "Prompt", w: 250, ports: { out: [{ id: "o", label: "prompt" }] }, data: { text: "" } },
-        model: { glyph: "✦", title: "Generate · gpt-image", badge: "run", w: 236, ports: { in: [{ id: "ref", label: "refs" }, { id: "prompt", label: "prompt" }], out: [{ id: "o", label: "image" }] } } }[type];
-      this._nc.addNode(Object.assign({ id, type, x: 120, y: 120 }, base));
-    },
-    async runGenerate(ev) {
-      if (ev) ev.stopPropagation();
-      const prompt = (this._promptText || "").trim();
-      if (!prompt) { toast("write a prompt first", true); return; }
-      const item = await post("/api/queue", { seat: "art", title: prompt.slice(0, 60), brief: "Generate art: " + prompt, priority: 3 });
-      if (item && item.id) { await post(`/api/queue/${item.id}/dispatch`, {}); toast("art agent dispatched"); }
-      else toast("could not queue", true);
-    },
-    // /react, not /review: a verdict has to leave a durable seat note (and a
-    // live steer) behind it, or rejecting teaches the next agent nothing.
-    async reviewCandidate(id, status) {
-      const verdict = status === "approved" ? "like" : "dislike";
-      const note = verdict === "dislike"
-        ? (window.prompt("Reject — what is off-model? (the art seat keeps this)", "") || "")
-        : "";
-      const r = await post(`/api/artifacts/${id}/react`, { verdict, note });
-      const err = (r && r.error && (r.error.message || r.error)) || (r && r.review_error) || null;
-      toast(err ? String(err) : status, !!err);
-      this.select("asset");
-    },
-    async regen(id) { await post(`/api/artifacts/${id}/regenerate`, { reason: "from studio" }); toast("regenerate queued"); },
 
     /* ══════════════════ AGENT FLOW ══════════════════ */
     async agent(host) {
@@ -224,7 +139,7 @@
         <div class="st-insp" id="st-insp"><div class="st-insp-empty">Select a task or agent.</div></div></div>`;
       const [q, ag] = await Promise.all([get("/api/queue"), get("/api/agents")]);
       const live = new Set((ag.agents || []).filter(a => a.state === "running").map(a => a.item_id));
-      const seatColors = { director: "#e8c05a", narrative: "#b083e8", gameplay: "#ff5c33", tech: "#4fa3ff", art: "#ff7ab8", audio: "#43d6a5", qa: "#9adb4f" };
+      const seatColors = { director: "var(--c-director)", narrative: "var(--c-narrative)", gameplay: "var(--c-gameplay)", tech: "var(--c-tech)", art: "var(--c-art)", audio: "var(--c-audio)", qa: "var(--c-qa)" };
       const items = (q.items || []).filter(i => i.status !== "done").slice(0, 10);
       const seats = [...new Set(items.map(i => i.seat))];
       const nodes = [], edges = [];
@@ -262,54 +177,6 @@
     async dispatchTask(id) { await post(`/api/queue/${id}/dispatch`, {}); toast("dispatched"); this.select("agent"); },
     async stopTask(id) { await post(`/api/queue/${id}/stop`, {}); toast("stop sent"); this.select("agent"); },
 
-    /* ══════════════════ GAME EDITOR ══════════════════ */
-    async game(host) {
-      host.innerHTML = `<div class="st-game">
-        <div class="st-gpanel">
-          <div class="st-ph">Scene · scripts</div>
-          <div class="st-tree" id="st-gtree"><div class="empty">loading…</div></div>
-        </div>
-        <div class="st-gviewport">
-          <div class="st-gbar">
-            <button class="qbtn small" onclick="Studio.gameBoot()">▶ boot build</button>
-            <button class="qbtn small ghost" onclick="Studio.gameShot()">screenshot</button>
-            <button class="qbtn small ghost" onclick="Studio.gameCheck()">build-check</button>
-            <span class="st-gstat" id="st-gstat"></span>
-          </div>
-          <div class="st-gstage" id="st-gstage"><button class="playbtn" onclick="Studio.gameBoot()">▶ boot current build · F1 tuning</button></div>
-        </div>
-        <div class="st-insp" id="st-insp"><div class="st-insp-empty">Pick a script to view it.</div></div>
-      </div>`;
-      const st = await get("/api/godot/status");
-      document.getElementById("st-gstat").textContent = st.available ? `Godot ${st.version || "detected"}` : "godot unavailable";
-      const tree = await get("/api/godot/files?kind=.gd");
-      const render = (nodes, d = 0) => (nodes || []).map(n => n.dir
-        ? `<div class="st-tdir" style="padding-left:${d * 12}px">▸ ${esc(n.name)}</div>` + render(n.children, d + 1)
-        : `<div class="st-tfile" style="padding-left:${d * 12 + 12}px" onclick="Studio.openScript('${esc(n.rel)}')">${esc(n.name)}</div>`).join("");
-      document.getElementById("st-gtree").innerHTML = render(tree.tree) || `<div class="empty">no scripts</div>`;
-    },
-    gameBoot() {
-      const stage = document.getElementById("st-gstage");
-      if (stage) stage.innerHTML = `<iframe class="st-gframe" src="/play/?t=${Date.now()}" allow="autoplay; fullscreen"></iframe>`;
-    },
-    async gameShot() {
-      document.getElementById("st-gstat").textContent = "capturing…";
-      const r = await post("/api/godot/screenshot", {});
-      const stage = document.getElementById("st-gstage");
-      if (r.ok && r.rel && stage) stage.innerHTML = `<img class="st-gimg" src="/api/preview?rel=${encodeURIComponent(r.rel)}&t=${Date.now()}">`;
-      document.getElementById("st-gstat").textContent = r.ok ? "screenshot" : "capture failed";
-    },
-    async gameCheck() {
-      document.getElementById("st-gstat").textContent = "checking…";
-      const r = await post("/api/godot/check", {});
-      document.getElementById("st-gstat").textContent = r.ok ? "✓ build ok" : `✕ ${(r.errors || []).length} errors`;
-    },
-    async openScript(rel) {
-      const insp = document.getElementById("st-insp");
-      insp.innerHTML = `<div class="st-insp-empty">loading…</div>`;
-      const d = await get("/api/godot/file?rel=" + encodeURIComponent(rel));
-      insp.innerHTML = `<div class="st-insp-h">⚙ ${esc(rel.split("/").pop())}</div><pre class="st-code">${esc(d.text || "")}</pre>`;
-    },
   };
   window.Studio = Studio;
 
@@ -325,16 +192,16 @@
       .st-canvas{flex:1;position:relative;min-width:0}
       .st-insp{width:250px;flex:none;background:var(--iron);border-left:1px solid var(--seam);padding:15px;overflow-y:auto}
       .st-insp-empty{color:var(--ash2);font-size:12px}
-      .st-insp-h{font-size:13px;font-weight:600;color:var(--bone);margin-bottom:12px}
-      .st-insp-img{width:100%;border-radius:8px;background:#000;margin-bottom:10px}
+      .st-insp-h{font-size:13px;font-weight:var(--fw-semi);color:var(--bone);margin-bottom:12px}
+      .st-insp-img{width:100%;border-radius:8px;background:var(--bg);margin-bottom:10px}
       .st-insp-p{font-size:12px;color:var(--ash);line-height:1.5;margin-top:8px}
       .st-insp-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
       .st-kv{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--seam)}
       .st-kv span:first-child{color:var(--ash2);font-family:var(--mono);font-size:11px}
       .st-kv span:last-child{color:var(--bone)}
-      .st-thumb{width:100%;height:96px;object-fit:contain;background:#000;border-radius:6px;display:block}
+      .st-thumb{width:100%;height:96px;object-fit:contain;background:var(--bg);border-radius:6px;display:block}
       .st-ta{width:100%;min-height:64px;resize:vertical;background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:12px;padding:7px}
-      .st-run{width:100%;padding:9px;background:var(--ember);color:#111;border:0;border-radius:8px;font:inherit;font-weight:600;font-size:12px;cursor:pointer}
+      .st-run{width:100%;padding:9px;background:var(--ember);color:var(--bg);border:0;border-radius:8px;font:inherit;font-weight:var(--fw-semi);font-size:12px;cursor:pointer}
       .st-sub{text-align:center;font-size:10px;color:var(--ash2);margin-top:6px}
       .st-tmeta{font-family:var(--mono);font-size:10.5px;color:var(--ash)}
       /* game editor */
@@ -347,10 +214,10 @@
       .st-gviewport{flex:1;display:flex;flex-direction:column;min-width:0}
       .st-gbar{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--seam)}
       .st-gstat{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ash)}
-      .st-gstage{flex:1;display:flex;align-items:center;justify-content:center;background:#050607;position:relative}
+      .st-gstage{flex:1;display:flex;align-items:center;justify-content:center;background:var(--bg);position:relative}
       .st-gframe{width:100%;height:100%;border:0}
       .st-gimg{max-width:100%;max-height:100%;object-fit:contain}
-      .st-code{font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#cdd6e4;margin-top:6px}
+      .st-code{font-family:var(--mono);font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:var(--text);margin-top:6px}
     `;
     document.head.appendChild(s);
   }
