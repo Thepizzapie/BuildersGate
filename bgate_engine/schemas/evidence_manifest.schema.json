@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bgate_engine/evidence_manifest",
+  "title": "EvidenceManifest",
+  "description": "Structured render evidence for a specific tick of a specific run. Extra buffers say what IS WHERE, not just what it looks like. Produced by the Godot playback adapter or a headless hitbox rasterizer. Every claim/assertion links to one of these.",
+  "type": "object",
+  "required": ["sim", "tick", "frame", "buffers"],
+  "properties": {
+    "sim":   { "type": "string", "examples": ["sim_91"] },
+    "tick":  { "type": "integer", "minimum": 0 },
+    "run":   { "$ref": "bgate_engine/run_identifier", "description": "The run this frame belongs to (so evidence is replayable)." },
+    "frame": { "type": "string", "description": "Project-relative path to the beauty frame.", "examples": ["evidence/sim_91/tick_212.png"] },
+    "buffers": {
+      "type": "array",
+      "description": "Which render buffers were emitted for this tick.",
+      "items": { "type": "string", "enum": ["beauty","entity_id","collision","navigation","depth","ui_layout","bone_overlay"] }
+    },
+    "entities": {
+      "type": "object",
+      "description": "Per-entity screen-space facts, keyed by entity id.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "screen_bounds": { "type": "array", "items": "number", "length": 4, "description": "[x0,y0,x1,y1] in screen pixels." },
+          "visible":       { "type": "boolean" },
+          "occlusion":     { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "description": "UI elements with their runtime value, so QA can assert the HUD matches sim state (e.g. health bar == Health.hp).",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "screen_bounds": { "type": "array", "items": "number", "length": 4 },
+          "value":         {}
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "sim": "sim_91", "tick": 212,
+      "frame": "evidence/sim_91/tick_212.png",
+      "buffers": ["beauty","entity_id","collision"],
+      "entities": { "fighter.tommy": { "screen_bounds": [110,232,154,270], "visible": true, "occlusion": 0 } },
+      "ui": { "player_health": { "screen_bounds": [36,24,310,32], "value": 92 } }
+    }
+  ]
+}

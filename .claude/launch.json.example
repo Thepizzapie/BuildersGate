@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "bgate-ui",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "bgate_cli.main",
+        "serve",
+        "--port",
+        "7788"
+      ],
+      "port": 7788,
+      "env": {
+        "BGATE_ROOT": "C:\\path\to\\your\\game\\project"
+      }
+    },
+    {
+      "name": "bgate-ui-alt",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "bgate_cli.main",
+        "serve",
+        "--port",
+        "7799"
+      ],
+      "port": 7799,
+      "env": {
+        "BGATE_ROOT": "C:\\path\to\\your\\game\\project"
+      }
+    }
+  ]
+}

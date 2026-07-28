@@ -1,0 +1,56 @@
+name: Bug report
+description: Something did not work. Setup failures especially welcome.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Windows is the supported platform; Linux is best-effort and macOS is
+        untested. Reports from all three are welcome — say which you are on.
+
+        Anything security-shaped goes to Security → Report a vulnerability
+        instead of here. See SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What you ran, what you expected, what happened
+      description: Include the exact command and the exact error text.
+      placeholder: |
+        $ bgate init emberfall --kind 2d
+        expected: a project directory
+        got: <paste the error>
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: Windows 11 26100 / Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python -V`.
+      placeholder: Python 3.12.4
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`bgate doctor --json` output"
+      description: >
+        Most first-run reports are answered by this. It reports only whether an
+        API key is set, never the key itself. If `bgate` itself will not run,
+        say so here instead.
+      render: json
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "`pip show builders-gate` version, or the commit you are on."
+    validations:
+      required: false

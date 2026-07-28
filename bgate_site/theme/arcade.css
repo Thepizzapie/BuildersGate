@@ -1,0 +1,169 @@
+/* The arcade's skin. Same palette as the Builders Gate dashboard — void black,
+   ember orange, mono for labels — so the public face and the workshop read as
+   one thing. Hand-written and dependency-free on purpose: a static site for
+   games should not ship a framework larger than the games. */
+
+:root{
+  --void:#000000; --iron:#050507; --plate:#0b0b0f; --plate2:#121218;
+  --seam:rgba(255,255,255,.075); --seam2:rgba(255,255,255,.14);
+  --ash:#9a9a9a; --ash2:#6a6a6a; --bone:#ffffff; --silver:#bdbdbd;
+  --ember:#ff6a3d; --ember-soft:rgba(255,106,61,.16);
+  --spark:#ffb23d;
+  --mono:"Cascadia Code","Cascadia Mono","Consolas",ui-monospace,monospace;
+  --sans:"Segoe UI Variable Display","Segoe UI",system-ui,-apple-system,sans-serif;
+  --page:1180px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--void); color:var(--bone); font-family:var(--sans);
+  font-size:15px; line-height:1.55;
+  background-image:radial-gradient(circle at 50% -20%, rgba(255,106,61,.10), transparent 60%);
+  background-repeat:no-repeat;
+}
+a{color:inherit}
+img{max-width:100%; display:block}
+
+.wrap{max-width:var(--page); margin:0 auto; padding:0 22px}
+.label{
+  font-family:var(--mono); font-size:10px; letter-spacing:.28em;
+  text-transform:uppercase; color:var(--ash2);
+}
+
+/* ---- masthead ---------------------------------------------------------- */
+.top{
+  border-bottom:1px solid var(--seam); position:sticky; top:0; z-index:20;
+  background:rgba(5,5,7,.86); backdrop-filter:blur(14px);
+}
+.top .wrap{display:flex; align-items:center; gap:14px; height:58px}
+.mark{display:flex; align-items:center; gap:10px; text-decoration:none}
+.mark svg{width:20px; height:20px; flex:none}
+.mark b{font-size:14px; letter-spacing:.02em}
+.top nav{margin-left:auto; display:flex; gap:18px}
+.top nav a{
+  font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--ash); text-decoration:none;
+}
+.top nav a:hover{color:var(--ember)}
+
+/* ---- hero -------------------------------------------------------------- */
+.hero{padding:76px 0 46px; border-bottom:1px solid var(--seam)}
+.hero h1{
+  margin:12px 0 0; font-size:clamp(34px, 6vw, 62px); line-height:1.02;
+  letter-spacing:-.025em; font-weight:600;
+}
+.hero p{margin:16px 0 0; max-width:60ch; color:var(--silver); font-size:17px}
+.count{margin-top:26px; display:flex; gap:26px; flex-wrap:wrap}
+.count div{font-family:var(--mono); font-size:11px; color:var(--ash2)}
+.count b{color:var(--bone); font-size:20px; display:block; letter-spacing:-.01em}
+
+/* ---- the grid ---------------------------------------------------------- */
+.grid{
+  display:grid; gap:20px; padding:44px 0 70px;
+  grid-template-columns:repeat(auto-fill, minmax(288px, 1fr));
+}
+.card{
+  border:1px solid var(--seam); background:var(--plate); border-radius:10px;
+  overflow:hidden; text-decoration:none; display:flex; flex-direction:column;
+  transition:border-color .16s ease, transform .16s ease;
+}
+.card:hover{border-color:var(--ember); transform:translateY(-3px)}
+.card:focus-visible{outline:2px solid var(--ember); outline-offset:2px}
+.shot{
+  aspect-ratio:16/10; background:var(--plate2); position:relative;
+  display:flex; align-items:center; justify-content:center; overflow:hidden;
+  background-image:
+    linear-gradient(180deg, rgba(255,106,61,.08), transparent 55%),
+    radial-gradient(circle at 1px 1px, rgba(255,255,255,.05) 1px, transparent 0);
+  background-size:auto, 22px 22px;
+}
+.shot img{width:100%; height:100%; object-fit:cover}
+.shot img.icon{width:44%; height:auto; object-fit:contain; opacity:.85}
+.card .body{padding:15px 16px 17px; display:flex; flex-direction:column; gap:7px; flex:1}
+.card h2{margin:0; font-size:17px; font-weight:600; letter-spacing:-.01em}
+.card p{margin:0; color:var(--ash); font-size:13.5px; line-height:1.5}
+.card .foot{
+  margin-top:auto; padding-top:10px; display:flex; align-items:center; gap:8px;
+  font-family:var(--mono); font-size:10px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ash2);
+}
+.card .play{margin-left:auto; color:var(--ember)}
+
+.tag{
+  font-family:var(--mono); font-size:9.5px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ash); border:1px solid var(--seam2);
+  border-radius:999px; padding:2px 8px;
+}
+
+.empty{
+  border:1px dashed var(--seam2); border-radius:10px; padding:40px 26px;
+  color:var(--ash); margin:44px 0 70px;
+}
+.empty code{
+  font-family:var(--mono); font-size:12.5px; color:var(--spark);
+  background:var(--plate2); border:1px solid var(--seam); border-radius:5px;
+  padding:2px 7px;
+}
+
+/* ---- one game ---------------------------------------------------------- */
+.back{
+  display:inline-flex; gap:8px; align-items:center; margin:30px 0 0;
+  font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ash); text-decoration:none;
+}
+.back:hover{color:var(--ember)}
+.gamehead{padding:22px 0 24px}
+.gamehead h1{margin:8px 0 0; font-size:clamp(28px,4.4vw,44px); letter-spacing:-.02em; font-weight:600}
+.gamehead p{margin:12px 0 0; color:var(--silver); max-width:66ch}
+.meta{margin-top:16px; display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+
+.stage{
+  border:1px solid var(--seam); border-radius:10px; overflow:hidden;
+  background:var(--iron); position:relative;
+}
+.stage iframe{
+  display:block; width:100%; aspect-ratio:16/9; border:0; background:#000;
+}
+.stagebar{
+  display:flex; align-items:center; gap:14px; padding:9px 14px;
+  border-top:1px solid var(--seam); background:var(--plate);
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--ash2);
+}
+.stagebar a{color:var(--ember); text-decoration:none}
+.stagebar a:hover{text-decoration:underline}
+.stagebar .right{margin-left:auto}
+
+.cols{display:grid; gap:26px; grid-template-columns:1fr; padding:34px 0 80px}
+@media (min-width:860px){.cols{grid-template-columns:1.6fr 1fr}}
+.panel{border:1px solid var(--seam); border-radius:10px; background:var(--plate); padding:18px 20px}
+.panel h3{
+  margin:0 0 12px; font-family:var(--mono); font-size:10px; letter-spacing:.28em;
+  text-transform:uppercase; color:var(--ash2); font-weight:400;
+}
+.panel p{margin:0 0 10px; color:var(--silver); font-size:14.5px}
+.panel p:last-child{margin-bottom:0}
+
+table.keys{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:11.5px}
+table.keys td{padding:5px 0; border-bottom:1px solid var(--seam); vertical-align:top}
+table.keys td:first-child{color:var(--ash); text-transform:uppercase; letter-spacing:.1em}
+table.keys td:last-child{text-align:right; color:var(--bone)}
+table.keys tr:last-child td{border-bottom:0}
+kbd{
+  font-family:var(--mono); font-size:11px; border:1px solid var(--seam2);
+  border-bottom-width:2px; border-radius:4px; padding:1px 6px; margin-left:4px;
+  background:var(--plate2);
+}
+
+/* ---- footer ------------------------------------------------------------ */
+footer{border-top:1px solid var(--seam); padding:26px 0 42px}
+footer .wrap{display:flex; gap:16px; flex-wrap:wrap; align-items:center}
+footer p{margin:0; font-family:var(--mono); font-size:10.5px; color:var(--ash2)}
+footer a{color:var(--ash); text-decoration:none}
+footer a:hover{color:var(--ember)}
+
+@media (prefers-reduced-motion:reduce){
+  .card{transition:none}
+  .card:hover{transform:none}
+}

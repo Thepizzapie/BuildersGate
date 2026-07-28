@@ -1,0 +1,299 @@
+"""Work queue + dispatch endpoints + the in-app play route."""
+from __future__ import annotations
+
+import json
+
+import pytest
+from fastapi.testclient import TestClient
+
+from bgate_core import db, queue
+from bgate_ui.app import app
+
+
+@pytest.fixture()
+def client(root, monkeypatch):
+    monkeypatch.setenv("BGATE_ROOT", str(root))
+    return TestClient(app)
+
+
+class TestQueueCore:
+    def test_lifecycle(self, root):
+        item = queue.add(root, "gameplay", "fix the jump", brief="too floaty now")
+        assert item["status"] == "queued"
+        assert queue.next_for(root, "gameplay")["id"] == item["id"]
+
+        done = queue.set_status(root, item["id"], "done", result="fixed")
+        assert done["status"] == "done"
+        assert queue.next_for(root, "gameplay") is None
+
+    def test_priority_orders_next(self, root):
+        queue.add(root, "art", "low", priority=0)
+        high = queue.add(root, "art", "high", priority=5)
+        assert queue.next_for(root, "art")["id"] == high["id"]
+
+    def test_unknown_seat_and_empty_title(self, root):
+        with pytest.raises(ValueError, match="seat"):
+            queue.add(root, "wizard", "x")
+        with pytest.raises(ValueError, match="title"):
+            queue.add(root, "art", "   ")
+
+    def test_promoted_playtest_items_flow_in_once(self, root):
+        with db.tx(root) as conn:
+            conn.execute("INSERT INTO playtest_session (id, name, slug, status) "
+                         "VALUES (1, 'R', 'r', 'ready')")
+            conn.execute(
+                "INSERT INTO playtest_item (session_id, t, kind, text, seat, status) "
+                "VALUES (1, 5.0, 'fix', 'jump is floaty', 'gameplay', 'promoted')")
+
+        first = queue.sync_promoted(root)
+        assert first["created"] == 1
+        assert "playtest item" in first["items"][0]["brief"]
+        assert queue.sync_promoted(root)["created"] == 0  # once, not every poll
+
+    def test_orbit_import_fails_soft(self, root):
+        got = queue.import_orbit(root, api_url="http://127.0.0.1:1")  # nothing there
+        assert got["created"] == 0
+        assert "unreachable" in got["error"]
+
+
+class TestQueueApi:
+    def test_add_and_list(self, client):
+        client.post("/api/queue", json={"seat": "tech", "title": "export web build"})
+        got = client.get("/api/queue").json()
+        assert got["items"][0]["title"] == "export web build"
+
+    def test_dispatch_missing_claude_is_honest(self, client, root, monkeypatch):
+        from bgate_ui import dispatch
+        monkeypatch.setattr(dispatch, "find_claude", lambda: None)
+        item = queue.add(root, "art", "paint")
+        got = client.post(f"/api/queue/{item['id']}/dispatch").json()
+        assert got["ok"] is False
+        assert "claude" in got["error"].lower()
+
+    def test_dispatch_spawns_with_seat_env_and_marks(self, client, root, monkeypatch):
+        # The dispatch contract is streamed: the CLI starts in stream-json
+        # input mode and the task arrives as the FIRST user message on stdin
+        # (not as a -p argument) so steer() can inject more turns later.
+        import io
+
+        from bgate_ui import dispatch
+
+        captured = {}
+
+        class FakeStdin(io.BytesIO):
+            def close(self):  # dispatch closes stdin at EOF; keep it readable
+                pass
+
+        class FakeProc:
+            pid = 4242
+            def __init__(self):
+                self.stdin = FakeStdin()
+            def poll(self):
+                return None
+            def kill(self):
+                pass
+        def fake_popen(args, **kw):
+            # dispatch() is not the only thing reaching for Popen. The liveness
+            # sweep asks the OS what a pid actually is, and with no psutil (it
+            # is a declared dependency of nothing, so CI has none while a dev
+            # box usually does) that falls back to `tasklist` via
+            # subprocess.run — which IS subprocess.Popen. Patching the module
+            # attribute catches both, and last-write-wins meant the assertions
+            # below ran against the tasklist argv on precisely the machines
+            # without psutil. Capture the spawn under test, by name.
+            if not args or args[0] != "claude":
+                return FakeProc()
+            captured["args"] = args
+            captured["env"] = kw["env"]
+            captured["cwd"] = kw["cwd"]
+            captured["proc"] = FakeProc()
+            return captured["proc"]
+
+        monkeypatch.setattr(dispatch, "find_claude", lambda: "claude")
+        monkeypatch.setattr(dispatch.subprocess, "Popen", fake_popen)
+        dispatch._live.clear()
+
+        item = queue.add(root, "art", "paint the thing")
+        got = client.post(f"/api/queue/{item['id']}/dispatch").json()
+        assert got["ok"] is True
+        assert captured["env"]["BGATE_SEAT"] == "art"
+        assert captured["cwd"] == str(root)
+        assert "--input-format" in captured["args"]  # stdin is the task channel
+        first_msg = json.loads(captured["proc"].stdin.getvalue().decode("utf-8"))
+        assert first_msg["type"] == "user"
+        prompt = first_msg["message"]["content"][0]["text"]
+        assert "queue_complete" in prompt and "progress/item-" in prompt
+        assert queue.get(root, item["id"])["status"] == "dispatched"
+        dispatch._live.clear()
+
+    def test_double_dispatch_refused(self, client, root, monkeypatch):
+        import io
+
+        from bgate_ui import dispatch
+
+        class FakeProc:
+            pid = 1
+            def __init__(self):
+                self.stdin = io.BytesIO()
+            def poll(self):
+                return None
+            def kill(self):
+                pass
+        monkeypatch.setattr(dispatch, "find_claude", lambda: "claude")
+        monkeypatch.setattr(dispatch.subprocess, "Popen", lambda *a, **k: FakeProc())
+        dispatch._live.clear()
+
+        item = queue.add(root, "qa", "verify")
+        assert client.post(f"/api/queue/{item['id']}/dispatch").json()["ok"] is True
+        second = client.post(f"/api/queue/{item['id']}/dispatch").json()
+        assert second["ok"] is False
+        dispatch._live.clear()
+
+
+class TestPlaytestFromApp:
+    def test_preflight_endpoint_reports_shape(self, client):
+        got = client.get("/api/playtest/preflight").json()
+        assert "ready" in got and "checks" in got
+
+    def test_stop_without_recording_is_honest(self, client):
+        got = client.post("/api/playtest/stop").json()
+        assert got["ok"] is False
+        assert "recording" in got["error"]
+
+    def test_stop_processes_and_queues_director_triage(self, client, root, monkeypatch):
+        """The routing the app exists for: session -> transcript -> a DIRECTOR
+        triage item in the queue, carrying the session id."""
+        from bgate_core import playtest as pt
+        from bgate_ui import app as ui_app
+
+        with db.tx(root) as conn:
+            conn.execute("INSERT INTO playtest_session (id, name, slug, status) "
+                         "VALUES (7, 'app session', 'app-session', 'recording')")
+
+        monkeypatch.setattr(pt, "stop", lambda r, sid, **kw: {
+            "session_id": sid, "transcript": {"ok": True, "items": 5}})
+
+        got = client.post("/api/playtest/stop").json()
+        assert got["ok"] is True and got["session_id"] == 7
+
+        import time
+        for _ in range(50):
+            if ui_app._pt_processing.get(7) == "ready":
+                break
+            time.sleep(0.05)
+        assert ui_app._pt_processing[7] == "ready"
+
+        items = queue.list_items(root, status="queued", seat="director")
+        assert len(items) == 1
+        assert items[0]["source"] == "playtest-triage"
+        assert items[0]["source_ref"] == "7"
+        assert "playtest_brief" in items[0]["brief"]
+        assert "session_id=7" in items[0]["brief"]
+
+    def test_failed_transcription_does_not_queue_triage(
+            self, client, root, monkeypatch):
+        from bgate_core import playtest as pt
+        from bgate_ui import app as ui_app
+
+        with db.tx(root) as conn:
+            conn.execute("INSERT INTO playtest_session (id, name, slug, status) "
+                         "VALUES (8, 'failed session', 'failed-session', 'recording')")
+        monkeypatch.setattr(pt, "stop", lambda r, sid, **kw: {
+            "session_id": sid,
+            "transcript": {"ok": False, "error": "whisper failed"}})
+
+        assert client.post("/api/playtest/stop").json()["ok"] is True
+        import time
+        for _ in range(50):
+            if str(ui_app._pt_processing.get(8, "")).startswith("failed"):
+                break
+            time.sleep(0.05)
+        assert queue.list_items(root, seat="director") == []
+
+    def test_status_endpoint(self, client):
+        got = client.get("/api/playtest/status").json()
+        assert "recording" in got and "processing" in got
+
+    def test_web_telemetry_and_review_endpoints(self, client, root):
+        with db.tx(root) as conn:
+            conn.execute(
+                "INSERT INTO playtest_session "
+                "(id, name, slug, status, started_epoch) "
+                "VALUES (9, 'web', 'web', 'recording', 1000)")
+            conn.execute(
+                "INSERT INTO playtest_item "
+                "(id, session_id, t, kind, text, seat) "
+                "VALUES (90, 9, 2.0, 'fix', 'jump is floaty', 'gameplay')")
+
+        event = client.post("/api/playtest/9/events", json={
+            "ts": 1002.0, "kind": "jump", "data": {"air_time": 0.9}})
+        assert event.status_code == 200
+        review = client.get("/api/playtest/9").json()
+        assert review["counts"]["events"] == 1
+        assert review["items"][0]["events"][0]["data"]["air_time"] == 0.9
+
+        promoted = client.post(
+            "/api/playtest/items/90/promote",
+            json={"seat": "tech", "kind": "fix"}).json()
+        assert promoted["status"] == "promoted"
+        assert promoted["seat"] == "tech"
+        # Promotion marks the moment noteworthy; it must NOT auto-create a work
+        # item (that produced blob/fragment tasks -- the director authors work
+        # from the full transcript by meaning).
+        assert queue.list_items(root) == []
+
+
+class TestPlayRoute:
+    def test_coi_headers_on_every_response(self, client):
+        got = client.get("/api/queue")
+        assert got.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+        assert got.headers["Cross-Origin-Embedder-Policy"] == "require-corp"
+
+    def test_serves_build_and_guards_escape(self, client, root):
+        web = root / "export" / "web"
+        web.mkdir(parents=True)
+        (web / "index.html").write_text("<html>game</html>", encoding="utf-8")
+
+        assert client.get("/play/").status_code == 200
+        assert "game" in client.get("/play/").text
+        assert client.get("/play/../../.env").status_code in (403, 404)
+
+    def test_no_build_is_a_clear_404(self, client):
+        got = client.get("/play/")
+        assert got.status_code == 404
+        assert "export" in got.json()["error"]["message"]
+
+
+class TestStaleBuildGuard:
+    """The stale-build bug that wasted a morning: the app served an 11-hour-old
+    export while the source had every requested change. status() must catch it."""
+
+    def test_missing_build_reads_stale(self, client, root):
+        got = client.get("/api/play/status").json()
+        assert got["stale"] is True
+
+    def test_source_newer_than_build_reads_stale(self, client, root):
+        import time
+        from bgate_core import scaffold
+        scaffold.new_project(root / "game", "T", kind="2d")
+        web = root / "export" / "web"
+        web.mkdir(parents=True)
+        (web / "index.pck").write_bytes(b"old")
+        time.sleep(0.02)
+        # touch a script AFTER the build
+        (root / "game" / "scripts" / "player.gd").write_text("# changed\n",
+                                                             encoding="utf-8")
+        got = client.get("/api/play/status").json()
+        assert got["built"] is True
+        assert got["stale"] is True
+
+    def test_build_newer_than_source_reads_fresh(self, client, root):
+        import time
+        from bgate_core import scaffold
+        scaffold.new_project(root / "game", "T", kind="2d")
+        time.sleep(0.02)
+        web = root / "export" / "web"
+        web.mkdir(parents=True)
+        (web / "index.pck").write_bytes(b"fresh")  # written after the source
+        got = client.get("/api/play/status").json()
+        assert got["stale"] is False
