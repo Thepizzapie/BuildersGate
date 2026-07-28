@@ -35,6 +35,13 @@ datas = [
 # Pillow ships binary plugins it loads dynamically.
 datas += collect_data_files("PIL", include_py_files=False)
 
+# WebView2Loader.dll — the native window loads this directly (see
+# bgate_ui/webview2.py). pywebview vendors it under
+# webview/lib/runtimes/<arch>/native/, and collect_data_files keeps that layout
+# so the same relative lookup works frozen. Without it the app silently loses
+# its window and falls back to the browser.
+datas += collect_data_files("webview", includes=["lib/runtimes/**/*.dll"])
+
 # ── hidden imports ──────────────────────────────────────────────────────────
 hiddenimports = [
     # uvicorn picks these at runtime from a string in its config.
