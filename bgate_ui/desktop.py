@@ -88,8 +88,13 @@ def _claim_singleton() -> bool:
 def run(port: Optional[int] = None, debug: bool = False) -> int:
     """Open the dashboard in a native window. Returns a process exit code."""
     if not _claim_singleton():
-        print("Builders Gate is already running — bringing nothing new up.",
-              file=sys.stderr)
+        # Same trap as the failure path below: a console=False build has no
+        # stderr, so a second double-click did nothing whatsoever and looked
+        # like the app was broken.
+        print("Builders Gate is already running.", file=sys.stderr)
+        _notify("Builders Gate is already running",
+                "Another copy is already open. Check your taskbar, or your "
+                "browser if it fell back to running there.")
         return 0
 
     try:
@@ -138,28 +143,85 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
         )
         return 1
 
-    webview.create_window(
-        WINDOW_TITLE,
-        url,
-        width=DEFAULT_SIZE[0],
-        height=DEFAULT_SIZE[1],
-        min_size=(max(MIN_SIZE[0], _MIN_USABLE_WIDTH), MIN_SIZE[1]),
-        background_color="#0a0a0c",   # --bg, so first paint is not a white flash
-        text_select=True,             # log lines and paths are meant to be copied
-    )
-
     try:
+        webview.create_window(
+            WINDOW_TITLE,
+            url,
+            width=DEFAULT_SIZE[0],
+            height=DEFAULT_SIZE[1],
+            min_size=(max(MIN_SIZE[0], _MIN_USABLE_WIDTH), MIN_SIZE[1]),
+            background_color="#0a0a0c",  # --bg, so first paint is not a white flash
+            text_select=True,            # log lines and paths are meant to be copied
+        )
         webview.start(debug=debug)
     except Exception as exc:                                   # noqa: BLE001
-        # The usual cause on Windows is a missing WebView2 runtime, which is
-        # preinstalled on 11 but not on every 10 build.
-        print(f"could not open the desktop window: {exc}", file=sys.stderr)
-        print(f"the dashboard is still served at {url} — try: bgate serve",
-              file=sys.stderr)
-        return 1
+        # The window is a convenience, not the product. Losing it must not cost
+        # the user the app.
+        #
+        # Two real causes seen so far. On Windows 10 the WebView2 runtime may
+        # not be present (it ships with 11). And in the PyInstaller build,
+        # pywebview reaches WebView2 through pythonnet, whose .NET hosting does
+        # not reliably initialise inside a bundle — "Failed to resolve
+        # Python.Runtime.Loader.Initialize". Fighting .NET hosting in a frozen
+        # app is not a fight worth having when the fallback is this good: the
+        # server is already up and the dashboard is a web app, so hand the user
+        # their own browser and keep serving.
+        #
+        # This used to print to stderr and return 1. In a console=False build
+        # there is no stderr anyone can see, so the app simply vanished on
+        # double-click while the disk spun. That was the actual bug report.
+        return _fallback_to_browser(url, exc, server, thread)
 
     # webview.start() returns when the last window closes. Ask uvicorn to stop
     # so an in-flight request gets to finish rather than dying with the process.
     server.should_exit = True
     thread.join(timeout=5.0)
     return 0
+
+
+def _fallback_to_browser(url, exc, server, thread) -> int:
+    """Open the default browser and keep serving until the user closes us."""
+    import webbrowser
+
+    print(f"could not open the desktop window: {exc}", file=sys.stderr)
+    print(f"opening {url} in your browser instead", file=sys.stderr)
+
+    opened = False
+    try:
+        opened = webbrowser.open(url)
+    except Exception:                                          # noqa: BLE001
+        pass
+
+    # A windowed build has no console, so this dialog is the only place the user
+    # will ever read this — and because it BLOCKS, it doubles as the thing
+    # keeping the process alive. Lead with that; a dialog people dismiss on
+    # reflex would take the server down with it.
+    where = (f"Your browser has been opened at:\n{url}"
+             if opened else
+             f"Open this in your browser:\n{url}")
+    _notify(
+        "Builders Gate is running — keep this open",
+        f"KEEP THIS MESSAGE OPEN while you use Builders Gate.\n"
+        f"Closing it shuts the server down.\n\n"
+        f"{where}\n\n"
+        f"The desktop window could not open on this machine, so the dashboard "
+        f"is running in your browser instead. Everything works the same.\n\n"
+        f"Technical detail: {exc}"
+    )
+
+    # The dialog has been dismissed, so the user is finished. Shut the server
+    # down rather than leaving an orphan holding a port.
+    server.should_exit = True
+    thread.join(timeout=5.0)
+    return 0
+
+
+def _notify(title: str, message: str) -> None:
+    """A message box, or stderr if even that is unavailable."""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, title, 0x40)  # MB_ICONINFORMATION
+        return
+    except Exception:                                          # noqa: BLE001
+        pass
+    print(f"{title}: {message}", file=sys.stderr)
