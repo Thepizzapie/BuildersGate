@@ -37,12 +37,16 @@ window.SceneView = (() => {
   const say = (m, k) => { try { toast(m, k); } catch (e) { console.warn(m); } };
   const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
 
+  // Token NAMES, not var() strings: most of these end up on the canvas, which
+  // cannot resolve var() and drops the assignment without saying so.
   const ROLE_TINT = {
-    character:"#ff9f43", enemy:"#ff6a3d", prop:"#c9a227", item:"#ffd166",
-    layer:"#2ec4b6", visual:"#4aa3ff", collision:"#7c8695",
-    controller:"#9a7bff", camera:"#57c7ff", audio:"#ff6ec7", fx:"#b06bff",
-    ui:"#8bd450", marker:"#7c8695", instance:"#57c7ff", node:"#7c8695",
+    character:"--warn", enemy:"--bad", prop:"--warn-line", item:"--warn",
+    layer:"--accent", visual:"--text", collision:"--text-3",
+    controller:"--c-narrative", camera:"--text", audio:"--c-narrative", fx:"--c-narrative",
+    ui:"--good", marker:"--text-3", instance:"--text", node:"--text-3",
   };
+  const tintVar = role => ROLE_TINT[role] || ROLE_TINT.node;
+  const tintOf = role => BGTheme.color(tintVar(role));
   const HANDLES = [
     ["nw",0,0],["n",.5,0],["ne",1,0],["e",1,.5],
     ["se",1,1],["s",.5,1],["sw",0,1],["w",0,.5],
@@ -56,8 +60,19 @@ window.SceneView = (() => {
                showBodies: true, outlines: true };
   let images = new Map();       // rel -> HTMLImageElement | null
   let drag = null, hover = null, busy = false;
-  // path -> { name, keys: Map(property -> {value, prev}) }. Staged, never written.
+  // path -> { name, keys: Map(property -> {value, prev, seq}) }. Staged, never written.
   let pending = new Map();
+  /* STRUCTURE stages too, in the same bar. Adding and deleting a node used to
+     be the graph panel's job and it wrote on confirm — so half the builder
+     committed on click and the other half waited for `apply`, which is exactly
+     the split that made accidental writes normal. These are ordered ops:
+       { op:"add", src, render, name, parent, wx, wy, seq }
+       { op:"delete", path, name, seq }
+     `seq` is monotonic across ops AND property edits so undo pops whichever
+     really was last. */
+  let staged = [], seq = 0;
+  let placing = null;      // an armed placement, waiting for a click on the canvas
+  let selStaged = -1;      // index into `staged` of a selected, not-yet-written add
   // View-only layer state. Hiding here never touches the scene's `visible`.
   let hiddenLayers = new Set(), isolated = null;
 
@@ -85,22 +100,44 @@ window.SceneView = (() => {
       ".sv-layer .eye{color:var(--lt)}",
       ".sv-layer .nm{padding-right:2px}",
       ".sv-layer .ct{padding:0 7px 0 2px;color:var(--ash2);font-size:9px}",
+      // A blank count reads as broken. These say WHICH kind of nothing it is:
+      // dimmed for empty in the file, warn-coloured for filled at run time.
+      ".sv-layer .ct.none{color:var(--ash2);opacity:.75;font-style:italic}",
+      ".sv-layer .ct.rt{color:var(--warn)}",
+      ".sv-layer.rt{border-style:dashed}",
       ".sv-layer:hover{border-color:var(--lt)}",
       ".sv-layer:hover .nm{color:var(--bone)}",
       ".sv-layer.off{opacity:.42}",
       ".sv-layer.off .nm{text-decoration:line-through}",
       ".sv-layer.solo{border-color:var(--lt);background:var(--plate)}",
       ".sv-layer.solo .nm{color:var(--bone)}",
-      ".sv-stage{flex:1;position:relative;min-height:0;background:#0a0b0e;overflow:hidden}",
+      ".sv-stage{flex:1;position:relative;min-height:0;background:var(--bg);overflow:hidden}",
       ".sv-stage canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}",
-      ".sv-hud{position:absolute;left:9px;bottom:9px;font-family:var(--mono);font-size:10px;color:var(--ash2);background:rgba(10,11,14,.85);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;pointer-events:none;white-space:pre}",
-      ".sv-tip{position:absolute;right:9px;bottom:9px;font-family:var(--mono);font-size:9.5px;color:var(--ash2);background:rgba(10,11,14,.85);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;pointer-events:none}",
+      ".sv-hud{position:absolute;left:9px;bottom:9px;font-family:var(--mono);font-size:10px;color:var(--ash2);background:var(--iron);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;pointer-events:none;white-space:pre}",
+      ".sv-tip{position:absolute;right:9px;bottom:9px;font-family:var(--mono);font-size:9.5px;color:var(--ash2);background:var(--iron);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;pointer-events:none}",
+      // It is a hint until it is a finding, and a finding you can click.
+      ".sv-tip.hot{pointer-events:auto;cursor:pointer;color:var(--warn);border-color:var(--warn)}",
+      // One column so the pending bar and the placing banner stack instead of
+      // sitting on top of each other — placing is exactly when both are up.
+      ".sv-top{position:absolute;left:9px;right:9px;top:9px;display:flex;flex-direction:column;gap:6px;pointer-events:none}",
+      ".sv-top>*{pointer-events:auto}",
       // Unmissable, because the alternative is writing to a live scene by
       // accident — which is exactly what this replaced.
-      ".sv-pending{position:absolute;left:9px;right:9px;top:9px;display:flex;align-items:center;gap:9px;background:rgba(24,16,10,.96);border:1px solid var(--warn);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;color:var(--warn)}",
+      ".sv-pending{display:flex;align-items:center;gap:9px;background:var(--iron);border:1px solid var(--warn);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;color:var(--warn)}",
       ".sv-pending .dot{width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none}",
       ".sv-pending .sv-b{color:var(--bone)}",
-      ".sv-pending .sv-b.go{background:var(--ember);color:#111;border-color:var(--ember);font-weight:600}",
+      ".sv-pending .sv-b.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
+      ".sv-place{display:flex;align-items:center;gap:9px;background:var(--iron);border:1px dashed var(--ember);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;color:var(--bone)}",
+      ".sv-place b{color:var(--ember);font-weight:400}",
+      // The scene picker. A list of the project's own .tscn files, which is the
+      // one thing the builder could never reach — every .tscn is kind="screen"
+      // to the atlas, and the swap picker filters those out on purpose.
+      ".sv-pick{position:absolute;right:9px;top:9px;width:min(300px,calc(100% - 18px));max-height:calc(100% - 18px);overflow-y:auto;background:var(--iron);border:1px solid var(--seam);border-radius:8px;padding:7px;z-index:3}",
+      ".sv-pick .hd{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ash2);padding:2px 4px 6px}",
+      ".sv-pick button{display:flex;width:100%;align-items:baseline;gap:7px;background:none;border:0;border-radius:6px;color:var(--bone);font:inherit;font-size:11px;text-align:left;padding:5px 7px;cursor:pointer}",
+      ".sv-pick button:hover{background:var(--plate)}",
+      ".sv-pick button span{margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--ash2)}",
+      ".sv-pick .no{font-size:11px;color:var(--ash);padding:4px 7px;line-height:1.5}",
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -124,6 +161,10 @@ window.SceneView = (() => {
           <button class="sv-b ${opts.showBodies?"on":""}" title="Bodies, collision and markers" onclick="SceneView.toggle('showBodies')">⬡</button>
           <button class="sv-b ${opts.showHidden?"on":""}" title="Nodes marked invisible" onclick="SceneView.toggle('showHidden')">◌</button>
           <span style="flex:1 1 auto;min-width:8px"></span>
+          <button class="sv-b" onclick="SceneView.placeMenu()"
+                  title="Place one of this project's scenes as a child of the selected node">＋ place</button>
+          <button class="sv-b" onclick="SceneView.removeSelected()"
+                  title="Delete the selected node — staged, like every other edit here">⌫</button>
           <button class="sv-b" onclick="SceneView.raise(1)" title="Bring forward">▲ z</button>
           <button class="sv-b" onclick="SceneView.raise(-1)" title="Send back">▼ z</button>
           <button class="sv-b" id="sv-undo" onclick="SceneView.undo()" title="Take back the last staged change — nothing has been written yet">↶</button>
@@ -134,14 +175,18 @@ window.SceneView = (() => {
         <div class="sv-stage" id="sv-stage">
           <canvas id="sv-canvas"></canvas>
           <div class="sv-hud" id="sv-hud"></div>
-          <div class="sv-tip" id="sv-tip">drag to move · handles scale · ring rotates · shift = free</div>
-          <div class="sv-pending" id="sv-pending" hidden>
-            <span class="dot"></span>
-            <span id="sv-pending-n"></span>
-            <span style="flex:1"></span>
-            <button class="sv-b" onclick="SceneView.discard()">discard</button>
-            <button class="sv-b go" onclick="SceneView.apply()">apply to the file…</button>
+          <div class="sv-tip" id="sv-tip" onclick="SceneView.nextBlank()">drag to move · handles scale · ring rotates · shift = free</div>
+          <div class="sv-top">
+            <div class="sv-pending" id="sv-pending" hidden>
+              <span class="dot"></span>
+              <span id="sv-pending-n"></span>
+              <span style="flex:1"></span>
+              <button class="sv-b" onclick="SceneView.discard()">discard</button>
+              <button class="sv-b go" onclick="SceneView.apply()">apply to the file…</button>
+            </div>
+            <div class="sv-place" id="sv-place" hidden></div>
           </div>
+          <div class="sv-pick" id="sv-pick" hidden></div>
         </div>
       </div>`;
     cv = host.querySelector("#sv-canvas");
@@ -151,19 +196,31 @@ window.SceneView = (() => {
     fit();
   }
 
-  function unmount(){
-    if (hasPending() && !confirm(
-        `${pendingCount()} change(s) have not been written. Leave and lose them?`))
-      return false;
-    pending.clear();
+  /* async, and the answer MATTERS: false means the operator kept their staged
+     work and the caller must not go through with whatever it was doing. */
+  async function unmount(){
+    if (hasPending() && !(await askConfirm({
+      title: `${pendingCount()} change(s) have not been written. Leave and lose them?`,
+      body: "Nothing staged has touched the file yet — leaving drops the whole batch.",
+      ok: "leave", danger: true,
+    }))) return false;
+    clearStaged();
     host = null; cv = null; sel = null; list = null;
     return true;
   }
 
+  /* Everything not yet on disk, gone. One place, so no reset path can forget
+     half of it and leave a ghost of a node that was never written. */
+  function clearStaged(){
+    pending.clear();
+    staged = []; selStaged = -1; placing = null;
+  }
+
   async function reload(){
     if (!scene) return;
-    pending.clear();
+    clearStaged();
     paintPending();
+    paintPlacing();
     const d = await readJSON(`/api/scene/render?scene=${encodeURIComponent(scene)}`, null);
     if (!d || d.__error){ say((d && d.__error) || "could not render that scene"); return; }
     list = d;
@@ -275,14 +332,69 @@ window.SceneView = (() => {
       // truth instead of a second field to keep in sync.
       if (it.path === "." || it.path.includes("/")) return;
       seen.set(it.path, { path: it.path, name: it.name, role: it.role,
-                          type: it.type, count: 0 });
+                          type: it.type, count: 0, kids: 0, item: it });
     });
     list.items.forEach(it => {
       const host = seen.get(layerOf(it));
-      if (host && it.draw && ["image", "rect", "tiles"].includes(it.draw.kind))
+      if (!host) return;
+      if (it.path !== host.path) host.kids++;
+      if (it.draw && ["image", "rect", "tiles"].includes(it.draw.kind))
         host.count += it.draw.kind === "tiles" ? it.draw.cells.length : 1;
     });
-    return [...seen.values()];
+    return [...seen.values()].map(l => ({ ...l, state: layerState(l) }));
+  }
+
+  /* WHAT IS IN THIS LAYER — a number, or the reason there is no number.
+   *
+   * The strip used to print a bare count and leave the cell blank when the
+   * count was zero, so "Ground 1200 · Props · Walls 320 · Characters" read as
+   * two working layers and two broken ones. They are not broken: Props is a
+   * TileMapLayer with no cells placed, and Characters is a container a script
+   * fills at run time. Both of those are facts the file states plainly, and a
+   * strip that omits them makes the user hunt for a bug that is not there.
+   */
+  const LAYER_KIND_STATE = { image:"art", rect:"art", camera:"camera frame",
+                             body:"collision" };
+  function layerState(l){
+    const d = (l.item && l.item.draw) || {};
+    if (d.kind === "tiles")
+      return { text: `${d.cells.length} tiles`, kind: "ok",
+               why: `${d.cells.length} tile(s) placed on this TileMapLayer` };
+    if (l.type === "TileMapLayer" || l.type === "TileMap")
+      return { text: d.reason || "no tiles", kind: "none",
+               why: `TileMapLayer — ${d.reason || "no tiles"}. Tiles are not `
+                    + "nodes, so there is nothing here to select or edit." };
+    if (l.kids)
+      return { text: `${l.kids} node${l.kids === 1 ? "" : "s"}`, kind: "ok",
+               why: `${l.kids} node(s) under ${l.name} in the file` };
+    if (d.kind !== "marker")
+      return { text: LAYER_KIND_STATE[d.kind] || "1 node", kind: "ok", why: "" };
+    const script = fillerScript(l.item);
+    if (script)
+      return { text: "run time", kind: "rt",
+               why: `${l.name} is empty in the FILE — ${script.split("/").pop()}`
+                    + " fills it with add_child when the game runs" };
+    // "no children in the file" is the chip's own case; spelling it out in a
+    // pill three words wide is worse than "empty" plus the reason on hover.
+    return { text: d.reason && d.reason !== "no children in the file"
+                   ? d.reason : "empty", kind: "none",
+             why: `${l.name} — ${d.reason || "nothing in the file"}. Nothing `
+                  + "here to select." };
+  }
+
+  /* Which script puts the contents there. The node's own if it has one, else
+     the nearest ancestor that does — that is as far as the FILE knows, and
+     naming a script that is merely nearby beats "something, at run time". */
+  function fillerScript(it){
+    if (!it || !list) return "";
+    let path = it.path;
+    for (let i = 0; i < 12; i++){
+      const node = list.items.find(n => n.path === path);
+      if (node && node.script) return node.script;
+      if (!path || path === ".") return "";
+      path = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
+    }
+    return "";
   }
 
   function layerVisible(path){
@@ -292,10 +404,21 @@ window.SceneView = (() => {
 
   function drawable(it){
     if (!it.visible && !opts.showHidden) return false;
+    if (deleted(it.path)) return false;
     if (it.path !== "." && !layerVisible(layerOf(it))) return false;
     const k = it.draw && it.draw.kind;
     if ((k === "body" || k === "marker") && !opts.showBodies) return false;
     return true;
+  }
+
+  /* Staged for deletion — and so is everything under it, because unwire takes
+     the subtree. Leaving the children on screen after their parent vanished
+     would misreport what `apply` is about to do. */
+  function deleted(path){
+    for (const op of staged)
+      if (op.op === "delete"
+          && (path === op.path || path.startsWith(op.path + "/"))) return true;
+    return false;
   }
 
   function toggleLayer(path){
@@ -323,14 +446,17 @@ window.SceneView = (() => {
     bar.innerHTML = `<span class="sv-l">layers</span>`
       + ls.map(l => {
           const on = layerVisible(l.path);
-          const tint = ROLE_TINT[l.role] || ROLE_TINT.node;
+          const tint = `var(${tintVar(l.role)})`;   // CSS, so var() is fine here
+          const st = l.state;
           return `<span class="sv-layer${on ? "" : " off"}${
-            isolated === l.path ? " solo" : ""}" style="--lt:${tint}">
+            isolated === l.path ? " solo" : ""}${
+            st.kind === "rt" ? " rt" : ""}" style="--lt:${tint}">
             <button class="eye" title="${on ? "Hide" : "Show"} ${E(l.name)} in this view only"
                     onclick="SceneView.toggleLayer('${E(l.path)}')">${on ? "◉" : "○"}</button>
             <button class="nm" title="Show only ${E(l.name)}"
                     onclick="SceneView.isolateLayer('${E(l.path)}')">${E(l.name)}</button>
-            <span class="ct">${l.count || ""}</span></span>`;
+            <span class="ct${st.kind === "ok" ? "" : ` ${st.kind}`}"
+                  title="${E(st.why || st.text)}">${E(st.text)}</span></span>`;
         }).join("")
       + (dirty ? `<button class="sv-b" onclick="SceneView.showAllLayers()">show all</button>` : "");
   }
@@ -343,9 +469,19 @@ window.SceneView = (() => {
       const it = items[i];
       const b = localBox(it);
       const [lx, ly] = toLocal(it, wx, wy);
-      if (lx >= b.x && ly >= b.y && lx <= b.x + b.w && ly <= b.y + b.h) return it;
+      if (lx >= b.x && ly >= b.y && lx <= b.x + b.w && ly <= b.y + b.h)
+        return owner(it);
     }
     return null;
+  }
+
+  /* Clicking the art inside an instanced scene selects THE INSTANCE, the way
+     Godot does. The sprite you hit lives in prop.tscn, not in this file — there
+     is no line here to move, so offering to move it would stage a write that
+     silently does nothing. */
+  function owner(it){
+    if (!it || !it.of) return it;
+    return list.items.find(i => i.path === it.of) || it;
   }
 
   function handleAt(sx, sy){
@@ -386,6 +522,12 @@ window.SceneView = (() => {
    * session, which reads as a dead panel rather than a throttled one. The
    * timeout is the escape hatch: whichever fires first does the work and
    * clears the flag. */
+
+  // A ground change invalidates every colour already painted into the canvas.
+  // BGTheme.flush() has already run by the time this fires (same event, earlier
+  // listener), so paint() picks up the new values.
+  try{ window.addEventListener("bgate:theme", () => { try{ paint(); }catch(e){} }); }catch(e){}
+
   function paint(){
     if (!host || !ctx || !list) return;
     if (paint._pending) return;
@@ -405,7 +547,7 @@ window.SceneView = (() => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const W = cv.width / dpr, H = cv.height / dpr;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#0a0b0e"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = BGTheme.color("--bg"); ctx.fillRect(0, 0, W, H);
 
     const v = list.viewport;
     if (opts.grid) grid(W, H);
@@ -413,32 +555,73 @@ window.SceneView = (() => {
     // The game's own frame, so "off screen" is visible as off screen.
     const [vx, vy] = toScreen(0, 0);
     ctx.save();
-    ctx.fillStyle = "rgba(12,14,18,.75)";
+    ctx.globalAlpha = .75;
+    ctx.fillStyle = BGTheme.color("--surface-1");
     ctx.fillRect(vx, vy, v[0] * view.z, v[1] * view.z);
-    ctx.strokeStyle = "rgba(232,226,216,.3)"; ctx.lineWidth = 1;
+    ctx.globalAlpha = .3;
+    ctx.strokeStyle = BGTheme.color("--text"); ctx.lineWidth = 1;
     ctx.strokeRect(vx + .5, vy + .5, v[0] * view.z, v[1] * view.z);
     ctx.restore();
 
     ctx.imageSmoothingEnabled = false;
     const shown = list.items.filter(drawable);
     shown.forEach(it => item(it));
-    if (sel) gizmo(sel);
+    staged.forEach((op, i) => { if (op.op === "add") ghost(op, i === selStaged); });
+    if (sel && !deleted(sel.path)) gizmo(sel);
     const DRAWS = ["image", "rect", "tiles"];
-    if (!shown.some(i => i.draw && DRAWS.includes(i.draw.kind)))
+    if (!shown.some(i => i.draw && DRAWS.includes(i.draw.kind))
+        && !staged.some(o => o.op === "add"))
       emptyState(vx, vy, v);
 
     const h = hover ? `  ·  ${hover.path}` : "";
     host.querySelector("#sv-hud").textContent =
       `${v[0]}×${v[1]}  ·  ${Math.round(view.z * 100)}%  ·  ${
         list.items.filter(drawable).length} drawn${h}`;
-    const blank = list.items.filter(i => i.draw && i.draw.kind === "marker"
-                                      && i.draw.reason).length;
+    // NAME them. A bare count is a number you cannot act on: "3 node(s) draw
+    // nothing" leaves you hunting the canvas for three things that are, by
+    // definition, invisible. Clicking the line walks them one by one.
+    const blanks = blankNodes();
     const tip = host.querySelector("#sv-tip");
-    if (tip) tip.textContent = blank
-      ? `${blank} node(s) draw nothing in the FILE — a script assigns them at run time`
-      : "drag to move · handles scale · ring rotates · shift = free";
+    if (tip){
+      const names = blanks.slice(0, 3).map(i => i.name).join(", ");
+      tip.textContent = blanks.length
+        ? `${blanks.length} node(s) draw nothing in the FILE — ${names}${
+            blanks.length > 3 ? ` +${blanks.length - 3} more` : ""} · click to step through`
+        : "drag to move · handles scale · ring rotates · shift = free";
+      tip.title = blanks.length
+        ? blanks.map(i => `${i.path} — ${i.draw.reason}`).join("\n") : "";
+      tip.classList.toggle("hot", blanks.length > 0);
+    }
     const u = document.getElementById("sv-undo");
     if (u) u.disabled = !pendingCount();
+  }
+
+  /* Every node that is in the file but puts nothing on screen, with the file's
+     own reason why. These are the nodes you cannot select on the canvas, so
+     they are exactly the ones a viewport has to name out loud. */
+  function blankNodes(){
+    if (!list) return [];
+    return list.items.filter(i => i.draw && i.draw.kind === "marker"
+                                  && i.draw.reason
+                                  // Insides of an instance are another file's
+                                  // problem, and an instance that DID open has
+                                  // a picture — its own node is just the anchor.
+                                  && !i.of && !(i.instance && i.drawn)
+                                  && !deleted(i.path));
+  }
+
+  /* Walk them. Selecting centres the gizmo on a node that draws nothing, which
+     is the only way to point at something invisible. */
+  let blankAt = 0;
+  function nextBlank(){
+    const blanks = blankNodes();
+    if (!blanks.length || !host) return;
+    if (blankAt >= blanks.length) blankAt = 0;
+    const it = blanks[blankAt++];
+    const r = host.querySelector("#sv-stage").getBoundingClientRect();
+    view.x = r.width / 2 - it.x * view.z;
+    view.y = r.height / 2 - it.y * view.z;
+    select(it.path);
   }
 
   /* An empty frame is indistinguishable from a broken viewport, and this tool
@@ -446,8 +629,7 @@ window.SceneView = (() => {
    * node, or a scene whose art is all assigned at run time. Say which. */
   function emptyState(vx, vy, v){
     const n = list.items.length;
-    const runtime = list.items.filter(i => i.draw && i.draw.kind === "marker"
-                                        && i.draw.reason).length;
+    const runtime = blankNodes().length;
     const lines = runtime
       ? [`nothing to draw yet`,
          `${runtime} of ${n} node(s) get their art from a script at run time,`,
@@ -462,10 +644,10 @@ window.SceneView = (() => {
     ctx.save();
     ctx.textAlign = "center";
     const cx = vx + v[0] * view.z / 2, cy = vy + v[1] * view.z / 2;
-    ctx.fillStyle = "#e8e2d8";
+    ctx.fillStyle = BGTheme.color("--text");
     ctx.font = "13px ui-monospace,monospace";
     ctx.fillText(lines[0], cx, cy - 8);
-    ctx.fillStyle = "#7c8695";
+    ctx.fillStyle = BGTheme.color("--text-3");
     ctx.font = "11px ui-monospace,monospace";
     lines.slice(1).forEach((line, i) => ctx.fillText(line, cx, cy + 12 + i * 15));
     ctx.restore();
@@ -475,7 +657,8 @@ window.SceneView = (() => {
     const step = Math.max(4, opts.snap) * view.z;
     if (step < 6) return;
     ctx.save();
-    ctx.strokeStyle = "rgba(232,226,216,.05)"; ctx.lineWidth = 1;
+    ctx.globalAlpha = .05;
+    ctx.strokeStyle = BGTheme.color("--text"); ctx.lineWidth = 1;
     ctx.beginPath();
     for (let x = view.x % step; x < W; x += step){ ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, H); }
     for (let y = view.y % step; y < H; y += step){ ctx.moveTo(0, y + .5); ctx.lineTo(W, y + .5); }
@@ -495,33 +678,19 @@ window.SceneView = (() => {
     const mod = it.modulate || [1, 1, 1, 1];
     if (mod[3] < 1) ctx.globalAlpha *= mod[3];
 
-    if (d.kind === "tiles"){
-      tiles(d);
-    } else if (d.kind === "image"){
-      const im = images.get(d.rel);
-      if (im){
-        const r = d.region || [0, 0, im.width, im.height];
-        ctx.drawImage(im, r[0], r[1], r[2], r[3], b.x, b.y, b.w, b.h);
-      } else {
-        ctx.fillStyle = "rgba(120,60,40,.5)";
-        ctx.fillRect(b.x, b.y, b.w, b.h);
+    if (!shape(d, b)){
+      if (d.kind === "camera"){
+        ctx.strokeStyle = tintOf("camera"); ctx.lineWidth = 2 / (view.z * it.sx);
+        ctx.setLineDash([8 / (view.z * it.sx), 6 / (view.z * it.sx)]);
+        ctx.strokeRect(b.x, b.y, b.w, b.h);
+        ctx.setLineDash([]);
+      } else if (opts.showBodies){
+        ctx.strokeStyle = tintOf(it.role); ctx.lineWidth = 1 / (view.z * it.sx);
+        ctx.globalAlpha *= .8;
+        ctx.beginPath();
+        ctx.moveTo(-7, 0); ctx.lineTo(7, 0); ctx.moveTo(0, -7); ctx.lineTo(0, 7);
+        ctx.stroke();
       }
-    } else if (d.kind === "rect"){
-      const c = d.color || [.4, .4, .45, .9];
-      ctx.fillStyle = `rgba(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0},${c[3]})`;
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-    } else if (d.kind === "camera"){
-      ctx.strokeStyle = ROLE_TINT.camera; ctx.lineWidth = 2 / (view.z * it.sx);
-      ctx.setLineDash([8 / (view.z * it.sx), 6 / (view.z * it.sx)]);
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-      ctx.setLineDash([]);
-    } else if (opts.showBodies){
-      const tint = ROLE_TINT[it.role] || ROLE_TINT.node;
-      ctx.strokeStyle = tint; ctx.lineWidth = 1 / (view.z * it.sx);
-      ctx.globalAlpha *= .8;
-      ctx.beginPath();
-      ctx.moveTo(-7, 0); ctx.lineTo(7, 0); ctx.moveTo(0, -7); ctx.lineTo(0, 7);
-      ctx.stroke();
     }
     ctx.restore();
 
@@ -529,11 +698,16 @@ window.SceneView = (() => {
     // SpriteFrames is assigned by a script at load — this view shows what the
     // scene FILE declares, and silence there reads as a broken viewport rather
     // than as the accurate answer it is.
-    if (d.kind === "marker" && d.reason && opts.showBodies && view.z > 0.45){
+    // An instance whose scene opened is not one of these: its own entry draws
+    // nothing because its CHILDREN carry the picture, and labelling forty desks
+    // "instance of prop.tscn" buries the canvas in captions.
+    if (d.kind === "marker" && d.reason && opts.showBodies && view.z > 0.45
+        && !(it.instance && it.drawn)){
       const [mx, my] = toScreen(it.x, it.y);
       ctx.save();
       ctx.font = "10px ui-monospace,monospace";
-      ctx.fillStyle = (ROLE_TINT[it.role] || ROLE_TINT.node) + "cc";
+      ctx.globalAlpha *= .8;
+      ctx.fillStyle = tintOf(it.role);
       ctx.fillText(`${it.name} — ${d.reason}`, mx + 10, my + 3);
       ctx.restore();
     }
@@ -541,13 +715,42 @@ window.SceneView = (() => {
     if (opts.outlines && d.kind !== "marker"){
       const pts = corners(it).map(p => toScreen(p[0], p[1]));
       ctx.save();
-      ctx.strokeStyle = (ROLE_TINT[it.role] || ROLE_TINT.node) + "55";
+      ctx.globalAlpha *= .33;
+      ctx.strokeStyle = tintOf(it.role);
       ctx.lineWidth = 1;
       ctx.beginPath();
       pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
       ctx.closePath(); ctx.stroke();
       ctx.restore();
     }
+  }
+
+  /* The picture itself, in the caller's already-transformed space. Split out of
+     item() so a placement that is not in the file yet can be drawn with exactly
+     the same code — a preview drawn by a second, nearly-identical painter is a
+     preview that lies about where the thing will land. Returns whether it drew;
+     the caller owns the non-picture cases (camera frame, body cross). */
+  function shape(d, b){
+    if (d.kind === "tiles"){ tiles(d); return true; }
+    if (d.kind === "image"){
+      const im = images.get(d.rel);
+      if (im){
+        const r = d.region || [0, 0, im.width, im.height];
+        ctx.drawImage(im, r[0], r[1], r[2], r[3], b.x, b.y, b.w, b.h);
+      } else {
+        ctx.fillStyle = BGTheme.color("--bad");
+        ctx.globalAlpha *= .5;
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+      }
+      return true;
+    }
+    if (d.kind === "rect"){
+      const c = d.color || [.4, .4, .45, .9];
+      ctx.fillStyle = `rgba(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0},${c[3]})`;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      return true;
+    }
+    return false;
   }
 
   /* Every placed cell, painted in the layer's local space (the caller has
@@ -576,7 +779,7 @@ window.SceneView = (() => {
   function gizmo(it){
     const pts = corners(it).map(p => toScreen(p[0], p[1]));
     ctx.save();
-    ctx.strokeStyle = "var(--ember)"; ctx.strokeStyle = "#ff6a3d"; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = BGTheme.color("--accent"); ctx.lineWidth = 1.5;
     ctx.beginPath();
     pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
     ctx.closePath(); ctx.stroke();
@@ -584,7 +787,7 @@ window.SceneView = (() => {
     const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     const all = [...pts, mid(pts[0], pts[1]), mid(pts[1], pts[2]),
                  mid(pts[2], pts[3]), mid(pts[3], pts[0])];
-    ctx.fillStyle = "#ff6a3d";
+    ctx.fillStyle = BGTheme.color("--accent");
     all.forEach(([x, y]) =>
       ctx.fillRect(x - HANDLE_PX / 2, y - HANDLE_PX / 2, HANDLE_PX, HANDLE_PX));
 
@@ -597,9 +800,209 @@ window.SceneView = (() => {
     ctx.beginPath(); ctx.arc(rp[0], rp[1], HANDLE_PX / 2 + 1, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = "#ff6a3d"; ctx.font = "11px ui-monospace,monospace";
+    ctx.fillStyle = BGTheme.color("--accent"); ctx.font = "11px ui-monospace,monospace";
     ctx.fillText(it.name, pts[0][0], pts[0][1] - 8);
     ctx.restore();
+  }
+
+  /* ── placing ──────────────────────────────────────────────────────────────
+   * The move this panel existed to make possible and could not: put a SCENE in
+   * a scene. Everything the backend needs has been there all along — wire()
+   * emits `instance=ExtResource(...)` for a .tscn and /api/scene/wire is live —
+   * but no surface could reach it, because the only asset picker in the builder
+   * filters .tscn out (every scene is kind="screen" to the atlas, and offering
+   * a screen as a sprite would be nonsense). So this is its own picker.
+   *
+   * A placement is STAGED like every other edit here: the ghost is drawn from
+   * the source scene's own draw list, dragging moves the ghost, and nothing is
+   * written until `apply` — which is one wire call plus one position write.
+   */
+  const DRAWN = ["image", "rect", "tiles"];
+
+  function rootName(){
+    const r = list && list.items.find(i => i.path === ".");
+    return (r && r.name) || "the root";
+  }
+
+  /* Where a placement lands: under the selection, else at the root. Any node
+     can parent another in Godot, so this does not second-guess the choice — it
+     says out loud where the thing is going and lets the click change it. */
+  function placeParent(){
+    return sel && sel.path !== "." && !sel.of ? sel.path : ".";
+  }
+
+  async function placeMenu(){
+    const el = document.getElementById("sv-pick");
+    if (!el) return;
+    if (!el.hidden){ el.hidden = true; return; }
+    const d = await readJSON("/api/scene/wirable", null);
+    const scenes = ((d && d.scenes) || []).filter(s => s.scene !== scene);
+    const parent = placeParent();
+    el.innerHTML = `<div class="hd">place under ${
+      E(parent === "." ? rootName() : parent)}</div>`
+      + (scenes.length
+        ? scenes.map(s => `<button onclick="SceneView.arm('${E(s.scene)}')"
+            title="${E(s.scene)}">${E(s.label)}<span>${s.nodes} node${
+            s.nodes === 1 ? "" : "s"}</span></button>`).join("")
+        : `<div class="no">this project has no other .tscn to place.</div>`);
+    el.hidden = false;
+  }
+
+  /* Read the scene being placed so the ghost is the real art, not a rectangle
+     with a name on it. One fetch per source, cached on the armed placement. */
+  async function arm(src){
+    const pick = document.getElementById("sv-pick");
+    if (pick) pick.hidden = true;
+    const r = await readJSON(`/api/scene/render?scene=${encodeURIComponent(src)}`,
+                             null);
+    if (!r || r.__error){ say((r && r.__error) || "could not read that scene"); return; }
+    const rels = new Set();
+    r.items.forEach(i => {
+      const d = i.draw || {};
+      if (d.rel) rels.add(d.rel);
+      if (d.kind === "tiles") Object.values(d.sources).forEach(s => rels.add(s.rel));
+    });
+    await Promise.all([...rels].map(load));
+    const parent = placeParent();
+    placing = { src, render: r, parent, box: ghostBox(r),
+                name: nextName(src, parent) };
+    paintPlacing();
+    paint();
+  }
+
+  function cancelPlacing(){
+    if (!placing) return;
+    placing = null;
+    paintPlacing();
+    paint();
+  }
+
+  function paintPlacing(){
+    const el = document.getElementById("sv-place");
+    if (!el) return;
+    el.hidden = !placing;
+    if (!placing) return;
+    el.innerHTML = `<span>click the canvas to place <b>${E(placing.name)}</b>
+      under <b>${E(placing.parent === "." ? rootName() : placing.parent)}</b></span>
+      <span style="flex:1"></span>
+      <button class="sv-b" onclick="SceneView.cancelPlacing()">done</button>`;
+  }
+
+  /* Desk_01, Desk_02 — never Node2D7. The name is the only handle you have on a
+     node in a list of forty, and a counter that restarts at every gap reads as
+     a bug, so it walks up past everything already taken. */
+  function baseName(src){
+    const stem = String(src).split("/").pop().replace(/\.tscn$/i, "");
+    const parts = stem.split(/[^A-Za-z0-9]+/).filter(Boolean);
+    return parts.map(p => p[0].toUpperCase() + p.slice(1)).join("") || "Node";
+  }
+
+  function nextName(src, parent){
+    const base = baseName(src);
+    const taken = new Set();
+    if (list) list.items.forEach(i => { if (!i.of) taken.add(i.name); });
+    staged.forEach(o => { if (o.op === "add") taken.add(o.name); });
+    for (let i = 1; i < 1000; i++){
+      const cand = `${base}_${String(i).padStart(2, "0")}`;
+      if (!taken.has(cand)) return cand;
+    }
+    return base;
+  }
+
+  /* The source scene's drawn extent, in its own space — the box you grab the
+     ghost by. Rotation is ignored deliberately: this is a pick target, and an
+     axis-aligned box you can always hit beats an exact one you cannot. */
+  function ghostBox(render){
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    render.items.forEach(s => {
+      if (!s.draw || !DRAWN.includes(s.draw.kind)) return;
+      const b = localBox(s);
+      [[b.x, b.y], [b.x + b.w, b.y + b.h]].forEach(([lx, ly]) => {
+        const px = s.x + lx * s.sx, py = s.y + ly * s.sy;
+        x0 = Math.min(x0, px); y0 = Math.min(y0, py);
+        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+      });
+    });
+    if (!isFinite(x0)) return { x:-12, y:-12, w:24, h:24 };
+    return { x:x0, y:y0, w:Math.max(1, x1 - x0), h:Math.max(1, y1 - y0) };
+  }
+
+  function ghost(op, selected){
+    ctx.save();
+    ctx.globalAlpha = 0.8;
+    (op.render.items || []).forEach(s => {
+      const d = s.draw || {};
+      if (!DRAWN.includes(d.kind)) return;
+      ctx.save();
+      const [px, py] = toScreen(op.wx + s.x, op.wy + s.y);
+      ctx.translate(px, py);
+      ctx.rotate(s.rot);
+      ctx.scale(view.z * s.sx, view.z * s.sy);
+      shape(d, localBox(s));
+      ctx.restore();
+    });
+    ctx.restore();
+
+    // Dashed, because it is not in the file yet and should not look like it is.
+    const b = op.box;
+    const [bx, by] = toScreen(op.wx + b.x, op.wy + b.y);
+    ctx.save();
+    ctx.strokeStyle = BGTheme.color(selected ? "--accent" : "--warn");
+    ctx.lineWidth = selected ? 1.5 : 1;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(bx, by, b.w * view.z, b.h * view.z);
+    ctx.setLineDash([]);
+    ctx.fillStyle = BGTheme.color(selected ? "--accent" : "--warn");
+    ctx.font = "11px ui-monospace,monospace";
+    ctx.fillText(`${op.name} · new`, bx, by - 6);
+    ctx.restore();
+  }
+
+  function hitGhost(wx, wy){
+    for (let i = staged.length - 1; i >= 0; i--){
+      const op = staged[i];
+      if (op.op !== "add") continue;
+      const b = op.box;
+      if (wx >= op.wx + b.x && wx <= op.wx + b.x + b.w
+          && wy >= op.wy + b.y && wy <= op.wy + b.y + b.h) return i;
+    }
+    return -1;
+  }
+
+  function stageAdd(wx, wy){
+    staged.push({ op:"add", src: placing.src, render: placing.render,
+                  box: placing.box, name: placing.name, parent: placing.parent,
+                  wx, wy, seq: ++seq });
+    // Stay armed: placing one desk is rare, placing eight is the job.
+    placing = { ...placing, name: nextName(placing.src, placing.parent) };
+    selStaged = staged.length - 1;
+    sel = null;
+    paintPlacing();
+    paintPending();
+    paint();
+  }
+
+  /* Delete: the selection, staged. A not-yet-written placement just disappears
+     — there is nothing to un-write — and a real node becomes an unwire that
+     runs with everything else at `apply`. */
+  function removeSelected(){
+    if (selStaged >= 0 && staged[selStaged]){
+      staged.splice(selStaged, 1);
+      selStaged = -1;
+      paintPending(); paint();
+      return;
+    }
+    if (!sel){ say("select a node first"); return; }
+    if (sel.path === "."){ say("the root node cannot be removed here"); return; }
+    if (sel.of){ say(`${sel.name} lives inside ${sel.of} — delete the instance`); return; }
+    if (deleted(sel.path)) return;
+    const kids = list.items.filter(
+      i => !i.of && i.path.startsWith(sel.path + "/")).length;
+    staged.push({ op:"delete", path: sel.path, name: sel.name, kids,
+                  seq: ++seq });
+    sel = null;
+    paintPending();
+    paint();
   }
 
   /* ── interaction ──────────────────────────────────────────────────────── */
@@ -613,6 +1016,15 @@ window.SceneView = (() => {
         drag = { pan:true, sx, sy, ox:view.x, oy:view.y };
         ev.preventDefault(); return;
       }
+      if (placing){
+        let [px, py] = toWorld(sx, sy);
+        if (opts.snapOn && !ev.shiftKey){
+          px = Math.round(px / opts.snap) * opts.snap;
+          py = Math.round(py / opts.snap) * opts.snap;
+        }
+        stageAdd(px, py);
+        return;
+      }
       const grip = handleAt(sx, sy);
       if (grip && sel){
         const [wx, wy] = toWorld(sx, sy);
@@ -622,6 +1034,17 @@ window.SceneView = (() => {
         return;
       }
       const [wx, wy] = toWorld(sx, sy);
+      // A placement not yet in the file sits on top of everything, because it
+      // is the thing you just put there and are still positioning.
+      const g = hitGhost(wx, wy);
+      if (g >= 0){
+        selStaged = g; sel = null;
+        drag = { ghost: staged[g], gx: wx - staged[g].wx, gy: wy - staged[g].wy };
+        select(null);
+        paint();
+        return;
+      }
+      selStaged = -1;
       const found = hit(wx, wy);
       select(found ? found.path : null);
       if (found) drag = { move:true, it: found, gx: wx - found.x, gy: wy - found.y,
@@ -636,8 +1059,10 @@ window.SceneView = (() => {
       const sx = ev.clientX - r.left, sy = ev.clientY - r.top;
       const [wx, wy] = toWorld(sx, sy);
       if (!drag){
-        hover = hit(wx, wy);
-        cv.style.cursor = handleAt(sx, sy) ? "nwse-resize" : hover ? "move" : "default";
+        hover = placing ? null : hit(wx, wy);
+        cv.style.cursor = placing ? "crosshair"
+          : handleAt(sx, sy) ? "nwse-resize"
+          : hitGhost(wx, wy) >= 0 || hover ? "move" : "default";
         paint();
         return;
       }
@@ -646,12 +1071,29 @@ window.SceneView = (() => {
         view.y = drag.oy + (sy - drag.sy);
         paint(); return;
       }
+      if (drag.ghost){
+        let nx = wx - drag.gx, ny = wy - drag.gy;
+        if (opts.snapOn && !ev.shiftKey){
+          nx = Math.round(nx / opts.snap) * opts.snap;
+          ny = Math.round(ny / opts.snap) * opts.snap;
+        }
+        drag.ghost.wx = nx; drag.ghost.wy = ny;
+        paint(); return;
+      }
       if (drag.move){
         let nx = wx - drag.gx, ny = wy - drag.gy;
         if (opts.snapOn && !ev.shiftKey){
           nx = Math.round(nx / opts.snap) * opts.snap;
           ny = Math.round(ny / opts.snap) * opts.snap;
         }
+        // Children move with their parent, because they do. Moving only the
+        // node itself left an instance's art standing where it was — and an
+        // instance's own entry draws nothing, so the drag looked like a no-op.
+        const dx = nx - drag.it.x, dy = ny - drag.it.y;
+        const prefix = drag.it.path === "." ? "" : drag.it.path + "/";
+        if (prefix) list.items.forEach(i => {
+          if (i.path.startsWith(prefix)){ i.x += dx; i.y += dy; }
+        });
         drag.it.x = nx; drag.it.y = ny;
         paint(); return;
       }
@@ -685,6 +1127,8 @@ window.SceneView = (() => {
     const done = () => {
       if (!drag){ return; }
       const d = drag; drag = null;
+      // A ghost carries its own position — there is no file line to stage yet.
+      if (d.ghost){ paint(); return; }
       if (d.move) stageMove(d);
       else if (d.grip === "rot"){
         if (round(d.it.rot, 4) !== round(d.rot0, 4))
@@ -713,6 +1157,17 @@ window.SceneView = (() => {
     }, { passive: false });
 
     window.addEventListener("resize", paint);
+    // Once, not per mount: escape is a global gesture and a stack of identical
+    // listeners is a leak that only shows up as work done N times.
+    if (!bind._keys){
+      bind._keys = true;
+      window.addEventListener("keydown", ev => {
+        if (ev.key !== "Escape" || !host) return;
+        const pick = document.getElementById("sv-pick");
+        if (pick && !pick.hidden){ pick.hidden = true; return; }
+        cancelPlacing();
+      });
+    }
   }
 
   const round = (v, n) => Math.round(v * 10 ** n) / 10 ** n;
@@ -738,14 +1193,15 @@ window.SceneView = (() => {
     // Keep the ORIGINAL value across repeated edits to the same property —
     // three nudges of one node is one change from the file's point of view,
     // and discarding must go back to where the file was, not to nudge two.
-    bucket.keys.set(key, { value, prev: existing ? existing.prev : prevValue });
+    bucket.keys.set(key, { value, prev: existing ? existing.prev : prevValue,
+                           seq: ++seq });
     pending.set(it.path, bucket);
     paintPending();
     paint();
   }
 
   function pendingCount(){
-    let n = 0;
+    let n = staged.length;
     pending.forEach(b => { n += b.keys.size; });
     return n;
   }
@@ -755,10 +1211,20 @@ window.SceneView = (() => {
     if (!bar) return;
     const n = pendingCount();
     bar.hidden = !n;
+    const touched = new Set(pending.keys());
+    staged.forEach(o => touched.add(o.op === "add"
+      ? `${o.parent}/${o.name}` : o.path));
+    // Structure is spelled out, because "3 unsaved changes" over a delete reads
+    // exactly like "3 unsaved changes" over three nudges, and one of those is
+    // recoverable by dragging back.
+    const adds = staged.filter(o => o.op === "add").length;
+    const dels = staged.filter(o => o.op === "delete").length;
+    const extra = [adds ? `${adds} new` : "", dels ? `${dels} deleted` : ""]
+      .filter(Boolean).join(", ");
     const label = document.getElementById("sv-pending-n");
     if (label) label.textContent =
-      `${n} unsaved change${n === 1 ? "" : "s"} across ${pending.size} node${
-        pending.size === 1 ? "" : "s"}`;
+      `${n} unsaved change${n === 1 ? "" : "s"} across ${touched.size} node${
+        touched.size === 1 ? "" : "s"}${extra ? ` · ${extra}` : ""}`;
   }
 
   function stageMove(d){
@@ -782,25 +1248,68 @@ window.SceneView = (() => {
           `Vector2(${round(px, 2)}, ${round(py, 2)})`);
   }
 
-  /* One confirmed action, one pass, one backup per file — not one per pixel. */
+  /* One confirmed action, one pass, one backup per file — not one per pixel.
+   *
+   * Additions go first so a property staged against a node can find it, and
+   * deletions go last so nothing is written to a node on its way out. Each is
+   * an existing endpoint doing its existing job; the only thing new here is
+   * that they all wait for the same confirmation. */
   async function applyPending(){
     if (busy || !pendingCount()) return;
     const n = pendingCount();
-    if (!confirm(`Write ${n} change${n === 1 ? "" : "s"} to ${
-      String(scene).split("/").pop()}?\n\nThe current file is kept under `
-      + `.bgate_out/scene_backups.`)) return;
+    const adds = staged.filter(o => o.op === "add");
+    const dels = staged.filter(o => o.op === "delete");
+    const lines = [];
+    if (adds.length) lines.push(`add ${adds.map(o => o.name).join(", ")}`);
+    if (dels.length) lines.push(`DELETE ${dels.map(
+      o => o.name + (o.kids ? ` (+${o.kids} child node(s))` : "")).join(", ")}`);
+    lines.push("The current file is kept under .bgate_out/scene_backups.");
+    const go = await askConfirm({
+      title: `Write ${n} change${n === 1 ? "" : "s"} to ${String(scene).split("/").pop()}?`,
+      body: lines, ok: "write to the file", danger: true,
+    });
+    if (!go || busy) return;
     busy = true;
     const failed = [];
+    // One property write, called from two places — a placement's position and
+    // the staged drags. Two literal call sites would be two chances for one of
+    // them to drift out from behind this confirmation.
+    const write = (node, key, value) => mutate("/api/scene/node/property", {
+      body: { scene, node, key, value }, quiet: true });
+
+    for (const op of adds){
+      const r = await mutate("/api/scene/wire", {
+        body: { scene, asset: op.src, parent: op.parent, node_name: op.name },
+        quiet: true });
+      if (!r.ok){ failed.push(`${op.name}: ${r.error}`); continue; }
+      // wire() uniquifies the name against the file, so the path to write the
+      // position onto is the one it reports back, not the one we asked for.
+      const final = (r.data && r.data.node) || op.name;
+      const path = op.parent === "." ? final : `${op.parent}/${final}`;
+      const [lx, ly] = localUnder(op.parent, op.wx, op.wy);
+      const p = await write(path, "position",
+                            `Vector2(${round(lx, 2)}, ${round(ly, 2)})`);
+      if (!p.ok) failed.push(`${path}.position: ${p.error}`);
+    }
+
     for (const [path, bucket] of pending){
+      if (deleted(path)) continue;
       for (const [key, change] of bucket.keys){
-        const r = await mutate("/api/scene/node/property", {
-          body: { scene, node: path, key, value: change.value }, quiet: true });
+        const r = await write(path, key, change.value);
         if (!r.ok) failed.push(`${path}.${key}: ${r.error}`);
       }
     }
+
+    for (const op of dels){
+      const r = await mutate("/api/scene/unwire", {
+        body: { scene, node: op.path, recursive: true }, quiet: true });
+      if (!r.ok) failed.push(`delete ${op.path}: ${r.error}`);
+    }
+
     busy = false;
-    pending.clear();
+    clearStaged();
     paintPending();
+    paintPlacing();
     await reload();
     if (failed.length) say(`${failed.length} change(s) failed — ${failed[0]}`);
     else say(`${n} change${n === 1 ? "" : "s"} written`, "ok");
@@ -809,8 +1318,9 @@ window.SceneView = (() => {
   /* Re-read the file. Whatever was staged never existed. */
   async function discardPending(){
     if (!pendingCount()) return;
-    pending.clear();
+    clearStaged();
     paintPending();
+    paintPlacing();
     await reload();
     say("staged changes discarded", "ok");
   }
@@ -822,9 +1332,15 @@ window.SceneView = (() => {
      before the number is written. Skipping this writes the world position into
      a local field and the node jumps the moment the scene reloads. */
   function toLocalTransform(it, wx, wy){
-    const parent = it.path.includes("/")
-      ? list.items.find(p => p.path === it.path.slice(0, it.path.lastIndexOf("/")))
-      : null;
+    return localUnder(it.path.includes("/")
+      ? it.path.slice(0, it.path.lastIndexOf("/")) : ".", wx, wy);
+  }
+
+  /* Same conversion, keyed on the parent's path — a placement has no item of
+     its own yet, only the container it is going into. */
+  function localUnder(parentPath, wx, wy){
+    const parent = parentPath && parentPath !== "." && list
+      ? list.items.find(p => p.path === parentPath) : null;
     if (!parent) return [wx, wy];
     const dx = wx - parent.x, dy = wy - parent.y;
     const cos = Math.cos(-parent.rot), sin = Math.sin(-parent.rot);
@@ -835,18 +1351,31 @@ window.SceneView = (() => {
   /* Undo pops the last STAGED change back off. Nothing has been written, so
      there is nothing to un-write — it just edits the pending list. */
   function undoLast(){
-    let lastPath = null, lastKey = null;
+    // Whichever really was last, across both kinds. Map insertion order alone
+    // could not answer that once structure staged alongside properties.
+    let best = null;
     pending.forEach((bucket, path) => {
-      bucket.keys.forEach((_, key) => { lastPath = path; lastKey = key; });
+      bucket.keys.forEach((change, key) => {
+        if (!best || change.seq > best.seq)
+          best = { kind:"prop", seq: change.seq, path, key, change };
+      });
     });
-    if (!lastPath) return;
-    const bucket = pending.get(lastPath);
-    const change = bucket.keys.get(lastKey);
-    bucket.keys.delete(lastKey);
-    if (!bucket.keys.size) pending.delete(lastPath);
-    // Put the number back on the item so the picture matches the pending list.
-    const it = list.items.find(i => i.path === lastPath);
-    if (it && change) restoreValue(it, lastKey, change.prev);
+    staged.forEach((op, i) => {
+      if (!best || op.seq > best.seq) best = { kind:"op", seq: op.seq, i };
+    });
+    if (!best) return;
+    if (best.kind === "op"){
+      staged.splice(best.i, 1);
+      if (selStaged === best.i) selStaged = -1;
+      else if (selStaged > best.i) selStaged--;
+    } else {
+      const bucket = pending.get(best.path);
+      bucket.keys.delete(best.key);
+      if (!bucket.keys.size) pending.delete(best.path);
+      // Put the number back on the item so the picture matches the pending list.
+      const it = list.items.find(i => i.path === best.path);
+      if (it) restoreValue(it, best.key, best.change.prev);
+    }
     paintPending();
     paint();
   }
@@ -890,6 +1419,7 @@ window.SceneView = (() => {
   /* ── selection ────────────────────────────────────────────────────────── */
   function select(path){
     sel = path && list ? list.items.find(i => i.path === path) || null : null;
+    if (sel) selStaged = -1;          // one selection, real or staged
     paint();
     if (window.SceneBuild && typeof SceneBuild.select === "function")
       SceneBuild.select(path);           // one selection, both surfaces
@@ -948,11 +1478,13 @@ window.SceneView = (() => {
     const r = await mutate("/api/scene/snapshot", { body: { scene, png } });
     if (r.ok) say(`saved ${r.data.rel}`, "ok");
   }
-  function setScene(id){
-    if (hasPending() && !confirm(
-        `${pendingCount()} change(s) have not been written. Switch scene and lose them?`))
-      return Promise.resolve(false);
-    pending.clear();
+  async function setScene(id){
+    if (hasPending() && !(await askConfirm({
+      title: `${pendingCount()} change(s) have not been written. Switch scene and lose them?`,
+      body: "Nothing staged has touched the file yet — switching drops the whole batch.",
+      ok: "switch scene", danger: true,
+    }))) return false;
+    clearStaged();
     scene = id; sel = null;
     return reload();
   }
@@ -960,7 +1492,8 @@ window.SceneView = (() => {
   return { mount, unmount, reload, fit, zoom: zoomBy, toggle, setSnap, snapshot,
            select, raise, undo: undoLast, setScene,
            apply: applyPending, discard: discardPending, hasPending,
-           toggleLayer, isolateLayer, showAllLayers,
+           placeMenu, arm, cancelPlacing, removeSelected,
+           toggleLayer, isolateLayer, showAllLayers, nextBlank,
            get layers(){ return layers(); },
            get list(){ return list; }, get selected(){ return sel; },
            get scene(){ return scene; },

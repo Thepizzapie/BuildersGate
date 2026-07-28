@@ -213,7 +213,7 @@
         // in; it is one call, so it belongs on the field it edits.
         + `<div class="wf-act"><button class="nc-w wf-improve" data-wact="improve"
              data-wval="${esc(n.id)}" title="rewrite this into a fuller image prompt"
-             ${str(n, "prompt", "").trim() ? "" : "disabled"}>&#10022; improve</button></div>`
+             ${str(n, "prompt", "").trim() ? "" : "disabled"}>&var(--bad-soft); improve</button></div>`
         + w.number(n, "count", { label: "Count", min: 1, max: 8, value: 1 })
         + w.seed(n, "seed", { label: "Seed", hint: "0 = random each run; set a number to reproduce one" })
         + w.text(n, "model", { label: "Model", placeholder: "override (blank = the tier's)" })

@@ -44,12 +44,56 @@ DEFAULT_SEATS: dict[str, dict] = {
         "mission": "Own mechanics, systems, and feel. When feedback says 'floaty', "
                    "read the telemetry numbers next to it before touching tunables.",
         "write_globs": ["game/scripts/**", "game/scenes/**"],
+        "workflow": (
+            "SCENES ARE MADE OF NODES, NOT LAYERS. A human has to open what you "
+            "build and change it without you.\n"
+            "1. ONE THING = ONE NODE. Anything a designer might select, move, "
+            "rename, re-skin, script or delete is its own node in the .tscn: "
+            "props, characters, interactables, spawn points, lights, triggers, "
+            "cameras, volumes. A tile index inside a packed array is not a thing "
+            "you can click, name, or hang a property on.\n"
+            "2. TileMapLayer IS FOR TERRAIN. Floor, walls, ceiling — surfaces "
+            "where the unit of editing genuinely IS the tile. It is not a "
+            "container for objects. A layer called 'Props' or 'Decor' is this "
+            "rule already broken.\n"
+            "3. INSTANCE, DON'T DUPLICATE. Repeated content goes in as "
+            "instance=ExtResource(\"...\") pointing at a source scene, so fixing "
+            "the source fixes all forty placements. Never paste a subtree.\n"
+            "4. NAME THINGS. 'Desk_03', 'DoorEast', 'Spawn_Guard_A' are editable; "
+            "'Node2D7' is not findable, not scriptable, and not reviewable.\n"
+            "5. add_child() IS FOR THE GENUINELY DYNAMIC — spawned enemies, "
+            "projectiles, VFX, pooled effects. It is NOT how set dressing gets "
+            "placed. If a script fills a container that a designer should be "
+            "arranging by hand, that container is the bug, not the feature.\n"
+            "WHY: a scene that is four monolithic layers is a scene nobody can "
+            "edit; the authoring left the editor and moved into your code, where "
+            "the designer cannot reach it."
+        ),
     },
     "tech": {
         "title": "Tech",
         "mission": "Own the engine, build, performance, and project plumbing. "
                    "godot_check_project after structural changes.",
         "write_globs": ["game/**", "scripts/**", "*.cfg", "*.godot"],
+        "workflow": (
+            "WHAT YOUR GENERATORS EMIT IS THE SCENE CONVENTION. Bakers, "
+            "importers, converters and scaffolds are bound by the same shape "
+            "hand-authoring is: one editable thing = one named node; "
+            "TileMapLayer for continuous terrain only, never as a bucket for "
+            "objects; repeated content as instance=ExtResource(\"...\") so the "
+            "source scene stays the one place to fix it; no empty container that "
+            "a script populates at run time with things a designer should be "
+            "placing. A tool that can only emit packed tile arrays and a script "
+            "host is not finished.\n"
+            "GENERATED IS FINE; MONOLITHIC IS NOT. If a scene is an output, say "
+            "so in a header comment and keep it node-shaped anyway. If a human "
+            "is expected to arrange something the generator also writes, the "
+            "generator must read that arrangement back or hand ownership over "
+            "explicitly — silently clobbering hand placement is the failure "
+            "mode, and 'it is a generated file' is not a defence.\n"
+            "WHY: generated scenes outlive their generator by years, and the "
+            "person who has to move one desk does not have your script."
+        ),
     },
     "art": {
         "title": "Art",
@@ -103,7 +147,12 @@ DEFAULT_SEATS: dict[str, dict] = {
             "an isometric game, wrong tile angle/footprint — check the bible's "
             "projection constraint); an INCOMPLETE facing/rotation matrix where "
             "the bible's unit-sprite or prop-rotation contract demands one "
-            "(a unit that can't walk north, a mirrored readable logo).\n"
+            "(a unit that can't walk north, a mirrored readable logo); a SCENE "
+            "BUILT OUT OF LAYERS INSTEAD OF NODES — open the .tscn and count "
+            "what a designer can select, and if the answer is 'the floor and "
+            "the walls' it FAILS. The two tells are props or markers baked into "
+            "a TileMapLayer, and an empty container a script fills with "
+            "add_child at run time.\n"
             "3. VERIFY IT ACTUALLY RUNS: tests at the known baseline, no new "
             "failures, no console errors, the change visibly does what was asked "
             "in the real app — not just 'the code looks right'.\n"

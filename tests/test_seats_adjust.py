@@ -10,6 +10,8 @@ a hardcoded .png suffix) so a regression is a red test rather than a re-audit.
 """
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 import pytest
@@ -255,11 +257,28 @@ class TestStudioFlowsAreDerived:
         assert "flows()" in src
         assert "window.StudioFlows" in src
 
-    def test_the_finished_flow_modules_are_loaded(self):
+    def test_every_registered_flow_module_exists(self):
+        """A flow named in MODULES must be a file that is really there.
+
+        This used to name flow_asset.js, flow_agent.js and flow_game.js
+        literally, from when the bug was that two finished modules were built
+        and never wired up. Two of the three have since been REMOVED on purpose:
+        "Asset flow" duplicated the Assets library and the art seat, and "Game
+        editor" could not edit anything — no save, no write path — it read the
+        Godot tree, screenshotted and dispatched queue items, all of which
+        Playtests and Agents already do.
+
+        Pinning the file list re-broke the moment the product changed, so what
+        gets asserted now is the property the original test was protecting: the
+        registry and the files on disk agree, in both directions.
+        """
         src = _read("flows.js")
-        for module in ("flow_asset.js", "flow_agent.js", "flow_game.js"):
-            assert module in src
-            assert (STATIC / module).is_file()
+        registered = set(re.findall(r'"/static/(flow_\w+\.js)"', src))
+        assert registered, "flows.js registers no flow modules at all"
+        for module in sorted(registered):
+            assert (STATIC / module).is_file(),                 f"flows.js loads {module}, which is not on disk"
+        on_disk = {p.name for p in STATIC.glob("flow_*.js")}
+        assert on_disk == registered,             f"orphaned flow modules nothing loads: {sorted(on_disk - registered)}"
 
 
 class TestReferenceThumbnailsRespectTheSuffix:
@@ -280,7 +299,7 @@ class TestWorkflowHousekeeping:
     def test_delete_confirms_and_clears_the_stored_document(self):
         src = _read("wf.js")
         body = src[src.index("async deleteSaved(id)"):src.index("/* ---- builder")]
-        assert "confirm(" in body
+        assert "confirm(" in body or "askConfirm(" in body
         assert '"/api/workspace/studio/wf:" + id' in body
 
     def test_the_run_bar_reports_why_a_step_failed(self):

@@ -7,7 +7,9 @@
                                 Never scaffolds, never overwrites. (default: .)
     bgate use [DIR|NAME]        make a project the active one for later commands
     bgate projects [--json]     list known projects and which one is active
-    bgate serve [--port 7788]   run the dashboard
+    bgate serve [--port 7788]   run the dashboard in your browser
+    bgate app [--port N]        run the dashboard in a native desktop window
+                                (needs: pip install "builders-gate[desktop]")
     bgate publish [--out DIR]   build the arcade: every game, as a static site
     bgate doctor [DIR] [--json] check every external dependency in one pass
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
@@ -687,6 +689,13 @@ def main() -> int:
         from bgate_ui.app import serve
         serve(port=port)
         return 0
+
+    if cmd == "app":
+        port = None
+        if "--port" in args:
+            port = int(args[args.index("--port") + 1])
+        from bgate_ui.desktop import run as run_desktop
+        return run_desktop(port=port, debug="--debug" in args)
 
     print(__doc__)
     return 0
