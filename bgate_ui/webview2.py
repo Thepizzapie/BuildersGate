@@ -69,6 +69,33 @@ user32.DefWindowProcW.restype = LRESULT
 user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, WPARAM, LPARAM]
 user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, WPARAM, LPARAM]
 
+# ANYTHING RETURNING OR TAKING A HANDLE NEEDS A SIGNATURE.
+# ctypes defaults an undeclared function to `int` in both directions, which is
+# 32 bits — so a 64-bit handle is silently chopped. GetModuleHandleW(None)
+# returns the image base, 0x7ff71d540000 on this machine; undeclared it came
+# back as 0x1d540000. That is not a module, so the frozen build's
+# LoadImage(hinst, MAKEINTRESOURCE(1)) found no icon resource and Windows
+# substituted its generic application icon — the app shipped without its own
+# icon in the taskbar and on the desktop, and nothing errored.
+#
+# Declaring restype alone is not enough: without argtypes, ctypes marshals the
+# now-correct Python int back down to a C int at the call. Both ends, always.
+kernel32.GetModuleHandleW.restype = wt.HMODULE
+kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+user32.LoadImageW.restype = wt.HANDLE
+user32.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT,
+                              ctypes.c_int, ctypes.c_int, wt.UINT]
+user32.LoadCursorW.restype = wt.HANDLE
+user32.LoadCursorW.argtypes = [wt.HINSTANCE, wt.LPCWSTR]
+user32.CreateWindowExW.restype = wt.HWND
+user32.CreateWindowExW.argtypes = [
+    wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID,
+]
+user32.SendMessageW.restype = LRESULT
+user32.SendMessageW.argtypes = [wt.HWND, wt.UINT, WPARAM, LPARAM]
+
 
 class WNDCLASSEX(ctypes.Structure):
     _fields_ = [
@@ -252,9 +279,17 @@ def _call(iface: c_void_p, index: int, restype, *argtypes):
 
 # Vtable slot indices, from the WebView2 SDK headers. IUnknown occupies 0-2 on
 # every interface, so these all start at 3.
+# ICoreWebView2Controller, in declaration order after IUnknown's 0-2:
+#   3 get_IsVisible   4 put_IsVisible   5 get_Bounds   6 put_Bounds
+#   7 get_ZoomFactor  8 put_ZoomFactor  ...  24 Close   25 get_CoreWebView2
+#
+# put_Bounds was 4 here, which is put_IsVisible — so every resize handed a RECT
+# to a method expecting a BOOL, the bounds were never set, and the webview sat
+# at 0x0 inside a correctly-created window. The symptom is a blank white pane
+# with every HRESULT returning S_OK, because nothing actually failed.
 _ENV_CREATE_CONTROLLER = 3      # ICoreWebView2Environment::CreateCoreWebView2Controller
+_CTRL_PUT_BOUNDS = 6            # ICoreWebView2Controller::put_Bounds
 _CTRL_GET_COREWEBVIEW2 = 25     # ICoreWebView2Controller::get_CoreWebView2
-_CTRL_PUT_BOUNDS = 4            # ICoreWebView2Controller::put_Bounds
 _WV_NAVIGATE = 5                # ICoreWebView2::Navigate
 
 
@@ -299,24 +334,45 @@ class Window:
         """The app icon, for the title bar and the taskbar.
 
         Frozen, PyInstaller embeds packaging/icon.ico as resource id 1, so it
-        comes straight out of the running executable. From source there is no
-        resource, so the .ico is loaded off disk. Returning None is fine —
-        Windows falls back to its default, which is what shipped before.
+        comes straight out of the running executable. Failing that — and from
+        source, where there is no resource to read — the .ico is loaded off
+        disk.
+
+        The resource path is tried first and the file path is a real fallback,
+        not decoration: the resource lookup silently returned NULL for the whole
+        of the first release because the module handle was being truncated to 32
+        bits (see the signature block at the top of this file), and the only
+        symptom was a generic Windows icon on the taskbar. A second, independent
+        way to get the same bytes is worth the six lines.
         """
-        IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x0010, 0x0040
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
         cx = user32.GetSystemMetrics(11 if big else 49)   # SM_CXICON / SM_CXSMICON
         cy = user32.GetSystemMetrics(12 if big else 50)
 
-        user32.LoadImageW.restype = wt.HANDLE
         if getattr(sys, "frozen", False):
+            # MAKEINTRESOURCE(1): the resource id travels as the pointer value.
             icon = user32.LoadImageW(hinst, wt.LPCWSTR(1), IMAGE_ICON, cx, cy, 0)
             if icon:
                 return icon
-        ico = Path(__file__).resolve().parent.parent / "packaging" / "icon.ico"
-        if ico.is_file():
-            return user32.LoadImageW(None, str(ico), IMAGE_ICON, cx, cy,
-                                     LR_LOADFROMFILE)
+        for ico in self._icon_files():
+            if ico.is_file():
+                icon = user32.LoadImageW(None, str(ico), IMAGE_ICON, cx, cy,
+                                         LR_LOADFROMFILE)
+                if icon:
+                    return icon
         return None
+
+    @staticmethod
+    def _icon_files():
+        """Where icon.ico might be, source tree first then bundle root.
+
+        sys._MEIPASS only exists frozen; bgate.spec puts the .ico at the bundle
+        root so this second entry resolves there.
+        """
+        yield Path(__file__).resolve().parent.parent / "packaging" / "icon.ico"
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            yield Path(meipass) / "icon.ico"
 
     def _create_window(self):
         self._proc = WNDPROC(self._wndproc)      # strong ref or COM calls freed memory
@@ -324,8 +380,10 @@ class Window:
         cls.cbSize = ctypes.sizeof(WNDCLASSEX)
         cls.lpfnWndProc = self._proc
         cls.hInstance = kernel32.GetModuleHandleW(None)
-        cls.hIcon = self._load_icon(cls.hInstance, big=True) or 0
-        cls.hIconSm = self._load_icon(cls.hInstance, big=False) or 0
+        big = self._load_icon(cls.hInstance, big=True)
+        small = self._load_icon(cls.hInstance, big=False)
+        cls.hIcon = big or 0
+        cls.hIconSm = small or 0
         cls.hCursor = user32.LoadCursorW(None, IDC_ARROW)
         cls.hbrBackground = 5            # COLOR_WINDOW; repainted by the webview
         cls.lpszClassName = "BuildersGateWebView2"
@@ -341,6 +399,14 @@ class Window:
             None, None, cls.hInstance, None)
         if not self.hwnd:
             raise OSError(f"CreateWindowEx failed ({ctypes.get_last_error()})")
+        # The class icon covers most of it, but the class is registered once per
+        # process and the shell reads the WINDOW icon when building the taskbar
+        # button. Set both so neither depends on the other.
+        WM_SETICON, ICON_BIG, ICON_SMALL = 0x0080, 1, 0
+        if big:
+            user32.SendMessageW(self.hwnd, WM_SETICON, ICON_BIG, big)
+        if small:
+            user32.SendMessageW(self.hwnd, WM_SETICON, ICON_SMALL, small)
         user32.ShowWindow(self.hwnd, SW_SHOW)
 
     # ---- the async creation chain -----------------------------------------

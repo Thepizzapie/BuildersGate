@@ -18,11 +18,12 @@ parser.
 Drawn at 8x and downsampled, which is what keeps the chevron's diagonals clean
 once it is 16px across.
 
-THE SMALL SIZES DROP THE BROKEN POST, DELIBERATELY.
-bgate_ui/static/favicon.svg already records why: "at 16px the broken right post
-turns to mush". The gap is 146 units of 1500 — under two physical pixels at
-16px, less after antialiasing — so below 32px the two right-hand posts are
-merged into one. Windows selects per size out of the .ico, so both ship.
+EVERY SIZE IS THE REAL MARK.
+An earlier version merged the broken right post into a solid one below 32px, on
+the reasoning that the gap is under two physical pixels there. That was the
+wrong call to make unasked: it is the gate in Builders Gate, and a logo that
+quietly becomes a different logo in the taskbar is not the logo. The gap is
+tight at 16px and it stays.
 """
 from __future__ import annotations
 
@@ -37,12 +38,12 @@ OUT = HERE / "icon.ico"
 
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 SS = 8                      # supersample factor
-FULL_MARK_ABOVE = 24        # sizes at or below this merge the broken post
 # Breathing room, as a fraction of the icon. Small sizes get less: at 16px a 6%
-# margin costs a whole pixel off each edge and the chevron degrades into a
-# smudge, and a title-bar icon has no neighbours to need separating from.
+# margin costs a whole pixel off each edge, and a title-bar icon has no
+# neighbours to need separating from.
 MARGIN = 0.06
 MARGIN_SMALL = 0.015
+SMALL_AT_OR_BELOW = 24
 
 
 def load_shapes(svg: Path):
@@ -76,28 +77,8 @@ def load_shapes(svg: Path):
     return shapes
 
 
-def merge_broken_post(shapes):
-    """Close the gap in the right-hand post, for the small sizes.
-
-    The two right posts are the pair sharing an x-range that is not the
-    left-most one. Merging is a bounding box over both, which is exact here
-    because they are axis-aligned rectangles of identical width.
-    """
-    posts = [(f, p) for f, p in shapes if len({round(x) for x, _ in p}) == 2]
-    if len(posts) < 3:
-        return shapes
-    posts.sort(key=lambda fp: min(x for x, _ in fp[1]))
-    right = posts[1:]                       # everything but the left-most post
-    xs = [x for _, p in right for x, _ in p]
-    ys = [y for _, p in right for _, y in p]
-    merged = (right[0][0], [(min(xs), min(ys)), (max(xs), min(ys)),
-                            (max(xs), max(ys)), (min(xs), max(ys))])
-    keep = [s for s in shapes if s not in right]
-    return keep + [merged]
-
-
 def draw(shapes, px: int) -> Image.Image:
-    margin = MARGIN if px > FULL_MARK_ABOVE else MARGIN_SMALL
+    margin = MARGIN_SMALL if px <= SMALL_AT_OR_BELOW else MARGIN
     xs = [x for _, p in shapes for x, _ in p]
     ys = [y for _, p in shapes for _, y in p]
     w, h = max(xs) - min(xs), max(ys) - min(ys)
@@ -119,18 +100,14 @@ def draw(shapes, px: int) -> Image.Image:
 def main() -> int:
     shapes = load_shapes(SVG)
     fills = sorted({f for f, _ in shapes})
-    small = merge_broken_post(shapes)
 
-    frames = [draw(shapes if s > FULL_MARK_ABOVE else small, s) for s in SIZES]
+    frames = [draw(shapes, s) for s in SIZES]
     frames[-1].save(OUT, format="ICO", sizes=[(s, s) for s in SIZES],
                     append_images=frames[:-1])
 
-    full = [s for s in SIZES if s > FULL_MARK_ABOVE]
-    simple = [s for s in SIZES if s <= FULL_MARK_ABOVE]
     print(f"read  {SVG.name}: {len(shapes)} shapes, colours {', '.join(fills)}")
     print(f"wrote {OUT.name}  ({OUT.stat().st_size / 1024:.1f} KB)")
-    print(f"  full mark  : {', '.join(map(str, full))}")
-    print(f"  merged post: {', '.join(map(str, simple))}")
+    print(f"  the mark, unaltered, at: {', '.join(map(str, SIZES))}")
     return 0
 
 
