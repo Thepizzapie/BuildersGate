@@ -9,6 +9,68 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-28
+
+A UI/UX pass over the whole dashboard, and the first downloadable build.
+
+### Added
+
+- **Light and dark grounds**, switchable from the rail, remembered, and applied
+  before first paint so there is no flash. Follows the OS unless you pick one.
+- **Desktop app.** `bgate app` runs the same local server in a native window
+  (Edge WebView2 on Windows, so nothing extra to install). `pip install
+  "builders-gate[desktop]"`.
+- **`BuildersGate.exe`** — a single 46 MB binary, no Python required. Built by
+  `python packaging/build_exe.py`, which boots the result and fetches real
+  assets out of it before declaring success.
+- **Sprite editor**: sheets grouped by category, a named edit history you can
+  click to step back through, a looping animation preview, and onion skin that
+  shows the frames before *and* after the one you are painting.
+- **Audio lab**: a layer timeline with per-lane waveforms and drag-to-offset,
+  file import, microphone recording, and non-destructive per-layer trim.
+- **World bible**: the relationships already in the lore data are drawn as a
+  graph, with search and canon/kind filters.
+- **Scene composition convention** — one editable thing, one named node —
+  written into the seat briefs, the scaffold template and the QA fail list.
+
+### Changed
+
+- The dashboard's CSS is one stylesheet (`bgate_ui/static/app.css`) with a
+  declared cascade order, replacing six `<style>` blocks that had accumulated
+  inside `index.html` across five redesigns.
+- Every `<select>` is a searchable in-app combobox. A native dropdown draws its
+  popup through the OS, so none of the app's styling reached it.
+- Every `window.prompt` / `window.confirm` is an in-app dialog. Destructive
+  actions still ask.
+- The clip editor gained parameters: numeric selection with zero-crossing snap,
+  a gain slider, fade curves, and A/B against the original before committing.
+- The sprite editor and audio mixer are Studio pages rather than fullscreen
+  overlays launched from a small button.
+
+### Fixed
+
+- Secondary text and placeholders failed WCAG AA (2.5:1 and 3.9:1). Every
+  colour that carries text now clears AA on both grounds.
+- Card borders were drawn with a *surface* token in 44 places, which made them
+  invisible on the light ground.
+- Canvas drawing cannot resolve `var()`; several modules had frozen to one
+  ground working around that. Tokens now resolve at draw time.
+- The active navigation item was tinted violet, left over from a theme that was
+  reverted everywhere else.
+- Cancelling a rejection or a regeneration prompt submitted it anyway — one
+  persisted a blank reason as precedent, the other queued a paid image job.
+- Visiting the audio tab left a document-level key handler running, so Space,
+  Ctrl+S and Backspace acted on an invisible clip from anywhere in the app.
+- `sys.executable` is the executable itself in a frozen build, so the doctor's
+  speech-to-text probe launched a new copy of the application per check.
+
+### Removed
+
+- **Studio "Asset flow"** — duplicated the Assets library and the art seat.
+- **Studio "Game editor"** — it had no save and no write path; it read the
+  Godot tree, took screenshots and dispatched queue items, all of which the
+  Playtests and Agents views already do.
+
 ## [0.1.0] - 2026-07-27
 
 First public release. Everything below already existed when the repository was
@@ -63,5 +125,6 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Thepizzapie/BuildersGate/releases/tag/v0.1.0
