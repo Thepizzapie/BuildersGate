@@ -670,9 +670,20 @@ async def queue_wait(ids: str, timeout_s: int = 60) -> dict:
 
 @app.post("/api/queue/{item_id}/dispatch")
 def queue_dispatch(item_id: int, payload: Optional[dict] = None) -> dict:
+    """Spawn an agent on a queued item.
+
+    allow_dirty rides through to dispatch(), which otherwise refuses on an
+    uncommitted tree. The route used to drop it, so the refusal was a dead end
+    in the browser: the only ways past were an env var and a restart, and the
+    message said "dispatch with allow_dirty" without there being any way to.
+    None (the default) is not the same as False here — it means "unspecified",
+    which lets BGATE_ALLOW_DIRTY still decide.
+    """
     payload = payload or {}
+    dirty = payload.get("allow_dirty")
     return _dispatch.dispatch(str(_root()), item_id,
-                              model=payload.get("model") or None)
+                              model=payload.get("model") or None,
+                              allow_dirty=None if dirty is None else bool(dirty))
 
 
 @app.post("/api/queue/{item_id}/stop")

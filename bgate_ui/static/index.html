@@ -2109,6 +2109,10 @@ setInterval(pollQueue, 3500);
 <!-- askText / askConfirm / askPick. First, because every module below reaches
      them on window the same way it reaches toast(). -->
 <script src="/static/ask.js"></script>
+<!-- Offers "run anyway" when dispatch refuses on an uncommitted tree. Sits
+     here because it calls askConfirm; it hooks fetch, so it needs no
+     cooperation from the nine modules that post a dispatch. -->
+<script src="/static/dirtygate.js"></script>
 <!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
 <script src="/static/nodecanvas.js"></script>
 <script src="/static/flows.js"></script>

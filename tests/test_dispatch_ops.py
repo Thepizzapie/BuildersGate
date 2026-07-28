@@ -384,6 +384,41 @@ class TestGitSurface:
         assert queue.get(root, item["id"])["base_commit"] == allowed["base_commit"]
         dispatch._live.clear()
 
+    def test_dispatch_route_carries_allow_dirty(self, client, root, monkeypatch):
+        """The refusal told the operator to "dispatch with allow_dirty" and the
+        route then dropped the field, so there was no way to do that from the
+        browser — env var and a restart, or nothing. static/dirtygate.js turns
+        the refusal into a dialog and retries through here."""
+        _git_repo(root)
+        (root / "wip.txt").write_text("half a thought\n", encoding="utf-8")
+        _fake_spawn(monkeypatch, [])
+        item = queue.add(root, "art", "paint")
+        url = f"/api/queue/{item['id']}/dispatch"
+
+        refused = client.post(url, json={}).json()
+        assert refused["ok"] is False and refused["code"] == "dirty_tree"
+        # The dialog lists these, so an empty list would make it useless.
+        assert refused["detail"]["paths"]
+
+        allowed = client.post(url, json={"allow_dirty": True}).json()
+        assert allowed["ok"] is True
+        dispatch._live.clear()
+
+    def test_dispatch_route_allow_dirty_false_still_refuses(self, client, root,
+                                                            monkeypatch):
+        """None and False are different: unspecified defers to
+        BGATE_ALLOW_DIRTY, an explicit false does not."""
+        _git_repo(root)
+        (root / "wip.txt").write_text("half a thought\n", encoding="utf-8")
+        _fake_spawn(monkeypatch, [])
+        monkeypatch.setenv("BGATE_ALLOW_DIRTY", "1")
+        item = queue.add(root, "art", "paint")
+        url = f"/api/queue/{item['id']}/dispatch"
+
+        assert client.post(url, json={"allow_dirty": False}).json()["code"] == "dirty_tree"
+        assert client.post(url, json={}).json()["ok"] is True   # env decides
+        dispatch._live.clear()
+
     def test_diff_route_reads_the_items_base_commit(self, client, root):
         (root / "a.txt").write_text("one\n", encoding="utf-8")
         _git_repo(root)
