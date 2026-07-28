@@ -690,13 +690,15 @@ def test_the_viewport_stages_edits_and_never_writes_on_a_drag():
     assert js.count('"/api/scene/node/property"') == 1
     apply_fn = js.split("async function applyPending()", 1)[1].split(
         "async function discardPending", 1)[0]
-    assert "confirm(" in apply_fn, "apply must ask before it writes"
+    # askConfirm() is the in-app modal that replaced window.confirm — the
+    # native one is suppressed in the WebView2 desktop host.
+    assert "confirm(" in apply_fn or "askConfirm(" in apply_fn, "apply must ask before it writes"
     assert '"/api/scene/node/property"' in apply_fn
 
     # Leaving or switching with work outstanding asks first.
     for fn in ("function unmount()", "function setScene("):
         body = js.split(fn, 1)[1][:400]
-        assert "hasPending()" in body and "confirm(" in body, f"{fn} must guard"
+        assert "hasPending()" in body and ("confirm(" in body or "askConfirm(" in body), f"{fn} must guard"
 
     # And a structural edit refuses rather than silently discarding them.
     build = (STATIC / "scenebuild.js").read_text(encoding="utf-8")

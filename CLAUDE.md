@@ -105,6 +105,15 @@ bgate serve
 
 Dashboard on http://127.0.0.1:7788. It binds to loopback only.
 
+If they would rather have a window than a browser tab, `bgate app` runs the
+same dashboard in one (needs `pip install -e ".[desktop]"`; on Windows it uses
+the WebView2 runtime that ships with 11, so there is nothing else to install).
+It takes a loopback port the OS picks, so it does not fight a `bgate serve`
+that is already running.
+
+There is also a standalone `BuildersGate.exe` on the releases page for people
+who do not want Python at all — `python packaging/build_exe.py` builds it.
+
 The user must restart Claude Code before the MCP tools appear. Tell them that
 explicitly; a fresh session is the only thing that picks up a new server.
 

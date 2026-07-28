@@ -24,14 +24,40 @@ MODELS = ("tiny", "base", "small", "medium", "large-v3")
 DEFAULT_MODEL = "base"
 
 
+def frozen() -> bool:
+    """True inside the PyInstaller build, where sys.executable is the app."""
+    return bool(getattr(sys, "frozen", False))
+
+
 def whisper_python() -> str:
-    """Which interpreter runs whisper. BGATE_WHISPER_PYTHON overrides."""
-    return os.environ.get("BGATE_WHISPER_PYTHON") or sys.executable
+    """Which interpreter runs whisper. BGATE_WHISPER_PYTHON overrides.
+
+    sys.executable is only an INTERPRETER when we are running from source. In
+    the frozen build it is BuildersGate.exe, and handing that to
+    `subprocess.run([exe, "-c", ...])` re-launches the whole application —
+    which is exactly what happened: the doctor's whisper probe spawned thirteen
+    copies of the app, each blocking for the full 60s timeout, and /api/doctor
+    hung behind them. Frozen, there is no bundled interpreter to ask, so the
+    honest answer is "" and the caller reports it as unavailable.
+    """
+    override = os.environ.get("BGATE_WHISPER_PYTHON")
+    if override:
+        return override
+    return "" if frozen() else sys.executable
 
 
 def available() -> dict:
     """Can we transcribe at all? Checked without loading a model."""
     exe = whisper_python()
+    if not exe:
+        return {
+            "available": False,
+            "python": "",
+            "reason": "speech-to-text needs a Python with faster-whisper "
+                      "installed; the packaged app does not bundle one. Set "
+                      "BGATE_WHISPER_PYTHON to an interpreter that has it, or "
+                      "run Builders Gate from a source checkout.",
+        }
     probe = ("import importlib.metadata as m;"
              "print(m.version('faster-whisper'))")
     try:

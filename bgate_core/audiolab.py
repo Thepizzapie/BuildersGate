@@ -18,7 +18,7 @@ would be slower and worse. So this module is deliberately the small half:
     live here rather than in a UI that would get one of them wrong.
 
   * SESSIONS. A mixdown is worth nothing if it cannot be re-opened and nudged.
-    ``<name>.mix.json`` records the tracks, offsets and gains that produced a
+    ``<name>.<ext>.mix.json`` records the tracks, offsets and gains that produced a
     file, next to the file, so a mix is a document rather than a one-shot.
 
   * WAV WRITING. The browser encodes 16-bit PCM WAV; this validates it before it
@@ -331,7 +331,10 @@ def write_loop(audio: str | os.PathLike[str], *, enabled: bool,
             raise AudioError("cannot convert seconds to frames — the WAV's "
                              "sample rate could not be read")
         updates = {
-            "edit/loop_mode": str(LOOP_MODES[mode] if enabled else 0),
+            # loop_state() reports a non-looping clip as mode "disabled", and
+            # clients round-trip that back here — writing LOOP_MODES["disabled"]
+            # (0) would mean "enable looping" silently left it off.
+            "edit/loop_mode": str((LOOP_MODES.get(mode, 1) or 1) if enabled else 0),
             "edit/loop_begin": str(int(round(begin_s * rate))),
             "edit/loop_end": str(int(round(end_s * rate))) if end_s is not None else "-1",
         }
@@ -377,8 +380,29 @@ SESSION_VERSION = 1
 
 
 def session_path(audio: str | os.PathLike[str]) -> Path:
+    """Where a mix session lives: music.wav -> music.wav.mix.json.
+
+    Keyed on the full filename, the way .import is. A stem-keyed name collided
+    a WAV master with its streaming OGG — a normal pairing in a Godot project,
+    and the exact thing "save as .ogg" produces — so one save silently
+    overwrote the other's session.
+    """
+    p = Path(audio)
+    return p.with_name(p.name + ".mix.json")
+
+
+def _legacy_session_path(audio: str | os.PathLike[str]) -> Path:
+    """The old stem-keyed name. Read-only, so existing sidecars still load."""
     p = Path(audio)
     return p.with_suffix("").with_name(p.stem + ".mix.json")
+
+
+def existing_session_path(audio: str | os.PathLike[str]) -> Optional[Path]:
+    """The session file on disk for this audio, preferring the new name."""
+    for candidate in (session_path(audio), _legacy_session_path(audio)):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def normalise_session(data: dict) -> dict:
@@ -402,10 +426,30 @@ def normalise_session(data: dict) -> dict:
             if not lo <= v <= hi:
                 raise AudioError(f"tracks[{i}].{key} is out of range [{lo}, {hi}]")
             return v
+        # in_s/out_s are seconds into the SOURCE file, not the timeline: the
+        # kept region is [in_s, out_s) and it lands at offset_s. out_s is None
+        # for "to the end", which is what every session written before this
+        # existed means. Trimming stays non-destructive; the file is untouched.
+        in_s = _num("in_s", 0.0, MAX_SECONDS, 0.0)
+        raw_out = raw.get("out_s")
+        if raw_out is None or raw_out == "":
+            out_s = None
+        else:
+            try:
+                out_s = float(raw_out)
+            except (TypeError, ValueError):
+                raise AudioError(f"tracks[{i}].out_s is not a number")
+            if not 0.0 <= out_s <= MAX_SECONDS:
+                raise AudioError(
+                    f"tracks[{i}].out_s is out of range [0.0, {MAX_SECONDS}]")
+            if out_s <= in_s:
+                raise AudioError(f"tracks[{i}].out_s must be after in_s")
         tracks.append({
             "source": src,
             "name": str(raw.get("name") or Path(src).name)[:80],
             "offset_s": _num("offset_s", 0.0, MAX_SECONDS, 0.0),
+            "in_s": in_s,
+            "out_s": out_s,
             "gain_db": _num("gain_db", -60.0, 12.0, 0.0),
             "pan": _num("pan", -1.0, 1.0, 0.0),
             "muted": bool(raw.get("muted")),
@@ -444,8 +488,22 @@ MAX_SONG = 64
 
 
 def beat_path(audio: str | os.PathLike[str]) -> Path:
+    """music.wav -> music.wav.beat.json. Same stem-collision fix as
+    session_path(); see the note there."""
+    p = Path(audio)
+    return p.with_name(p.name + ".beat.json")
+
+
+def _legacy_beat_path(audio: str | os.PathLike[str]) -> Path:
     p = Path(audio)
     return p.with_suffix("").with_name(p.stem + ".beat.json")
+
+
+def existing_beat_path(audio: str | os.PathLike[str]) -> Optional[Path]:
+    for candidate in (beat_path(audio), _legacy_beat_path(audio)):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _beat_track(raw: dict, where: str, steps: int) -> dict:
@@ -565,8 +623,8 @@ def beat_seconds(session: dict) -> float:
 
 
 def load_beat(audio: str | os.PathLike[str]) -> Optional[dict]:
-    path = beat_path(audio)
-    if not path.is_file():
+    path = existing_beat_path(audio)
+    if path is None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -589,8 +647,8 @@ def save_beat(audio: str | os.PathLike[str], data: dict) -> dict:
 
 
 def load_session(audio: str | os.PathLike[str]) -> Optional[dict]:
-    path = session_path(audio)
-    if not path.is_file():
+    path = existing_session_path(audio)
+    if path is None:
         return None
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))

@@ -21,7 +21,7 @@
  *   BGIcon.upgrade(root)              -> swap [data-icon] placeholders in place
  */
 (function () {
-  const EMBER = "var(--ember, #ff6a3d)";
+  const EMBER = "var(--ember)";
 
   /* Each entry is the inner geometry of a 24x24 icon. `e` marks the one stroke
      drawn in ember — the moving part, the live part, the thing under review. */
@@ -136,12 +136,12 @@
     s.id = "bgi-style";
     s.textContent = `
       .bgi{display:block;flex:none;vertical-align:middle;overflow:visible}
-      .bgi .e{stroke:var(--ember,#ff6a3d)}
-      .bgi-missing{color:var(--ember,#ff6a3d)}
+      .bgi .e{stroke:var(--ember)}
+      .bgi-missing{color:var(--ember)}
       /* The rail dims its icons until the row is live, so the ember stroke
          reads as "this is the one you are in" rather than constant noise. */
       .rail-item .bgi .e{stroke:currentColor;opacity:.6}
-      .rail-item.on .bgi .e,.rail-item:hover .bgi .e{stroke:var(--ember,#ff6a3d);opacity:1}
+      .rail-item.on .bgi .e,.rail-item:hover .bgi .e{stroke:var(--ember);opacity:1}
     `;
     document.head.appendChild(s);
   }

@@ -52,49 +52,59 @@
   .tech-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
   .tech-wrap .tech-span2{grid-column:1 / -1}
   @media(max-width:1080px){.tech-wrap{grid-template-columns:1fr}.tech-wrap .tech-span2{grid-column:auto}}
-  .tech-card{background:#101319;border:1px solid #1e232c;border-radius:12px;padding:14px 16px}
-  .tech-card h3{margin:0 0 10px;font-size:13px;font-weight:600;color:#e6e8ee;display:flex;align-items:center;gap:8px}
-  .tech-card h3 .tech-sub{margin-left:auto;font-weight:400;font-size:11px;color:#6b7280}
-  .tech-lamp{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4a5160;flex:none}
-  .tech-lamp.ok{background:#3fbf7f;box-shadow:0 0 6px rgba(63,191,127,.6)}
-  .tech-lamp.bad{background:#e0574c;box-shadow:0 0 6px rgba(224,87,76,.5)}
-  .tech-lamp.warn{background:#e2b13c}
-  .tech-row{display:flex;align-items:center;gap:10px;font-size:12px;color:#aeb6c2;padding:4px 0}
-  .tech-row b{color:#e6e8ee;font-weight:600}
-  .tech-kv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:#8a93a2;word-break:break-all}
-  .tech-btn{padding:7px 13px;background:#16202a;border:1px solid #2b4a58;border-radius:8px;color:#cfe6f0;font:inherit;font-size:12px;cursor:pointer;transition:background .15s}
-  .tech-btn:hover{background:#1c2b38}
+  .tech-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
+  .tech-card h3{margin:0 0 10px;font-size:13px;font-weight:var(--fw-semi);color:var(--text);display:flex;align-items:center;gap:8px}
+  .tech-card h3 .tech-sub{margin-left:auto;font-weight:400;font-size:11px;color:var(--text-3)}
+  .tech-lamp{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--line-strong);flex:none}
+  .tech-lamp.ok{background:var(--good-line);box-shadow:0 0 6px rgba(63,191,127,.6)}
+  .tech-lamp.bad{background:var(--bad);box-shadow:0 0 6px rgba(224,87,76,.5)}
+  .tech-lamp.warn{background:var(--warn)}
+  .tech-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-2);padding:4px 0}
+  .tech-row b{color:var(--text);font-weight:var(--fw-semi)}
+  .tech-kv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;color:var(--text-3);word-break:break-all}
+  .tech-btn{padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}
+  .tech-btn:hover{background:var(--surface-3)}
   .tech-btn:disabled{opacity:.5;cursor:default}
-  .tech-btn.primary{background:#193240;border-color:#3b7f9e;color:#dff0f7}
-  .tech-btn.big{padding:10px 18px;font-size:13px;font-weight:600;width:100%}
-  .tech-btn.danger{background:#2a1717;border-color:#5a2a2a;color:#f0b3b3}
-  .tech-spin{display:inline-block;width:12px;height:12px;border:2px solid #3b7f9e;border-top-color:transparent;border-radius:50%;animation:tech-rot .7s linear infinite;vertical-align:-1px}
+  .tech-btn.primary{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+  .tech-btn.big{padding:10px 18px;font-size:13px;font-weight:var(--fw-semi);width:100%}
+  .tech-btn.danger{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+  .tech-spin{display:inline-block;width:12px;height:12px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:tech-rot .7s linear infinite;vertical-align:-1px}
   @keyframes tech-rot{to{transform:rotate(360deg)}}
-  .tech-out{margin-top:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;background:#0a0d12;border:1px solid #1a1f28;border-radius:8px;padding:10px;max-height:260px;overflow:auto;white-space:pre-wrap;color:#aeb6c2}
-  .tech-ok{color:#8fe0b4}.tech-err{color:#f0a9a2}.tech-warn{color:#e2c05a}
-  .tech-pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid #2b3340;color:#aeb6c2}
-  .tech-pill.g{background:#12241a;border-color:#274a34;color:#8fe0b4}
-  .tech-pill.r{background:#241414;border-color:#4a2727;color:#f0a9a2}
-  .tech-pill.y{background:#241f10;border-color:#4a3d1c;color:#e2c05a}
-  .tech-select,.tech-input,.tech-ta{background:#0c0f14;border:1px solid #263040;border-radius:8px;color:#e6e8ee;font:inherit;font-size:12px;padding:7px 9px}
+  .tech-out{margin-top:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;background:var(--bg);border:1px solid var(--line-soft);border-radius:8px;padding:10px;max-height:260px;overflow:auto;white-space:pre-wrap;color:var(--text-2)}
+  .tech-ok{color:var(--good)}.tech-err{color:var(--bad)}.tech-warn{color:var(--warn)}
+  .tech-pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid var(--line);color:var(--text-2)}
+  .tech-pill.g{background:var(--good-soft);border-color:var(--good-line);color:var(--good)}
+  .tech-pill.r{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+  .tech-pill.y{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+  .tech-select,.tech-input,.tech-ta{background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);font:inherit;font-size:12px;padding:7px 9px}
   .tech-ta{width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;resize:vertical;min-height:120px}
   .tech-tree{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;max-height:340px;overflow:auto;line-height:1.7}
-  .tech-node{cursor:default;color:#8a93a2;user-select:none}
-  .tech-node .tf{cursor:pointer;color:#bcd2dc}
-  .tech-node .tf:hover{color:#e6e8ee;text-decoration:underline}
-  .tech-node .tsz{color:#5a6472;font-size:10px;margin-left:6px}
-  .tech-dir{color:#7d8797}
-  .tech-mesh{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;font-size:11.5px;padding:6px 0;border-bottom:1px solid #171c24}
-  .tech-mesh b{color:#e6e8ee}
-  .tech-empty{color:#6b7280;font-size:12px;padding:8px 0;font-style:italic}
-  .tech-meta{font-size:11px;color:#6b7280;margin:2px 0 8px}
+  .tech-node{cursor:default;color:var(--text-3);user-select:none}
+  .tech-node .tf{cursor:pointer;color:var(--text)}
+  .tech-node .tf:hover{color:var(--text);text-decoration:underline}
+  .tech-node .tsz{color:var(--text-3);font-size:10px;margin-left:6px}
+  .tech-dir{color:var(--text-3)}
+  /* Depth is a CSS variable now, not two literal spaces per level baked into
+     the text — indentation that survives copy/paste and wrapping. */
+  .tech-node,.tech-dirbtn{padding-left:calc(var(--d,0) * 14px)}
+  .tech-dirbtn{display:flex;align-items:center;gap:6px;width:100%;text-align:left;
+    background:none;border:0;font:inherit;font-size:11.5px;color:var(--text-2);
+    cursor:pointer;padding-top:1px;padding-bottom:1px;border-radius:var(--r-xs)}
+  .tech-dirbtn:hover{background:var(--surface-3);color:var(--text)}
+  .tech-dirbtn .tw{width:10px;flex:none;color:var(--accent)}
+  .tech-dirbtn .tsz{margin-left:auto;padding-right:4px}
+  .tech-kids[hidden]{display:none}
+  .tech-mesh{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;font-size:11.5px;padding:6px 0;border-bottom:1px solid var(--line-soft)}
+  .tech-mesh b{color:var(--text)}
+  .tech-empty{color:var(--text-3);font-size:12px;padding:8px 0;font-style:italic}
+  .tech-meta{font-size:11px;color:var(--text-3);margin:2px 0 8px}
   .tech-flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .tech-act{font-size:11.5px;line-height:1.5;border-left:2px solid #263040;padding:3px 0 3px 10px;margin:5px 0;color:#aeb6c2}
-  .tech-act .an{color:#8fbfe0;font-weight:600}
-  .tech-act.k-say{border-color:#3b7f9e;color:#cdd6e2}
-  .tech-act.k-tool{border-color:#4a5a3a}
-  .tech-act.k-result{border-color:#2b3340;color:#8a93a2}
-  .tech-act.k-steer{border-color:#7a5a2a;color:#e2c05a}
+  .tech-act{font-size:11.5px;line-height:1.5;border-left:2px solid var(--line);padding:3px 0 3px 10px;margin:5px 0;color:var(--text-2)}
+  .tech-act .an{color:var(--text);font-weight:var(--fw-semi)}
+  .tech-act.k-say{border-color:var(--accent);color:var(--text)}
+  .tech-act.k-tool{border-color:var(--good-line)}
+  .tech-act.k-result{border-color:var(--line);color:var(--text-3)}
+  .tech-act.k-steer{border-color:var(--warn-line);color:var(--warn)}
   </style>`;
 
   function shell() {
@@ -242,15 +252,66 @@ func _init():
     });
     return acc;
   }
-  function renderTree(nodes, depth) {
-    if (!nodes || !nodes.length) return depth === 0 ? `<div class="tech-empty">empty project</div>` : "";
+  /* The tree above rendered every node eagerly — 589 files and 68 directories,
+     2,006 DOM nodes, into a panel about 1,000px tall. The "▸" on each directory
+     was decorative: nothing collapsed, so the whole project arrived as one
+     indented wall you had to scroll to read.
+
+     Directories are real now: collapsed by default, children built on first
+     expand. Boot renders ~30 nodes instead of 2,006, and the arrow means what
+     it looks like it means. _dirReg maps a rendered button back to its node,
+     because that node's children are not in the DOM yet to be found. */
+  const _dirReg = [];
+
+  function renderLazyTree(nodes, depth) {
+    if (depth === 0) _dirReg.length = 0;
+    return renderLazyNodes(nodes, depth);
+  }
+
+  function renderLazyNodes(nodes, depth) {
+    if (!nodes || !nodes.length) {
+      return depth === 0 ? `<div class="tech-empty">empty project</div>` : "";
+    }
     return nodes.map((n) => {
-      const pad = "  ".repeat(depth);
       if (n.dir) {
-        return `<div class="tech-node"><span class="tech-dir">${esc(pad)}▸ ${esc(n.name)}/</span></div>` + renderTree(n.children, depth + 1);
+        const i = _dirReg.push(n) - 1;
+        const kids = countFiles(n.children);
+        return `<div class="tech-dirw" style="--d:${depth}">` +
+          `<button type="button" class="tech-dirbtn" data-dir="${i}" data-depth="${depth}" aria-expanded="false">` +
+            `<span class="tw">▸</span><span class="tech-dir">${esc(n.name)}/</span>` +
+            `<span class="tsz">${kids} file${kids === 1 ? "" : "s"}</span>` +
+          `</button><div class="tech-kids" hidden></div></div>`;
       }
-      return `<div class="tech-node">${esc(pad)}<span class="tf" data-rel="${esc(n.rel)}">${esc(n.name)}</span><span class="tsz">${fmtBytes(n.bytes)}</span></div>`;
+      return `<div class="tech-node" style="--d:${depth}">` +
+        `<span class="tf" data-rel="${esc(n.rel)}">${esc(n.name)}</span>` +
+        `<span class="tsz">${fmtBytes(n.bytes)}</span></div>`;
     }).join("");
+  }
+
+  // One delegated handler on the tree root: expanding builds the level below on
+  // demand, then leaves it in place so re-collapsing costs nothing.
+  function wireTree(root) {
+    if (!root || root._wired) return;
+    root._wired = true;
+    root.addEventListener("click", (ev) => {
+      const btn = ev.target.closest(".tech-dirbtn");
+      if (btn && root.contains(btn)) {
+        const kids = btn.parentElement.querySelector(".tech-kids");
+        const open = btn.getAttribute("aria-expanded") === "true";
+        if (!open && !kids.dataset.built) {
+          const node = _dirReg[Number(btn.dataset.dir)];
+          kids.innerHTML = renderLazyNodes(node && node.children, Number(btn.dataset.depth) + 1);
+          kids.dataset.built = "1";
+        }
+        btn.setAttribute("aria-expanded", open ? "false" : "true");
+        const tw = btn.querySelector(".tw");
+        if (tw) tw.textContent = open ? "▸" : "▾";
+        kids.hidden = open;
+        return;
+      }
+      const f = ev.target.closest(".tf");
+      if (f && root.contains(f)) openFile(f.dataset.rel);
+    });
   }
 
   async function loadFiles() {
@@ -262,8 +323,10 @@ func _init():
     const sel = $("#tech-res-sel");
     if (treeEl) {
       if (r && r.error) treeEl.innerHTML = `<div class="tech-empty">could not load files: ${esc(r.error)}</div>`;
-      else treeEl.innerHTML = renderTree(r.tree, 0);
-      treeEl.querySelectorAll(".tf").forEach((el) => { el.onclick = () => openFile(el.dataset.rel); });
+      else treeEl.innerHTML = renderLazyTree(r.tree, 0);
+      // Per-element onclick cannot reach rows that do not exist yet; the tree
+      // root delegates instead, which also covers every lazily-built level.
+      wireTree(treeEl);
     }
     const resources = flattenResources(r && r.tree, []);
     if (sub) sub.textContent = r && r.tree ? `${countFiles(r.tree)} files` : "";
@@ -323,7 +386,7 @@ func _init():
       <span class="tech-pill ${r.total_tris > 100000 ? "y" : "g"}">${Number(r.total_tris || 0).toLocaleString()} tris total</span>
     </div>`;
     if (meshes.length) {
-      html += `<div style="margin-top:6px"><div class="tech-mesh" style="color:#6b7280;border-color:#263040"><b>mesh</b><b>surfaces</b><b>tris</b></div>`;
+      html += `<div style="margin-top:6px"><div class="tech-mesh" style="color:var(--text-3);border-color:var(--line)"><b>mesh</b><b>surfaces</b><b>tris</b></div>`;
       html += meshes.map((m) => {
         const aabb = (m.aabb_size || []).map((v) => Number(v).toFixed(1)).join(" × ");
         return `<div class="tech-mesh"><span><b>${esc(m.name)}</b>${aabb ? `<span class="tsz">${esc(aabb)}</span>` : ""}</span>

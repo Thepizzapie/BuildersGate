@@ -23,6 +23,11 @@
  * uncaught into the dashboard.
  */
 window.SpriteEdit = (() => {
+  /* Both editors were built as fullscreen overlays appended to <body>. Studio
+     needs them as pages, so mount() takes a host: when _host is set the same
+     markup lands inside it and drops the fixed positioning and the close
+     button (there is nothing to close back to inside a tab). */
+  let _host = null;
   "use strict";
 
   const E = s => String(s ?? "").replace(/[&<>"']/g,
@@ -46,13 +51,13 @@ window.SpriteEdit = (() => {
   ];
 
   const SLOT_COLOR = {
-    main_hand:"#ff6a3d", off_hand:"#4aa3ff",
-    left_hand:"#ffd166", right_hand:"#2ec4b6",
-    head:"#e8e2d8", body:"#9a7bff",
-    feet:"#8bd450", throwable:"#ff6ec7", pivot:"#7c8695", muzzle:"#ff9f43",
-    fx:"#57c7ff",
+    main_hand:"var(--bad)", off_hand:"var(--text)",
+    left_hand:"var(--warn)", right_hand:"var(--accent)",
+    head:"var(--warn)", body:"var(--c-narrative)",
+    feet:"var(--good)", throwable:"var(--c-narrative)", pivot:"var(--text-3)", muzzle:"var(--warn)",
+    fx:"var(--text)",
   };
-  const slotColor = s => SLOT_COLOR[s] || "#e8e2d8";
+  const slotColor = s => SLOT_COLOR[s] || "var(--warn)";
 
   /* LOGICAL vs ANATOMICAL hands. main_hand/off_hand say which hand holds the
    * weapon — that is what the gear layer equips against. left_hand/right_hand
@@ -78,6 +83,13 @@ window.SpriteEdit = (() => {
     s.id = "spriteedit-style";
     s.textContent = [
       ".se-back{position:fixed;inset:0;z-index:1400;background:rgba(4,5,7,.86);backdrop-filter:blur(3px);display:flex;flex-direction:column}",
+      // Embedded in a Studio tab: a panel in the page, not a sheet over it.
+      ".se-back.se-embed{position:relative;inset:auto;z-index:auto;background:var(--surface-2);backdrop-filter:none;height:100%;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}",
+      ".se-back.se-embed .se-closebtn{display:none}",
+      ".se-land{display:grid;place-items:center;height:100%;min-height:420px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg)}",
+      ".se-land-in{text-align:center;max-width:380px;padding:var(--s-8)}",
+      ".se-land-in h3{font-size:var(--fs-xl);font-weight:var(--fw-regular);color:var(--text);margin-bottom:var(--s-4)}",
+      ".se-land-in p{color:var(--text-3);font-size:var(--fs-md);line-height:var(--lh);margin-bottom:var(--s-7)}",
       ".se-bar{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--seam);background:var(--iron);flex:none}",
       ".se-title{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--bone);text-transform:uppercase}",
       ".se-sub{font-family:var(--mono);font-size:10px;color:var(--ash2)}",
@@ -86,16 +98,37 @@ window.SpriteEdit = (() => {
       ".se-btn{padding:6px 11px;background:var(--plate);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;cursor:pointer}",
       ".se-btn:hover:not(:disabled){border-color:var(--ember)}",
       ".se-btn:disabled{opacity:.4;cursor:default}",
-      ".se-btn.go{background:var(--ember);color:#111;border-color:var(--ember);font-weight:600}",
+      ".se-btn.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
       ".se-body{flex:1;display:flex;min-height:0}",
       ".se-tools{width:52px;flex:none;background:var(--iron);border-right:1px solid var(--seam);padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:5px;overflow-y:auto}",
       ".se-tool{width:36px;height:36px;display:grid;place-items:center;background:var(--plate);border:1px solid var(--seam);border-radius:8px;color:var(--ash);font-size:16px;cursor:pointer;flex:none}",
       ".se-tool:hover{border-color:var(--ember);color:var(--bone)}",
-      ".se-tool.on{background:var(--ember);border-color:var(--ember);color:#111}",
-      ".se-stage{flex:1;position:relative;min-width:0;overflow:hidden;background:#0b0c0f}",
+      ".se-tool.on{background:var(--ember);border-color:var(--ember);color:var(--bg)}",
+      ".se-stage{flex:1;position:relative;min-width:0;overflow:hidden;background:var(--bg)}",
       ".se-stage canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}",
       ".se-hud{position:absolute;left:10px;bottom:10px;font-family:var(--mono);font-size:10px;color:var(--ash2);background:rgba(10,11,14,.8);border:1px solid var(--seam);border-radius:6px;padding:4px 8px;pointer-events:none;white-space:pre}",
       ".se-side{width:284px;flex:none;background:var(--iron);border-left:1px solid var(--seam);overflow-y:auto;padding:12px}",
+      // history list
+      ".se-prevwrap{position:relative;margin-bottom:8px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;line-height:0}",
+      ".se-prevwrap canvas{width:100%;height:auto;display:block;image-rendering:pixelated}",
+      ".se-prev-n{position:absolute;right:5px;bottom:4px;font-family:var(--mono);font-size:9px;color:#fff;background:rgba(8,9,12,.78);padding:1px 5px;border-radius:4px;line-height:1.5}",
+      ".se-fps{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-3)}",
+      ".se-onion{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-3)}",
+      ".se-onion select{flex:1;min-width:0}",
+      ".se-btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}",
+      ".se-hist{display:flex;flex-direction:column;gap:1px;max-height:230px;overflow-y:auto;margin-bottom:8px}",
+      ".se-hrow{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:4px 7px;background:none;border:0;border-radius:var(--r-xs);color:var(--text-2);font:inherit;font-size:11px;cursor:pointer}",
+      "button.se-hrow:hover{background:var(--surface-3);color:var(--text)}",
+      ".se-hrow .se-hdot{width:6px;height:6px;border-radius:50%;background:var(--line-strong);flex:none}",
+      ".se-hrow .se-hl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".se-hrow .se-ht{flex:none;font-family:var(--mono);font-size:9px;color:var(--text-3);font-variant-numeric:tabular-nums}",
+      // the state you are looking at
+      ".se-hrow.now{color:var(--text);cursor:default}",
+      ".se-hrow.now .se-hdot{background:var(--accent);box-shadow:0 0 6px var(--accent)}",
+      // steps ahead of the cursor, reachable with redo
+      ".se-hrow.undone{opacity:.5}",
+      ".se-hrow.undone .se-hdot{background:transparent;border:1px solid var(--line-strong)}",
+      ".se-hrow.base{color:var(--text-3);cursor:default}",
       ".se-h{font-family:var(--mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ash2);margin:16px 0 7px}",
       ".se-h:first-child{margin-top:0}",
       ".se-row{display:flex;align-items:center;gap:7px;margin-bottom:7px}",
@@ -105,18 +138,18 @@ window.SpriteEdit = (() => {
       ".se-in.num{flex:none;width:62px}",
       ".se-sw{width:34px;height:30px;padding:2px;border:1px solid var(--seam);border-radius:6px;background:var(--void);cursor:pointer;flex:none}",
       ".se-pal{display:flex;flex-wrap:wrap;gap:4px}",
-      ".se-pc{width:20px;height:20px;border-radius:4px;border:1px solid var(--seam);cursor:pointer;position:relative;background-image:linear-gradient(45deg,#222 25%,transparent 25%,transparent 75%,#222 75%),linear-gradient(45deg,#222 25%,#111 25%,#111 75%,#222 75%);background-size:8px 8px;background-position:0 0,4px 4px}",
+      ".se-pc{width:20px;height:20px;border-radius:4px;border:1px solid var(--seam);cursor:pointer;position:relative;background-image:linear-gradient(45deg,var(--surface-2) 25%,transparent 25%,transparent 75%,var(--surface-2) 75%),linear-gradient(45deg,var(--surface-2) 25%,var(--bg) 25%,var(--bg) 75%,var(--surface-2) 75%);background-size:8px 8px;background-position:0 0,4px 4px}",
       ".se-pc span{position:absolute;inset:0;border-radius:3px}",
       ".se-pc.on{border-color:var(--ember);box-shadow:0 0 0 1px var(--ember)}",
       ".se-strip{display:flex;flex-wrap:wrap;gap:4px}",
-      ".se-fr{position:relative;width:46px;height:46px;border:1px solid var(--seam);border-radius:6px;background:#000;cursor:pointer;overflow:hidden;flex:none}",
+      ".se-fr{position:relative;width:46px;height:46px;border:1px solid var(--seam);border-radius:6px;background:var(--bg);cursor:pointer;overflow:hidden;flex:none}",
       ".se-fr canvas{width:100%;height:100%;image-rendering:pixelated;display:block}",
       ".se-fr.on{border-color:var(--ember);box-shadow:0 0 0 1px var(--ember)}",
-      ".se-fr .n{position:absolute;left:2px;top:1px;font-family:var(--mono);font-size:8px;color:var(--ash2);text-shadow:0 0 3px #000}",
+      ".se-fr .n{position:absolute;left:2px;top:1px;font-family:var(--mono);font-size:8px;color:var(--ash2);text-shadow:0 0 3px var(--bg)}",
       ".se-fr .dots{position:absolute;right:2px;bottom:2px;display:flex;gap:2px}",
       ".se-fr .dots i{width:5px;height:5px;border-radius:50%;display:block}",
-      ".se-fr.picked{border-color:#57c7ff;box-shadow:0 0 0 1px #57c7ff}",
-      ".se-fr.picked::after{content:'●';position:absolute;right:3px;top:1px;font-size:8px;color:#57c7ff}",
+      ".se-fr.picked{border-color:var(--text);box-shadow:0 0 0 1px var(--text)}",
+      ".se-fr.picked::after{content:'●';position:absolute;right:3px;top:1px;font-size:8px;color:var(--text)}",
       // hand buttons
       ".se-hands{display:flex;gap:6px}",
       ".se-hand{flex:1;display:flex;align-items:center;gap:6px;padding:7px 9px;background:var(--plate);border:1px solid var(--seam);border-radius:8px;color:var(--ash);font:inherit;font-size:11.5px;cursor:pointer;position:relative}",
@@ -127,12 +160,12 @@ window.SpriteEdit = (() => {
       ".se-hand.has{color:var(--bone)}",
       // regen results
       ".se-res{border:1px solid var(--seam);border-radius:9px;padding:8px;margin-bottom:8px}",
-      ".se-res.bad{border-color:#7d4338}",
+      ".se-res.bad{border-color:var(--bad-line)}",
       ".se-res .hd{display:flex;font-family:var(--mono);font-size:10px;color:var(--bone);margin-bottom:6px}",
       ".se-res .hd .m{margin-left:auto;color:var(--ash2)}",
       ".se-res .pair{display:grid;grid-template-columns:1fr 1fr;gap:6px}",
       ".se-res figure{margin:0}",
-      ".se-res img{width:100%;background:#000;border-radius:5px;image-rendering:pixelated;display:block}",
+      ".se-res img{width:100%;background:var(--bg);border-radius:5px;image-rendering:pixelated;display:block}",
       ".se-res figcaption{font-family:var(--mono);font-size:8.5px;color:var(--ash2);text-align:center;margin-top:2px}",
       ".se-res .acts{display:flex;gap:6px;margin-top:7px}",
       ".se-res .acts .se-btn{flex:1}",
@@ -147,11 +180,18 @@ window.SpriteEdit = (() => {
       ".se-note b{color:var(--bone)}",
       ".se-warn{color:var(--warn)}",
       ".se-pick{position:fixed;inset:0;z-index:1401;background:rgba(4,5,7,.9);display:flex;align-items:center;justify-content:center;padding:40px}",
-      ".se-pick-box{background:var(--iron);border:1px solid var(--seam);border-radius:12px;width:min(760px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}",
-      ".se-pick-list{overflow-y:auto;padding:8px}",
+      ".se-pick-box{background:var(--iron);border:1px solid var(--seam);border-radius:12px;width:min(920px,100%);height:min(660px,90vh);display:flex;flex-direction:column;overflow:hidden}",
+      ".se-pick-body{display:flex;min-height:0;flex:1}",
+      ".se-pick-cats{width:150px;flex:none;border-right:1px solid var(--line);padding:8px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}",
+      ".se-cat{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:6px 9px;background:none;border:0;border-radius:var(--r-sm);color:var(--text-2);font:inherit;font-size:12px;cursor:pointer;text-transform:capitalize}",
+      ".se-cat:hover{background:var(--surface-3);color:var(--text)}",
+      ".se-cat.on{background:var(--accent-soft);color:var(--text)}",
+      ".se-cat .n{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text-3);font-variant-numeric:tabular-nums}",
+      ".se-cat.on .n{color:var(--accent)}",
+      ".se-pick-list{overflow-y:auto;padding:8px;flex:1;min-width:0}",
       ".se-pick-i{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--bone)}",
       ".se-pick-i:hover{background:var(--plate)}",
-      ".se-pick-i img{width:34px;height:34px;object-fit:contain;image-rendering:pixelated;background:#000;border-radius:5px;border:1px solid var(--seam);flex:none}",
+      ".se-pick-i img{width:34px;height:34px;object-fit:contain;image-rendering:pixelated;background:var(--bg);border-radius:5px;border:1px solid var(--seam);flex:none}",
       ".se-pick-i .m{margin-left:auto;color:var(--ash2);font-size:10px}",
       ".se-tag{font-size:9px;padding:1px 5px;border-radius:999px;border:1px solid var(--seam);color:var(--ash2)}",
       ".se-tag.on{border-color:var(--good);color:var(--good)}",
@@ -162,8 +202,12 @@ window.SpriteEdit = (() => {
   /* ── open / close ─────────────────────────────────────────────────────── */
   async function open(rel){
     injectStyle();
-    if (S && S.dirty && !confirm("Discard unsaved pixel edits?")) return;
-    if (S) close(true);
+    if (S && S.dirty && !(await askConfirm({
+      title: "Discard unsaved pixel edits?",
+      body: "The pixels you painted and the undo history for this sheet go with it.",
+      ok: "discard", danger: true,
+    }))) return;
+    if (S) await close(true);
     if (!rel) return pick();
 
     let info;
@@ -191,9 +235,13 @@ window.SpriteEdit = (() => {
       rig: info.rig && info.rig.grid ? info.rig : Object.assign({}, info.rig, {
         grid: info.suggested_grid || null,
       }),
-      tool: "pencil", color: "#ffffff", brush: 1, zoom: 1, pan: {x:0, y:0},
+      // Resolved, not a var() string: this is a canvas fillStyle, a
+      // hexToRGBA() argument and an <input type="color"> value, and none of
+      // the three can read a custom property.
+      tool: "pencil", color: BGTheme.color("--text"), brush: 1, zoom: 1, pan: {x:0, y:0},
       frame: 0, slot: "left_hand",
-      onion: false, showGrid: true, focusFrame: true,
+      onion: "off", showGrid: true, focusFrame: true,
+      preview: { on: false, fps: 8, i: 0, timer: null, row: "sheet" },
       undo: [], redo: [], undoBytes: 0,
       dirty: false, rigDirty: false,
       drag: null, hover: null, clip: null,
@@ -207,13 +255,20 @@ window.SpriteEdit = (() => {
     regenStatus();      // async: fills in the price table and the off-switch
   }
 
-  function close(silent){
-    if (S && S.dirty && !silent &&
-        !confirm("You have unsaved pixel edits. Close anyway?")) return;
+  // async because the unsaved-edit question is a real element now. Every caller
+  // is a click or a keystroke that discards the result anyway; open() awaits it
+  // so a discarded sheet is torn down before the next one is built.
+  async function close(silent){
+    if (S && S.dirty && !silent && !(await askConfirm({
+      title: "You have unsaved pixel edits. Close anyway?",
+      body: "The undo history closes with the sheet — reopening it reads the file on disk.",
+      ok: "close anyway", danger: true,
+    }))) return;
     if (S){
       if (S.ro) try { S.ro.disconnect(); } catch (e) {}
       if (S.onResize) window.removeEventListener("resize", S.onResize);
     }
+    previewStop();
     const back = document.getElementById("se-back");
     if (back) back.remove();
     document.removeEventListener("keydown", onKey, true);
@@ -247,23 +302,73 @@ window.SpriteEdit = (() => {
           <span class="se-sub" id="se-pick-n"></span>
           <span class="se-spacer"></span>
           <button class="se-btn" onclick="SpriteEdit.closePick()">close</button></div>
-        <div class="se-pick-list" id="se-pick-list">
-          <div class="se-note" style="padding:24px;text-align:center">scanning…</div></div>
+        <div class="se-pick-body">
+          <div class="se-pick-cats" id="se-pick-cats"></div>
+          <div class="se-pick-list" id="se-pick-list">
+            <div class="se-note" style="padding:24px;text-align:center">scanning…</div></div>
+        </div>
       </div>`;
       document.body.appendChild(host);
       host.addEventListener("click", ev => { if (ev.target === host) closePick(); });
       const input = host.querySelector("#se-pick-q");
       if (input) input.focus();
     }
+    // limit=2000 (the route's ceiling) instead of the default 300. At the
+    // default this project returned 300 of 584 and the category counts would
+    // have been confidently wrong.
     const d = await readJSON(
-      `/api/sprite/list${q ? `?q=${encodeURIComponent(q)}` : ""}`, {sheets:[]});
-    const sheets = d.sheets || [];
+      `/api/sprite/list?limit=2000${q ? `&q=${encodeURIComponent(q)}` : ""}`, {sheets:[]});
+    _pickAll = d.sheets || [];
+    _pickTruncated = !!d.truncated;
+    _pickTotal = d.total || _pickAll.length;
+    renderPick();
+  }
+
+  /* One flat list of 584 sheets with a text box was the whole navigation. The
+     project already sorts itself — characters, enemies, props, tiles, portraits,
+     tmp — by the path segment under assets/, so the picker groups on that. */
+  let _pickAll = [], _pickCat = null, _pickTruncated = false, _pickTotal = 0;
+
+  function categoryOf(rel){
+    const parts = String(rel).replace(/\\/g, "/").split("/");
+    const i = parts.indexOf("assets");
+    if (i >= 0 && i + 1 < parts.length - 1) return parts[i + 1];
+    if (i >= 0) return "loose";
+    return parts.length > 1 ? parts[0] : "root";
+  }
+
+  function renderPick(){
+    const cats = new Map();
+    _pickAll.forEach(s => {
+      const c = categoryOf(s.rel);
+      cats.set(c, (cats.get(c) || 0) + 1);
+    });
+    // Only keep a category selected while it still has matches under the filter.
+    if (_pickCat && !cats.has(_pickCat)) _pickCat = null;
+
+    const order = [...cats.entries()].sort((a, b) => b[1] - a[1]);
+    const catHost = document.getElementById("se-pick-cats");
+    if (catHost) {
+      catHost.innerHTML =
+        `<button class="se-cat${_pickCat === null ? " on" : ""}" data-cat="">` +
+          `<span>all</span><span class="n">${_pickAll.length}</span></button>` +
+        order.map(([c, n]) =>
+          `<button class="se-cat${_pickCat === c ? " on" : ""}" data-cat="${E(c)}">` +
+            `<span>${E(c)}</span><span class="n">${n}</span></button>`).join("");
+      catHost.querySelectorAll(".se-cat").forEach(b => b.onclick = () => {
+        _pickCat = b.dataset.cat || null;
+        renderPick();
+      });
+    }
+
+    const shown = _pickCat ? _pickAll.filter(s => categoryOf(s.rel) === _pickCat) : _pickAll;
     const n = document.getElementById("se-pick-n");
-    if (n) n.textContent = d.truncated
-      ? `${sheets.length} of ${d.total} — narrow the filter`
-      : `${sheets.length} editable image${sheets.length===1?"":"s"}`;
+    if (n) n.textContent = _pickTruncated
+      ? `${_pickAll.length} of ${_pickTotal} — narrow the filter`
+      : `${shown.length} editable image${shown.length === 1 ? "" : "s"}`;
+
     const list = document.getElementById("se-pick-list");
-    if (list) list.innerHTML = sheets.length ? sheets.map(s => `
+    if (list) list.innerHTML = shown.length ? shown.map(s => `
       <div class="se-pick-i" onclick="SpriteEdit.closePick();SpriteEdit.open('${E(s.rel)}')">
         <img loading="lazy" src="/api/preview?rel=${encodeURIComponent(s.rel)}" alt="">
         <span>${E(s.name)}</span>
@@ -294,7 +399,7 @@ window.SpriteEdit = (() => {
         <button class="se-btn" onclick="SpriteEdit.fit()" title="Fit to view (0)">⊡ fit</button>
         <button class="se-btn" onclick="SpriteEdit.pick()">open…</button>
         <button class="se-btn go" id="se-save" onclick="SpriteEdit.save()">save sheet</button>
-        <button class="se-btn" onclick="SpriteEdit.close()">close</button>
+        <button class="se-btn se-closebtn" onclick="SpriteEdit.close()">close</button>
       </div>
       <div class="se-body">
         <div class="se-tools" id="se-tools"></div>
@@ -302,7 +407,8 @@ window.SpriteEdit = (() => {
           <div class="se-hud" id="se-hud"></div></div>
         <div class="se-side" id="se-side"></div>
       </div>`;
-    document.body.appendChild(back);
+    if (_host) { back.classList.add("se-embed"); _host.innerHTML = ""; _host.appendChild(back); }
+    else document.body.appendChild(back);
     $ = {
       back, name: back.querySelector("#se-name"), tools: back.querySelector("#se-tools"),
       stage: back.querySelector("#se-stage"), view: back.querySelector("#se-view"),
@@ -403,6 +509,12 @@ window.SpriteEdit = (() => {
    * tab); a plain `if (pending) return` guard then stays true forever and the
    * canvas is frozen for the rest of the session. The timeout is the escape
    * hatch — whichever fires first does the work and clears the flag. */
+
+  // A ground change invalidates every colour already painted into the canvas.
+  // BGTheme.flush() has already run by the time this fires (same event, earlier
+  // listener), so paint() picks up the new values.
+  try{ window.addEventListener("bgate:theme", () => { try{ paint(); }catch(e){} }); }catch(e){}
+
   function paint(){
     if (!S || !$.ctx) return;
     if (S._pending) return;
@@ -426,23 +538,67 @@ window.SpriteEdit = (() => {
     const chk = 8;
     c.save();
     c.beginPath(); c.rect(px, py, S.w*z, S.h*z); c.clip();
-    c.fillStyle = "#16181d"; c.fillRect(px, py, S.w*z, S.h*z);
-    c.fillStyle = "#1d2026";
+    c.fillStyle = BGTheme.color("--checker-b"); c.fillRect(px, py, S.w*z, S.h*z);
+    c.fillStyle = BGTheme.color("--checker-a");
     for (let y = 0; y < S.h*z; y += chk)
       for (let x = ((y/chk)|0)%2 ? chk : 0; x < S.w*z; x += chk*2)
         c.fillRect(px+x, py+y, chk, chk);
     c.restore();
 
-    // Onion skin: the previous frame, ghosted, under the live one.
-    if (S.onion && S.focusFrame && frameCount() > 1 && S.frame > 0){
-      const prev = frameBox(S.frame-1), cur = frameBox(S.frame);
-      c.globalAlpha = 0.28;
-      c.drawImage(S.work, prev.x, prev.y, prev.w, prev.h,
-                  px+cur.x*z, py+cur.y*z, cur.w*z, cur.h*z);
-      c.globalAlpha = 1;
+    /* Onion skin. This used to be one boolean that ghosted only the PREVIOUS
+       frame, which tells you where a limb came from but never where it is
+       going — the two-sided version is what actually catches a walk cycle that
+       does not translate evenly.
+
+         prev  · the frame behind, warm
+         both  · behind warm, ahead cool — the classic animation read
+         all   · every other frame, faint, for checking overall drift
+
+       Ghosts are tinted and drawn INTO the current frame's box so they stack
+       registered on top of each other rather than sitting in their own cells. */
+    const nFrames = frameCount();
+    const mode = S.onion;
+    if (mode && mode !== "off" && S.focusFrame && nFrames > 1){
+      const cur = frameBox(S.frame);
+      const ghosts = [];
+      if (mode === "prev" || mode === "both"){
+        if (S.frame > 0) ghosts.push({ i: S.frame - 1, a: .34, tint: "var(--bad)" });
+      }
+      if (mode === "both"){
+        if (S.frame < nFrames - 1) ghosts.push({ i: S.frame + 1, a: .34, tint: "var(--c-tech)" });
+      }
+      if (mode === "all"){
+        for (let i = 0; i < nFrames; i++){
+          if (i === S.frame) continue;
+          ghosts.push({ i: i, a: .16, tint: i < S.frame ? "var(--bad)" : "var(--c-tech)" });
+        }
+      }
+      ghosts.forEach(g => {
+        const b = frameBox(g.i);
+        c.globalAlpha = g.a;
+        c.drawImage(S.work, b.x, b.y, b.w, b.h, px+cur.x*z, py+cur.y*z, cur.w*z, cur.h*z);
+        c.globalAlpha = 1;
+      });
     }
 
     c.drawImage(S.work, px, py, S.w*z, S.h*z);
+
+    /* With ghosts on the canvas the live frame stops being obvious, so say
+       which cell you are actually painting into: dim every other cell and ring
+       the current one. Only while onion is on — it is noise otherwise. */
+    if (mode && mode !== "off" && S.focusFrame && nFrames > 1){
+      const cur = frameBox(S.frame);
+      c.save();
+      c.beginPath();
+      c.rect(px, py, S.w*z, S.h*z);
+      c.rect(px+cur.x*z, py+cur.y*z, cur.w*z, cur.h*z);
+      c.fillStyle = "rgba(0,0,0,.45)";
+      c.fill("evenodd");                     // everything except the live cell
+      c.restore();
+      c.strokeStyle = BGTheme.color("--accent");
+      c.lineWidth = 2;
+      c.strokeRect(px+cur.x*z - 1, py+cur.y*z - 1, cur.w*z + 2, cur.h*z + 2);
+    }
 
     // In-progress line/rect preview lives on the view, never on the sheet, so
     // an abandoned drag leaves no trace.
@@ -450,7 +606,7 @@ window.SpriteEdit = (() => {
 
     const g = grid();
     if (S.showGrid && g.cols*g.rows > 1){
-      c.strokeStyle = "rgba(232,226,216,.28)"; c.lineWidth = 1;
+      c.strokeStyle = BGTheme.color("--text-3"); c.globalAlpha = .45; c.lineWidth = 1;
       c.beginPath();
       for (let i = 1; i < g.cols; i++){
         const x = Math.round(px + i*g.cell_w*z) + .5;
@@ -461,6 +617,7 @@ window.SpriteEdit = (() => {
         c.moveTo(px, y); c.lineTo(px + S.w*z, y);
       }
       c.stroke();
+      c.globalAlpha = 1;
     }
     if (z >= 8){
       c.strokeStyle = "rgba(232,226,216,.07)"; c.lineWidth = 1;
@@ -481,7 +638,7 @@ window.SpriteEdit = (() => {
       c.rect(px+b.x*z, py+b.y*z, b.w*z, b.h*z);
       c.fill("evenodd");
       c.restore();
-      c.strokeStyle = "var(--ember)"; c.strokeStyle = "#ff6a3d"; c.lineWidth = 2;
+      c.strokeStyle = BGTheme.color("--accent"); c.lineWidth = 2;
       c.strokeRect(px+b.x*z-1, py+b.y*z-1, b.w*z+2, b.h*z+2);
     }
 
@@ -531,37 +688,167 @@ window.SpriteEdit = (() => {
   }
 
   /* ── pixel operations ─────────────────────────────────────────────────── */
-  function snapshot(){
+  /* The stack used to hold bare ImageData, so undo worked but there was nothing
+     to SHOW: no way to see what you had done, or to jump back more than one
+     step at a time. Each entry now carries a label and a timestamp. Entries are
+     {data, label, t} — the byte accounting reads e.data.data.length, one more
+     hop than before. */
+  function step(data, label){
+    return { data: data, label: label || "edit", t: Date.now() };
+  }
+
+  function snapshot(label){
     if (!S) return;
-    const data = S.wctx.getImageData(0, 0, S.w, S.h);
-    S.undo.push(data);
-    S.undoBytes += data.data.length;
+    const e = step(S.wctx.getImageData(0, 0, S.w, S.h), label || S._pendingLabel);
+    S._pendingLabel = null;
+    S.undo.push(e);
+    S.undoBytes += e.data.data.length;
     while (S.undoBytes > UNDO_BYTES && S.undo.length > 1){
-      S.undoBytes -= S.undo.shift().data.length;
+      S.undoBytes -= S.undo.shift().data.data.length;
     }
     S.redo.length = 0;
     refreshHistory();
   }
+
+  // Tools call snapshot() from deep inside pointer handling where the operation
+  // name is not in scope; they set the label just before instead.
+  function labelNext(label){ if (S) S._pendingLabel = label; }
+
+  function setOnion(mode){
+    if (!S) return;
+    S.onion = ["off","prev","both","all"].indexOf(mode) >= 0 ? mode : "off";
+    renderSide(); paint();
+  }
+
+  /* ── animation preview ─────────────────────────────────────────────────────
+     Editing a walk cycle a cell at a time tells you nothing about whether it
+     walks. This loops the frames at a chosen fps straight off the working
+     canvas, so it reflects unsaved edits as you make them — the whole point is
+     to see the change land. */
+  function previewStop(){
+    if (S && S.preview && S.preview.timer){
+      clearInterval(S.preview.timer);
+      S.preview.timer = null;
+    }
+  }
+
+  function previewFrames(){
+    // Either every cell in the sheet, or just the frames of a named animation.
+    const p = S.preview;
+    if (p.row !== "sheet"){
+      const anim = (S.rig.animations || []).find(a => a.name === p.row);
+      if (anim && anim.frames && anim.frames.length) return anim.frames.slice();
+    }
+    const n = frameCount();
+    return Array.from({ length: n }, (_, i) => i);
+  }
+
+  function previewTick(){
+    const cv = document.getElementById("se-prev");
+    if (!cv || !S){ previewStop(); return; }
+    const frames = previewFrames();
+    if (!frames.length) return;
+    const p = S.preview;
+    p.i = p.i % frames.length;
+    const b = frameBox(frames[p.i]);
+    const ctx = cv.getContext("2d");
+    // Integer scale so pixel art stays pixel art.
+    const scale = Math.max(1, Math.floor(Math.min(cv.width / b.w, cv.height / b.h)));
+    const dw = b.w * scale, dh = b.h * scale;
+    const dx = ((cv.width - dw) / 2) | 0, dy = ((cv.height - dh) / 2) | 0;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    const chk = 8;
+    ctx.fillStyle = BGTheme.color("--checker-b");
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = BGTheme.color("--checker-a");
+    for (let y = 0; y < cv.height; y += chk)
+      for (let x = ((y/chk)|0)%2 ? chk : 0; x < cv.width; x += chk*2)
+        ctx.fillRect(x, y, chk, chk);
+    ctx.drawImage(S.work, b.x, b.y, b.w, b.h, dx, dy, dw, dh);
+    const lab = document.getElementById("se-prev-n");
+    if (lab) lab.textContent = `${p.i + 1}/${frames.length}`;
+    p.i++;
+  }
+
+  function previewStart(){
+    previewStop();
+    if (!S) return;
+    previewTick();
+    S.preview.timer = setInterval(previewTick, Math.max(30, 1000 / (S.preview.fps || 8)));
+  }
+
+  function previewToggle(on){
+    if (!S) return;
+    S.preview.on = on == null ? !S.preview.on : !!on;
+    if (S.preview.on) previewStart(); else { previewStop(); }
+    renderSide();
+  }
+
+  function previewField(k, v){
+    if (!S) return;
+    if (k === "fps") S.preview.fps = Math.max(1, Math.min(60, Number(v) || 8));
+    else if (k === "row") { S.preview.row = String(v || "sheet"); S.preview.i = 0; }
+    if (S.preview.on) previewStart();
+    renderSide();
+  }
+
   function refreshHistory(){
     const u = document.getElementById("se-undo"), r = document.getElementById("se-redo");
     if (u) u.disabled = !S.undo.length;
     if (r) r.disabled = !S.redo.length;
     if ($.name) $.name.innerHTML =
       `${E(S.rel)}${S.dirty ? ' <span class="se-dirty">● unsaved</span>' : ""}`;
+    renderHistory();
   }
+
+  function renderHistory(){
+    const host = document.getElementById("se-hist");
+    if (!host || !S) return;
+    const fmt = t => { const d = new Date(t);
+      return String(d.getHours()).padStart(2,"0") + ":" +
+             String(d.getMinutes()).padStart(2,"0") + ":" +
+             String(d.getSeconds()).padStart(2,"0"); };
+    // Oldest at the bottom: the newest state is the one you are looking at.
+    const rows = [];
+    S.redo.slice().forEach((e, i) => {
+      rows.push(`<button class="se-hrow undone" data-redo="${S.redo.length - 1 - i}">` +
+        `<span class="se-hdot"></span><span class="se-hl">${E(e.label)}</span>` +
+        `<span class="se-ht">${fmt(e.t)}</span></button>`);
+    });
+    rows.push(`<div class="se-hrow now"><span class="se-hdot"></span>` +
+      `<span class="se-hl">current</span>` +
+      `<span class="se-ht">${S.dirty ? "unsaved" : "saved"}</span></div>`);
+    S.undo.slice().reverse().forEach((e, i) => {
+      rows.push(`<button class="se-hrow" data-undo="${i + 1}" ` +
+        `title="step back to just before this">` +
+        `<span class="se-hdot"></span><span class="se-hl">${E(e.label)}</span>` +
+        `<span class="se-ht">${fmt(e.t)}</span></button>`);
+    });
+    rows.push(`<div class="se-hrow base"><span class="se-hdot"></span>` +
+      `<span class="se-hl">opened</span><span class="se-ht"></span></div>`);
+    host.innerHTML = rows.join("");
+    host.querySelectorAll("[data-undo]").forEach(b =>
+      b.onclick = () => { const n = Number(b.dataset.undo); for (let i=0;i<n;i++) undo(); });
+    host.querySelectorAll("[data-redo]").forEach(b =>
+      b.onclick = () => { const n = S.redo.length - Number(b.dataset.redo); for (let i=0;i<n;i++) redo(); });
+  }
+
   function undo(){
     if (!S || !S.undo.length) return;
-    S.redo.push(S.wctx.getImageData(0, 0, S.w, S.h));
-    const d = S.undo.pop();
-    S.undoBytes -= d.data.length;
-    S.wctx.putImageData(d, 0, 0);
+    const cur = S.undo[S.undo.length - 1];
+    S.redo.push(step(S.wctx.getImageData(0, 0, S.w, S.h), cur.label));
+    const e = S.undo.pop();
+    S.undoBytes -= e.data.data.length;
+    S.wctx.putImageData(e.data, 0, 0);
     S.dirty = true; refreshHistory(); paint(); thumbs();
   }
   function redo(){
     if (!S || !S.redo.length) return;
-    S.undo.push(S.wctx.getImageData(0, 0, S.w, S.h));
+    const e = S.redo.pop();
+    S.undo.push(step(S.wctx.getImageData(0, 0, S.w, S.h), e.label));
     S.undoBytes += S.w*S.h*4;
-    S.wctx.putImageData(S.redo.pop(), 0, 0);
+    S.wctx.putImageData(e.data, 0, 0);
     S.dirty = true; refreshHistory(); paint(); thumbs();
   }
 
@@ -664,10 +951,10 @@ window.SpriteEdit = (() => {
       if (S.clip.width !== b.w || S.clip.height !== b.h){
         say("clipboard frame is a different size"); return;
       }
-      snapshot();
+      snapshot("paste frame");
       S.wctx.putImageData(S.clip, b.x, b.y);
     } else {
-      snapshot();
+      snapshot("paste");
       const img = S.wctx.getImageData(b.x, b.y, b.w, b.h);
       const out = S.wctx.createImageData(b.w, b.h);
       const gp = (x, y) => { const i = (y*b.w+x)*4; return [img.data[i],img.data[i+1],img.data[i+2],img.data[i+3]]; };
@@ -692,7 +979,7 @@ window.SpriteEdit = (() => {
    * "fix the generated sheet" edit, and doing it by hand is 200 clicks. */
   function dehalo(threshold){
     if (!S) return;
-    snapshot();
+    snapshot("de-halo");
     const img = S.wctx.getImageData(0, 0, S.w, S.h);
     const d = img.data;
     let hit = 0;
@@ -731,9 +1018,13 @@ window.SpriteEdit = (() => {
 
       if (S.tool === "bucket"){
         if (p.x<0||p.y<0||p.x>=S.w||p.y>=S.h) return;
-        snapshot();
+        snapshot("bucket fill");
         if (bucket(p.x, p.y)){ S.dirty = true; paint(); thumbs(); }
-        else { S.undo.pop(); }
+        // A fill that changed nothing should not leave a history step. The pop
+        // was here already; it just never gave the bytes back, so undoBytes
+        // drifted up on every no-op click until the cap started evicting real
+        // history early.
+        else { const e = S.undo.pop(); if (e) S.undoBytes -= e.data.data.length; }
         refreshHistory();
         return;
       }
@@ -742,7 +1033,7 @@ window.SpriteEdit = (() => {
         paint();
         return;
       }
-      snapshot();
+      snapshot(S.tool === "eraser" ? "erase" : "paint");
       S.drag = {paint:true, erase:S.tool === "eraser", last:p};
       put(p.x, p.y, S.drag.erase);
       S.dirty = true; paint(); thumbs();
@@ -777,7 +1068,7 @@ window.SpriteEdit = (() => {
       const d = S.drag;
       S.drag = null;
       if (d && d.shape && d.preview && d.preview.length > 1){
-        snapshot();
+        snapshot(d.fill ? d.shape + " (filled)" : d.shape);
         const erase = false;
         d.preview.forEach(pt => put(pt[0], pt[1], erase));
         S.dirty = true; thumbs();
@@ -816,6 +1107,10 @@ window.SpriteEdit = (() => {
   function onKey(ev){
     if (!S) return;
     const t = ev.target;
+    // This listener is on document in the CAPTURE phase, so it sees keys before
+    // anything an ask dialog stops. Escape there means "cancel the question",
+    // not "close the editor"; letters are its buttons, not this editor's tools.
+    if (t && t.closest && t.closest(".ask")) return;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)){
       if (ev.key === "Escape") t.blur();
       return;
@@ -1043,7 +1338,13 @@ window.SpriteEdit = (() => {
       <div class="se-row">
         <label><input type="checkbox" ${S.showGrid?"checked":""} onchange="SpriteEdit.toggle('showGrid',this.checked)"> grid</label>
         <label><input type="checkbox" ${S.focusFrame?"checked":""} onchange="SpriteEdit.toggle('focusFrame',this.checked)"> focus</label>
-        <label><input type="checkbox" ${S.onion?"checked":""} onchange="SpriteEdit.toggle('onion',this.checked)"> onion</label>
+        <label class="se-onion">onion
+        <select class="se-in" onchange="SpriteEdit.setOnion(this.value)">
+          <option value="off"${S.onion==="off"?" selected":""}>off</option>
+          <option value="prev"${S.onion==="prev"?" selected":""}>previous</option>
+          <option value="both"${S.onion==="both"?" selected":""}>before + after</option>
+          <option value="all"${S.onion==="all"?" selected":""}>all frames</option>
+        </select></label>
       </div>
 
       <div class="se-h">frames</div>
@@ -1123,7 +1424,35 @@ window.SpriteEdit = (() => {
       <div class="se-row"><button class="se-btn" style="flex:1"
         onclick="SpriteEdit.exportFrames()">export SpriteFrames .tres</button></div>
       <div class="se-note">The sidecar is <b>${E((S.info && S.info.sidecar) || "")}</b> —
-        it travels with the art, not the database.</div>`;
+        it travels with the art, not the database.</div>
+
+      <div class="se-h">preview</div>
+      <div class="se-prevwrap">
+        <canvas id="se-prev" width="252" height="150"></canvas>
+        <span class="se-prev-n" id="se-prev-n"></span>
+      </div>
+      <div class="se-row">
+        <button class="se-btn${S.preview.on ? " on" : ""}" style="flex:1"
+          onclick="SpriteEdit.previewToggle()">${S.preview.on ? "❚❚ pause" : "▶ play"}</button>
+        <label class="se-fps">fps
+          <input class="se-in" type="number" min="1" max="60" value="${S.preview.fps}"
+                 style="width:52px" onchange="SpriteEdit.previewField('fps',this.value)"></label>
+      </div>
+      ${(S.rig.animations || []).length ? `<div class="se-row">
+        <select class="se-in" style="flex:1" onchange="SpriteEdit.previewField('row',this.value)">
+          <option value="sheet"${S.preview.row === "sheet" ? " selected" : ""}>whole sheet · ${n} frames</option>
+          ${(S.rig.animations || []).map(a => `<option value="${E(a.name)}"${
+            S.preview.row === a.name ? " selected" : ""}>${E(a.name)} · ${a.frames.length}f</option>`).join("")}
+        </select></div>` : ""}
+
+      <div class="se-h">history</div>
+      <div class="se-hist" id="se-hist"></div>
+      <div class="se-note">Click a step to go back to just before it. Undo depth is
+        capped by memory, so the oldest steps drop off on long sessions.</div>`;
+    // renderSide() rebuilds the panel, which throws away the history list and
+    // the preview canvas with it — repaint both into the fresh DOM.
+    renderHistory();
+    if (S.preview.on) previewStart(); else previewTick();
     thumbs();
     refreshHistory();
   }
@@ -1259,9 +1588,12 @@ window.SpriteEdit = (() => {
     if (!S || S.regen.busy) return;
     const prompt = (S.regen.prompt || "").trim();
     if (!prompt){ say("say what should change first"); return; }
-    if (S.dirty && !confirm(
-        "The sheet has unsaved pixel edits. Regeneration reads the file ON DISK, "
-        + "so those edits will not be in the reference. Continue?")) return;
+    if (S.dirty && !(await askConfirm({
+      title: "The sheet has unsaved pixel edits. Continue?",
+      body: "Regeneration reads the file ON DISK, so those edits will not be in the reference.",
+      ok: "regenerate anyway",
+    }))) return;
+    if (!S || S.regen.busy) return;
 
     const frames = pickedFrames();
     S.regen.busy = true; S.regen.done = 0; S.regen.results = [];
@@ -1316,7 +1648,7 @@ window.SpriteEdit = (() => {
   async function acceptRegen(i){
     const res = S.regen.results[i];
     if (!res || res.error || res.applied) return;
-    snapshot();
+    snapshot("accept regenerated frame");
     if (!await applyResult(res)){ say("that result would not decode"); return; }
     res.applied = true;
     S.dirty = true;
@@ -1327,7 +1659,7 @@ window.SpriteEdit = (() => {
   async function acceptAllRegen(){
     const pending = S.regen.results.filter(r => !r.error && !r.applied);
     if (!pending.length) return;
-    snapshot();                       // one undo step for the whole batch
+    snapshot("accept all regenerated");                       // one undo step for the whole batch
     for (const res of pending) await applyResult(res);
     S.regen.results = S.regen.results.filter(r => r.error);
     S.dirty = true;
@@ -1432,8 +1764,27 @@ window.SpriteEdit = (() => {
   function setBrush(v){ if (S){ S.brush = clamp(parseInt(v,10)||1, 1, 16); } }
   function toggle(field, on){ if (S){ S[field] = !!on; paint(); } }
 
+  // Studio entry point: render into `host` instead of over the whole page.
+  function embed(host, rel){
+    _host = host || null;
+    if (rel) return open(rel);
+    // Landing state. Opening the tab used to fire the picker modal straight
+    // away, which reads as an error dialog rather than as a workspace.
+    if (host) host.innerHTML =
+      '<div class="se-land">' +
+        '<div class="se-land-in">' +
+          '<h3>Sprite sheet editor</h3>' +
+          '<p>Choose a sprite sheet to work on. Everything you open here saves back to the project.</p>' +
+          '<button class="qbtn" onclick="SpriteEdit.pick()">open a sprite sheet…</button>' +
+        '</div></div>';
+    return null;
+  }
+  function unembed(){ _host = null; }
+
   return {
     open, close, pick, pickSearch, closePick, fit, undo, redo, save, saveRig, exportFrames,
+    previewToggle, previewField, setOnion,
+    embed, unembed,
     setTool, setColor, setBrush, setFrame, clickFrame, setSlot, dropLabel,
     spreadLabels, swapHands,
     applyGrid, applyCells, detectGrid, rowAnimations, addAnimation, animField, dropAnimation,

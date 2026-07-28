@@ -34,29 +34,48 @@
             <span class="aud-todo">TODO: waveform view, generation, in-engine hookup.</span>
           </div>
           <div class="aud-card" id="aud-lib">
-            <div class="aud-h">${BGICON("audio")} Sound library <span class="aud-sub" id="aud-lib-count"></span></div>
+            <h3 class="aud-h">${BGICON("audio")} Sound library <span class="aud-sub" id="aud-lib-count"></span>
+              <span class="aud-actions">
+                <button class="aud-btn aud-primary" id="aud-open-studio"
+                        title="Waveform editing, effects and mixdown live in Studio">
+                  ${BGICON("studio")} open in Studio
+                </button>
+              </span>
+            </h3>
             <div id="aud-lib-body"><div class="aud-empty">loading…</div></div>
           </div>
           <div class="aud-card" id="aud-cues">
-            <div class="aud-h">${BGICON("timeline")} Cue sheet <span class="aud-sub">which sound plays when</span>
+            <h3 class="aud-h">${BGICON("timeline")} Cue sheet <span class="aud-sub">which sound plays when</span>
               <span class="aud-actions">
                 <button class="aud-btn" id="aud-cue-add">+ row</button>
                 <button class="aud-btn aud-primary" id="aud-cue-save">save</button>
               </span>
-            </div>
+            </h3>
             <div id="aud-cue-body"><div class="aud-empty">loading…</div></div>
           </div>
           <div class="aud-card" id="aud-agent">
-            <div class="aud-h">${BGICON("agents")} Live audio agent</div>
+            <h3 class="aud-h">${BGICON("agents")} Live audio agent</h3>
             <div id="aud-agent-body"><div class="aud-empty">loading…</div></div>
           </div>
         </div>`;
 
-      // Wire the two static buttons once.
+      // Wire the static buttons once.
       const addBtn = container.querySelector("#aud-cue-add");
       const saveBtn = container.querySelector("#aud-cue-save");
       if (addBtn) addBtn.onclick = () => this._addCueRow();
       if (saveBtn) saveBtn.onclick = () => this._saveCues();
+
+      // This seat owns the library and the cue sheet; waveform editing, effects
+      // and mixdown are the mixer's job, which now has its own Studio tab.
+      const studioBtn = container.querySelector("#aud-open-studio");
+      if (studioBtn) studioBtn.onclick = () => {
+        try {
+          setWorkspace("studio", document.querySelector('.rail-item[data-view="studio"]'));
+          // activate() resolves the lazy flow modules before select() can work.
+          Promise.resolve(window.Studio && Studio.activate())
+            .then(() => { try { Studio.select("audio"); } catch (e) {} });
+        } catch (e) { if (window.BGWS) BGWS.toast("could not open Studio", true); }
+      };
 
       this._loadAll();
     },
@@ -353,7 +372,9 @@
     async _steer() {
       const id = this._activeItem;
       if (id == null) return;
-      const text = window.prompt("Steer the audio agent — course correction:");
+      const text = await this._bg.askText({
+        title: "Steer the audio agent",
+        label: "course correction", ok: "send", required: true });
       if (!text) return;
       try {
         const r = await this._bg.post(`/api/queue/${id}/steer`, { text });
@@ -373,45 +394,45 @@
 
     _style() {
       return `<style>
-        .aud-wrap{display:flex;flex-direction:column;gap:14px;color:#e6e8ee;font-size:13px}
-        .aud-note{background:#101319;border:1px solid #1e232c;border-left:3px solid #3b7f9e;border-radius:10px;padding:10px 14px;color:#c7cdd8;line-height:1.5}
-        .aud-note b{color:#e6e8ee}
-        .aud-todo{color:#7f8b9c;font-style:italic;margin-left:4px}
-        .aud-card{background:#101319;border:1px solid #1e232c;border-radius:14px;padding:14px 16px}
-        .aud-h{font-size:13px;font-weight:600;color:#e6e8ee;display:flex;align-items:center;gap:8px;margin-bottom:12px}
-        .aud-sub{font-weight:400;color:#7f8b9c;font-size:11px}
+        .aud-wrap{display:flex;flex-direction:column;gap:14px;color:var(--text);font-size:13px}
+        .aud-note{background:var(--surface-1);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:10px 14px;color:var(--text);line-height:1.5}
+        .aud-note b{color:var(--text)}
+        .aud-todo{color:var(--text-3);font-style:italic;margin-left:4px}
+        .aud-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
+        .aud-h{font-size:13px;font-weight:var(--fw-semi);color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:12px}
+        .aud-sub{font-weight:400;color:var(--text-3);font-size:11px}
         .aud-actions{margin-left:auto;display:flex;gap:6px}
-        .aud-btn{background:#161b22;border:1px solid #2b323d;color:#c7cdd8;border-radius:8px;padding:5px 11px;font:inherit;font-size:12px;cursor:pointer}
-        .aud-btn:hover{border-color:#3b7f9e;color:#e6e8ee}
-        .aud-primary{background:#123039;border-color:#3b7f9e;color:#bfe0ee}
-        .aud-danger{border-color:#5a2a2a;color:#f0b3b3}
+        .aud-btn{padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}
+        .aud-btn:hover{border-color:var(--accent);color:var(--text)}
+        .aud-primary{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+        .aud-danger{border-color:var(--bad-line);color:var(--bad)}
         .aud-tbl{width:100%;border-collapse:collapse;font-size:12px}
-        .aud-tbl th{text-align:left;color:#7f8b9c;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:4px 8px;border-bottom:1px solid #1e232c}
-        .aud-tbl td{padding:6px 8px;border-bottom:1px solid #171b22;vertical-align:middle}
-        .aud-name{color:#e6e8ee;font-weight:500;white-space:nowrap}
-        .aud-tag{color:#7f8b9c;font-size:10px;font-weight:400}
-        .aud-path{color:#8a93a2;font-family:ui-monospace,monospace;font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .aud-bytes{color:#7f8b9c;white-space:nowrap}
+        .aud-tbl th{text-align:left;color:var(--text-3);font-weight:var(--fw-semi);font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:4px 8px;border-bottom:1px solid var(--line)}
+        .aud-tbl td{padding:6px 8px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+        .aud-name{color:var(--text);font-weight:var(--fw-semi);white-space:nowrap}
+        .aud-tag{color:var(--text-3);font-size:10px;font-weight:400}
+        .aud-path{color:var(--text-3);font-family:ui-monospace,monospace;font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .aud-bytes{color:var(--text-3);white-space:nowrap}
         .aud-play audio,.aud-prev audio{height:30px;max-width:220px;vertical-align:middle}
-        .aud-muted{color:#5a6472}
-        .aud-in{background:#0c0f14;border:1px solid #2b323d;color:#e6e8ee;border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;width:100%;box-sizing:border-box}
-        .aud-in:focus{outline:none;border-color:#3b7f9e}
-        .aud-del{padding:4px 8px;color:#f0b3b3;border-color:#3a2626}
-        .aud-empty{color:#7f8b9c;padding:10px 2px;line-height:1.5}
-        .aud-empty code{background:#0c0f14;border:1px solid #1e232c;border-radius:5px;padding:1px 5px;font-size:11px}
+        .aud-muted{color:var(--text-3)}
+        .aud-in{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;width:100%;box-sizing:border-box}
+        .aud-in:focus{outline:none;border-color:var(--accent)}
+        .aud-del{padding:4px 8px;color:var(--bad);border-color:var(--bad-soft)}
+        .aud-empty{color:var(--text-3);padding:10px 2px;line-height:1.5}
+        .aud-empty code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:11px}
         .aud-agent-top{display:flex;gap:8px;align-items:center;margin-bottom:10px}
         .aud-agent-top .aud-in{width:auto;flex:1;min-width:0}
         #aud-feed{display:flex;flex-direction:column;gap:5px;max-height:340px;overflow:auto}
         .aud-step{padding:6px 10px;border-radius:8px;font-size:12px;line-height:1.4}
-        .s-tool{background:#0f171c;border:1px solid #1e2a30}
-        .s-tool b{color:#7fc4dd}
-        .s-tool span{color:#8a93a2;font-family:ui-monospace,monospace;font-size:11px}
-        .s-say{background:#12141a;color:#c7cdd8}
-        .s-res{background:#0d1016;color:#8a93a2;font-family:ui-monospace,monospace;font-size:11px}
-        .s-steer{background:#1a1526;border:1px solid #3a2f52;color:#c9b8ea}
-        .aud-final{background:#0f1a14;border:1px solid #274a34;border-radius:8px;padding:8px 10px;color:#bfe6cf;font-size:12px;margin-top:4px}
-        .aud-final b{color:#8fd6a8}
-        .aud-run{color:#7f8b9c;font-size:11px;padding:2px}
+        .s-tool{background:var(--surface-1);border:1px solid var(--line)}
+        .s-tool b{color:var(--text)}
+        .s-tool span{color:var(--text-3);font-family:ui-monospace,monospace;font-size:11px}
+        .s-say{background:var(--surface-1);color:var(--text)}
+        .s-res{background:var(--bg);color:var(--text-3);font-family:ui-monospace,monospace;font-size:11px}
+        .s-steer{background:var(--info-soft);border:1px solid var(--info-line);color:var(--c-narrative)}
+        .aud-final{background:var(--good-soft);border:1px solid var(--good-line);border-radius:8px;padding:8px 10px;color:var(--good);font-size:12px;margin-top:4px}
+        .aud-final b{color:var(--good)}
+        .aud-run{color:var(--text-3);font-size:11px;padding:2px}
       </style>`;
     },
   };
