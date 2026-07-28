@@ -9,6 +9,19 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-28
+
+### Fixed
+
+- The standalone Windows build ships as a folder rather than a self-extracting
+  executable. The 0.1.1 binary was quarantined by Defender as
+  `Trojan:Win32/Sabsik.TE.A!ml` — a machine-learning guess triggered by the
+  `--onefile` stub unpacking a compressed archive into `%TEMP%` and running code
+  from it. Downloads are now a zip with a published SHA256.
+- It is still **not code signed**, so Smart App Control will refuse to launch it
+  ("we can't confirm who published BuildersGate.exe"). Repackaging cannot fix
+  that; it needs a certificate. `pip install -e ".[desktop]"` avoids it entirely.
+
 ## [0.1.1] - 2026-07-28
 
 A UI/UX pass over the whole dashboard, and the first downloadable build.
@@ -130,6 +143,7 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Thepizzapie/BuildersGate/releases/tag/v0.1.0
