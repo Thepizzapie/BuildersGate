@@ -25,66 +25,65 @@
   };
 
   const STYLE = `
-    .dir-wrap{display:flex;flex-direction:column;gap:18px;color:#e6e8ee;font-size:13px}
-    .dir-sec{background:#101319;border:1px solid #1e232c;border-radius:12px;padding:14px 16px}
+    .dir-wrap{display:flex;flex-direction:column;gap:18px;color:var(--text);font-size:13px}
+    .dir-sec{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
     .dir-sec-h{display:flex;align-items:center;gap:10px;margin:0 0 12px;font-size:12px;
-      text-transform:uppercase;letter-spacing:.06em;color:#8a93a2}
-    .dir-sec-h .dir-count{color:#3b7f9e;font-weight:600}
+      text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
+    .dir-sec-h .dir-count{color:var(--accent);font-weight:var(--fw-semi)}
     .dir-sec-h .dir-spacer{flex:1}
-    .dir-empty{color:#6b7280;font-size:12px;padding:10px 2px}
+    .dir-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
     /* agent board */
     .dir-agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-    .dir-acard{background:#0d1016;border:1px solid #242a35;border-radius:10px;padding:11px 12px;
+    .dir-acard{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:11px 12px;
       display:flex;flex-direction:column;gap:8px}
-    .dir-acard.dir-deleg{border-color:#3b7f9e;box-shadow:0 0 0 1px rgba(59,127,158,.25)}
+    .dir-acard.dir-deleg{border-color:var(--accent);box-shadow:0 0 0 1px rgba(59,127,158,.25)}
     .dir-ahead{display:flex;align-items:center;gap:8px}
-    .dir-glyph{font-size:15px;width:20px;text-align:center;color:#3b7f9e}
-    .dir-atitle{flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .dir-glyph{font-size:15px;width:20px;text-align:center;color:var(--accent)}
+    .dir-atitle{flex:1;font-weight:var(--fw-semi);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .dir-badge{font-size:10px;padding:2px 7px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}
-    .dir-b-run{background:#16221a;color:#8fe0b0;border:1px solid #274a34}
-    .dir-b-done{background:#152029;color:#7fb8d4;border:1px solid #244658}
-    .dir-b-fail{background:#2a1616;color:#e79b9b;border:1px solid #5a2a2a}
-    .dir-ameta{font-size:11px;color:#8a93a2;display:flex;gap:12px;flex-wrap:wrap}
+    .dir-b-run{background:var(--good-soft);color:var(--good);border:1px solid var(--good-line)}
+    .dir-b-done{background:var(--surface-2);color:var(--text);border:1px solid var(--accent-line)}
+    .dir-b-fail{background:var(--bad-soft);color:var(--bad);border:1px solid var(--bad-line)}
+    .dir-ameta{font-size:11px;color:var(--text-3);display:flex;gap:12px;flex-wrap:wrap}
     .dir-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px;
-      background:#07090d;border:1px solid #1a1f27;border-radius:7px;padding:7px 9px;max-height:120px;overflow:auto}
+      background:var(--bg);border:1px solid var(--line-soft);border-radius:7px;padding:7px 9px;max-height:120px;overflow:auto}
     .dir-step{font-size:11px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .dir-step .k{color:#5b6675;margin-right:5px}
-    .dir-step.k-tool .k{color:#3b7f9e}
-    .dir-step.k-steer .k{color:#c9a24a}
-    .dir-step.k-result .k{color:#5f8a6e}
+    .dir-step .k{color:var(--text-3);margin-right:5px}
+    .dir-step.k-tool .k{color:var(--accent)}
+    .dir-step.k-steer .k{color:var(--warn)}
+    .dir-step.k-result .k{color:var(--good)}
     .dir-steer{display:flex;gap:6px}
-    .dir-steer-in{flex:1;min-width:0;padding:6px 8px;background:#12141a;border:1px solid #2b3a44;
-      border-radius:7px;color:#e6e8ee;font:inherit;font-size:12px}
+    .dir-steer-in{flex:1;min-width:0;padding:6px 8px;background:var(--surface-1);border:1px solid var(--line);
+      border-radius:7px;color:var(--text);font:inherit;font-size:12px}
     .dir-arow{display:flex;gap:6px;align-items:center}
     /* buttons */
-    .dir-btn{padding:6px 11px;background:#182029;border:1px solid #2b3a44;border-radius:7px;
-      color:#cfe3ee;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
-    .dir-btn:hover{border-color:#3b7f9e}
+    .dir-btn{padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease);white-space:nowrap}
+    .dir-btn:hover{border-color:var(--accent)}
     .dir-btn:disabled{opacity:.45;cursor:default}
-    .dir-btn.dir-primary{background:#173241;border-color:#2f6f8c;color:#daf0fb}
-    .dir-btn.dir-danger{background:#241618;border-color:#5a2a2a;color:#eaa}
+    .dir-btn.dir-primary{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+    .dir-btn.dir-danger{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
     .dir-btn.dir-sm{padding:4px 8px;font-size:11px}
     /* queue board */
     .dir-cols{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;align-items:start}
-    .dir-col{background:#0d1016;border:1px solid #1e232c;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
-    .dir-colh{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600}
+    .dir-col{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px}
+    .dir-colh{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:var(--fw-semi)}
     .dir-colh .dir-spacer{flex:1}
-    .dir-qcard{background:#12151c;border:1px solid #232a34;border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:6px}
-    .dir-qcard.sel{border-color:#3b7f9e;background:#131b22}
+    .dir-qcard{background:var(--surface-1);border:1px solid var(--line);border-radius:8px;padding:8px 9px;display:flex;flex-direction:column;gap:6px}
+    .dir-qcard.sel{border-color:var(--accent);background:var(--surface-1)}
     .dir-qtop{display:flex;align-items:flex-start;gap:7px}
     .dir-qtitle{flex:1;font-size:12px;line-height:1.35;cursor:pointer}
-    .dir-qtitle:hover{color:#9fd2e6}
-    .dir-qmeta{display:flex;gap:8px;align-items:center;font-size:10px;color:#7a8496}
-    .dir-st{font-size:10px;padding:1px 6px;border-radius:12px;border:1px solid #2b333f;color:#9aa4b2}
-    .dir-st.queued{color:#c9a24a;border-color:#4a3f22}
-    .dir-st.dispatched{color:#8fe0b0;border-color:#274a34}
-    .dir-st.done{color:#7fb8d4;border-color:#244658}
-    .dir-st.failed{color:#e79b9b;border-color:#5a2a2a}
+    .dir-qtitle:hover{color:var(--text)}
+    .dir-qmeta{display:flex;gap:8px;align-items:center;font-size:10px;color:var(--text-3)}
+    .dir-st{font-size:10px;padding:1px 6px;border-radius:12px;border:1px solid var(--line);color:var(--text-2)}
+    .dir-st.queued{color:var(--warn);border-color:var(--warn-line)}
+    .dir-st.dispatched{color:var(--good);border-color:var(--good-line)}
+    .dir-st.done{color:var(--text);border-color:var(--accent-line)}
+    .dir-st.failed{color:var(--bad);border-color:var(--bad-line)}
     .dir-qacts{display:flex;gap:5px;flex-wrap:wrap}
-    .dir-chk{width:14px;height:14px;accent-color:#3b7f9e;margin-top:2px;cursor:pointer}
-    .dir-batch{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#131b22;
-      border:1px solid #2f6f8c;border-radius:9px}
-    .dir-batch b{color:#daf0fb}
+    .dir-chk{width:14px;height:14px;accent-color:var(--accent);margin-top:2px;cursor:pointer}
+    .dir-batch{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-1);
+      border:1px solid var(--accent);border-radius:9px}
+    .dir-batch b{color:var(--text)}
   `;
 
   function e(html) {
@@ -208,6 +207,9 @@
     const id = a.item_id;
     const item = idx[id] || {};
     const seat = item.seat || "director";
+    // BGWS.glyphs returns rendered <svg> markup from icons.js, not text. Running
+    // it through esc() printed the SVG source into the card as visible source
+    // code; it comes from a fixed icon table, never from user input.
     const glyph = (S.bg.glyphs && S.bg.glyphs[seat]) || "•";
     const title = item.title || `work item #${id}`;
     const isDeleg = item.source === "delegate" || id === S.delegateWatch;
@@ -241,7 +243,7 @@
 
     card.innerHTML =
       `<div class="dir-ahead">
-         <span class="dir-glyph">${esc(glyph)}</span>
+         <span class="dir-glyph">${glyph}</span>
          <span class="dir-atitle" title="${esc(title)}">${esc(title)}</span>
          <span class="dir-badge ${badge}">${esc(badgeText)}</span>
        </div>
@@ -315,6 +317,9 @@
   }
 
   function queueColumn(seat, items) {
+    // BGWS.glyphs returns rendered <svg> markup from icons.js, not text. Running
+    // it through esc() printed the SVG source into the card as visible source
+    // code; it comes from a fixed icon table, never from user input.
     const glyph = (S.bg.glyphs && S.bg.glyphs[seat]) || "•";
     const queued = items.filter(i => i && i.status === "queued");
     const col = document.createElement("div");
@@ -322,7 +327,7 @@
     const head = document.createElement("div");
     head.className = "dir-colh";
     head.innerHTML =
-      `<span class="dir-glyph">${esc(glyph)}</span><span>${esc(seat)}</span>
+      `<span class="dir-glyph">${glyph}</span><span>${esc(seat)}</span>
        <span class="dir-spacer"></span><span class="dir-qmeta">${esc(items.length)}</span>`;
     if (queued.length) {
       const all = e(`<button class="dir-btn dir-sm" title="dispatch all queued for ${esc(seat)}">dispatch all (${queued.length})</button>`);

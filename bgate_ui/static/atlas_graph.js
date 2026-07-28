@@ -75,14 +75,14 @@ window.AtlasGraph = (() => {
       ".ag-chip{font-family:var(--mono);font-size:9.5px;padding:4px 9px;border:1px solid var(--seam);border-radius:999px;color:var(--ash);cursor:pointer;background:none}",
       ".ag-chip:hover{border-color:var(--ember);color:var(--bone)}",
       ".ag-chip.on{border-color:var(--ember);color:var(--bone);background:var(--plate)}",
-      ".ag-chip.bad{border-color:#7d4338;color:#ff9379}",
+      ".ag-chip.bad{border-color:var(--bad-line);color:var(--bad)}",
       ".ag-in{background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;padding:5px 9px;min-width:140px}",
       ".ag-in:focus{outline:none;border-color:var(--ember)}",
       ".ag-b{padding:6px 10px;background:var(--plate);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;cursor:pointer}",
       ".ag-b:hover{border-color:var(--ember)}",
-      ".ag-b.go{background:var(--ember);color:#111;border-color:var(--ember);font-weight:600}",
+      ".ag-b.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
       ".ag-nb{font-family:var(--mono);font-size:10px;color:var(--ash);line-height:1.5}",
-      ".ag-nb img{width:100%;height:78px;object-fit:contain;background:#000;border-radius:6px;image-rendering:pixelated;display:block;margin-bottom:6px}",
+      ".ag-nb img{width:100%;height:78px;object-fit:contain;background:var(--bg);border-radius:6px;image-rendering:pixelated;display:block;margin-bottom:6px}",
       ".ag-nb .p{color:var(--ash2);word-break:break-all;font-size:9px}",
       ".ag-nb .acts{display:flex;gap:5px;margin-top:6px}",
       ".ag-nb .acts button{flex:1;padding:4px;background:var(--plate);border:1px solid var(--seam);border-radius:5px;color:var(--bone);font:inherit;font-size:10px;cursor:pointer}",
@@ -143,7 +143,7 @@ window.AtlasGraph = (() => {
         badge: !n.exists ? "missing" : n.orphan ? "dead"
              : (use[id] && use[id].size > 1) ? `×${use[id].size}` : "",
         status: !n.exists ? "bad" : n.orphan ? "warn" : "",
-        accent: !n.exists ? "#ff6a3d" : n.orphan ? "#d99a2b" : undefined,
+        accent: !n.exists ? "var(--bad)" : n.orphan ? "var(--warn)" : undefined,
         ports: { in: [], out: [{ id: "use", label: n.kind,
                                  type: PORT_TYPE[n.kind] || "asset" }] },
         data: n,
@@ -343,7 +343,7 @@ window.AtlasGraph = (() => {
       .map(id => (map.nodes[id] || {}).label || id);
     const canEdit = d.preview && EDITABLE.test(d.path || "");
     side(`<div class="ag-h">${E(d.kind || "asset")}</div>
-      ${d.preview ? `<img style="width:100%;background:#000;border-radius:8px;image-rendering:pixelated;margin-bottom:9px"
+      ${d.preview ? `<img style="width:100%;background:var(--bg);border-radius:8px;image-rendering:pixelated;margin-bottom:9px"
         src="/api/preview?rel=${encodeURIComponent(d.preview)}" alt="">` : ""}
       <div class="ag-note"><b>${E(d.label || node.id)}</b><br>
         <span style="font-family:var(--mono);font-size:9.5px;color:var(--ash2)">${E(d.path || node.id)}</span></div>

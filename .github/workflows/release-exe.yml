@@ -1,0 +1,69 @@
+# Builds the downloadable Windows binary and attaches it to a release.
+#
+# Runs on every tag, and on demand. It also runs on pull requests that touch
+# the packaging or the data trees — because the way this build breaks is silent:
+# PyInstaller reports success and produces an exe that starts fine and 404s
+# every asset, since bgate_ui/app.py and bgate_core/scaffold.py locate their
+# data by walking up from __file__. Only the smoke test catches that, so the
+# smoke test is the actual point of this job.
+name: release-exe
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "bgate_ui/static/**"
+      - "templates/**"
+      - "bgate_engine/**"
+      - "pyproject.toml"
+      - ".github/workflows/release-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[desktop]"
+          pip install pyinstaller>=6.14
+
+      - name: Build and smoke-test the exe
+        # build_exe.py boots the frozen binary in server mode and fetches real
+        # files out of it. A build that cannot serve /static/app.css fails here.
+        run: python packaging/build_exe.py
+
+      - name: Report size
+        shell: bash
+        run: |
+          ls -la dist/
+          echo "size: $(( $(stat -c%s dist/BuildersGate.exe) / 1048576 )) MB"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BuildersGate-windows
+          path: dist/BuildersGate.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BuildersGate.exe
+          fail_on_unmatched_files: true

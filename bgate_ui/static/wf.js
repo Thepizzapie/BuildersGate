@@ -664,7 +664,12 @@
     async deleteSaved(id) {
       const entry = this._saved.find(s => s.id === id);
       const name = (entry && entry.name) || id;
-      if (!window.confirm(`Delete the saved workflow “${name}”?\n\nThe stored document is removed too. Runs already started from it keep their own record.`)) return;
+      const go = await askConfirm({
+        title: `Delete the saved workflow “${name}”?`,
+        body: "The stored document is removed too. Runs already started from it keep their own record.",
+        ok: "delete", danger: true,
+      });
+      if (!go) return;
       this._saved = this._saved.filter(s => s.id !== id);
       await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
       // The workspace store has no DELETE; an empty document is the tombstone,
@@ -1177,7 +1182,19 @@
     },
     async resolveGate(nodeId, decision) {
       if (!this._run) return;
-      const note = decision === "reject" ? (prompt("Why is this rejected?") || "") : "";
+      let note = "";
+      if (decision === "reject") {
+        // The reason is persisted on the run record, so backing out of the
+        // question has to back out of the decision too — `|| ""` used to
+        // reject the gate with a blank reason when you pressed Escape.
+        note = await askText({
+          title: "Why is this rejected?",
+          body: "This is kept on the run record and is what the next person sees.",
+          ok: "reject the gate",
+          placeholder: "e.g. the consistency step scored under its floor",
+        });
+        if (note == null) return;
+      }
       const res = await post(`/api/workflows/runs/${this._run.id}/nodes/${encodeURIComponent(nodeId)}/approve`, { decision, note });
       const run = data(res);
       if (!run) { toast(errMsg(res), true); return; }
@@ -1245,14 +1262,14 @@
       .wf-card{position:relative;display:flex;flex-direction:column;gap:4px;text-align:left;padding:16px;background:var(--plate);border:1px solid var(--seam);border-radius:12px;cursor:pointer;color:var(--bone);font:inherit}
       .wf-card:hover{border-color:var(--ember);background:var(--plate2)}
       .wf-card-g{font-size:18px;color:var(--ember)}
-      .wf-card-t{font-size:13.5px;font-weight:600}
+      .wf-card-t{font-size:13.5px;font-weight:var(--fw-semi)}
       .wf-card-h{font-size:11px;color:var(--ash)}
       .wf-card-x{position:absolute;top:8px;right:8px;color:var(--ash2);font-size:11px}
       .wf-card-x:hover{color:var(--bad)}
       /* builder */
       .wf-build{display:flex;flex-direction:column;height:100%}
       .wf-top{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--seam);border-bottom:0;border-radius:12px 12px 0 0;background:var(--iron)}
-      .wf-name{background:transparent;border:1px solid transparent;border-radius:7px;color:var(--bone);font:inherit;font-size:14px;font-weight:600;padding:5px 8px;min-width:160px}
+      .wf-name{background:transparent;border:1px solid transparent;border-radius:7px;color:var(--bone);font:inherit;font-size:14px;font-weight:var(--fw-semi);padding:5px 8px;min-width:160px}
       .wf-name:hover,.wf-name:focus{border-color:var(--seam);background:var(--void);outline:none}
       .wf-cat{font-family:var(--mono);font-size:10px;color:var(--ash2);text-transform:uppercase;letter-spacing:.08em}
       /* run state */
@@ -1279,14 +1296,14 @@
       .wf-canvas{flex:1;position:relative;min-width:0}
       .wf-insp{width:270px;flex:none;background:var(--iron);border-left:1px solid var(--seam);padding:15px;overflow-y:auto}
       .wf-insp-empty{color:var(--ash2);font-size:12px}
-      .wf-insp-h{font-size:13.5px;font-weight:600;color:var(--bone);margin-bottom:12px;display:flex;gap:8px;align-items:center}
+      .wf-insp-h{font-size:13.5px;font-weight:var(--fw-semi);color:var(--bone);margin-bottom:12px;display:flex;gap:8px;align-items:center}
       .wf-insp-p{font-size:12px;color:var(--ash);line-height:1.5;margin:6px 0}
       .wf-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0;font-size:12px;color:var(--bone)}
       .wf-row label{color:var(--ash);font-size:12px}
       .wf-row input,.wf-row select,.wf-ta{background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:12px;padding:6px 8px}
       .wf-ta{width:100%;min-height:60px;resize:vertical;margin-top:6px}
       .wf-refgroup{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ash);margin:9px 0 5px}
-      .wf-refgroup b{color:var(--ember);font-weight:600}
+      .wf-refgroup b{color:var(--ember);font-weight:var(--fw-semi)}
       .wf-refrow{display:flex;flex-wrap:wrap;gap:7px}
       .wf-refsearch input{width:100%;background:var(--iron);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font-size:11.5px;padding:5px 8px;margin-bottom:4px}
       .wf-refpick{max-height:280px;overflow:auto}
@@ -1294,17 +1311,17 @@
       .wf-refcard{display:flex;flex-direction:column;gap:3px;padding:5px;background:var(--plate);border:1px solid var(--seam);border-radius:8px;cursor:pointer;color:var(--bone);font:inherit;text-align:left}
       .wf-refcard:hover{border-color:var(--ember)}
       .wf-refcard.sel{border-color:var(--ember);background:var(--plate2)}
-      .wf-refcard img{width:100%;height:56px;object-fit:contain;background:#000;border-radius:5px}
-      .wf-refnone{display:block;height:56px;line-height:56px;text-align:center;color:var(--ash2);background:#000;border-radius:5px}
+      .wf-refcard img{width:100%;height:56px;object-fit:contain;background:var(--bg);border-radius:5px}
+      .wf-refnone{display:block;height:56px;line-height:56px;text-align:center;color:var(--ash2);background:var(--bg);border-radius:5px}
       .wf-refname{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .wf-refmeta{font-family:var(--mono);font-size:9px;color:var(--ash2)}
       .wf-b-note{font-size:11.5px;color:var(--ash);line-height:1.4}
-      .wf-b-img{width:100%;height:78px;object-fit:contain;background:#000;border-radius:6px}
+      .wf-b-img{width:100%;height:78px;object-fit:contain;background:var(--bg);border-radius:6px}
       .wf-b-tag{font-family:var(--mono);font-size:10px;color:var(--ash2)}
       /* candidate strip: what a node produced, capped — several small truths
          beat one arbitrary pick */
       .wf-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:4px;margin:2px 0 4px}
-      .wf-strip img{width:100%;height:46px;object-fit:cover;background:#000;border:1px solid var(--seam);border-radius:5px}
+      .wf-strip img{width:100%;height:46px;object-fit:cover;background:var(--bg);border:1px solid var(--seam);border-radius:5px}
       /* per-node run + candidate picking (model comparison steps) */
       .wf-act{display:flex;gap:6px;margin:7px 0 3px}
       .wf-run1{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
@@ -1314,7 +1331,7 @@
       .wf-run1[disabled]{opacity:.5;cursor:default}
       .wf-run1.ghost{flex:none}
       .wf-cands{display:grid;grid-template-columns:repeat(auto-fit,minmax(64px,1fr));gap:5px;margin:5px 0}
-      .wf-cand{position:relative;padding:0;background:#000;border:1px solid var(--seam);
+      .wf-cand{position:relative;padding:0;background:var(--bg);border:1px solid var(--seam);
         border-radius:6px;cursor:pointer;overflow:hidden;line-height:0}
       .wf-cand img{width:100%;height:56px;object-fit:cover;display:block}
       .wf-cand:hover{border-color:var(--ember)}

@@ -71,6 +71,12 @@
       t.textContent = msg; t.style.opacity = "1";
       clearTimeout(t._to); t._to = setTimeout(() => { t.style.opacity = "0"; }, 2600);
     },
+    // The in-page replacements for prompt()/confirm() — ask.js, loaded above
+    // this file. Mirrored here so seat code keeps its bg.* idiom instead of
+    // growing a second copy of the pattern per seat.
+    askText(o) { return window.askText(o); },
+    askConfirm(o) { return window.askConfirm(o); },
+    askPick(o) { return window.askPick(o); },
     // The currently-selected work item, shared across seats (director sets it,
     // art/gameplay read it). Persisted so a reload keeps context.
     _item: (() => { try { return Number(localStorage.getItem("bgws-item")) || null; } catch (e) { return null; } })(),
@@ -114,9 +120,9 @@
       const queued = items.filter(it => it.status === "queued").length;
 
       let state, dot;
-      if (current.length) { state = current.some(it => live[it.id]) ? "working" : "dispatched"; dot = "#8fd6a8"; }
-      else if (blockers.length) { state = "blocked"; dot = "#e0524a"; }
-      else { state = "idle"; dot = "#3a4350"; }
+      if (current.length) { state = current.some(it => live[it.id]) ? "working" : "dispatched"; dot = "var(--good)"; }
+      else if (blockers.length) { state = "blocked"; dot = "var(--bad)"; }
+      else { state = "idle"; dot = "var(--line)"; }
 
       const itemLine = it => {
         const ag = live[it.id];
@@ -128,16 +134,16 @@
         `<div class="sst-cell"><div class="sst-h">${label}</div>${inner}</div>`;
       host.innerHTML = `
         <style>
-          .sst{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;background:#101319;border:1px solid #1e232c;border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#c4cbd6}
+          .sst{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;background:var(--surface-1);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--text)}
           .sst-cell{min-width:150px;flex:1}
-          .sst-h{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#7a8494;margin-bottom:4px}
-          .sst-state{display:flex;align-items:center;gap:7px;font-weight:600}
+          .sst-h{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:4px}
+          .sst-state{display:flex;align-items:center;gap:7px;font-weight:var(--fw-semi)}
           .sst-dot{width:9px;height:9px;border-radius:50%;display:inline-block}
           .sst-item{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px;line-height:1.5}
-          .sst-id{color:#7a8494;margin-right:6px;font-variant-numeric:tabular-nums}
-          .sst-none{color:#5f6b7a}
-          .sst-bad .sst-item{color:#f0b3b3}
-          .sst-q{color:#7a8494;font-size:11px;margin-top:3px}
+          .sst-id{color:var(--text-3);margin-right:6px;font-variant-numeric:tabular-nums}
+          .sst-none{color:var(--text-3)}
+          .sst-bad .sst-item{color:var(--bad)}
+          .sst-q{color:var(--text-3);font-size:11px;margin-top:3px}
         </style>
         <div class="sst">
           ${cell("agent", `<div class="sst-state"><span class="sst-dot" style="background:${dot}"></span>${state}</div>` +

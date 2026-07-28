@@ -11,8 +11,8 @@
 (function () {
   const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"];
   const SEAT_COLORS = {
-    director: "#e8c05a", narrative: "#b083e8", gameplay: "#ff5c33",
-    tech: "#4fa3ff", art: "#ff7ab8", audio: "#43d6a5", qa: "#9adb4f",
+    director: "var(--warn)", narrative: "var(--c-narrative)", gameplay: "var(--bad)",
+    tech: "var(--text)", art: "var(--c-narrative)", audio: "var(--good)", qa: "var(--good)",
   };
   const MUTED = "var(--seam2)";
   const EMBER = "var(--ember)";
@@ -458,13 +458,13 @@
       .fg-ph{font-family:var(--mono);font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:var(--ash2);margin-bottom:8px}
       .fg-in{display:block;width:100%;box-sizing:border-box;margin-bottom:8px;padding:8px 9px;background:var(--void);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px}
       .fg-in:focus{outline:none;border-color:var(--ember)}
-      .fg-add{width:100%;padding:9px;background:var(--ember);color:#111;border:0;border-radius:8px;font:inherit;font-weight:600;font-size:12px;cursor:pointer}
+      .fg-add{width:100%;padding:9px;background:var(--ember);color:var(--bg);border:0;border-radius:8px;font:inherit;font-weight:var(--fw-semi);font-size:12px;cursor:pointer}
       .fg-add:hover{filter:brightness(1.08)}
       .fg-hint{font-size:11.5px;color:var(--ash);line-height:1.5}
       .fg-canvas{flex:1;position:relative;min-width:0}
       .fg-insp{width:260px;flex:none;background:var(--iron);border-left:1px solid var(--seam);padding:15px;overflow-y:auto}
       .fg-insp-empty{color:var(--ash2);font-size:12px}
-      .fg-insp-h{font-size:13px;font-weight:600;color:var(--bone);margin-bottom:12px;line-height:1.3;word-break:break-word}
+      .fg-insp-h{font-size:13px;font-weight:var(--fw-semi);color:var(--bone);margin-bottom:12px;line-height:1.3;word-break:break-word}
       .fg-insp-p{font-size:12px;color:var(--ash);line-height:1.5;margin-top:8px;word-break:break-word}
       .fg-kv{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--seam)}
       .fg-kv span:first-child{color:var(--ash2);font-family:var(--mono);font-size:11px}
@@ -472,12 +472,12 @@
       .fg-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px}
       .fg-btn{padding:6px 11px;background:var(--plate);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:11.5px;cursor:pointer}
       .fg-btn:hover{border-color:var(--ember)}
-      .fg-btn.primary{background:var(--ember);color:#111;border-color:var(--ember);font-weight:600}
+      .fg-btn.primary{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}
       .fg-steer{display:flex;gap:6px;margin-top:10px}
       .fg-steer .fg-in{margin-bottom:0;flex:1}
       .fg-tmeta{font-family:var(--mono);font-size:10.5px;color:var(--ash);display:flex;align-items:center;gap:5px;flex-wrap:wrap}
       .fg-smeta{font-family:var(--mono);font-size:10.5px;color:var(--ash);display:flex;justify-content:space-between;gap:8px}
-      .fg-live{color:var(--good);font-weight:600}
+      .fg-live{color:var(--good);font-weight:var(--fw-semi)}
       .fg-idle{color:var(--ash2)}
       .fg-q{color:var(--ash2)}
       .fg-dot{width:7px;height:7px;border-radius:50%;background:var(--ember);display:inline-block;box-shadow:0 0 0 0 var(--ember);animation:fg-pulse 1.4s infinite}
@@ -488,7 +488,7 @@
       .fg-srow-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .fg-feed{display:flex;flex-direction:column;gap:5px;max-height:260px;overflow-y:auto}
       .fg-frow{font-size:11px;line-height:1.4;padding:5px 7px;border-radius:6px;background:var(--plate);color:var(--ash);word-break:break-word}
-      .fg-frow.tool{border-left:2px solid var(--accent,#3b7f9e)}
+      .fg-frow.tool{border-left:2px solid var(--accent)}
       .fg-frow .fg-fk{font-family:var(--mono);color:var(--bone);display:block}
       .fg-frow .fg-fh{font-family:var(--mono);color:var(--ash2);font-size:10px}
       .fg-frow.say{color:var(--bone)}
