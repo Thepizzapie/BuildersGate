@@ -95,21 +95,46 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# ── onedir, deliberately, not onefile ───────────────────────────────────────
+# The first release shipped --onefile and Windows Defender quarantined it as
+# Trojan:Win32/Sabsik.TE.A!ml. The !ml suffix is a machine-learning verdict
+# rather than a signature hit, and a onefile build presents every trait those
+# models weight: a self-extracting stub that unpacks a compressed archive into
+# %TEMP% and executes code out of it, ~46 MB of high-entropy zlib that reads as
+# a packed payload, and no Authenticode signature to weigh against any of it.
+# That is behaviourally indistinguishable from a dropper.
+#
+# onedir has no stub and no runtime unpack — the interpreter, the DLLs and the
+# data sit on disk as ordinary files — which removes the biggest trigger. It
+# also starts faster, because nothing is extracted on every launch.
+#
+# This does NOT make the binary trusted. The real fix is code signing; until
+# there is a certificate, expect SmartScreen's "unrecognised app" prompt on
+# first run. Ship the folder zipped, and publish the SHA256.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,        # binaries+datas go in the COLLECT below
     name="BuildersGate",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,               # UPX mangles the WebView2 loader; leave it off.
-    runtime_tmpdir=None,
+    # UPX would compress the binaries back into high-entropy blobs, which is
+    # the thing being avoided here — and it mangles the WebView2 loader.
+    upx=False,
     # No console window on a double-click. `BuildersGate.exe serve` still works
     # from a terminal, it just cannot print back to one.
     console=False,
     icon=str(ROOT / "packaging" / "icon.ico")
         if (ROOT / "packaging" / "icon.ico").exists() else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="BuildersGate",
 )

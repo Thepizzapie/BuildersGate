@@ -23,7 +23,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "packaging" / "bgate.spec"
 DIST = ROOT / "dist"
-EXE = DIST / "BuildersGate.exe"
+# onedir: PyInstaller writes dist/BuildersGate/ with the exe inside it, not a
+# single dist/BuildersGate.exe. See the note at the top of bgate.spec for why
+# onefile was abandoned (Defender's ML quarantined it).
+APPDIR = DIST / "BuildersGate"
+EXE = APPDIR / "BuildersGate.exe"
+ZIP = DIST / "BuildersGate-windows.zip"
 
 # Every one of these is a real past failure: a wheel with no JS, a wheel with
 # no templates. The exe can regress the same way.
@@ -56,8 +61,31 @@ def build() -> None:
         sys.exit(f"PyInstaller failed (exit {r.returncode})")
     if not EXE.is_file():
         sys.exit(f"build reported success but {EXE} is not there")
-    mb = EXE.stat().st_size / (1024 * 1024)
-    print(f"built {EXE.relative_to(ROOT)} — {mb:.1f} MB")
+    total = sum(p.stat().st_size for p in APPDIR.rglob("*") if p.is_file())
+    print(f"built {APPDIR.relative_to(ROOT)}/ — "
+          f"{total / (1024 * 1024):.1f} MB across "
+          f"{sum(1 for p in APPDIR.rglob('*') if p.is_file())} files")
+
+
+def package() -> None:
+    """Zip the app directory — a folder is not a download.
+
+    Note this is the ONLY compression in the pipeline: the binaries themselves
+    are left uncompressed on disk (no UPX), because re-packing them into
+    high-entropy blobs is what got the onefile build quarantined.
+    """
+    if ZIP.exists():
+        ZIP.unlink()
+    shutil.make_archive(str(ZIP.with_suffix("")), "zip",
+                        root_dir=str(DIST), base_dir=APPDIR.name)
+    mb = ZIP.stat().st_size / (1024 * 1024)
+    print(f"packaged {ZIP.relative_to(ROOT)} — {mb:.1f} MB")
+    # Publish this next to the download so anyone can check what they got.
+    import hashlib
+    h = hashlib.sha256(ZIP.read_bytes()).hexdigest()
+    (DIST / "BuildersGate-windows.zip.sha256").write_text(
+        f"{h}  {ZIP.name}\n", encoding="utf-8")
+    print(f"sha256 {h}")
 
 
 def smoke() -> None:
@@ -121,9 +149,11 @@ def main() -> int:
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
     build()
+    # Smoke FIRST, then zip — never package something that could not serve.
     if not a.skip_smoke:
         smoke()
-    print(f"\n{EXE}")
+    package()
+    print(f"\n{ZIP}")
     return 0
 
 
