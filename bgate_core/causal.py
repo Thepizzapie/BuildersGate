@@ -53,7 +53,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Iterable, Optional
 
 SPEC_FILE = "causal_specs.json"
 

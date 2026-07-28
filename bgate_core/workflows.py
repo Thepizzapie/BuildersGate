@@ -436,9 +436,9 @@ def _step_brief(run: dict, snapshot: dict, spec: dict, position: int,
     head = (f"Workflow run #{run['id']} — \"{run['name']}\", "
             f"step {position} of {total}: {spec['label']}.")
     body = spec.get("brief") or f"Carry out the {spec['label']} step of this workflow."
-    tail = (f"\n\nThis step is one node of a persisted workflow run; the run is "
-            f"blocked on it. Finish with queue_complete and a summary of what "
-            f"this step produced — the run advances on that.")
+    tail = ("\n\nThis step is one node of a persisted workflow run; the run is "
+            "blocked on it. Finish with queue_complete and a summary of what "
+            "this step produced — the run advances on that.")
     wire = _wire_context(inputs)
     if task:
         return (f"{head}\n\nTASK / COMPLAINT (the run's north star):\n\"{task}\"\n\n"

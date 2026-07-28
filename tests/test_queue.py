@@ -93,6 +93,16 @@ class TestQueueApi:
             def kill(self):
                 pass
         def fake_popen(args, **kw):
+            # dispatch() is not the only thing reaching for Popen. The liveness
+            # sweep asks the OS what a pid actually is, and with no psutil (it
+            # is a declared dependency of nothing, so CI has none while a dev
+            # box usually does) that falls back to `tasklist` via
+            # subprocess.run — which IS subprocess.Popen. Patching the module
+            # attribute catches both, and last-write-wins meant the assertions
+            # below ran against the tasklist argv on precisely the machines
+            # without psutil. Capture the spawn under test, by name.
+            if not args or args[0] != "claude":
+                return FakeProc()
             captured["args"] = args
             captured["env"] = kw["env"]
             captured["cwd"] = kw["cwd"]

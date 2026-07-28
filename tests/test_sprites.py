@@ -7,7 +7,6 @@ a screenshot that shows the real game. All slow, all skipped without the tools.
 from __future__ import annotations
 
 import struct
-import zlib
 from pathlib import Path
 
 import pytest

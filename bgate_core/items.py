@@ -109,11 +109,6 @@ GEAR_SHAPES: dict[str, tuple[float, float]] = {
 }
 
 
-def gear_shape(item_class: str) -> tuple[float, float]:
-    """(length, width) of a class's placeholder glyph, in cell-height fractions."""
-    _class(item_class)
-    return GEAR_SHAPES.get(item_class, (0.35, 0.10))
-
 # Placeholder proportions per class, as fractions of a sprite CELL's height.
 # Lives here rather than in bgate_core/gear.py because it is taxonomy, not
 # rendering: how long a thing reads in the hand is a property of the class, the

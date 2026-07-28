@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Optional, Sequence
+from typing import Any
 
 # Cheap and fast on purpose. This is a rewrite, not a reasoning task.
 DEFAULT_MODEL = "gpt-4o-mini"

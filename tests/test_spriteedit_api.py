@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 from pathlib import Path
 
 import pytest
@@ -350,7 +349,6 @@ def test_left_and_right_hands_are_first_class_slots(client, game):
 
 
 def test_swap_hands_exchanges_only_the_anatomical_pair():
-    from bgate_core import rigmap
 
     data = rigmap.normalise({"grid": GRID, "labels": [
         {"slot": "left_hand", "frame": 0, "x": 1, "y": 1},

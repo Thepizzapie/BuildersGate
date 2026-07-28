@@ -9,7 +9,6 @@ do — so the maths is pinned rather than eyeballed.
 """
 from __future__ import annotations
 
-import math
 
 import pytest
 

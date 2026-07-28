@@ -40,6 +40,17 @@ arcade/
 # editor touches them), so a game project's own is ignored — but the one the
 # scaffold STAMPS OUT is source, and ignoring it shipped a wheel that could not
 # export anything.
+#
+# The negation below is NOT what makes that file tracked, and cannot be: git
+# resolves .gitignore files deepest-first, and templates/shared/.gitignore —
+# which is itself shipped, and rightly ignores export_presets.cfg inside the
+# game it scaffolds — re-ignores it after this file has spoken. So the template
+# copy is force-added (`git add -f`) and stays tracked because tracked files are
+# never consulted against ignore rules at all. It went untracked for a release
+# this way: the suite was green on the author's machine, which HAD the file, and
+# red on every clean checkout, which did not. If you add another shipped data
+# file under templates/, run `git check-ignore -v` on it before trusting `git
+# status` to have told you about it.
 export_presets.cfg
 !templates/shared/export_presets.cfg
 

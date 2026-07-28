@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from bgate_core import artifacts, project
+from bgate_core import artifacts
 from bgate_ui import api, dispatch
 
 

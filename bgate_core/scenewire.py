@@ -286,10 +286,10 @@ def wire(text: str, res_path: str, *, node_name: Optional[str] = None,
 
     existing = next((e for e in parsed["ext"] if e["path"] == res_path), None)
     if existing:
-        rid, reused, ext_delta = existing["id"], True, 0
+        rid, reused = existing["id"], True
         out = text
     else:
-        rid, reused, ext_delta = _fresh_id(parsed, res_path), False, 1
+        rid, reused = _fresh_id(parsed, res_path), False
         etype = res_type or _EXT_TYPE.get(suffix, "Resource")
         out = _insert_ext(
             text, parsed,

@@ -28,7 +28,7 @@ import socket
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
-from fastapi import HTTPException, Query, Request
+from fastapi import Query, Request
 from fastapi.responses import JSONResponse
 
 # ---------------------------------------------------------------------------

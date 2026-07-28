@@ -43,12 +43,34 @@ def _concrete(path: str) -> str:
         lambda m: str(PARAM_VALUES.get(m.group(1), DEFAULT_PARAM)), path)
 
 
+def _walk(routes) -> list:
+    """Every APIRoute reachable from a route list, however it is nested.
+
+    Starlette 1.0 stopped flattening `include_router` into `app.routes`: an
+    included router now sits there as ONE opaque object holding the real routes
+    behind `.original_router`. Walking only the top level therefore saw 39 of
+    this app's 159 routes on new Starlette and 159 on old — and because this
+    module parametrizes off the result, the coverage silently shrank by 120
+    tests rather than failing. Recurse, and both shapes give the same answer.
+    """
+    out = []
+    for route in routes:
+        if isinstance(route, APIRoute):
+            out.append(route)
+            continue
+        nested = getattr(route, "routes", None)
+        if nested is None:
+            inner = getattr(route, "original_router", None)  # Starlette >= 1.0
+            nested = getattr(inner, "routes", None)
+        if nested:
+            out.extend(_walk(nested))
+    return out
+
+
 def _api_routes() -> list[tuple[str, str]]:
     """(method, path template) for every APIRoute the app has registered."""
     out = []
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _walk(app.routes):
         for method in sorted(route.methods or []):
             if method in ("HEAD", "OPTIONS"):
                 continue

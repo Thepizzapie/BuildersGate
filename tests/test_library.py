@@ -8,7 +8,6 @@ instead of looking identical to one the game loads every frame.
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 from fastapi.testclient import TestClient

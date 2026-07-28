@@ -28,7 +28,6 @@ an animation. Every tier is therefore constrained by what the task NEEDS, and
 """
 from __future__ import annotations
 
-from typing import Optional
 
 from bgate_adapters import krea
 

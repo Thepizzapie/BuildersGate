@@ -39,7 +39,7 @@ $s.Rate = -1
 $s.Speak('{text}')
 $s.Dispose()
 """
-    proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                           capture_output=True, text=True, timeout=120,
                           stdin=subprocess.DEVNULL)
     return out.exists() and out.stat().st_size > 1024

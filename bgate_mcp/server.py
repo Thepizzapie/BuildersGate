@@ -1771,7 +1771,6 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 
             frame_map = assembled.get("frames", {})
             assembled["consistency"] = consistency
-            needs_review = bool(consistency.get("ok") and consistency.get("flagged"))
 
             artifact = _register_artifact(
                 name, assembled["sheet"], producer="image_sprites",

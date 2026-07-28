@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from bgate_core import assets, bible, lore, playtest, seats
+from bgate_core import assets, bible, lore, seats
 from bgate_core import db
 
 

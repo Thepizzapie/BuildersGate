@@ -11,7 +11,6 @@ import json
 import subprocess
 import sys
 
-import pytest
 
 from bgate_cli import hook
 from bgate_cli.main import install_hook

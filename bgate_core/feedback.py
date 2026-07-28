@@ -188,7 +188,7 @@ def group_thoughts(segments: list[dict], max_gap: float = THOUGHT_GAP) -> list[d
     full spoken context, so classify/route see the whole complaint at once.
     """
     thoughts: list[dict] = []
-    cur: Optional[dict] = None
+    cur: dict | None = None
     for seg in sorted(segments, key=lambda s: s.get("t_start", 0.0)):
         text = seg.get("text", "").strip()
         if not text:

@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -289,7 +288,6 @@ def run(root: str | os.PathLike[str], *, run_id: int, node_id: str,
             stopped = str(verdict.get("reason") or "the spend budget refused this generation")
             break
         out_path = target / f"{name}_{index + 1}.png"
-        started = time.monotonic()
         result = call_provider(
             spec["provider"], spec["model"], prompt, str(out_path),
             size=spec["size"], seed=(None if spec["seed"] is None

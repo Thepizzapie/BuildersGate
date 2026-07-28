@@ -60,10 +60,16 @@ class TestQueueAdd:
 
 
 class TestDispatch:
-    def test_dispatch_refuses_work_the_line_retroactively_cut(self, tiered):
+    def test_dispatch_refuses_work_the_line_retroactively_cut(self, tiered,
+                                                              monkeypatch):
         """The line moves. An item queued legitimately can be out of scope by
         the time anyone dispatches it — that is the case worth catching, since
         the queue-time gate cannot see the future."""
+        # dispatch() looks for the Claude CLI before it consults the scope gate,
+        # so on any machine without `claude` on PATH — every CI runner — this
+        # test was asserting on the "no CLI" refusal instead of the one it
+        # names. The CLI's presence is not what is under test here; the gate is.
+        monkeypatch.setattr(dispatch, "find_claude", lambda *a, **k: "claude")
         root = tiered["root"]
         item = queue.add(root, "gameplay", "hit detection",
                          scope_tier_id=tiered["above"])

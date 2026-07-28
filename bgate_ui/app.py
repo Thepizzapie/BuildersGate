@@ -821,7 +821,7 @@ def artifact_react(artifact_id: int, payload: dict) -> dict:
     # 2. durable preference the next art agent reads in seat_brief
     body = (("KEEP / on-model" if verdict == "like" else "AVOID / off-model")
             + f" — {name}" + (f": {note}" if note else "")
-            + f" (via live like/dislike).")
+            + " (via live like/dislike).")
 
     def _note() -> dict:
         seats.post_note(root, "art", "ART PREFERENCE — " + body,
@@ -1298,6 +1298,16 @@ def pt_video(session_id: int, request: Request) -> Response:
             headers={**headers, "Content-Range": f"bytes */{size}"})
 
     if span is None:
+        if request.headers.get("range"):
+            # We have DELIBERATELY ignored this Range: it names a unit we do not
+            # speak, and RFC 7233 says that is a 200 with the whole body, not an
+            # error. Starlette 1.0's FileResponse grew its own Range support and
+            # answers 400 for a header it cannot parse — so handing it a request
+            # still carrying `Range: frames=1-2` turns our deliberate 200 into a
+            # client error. Serve the body here so exactly one layer reads Range.
+            return StreamingResponse(
+                _file_window(path, 0, size - 1), media_type="video/mp4",
+                headers={**headers, "Content-Length": str(size)})
         return FileResponse(path, media_type="video/mp4", headers=headers)
 
     start, end = span

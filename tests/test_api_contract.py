@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from bgate_core import db, playtest, queue as _queue
+from bgate_core import db, queue as _queue
 from bgate_ui.app import app
 
 
