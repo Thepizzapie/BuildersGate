@@ -29,6 +29,14 @@ written by another, and no agent can approve its own art.
 
 Local-first. No daemon, no cloud, no build step in the frontend.
 
+<p align="center">
+  <img src="docs/screenshots/overview.png" width="820"
+       alt="The Builders Gate dashboard: live agents, the queue, and recent activity">
+</p>
+
+<p align="center"><em>The dashboard, running against a real project.
+<a href="docs/screenshots.md">More screenshots →</a></em></p>
+
 **Who it is for:** people running Claude Code who are building a game and want
 more than one session working on it. It is more machinery than a small project
 needs.
