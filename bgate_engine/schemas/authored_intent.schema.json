@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bgate_engine/authored_intent",
+  "title": "AuthoredIntent",
+  "description": "A design requirement — the top of the three representations. Stores intent and acceptance ranges, NOT parameters. The engine compares these against what canonical parameters actually produce in simulation, and attributes regressions to a transaction: 'requirement says 130-152px; params produce 91px; tx_84 introduced it.'",
+  "type": "object",
+  "required": ["id", "requirements", "priority", "owner"],
+  "properties": {
+    "id":       { "type": "string", "examples": ["movement.jump_profile","combat.facing_rule"] },
+    "statement":{ "type": "string", "description": "Human phrasing of the intent.", "examples": ["Jump should peak around a character height and feel floaty but responsive."] },
+    "requirements": {
+      "type": "object",
+      "description": "Named acceptance criteria. Ranges are [min,max] inclusive; a bare value is an equality/boolean assertion.",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "array", "items": "number", "length": 2, "description": "[min, max] range." },
+          { "type": ["number","boolean","string"], "description": "Exact expected value." }
+        ]
+      },
+      "examples": [{ "peak_height_px": [130, 152], "air_time_s": [1.5, 1.75] }]
+    },
+    "priority":    { "type": "string", "enum": ["ship","should","nice"], "description": "ship = blocks release." },
+    "owner":       { "type": "string", "enum": ["director","gameplay","art","tech","audio","narrative","qa"] },
+    "verified_by": { "type": "array", "items": { "type": "string" }, "description": "Test ids that assert this requirement against a run." }
+  },
+  "examples": [
+    {
+      "id": "combat.facing_rule",
+      "statement": "An attack only lands on the half the fighter is turned toward. No blind-side hits.",
+      "requirements": { "blind_side_hits": 0 },
+      "priority": "ship", "owner": "gameplay",
+      "verified_by": ["test.facing_hitbox","test.crossup"]
+    },
+    {
+      "id": "movement.jump_profile",
+      "statement": "Same height as the old jump but much floatier — the arc the playtester dialed in on F1.",
+      "requirements": { "peak_height_px": [130, 152], "air_time_s": [1.5, 1.75] },
+      "priority": "should", "owner": "gameplay",
+      "verified_by": ["test.jump_profile"]
+    }
+  ]
+}

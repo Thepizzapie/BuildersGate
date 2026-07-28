@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Builders Gate. Simplified for the tab: at 16px the broken right post
+       turns to mush, so the favicon keeps one post and the chevron through it. -->
+  <rect width="64" height="64" rx="14" fill="#14161c"/>
+  <path d="M14 12 V52" stroke="#9aa3b2" stroke-width="7" stroke-linecap="square"/>
+  <path d="M28 20 L44 32 L28 44" stroke="#ff6a3d" stroke-width="8" fill="none" stroke-linecap="square"/>
+</svg>

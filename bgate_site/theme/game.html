@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{GAME_TITLE}} — {{TITLE}}</title>
+<meta name="description" content="{{GAME_TAGLINE}}">
+<meta property="og:title" content="{{GAME_TITLE}}">
+<meta property="og:description" content="{{GAME_TAGLINE}}">
+<meta property="og:type" content="website">
+{{OG_IMAGE}}
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../../arcade.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="../../">
+      {{MARK}}
+      <b>{{TITLE}}</b>
+    </a>
+    <nav>{{NAV}}</nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <a class="back" href="../../">&larr; all games</a>
+
+  <div class="gamehead">
+    <div class="label">{{GAME_KICKER}}</div>
+    <h1>{{GAME_TITLE}}</h1>
+    <p>{{GAME_TAGLINE}}</p>
+    <div class="meta">{{TAGS}}</div>
+  </div>
+
+  <div class="stage">
+    <iframe src="build/index.html"
+            title="{{GAME_TITLE}}"
+            allow="autoplay; fullscreen; gamepad; cross-origin-isolated"
+            allowfullscreen></iframe>
+    <div class="stagebar">
+      <span>click the game, then play</span>
+      <span class="right"><a href="build/index.html" target="_blank" rel="noopener">open fullscreen &nearr;</a></span>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <h3>About</h3>
+      {{GAME_BODY}}
+    </div>
+    <div class="panel">
+      <h3>Controls</h3>
+      {{CONTROLS}}
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <p>{{FOOTER}}</p>
+    <p style="margin-left:auto">built with <a href="https://github.com/Thepizzapie/builders-gate">builders gate</a> · godot 4</p>
+  </div>
+</footer>
+
+</body>
+</html>

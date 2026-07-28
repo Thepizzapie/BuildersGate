@@ -1,0 +1,37 @@
+# Stamped into every project `bgate init` creates.
+#
+# THIS FILE EXISTS BECAUSE THE DOCUMENTED SETUP LEAKED A KEY. The README tells
+# you to put OPENAI_API_KEY / KREA_API_KEY in a .env at your GAME PROJECT's
+# root, and it also tells you that `.bgate/game.db` travels with the repo --
+# which means the natural next step is `git init` in this directory. Without
+# this file, following both instructions commits the key.
+#
+# Builders Gate's own repo learned that lesson once already; its .gitignore
+# still carries the note. The fix there only covered the tool's repo, not the
+# project the tool GENERATES, which is where the README actually tells you to
+# put the key.
+
+# API keys.
+.env
+.env.*
+!.env.example
+
+# Per-project store. Contains the dashboard's auth token, so it is ignored by
+# default. If you deliberately want the game DB in version control, remove this
+# line AND rotate the token -- do not do one without the other.
+.bgate/
+
+# Adapter scratch: renders, playtest captures, logs. Regenerated, never sourced.
+.bgate_out/
+
+# Godot's import cache and per-machine export config.
+.godot/
+export_presets.cfg
+
+# NOT ignored, deliberately: *.import files carry import settings and the
+# resource UID. Without them a clone re-imports and can renumber UIDs, which
+# breaks every scene reference that resolves by uid://.
+
+# Blender
+*.blend1
+*.blend2

@@ -1,0 +1,19 @@
+version: 2
+
+updates:
+  # Runtime and dev dependencies are pinned as floors in pyproject.toml, so this
+  # mostly surfaces "a floor is now below a version with a known problem".
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+
+  # The CI workflow pins actions by major tag; this catches the ones that move.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
