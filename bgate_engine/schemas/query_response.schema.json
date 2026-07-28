@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bgate_engine/query_response",
+  "title": "QueryResponse",
+  "description": "Response to world.query. Semantic, relationship-bearing — gives an agent a dependency map BEFORE it mutates anything. Not a filesystem search result.",
+  "type": "object",
+  "properties": {
+    "query":   { "type": "string", "description": "The semantic query that produced this.", "examples": ["entities with Movement and Health"] },
+    "kind":    { "type": "string", "enum": ["entity","entities","assets","systems","transactions","tests","components"] },
+    "results": {
+      "type": "array",
+      "description": "Shape depends on kind. Entity results carry the full relationship map below.",
+      "items": { "$ref": "#/$defs/entity_relations" }
+    }
+  },
+  "$defs": {
+    "entity_relations": {
+      "type": "object",
+      "description": "The dependency map for one entity.",
+      "properties": {
+        "entity":     { "type": "string", "examples": ["fighter.tommy"] },
+        "revision":   { "type": "integer" },
+        "components": { "type": "array", "items": { "type": "string" } },
+        "used_by":    { "type": "array", "items": { "type": "string" }, "description": "Scenes/entities referencing this one." },
+        "assets":     { "type": "array", "items": { "type": "string" } },
+        "systems":    { "type": "array", "items": { "type": "string" }, "description": "Systems that read/write this entity's components." },
+        "tests":      { "type": "array", "items": { "type": "string" }, "description": "Tests whose outcome depends on this entity." }
+      }
+    }
+  },
+  "examples": [
+    {
+      "query": "assets referenced by fighter.tommy", "kind": "entity",
+      "results": [{
+        "entity": "fighter.tommy", "revision": 43,
+        "components": ["Transform2D","Movement","Fighter","Health","StateMachine","SpriteRig"],
+        "used_by": ["scene.fight","scene.training"],
+        "assets": ["sprite.tommy_bright16","audio.tommy_voice"],
+        "systems": ["MovementSystem","CombatSystem","AnimationSystem"],
+        "tests": ["jump_profile","facing_hitbox","stamina_regen"]
+      }]
+    }
+  ]
+}

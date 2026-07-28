@@ -1,0 +1,1301 @@
+"""Dispatch — the dashboard spawns real Claude seat sessions against work items.
+
+Why this architecture wins: a session spawned with cwd = the game project gets
+(1) the builders-gate MCP tools NATIVELY (the server resolves the project by
+cwd — no runner scripts, no kwargs files), and (2) the PreToolUse lane/lock
+hook with BGATE_SEAT set — actual enforcement, not honor-system. The dashboard
+is user-run software, so a dispatch click is the USER launching the agent.
+
+One live session per work item; state is in-memory plus a log file per item
+(.bgate/agents/item-<id>.log) so a dashboard restart loses handles, not history.
+
+Who writes what, because getting this wrong cost us the whole lifecycle once:
+status() and read_activity() are READS — the dashboard polls them every few
+seconds and they must not touch the DB. Everything that settles a run
+(_reap/_trip/sweep/reconcile) is driven by the per-run watchdog thread, or
+called explicitly at startup, so a run finishes correctly whether or not
+anybody has a browser tab open.
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+from bgate_core import assets as _assets
+from bgate_core import gitwork as _git
+from bgate_core import queue as _queue
+from bgate_core import scope as _scope
+from bgate_core import spend as _spend
+
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+_live: dict[int, dict] = {}
+_lock = threading.Lock()
+
+# Finished runs, kept so their result can actually be READ. A reaped run used to
+# leave the table on the very next poll, taking the agent's final word with it —
+# the one thing the user was waiting three minutes to see was on screen for
+# three seconds. Bounded by count and age; keyed (project, item).
+_done: dict[tuple[str, int], dict] = {}
+RETAIN_RUNS = 20
+RETAIN_S = 30 * 60
+
+# Parsed activity per (project, item) — see read_activity: the log is read
+# FORWARD FROM A BYTE CURSOR exactly once, never re-parsed per poll.
+_activity: dict[tuple[str, int], dict] = {}
+MAX_STEPS = 500      # ring per run; what falls off is counted, not hidden
+MAX_FEEDS = 200      # parsed feeds held at once
+
+# Projects whose stranded-item reconciliation has already run this process.
+_reconciled: set[str] = set()
+
+
+def _pkey(root) -> str:
+    """One stable key per project for the module-level tables."""
+    try:
+        return str(Path(root).resolve())
+    except OSError:
+        return str(root)
+
+
+def _refuse(code: str, message: str, **detail) -> dict:
+    """A refusal the UI can both show and switch on.
+
+    dispatch() answers plain dicts (app.py returns them verbatim) and callers
+    already read ``error`` as a sentence, so the machine-readable ``code`` rides
+    alongside rather than replacing it — the string stays a string.
+    """
+    return {"ok": False, "error": message, "code": code, "detail": detail}
+
+
+def _user_msg(text: str) -> str:
+    """A stream-json user turn — the wire format the CLI reads from stdin."""
+    return json.dumps({"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
+
+
+def find_claude() -> Optional[str]:
+    exe = shutil.which("claude")
+    if exe:
+        return exe
+    fallback = Path.home() / ".local" / "bin" / ("claude.exe" if sys.platform == "win32" else "claude")
+    return str(fallback) if fallback.exists() else None
+
+
+# Seat-specific house rules injected UNCONDITIONALLY into the dispatch prompt —
+# the one channel every agent sees even if it skips seat_brief (item 56 did:
+# it hand-rolled 8 loose image_edit frames for an animation task and never
+# stitched a sheet). Keep these short, imperative, and PROJECT-AGNOSTIC: this
+# dict ships with the tool and is read by every project on the machine, so
+# anything naming a specific game's assets, characters or test scenes belongs
+# in that project's own seat_rules.json (see :func:`seat_rules`), not here.
+SEAT_RULES = {
+    "narrative": (
+        "NARRATIVE HOUSE RULE — NO FIRST-THOUGHT JOKES:\n"
+        "• Before landing ANY name/line/bark, generate 5 candidates and kill "
+        "every one that is the FIRST joke anyone would make on the premise "
+        "(the obvious pun, the meme format, the joke every parody of this "
+        "subject already made). Ship the one that surprises.\n"
+        "• Obey the project's OWN tone tests (read the tone guide / bible "
+        "before writing; if you wrote one this session, your content must "
+        "pass it — self-contradiction is an automatic fail). No winks, no "
+        "lampshading, no decade-old meme formats.\n"
+        "• Specificity beats snark: a line should only make sense in THIS "
+        "world. If it could be pasted into any generic parody of the genre, "
+        "cut it.\n"
+        "• Read every deliverable back OUT LOUD (to yourself) against the "
+        "tone tests before landing. Land fewer, better lines."
+    ),
+    "audio": (
+        "AUDIO HOUSE RULE — EVERY SYNTHESIZED ASSET SHIPS ITS RECIPE:\n"
+        "• Alongside each .wav/.ogg you synthesize, write a `<name>.synth.json` "
+        "sidecar capturing the FULL parametric recipe: wave type(s), ADSR, "
+        "pitch/glide, noise mix, filter, duration, sample rate — and for music "
+        "beds the complete note/step pattern per channel + tempo/key. Another "
+        "process must be able to re-render the identical asset from the recipe "
+        "alone (the upcoming Audio Studio edits these knobs and re-renders — "
+        "a .wav without its recipe is a dead end).\n"
+        "• Keep the synthesis code you used in the project's .bgate/ scratch "
+        "so the recipe->render path is reproducible."
+    ),
+    "art": (
+        "ART HOUSE RULE — ANIMATIONS ARE SINGLE-GEN SHEETS (identity by "
+        "construction), THEN SLICED:\n"
+        "• For ANY animation, generate the WHOLE animation as ONE image: "
+        "image_edit conditioned on the approved anchor ref, prompting 'an "
+        "N-frame <anim> animation sprite sheet of THIS EXACT character, N "
+        "poses side-by-side left-to-right in one row, evenly spaced, "
+        "transparent background, same character same colors in every frame'. "
+        "A model CANNOT drift identity inside one image — per-pose generation "
+        "drifted skin/outfit colors across frames and is now the FALLBACK, "
+        "not the default.\n"
+        "• Slice + normalize + emit the engine sheet with the pipeline: "
+        "python -c from bgate_adapters.sprites import from_painted_sheet — it "
+        "cuts the row into equal cells, alpha-trims, bottom-centers, and "
+        "writes <name>_sheet.png + <name>_frames.tres. Verify every cell "
+        "sliced cleanly (no half-characters: regenerate the sheet with a "
+        "stricter even-spacing instruction, don't hand-fix).\n"
+        "• Cross-sheet identity: every animation sheet conditions on the SAME "
+        "anchor ref, and you LOOK at all sheets side-by-side before landing — "
+        "same character, same colors across the whole set.\n"
+        "• image_edit single-frame fixes and per-pose image_sprites remain "
+        "available ONLY to repair one bad cell of an otherwise-good sheet.\n"
+        "• Before landing: run consistency_check on every frame AND clear its "
+        "alpha flags (no white halo, no feathered fringe, no background bleed, no "
+        "hollow interior, transparent = truly empty). Any alpha flag = do not land.\n"
+        "\n"
+        "HUD / UI CHROME SHIPS AS SEPARATE LAYERED PARTS, NEVER ONE BAKED "
+        "COMPOSITE:\n"
+        "• A UI element with dynamic or independently-driven sub-parts — a meter = "
+        "frame + segmented FILL + icon + counter badge; a health bar = frame + "
+        "FILL; a card = frame + portrait + label plate — MUST ship as SEPARATE "
+        "transparent PNGs, one per layer, NOT fused into a single image. The "
+        "scene/designer stacks and drives each independently: the fill depletes in "
+        "code BEHIND a hollow frame, segments light one by one, the icon/badge are "
+        "their own nodes. Gening the whole element in one go leaves nothing the "
+        "designer can wire — it is not shippable.\n"
+        "• Frames are HOLLOW: a fully transparent window where the code-driven fill "
+        "shows through. NEVER bake a colored fill into a frame. For every frame, "
+        "post the exact fill-window rect (x,y,w,h) in your seat note.\n"
+        "• Keep the parts on a consistent pixel grid / shared registration so they "
+        "stack cleanly at the target rect. A single composed PREVIEW mock is fine "
+        "FOR REVIEW, but the SHIPPED assets are the separate layers.\n"
+        "• Match the pinned concept: crop the target element out of the concept "
+        "ref, condition generation on that crop, and build your own "
+        "concept-vs-output comparison — iterate until it matches, don't ship "
+        "isolated bare bars.\n"
+        "\n"
+        "WORLD / ENVIRONMENT ASSETS ARE INDIVIDUAL GENS, NEVER A SLICED SCENE:\n"
+        "• Concept mocks are COMPOSITES — inspiration, not assets. A shippable "
+        "world asset is generated ON ITS OWN: one prop (desk, plant, vending "
+        "machine, printer shrine), one tile, one unit sprite per gen, "
+        "transparent background, consistent scale against the project's grid "
+        "(e.g. a 32px-tile world: props sized in tile multiples, characters to "
+        "their tile footprint). NEVER generate a full scene and cut pieces out "
+        "of it — sliced fragments have baked lighting/overlap and never "
+        "composite cleanly.\n"
+        "• Tilesets: gen each tile type separately (or a strict uniform grid "
+        "sheet where every cell is one clean tile), then assemble the atlas "
+        "with code — cells must be seamlessly tileable with their neighbors.\n"
+        "• Scale/registration discipline: every asset in a batch states its "
+        "intended pixel size; verify against the grid before landing so the "
+        "engine drops it in without per-asset fudging.\n"
+        "• ISO UNITS SHIP THE FULL FACING MATRIX: 2 generated base facings "
+        "(SE front-right + NE back-right) x every animation, named "
+        "<anim>_<facing> (idle_se, walk_ne, ...) through the standard sheet "
+        "pipeline; SW/NW are mirrored in-engine (flip_h), never generated. A "
+        "partial facing x anim matrix is an automatic fail — check the "
+        "project bible's unit-sprite contract before landing any unit.\n"
+        "• ISO PROPS DECLARE A ROTATION CLASS (see the project bible's "
+        "prop-rotation contract): SYMMETRIC = 1 gen reused; MIRRORABLE = 2 "
+        "gens + flip_h (NO text/logos/handedness); FULL = 4 gens (anything "
+        "with readable text/signage — mirrored text is an automatic fail). "
+        "All views of one prop conditioned on the SAME prop ref so it reads "
+        "as one object rotated; state the tile footprint per prop.\n"
+        "\n"
+        "DELIVERY FIDELITY — WHAT WAS APPROVED IS WHAT SHIPS:\n"
+        "• The engine-ready file you deliver must be a MECHANICAL derivation "
+        "of the approved artifact revision: trim, downscale, alpha-clean — "
+        "NOTHING ELSE. Never redraw, re-generate, or 'improve' an asset at "
+        "the delivery step; a delivered file whose content differs from its "
+        "approved source is an automatic reject (observed failure: floors "
+        "shipped with an invented X-bevel that existed in no approved rev).\n"
+        "• Name the source in your seat note per delivered file "
+        "(delivered X <- approved revision N) so the trail is auditable."
+    ),
+}
+
+
+SEAT_RULES_FILENAME = "seat_rules.json"
+
+
+def seat_rules(root: str, seat: str) -> str:
+    """The house rules injected into THIS project's prompt for this seat.
+
+    ``<root>/.bgate/seat_rules.json`` ({"art": "...", "narrative": ""}) is the
+    project's override and wins outright — including an empty string, which is
+    how a project turns a built-in off. Rules are prompt text, not schema, so
+    they live in a file the project edits and diffs rather than in the seat
+    table. Absent an override, the shipped built-in applies.
+    """
+    try:
+        data = json.loads((Path(root) / ".bgate" / SEAT_RULES_FILENAME)
+                          .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    if isinstance(data, dict) and seat in data:
+        return str(data[seat] or "").strip()
+    return SEAT_RULES.get(seat, "")
+
+
+def _verify_rule(root: str) -> str:
+    """Step 4's verification line, DERIVED from this project.
+
+    It used to name another game's test scene (game/tests/fight_test.gd) and
+    order every seat of every project to run it — an instruction most projects
+    cannot follow and none should inherit. Nothing is invented here: the engine
+    comes from the project row (or a project.godot on disk), the test scripts
+    from what actually exists, and a project with neither is simply told to look
+    at what it produced.
+    """
+    root_path = Path(root)
+    engine = ""
+    try:
+        from bgate_core import project as _project
+        engine = str(_project.get(root).get("engine") or "")
+    except Exception:
+        pass
+    godot = engine == "godot" or (root_path / "game" / "project.godot").is_file()
+    if not godot:
+        return "LOOK at what you produce and prove it works before you land it."
+    parts = ["godot_check_project after structural changes"]
+    try:
+        tests = sorted(p for p in (root_path / "game" / "tests").glob("*.gd"))
+    except OSError:
+        tests = []
+    if tests:
+        named = ", ".join(p.relative_to(root_path).as_posix() for p in tests[:4])
+        parts.append("run this project's own test scripts via godot_run when the "
+                     f"code they cover moved ({named}) — fail=0 or report exactly "
+                     "why")
+    parts.append("godot_screenshot when the change is visible")
+    parts.append("LOOK at what you produce")
+    return "; ".join(parts) + "."
+
+
+def _prompt_for(root: str, item: dict) -> str:
+    from bgate_core.seats import SEAT_IDENTITY
+
+    seat_rule = seat_rules(root, item["seat"])
+    return (
+        SEAT_IDENTITY + "\n\n"
+        f"You are the {item['seat'].upper()} seat of the Builders Gate game project "
+        "in the current directory. The builders-gate MCP tools are available to you "
+        "NATIVELY — no runner scripts.\n\n"
+        f"WORK ITEM #{item['id']} ({item['source']}): {item['title']}\n"
+        f"{item['brief']}\n\n"
+        + (seat_rule + "\n\n" if seat_rule else "")
+        + "Protocol, in order:\n"
+        "1. seat_brief for your role — mission, lanes, bible, pinned refs, notes.\n"
+        f"2. Read .bgate/progress/item-{item['id']}.jsonl if it exists (a "
+        "predecessor's trail); append one JSON line "
+        '{"step":...,"artifacts":[...],"next":...} after EVERY unit of work.\n'
+        "3. Do the work inside your lanes (the PreToolUse hook enforces them; "
+        "seat_can_write is the oracle). Lock binaries before editing.\n"
+        f"4. Verify per house norms: {_verify_rule(root)}\n"
+        "5. seat_post_note with what changed.\n"
+        f"6. Mark the item: call queue_complete with item_id={item['id']} and a "
+        "one-paragraph result (status 'done', or 'failed' with the honest reason).\n"
+    )
+
+
+def _live_count() -> int:
+    return sum(1 for e in _live.values() if e["proc"].poll() is None)
+
+
+def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
+             model: Optional[str] = None, max_runtime_s: Optional[int] = None,
+             max_cost_usd: Optional[float] = None,
+             allow_dirty: Optional[bool] = None,
+             actor: str = "") -> dict:
+    """Spawn a Claude session against a queued item. One per item.
+
+    Four things must be true before a process exists: the CLI is there, the item
+    is dispatchable, the fleet is under its concurrency cap, and the projected
+    cost fits the budget. Then the git boundary is captured — without a
+    base_commit nothing downstream can show or undo what the agent did.
+    """
+    claude = find_claude()
+    if not claude:
+        return {"ok": False, "error": "claude CLI not found on PATH"}
+    try:
+        item = _queue.get(root, item_id)
+    except LookupError:
+        # A stale dashboard tab dispatching a deleted item used to escape as a
+        # LookupError and land in the user's face as a 500 stack.
+        return _refuse("not_found", f"work item {item_id} does not exist",
+                       item_id=item_id)
+    if item["status"] != "queued":
+        return {"ok": False, "error": f"item {item_id} is {item['status']}, not queued"}
+
+    # The cut line, enforced at the last possible moment. queue.add refuses to
+    # FILE work below the line, but the line moves — an item queued legitimately
+    # can be retroactively out of scope by the time anyone dispatches it, and
+    # spending an agent on it is exactly the gold-plating the tier system exists
+    # to stop.
+    verdict = _scope.check(root, item["scope_tier_id"])
+    if not verdict["allowed"]:
+        return _refuse("out_of_scope", verdict["reason"], **{
+            k: v for k, v in verdict.items()
+            if k in ("tier", "cut_line", "cut_line_rank")},
+            scope_code=verdict["code"])
+    with _lock:
+        if item_id in _live and _live[item_id]["proc"].poll() is None:
+            return {"ok": False, "error": f"item {item_id} already has a live agent"}
+        # Server-side, because the dashboard's "dispatch all" loops every queued
+        # item with no cap of its own — 20 agents is 20 claude trees, each with
+        # its own MCP children, on one laptop.
+        cap = int(_spend.budget(root).get("max_concurrent") or 0)
+        running = _live_count()
+        if cap and running >= cap:
+            return _refuse("concurrency_limit",
+                           f"{running} agents already running — the cap is {cap}",
+                           running=running, max_concurrent=cap)
+
+    # Ceilings: the item's own overrides win, then this call's, then the budget.
+    ceiling_usd = float(max_cost_usd or _spend.item_ceiling(root, item) or 0)
+    ceiling_s = int(max_runtime_s or _spend.runtime_ceiling(root, item) or 0)
+    verdict = _spend.check(root, projected_usd=ceiling_usd)
+    if not verdict["allowed"]:
+        return _refuse("budget_exceeded", verdict["reason"],
+                       projected_usd=ceiling_usd, **{
+                           k: v for k, v in verdict.items()
+                           if k in ("scope", "spent", "ceiling")})
+
+    # The git boundary. A run dispatched on top of uncommitted work produces a
+    # diff that cannot tell the agent's edits from the human's, so mixing them
+    # has to be asked for.
+    if allow_dirty is None:
+        allow_dirty = os.environ.get("BGATE_ALLOW_DIRTY", "").strip().lower() in {
+            "1", "true", "yes", "on"}
+    state = _git.dirty(root)
+    if state["available"] and state["dirty"] and not allow_dirty:
+        return _refuse("dirty_tree",
+                       f"{len(state['paths'])} uncommitted change(s) in the tree — "
+                       "commit or stash first, or dispatch with allow_dirty",
+                       paths=state["paths"][:50])
+    base_commit = _git.head(root) if state["available"] else ""
+    branch, worktree = "", ""
+    cwd = str(root)
+    if base_commit and _git.isolation_enabled():
+        made = _git.make_worktree(root, item_id, base=base_commit)
+        if not made["available"]:
+            return _refuse("worktree_failed", made["reason"])
+        branch, worktree = made["branch"], made["worktree"]
+        cwd = worktree
+
+    log_dir = Path(root) / ".bgate" / "agents"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"item-{item_id}.log"
+
+    env = {
+        **os.environ,
+        "BGATE_SEAT": item["seat"],
+        "BGATE_ROOT": str(root),
+        "BGATE_WORK_ITEM": str(item_id),
+        "BGATE_LOCK_OWNER": f"item-{item_id}",
+        # Who this session is, for anything that asks whether a human is
+        # responsible. Without it a spawned agent inherits the dashboard user's
+        # identity and can approve its own work — it did, until this line.
+        "BGATE_ACTOR": f"agent:item-{item_id}",
+        # Director directive: gpt-image-2 is banned — force 1 for every gen.
+        "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL", "gpt-image-1"),
+    }
+    # stream-json OUTPUT makes claude emit one NDJSON event per step AS IT WORKS
+    # (tool calls, messages) instead of buffering to the end -- that feeds the
+    # live activity view. stream-json INPUT keeps stdin open as a channel: the
+    # initial prompt is the first user message, and steer() can inject more
+    # user turns WHILE the agent runs. --replay-user-messages echoes injected
+    # steers back into the output log so they show in the activity feed. The
+    # process waits on stdin, so it only exits when we close the pipe (done in
+    # status() once the agent self-reports via queue_complete).
+    args = [claude, "-p", "--permission-mode", permission_mode,
+            "--input-format", "stream-json", "--output-format", "stream-json",
+            "--verbose", "--replay-user-messages",
+            "--allowedTools", "mcp__builders-gate", "Read", "Edit", "Write",
+            "Glob", "Grep", "Bash"]
+    if model:
+        args += ["--model", model]
+
+    log_handle = open(log_path, "ab")
+    # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
+    # view and the steer-echo scanner must only look at THIS run — the stale
+    # first-run result being shown as current, and old echoes falsely marking
+    # fresh steers consumed, were real observed bugs. Marker + byte offset.
+    import time as _time
+    log_handle.write((json.dumps({"type": "bgate_run_start",
+                                  "item_id": item_id,
+                                  "base_commit": base_commit,
+                                  "ts": _time.time()}) + "\n").encode("utf-8"))
+    log_handle.flush()
+    run_start_pos = log_handle.tell()
+    proc = subprocess.Popen(args, cwd=cwd, env=env,
+                            stdin=subprocess.PIPE, stdout=log_handle,
+                            stderr=log_handle, creationflags=_NO_WINDOW)
+    # Deliver the task as the first streamed user message, then leave stdin open.
+    try:
+        proc.stdin.write(_user_msg(_prompt_for(root, item)).encode("utf-8"))
+        proc.stdin.flush()
+    except OSError as exc:
+        proc.kill()
+        return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
+    with _lock:
+        _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
+                          "stdin": proc.stdin, "steers": [], "stdin_closed": False,
+                          "log_scan_pos": run_start_pos,
+                          "run_start_pos": run_start_pos,
+                          "cost_scan_pos": run_start_pos,
+                          "started_at": _time.monotonic(),
+                          "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd,
+                          "base_commit": base_commit, "cwd": cwd,
+                          # The project this run belongs to. status()/stop() and
+                          # the sweep all need it and only the spawner knows it;
+                          # stop(item_id) has no root argument to be given one.
+                          "root": str(root), "actor": actor,
+                          "branch": branch, "worktree": worktree}
+    _queue.set_status(root, item_id, "dispatched")
+    _queue.set_run_fields(root, item_id, base_commit=base_commit, branch=branch,
+                          worktree=worktree, actor=actor or None,
+                          max_cost_usd=ceiling_usd or None,
+                          max_runtime_s=ceiling_s or None)
+    _record_pid(root, proc.pid, item_id)
+    # The streamed session waits on stdin forever; close it once the agent
+    # self-reports so it exits even when no dashboard is polling /api/agents.
+    threading.Thread(target=_watch_completion, args=(root, item_id),
+                     daemon=True).start()
+    return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path),
+            "base_commit": base_commit, "branch": branch, "worktree": worktree,
+            "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd}
+
+
+def _observed_cost(entry: dict) -> float:
+    """The highest ``total_cost_usd`` the CLI has reported THIS run.
+
+    The session only prints cost at result boundaries, so this is a step
+    function, not a live meter — it trips at the first boundary past the
+    ceiling, which still bounds the damage. Incremental tail read (own cursor,
+    separate from the steer scanner's) so polling a 10MB log costs nothing."""
+    best = float(entry.get("cost_usd", 0.0))
+    try:
+        with open(entry["log"], "rb") as fh:
+            fh.seek(entry.get("cost_scan_pos", entry.get("run_start_pos", 0)))
+            chunk = entry.get("cost_scan_rem", b"") + fh.read()
+            entry["cost_scan_pos"] = fh.tell()
+    except OSError:
+        return best
+    lines = chunk.split(b"\n")
+    entry["cost_scan_rem"] = lines.pop()  # possibly-partial last line
+    for line in lines:
+        if b"total_cost_usd" not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        val = ev.get("total_cost_usd") if isinstance(ev, dict) else None
+        if isinstance(val, (int, float)) and float(val) > best:
+            best = float(val)
+    entry["cost_usd"] = best
+    return best
+
+
+def _trip(root: str, item_id: int, entry: dict, reason: str) -> None:
+    """A budget the agent blew through: kill the tree and say why on the item."""
+    _kill_tree(entry["proc"].pid)
+    entry["stop_reason"] = reason
+    try:
+        _queue.set_status(root, item_id, "failed", result=reason)
+    except LookupError:
+        pass
+    _reap(root, item_id, entry, entry["proc"].poll())
+
+
+def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
+                      exit_grace_s: float = 90.0) -> None:
+    """Close the agent's stdin once it has queue_complete'd, so the waiting
+    process reaches EOF and exits — then make SURE it exits. EOF alone proved
+    unreliable (agents wedged on child MCP servers piled up 14 orphaned
+    claude.exe at peak), so after a grace period the process tree is killed;
+    the item is already done, nothing of value is lost.
+
+    This is also the wall clock. The kill grace above only starts once the item
+    ALREADY reached done/failed, which is no help against the failure that
+    actually costs money: an agent that never self-reports and runs all night.
+    Runtime and cost are checked every poll from the moment it spawned.
+
+    And it is where a finished run is BANKED (_reap). It used to be the
+    dashboard's GET that did that; a read handler is the wrong owner, and an
+    agent whose dashboard nobody had open never got settled at all. The lock is
+    held only long enough to look the entry up — every DB and process call below
+    happens outside it, or _reap (which takes the lock itself) would deadlock."""
+    with _lock:
+        watched = _live.get(item_id)
+    if watched is None:
+        return
+    while True:
+        time.sleep(poll_s)
+        with _lock:
+            entry = _live.get(item_id)
+        # Bound to THIS run, not to the item id: a re-dispatch of the same item
+        # installs a new entry, and a watchdog that kept going would bank the
+        # successor's process against the predecessor's project.
+        if entry is None or entry is not watched:
+            return
+        code = entry["proc"].poll()
+        if code is not None:
+            _reap(root, item_id, entry, code)
+            return
+
+        # The ceilings, enforced from spawn — not from completion.
+        limit_s = int(entry.get("max_runtime_s") or 0)
+        if limit_s and time.monotonic() - entry["started_at"] >= limit_s:
+            _trip(root, item_id, entry,
+                  f"killed: exceeded the {limit_s // 60}-minute runtime budget")
+            return
+        limit_usd = float(entry.get("max_cost_usd") or 0)
+        if limit_usd:
+            spent = _observed_cost(entry)
+            if spent > limit_usd:
+                _trip(root, item_id, entry,
+                      f"killed: spent ${spent:.2f} against a "
+                      f"${limit_usd:.2f} ceiling")
+                return
+        # Renew what this run holds. It lives here rather than in status()
+        # because a lease must not depend on somebody having the dashboard open.
+        try:
+            _assets.heartbeat(root, f"item-{item_id}")
+        except Exception:
+            pass
+        if not entry.get("stdin_closed"):
+            try:
+                if _queue.get(root, item_id)["status"] in ("done", "failed"):
+                    try:
+                        entry["stdin"].close()
+                    except OSError:
+                        pass
+                    entry["stdin_closed"] = True
+                    entry["eof_at"] = time.monotonic()
+            except LookupError:
+                return
+            continue
+        # stdin closed: give the process the grace period, then kill its
+        # whole tree (the agent's own MCP-server children orphan too).
+        # setdefault matters: another path (stop, a manual sweep) may close
+        # stdin FIRST without stamping eof_at — without this, the default
+        # re-evaluated to now() every pass and the kill NEVER fired (the
+        # observed doom-loop zombie).
+        entry.setdefault("eof_at", time.monotonic())
+        if time.monotonic() - entry["eof_at"] >= exit_grace_s:
+            _kill_tree(entry["proc"].pid)
+            # Do NOT return: the next pass sees the dead process and banks the
+            # run. Returning here left the entry in _live with a corpse in it,
+            # which is exactly the stuck row this file keeps growing scars over.
+            entry["eof_at"] = time.monotonic()
+
+
+def run_record_path(root: str, item_id: int) -> Path:
+    """Where a finished run's git fingerprint lives (see :func:`_finalize`)."""
+    return Path(root) / ".bgate" / "agents" / f"item-{item_id}.run.json"
+
+
+def read_run_record(root: str, item_id: int) -> dict:
+    try:
+        return json.loads(run_record_path(root, item_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _finalize(root: str, item_id: int, entry: dict) -> None:
+    """Bank what the run cost and what it touched, exactly once.
+
+    Cost used to be parsed off the final result event and handed to an ephemeral
+    JSON response — nothing summed it, so no one could answer what a night of
+    fan-out cost. It now lands on the item and in the spend ledger.
+
+    The fingerprint is the other half of revert: hashes of every path this run
+    changed, taken the moment it ended. Revert compares against it and refuses
+    rather than discarding an edit someone made afterwards."""
+    if entry.get("finalized"):
+        return
+    entry["finalized"] = True
+    try:
+        final = read_activity(root, item_id).get("final") or {}
+        cost = final.get("cost")
+        turns = final.get("turns")
+        if turns:
+            _queue.set_run_fields(root, item_id, num_turns=int(turns))
+        if isinstance(cost, (int, float)) and cost > 0:
+            # spend.record also increments work_item.total_cost_usd — one write,
+            # one truth; do not add it a second time here.
+            _spend.record(root, float(cost), kind="agent", work_item_id=item_id,
+                          detail=f"agent session for item {item_id}")
+    except Exception:
+        pass
+    base = entry.get("base_commit") or ""
+    if not base:
+        return
+    try:
+        scope = _git.touched(entry.get("cwd") or root, base)
+        if scope["available"]:
+            record = {"base_commit": base, "branch": entry.get("branch", ""),
+                      "worktree": entry.get("worktree", ""),
+                      "paths": _git.fingerprint(entry.get("cwd") or root,
+                                                scope["paths"])}
+            run_record_path(root, item_id).write_text(
+                json.dumps(record), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _final_event(root: str, item_id: int) -> dict:
+    """The CLI's terminal ``result`` event for this run, or {}."""
+    try:
+        return read_activity(root, item_id, limit=0).get("final") or {}
+    except Exception:
+        return {}
+
+
+def _exit_verdict(root: str, item_id: int, code, entry: dict) -> tuple[str, str]:
+    """What a dead process means for its item.
+
+    EXIT 0 IS NOT SUCCESS. A `claude` that dies on startup, gets killed by the
+    OS, or does nothing at all can still exit 0 — and marking that 'done'
+    silently books work nobody did, on an item nobody will ever look at again.
+    The evidence that a run happened is the CLI's own terminal ``result`` event:
+    exited 0 AND self-reported = done; exited 0 saying nothing = a session with
+    nothing to account for, which is a failure and has to read like one.
+    """
+    stopped = entry.get("stop_reason")
+    if stopped:
+        return "failed", stopped
+    final = _final_event(root, item_id)
+    said = str(final.get("text") or "").strip()
+    tail = f"; its last words: {said[:400]}" if said else ""
+    if code != 0:
+        return "failed", f"session exited {code} without self-reporting{tail}"
+    if not final:
+        return "failed", ("session exited 0 without ever reporting a result — "
+                          "nothing was accounted for, so this is not done "
+                          "(a crashed or no-op run looks exactly like this)")
+    if final.get("subtype") != "success":
+        return "failed", (f"session ended as {final.get('subtype')!r} without "
+                          f"self-reporting{tail}")
+    return "done", ("session exited cleanly and reported success without calling "
+                    f"queue_complete{tail}")
+
+
+def _reap(root: str, item_id: int, entry: dict, code) -> dict:
+    """Bank a run whose process is gone — exactly once — and retain the result.
+
+    The ONE place a finished run writes its item status. It used to live in
+    status(), i.e. in the dashboard's GET: two concurrent polls raced each other
+    through the same transition, and a headless run was never settled at all.
+    """
+    with _lock:
+        if entry.get("reaped"):
+            return _done.get((_pkey(root), item_id), {})
+        entry["reaped"] = True
+        if _live.get(item_id) is entry:
+            del _live[item_id]
+    for key in ("handle", "stdin"):
+        try:
+            entry[key].close()
+        except Exception:
+            pass
+    outcome, result = _exit_verdict(root, item_id, code, entry)
+    try:
+        # Only if the agent never spoke for itself: queue_complete's own result
+        # is the better answer and must never be overwritten.
+        if _queue.get(root, item_id)["status"] == "dispatched":
+            _queue.set_status(root, item_id, outcome, result=result)
+    except LookupError:
+        pass
+    _finalize(root, item_id, entry)
+    try:
+        _unrecord_pid(root, entry["proc"].pid)
+    except Exception:
+        pass
+    row = {"item_id": item_id, "state": "exited", "code": code,
+           "pid": getattr(entry.get("proc"), "pid", None),
+           "log": entry.get("log", ""), "ended_at": time.time(),
+           "outcome": outcome, "result": result,
+           "stopped_by": entry.get("stopped_by", ""),
+           "final": _final_event(root, item_id)}
+    with _lock:
+        _done[(_pkey(root), item_id)] = row
+    _prune_retained()
+    return row
+
+
+def _prune_retained() -> None:
+    """Bounded retention: the newest RETAIN_RUNS per project, nothing older than
+    RETAIN_S. Evicting a run drops its parsed feed too — the two are the same
+    memory story."""
+    now = time.time()
+    with _lock:
+        per_project: dict[str, list] = {}
+        for key, row in list(_done.items()):
+            if now - row["ended_at"] > RETAIN_S:
+                _done.pop(key, None)
+                _activity.pop(key, None)
+                continue
+            per_project.setdefault(key[0], []).append((row["ended_at"], key[1]))
+        for project, ended in per_project.items():
+            for _ts, item_id in sorted(ended, reverse=True)[RETAIN_RUNS:]:
+                _done.pop((project, item_id), None)
+                _activity.pop((project, item_id), None)
+
+
+def sweep(root: str) -> dict:
+    """Advance this project's bookkeeping — the WRITER half of status().
+
+    status() is a pure read now, so something explicit has to bank runs whose
+    process died, renew what live runs hold, and expire retained results. The
+    per-run watchdog thread does it for anything this server spawned; this is
+    the belt-and-braces pass a caller can run on a timer or at startup, and the
+    only thing that un-strands items a previous server left behind.
+    """
+    root = str(root)
+    project = _pkey(root)
+    if project not in _reconciled:
+        _reconciled.add(project)
+        reconcile(root)
+    with _lock:
+        entries = [(i, e) for i, e in _live.items()
+                   if _pkey(e.get("root") or root) == project]
+    reaped = []
+    for item_id, entry in entries:
+        code = entry["proc"].poll()
+        if code is None:
+            try:
+                _assets.heartbeat(root, f"item-{item_id}")
+            except Exception:
+                pass
+            continue
+        _reap(root, item_id, entry, code)
+        reaped.append(item_id)
+    _prune_retained()
+    return {"reaped": reaped, "live": _live_count()}
+
+
+def reconcile(root: str) -> dict:
+    """Un-strand items left 'dispatched' by a dashboard that restarted.
+
+    _live is the only record that a run exists and it dies with the server, so
+    an item that was mid-flight when the dashboard went down stayed 'dispatched'
+    FOREVER: not queued, not finished, absent from the agent table, and refused
+    by dispatch() because it is 'not queued'. The run's own log outlives the
+    process, so that is what the item is settled against — a log that ends in a
+    success result is a run that finished and only lost its bookkeeping.
+    """
+    try:
+        stranded = _queue.list_items(root, status="dispatched")
+    except Exception:
+        return {"settled": []}  # no project here (or no DB yet) — nothing to do
+    settled = []
+    for item in stranded:
+        item_id = int(item["id"])
+        with _lock:
+            if item_id in _live:
+                continue  # this server run owns it
+        final = _final_event(root, item_id)
+        if final.get("subtype") == "success":
+            outcome = "done"
+            said = str(final.get("text") or "").strip()[:400]
+            result = ("the dashboard restarted before this was banked; the "
+                      "agent's log ends in success" + (f": {said}" if said else ""))
+        else:
+            outcome = "failed"
+            result = ("stranded by a dashboard restart — the process did not "
+                      "survive it and never reported a result")
+        try:
+            _queue.set_status(root, item_id, outcome, result=result)
+        except Exception:
+            continue
+        settled.append({"item_id": item_id, "status": outcome})
+    return {"settled": settled}
+
+
+def _pids_path(root: str) -> Path:
+    return Path(root) / ".bgate" / "agents" / "pids.json"
+
+
+def _read_pids(root: str) -> dict:
+    try:
+        return json.loads(_pids_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_pid(root: str, pid: int, item_id: int) -> None:
+    """Persist spawned-agent pids so a server restart can sweep survivors.
+
+    The identity fields matter as much as the pid: a pid is reused within
+    minutes on Windows, and the sweep's job is to kill OUR agent, never the
+    claude session the user started themselves. See :func:`_is_recorded_agent`.
+    """
+    try:
+        path = _pids_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = _read_pids(root)
+        ident = _proc_identity(pid)
+        data[str(pid)] = {"item_id": item_id, "spawned_at": time.time(),
+                          "name": ident.get("name", ""),
+                          "started": ident.get("started")}
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _unrecord_pid(root: str, pid: int) -> None:
+    try:
+        path = _pids_path(root)
+        if not path.is_file():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.pop(str(pid), None) is not None:
+            path.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _proc_identity(pid: int) -> dict:
+    """``{"name", "started"}`` for a running pid, as much as this host can say.
+
+    psutil answers both and is used when it is installed (it is NOT a declared
+    dependency, so it can never be required); otherwise tasklist answers the
+    name only. An empty dict means 'no such process, or unknowable' — and the
+    sweep treats unknowable as 'do not touch'.
+    """
+    try:
+        import psutil  # optional; see docstring
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            proc = psutil.Process(int(pid))
+            return {"name": (proc.name() or "").lower(),
+                    "started": round(float(proc.create_time()), 3)}
+        except Exception:
+            return {}
+    if sys.platform != "win32":
+        return {}
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, creationflags=_NO_WINDOW,
+            timeout=15).stdout
+    except Exception:
+        return {}
+    return {"name": out.split(",")[0].strip('" ').lower()} if "," in out else {}
+
+
+def _is_recorded_agent(pid: int, meta: dict) -> bool:
+    """Is this pid still the process we spawned, or a stranger wearing its number?
+
+    Killing anything whose image name starts with 'claude' is how you kill the
+    user's OWN claude session: pids are recycled, and this ledger is best-effort
+    (a crash can leave entries for processes that died hours ago). The process
+    START TIME is the part a recycled pid cannot fake, so when the ledger
+    recorded one it is the check that decides. Entries without it — written by
+    an older build, or on a host where the start time was unreadable — fall back
+    to the name check and stay explicitly best-effort.
+    """
+    live = _proc_identity(int(pid))
+    name = str(live.get("name") or "")
+    if not name.startswith("claude"):
+        return False
+    recorded = meta.get("started")
+    if recorded and live.get("started") is not None:
+        return abs(float(live["started"]) - float(recorded)) < 1.0
+    return True
+
+
+def _kill_tree(pid: int) -> None:
+    """Kill a process and its children (Windows: taskkill /T; else SIGKILL)."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, creationflags=_NO_WINDOW,
+                           timeout=15)
+        else:
+            os.kill(pid, 9)
+    except Exception:
+        pass
+
+
+def reap_orphans(root: str) -> dict:
+    """Sweep agents orphaned by a previous server run.
+
+    _live dies with the server process, but the spawned claude.exe trees do
+    not — they sit waiting on a pipe nobody will ever close. The pids ledger
+    survives restarts; anything in it that is not in the CURRENT _live and is
+    still verifiably OUR agent process gets its tree killed. The items those
+    orphans were working on are settled in the same pass (reconcile) — killing
+    the process without settling the item just moves the strand somewhere
+    else."""
+    killed, cleared = [], []
+    path = _pids_path(root)
+    if not path.is_file():
+        _reconcile_quietly(root)
+        return {"killed": [], "cleared": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        _reconcile_quietly(root)
+        return {"killed": [], "cleared": ["unreadable ledger — reset"],
+                "reset": bool(path.write_text("{}", encoding="utf-8"))}
+    with _lock:
+        live_pids = {e["proc"].pid for e in _live.values()}
+    for pid_s, meta in list(data.items()):
+        pid = int(pid_s)
+        if pid in live_pids:
+            continue  # owned by this server run
+        if _is_recorded_agent(pid, meta if isinstance(meta, dict) else {}):
+            _kill_tree(pid)
+            killed.append({"pid": pid, "item_id": (meta or {}).get("item_id")})
+        data.pop(pid_s)
+        cleared.append(pid)
+    try:
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+    _reconcile_quietly(root)
+    return {"killed": killed, "cleared": cleared}
+
+
+def _reconcile_quietly(root: str) -> None:
+    """Reconcile once per project, never raising — reap_orphans runs at server
+    startup and its return shape is a contract, so this cannot add keys or
+    blow up on a directory that has no project in it."""
+    project = _pkey(root)
+    if project in _reconciled:
+        return
+    _reconciled.add(project)
+    try:
+        reconcile(root)
+    except Exception:
+        pass
+
+
+def steer(root: str, item_id: int, text: str) -> dict:
+    """Inject a live user message into a running agent — course-correction
+    without killing and re-dispatching. Lands as a new user turn mid-work."""
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "steer text is empty"}
+    with _lock:
+        entry = _live.get(item_id)
+        if not entry or entry["proc"].poll() is not None:
+            return {"ok": False, "error": "no live agent for this item"}
+        if entry.get("stdin_closed"):
+            return {"ok": False, "error": "agent is finishing; steer channel closed"}
+        try:
+            entry["stdin"].write(_user_msg(f"STEER FROM THE DIRECTOR (act on this now): {text}").encode("utf-8"))
+            entry["stdin"].flush()
+        except OSError as exc:
+            return {"ok": False, "error": f"agent not accepting input: {exc}"}
+        import time as _time
+        entry["steers"].append({"text": text, "sent_at": _time.time(),
+                                "consumed_at": None})
+    return {"ok": True, "item_id": item_id, "steers": len(entry["steers"])}
+
+
+def _scan_steer_echoes(entry: dict) -> None:
+    """Mark steers consumed by finding their --replay-user-messages echoes.
+
+    A steer lands in stdin instantly, but the model only READS it when the
+    current turn ends — that gap is the 'late to inject' feeling. The echo of
+    the injected user message in the output log is the moment of consumption,
+    so sent_at -> echo time IS the injection latency. Incremental tail read
+    (cursor per entry), so a 10MB log costs nothing per poll."""
+    import time as _time
+    pending = [s for s in entry.get("steers", ()) if isinstance(s, dict)
+               and s.get("consumed_at") is None]
+    if not pending:
+        return
+    try:
+        with open(entry["log"], "rb") as fh:
+            fh.seek(entry.get("log_scan_pos", 0))
+            chunk = entry.get("log_scan_rem", b"") + fh.read()
+            entry["log_scan_pos"] = fh.tell()
+    except OSError:
+        return
+    lines = chunk.split(b"\n")
+    entry["log_scan_rem"] = lines.pop()  # possibly-partial last line
+    now = _time.time()
+    for line in lines:
+        if b"STEER FROM THE DIRECTOR" not in line or b'"user"' not in line:
+            continue
+        for s in entry["steers"]:
+            if isinstance(s, dict) and s.get("consumed_at") is None:
+                s["consumed_at"] = now
+                break
+
+
+def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
+    """Seconds since the agent last produced ANY observable output — log write
+    or a file under .bgate_out / game assets. Long atomic MCP calls (a 30-min
+    image_sprites batch) log nothing until they return, which made healthy
+    agents look hung and got them manually killed; file mtimes are the real
+    heartbeat. Shallow capped scan, cheap enough for the dashboard poll."""
+    import time as _t
+    newest = 0.0
+    try:
+        newest = os.path.getmtime(entry["log"])
+    except OSError:
+        pass
+    budget = 400  # max entries visited — keep the poll snappy
+    stack = [(Path(root) / ".bgate_out", 0), (Path(root) / "game" / "assets", 0)]
+    while stack and budget > 0:
+        d, depth = stack.pop()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    budget -= 1
+                    if budget <= 0:
+                        break
+                    try:
+                        m = e.stat().st_mtime
+                        if m > newest:
+                            newest = m
+                        if e.is_dir() and depth < 2:
+                            stack.append((Path(e.path), depth + 1))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return int(_t.time() - newest) if newest else None
+
+
+def status(root: str) -> list[dict]:
+    """The agent table for the dashboard — a PURE READ.
+
+    This used to reap: a GET that closed pipes, flipped item statuses and wrote
+    the spend ledger. Two dashboards (or one dashboard and one long-poll) raced
+    each other through the same transition, and the whole lifecycle depended on
+    somebody keeping a browser tab open. The writing moved to _reap/sweep, which
+    the per-run watchdog drives; the only state touched here is the in-memory
+    steer-echo cursor, which is a log READ.
+
+    Finished runs stay in the table for a bounded window (see RETAIN_RUNS) so
+    the result the user was waiting for is still there to read.
+    """
+    out = []
+    project = _pkey(root)
+    with _lock:
+        entries = [(i, e) for i, e in _live.items()
+                   if _pkey(e.get("root") or root) == project]
+    for item_id, entry in entries:
+        if entry["proc"].poll() is not None:
+            continue  # dead but not banked yet — the watchdog/sweep owns that
+        _scan_steer_echoes(entry)
+        steers = [s for s in entry.get("steers", ()) if isinstance(s, dict)]
+        consumed = [s for s in steers if s.get("consumed_at")]
+        latencies = [round(s["consumed_at"] - s["sent_at"], 1) for s in consumed]
+        out.append({"item_id": item_id, "state": "running",
+                    "pid": entry["proc"].pid, "log": entry["log"],
+                    "steers": len(steers),
+                    "steers_pending": len(steers) - len(consumed),
+                    "steer_latency_s": latencies,
+                    "last_output_s": _last_output_age_s(root, entry)})
+    with _lock:
+        finished = [dict(row) for key, row in _done.items() if key[0] == project]
+    out.extend(sorted(finished, key=lambda r: r["ended_at"]))
+    return out
+
+
+STEER_MARKER = "STEER FROM THE DIRECTOR (act on this now): "
+
+
+def _add_step(state: dict, step: dict) -> None:
+    """Append one step to the ring. What falls off the front is counted, not
+    forgotten — see the ``dropped``/``truncated`` fields read_activity returns."""
+    state["steps"].append(step)
+    state["step_count"] += 1
+    if len(state["steps"]) > MAX_STEPS:
+        del state["steps"][:len(state["steps"]) - MAX_STEPS]
+
+
+def _blocks(ev: dict) -> list:
+    """Content blocks of a stream-json message. Some CLI builds send ``content``
+    as a bare string; iterating that yields characters and explodes on .get."""
+    content = (ev.get("message") or {}).get("content")
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def _absorb(state: dict, raw: bytes) -> None:
+    """Fold one log line into the parsed feed."""
+    line = raw.strip()
+    if not line:
+        return
+    try:
+        ev = json.loads(line)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(ev, dict):
+        return
+    etype = ev.get("type")
+    if etype == "bgate_run_start":
+        # A RE-DISPATCH. The log appends across runs and showing run 1's result
+        # as run 2's current state was a real observed bug — everything before
+        # this marker belongs to a run that is over.
+        state["steps"].clear()
+        state["step_count"] = 0
+        state["final"] = None
+    elif etype == "assistant":
+        for block in _blocks(ev):
+            if block.get("type") == "text" and str(block.get("text", "")).strip():
+                _add_step(state, {"kind": "say",
+                                  "text": str(block["text"]).strip()[:1000]})
+            elif block.get("type") == "tool_use":
+                name = str(block.get("name", "?"))
+                inp = block.get("input") if isinstance(block.get("input"), dict) else {}
+                hint = (inp.get("path") or inp.get("file_path") or inp.get("role")
+                        or inp.get("title") or inp.get("query") or inp.get("prompt")
+                        or inp.get("command") or "")
+                _add_step(state, {"kind": "tool",
+                                  "name": name.replace("mcp__builders-gate__", ""),
+                                  "hint": str(hint)[:120]})
+    elif etype == "user":
+        for block in _blocks(ev):
+            if block.get("type") == "tool_result":
+                c = block.get("content")
+                txt = c if isinstance(c, str) else (
+                    c[0].get("text", "") if isinstance(c, list) and c
+                    and isinstance(c[0], dict) else "")
+                txt = str(txt).strip()
+                if txt:
+                    _add_step(state, {"kind": "result", "text": txt[:600],
+                                      "truncated": len(txt) > 600})
+            elif block.get("type") == "text":
+                # Replayed user turns — and the FIRST of them is the dispatch
+                # prompt, which carries the seat-identity preamble and the whole
+                # house-rules block. That is internal plumbing, not something to
+                # show a human reading their agent's activity: only turns
+                # carrying the director marker (live steers) are surfaced.
+                txt = str(block.get("text", ""))
+                if STEER_MARKER in txt:
+                    _add_step(state, {"kind": "steer",
+                                      "text": txt.split(STEER_MARKER, 1)[1].strip()[:600]})
+    elif etype == "result":
+        # The agent's actual answer. NOT truncated to a preview length — this is
+        # the deliverable sentence the user opened the panel to read; the cap is
+        # only here so a runaway result cannot pin the process's memory.
+        state["final"] = {"subtype": ev.get("subtype"),
+                          "text": str(ev.get("result", ""))[:20000],
+                          "cost": ev.get("total_cost_usd"),
+                          "turns": ev.get("num_turns")}
+
+
+def _is_running(item_id: int) -> bool:
+    entry = _live.get(item_id)
+    return bool(entry) and entry["proc"].poll() is None
+
+
+def read_activity(root: str, item_id: int, limit: int = 40,
+                  offset: int = 0) -> dict:
+    """An agent's stream-json log as a readable feed — parsed FORWARD FROM A
+    BYTE CURSOR, once.
+
+    The log is documented as 10MB and the dashboard polls every ~3s per live
+    agent; read_text() + json.loads on every line of it, every poll, re-parsed
+    the entire session to display its last 40 steps. The steer-echo scanner a
+    hundred lines up already solved that with a per-run byte cursor — this is
+    the same trick, plus a bounded ring so a long session cannot grow without
+    limit in memory.
+
+    Truncation is now REPORTED rather than silent: ``step_count`` is everything
+    the run has done, ``dropped`` is what aged out of the ring, ``truncated``
+    says the window is not the whole story, and ``offset`` (steps back from the
+    newest) pages through what is still held. ``limit=0`` returns the full ring.
+    """
+    key = (_pkey(root), int(item_id))
+    log_path = Path(root) / ".bgate" / "agents" / f"item-{item_id}.log"
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        _activity.pop(key, None)
+        return {"steps": [], "running": _is_running(item_id), "final": None,
+                "step_count": 0, "dropped": 0, "truncated": False}
+
+    state = _activity.get(key)
+    if state is None or state["pos"] > size:
+        # First look, or the log was replaced/truncated under us (a cursor past
+        # EOF means the bytes we already parsed are gone) — start clean.
+        state = {"pos": 0, "rem": b"", "steps": [], "final": None,
+                 "step_count": 0, "bytes_read": 0}
+        _activity[key] = state
+    state["touched"] = time.time()
+    if size > state["pos"]:
+        try:
+            with open(log_path, "rb") as fh:
+                fh.seek(state["pos"])
+                chunk = fh.read()
+                state["pos"] = fh.tell()
+        except OSError:
+            chunk = b""
+        state["bytes_read"] += len(chunk)
+        lines = (state["rem"] + chunk).split(b"\n")
+        state["rem"] = lines.pop()  # possibly-partial last line
+        for raw in lines:
+            _absorb(state, raw)
+    _prune_feeds()
+
+    kept = state["steps"]
+    end = max(0, len(kept) - max(0, int(offset)))
+    start = max(0, end - int(limit)) if limit else 0
+    window = kept[start:end]
+    return {"steps": window, "running": _is_running(item_id),
+            "final": state["final"], "step_count": state["step_count"],
+            "dropped": state["step_count"] - len(kept),
+            "truncated": len(window) < state["step_count"],
+            "offset": max(0, int(offset)), "limit": int(limit)}
+
+
+def _prune_feeds() -> None:
+    """Cap the parsed-feed cache. Every item ever opened in the UI gets one, and
+    a dashboard left running for a week must not accumulate them forever."""
+    if len(_activity) <= MAX_FEEDS:
+        return
+    oldest = sorted(_activity.items(), key=lambda kv: kv[1].get("touched", 0))
+    for key, _state in oldest[:len(_activity) - MAX_FEEDS]:
+        _activity.pop(key, None)
+
+
+def stop(item_id: int, actor: str = "") -> dict:
+    """End a run deliberately: kill the TREE, and record it as a stop.
+
+    Two bugs in one line. terminate() killed the `claude` parent only, leaving
+    its MCP-server children alive holding the pipe — the orphan pile-up the rest
+    of this file keeps fighting. And the run was then banked as 'session exited
+    N without self-reporting', so the one place a user looks to find out what
+    happened told them their agent mysteriously died, when in fact they stopped
+    it. The stop lands on the item immediately, with a name on it.
+    """
+    with _lock:
+        entry = _live.get(item_id)
+        if not entry or entry["proc"].poll() is not None:
+            return {"ok": False, "error": "no live agent for this item"}
+        if not actor:
+            try:
+                from bgate_ui import api as _api
+                actor = _api.current_actor()
+            except Exception:
+                actor = ""
+        actor = actor or "the dashboard"
+        reason = (f"stopped by {actor} — this run was ended by hand, "
+                  "it did not die on its own")
+        entry["stopped_by"] = actor
+        entry["stop_reason"] = reason
+        pid = entry["proc"].pid
+        root = entry.get("root") or ""
+    _kill_tree(pid)
+    # Written here, not at reap time: the reap only writes while the item is
+    # still 'dispatched', so recording the stop now is what keeps the crash
+    # story from being told over it.
+    if root:
+        try:
+            if _queue.get(root, item_id)["status"] == "dispatched":
+                _queue.set_status(root, item_id, "failed", result=reason)
+        except LookupError:
+            pass
+    return {"ok": True, "item_id": item_id, "pid": pid, "actor": actor,
+            "reason": reason}

@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bgate_engine/transaction",
+  "title": "Transaction",
+  "description": "An isolated change set off a base world revision. Non-overlapping component patches merge; overlapping ones are rejected with field-level precision. Replaces asset-path file locking with component-scoped concurrency.",
+  "type": "object",
+  "required": ["id", "base_revision", "actor", "seat", "operations", "status"],
+  "properties": {
+    "id":            { "type": "string", "pattern": "^tx_[a-z]+_[0-9]+$", "examples": ["tx_gameplay_51"] },
+    "base_revision": { "type": "integer", "description": "World revision this change set forked from." },
+    "actor":         { "type": "string", "description": "Agent or human identity that owns the change set." },
+    "seat":          { "type": "string", "enum": ["director","gameplay","art","tech","audio","narrative","qa"] },
+    "work_item":     { "type": ["integer","null"], "description": "Builders Gate queue item this transaction serves." },
+    "operations": {
+      "type": "array",
+      "description": "Ordered typed mutations. Each targets an addressable component/field or entity.",
+      "items": {
+        "type": "object",
+        "required": ["op", "target"],
+        "properties": {
+          "op":     { "type": "string", "enum": ["component.patch","entity.add","entity.remove","asset.bind","behavior.patch"] },
+          "target": { "type": "string", "examples": ["fighter.tommy.Movement.jump_gravity","system.combat.facing_rule"] },
+          "from":   { "description": "Expected current value (optimistic concurrency; omit for adds)." },
+          "to":     { "description": "New value." }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "Result of schema + unit + invariant checks, filled by transaction.create/validate.",
+      "properties": {
+        "ok":      { "type": "boolean" },
+        "errors":  { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "simulation_evidence": {
+      "type": "array",
+      "description": "Run identifiers + assertions produced while proving this change (see run_identifier + evidence_manifest).",
+      "items": { "type": "object" }
+    },
+    "dependencies_changed": {
+      "type": "array", "items": { "type": "string" },
+      "description": "Components/entities/assets/tests this transaction touches — the merge/conflict surface."
+    },
+    "status": { "type": "string", "enum": ["open","validated","proven","committed","aborted","conflict"] },
+    "conflict": {
+      "type": "object",
+      "description": "Set when status=conflict. Field-level, not file-level.",
+      "properties": {
+        "error":      { "const": "revision_conflict" },
+        "entity":     { "type": "string" },
+        "component":  { "type": "string" },
+        "field":      { "type": "string" },
+        "expected":   {},
+        "current":    {},
+        "changed_by": { "type": "string", "examples": ["tx_gameplay_48"] }
+      }
+    }
+  },
+  "examples": [
+    {
+      "id": "tx_gameplay_51", "base_revision": 142, "actor": "agent.gameplay", "seat": "gameplay",
+      "work_item": 51,
+      "operations": [
+        { "op": "behavior.patch", "target": "system.combat.facing_rule",
+          "from": "applied_regardless_of_facing", "to": "attacker_facing == sign(target_x - attacker_x)" }
+      ],
+      "validation": { "ok": true, "errors": [] },
+      "dependencies_changed": ["system.combat", "test.facing_hitbox"],
+      "status": "proven"
+    }
+  ]
+}

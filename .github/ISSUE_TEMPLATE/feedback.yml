@@ -1,0 +1,32 @@
+name: Feedback or feature idea
+description: Disagreement with the design is as welcome as a feature request.
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feedback is worth more to this project than patches right now. A
+        "this concept does not survive contact with how my studio works" needs
+        no repro and no proposal.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind
+      options:
+        - The docs describe something the code does not do
+        - A gate can be walked around (cut line, seat lanes, locks, budget, approval)
+        - This does not fit how I actually work
+        - Feature idea
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: body
+    attributes:
+      label: The point
+      description: >
+        If it is a docs mismatch, quote the line. If it is a gate, say what you
+        did to get past it. If it is a feature, say what you were trying to do —
+        the problem is more useful than the proposed solution.
+    validations:
+      required: true
