@@ -1,15 +1,15 @@
 # Contributing
 
 This is a solo project, published because the ideas in it are worth arguing
-about. **Feedback is worth more to me than patches right now** — the design is
-still moving, and a good bug report or a "this concept does not survive contact
-with my studio" is more useful than a merged diff.
+about. **Feedback is worth more to me than patches right now.** The design is still
+moving. A good bug report, or a "this concept does not survive contact with my
+studio", is more useful than a merged diff.
 
 ## What is most useful
 
 - **It did not run.** Setup failures beat everything else. If `pip install -e .`,
   `bgate doctor`, `bgate init` or `bgate serve` failed on your machine, that is
-  the highest-value report there is — the quickstart is only ever verified on one
+  the highest-value report there is. The quickstart is only ever verified on one
   machine.
 - **The docs lie.** Anywhere the README or `docs/` describes behaviour the code
   does not have. Quote the line.
@@ -29,8 +29,8 @@ unsolicited refactors.
 Use the bug report form under **Issues**. Whatever route you take, include:
 
 - **OS and version** (Windows 11, Ubuntu 24.04, …)
-- **Python version** — `python -V`
-- **`bgate doctor --json` output** — it answers "is the toolchain even here" in
+- **Python version**, from `python -V`
+- **`bgate doctor --json` output.** It answers "is the toolchain even here" in
   one pass, and most first-run reports are answered by it. It never prints your
   API key, only whether one is set.
 - **What you ran, what you expected, what happened**, with the exact error text.
@@ -57,7 +57,7 @@ command CI runs.
 
 If you are changing anything the wheel ships (JavaScript under
 `bgate_ui/static/`, anything in `templates/`, the engine schemas), check the
-`wheel-smoke` job in `.github/workflows/ci.yml` — a wheel that quietly ships no
+`wheel-smoke` job in `.github/workflows/ci.yml`. A wheel that quietly ships no
 JavaScript is a bug this repo has already had once.
 
 ## Pull requests

@@ -9,7 +9,7 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
-## [0.1.0] — 2026-07-27
+## [0.1.0] - 2026-07-27
 
 First public release. Everything below already existed when the repository was
 opened; this entry describes the state, not a set of changes against a previous
@@ -20,30 +20,30 @@ version.
 - **MCP server** (`bgate_mcp`, stdio/FastMCP) exposing the whole pipeline as
   tools: design bible, lore canon and `canon_check`, scope tiers and the cut
   line, seats, asset registry and locks, queue, workflows, playtest, iterations.
-- **Seven agent seats** — director, narrative, gameplay, tech, art, audio, qa —
+- **Seven agent seats** (director, narrative, gameplay, tech, art, audio, qa)
   with write lanes, one-call briefs, a shared blackboard, and a PreToolUse hook
   (`bgate hook-install`) that enforces lanes and locks.
-- **Godot adapter** — headless run and project check, asset import with
+- **Godot adapter.** Headless run and project check, asset import with
   in-engine inspection, live screenshots, 2D/3D project scaffolds with telemetry
   and an F1 live-tuning overlay wired in.
-- **Blender adapter** — headless `bpy` returning structured facts (tri/vert
+- **Blender adapter.** Headless `bpy` returning structured facts (tri/vert
   counts off the evaluated mesh, UV warnings, materials), sprite factory, glTF
   export with modifiers applied and game-readiness checks.
-- **Two image providers** — OpenAI `gpt-image` and Krea (a catalogue of ~20
+- **Two image providers.** OpenAI `gpt-image` and Krea (a catalogue of 14
   models with per-request pricing), behind quality tiers, with chroma-key alpha
   extraction since neither returns usable transparency.
-- **Dashboard** (`bgate serve`) — nine views over one SQLite store, including
+- **Dashboard** (`bgate serve`). Nine views over one SQLite store, including
   live agent steering, node editors, per-seat workspaces, playtest review, the
   asset registry, the project atlas, the world bible and the iteration timeline.
   No build step, no node, no CDN.
-- **Playtest mode** — screen and voice capture, whisper transcription, feedback
+- **Playtest mode.** Screen and voice capture, whisper transcription, feedback
   classification, and a join against game telemetry on one clock.
-- **`bgate publish`** — turns every game on the machine into a static arcade
+- **`bgate publish`.** Turns every game on the machine into a static arcade
   site, respecting the target host's per-file upload limit (Godot 4's ~38 MiB
   `index.wasm` versus Cloudflare's 25 MiB ceiling).
-- **`bgate doctor`** — one bounded probe of every external dependency, exiting
+- **`bgate doctor`.** One bounded probe of every external dependency, exiting
   non-zero if anything is unavailable.
-- **CI** — the suite on Windows and Linux (Linux informational), plus a
+- **CI.** The suite on Windows and Linux (Linux informational), plus a
   clean-venv wheel smoke test that installs the built artifact and uses it from
   outside the source tree.
 - MIT licence, `.env.example`, and this changelog.
@@ -51,8 +51,8 @@ version.
 ### Security
 
 - Dashboard mutations require a same-origin request, a per-project bearer token
-  from `.bgate/ui-token`, and a `Host` header that resolves to loopback — the
-  last of which is not disabled by `BGATE_NO_AUTH` because it is what closes DNS
+  from `.bgate/ui-token`, and a `Host` header that resolves to loopback. That
+  last check is not disabled by `BGATE_NO_AUTH`, because it is what closes DNS
   rebinding. See [SECURITY.md](SECURITY.md).
 - `.env` and `.env.*` are gitignored here and in every project `bgate init`
   stamps out.

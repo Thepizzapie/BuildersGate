@@ -16,7 +16,7 @@ machine, on projects you trust.
 
 **What the guards are designed to stop:** a web page you happen to have open in
 your browser reaching the dashboard on `127.0.0.1` and driving it. `127.0.0.1`
-is not a security boundary — any page can POST to localhost — so
+is not a security boundary, since any page can POST to localhost, so
 `bgate_ui/api.py` installs three checks on the mutating surface:
 
 1. **Host allowlist.** The request's `Host` header must resolve to a loopback
@@ -41,7 +41,7 @@ budget, the revert, workflow gates, and promoting a candidate to the build.
   do whatever an agent could.
 - **A hostile game project or a hostile prompt.** The seat lanes, asset locks
   and the cut line are *coordination* controls that stop agents from stomping
-  each other's work — they are not a sandbox and were never meant to contain an
+  each other's work. They are not a sandbox and were never meant to contain an
   adversary. The PreToolUse hook fails **open** by design: a crashing hook must
   never dam a session.
 - **Exposure to a network.** It binds to `127.0.0.1` and there is no multi-user
@@ -59,8 +59,8 @@ Report privately, not as a public issue: use **GitHub Security Advisories**
 <https://github.com/Thepizzapie/BuildersGate>.
 
 Useful in a report: what an attacker controls to begin with, the exact request
-or file that triggers it, and what they get. This is a solo project with no SLA —
-you will get an honest answer, not a fast one.
+or file that triggers it, and what they get. This is a solo project with no SLA.
+You will get an honest answer, not a fast one.
 
 Note that [`docs/qa-nitpick-audit.md`](docs/qa-nitpick-audit.md) is a **historical**
 self-audit; several issues it describes are fixed. Its status header lists which.
