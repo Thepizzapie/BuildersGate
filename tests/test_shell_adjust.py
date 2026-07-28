@@ -44,6 +44,21 @@ def styles(page: str) -> list[str]:
     return re.findall(r"<style[^>]*>(.*?)</style>", page, re.S)
 
 
+@pytest.fixture()
+def shell(client, page) -> str:
+    """The shell's markup AND its stylesheet, as one string to assert against.
+
+    The CSS used to live in six stacked <style> blocks inside index.html, which
+    is why every assertion below was written against the served page. It now
+    lives in /static/app.css — one file, one cascade, declared once. The
+    properties these tests pin did not change; only which response carries
+    them, so they read both rather than being deleted.
+    """
+    got = client.get("/static/app.css")
+    assert got.status_code == 200, "the shell's stylesheet must be served"
+    return page + "\n" + got.text
+
+
 # ---------------------------------------------------------------------------
 # 1. Every mutation goes through one helper that reads the response
 # ---------------------------------------------------------------------------
@@ -153,16 +168,19 @@ class TestUnroutedStaysUnrouted:
 # 4. Merged is not dismissed, and merging asks first
 # ---------------------------------------------------------------------------
 class TestMergedFeedbackIsDistinct:
-    def test_merged_items_render_their_own_state(self, page):
+    def test_merged_items_render_their_own_state(self, page, shell):
+        # The data and the copy are rendered by index.html's script; the two
+        # class rules moved into app.css with the rest of the stylesheet.
         assert "merged_into_id" in page
         assert "merged into" in page
-        assert ".feedback-card.st-merged" in page
-        assert ".chip.merged" in page
+        assert ".feedback-card.st-merged" in shell
+        assert ".chip.merged" in shell
 
     def test_merging_confirms_because_it_cannot_be_undone(self, page):
         body = _function_body(page, "mergeFeedback")
-        assert "confirm(" in body
-        assert body.index("confirm(") < body.index("mutate(")
+        ask = "askConfirm(" if "askConfirm(" in body else "confirm("
+        assert ask in body
+        assert body.index(ask) < body.index("mutate(")
 
     def test_the_merge_target_links_back_to_the_target_card(self, page):
         assert "function jumpToFeedback(" in page
@@ -263,18 +281,18 @@ class TestResponsiveTargetsLiveMarkup:
             assert f".{selector}" not in block, \
                 f"a breakpoint still targets .{selector}, which no longer exists"
 
-    def test_the_game_frame_grows_with_the_stage(self, page):
-        assert "aspect-ratio:16/9" in page.replace(" ", "")
+    def test_the_game_frame_grows_with_the_stage(self, shell):
+        assert "aspect-ratio:16/9" in shell.replace(" ", "")
         # the fixed letterbox height is gone
-        assert "#play-holder,#gameframe{min-height:300px}" not in page.replace(" ", "")
+        assert "#play-holder,#gameframe{min-height:300px}" not in shell.replace(" ", "")
 
-    def test_the_rail_collapses_before_the_stage_does(self, page):
-        flat = page.replace(" ", "")
+    def test_the_rail_collapses_before_the_stage_does(self, shell):
+        flat = shell.replace(" ", "")
         assert "@media(max-width:1180px)" in flat
         assert ".deck{grid-template-columns:64px1fr}" in flat
 
-    def test_reduced_motion_is_still_honoured(self, page):
-        assert "prefers-reduced-motion" in page
+    def test_reduced_motion_is_still_honoured(self, shell):
+        assert "prefers-reduced-motion" in shell
 
 
 # ---------------------------------------------------------------------------
@@ -334,8 +352,26 @@ class TestPreflightPolling:
 # 10. One theme layer, and no font that cannot load
 # ---------------------------------------------------------------------------
 class TestOneThemeLayer:
-    def test_the_tokens_are_declared_exactly_once(self, page):
-        assert len(re.findall(r"(?m)^\s*:root\{", page)) == 1
+    def test_the_tokens_are_declared_in_exactly_one_place(self, page, shell):
+        """One token layer, not four stacked ones.
+
+        This used to count ``:root{`` in the served page and demand exactly one,
+        which was the right guard when six <style> blocks were fighting inside
+        index.html. Two things changed. The CSS moved to app.css, and the app
+        grew a light ground as well as a dark one — so there are now several
+        :root rules ON PURPOSE (the dark default, [data-theme="light"], and a
+        prefers-color-scheme block), and counting them proves nothing.
+
+        The property that actually mattered is stronger now and is what gets
+        asserted: the shell markup carries NO stylesheet of its own, so there is
+        exactly one file where a token can be defined.
+        """
+        assert not styles(page), \
+            "index.html grew a <style> block again — tokens belong in app.css"
+        assert '<link rel="stylesheet" href="/static/app.css">' in page
+        # Each ground declares its palette once, and only inside app.css.
+        assert len(re.findall(r"--accent:#", shell)) == len(
+            re.findall(r"(?m)^\s*--accent:#", shell)), "accent declared oddly"
 
     def test_no_font_is_declared_that_can_never_load(self, page):
         # No CDN and no @font-face, so a webfont name in a font stack is a lie:
@@ -346,16 +382,33 @@ class TestOneThemeLayer:
         for webfont in ("Inter", "JetBrains Mono", "SF Mono", "Roboto", "Manrope"):
             assert webfont not in declared, f"{webfont} is declared and never loads"
 
-    def test_the_surviving_stack_is_all_system_fonts(self, page):
-        sans = re.search(r"--sans:([^;]+);", page).group(1)
+    def test_the_surviving_stack_is_all_system_fonts(self, shell):
+        sans = re.search(r"--sans:([^;]+);", shell).group(1)
         assert "Segoe UI" in sans and "system-ui" in sans
 
-    def test_body_is_styled_once_not_four_times(self, page):
-        assert len(re.findall(r"(?m)^\s*body\{", page)) == 1
+    def test_body_is_styled_once_not_four_times(self, shell):
+        assert len(re.findall(r"(?m)^\s*body\{", shell)) == 1
 
-    def test_the_accent_survived_the_flattening(self, page):
-        assert "--ember:#ff6a3d" in page
-        assert "--void:#000000" in page
+    def test_the_accent_survived_the_flattening(self, shell):
+        """Ember is still the accent, and every alias still resolves.
+
+        The old form of this test pinned two literals: ``--ember:#ff6a3d`` and
+        ``--void:#000000``. Both moved, one deliberately.
+
+        --ember is now an ALIAS of --accent (about 1800 var(--…) references
+        across 29 JS files point at the old names, so the aliases stay), and
+        --void aliases --bg, whose value is no longer pure black: on true black
+        a 1px hairline of rgba(255,255,255,.075) computes to ~#131317 and is
+        invisible, so every card leaned on a shadow it could not cast either.
+
+        What must remain true is the thing the test was named for — ember is the
+        accent, and the legacy names still resolve to something.
+        """
+        assert "--accent:#ff6a3d" in shell, "ember is no longer the dark accent"
+        for alias in ("--ember:", "--void:", "--plate:", "--seam:", "--bone:"):
+            assert alias in shell, f"{alias} alias dropped; ~1800 refs rely on it"
+        # The canvas is intentionally off pure black now.
+        assert "--void:#000000" not in shell
 
 
 # ---------------------------------------------------------------------------

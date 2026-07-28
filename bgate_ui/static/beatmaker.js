@@ -262,7 +262,7 @@ window.BeatMaker = (() => {
     while (nextTime < ctx.currentTime + LOOKAHEAD_S){
       const patternIndex = ui.song
         ? B.patterns.findIndex(p => p.name === B.song[nextSongIndex % B.song.length])
-        : ui.pattern;
+        : patIndex();
       scheduleStep(ctx, ctx.destination, patternIndex < 0 ? 0 : patternIndex,
                    nextStep, nextTime);
       const at = nextTime, at_step = nextStep;
@@ -300,7 +300,7 @@ window.BeatMaker = (() => {
     for (let bar = 0; bar < bars; bar++){
       const pi = songMode
         ? Math.max(0, B.patterns.findIndex(p => p.name === B.song[bar]))
-        : ui.pattern;
+        : patIndex();
       for (let s = 0; s < B.steps; s++){
         scheduleStep(off, master, pi, s, bar * patternSeconds() + s * stepSeconds());
       }
@@ -334,15 +334,21 @@ window.BeatMaker = (() => {
 
   async function renderTo(songMode){
     if (!window.AudioLab || !AudioLab.state){ say("open the audio lab first"); return; }
-    stop();
-    await loadSamples();
-    const rendered = await renderBuffer(songMode);
-    const head = headroom(rendered);
-    const what = songMode ? `the song · ${B.song.join(" ")}`
-                          : `pattern ${B.patterns[ui.pattern].name}`;
-    AudioLab.adopt(rendered, `rendered ${what}` + (head.trimmed_db
-      ? ` · pulled back ${Math.abs(head.trimmed_db).toFixed(1)} dB to stop it clipping`
-      : ""));
+    // Called straight from an inline onclick, so a throw in here used to become
+    // an unhandled rejection: the button did nothing and said nothing.
+    try {
+      stop();
+      await loadSamples();
+      const rendered = await renderBuffer(songMode);
+      const head = headroom(rendered);
+      const what = songMode ? `the song · ${B.song.join(" ")}`
+                            : `pattern ${pat().name}`;
+      AudioLab.adopt(rendered, `rendered ${what}` + (head.trimmed_db
+        ? ` · pulled back ${Math.abs(head.trimmed_db).toFixed(1)} dB to stop it clipping`
+        : ""));
+    } catch (e){
+      say(`could not render: ${(e && e.message) || e}`);
+    }
   }
 
   /* ── session ──────────────────────────────────────────────────────────── */
@@ -359,7 +365,7 @@ window.BeatMaker = (() => {
     const s = document.createElement("style");
     s.id = "beatmaker-style";
     s.textContent = [
-      ".bm{display:flex;flex-direction:column;height:100%;min-height:0;background:#0b0c0f}",
+      ".bm{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--bg)}",
       ".bm-top{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--seam);background:var(--iron);flex-wrap:wrap;flex:none}",
       ".bm-l{font-family:var(--mono);font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--ash2)}",
       ".bm-in{background:var(--void);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font:inherit;font-size:11.5px;padding:4px 7px;width:66px}",
@@ -367,11 +373,11 @@ window.BeatMaker = (() => {
       ".bm-in.wide{width:auto;flex:1;min-width:130px}",
       ".bm-b{padding:5px 10px;background:var(--plate);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;cursor:pointer}",
       ".bm-b:hover{border-color:var(--ember)}",
-      ".bm-b.go{background:var(--ember);color:#111;border-color:var(--ember);font-weight:600}",
+      ".bm-b.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
       ".bm-b.on{border-color:var(--ember);background:var(--plate2)}",
       ".bm-pat{display:flex;gap:4px}",
       ".bm-pc{width:28px;height:26px;border-radius:6px;border:1px solid var(--seam);background:var(--plate);color:var(--ash);font:inherit;font-size:11px;cursor:pointer}",
-      ".bm-pc.on{border-color:var(--ember);color:#111;background:var(--ember);font-weight:600}",
+      ".bm-pc.on{border-color:var(--ember);color:var(--bg);background:var(--ember);font-weight:var(--fw-semi)}",
       ".bm-grid{flex:1;overflow:auto;padding:10px 13px}",
       ".bm-ruler{display:grid;gap:3px;margin-bottom:5px;margin-left:190px}",
       ".bm-ruler div{font-family:var(--mono);font-size:8.5px;color:var(--ash2);text-align:center}",
@@ -385,10 +391,10 @@ window.BeatMaker = (() => {
       ".bm-tg.solo.on{border-color:var(--good);color:var(--good)}",
       ".bm-steps{display:grid;gap:3px;flex:1}",
       ".bm-s{height:26px;border-radius:5px;border:1px solid var(--seam);background:var(--void);cursor:pointer;position:relative;padding:0}",
-      ".bm-s.beat{border-color:#33383f}",
+      ".bm-s.beat{border-color:var(--line)}",
       ".bm-s.on{background:var(--ember);border-color:var(--ember)}",
-      ".bm-s.on.synth{background:#7fb3ff;border-color:#7fb3ff}",
-      ".bm-s .nt{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--mono);font-size:8px;color:#111;pointer-events:none}",
+      ".bm-s.on.synth{background:var(--text);border-color:var(--text)}",
+      ".bm-s .nt{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--mono);font-size:8px;color:var(--bg);pointer-events:none}",
       ".bm-s.play{box-shadow:0 0 0 2px var(--bone)}",
       ".bm-foot{display:flex;align-items:center;gap:8px;padding:8px 13px;border-top:1px solid var(--seam);background:var(--iron);flex-wrap:wrap;flex:none}",
       ".bm-hint{font-family:var(--mono);font-size:9.5px;color:var(--ash2)}",
@@ -403,6 +409,10 @@ window.BeatMaker = (() => {
     ctx = window.AudioLab && AudioLab.state ? AudioLab.state.ctx : null;
     if (!ctx){ host.innerHTML = `<div class="bm-hint" style="padding:24px">the audio lab is not open</div>`; return; }
     B = session || starter();
+    // ui is module state and outlives a mount. Carrying pattern/track indices
+    // over from the last clip pointed them off the end of the new one, which
+    // render() papered over and every click handler then threw on.
+    ui = { pattern: 0, track: 0, playing: false, step: -1, song: false };
     invalidate();
     loadSamples();
     render();
@@ -410,9 +420,14 @@ window.BeatMaker = (() => {
 
   function unmount(){ stop(); host = null; }
 
+  /* Single reader for the selected pattern; heals the index instead of leaving
+     a stale one to throw in whichever handler is touched next. */
+  function patIndex(){ if (!B.patterns[ui.pattern]) ui.pattern = 0; return ui.pattern; }
+  function pat(){ return B.patterns[patIndex()]; }
+
   function render(){
     if (!host || !B) return;
-    const pattern = B.patterns[ui.pattern] || B.patterns[0];
+    const pattern = pat();
     const cols = `repeat(${B.steps}, minmax(19px, 1fr))`;
     const per = B.resolution;
 
@@ -537,7 +552,7 @@ window.BeatMaker = (() => {
 
   /* ── actions ──────────────────────────────────────────────────────────── */
   function stepClick(ev, ti, si){
-    const t = B.patterns[ui.pattern].tracks[ti];
+    const t = pat().tracks[ti];
     const c = t.steps[si];
     if (ev && ev.shiftKey && c.on){
       // Accent cycles down through three levels rather than toggling off, so
@@ -553,7 +568,7 @@ window.BeatMaker = (() => {
   }
   function stepWheel(ev, ti, si){
     ev.preventDefault();
-    const t = B.patterns[ui.pattern].tracks[ti];
+    const t = pat().tracks[ti];
     const c = t.steps[si];
     if (!c.on) return;
     c.note = clamp(c.note + (ev.deltaY < 0 ? 1 : -1), -36, 36);
@@ -564,7 +579,7 @@ window.BeatMaker = (() => {
   function selectTrack(i){ ui.track = i; render(); }
   function addPattern(){
     if (B.patterns.length >= 8){ say("eight patterns is the cap"); return; }
-    const src = B.patterns[ui.pattern];
+    const src = pat();
     const name = String.fromCharCode(65 + B.patterns.length);
     B.patterns.push({ name, tracks: src.tracks.map(t => Object.assign({}, t,
       { steps: t.steps.map(c => Object.assign({}, c)) })) });
@@ -573,31 +588,31 @@ window.BeatMaker = (() => {
     say(`pattern ${name} copied from ${src.name}`, "ok");
   }
   function addTrack(kind, voice){
-    const p = B.patterns[ui.pattern];
+    const p = pat();
     if (p.tracks.length >= 16){ say("sixteen tracks is the cap"); return; }
     p.tracks.push(track(voice.replace("_", " "), kind, voice));
     ui.track = p.tracks.length - 1;
     render();
   }
+  /* The lab's picker, not a second one: same endpoint, same rows, and a path
+     typed by hand was never a real way to choose a file. */
   async function addSample(){
-    const d = await readJSON("/api/audio/lab/list", {sounds:[]});
-    const names = (d.sounds || []).map(s => s.rel);
-    const rel = prompt("Which project sound?\n\n" + names.slice(0, 40).join("\n"),
-                       names[0] || "");
+    if (!window.AudioLab || !AudioLab.pickSound){ say("open the audio lab first"); return; }
+    const rel = await AudioLab.pickSound("which project sound?");
     if (!rel) return;
-    const p = B.patterns[ui.pattern];
-    p.tracks.push(track(rel.split("/").pop(), "sample", "", { source: rel.trim() }));
+    const p = pat();
+    p.tracks.push(track(rel.split("/").pop(), "sample", "", { source: rel }));
     ui.track = p.tracks.length - 1;
     await loadSamples();
     render();
   }
   function dropTrack(ti){
-    B.patterns[ui.pattern].tracks.splice(ti, 1);
+    pat().tracks.splice(ti, 1);
     ui.track = 0;
     render();
   }
   function trackField(ti, key, v){
-    const t = B.patterns[ui.pattern].tracks[ti];
+    const t = pat().tracks[ti];
     if (!t) return;
     if (key === "muted" || key === "solo") t[key] = !!v;
     else if (key === "name" || key === "voice") t[key] = String(v);
@@ -606,7 +621,7 @@ window.BeatMaker = (() => {
     render();
   }
   function clearPattern(){
-    B.patterns[ui.pattern].tracks.forEach(t =>
+    pat().tracks.forEach(t =>
       t.steps.forEach(c => { c.on = false; }));
     render();
   }
@@ -628,6 +643,13 @@ window.BeatMaker = (() => {
       }));
     } else if (key === "resolution"){
       B.resolution = parseInt(v, 10) || 4;
+      // An empty box gives NaN and `NaN || 0` is 0 — bpm 0 makes stepSeconds()
+      // Infinity, which stalls the scheduler after one step and makes the
+      // offline render throw. min= on the input does not stop an onchange.
+    } else if (key === "bpm"){
+      B.bpm = clamp(parseFloat(v) || 120, 20, 300);
+    } else if (key === "swing"){
+      B.swing = clamp(parseFloat(v) || 0, 0, 0.7);
     } else {
       B[key] = parseFloat(v) || 0;
     }

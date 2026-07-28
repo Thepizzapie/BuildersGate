@@ -204,6 +204,97 @@ def test_first_frame_follows_the_animation_not_just_the_first_atlas():
 
 
 # ---------------------------------------------------------------------------
+# Instanced scenes
+# ---------------------------------------------------------------------------
+# A scene built out of individual, editable components is built out of instanced
+# children — and an instanced child carries no `type=`, so every branch in the
+# resolver used to fall through and it drew as a bare, unlabelled dot. Forty
+# desks placed that way rendered as an empty frame.
+PROP = (
+    '[gd_scene load_steps=2 format=3]\n\n'
+    '[ext_resource type="Texture2D" path="res://desk.png" id="1_d"]\n\n'
+    '[node name="Prop" type="Node2D"]\n\n'
+    '[node name="Art" type="Sprite2D" parent="."]\n'
+    'position = Vector2(0, -8)\ntexture = ExtResource("1_d")\n')
+
+FLOOR = (
+    '[gd_scene load_steps=2 format=3]\n\n'
+    '[ext_resource type="PackedScene" path="res://prop.tscn" id="1_p"]\n\n'
+    '[node name="Floor" type="Node2D"]\n\n'
+    '[node name="Characters" type="Node2D" parent="."]\n\n'
+    '[node name="Desk_01" parent="Characters" instance=ExtResource("1_p")]\n'
+    'position = Vector2(100, 50)\n')
+
+
+def _floor():
+    return _draw(FLOOR, sizes={"res://desk.png": (32, 32)},
+                 reads={"res://prop.tscn": PROP})
+
+
+def test_an_instanced_scene_brings_its_art_with_it():
+    """Without this the desk is an invisible marker: the art it draws lives in
+    another file, so nothing in THIS scene's text says there is a picture."""
+    at = _by_path(_floor())
+    art = at["Characters/Desk_01/Art"]
+    assert art["draw"]["kind"] == "image"
+    assert art["draw"]["rel"] == "game/desk.png"
+    # 100,50 from the instance + 0,-8 from inside prop.tscn.
+    assert (art["x"], art["y"]) == (100, 42)
+
+
+def test_an_instances_insides_are_marked_as_belonging_to_it():
+    """`of` is what lets a click on the sprite select the instance, the way
+    Godot does — there is no line in this file for prop.tscn's own nodes."""
+    at = _by_path(_floor())
+    assert at["Characters/Desk_01/Art"]["of"] == "Characters/Desk_01"
+    assert "of" not in at["Characters/Desk_01"]
+    assert at["Characters/Desk_01"]["instance"] == "res://prop.tscn"
+
+
+def test_an_instance_whose_insides_all_draw_nothing_still_says_so():
+    """The normal case in these projects: prop.tscn's sprite gets its texture
+    from a script at load. Opening it must not turn "blank, and here is why"
+    into a node that silently draws nothing and is reported nowhere."""
+    blank = ('[gd_scene format=3]\n\n[node name="Prop" type="Node2D"]\n\n'
+             '[node name="Art" type="Sprite2D" parent="."]\n')
+    at = _by_path(_draw(FLOOR, reads={"res://prop.tscn": blank}))
+    desk = at["Characters/Desk_01"]
+    assert desk["drawn"] == 0
+    assert "nothing in it draws" in desk["draw"]["reason"]
+    assert _by_path(_floor())["Characters/Desk_01"]["drawn"] == 1
+
+
+def test_an_instance_that_cannot_be_read_says_which_one():
+    at = _by_path(_draw(FLOOR))          # no `reads`, so prop.tscn is missing
+    draw = at["Characters/Desk_01"]["draw"]
+    assert draw["kind"] == "marker"
+    assert "prop.tscn" in draw["reason"]
+
+
+def test_a_scene_that_instances_itself_stops_instead_of_recursing():
+    """A cycle here is an infinite walk, and the file that causes it is a file
+    someone can save by accident. It opens once — that is what the engine would
+    show — and the copy inside the copy says why it went no further."""
+    loop = (
+        '[gd_scene load_steps=2 format=3]\n\n'
+        '[ext_resource type="PackedScene" path="res://loop.tscn" id="1_l"]\n\n'
+        '[node name="Loop" type="Node2D"]\n\n'
+        '[node name="Again" parent="." instance=ExtResource("1_l")]\n')
+    at = _by_path(_draw(loop, reads={"res://loop.tscn": loop}))
+    assert "itself" in at["Again/Again"]["draw"]["reason"]
+    assert "Again/Again/Again" not in at
+
+
+def test_an_instances_nodes_paint_after_the_instance_not_at_the_end():
+    """Order decides paint order for everything sharing z=0. Appending the
+    insides at the end of the list would put every prop's art on top of every
+    wall, whatever the file says."""
+    order = [i["path"] for i in _floor()["items"]]
+    assert order.index("Characters/Desk_01/Art") == \
+        order.index("Characters/Desk_01") + 1
+
+
+# ---------------------------------------------------------------------------
 # Viewport
 # ---------------------------------------------------------------------------
 def test_the_viewport_comes_from_the_project_not_a_guess():

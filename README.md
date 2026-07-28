@@ -135,11 +135,48 @@ Other entry points, covered in [`docs/setup.md`](docs/setup.md):
 
 | Command | What it does |
 |---|---|
+| `bgate app` | The dashboard in a native window instead of a browser tab |
 | `bgate adopt` | Point it at a Godot project you already have. Additive only, never rewrites a byte you wrote |
 | `bgate projects` | List every known project |
 | `bgate use <name>` | Switch the active project without exporting `BGATE_ROOT` |
 | `bgate publish` | Turn every game on the machine into a static arcade site |
 | `bgate hook-status` | Prove the enforcement hook is actually live |
+
+### Desktop app
+
+`bgate serve` runs a local web server and you open it in a browser. `bgate app`
+runs the same server and puts it in a native window instead — on Windows that
+is the Edge WebView2 runtime, which ships with Windows 11, so there is no
+browser bundled and nothing extra to install:
+
+```bash
+pip install -e ".[desktop]"
+bgate app
+```
+
+It binds to a loopback port the OS picks, so it will not collide with a
+`bgate serve` you already have open, and it shuts the server down when you
+close the window.
+
+### Download it as a single .exe
+
+No Python needed on the target machine. Grab `BuildersGate.exe` from the
+[releases page](https://github.com/Thepizzapie/BuildersGate/releases) and run
+it — double-click for the window, or `BuildersGate.exe serve` for the browser
+dashboard out of the same binary.
+
+To build it yourself:
+
+```bash
+pip install -e ".[desktop]" pyinstaller
+python packaging/build_exe.py
+```
+
+That builds `dist/BuildersGate.exe` and then boots it to check it actually
+serves its own assets. The check is not ceremony: this app finds `static/` and
+`templates/` by walking up from `__file__`, so a bundle that lays them out
+wrongly still starts, still renders the shell, and 404s every stylesheet. A
+green PyInstaller run does not mean a working binary.
 
 ## The working loop
 
