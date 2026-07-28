@@ -9,6 +9,37 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-07-28
+
+### Fixed
+
+- **The desktop app had no icon.** `bgate_ui/webview2.py` called
+  `GetModuleHandleW` without declaring a ctypes `restype`, so the 64-bit module
+  handle was truncated (`0x7ff71d540000` → `0x1d540000`). `LoadImage` then
+  looked for the icon resource in a module that is not loaded, returned NULL,
+  and Windows substituted its generic application icon on the taskbar and the
+  desktop. Every Win32 call carrying a handle now declares both `restype` and
+  `argtypes`, and the icon has a file-on-disk fallback.
+- **The logo was a redrawing of itself in four places** — the rail brand, the
+  first-run card, the dashboard tab and the arcade tab each carried
+  hand-approximated geometry with the proportions and the chevron angle off, and
+  the two favicons dropped the broken gate post entirely. All four are now
+  traced from `packaging/logo.svg`.
+- **The rail brand painted the whole mark one colour**, collapsing the gate and
+  the chevron into a single shape. New `--brand-post` token: the logo's own
+  `#1800ad` on the light ground, the same hue lifted to `#8f7cff` on the dark
+  one, where that blue is invisible.
+
+### Added
+
+- **"Run anyway" on the uncommitted-changes refusal.** Dispatch declines to
+  start an agent on a dirty git tree, because it records `base_commit` and a
+  diff taken over uncommitted work cannot separate the agent's edits from
+  yours. That refusal used to arrive as a toast reading "dispatch with
+  `allow_dirty`" — a parameter the browser had no way to send. The route now
+  forwards it and the dashboard offers the choice, with the offending paths
+  listed.
+
 ## [0.1.2] - 2026-07-28
 
 ### Fixed
@@ -143,7 +174,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.2...v0.1.21
 [0.1.2]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Thepizzapie/BuildersGate/releases/tag/v0.1.0
