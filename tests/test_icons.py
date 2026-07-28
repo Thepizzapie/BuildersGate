@@ -34,17 +34,29 @@ class TestIconSet:
         assert len(icon_names()) >= 30
 
     def test_every_icon_shares_one_grid(self):
-        """A shared viewBox is what makes a set look like a set."""
+        """A shared viewBox is what makes a set look like a set.
+
+        The logo is deliberately outside this. It is traced from
+        packaging/logo.svg and keeps the artwork's own user units so the path
+        data stays copy-pasteable from the file; forcing it onto the icon grid
+        would mean rounding it, and a redrawn mark is how it went wrong before.
+        """
         src = ICONS.read_text(encoding="utf-8")
-        boxes = set(re.findall(r'viewBox="([^"]+)"', src))
-        assert boxes <= {"0 0 24 24", "0 0 64 64"}, boxes
+        # Drop the logo builder, not everything before the first mention of it —
+        # the module docstring names it, and splitting on the name alone cut the
+        # icon builder out too and left nothing to assert on.
+        logo = re.search(r"BGIcon\.logo = function.*?\n  \};", src, re.S)
+        assert logo, "BGIcon.logo went missing"
+        boxes = set(re.findall(r'viewBox="([^"]+)"', src.replace(logo.group(0), "")))
+        assert boxes == {"0 0 24 24"}, boxes
 
     def test_one_stroke_weight(self):
         src = ICONS.read_text(encoding="utf-8")
         assert 'stroke-width="1.75"' in src
-        # The only other weights allowed are the logo's, which is a mark, not an icon.
+        # 1.75 is the whole set. The logo used to add four more weights because
+        # it was drawn with strokes; it is filled paths now and adds none.
         weights = set(re.findall(r'stroke-width="([\d.]+)"', src))
-        assert weights <= {"1.75", "4", "5", "7", "8"}, weights
+        assert weights == {"1.75"}, weights
 
     def test_icons_inherit_colour(self):
         """currentColor is why one icon works on the rail, a chip and a button."""
