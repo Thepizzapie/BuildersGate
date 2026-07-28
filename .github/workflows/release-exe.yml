@@ -43,21 +43,66 @@ jobs:
           pip install -e ".[desktop]"
           pip install pyinstaller>=6.14
 
-      - name: Build and smoke-test the exe
+      - name: Build and smoke-test the app
         # build_exe.py boots the frozen binary in server mode and fetches real
-        # files out of it. A build that cannot serve /static/app.css fails here.
+        # files out of it, THEN zips. A build that cannot serve /static/app.css
+        # fails here and never gets packaged.
         run: python packaging/build_exe.py
 
-      - name: Report size
+      # ── signing ────────────────────────────────────────────────────────────
+      # Unsigned, this binary is blocked twice over: Defender's ML quarantined
+      # the first release, and Smart App Control refuses to launch it at all
+      # ("we can't confirm who published BuildersGate.exe"). SAC is default-on
+      # for clean Windows 11 installs, so this is not a niche problem.
+      #
+      # Since June 2023 the CA/Browser Forum requires code-signing private keys
+      # to live on FIPS 140-2 Level 2 hardware, so the old trick of dropping a
+      # .pfx into repo secrets is no longer possible for a newly issued cert.
+      # The key has to stay in a cloud HSM and the runner calls out to it.
+      #
+      # This step is inert until the secrets exist, so the build keeps working
+      # for anyone without a certificate.
+      - name: Sign the executable
+        if: >-
+          startsWith(github.ref, 'refs/tags/') &&
+          env.SIGN_ENDPOINT != ''
+        env:
+          SIGN_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          # Sign the launcher AND the PyInstaller bootloader DLLs it loads —
+          # SAC evaluates what gets loaded, not only what gets double-clicked.
+          files-folder: dist/BuildersGate
+          files-folder-filter: exe,dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Re-zip after signing
+        if: startsWith(github.ref, 'refs/tags/')
+        # The zip made during the build predates the signatures, so rebuild it
+        # and refresh the checksum. Idempotent when signing was skipped.
+        run: python -c "import sys; sys.path.insert(0,'packaging'); import build_exe; build_exe.package()"
+
+      - name: Report what was built
         shell: bash
         run: |
           ls -la dist/
-          echo "size: $(( $(stat -c%s dist/BuildersGate.exe) / 1048576 )) MB"
+          echo "zip: $(( $(stat -c%s dist/BuildersGate-windows.zip) / 1048576 )) MB"
+          cat dist/BuildersGate-windows.zip.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: BuildersGate-windows
-          path: dist/BuildersGate.exe
+          path: |
+            dist/BuildersGate-windows.zip
+            dist/BuildersGate-windows.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -65,5 +110,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/BuildersGate.exe
+          files: |
+            dist/BuildersGate-windows.zip
+            dist/BuildersGate-windows.zip.sha256
           fail_on_unmatched_files: true
