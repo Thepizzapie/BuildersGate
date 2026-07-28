@@ -94,6 +94,39 @@ different game next to it.
 - `recall(query)` searches everything the project knows. Use it before asking
   the user a question they have already answered.
 
+## Building scenes
+
+The rule that makes it work: **a scene is made of nodes, not layers.** Someone
+has to open what you build and change it without you in the room.
+
+1. **One thing, one node.** Anything a person might select, move, rename,
+   re-skin, script or delete is its own node in the `.tscn` — props, characters,
+   interactables, spawn points, lights, triggers, cameras. A tile index inside a
+   packed array is not something you can click, name, or give a property to.
+2. **`TileMapLayer` is for terrain.** Floor, walls, ceiling — surfaces where the
+   unit of editing genuinely *is* the tile. It is not a container for objects. A
+   layer named `Props` or `Decor` is this rule already broken.
+3. **Instance, don't duplicate.** Repeated content goes in as
+   `instance=ExtResource("...")` pointing at a source scene, so fixing the source
+   fixes all forty placements. Never paste a subtree.
+4. **Give nodes meaningful names.** `Desk_03`, `DoorEast`, `Spawn_Guard_A` are
+   editable. `Node2D7` is not findable, not scriptable, and not reviewable.
+5. **Node.add_child() is for the genuinely dynamic** — spawned enemies,
+   projectiles, VFX, pooled effects. It is not how set dressing gets placed. If a
+   script fills a container that a designer should be arranging by hand, that
+   container is the bug.
+
+This holds for generated scenes too. Generated is fine; monolithic is not. If a
+baker or importer writes a scene, say so in a header comment and keep it
+node-shaped anyway — and if a human is expected to arrange something the
+generator also writes, the generator reads that arrangement back or hands
+ownership over. Silently clobbering hand placement is the failure this section
+exists to prevent.
+
+Why any of this: a scene that is four big layers is a scene nobody can edit. The
+authoring left the editor and moved into your code, where the designer cannot
+reach it.
+
 ## Art pipeline
 
 The rule that makes it work: **generate against a reference, never from scratch
@@ -142,6 +175,10 @@ next to the telemetry numbers that explain it.
   `lore_add` / `lore_fact`. `canon_check` before narrative text, always.
 - **Do not skip the consistency gate** because the image "looks fine". Drift is
   invisible one asset at a time and obvious across twenty.
+- **Do not build a scene out of a few big layers.** One editable thing is one
+  named node; `TileMapLayer` is terrain, not a bucket for objects; and a script
+  that add_child()s the set dressing has taken authoring away from the designer.
+  See "Building scenes".
 - **Do not claim something works because the code looks right.** Screenshot it,
   run it, `godot_check_project` it. Attach the evidence to `queue_complete`.
 - **Do not scaffold over an existing game.** `godot_scaffold` is for new

@@ -57,7 +57,11 @@ def audio_file(rel: str):
     if not target.is_file():
         raise HTTPException(404, "audio file not found")
     media = _MEDIA_TYPES.get(target.suffix.lower(), "application/octet-stream")
-    return FileResponse(target, media_type=media)
+    # no-cache, not no-store: without it the browser applies heuristic freshness
+    # and can hand the lab a pre-edit copy of a file it just saved. The ETag
+    # FileResponse already sets keeps the revalidation cheap.
+    return FileResponse(target, media_type=media,
+                        headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/api/audio/list")

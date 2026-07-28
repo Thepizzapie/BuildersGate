@@ -55,6 +55,12 @@ _RECT_TYPES = {"ColorRect", "Panel", "Button", "Label", "RichTextLabel",
                "ProgressBar"}
 _CONTROL_TYPES = _RECT_TYPES | {"TextureRect", "NinePatchRect", "Control",
                                 "VBoxContainer", "HBoxContainer"}
+# Classes that exist to HOLD other nodes. One of these with no children in the
+# file is not a node that failed to draw — it is a container something fills at
+# run time, and reporting it as blank-for-no-reason is what makes the viewport
+# read as broken.
+_CONTAINER_TYPES = {"Node", "Node2D", "Node3D", "CanvasLayer", "YSort",
+                    "Control", "ParallaxBackground", "ParallaxLayer"}
 
 
 def _vec2(value: str, default=(0.0, 0.0)) -> tuple[float, float]:
@@ -187,10 +193,31 @@ def draw_list(scene_text: str, *,
     path the browser can fetch it by. All three are injected so the geometry can
     be tested without a project on disk.
     """
+    items = _walk(scene_text, read=read, size_of=size_of, rel_of=rel_of,
+                  stack=())
+    # Paint order: z_index first, then declaration order, exactly as Godot does
+    # for siblings at the same z. Sorting by z alone would shuffle everything
+    # that shares the default 0 into whatever order the sort felt like.
+    items.sort(key=lambda i: (i["z"], i["order"]))
+    return {"viewport": list(viewport), "items": items}
+
+
+def _walk(scene_text: str, *, read, size_of, rel_of,
+          stack: tuple[str, ...] = ()) -> list[dict]:
     nodes = scenewire.outline(scene_text)
     by_path = {n["path"]: n for n in nodes}
     world: dict[str, dict] = {}
     items = []
+
+    # How many children each node has IN THE FILE. An empty container is the
+    # single most common "why can I not edit this" — the answer is that a script
+    # fills it at run time — and that is only knowable with the whole tree in
+    # hand, so it is counted here and handed to the per-node resolver.
+    kids: dict[str, int] = {}
+    for node in nodes:
+        parent = node["parent"]
+        if parent is not None:
+            kids[parent] = kids.get(parent, 0) + 1
 
     for order, node in enumerate(nodes):
         props = node["properties"]
@@ -209,10 +236,13 @@ def draw_list(scene_text: str, *,
                 visible = False
         node["_visible"] = visible
 
-        draw = _draw_for(node, props, read=read, size_of=size_of, rel_of=rel_of)
+        draw = _draw_for(node, props, read=read, size_of=size_of, rel_of=rel_of,
+                         children=kids.get(node["path"], 0))
         items.append({
             "path": node["path"], "name": node["name"], "type": node["type"],
             "role": node["role"], "order": order,
+            "script": node.get("script", ""),
+            "children": kids.get(node["path"], 0),
             "x": round(tf["x"], 3), "y": round(tf["y"], 3),
             "rot": round(tf["rot"], 5),
             "sx": round(tf["sx"], 4), "sy": round(tf["sy"], 4),
@@ -221,15 +251,100 @@ def draw_list(scene_text: str, *,
             "modulate": list(_color(props.get("modulate", ""))),
             "draw": draw,
         })
+        if node["instance"]:
+            items.extend(_open_instance(
+                items[-1], node, tf, order,
+                read=read, size_of=size_of, rel_of=rel_of, stack=stack))
 
-    # Paint order: z_index first, then declaration order, exactly as Godot does
-    # for siblings at the same z. Sorting by z alone would shuffle everything
-    # that shares the default 0 into whatever order the sort felt like.
-    items.sort(key=lambda i: (i["z"], i["order"]))
-    return {"viewport": list(viewport), "items": items}
+    return items
 
 
-def _draw_for(node: dict, props: dict, *, read, size_of, rel_of) -> dict:
+# ---------------------------------------------------------------------------
+# Instanced scenes
+# ---------------------------------------------------------------------------
+# An instanced child carries no `type=` and no properties of its own, so every
+# branch above falls through and it draws as a bare unlabelled dot. That is the
+# one shape a scene made of individual, editable components is entirely built
+# out of — a floor of Desk_01, Desk_02, Plant_01 would have rendered as an empty
+# frame. So the instance is OPENED: its scene is read, drawn at the instance's
+# world transform, and its nodes are carried along as `of` entries the viewport
+# shows but does not let you edit. Godot selects the instance, not its insides.
+_MAX_INSTANCE_DEPTH = 3
+
+
+def _open_instance(host: dict, node: dict, tf: dict, order: int, *,
+                   read, size_of, rel_of, stack: tuple[str, ...]) -> list[dict]:
+    """Give ``host`` the instanced scene's picture; return its nodes as items."""
+    res_path = next((r["path"] for r in node["resources"]
+                     if r["property"] == "instance"), "")
+    name = res_path.rsplit("/", 1)[-1] or "a scene"
+    if not res_path:
+        host["draw"] = {"kind": "marker", "reason": "instance of nothing"}
+        return []
+    host["instance"] = res_path
+    if res_path in stack:
+        host["draw"] = {"kind": "marker",
+                        "reason": f"{name} instances itself"}
+        return []
+    if len(stack) >= _MAX_INSTANCE_DEPTH:
+        host["draw"] = {"kind": "marker",
+                        "reason": f"instance of {name} — nested too deep to draw"}
+        return []
+    try:
+        sub = _walk(read(res_path) or "", read=read, size_of=size_of,
+                    rel_of=rel_of, stack=stack + (res_path,))
+    except (scenewire.WireError, ValueError):
+        sub = []
+    if not sub:
+        host["draw"] = {"kind": "marker",
+                        "reason": f"instance of {name} — could not read it"}
+        return []
+
+    sub.sort(key=lambda i: (i["z"], i["order"]))
+    root = next((i for i in sub if i["path"] == "."), None)
+    picture = (root or {}).get("draw") or {}
+    host["draw"] = picture if picture.get("kind") != "marker" else {
+        "kind": "marker", "reason": f"instance of {name}"}
+    host["children"] = sum(1 for i in sub
+                           if i["path"] != "." and "/" not in i["path"])
+
+    out = []
+    for k, entry in enumerate(sub):
+        if entry is root:
+            continue
+        world = _compose(tf, {"x": entry["x"], "y": entry["y"],
+                              "rot": entry["rot"],
+                              "sx": entry["sx"], "sy": entry["sy"]})
+        out.append({**entry,
+                    "path": f'{host["path"]}/{entry["path"]}',
+                    # Which instance owns it. The viewport routes a click here
+                    # to the instance itself rather than offering to move a node
+                    # that lives in another file. A nested instance keeps its
+                    # own owner — re-prefixed, so the path still resolves.
+                    "of": f'{host["path"]}/{entry["of"]}' if entry.get("of")
+                          else host["path"],
+                    "order": order + (k + 1) / 1000.0,
+                    "z": host["z"] + entry["z"],
+                    "visible": host["visible"] and entry["visible"],
+                    "x": round(world["x"], 3), "y": round(world["y"], 3),
+                    "rot": round(world["rot"], 5),
+                    "sx": round(world["sx"], 4), "sy": round(world["sy"], 4)})
+
+    # Did opening it actually produce a picture? An instance whose insides all
+    # get their art from a script at run time is the normal case in these
+    # projects, and it is a very different thing from one that failed to load —
+    # so it says which, and the viewport keeps reporting it as blank-with-a-
+    # reason instead of quietly drawing nothing.
+    host["drawn"] = sum(1 for i in [host, *out]
+                        if i["draw"].get("kind") in ("image", "rect", "tiles"))
+    if not host["drawn"]:
+        host["draw"] = {"kind": "marker", "reason":
+                        f"instance of {name} — nothing in it draws in the file"}
+    return out
+
+
+def _draw_for(node: dict, props: dict, *, read, size_of, rel_of,
+              children: int = 0) -> dict:
     ntype = node["type"]
     textures = {r["property"]: r["path"] for r in node["resources"]}
 
@@ -331,6 +446,14 @@ def _draw_for(node: dict, props: dict, *, read, size_of, rel_of) -> dict:
     if ntype in ("CollisionShape2D", "CollisionPolygon2D", "Area2D",
                  "StaticBody2D", "CharacterBody2D", "RigidBody2D"):
         return {"kind": "body"}
+
+    # An empty container is the honest answer to "why can I only edit the
+    # floors and walls": there is nothing in the file to edit, because a script
+    # puts the contents there with add_child at run time. The root is exempt —
+    # a one-node scene is a script host, which the caller already says better.
+    if ntype in _CONTAINER_TYPES and not children \
+            and node["parent"] is not None:
+        return {"kind": "marker", "reason": "no children in the file"}
 
     return {"kind": "marker", "reason": ""}
 

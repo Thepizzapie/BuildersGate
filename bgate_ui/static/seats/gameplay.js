@@ -82,59 +82,59 @@ func _init():
   function shell() {
     return `
 <style>
-  .gp-wrap{display:flex;flex-direction:column;gap:12px;color:#e6e8ee;font-size:13px}
-  .gp-head{display:flex;align-items:center;gap:12px;background:#101319;border:1px solid #1e232c;border-radius:12px;padding:10px 14px;flex-wrap:wrap}
-  .gp-lamp{width:10px;height:10px;border-radius:50%;background:#5a2a2a;box-shadow:0 0 0 3px rgba(90,42,42,.18);flex-shrink:0}
-  .gp-lamp.ok{background:#3b7f9e;box-shadow:0 0 0 3px rgba(59,127,158,.2)}
+  .gp-wrap{display:flex;flex-direction:column;gap:12px;color:var(--text);font-size:13px}
+  .gp-head{display:flex;align-items:center;gap:12px;background:var(--surface-1);border:1px solid var(--line);border-radius:12px;padding:10px 14px;flex-wrap:wrap}
+  .gp-lamp{width:10px;height:10px;border-radius:50%;background:var(--bad-line);box-shadow:0 0 0 3px rgba(90,42,42,.18);flex-shrink:0}
+  .gp-lamp.ok{background:var(--accent);box-shadow:0 0 0 3px rgba(59,127,158,.2)}
   .gp-head b{font-size:14px}
-  .gp-head .gp-meta{color:#8a93a2;font-size:11.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .gp-head .gp-meta{color:var(--text-3);font-size:11.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
   .gp-cols{display:grid;grid-template-columns:minmax(260px,1fr) minmax(340px,1.4fr);gap:12px;align-items:start}
   @media(max-width:1080px){.gp-cols{grid-template-columns:1fr}}
-  .gp-card{background:#101319;border:1px solid #1e232c;border-radius:12px;padding:12px}
-  .gp-card h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#8a93a2;font-weight:600;display:flex;align-items:center;gap:8px;justify-content:space-between}
-  .gp-btn{padding:6px 12px;background:#16221a;border:1px solid #274a34;border-radius:8px;color:#bfe6cf;cursor:pointer;font:inherit;font-size:12px}
-  .gp-btn:hover{background:#1b2a20}
-  .gp-btn.alt{background:#12141a;border-color:#2b3a44;color:#cfe3ec}
-  .gp-btn.alt:hover{background:#17202a}
-  .gp-btn.danger{background:#2a1414;border-color:#5a2a2a;color:#f0b3b3}
+  .gp-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
+  .gp-card h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:var(--fw-semi);display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .gp-btn{padding:6px 12px;background:var(--good-soft);border:1px solid var(--good-line);border-radius:8px;color:var(--good);cursor:pointer;font:inherit;font-size:12px}
+  .gp-btn:hover{background:var(--good-soft)}
+  .gp-btn.alt{background:var(--surface-1);border-color:var(--line);color:var(--text)}
+  .gp-btn.alt:hover{background:var(--surface-2)}
+  .gp-btn.danger{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
   .gp-btn:disabled{opacity:.5;cursor:default}
   .gp-tree{max-height:320px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.7}
-  .gp-tree .gp-dir{cursor:pointer;color:#cfe3ec;user-select:none}
-  .gp-tree .gp-dir:hover{color:#fff}
-  .gp-tree .gp-file{cursor:pointer;color:#9aa4b2;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .gp-tree .gp-file:hover{color:#e6e8ee}
-  .gp-tree .gp-file.sel{color:#3b7f9e;font-weight:600}
-  .gp-tree .gp-file .gp-b{color:#5c6675;font-size:10.5px}
-  .gp-tree .gp-kids{margin-left:13px;border-left:1px solid #1e232c;padding-left:8px}
+  .gp-tree .gp-dir{cursor:pointer;color:var(--text);user-select:none}
+  .gp-tree .gp-dir:hover{color:var(--text)}
+  .gp-tree .gp-file{cursor:pointer;color:var(--text-2);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gp-tree .gp-file:hover{color:var(--text)}
+  .gp-tree .gp-file.sel{color:var(--accent);font-weight:var(--fw-semi)}
+  .gp-tree .gp-file .gp-b{color:var(--text-3);font-size:10.5px}
+  .gp-tree .gp-kids{margin-left:13px;border-left:1px solid var(--line);padding-left:8px}
   .gp-tree .gp-kids.hid{display:none}
-  .gp-view{margin-top:10px;background:#0b0e13;border:1px solid #1e232c;border-radius:8px;max-height:360px;overflow:auto}
+  .gp-view{margin-top:10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;max-height:360px;overflow:auto}
   .gp-view pre{margin:0;display:flex;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.55}
-  .gp-view .gp-ln{color:#3a4250;text-align:right;padding:8px 8px 8px 10px;user-select:none;border-right:1px solid #1e232c;min-width:38px}
-  .gp-view .gp-code{padding:8px 12px;white-space:pre;overflow-x:auto;color:#d3d8e0;flex:1}
-  .gp-ta{width:100%;box-sizing:border-box;min-height:150px;background:#0b0e13;border:1px solid #1e232c;border-radius:8px;color:#d3d8e0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;padding:9px 11px;resize:vertical}
+  .gp-view .gp-ln{color:var(--text-3);text-align:right;padding:8px 8px 8px 10px;user-select:none;border-right:1px solid var(--line);min-width:38px}
+  .gp-view .gp-code{padding:8px 12px;white-space:pre;overflow-x:auto;color:var(--text);flex:1}
+  .gp-ta{width:100%;box-sizing:border-box;min-height:150px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;padding:9px 11px;resize:vertical}
   .gp-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
-  .gp-in{padding:6px 9px;background:#0b0e13;border:1px solid #1e232c;border-radius:7px;color:#e6e8ee;font:inherit;font-size:12px}
-  .gp-out{margin-top:9px;background:#0b0e13;border:1px solid #1e232c;border-radius:8px;padding:9px 11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;color:#c3cad4}
-  .gp-out .gp-err{color:#f0b3b3}
-  .gp-out .gp-good{color:#bfe6cf}
+  .gp-in{padding:6px 9px;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:12px}
+  .gp-out{margin-top:9px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;color:var(--text)}
+  .gp-out .gp-err{color:var(--bad)}
+  .gp-out .gp-good{color:var(--good)}
   .gp-shot{margin-top:9px;text-align:center}
-  .gp-shot img{max-width:100%;max-height:300px;border:1px solid #1e232c;border-radius:8px;background:#07090d}
-  .gp-frame{width:100%;height:360px;border:1px solid #1e232c;border-radius:8px;background:#07090d}
-  .gp-hint{color:#6b7280;font-size:11px;margin-top:6px}
+  .gp-shot img{max-width:100%;max-height:300px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+  .gp-frame{width:100%;height:360px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+  .gp-hint{color:var(--text-3);font-size:11px;margin-top:6px}
   .gp-feed{margin-top:8px;max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:5px}
-  .gp-step{font-size:11.5px;line-height:1.45;padding:5px 8px;border-radius:7px;border:1px solid #1e232c;background:#0b0e13}
-  .gp-step .gp-tag{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:#6b7280;margin-right:6px}
-  .gp-step.say{border-color:#243043}
-  .gp-step.tool .gp-tag{color:#3b7f9e}
-  .gp-step.result{color:#9aa4b2}
-  .gp-step.steer{border-color:#5a4a1c;background:#191509}
-  .gp-step.steer .gp-tag{color:#d9c26a}
-  .gp-final{margin-top:8px;padding:8px 10px;border-radius:8px;border:1px solid #274a34;background:#0e1712;font-size:12px}
-  .gp-final.bad{border-color:#5a2a2a;background:#170e0e;color:#f0b3b3}
-  .gp-badge{font-size:10px;padding:2px 7px;border-radius:6px;background:#12141a;border:1px solid #2b3a44;color:#9aa4b2}
-  .gp-badge.live{background:#16221a;border-color:#274a34;color:#bfe6cf}
-  .gp-sel{padding:6px 9px;background:#0b0e13;border:1px solid #1e232c;border-radius:7px;color:#e6e8ee;font:inherit;font-size:12px;max-width:100%}
-  .gp-empty{color:#6b7280;font-size:12px;padding:8px 2px}
+  .gp-step{font-size:11.5px;line-height:1.45;padding:5px 8px;border-radius:7px;border:1px solid var(--line);background:var(--bg)}
+  .gp-step .gp-tag{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-right:6px}
+  .gp-step.say{border-color:var(--line)}
+  .gp-step.tool .gp-tag{color:var(--accent)}
+  .gp-step.result{color:var(--text-2)}
+  .gp-step.steer{border-color:var(--warn-line);background:var(--warn-soft)}
+  .gp-step.steer .gp-tag{color:var(--warn)}
+  .gp-final{margin-top:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--good-line);background:var(--good-soft);font-size:12px}
+  .gp-final.bad{border-color:var(--bad-line);background:var(--bad-soft);color:var(--bad)}
+  .gp-badge{font-size:10px;padding:2px 7px;border-radius:6px;background:var(--surface-1);border:1px solid var(--line);color:var(--text-2)}
+  .gp-badge.live{background:var(--good-soft);border-color:var(--good-line);color:var(--good)}
+  .gp-sel{padding:6px 9px;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:12px;max-width:100%}
+  .gp-empty{color:var(--text-3);font-size:12px;padding:8px 2px}
 </style>
 <div class="gp-wrap">
   <div class="gp-head" id="gp-head">
@@ -584,7 +584,11 @@ func _init():
 
   async function reopenItem() {
     if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
-    const reason = window.prompt("Reopen #" + S.selItem + " — what still has to be fixed?\n(the reason is appended to the brief the next agent reads)", "");
+    // null is "backed out"; "" is a confirmed empty reason, which reopen accepts.
+    const reason = await S.bg.askText({
+      title: `Reopen #${S.selItem} — what still has to be fixed?`,
+      body: "The reason is appended to the brief the next agent reads.",
+      label: "reason", ok: "reopen" });
     if (reason == null) return;
     let r;
     try { r = await S.bg.post(`/api/queue/${S.selItem}/reopen`, { reason }); }
@@ -598,7 +602,10 @@ func _init():
 
   async function cancelItem() {
     if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
-    if (!window.confirm(`Cancel #${S.selItem}? A live agent is stopped first; the item stays in the queue as cancelled.`)) return;
+    if (!await S.bg.askConfirm({
+      title: `Cancel #${S.selItem}?`,
+      body: "A live agent is stopped first; the item stays in the queue as cancelled.",
+      ok: "cancel the item", cancel: "leave it", danger: true })) return;
     let r;
     try { r = await S.bg.post(`/api/queue/${S.selItem}/cancel`, { reason: "cancelled from the gameplay seat" }); }
     catch (e) { r = { ok: false, error: { message: (e && e.message) } }; }

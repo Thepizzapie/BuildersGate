@@ -72,16 +72,16 @@
             <div class="art-pick" id="art-picker"></div>
             <div class="art-cols">
               <div class="art-side">
-                <div class="art-card"><div class="art-h">${BGICON("reference")} References &amp; anchoring</div>
+                <div class="art-card"><h3 class="art-h">${BGICON("reference")} References &amp; anchoring</h3>
                   <div id="art-refs"></div></div>
-                <div class="art-card"><div class="art-h">⧉ Flow map — assets rigged into Godot</div>
+                <div class="art-card"><h3 class="art-h">⧉ Flow map — assets rigged into Godot</h3>
                   <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div></div>
-                <div class="art-card"><div class="art-h">⛨ Locks &amp; contention</div>
+                <div class="art-card"><h3 class="art-h">⛨ Locks &amp; contention</h3>
                   <div id="art-locks"><div class="art-empty">loading locks…</div></div></div>
               </div>
               <div class="art-main">
                 <div class="art-card" id="art-lab">
-                  <div class="art-h">Iteration lab</div>
+                  <h3 class="art-h">Iteration lab</h3>
                   <div class="art-empty">loading candidates…</div>
                 </div>
               </div>
@@ -461,7 +461,7 @@
         const m = this._groupMap();
         const names = this._logicalNames();
         if (!names.length) {
-          host.innerHTML = `<div class="art-h">${BGICON("consistency")} Iteration lab</div>
+          host.innerHTML = `<h3 class="art-h">${BGICON("consistency")} Iteration lab</h3>
             <div class="art-empty">No artifacts yet. When the art seat produces candidate images they appear here — every revision as a thumbnail, each beside the reference it was drawn against.</div>`;
           return;
         }
@@ -476,9 +476,18 @@
         if (!full && sig === this._detailSig) { this._renderLabList(m, names); return; }
         this._detailSig = sig;
 
-        host.innerHTML = `<div class="art-h">${BGICON("consistency")} Iteration lab</div>
+        // The picker lists every logical asset — 99 of them on this project —
+        // in a 560px-tall scroller with no way to narrow it. A filter costs one
+        // input and turns "scroll and hope" into "type three letters".
+        host.innerHTML = `<h3 class="art-h">${BGICON("consistency")} Iteration lab</h3>
           <div class="art-lab">
-            <div class="art-list" id="art-list"></div>
+            <div class="art-listwrap">
+              <input class="art-lfilter" id="art-lfilter" type="search"
+                     placeholder="Filter assets…" aria-label="Filter assets"
+                     autocomplete="off" spellcheck="false">
+              <div class="art-list" id="art-list"></div>
+              <div class="art-lnone" id="art-lnone" hidden>nothing matches that</div>
+            </div>
             <div class="art-detail" id="art-detail"></div>
           </div>`;
         this._renderLabList(m, names);
@@ -512,8 +521,39 @@
           <span class="art-lcount">${g.length}${cand ? " · " + cand + "c" : ""}</span>
         </button>`;
       }).join("");
-      list.querySelectorAll(".art-lrow").forEach(b =>
-        b.addEventListener("click", () => this._selectLogical(b.dataset.logical)));
+      // One delegated listener on the scroller instead of 99 on the rows —
+      // the list is rebuilt on every poll, so per-row binding re-ran 99 times
+      // every few seconds.
+      if (!list._wired) {
+        list._wired = true;
+        list.addEventListener("click", (ev) => {
+          const row = ev.target.closest(".art-lrow");
+          if (row && list.contains(row)) this._selectLogical(row.dataset.logical);
+        });
+      }
+      this._wireFilter();
+    },
+
+    // Filtering is pure show/hide on rows already in the DOM: no refetch, and
+    // it survives the poll because _renderLabList re-applies the live term.
+    _wireFilter() {
+      const box = this._els.lab && this._els.lab.querySelector("#art-lfilter");
+      if (!box) return;
+      const apply = () => {
+        const q = (box.value || "").trim().toLowerCase();
+        const list = this._els.lab.querySelector("#art-list");
+        const none = this._els.lab.querySelector("#art-lnone");
+        if (!list) return;
+        let shown = 0;
+        list.querySelectorAll(".art-lrow").forEach((row) => {
+          const hit = !q || (row.dataset.logical || "").toLowerCase().includes(q);
+          row.hidden = !hit;
+          if (hit) shown++;
+        });
+        if (none) none.hidden = shown > 0;
+      };
+      if (!box._wired) { box._wired = true; box.addEventListener("input", apply); }
+      apply();
     },
 
     _verdictSig(a) {
@@ -1363,9 +1403,9 @@
 
   const STYLE = `<style>
     .art-root{color:var(--bone);font-size:13px}
-    .art-card{background:var(--plate);border:1px solid var(--seam);border-radius:12px;padding:14px;margin-bottom:14px}
-    .art-h{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--ash);margin-bottom:12px}
-    .art-empty{color:var(--ash);font-size:12px;padding:10px 4px;line-height:1.5}
+    .art-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6);margin-bottom:var(--s-6)}
+    .art-h{display:flex;align-items:center;gap:var(--s-4);margin:0 0 var(--s-5);font-size:var(--fs-2xs);font-weight:var(--fw-bold);text-transform:uppercase;letter-spacing:var(--track-label);color:var(--text-3)}
+    .art-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
     .art-muted{color:var(--ash);font-size:11px}
     .art-btn{padding:6px 11px;background:var(--plate2);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;cursor:pointer}
     .art-btn:hover{border-color:var(--ember)}
@@ -1397,7 +1437,14 @@
     .art-lg-edge{color:var(--ember)}
     /* lab */
     .art-lab{display:flex;gap:12px;align-items:flex-start}
-    .art-list{width:210px;flex:0 0 210px;max-height:560px;overflow:auto;display:flex;flex-direction:column;gap:3px}
+    .art-listwrap{width:210px;flex:0 0 210px;display:flex;flex-direction:column;gap:7px}
+    .art-lfilter{width:100%;padding:var(--s-3) var(--s-4);background:var(--bg);border:1px solid var(--line);
+      border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);outline:none}
+    .art-lfilter:focus{border-color:var(--accent)}
+    .art-lnone{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-4) var(--s-1)}
+    .art-lnone[hidden]{display:none}
+    .art-lrow[hidden]{display:none}
+    .art-list{width:100%;max-height:520px;overflow:auto;display:flex;flex-direction:column;gap:3px}
     .art-lrow{display:flex;align-items:center;gap:7px;padding:6px 8px;background:transparent;border:1px solid transparent;border-radius:7px;color:var(--bone);cursor:pointer;text-align:left;font:inherit;font-size:12px;width:100%}
     .art-lrow:hover{background:var(--plate2)}
     .art-lrow.sel{background:var(--plate2);border-color:var(--seam2)}
@@ -1418,9 +1465,9 @@
     .art-lockwait{font-size:11px;color:var(--warn);margin-top:4px}
     .art-lusd{color:var(--ash);font-size:10px;font-variant-numeric:tabular-nums}
     .art-detail{flex:1;min-width:0}
-    @media(max-width:720px){.art-lab{flex-direction:column}.art-list{width:100%;flex:none;flex-direction:row;flex-wrap:wrap}}
+    @media(max-width:720px){.art-lab{flex-direction:column}.art-listwrap{width:100%;flex:none}.art-list{flex-direction:row;flex-wrap:wrap}}
     .art-detail-head{display:flex;align-items:center;gap:12px;margin-bottom:10px}
-    .art-dtitle{font-size:15px;font-weight:600;color:var(--bone);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .art-dtitle{font-size:15px;font-weight:var(--fw-semi);color:var(--bone);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .art-hcost{font-size:12px;color:var(--ember);border:1px solid var(--seam);border-radius:6px;padding:3px 9px;font-variant-numeric:tabular-nums;white-space:nowrap}
     /* filmstrip */
     .art-striptools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px}
@@ -1432,7 +1479,7 @@
     .art-frame.cmp{border-color:var(--ember);box-shadow:0 0 0 2px var(--ember) inset}
     .art-frame img{width:100%;height:100%;object-fit:contain;pointer-events:none}
     .art-fr-r{position:absolute;bottom:2px;right:3px;font-size:9px;background:rgba(0,0,0,.65);color:var(--bone);padding:1px 4px;border-radius:4px}
-    .art-fr-c{position:absolute;bottom:2px;left:3px;font-size:9px;color:var(--ember);font-weight:700}
+    .art-fr-c{position:absolute;bottom:2px;left:3px;font-size:9px;color:var(--ember);font-weight:var(--fw-semi)}
     .art-fr-z{position:absolute;top:2px;right:2px;width:17px;height:17px;padding:0;border:0;border-radius:4px;background:rgba(0,0,0,.6);color:var(--bone);font-size:10px;line-height:1;cursor:zoom-in}
     /* candidate cards */
     .art-cards{display:flex;flex-direction:column;gap:12px}
@@ -1440,7 +1487,7 @@
     .art-cand.sel{border-color:var(--ember)}
     .art-cand-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
     .art-cbxw{display:flex;align-items:center;cursor:pointer}
-    .art-rev{font-weight:600;color:var(--bone)}
+    .art-rev{font-weight:var(--fw-semi);color:var(--bone)}
     .art-model{color:var(--ash);font-size:11px;margin-left:auto}
     .art-badge{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border:1px solid;border-radius:5px;padding:1px 6px}
     .art-qab{cursor:help}
@@ -1491,7 +1538,7 @@
     .art-lbctl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--plate);border:1px solid var(--seam);border-radius:10px;padding:10px 12px}
     .art-cmpstage,.art-animstage{position:relative;width:min(88vw,900px);height:min(72vh,700px);background:var(--void);border:1px solid var(--seam);border-radius:10px;overflow:hidden}
     .art-cmpstage img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
-    .art-cmpstage.diff{background:#000}
+    .art-cmpstage.diff{background:var(--bg)}
     .art-cmpstage.diff img{mix-blend-mode:difference}
     .art-cmpstage.diff img:first-child{mix-blend-mode:normal}
     .art-animstage img{width:100%;height:100%;object-fit:contain;image-rendering:pixelated}

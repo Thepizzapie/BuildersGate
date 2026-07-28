@@ -42,11 +42,11 @@
    * Colour is derived from the name so a new type needs no registration and
    * still reads consistently everywhere. */
   const TYPE_COLORS = {
-    image: "#4aa3ff", sheet: "#4aa3ff", frames: "#57c7ff",
-    text: "#9a7bff", prompt: "#9a7bff",
-    ref: "#ff9f43", asset: "#ffd166",
-    model: "#2ec4b6", gltf: "#2ec4b6",
-    audio: "#ff6ec7", task: "#ff6a3d", any: "#7c8695",
+    image: "var(--text)", sheet: "var(--text)", frames: "var(--text)",
+    text: "var(--c-narrative)", prompt: "var(--c-narrative)",
+    ref: "var(--warn)", asset: "var(--warn)",
+    model: "var(--accent)", gltf: "var(--accent)",
+    audio: "var(--c-narrative)", task: "var(--bad)", any: "var(--text-3)",
   };
   function typeColor(type) {
     if (!type || type === "*") return TYPE_COLORS.any;
@@ -886,7 +886,7 @@
     const s = document.createElement("style");
     s.id = "nc-style";
     s.textContent = `
-      .nc-host{position:relative;width:100%;height:100%;overflow:hidden;background:#0b0d10;border:1px solid var(--seam);border-radius:12px;--nc-edge:var(--ember)}
+      .nc-host{position:relative;width:100%;height:100%;overflow:hidden;background:var(--bg);border:1px solid var(--seam);border-radius:12px;--nc-edge:var(--ember)}
       .nc-grid{position:absolute;inset:0;background-image:radial-gradient(var(--grid-dot,rgba(255,255,255,.06)) 1px,transparent 1px);background-size:24px 24px}
       .nc-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
       .nc-edge{fill:none;stroke:var(--nc-edge);stroke-width:2;opacity:.8}
@@ -894,18 +894,18 @@
       .nc-hit{fill:none;stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:pointer}
       .nc-hit:hover{stroke:var(--nc-edge);opacity:.18}
       .nc-world{position:absolute;top:0;left:0;transform-origin:0 0}
-      .nc-node{position:absolute;background:var(--plate,#14161c);border:1px solid var(--seam,#262a33);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.35);transition:border-color .12s,box-shadow .12s}
+      .nc-node{position:absolute;background:var(--plate);border:1px solid var(--seam);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.35);transition:border-color .12s,box-shadow .12s}
       .nc-node.sel{border-color:var(--nc-a);box-shadow:0 0 0 1px var(--nc-a),0 10px 30px rgba(0,0,0,.5)}
-      .nc-node[data-status="running"]{border-color:#4aa3ff;box-shadow:0 0 0 1px #4aa3ff55,0 10px 30px rgba(0,0,0,.5)}
-      .nc-node[data-status="passed"]{border-color:#2ec4b6}
-      .nc-node[data-status="failed"]{border-color:#ff5c5c}
+      .nc-node[data-status="running"]{border-color:var(--text);box-shadow:0 0 0 1px var(--text),0 10px 30px rgba(0,0,0,.5)}
+      .nc-node[data-status="passed"]{border-color:var(--accent)}
+      .nc-node[data-status="failed"]{border-color:var(--bad)}
       .nc-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--seam);cursor:grab;border-radius:12px 12px 0 0;user-select:none}
       .nc-head:active{cursor:grabbing}
       .nc-ico{color:var(--nc-a);font-size:13px;width:16px;text-align:center}
-      .nc-title{font-size:12.5px;font-weight:600;color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+      .nc-title{font-size:12.5px;font-weight:var(--fw-semi);color:var(--bone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
       .nc-cost{font-family:var(--mono);font-size:9.5px;color:var(--ash);opacity:.85;white-space:nowrap}
       .nc-badge{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--nc-a);border:1px solid var(--nc-a);border-radius:20px;padding:1px 7px;opacity:.9}
-      .nc-body{padding:9px 11px;font-size:12px;color:var(--ash,#9aa3b2);line-height:1.45;min-height:18px}
+      .nc-body{padding:9px 11px;font-size:12px;color:var(--ash);line-height:1.45;min-height:18px}
 
       /* ports: a labelled, typed terminal — not a bare dot with a tooltip.
          They occupy their own band in normal flow so the body starts BELOW
@@ -919,7 +919,7 @@
       .nc-ports:empty{display:none}
       .nc-port{display:flex;align-items:center;gap:6px;cursor:crosshair;--pc:var(--nc-a)}
       .nc-out .nc-port{flex-direction:row-reverse}
-      .nc-dot{width:11px;height:11px;border-radius:50%;background:var(--plate2,#1b1f27);border:2px solid var(--pc);transition:transform .1s;flex:none}
+      .nc-dot{width:11px;height:11px;border-radius:50%;background:var(--plate2);border:2px solid var(--pc);transition:transform .1s;flex:none}
       .nc-port:hover .nc-dot{transform:scale(1.35);background:var(--pc)}
       .nc-plabel{font-size:9.5px;color:var(--ash);white-space:nowrap;opacity:.9;pointer-events:none;display:flex;gap:4px;align-items:baseline}
       .nc-plabel b{font-family:var(--mono);font-size:8px;letter-spacing:.06em;color:var(--pc);opacity:.95}
@@ -931,7 +931,7 @@
       .nc-lab{font-size:10.5px;color:var(--ash);opacity:.85;min-width:64px;flex:none}
       .nc-hint{font-size:10px;color:var(--ash);opacity:.6;margin:-2px 0 6px 72px}
       .nc-w{font-family:inherit}
-      .nc-in-t,.nc-ta,.nc-sel,.nc-in-n{flex:1;min-width:0;background:var(--iron,#0e1116);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font-size:11.5px;padding:4px 7px}
+      .nc-in-t,.nc-ta,.nc-sel,.nc-in-n{flex:1;min-width:0;background:var(--iron);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font-size:11.5px;padding:4px 7px}
       .nc-ta{resize:vertical;line-height:1.4;font-family:var(--mono);font-size:11px}
       .nc-in-t:focus,.nc-ta:focus,.nc-sel:focus,.nc-in-n:focus{outline:none;border-color:var(--nc-a)}
       .nc-num{display:flex;align-items:center;gap:3px;flex:1}
@@ -952,7 +952,7 @@
       .nc-note{font-size:11px;opacity:.8;margin:3px 0}
       .nc-tag{display:inline-block;font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:var(--nc-a);border:1px solid var(--nc-a);opacity:.85;border-radius:20px;padding:1px 7px;margin:3px 3px 0 0}
 
-      .nc-toolbar{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:var(--iron,#0e1116);border:1px solid var(--seam);border-radius:10px;padding:5px 8px;z-index:5}
+      .nc-toolbar{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:var(--iron);border:1px solid var(--seam);border-radius:10px;padding:5px 8px;z-index:5}
       .nc-tb{width:26px;height:26px;border:0;border-radius:7px;background:transparent;color:var(--ash);cursor:pointer;font-size:14px}
       .nc-tb:hover{background:var(--plate2);color:var(--bone)}
       .nc-zoom{font-family:var(--mono);font-size:11px;color:var(--ash);min-width:40px;text-align:center}
@@ -970,13 +970,13 @@
                background:linear-gradient(135deg,transparent 50%,var(--nc-a) 50%);border-radius:0 0 11px 0}
       .nc-node:hover .nc-size,.nc-node.sel .nc-size{opacity:.55}
       .nc-size:hover{opacity:1!important}
-      .nc-note-node{background:color-mix(in srgb,#ffd166 8%,var(--plate,#14161c));z-index:0}
+      .nc-note-node{background:color-mix(in srgb,var(--warn) 8%,var(--plate));z-index:0}
       .nc-world .nc-node{z-index:1}
       .nc-world .nc-note-node{z-index:0}
       .nc-note-node .nc-body{padding:7px}
       .nc-note-ta{width:100%;box-sizing:border-box;resize:none;background:transparent;border:0;
                   color:var(--bone);font-size:11.5px;line-height:1.5;font-family:inherit;outline:none}
-      .nc-marq{position:absolute;border:1px solid var(--nc-a,#ff7a3c);background:rgba(255,122,60,.10);
+      .nc-marq{position:absolute;border:1px solid var(--nc-a);background:rgba(255,122,60,.10);
                border-radius:3px;pointer-events:none;z-index:4}
       .nc-map{position:absolute;right:12px;bottom:12px;z-index:5;background:rgba(10,12,15,.82);
               border:1px solid var(--seam);border-radius:8px;padding:4px;cursor:crosshair;line-height:0}
