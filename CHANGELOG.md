@@ -20,9 +20,14 @@ A UI/UX pass over the whole dashboard, and the first downloadable build.
 - **Desktop app.** `bgate app` runs the same local server in a native window
   (Edge WebView2 on Windows, so nothing extra to install). `pip install
   "builders-gate[desktop]"`.
-- **`BuildersGate.exe`** — a single 46 MB binary, no Python required. Built by
+- **A standalone Windows build** for people who do not want Python. Built by
   `python packaging/build_exe.py`, which boots the result and fetches real
-  assets out of it before declaring success.
+  assets out of it before declaring success, then zips it with a SHA256.
+  It is **not code signed**: Defender's ML quarantined the first onefile
+  attempt as `Trojan:Win32/Sabsik.TE.A!ml`, and Smart App Control refuses to
+  launch unsigned binaries at all. Shipping as a folder rather than a
+  self-extracting exe removes the first trigger; the second needs a
+  certificate. `pip install -e ".[desktop]"` remains the recommended route.
 - **Sprite editor**: sheets grouped by category, a named edit history you can
   click to step back through, a looping animation preview, and onion skin that
   shows the frames before *and* after the one you are painting.

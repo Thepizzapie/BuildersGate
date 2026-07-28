@@ -158,22 +158,45 @@ It binds to a loopback port the OS picks, so it will not collide with a
 `bgate serve` you already have open, and it shuts the server down when you
 close the window.
 
-### Download it as a single .exe
+### The standalone Windows build, and why it warns
 
-No Python needed on the target machine. Grab `BuildersGate.exe` from the
-[releases page](https://github.com/Thepizzapie/BuildersGate/releases) and run
-it — double-click for the window, or `BuildersGate.exe serve` for the browser
-dashboard out of the same binary.
+There is a `BuildersGate-windows.zip` on the
+[releases page](https://github.com/Thepizzapie/BuildersGate/releases) for people
+who do not want Python at all. Unzip it and run `BuildersGate.exe` — double-click
+for the window, or `BuildersGate.exe serve` for the browser dashboard.
 
-To build it yourself:
+**Windows will complain, and here is exactly why.** The binary is not code
+signed, and Windows has two separate defences against that:
+
+- **Defender** flagged the first build as `Trojan:Win32/Sabsik.TE.A!ml`. The
+  `!ml` suffix means a machine-learning guess, not a signature match. That build
+  used PyInstaller's `--onefile`, which unpacks a compressed archive into
+  `%TEMP%` and executes code from it — behaviourally a dropper, whatever it
+  actually does. It ships as a plain folder now, which removes that trigger.
+- **Smart App Control**, default-on for clean Windows 11 installs, refuses to
+  launch unsigned binaries outright: *"we can't confirm who published
+  BuildersGate.exe."* No amount of repackaging fixes this one. It needs an
+  Authenticode certificate, which is
+  [being worked on](https://github.com/Thepizzapie/BuildersGate/issues).
+
+Every release publishes a `.sha256` next to the zip so you can check that what
+you downloaded is what CI built. Both are produced by the workflow in
+[`.github/workflows/release-exe.yml`](.github/workflows/release-exe.yml) from a
+tagged commit, and you can read the build log.
+
+**If you have Python, `pip install` avoids all of this** — `bgate app` is an
+ordinary Python process rather than an unsigned executable, and gives you the
+same native window. It is the recommended route.
+
+To build the standalone yourself:
 
 ```bash
 pip install -e ".[desktop]" pyinstaller
 python packaging/build_exe.py
 ```
 
-That builds `dist/BuildersGate.exe` and then boots it to check it actually
-serves its own assets. The check is not ceremony: this app finds `static/` and
+That writes `dist/BuildersGate/`, boots it to check it serves its own assets,
+and only then zips it. The check is not ceremony: this app finds `static/` and
 `templates/` by walking up from `__file__`, so a bundle that lays them out
 wrongly still starts, still renders the shell, and 404s every stylesheet. A
 green PyInstaller run does not mean a working binary.
