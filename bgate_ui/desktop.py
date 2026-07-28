@@ -12,9 +12,11 @@ browser dashboard is still a complete way to use the product.
 """
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import threading
+from pathlib import Path
 from typing import Optional
 
 WINDOW_TITLE = "Builders Gate"
@@ -143,6 +145,25 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
         )
         return 1
 
+    # On Windows, host WebView2 through its COM API directly. pywebview reaches
+    # the same control through .NET (pythonnet -> clr_loader -> hostfxr), and
+    # that chain does not survive being frozen: "Failed to resolve
+    # Python.Runtime.Loader.Initialize". The packaged app therefore had no
+    # window at all on a machine where WebView2 itself was fine. There is no
+    # .NET in the path below, so it behaves the same frozen or not — and
+    # pywebview stays as the fallback, and as the non-Windows path.
+    if sys.platform == "win32":
+        try:
+            from bgate_ui import webview2
+            ok, why = webview2.available()
+            if ok:
+                return _run_native(webview2, port, url, server, thread)
+            print(f"native window unavailable ({why}); trying pywebview",
+                  file=sys.stderr)
+        except Exception as exc:                               # noqa: BLE001
+            print(f"native window failed ({exc}); trying pywebview",
+                  file=sys.stderr)
+
     try:
         webview.create_window(
             WINDOW_TITLE,
@@ -177,6 +198,34 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
     server.should_exit = True
     thread.join(timeout=5.0)
     return 0
+
+
+def _run_native(webview2, port, url, server, thread) -> int:
+    """The COM-hosted WebView2 window. Blocks until the user closes it."""
+    win = webview2.Window(
+        WINDOW_TITLE, url,
+        width=DEFAULT_SIZE[0], height=DEFAULT_SIZE[1],
+        min_width=max(MIN_SIZE[0], _MIN_USABLE_WIDTH), min_height=MIN_SIZE[1],
+        # Keep the browser profile beside the project's own state rather than in
+        # a temp dir, so logins and localStorage (the theme choice, the last
+        # workspace) survive a restart.
+        user_data_dir=str(_profile_dir()),
+    )
+    err = win.run()
+    if err:
+        return _fallback_to_browser(url, err, server, thread)
+
+    server.should_exit = True
+    thread.join(timeout=5.0)
+    return 0
+
+
+def _profile_dir() -> Path:
+    """Where WebView2 keeps its cache and localStorage."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    p = Path(base) / "BuildersGate" / "webview"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _fallback_to_browser(url, exc, server, thread) -> int:
