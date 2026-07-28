@@ -67,6 +67,13 @@
     --text-3:#8e8a84;      /*  5.8:1 — labels, hints, placeholders */
     --text-dim:#6b6863;    /*  3.6:1 — NON-TEXT ONLY */
 
+    /* The logo's gate posts. The mark's real blue is #1800ad, which is fine on
+       a light ground and all but invisible on this one, so the dark theme keeps
+       the hue and lifts the lightness rather than falling back to grey — a grey
+       mark is a different mark. 5.9:1 on --surface-1, where the rail brand
+       sits. */
+    --brand-post:#8f7cff;
+
     --accent:#ff6a3d;      /*  7.0:1 */
     --accent-hover:#ff855e;
     --accent-press:#e85526;
@@ -120,6 +127,8 @@
     --text-3:#6a665f;      /*  4.6:1 */
     --text-dim:#9b968b;    /*  2.4:1 — NON-TEXT ONLY */
 
+    --brand-post:#1800ad;  /* 11.2:1 — the logo's own blue, unmodified */
+
     --accent:#b73d0b;      /*  4.6:1 */
     --accent-hover:#9c3308;
     --accent-press:#8a2d07;
@@ -170,6 +179,8 @@
       --text-2:#4e4b45;
       --text-3:#6a665f;
       --text-dim:#9b968b;
+
+      --brand-post:#1800ad;
 
       --accent:#b73d0b;
       --accent-hover:#9c3308;
@@ -346,7 +357,11 @@
     padding:var(--s-6) var(--s-6) var(--s-5);
     border-bottom:1px solid var(--line);
   }
-  .rail-brand .mark{display:flex; align-items:center; color:var(--accent); line-height:0}
+  /* The mark is two-tone: BGIcon.logo paints the chevron with --ember and
+     leaves the gate posts on currentColor. Setting colour to --accent here made
+     both the same orange, which flattened the gate and the chevron into one
+     shape. --brand-post carries the logo's blue. */
+  .rail-brand .mark{display:flex; align-items:center; color:var(--brand-post); line-height:0}
   .rail-brand .bn{
     font-size:var(--fs-sm); font-weight:var(--fw-bold);
     letter-spacing:var(--track-label); text-transform:uppercase; color:var(--text);
@@ -1778,7 +1793,8 @@
     width:min(560px,100%); background:var(--surface-2); border:1px solid var(--line);
     border-radius:var(--r-xl); padding:var(--s-9); box-shadow:var(--shadow-4);
   }
-  .fr-mark{color:var(--accent); font-size:var(--fs-2xl); line-height:1}
+  /* Same two-tone mark as the rail — see .rail-brand .mark. */
+  .fr-mark{color:var(--brand-post); font-size:var(--fs-2xl); line-height:1}
   .fr-card h1{
     margin:var(--s-5) 0 var(--s-2); font-size:var(--fs-xl); color:var(--text);
     font-weight:var(--fw-semi); letter-spacing:var(--track-tight);
