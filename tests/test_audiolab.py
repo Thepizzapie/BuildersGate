@@ -249,7 +249,7 @@ def test_a_session_round_trips(tmp_path):
     saved = audiolab.save_session(target, {"tracks": [
         {"source": "assets/audio/sfx_hurt.wav", "offset_s": 0.25, "gain_db": -6}]})
     assert saved["updated_at"]
-    assert audiolab.session_path(target).name == "mix.mix.json"
+    assert audiolab.session_path(target).name == "mix.wav.mix.json"
     back = audiolab.load_session(target)
     assert back["tracks"][0]["source"] == "assets/audio/sfx_hurt.wav"
     assert back["tracks"][0]["offset_s"] == 0.25
@@ -267,6 +267,38 @@ def test_out_of_range_track_values_are_refused():
             {"source": "a.wav", "gain_db": 400}]})
     with pytest.raises(audiolab.AudioError):
         audiolab.normalise_session({"tracks": [{"source": "a.wav", "pan": 9}]})
+
+
+def test_a_session_round_trips_layer_trim_points(tmp_path):
+    target = tmp_path / "mix.wav"
+    audiolab.save_session(target, {"tracks": [
+        {"source": "assets/audio/sfx_hurt.wav", "offset_s": 1.0,
+         "in_s": 0.4, "out_s": 1.75}]})
+    back = audiolab.load_session(target)
+    assert back["tracks"][0]["in_s"] == 0.4
+    assert back["tracks"][0]["out_s"] == 1.75
+
+
+def test_a_track_without_trim_points_keeps_the_whole_source():
+    out = audiolab.normalise_session({"tracks": [{"source": "a.wav"}]})
+    assert out["tracks"][0]["in_s"] == 0.0
+    assert out["tracks"][0]["out_s"] is None
+
+
+def test_a_trim_that_ends_before_it_starts_is_refused():
+    for bad in (0.5, 0.25):
+        with pytest.raises(audiolab.AudioError):
+            audiolab.normalise_session({"tracks": [
+                {"source": "a.wav", "in_s": 0.5, "out_s": bad}]})
+
+
+def test_a_trim_past_the_cap_is_refused():
+    with pytest.raises(audiolab.AudioError):
+        audiolab.normalise_session({"tracks": [
+            {"source": "a.wav", "in_s": audiolab.MAX_SECONDS + 1}]})
+    with pytest.raises(audiolab.AudioError):
+        audiolab.normalise_session({"tracks": [
+            {"source": "a.wav", "out_s": audiolab.MAX_SECONDS + 1}]})
 
 
 def test_no_session_is_none_not_an_error(tmp_path):
@@ -332,12 +364,24 @@ def test_open_refuses_escapes_and_non_audio(client, game):
 def test_save_writes_the_wav_and_keeps_the_old_bytes(client, game):
     before = (game / HIT).read_bytes()
     r = client.post("/api/audio/lab/save", json={
-        "rel": HIT, "wav": base64.b64encode(_wav_bytes(seconds=0.6)).decode()})
+        "rel": HIT, "wav": base64.b64encode(_wav_bytes(seconds=0.6)).decode(),
+        "overwrite": True})
     assert r.status_code == 200, r.text
     d = r.json()["data"]
     assert d["created"] is False
     assert (game / d["backup"]).read_bytes() == before
     assert audiolab.probe(game / HIT)["seconds"] == pytest.approx(0.6, abs=0.01)
+
+
+def test_save_refuses_to_replace_an_existing_file_unasked(client, game):
+    """A "save as" onto another sound's path sends no mtime, so the staleness
+    check cannot fire. Without this guard it silently replaced that sound."""
+    before = (game / HIT).read_bytes()
+    r = client.post("/api/audio/lab/save", json={
+        "rel": HIT, "wav": base64.b64encode(_wav_bytes(seconds=0.6)).decode()})
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["code"] == "exists"
+    assert (game / HIT).read_bytes() == before
 
 
 def test_save_can_create_a_sound_that_did_not_exist(client, game):
@@ -397,7 +441,7 @@ def test_a_session_saves_beside_the_file(client, game):
             {"source": THEME, "offset_s": 1.0, "gain_db": -12}]}})
     assert r.status_code == 200, r.text
     path = game / r.json()["data"]["path"]
-    assert path.name == "sfx_hit.mix.json"
+    assert path.name == "sfx_hit.wav.mix.json"
     assert json.loads(path.read_text(encoding="utf-8"))["tracks"][0]["gain_db"] == -12
 
 
@@ -425,7 +469,7 @@ def _beat(**over):
 def test_a_beat_round_trips_with_its_grid_intact(tmp_path):
     target = tmp_path / "loop.wav"
     saved = audiolab.save_beat(target, _beat())
-    assert audiolab.beat_path(target).name == "loop.beat.json"
+    assert audiolab.beat_path(target).name == "loop.wav.beat.json"
     back = audiolab.load_beat(target)
     steps = back["patterns"][0]["tracks"][0]["steps"]
     assert [s["on"] for s in steps] == [True, False, True, False]
@@ -487,7 +531,7 @@ def test_the_beat_endpoints_round_trip(client, game):
     r = client.post("/api/audio/lab/beat", json={"rel": HIT, "beat": _beat()})
     assert r.status_code == 200, r.text
     d = r.json()["data"]
-    assert d["path"] == "assets/audio/sfx_hit.beat.json"
+    assert d["path"] == "assets/audio/sfx_hit.wav.beat.json"
     assert d["seconds"] == pytest.approx(0.5)
     got = client.get("/api/audio/lab/beat", params={"rel": HIT}).json()
     assert got["beat"]["patterns"][0]["tracks"][0]["name"] == "kick"

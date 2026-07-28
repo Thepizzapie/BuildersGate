@@ -92,52 +92,52 @@ window.SeatWS.qa = {
   _shellHTML() {
     return `
       <style>
-        .qa-wrap{display:flex;flex-direction:column;gap:14px;color:#e6e8ee;font-size:13px}
-        .qa-card{background:#101319;border:1px solid #1e232c;border-radius:12px;padding:14px 16px}
-        .qa-card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#8a93a2;font-weight:600}
+        .qa-wrap{display:flex;flex-direction:column;gap:14px;color:var(--text);font-size:13px}
+        .qa-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
+        .qa-card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:var(--fw-semi)}
         .qa-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
         .qa-sp{justify-content:space-between}
-        .qa-btn{padding:6px 12px;background:#161b22;border:1px solid #2b3440;border-radius:8px;color:#e6e8ee;font:inherit;font-size:12px;cursor:pointer}
-        .qa-btn:hover{border-color:#3b7f9e}
-        .qa-btn.pri{background:#12303a;border-color:#3b7f9e;color:#cfeaf4}
-        .qa-btn.danger{color:#f0b3b3}
+        .qa-btn{padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}
+        .qa-btn:hover{border-color:var(--accent)}
+        .qa-btn.pri{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+        .qa-btn.danger{color:var(--bad)}
         .qa-btn:disabled{opacity:.5;cursor:default}
         .qa-btn.small{padding:3px 8px;font-size:11px}
-        .qa-in,.qa-sel{padding:5px 8px;background:#0c0f14;border:1px solid #2b3440;border-radius:7px;color:#e6e8ee;font:inherit;font-size:12px}
+        .qa-in,.qa-sel{padding:5px 8px;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:12px}
         .qa-in.num{width:64px}
-        .qa-bot{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:9px 11px;border:1px solid #1e232c;border-radius:9px;margin-bottom:8px;background:#0c0f14}
+        .qa-bot{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:9px 11px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;background:var(--bg)}
         .qa-bot b{font-size:13px}
-        .qa-bot .meta{color:#7a8494;font-size:11px}
-        .qa-empty{color:#6b7280;font-size:12px;padding:6px 0}
+        .qa-bot .meta{color:var(--text-3);font-size:11px}
+        .qa-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
         .qa-actrow{display:flex;gap:6px;align-items:center;margin-bottom:6px}
-        .qa-tag{display:inline-block;padding:2px 7px;border-radius:6px;background:#131922;border:1px solid #24303c;color:#9fb4c2;font-size:11px;margin:2px 4px 2px 0}
+        .qa-tag{display:inline-block;padding:2px 7px;border-radius:6px;background:var(--surface-1);border:1px solid var(--line);color:var(--text-2);font-size:11px;margin:2px 4px 2px 0}
         table.qa-t{border-collapse:collapse;width:100%;font-size:12px}
-        table.qa-t th,table.qa-t td{text-align:right;padding:4px 8px;border-bottom:1px solid #1a1f28}
-        table.qa-t th{color:#7a8494;font-weight:600;text-transform:uppercase;font-size:10px;letter-spacing:.04em}
+        table.qa-t th,table.qa-t td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--line-soft)}
+        table.qa-t th{color:var(--text-3);font-weight:var(--fw-semi);text-transform:uppercase;font-size:10px;letter-spacing:.04em}
         table.qa-t td:first-child,table.qa-t th:first-child{text-align:left}
-        .qa-pre{background:#07090d;border:1px solid #1a1f28;border-radius:8px;padding:9px 11px;font-family:ui-monospace,Consolas,monospace;font-size:11px;color:#9aa6b4;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+        .qa-pre{background:var(--bg);border:1px solid var(--line-soft);border-radius:8px;padding:9px 11px;font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--text-2);max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
         .qa-kv{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px}
         .qa-kv div{display:flex;flex-direction:column}
-        .qa-kv span{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:#7a8494}
+        .qa-kv span{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3)}
         .qa-kv b{font-size:16px;font-variant-numeric:tabular-nums}
-        .qa-bad{color:#f0b3b3}
-        .qa-good{color:#8fd6a8}
+        .qa-bad{color:var(--bad)}
+        .qa-good{color:var(--good)}
         .qa-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
         .qa-feed{display:flex;flex-direction:column;gap:5px;max-height:260px;overflow:auto}
-        .qa-step{padding:5px 9px;border-radius:7px;background:#0c0f14;border:1px solid #1a1f28;font-size:12px;line-height:1.35}
-        .qa-step .k{font-size:10px;text-transform:uppercase;color:#7a8494;margin-right:6px}
-        .qa-verdict{padding:9px 11px;border:1px solid #1e232c;border-radius:9px;margin-bottom:8px;background:#0c0f14}
-        .qa-vbadge{display:inline-block;padding:2px 9px;border-radius:6px;border:1px solid;font-size:11px;font-weight:700;letter-spacing:.05em}
-        .qa-nits{margin:7px 0 0;padding-left:18px;color:#d5b8b8;font-size:12px;line-height:1.5}
+        .qa-step{padding:5px 9px;border-radius:7px;background:var(--bg);border:1px solid var(--line-soft);font-size:12px;line-height:1.35}
+        .qa-step .k{font-size:10px;text-transform:uppercase;color:var(--text-3);margin-right:6px}
+        .qa-verdict{padding:9px 11px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;background:var(--bg)}
+        .qa-vbadge{display:inline-block;padding:2px 9px;border-radius:6px;border:1px solid;font-size:11px;font-weight:var(--fw-semi);letter-spacing:.05em}
+        .qa-nits{margin:7px 0 0;padding-left:18px;color:var(--bad);font-size:12px;line-height:1.5}
         .qa-nits li{margin-bottom:2px}
-        .qa-unknown{color:#c3a6e0}
-        .qa-fail{padding:7px 9px;border:1px solid #7a3535;border-radius:8px;background:#150d0e;margin-bottom:6px;font-size:12px;line-height:1.45}
-        .qa-fail .lbl{color:#f0b3b3;font-weight:600}
-        .qa-sample{color:#7a8494;font-size:11px;font-family:ui-monospace,Consolas,monospace;margin-top:4px;word-break:break-word}
+        .qa-unknown{color:var(--c-narrative)}
+        .qa-fail{padding:7px 9px;border:1px solid var(--bad-line);border-radius:8px;background:var(--bad-soft);margin-bottom:6px;font-size:12px;line-height:1.45}
+        .qa-fail .lbl{color:var(--bad);font-weight:var(--fw-semi)}
+        .qa-sample{color:var(--text-3);font-size:11px;font-family:ui-monospace,Consolas,monospace;margin-top:4px;word-break:break-word}
         .qa-exp{display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap}
         .qa-exp .qa-in{min-width:0}
-        .qa-hist{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid #1a1f28;font-size:12px}
-        .qa-hist .when{color:#7a8494;font-size:11px;margin-left:auto}
+        .qa-hist{display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--line-soft);font-size:12px}
+        .qa-hist .when{color:var(--text-3);font-size:11px;margin-left:auto}
       </style>
       <div class="qa-wrap">
         <div class="qa-card">
@@ -308,7 +308,7 @@ window.SeatWS.qa = {
         <select class="qa-sel qa-x-cmp">${this._comparators.map(c =>
           `<option value="${c}"${c === e.comparator ? " selected" : ""}>${c}</option>`).join("")}</select>
         <input class="qa-in qa-x-val" style="width:96px" placeholder="value" value="${bg.esc(this._showVal(e.value))}">
-        <span class="meta" style="color:#7a8494">@tick</span>
+        <span class="meta" style="color:var(--text-3)">@tick</span>
         <input class="qa-in num qa-x-at" type="number" min="0" placeholder="end" value="${e.at_tick == null ? "" : e.at_tick}">
         <input class="qa-in qa-x-lbl" style="flex:1;min-width:110px" placeholder="what this proves (optional)" value="${bg.esc(e.label || "")}">
         <button class="qa-btn small danger" onclick="SeatWS.qa.rmExpect(${j})">✕</button>
@@ -316,27 +316,27 @@ window.SeatWS.qa = {
     const rows = bot.actions.map((a, j) => `
       <div class="qa-actrow" data-j="${j}">
         <select class="qa-sel qa-a-action">${opts(a.action)}</select>
-        <span class="meta" style="color:#7a8494">@tick</span>
+        <span class="meta" style="color:var(--text-3)">@tick</span>
         <input class="qa-in num qa-a-at" type="number" min="0" value="${a.at_tick}">
-        <span class="meta" style="color:#7a8494">hold</span>
+        <span class="meta" style="color:var(--text-3)">hold</span>
         <input class="qa-in num qa-a-hold" type="number" min="1" value="${a.hold_ticks}">
         <button class="qa-btn small danger" onclick="SeatWS.qa.rmAction(${j})">✕</button>
       </div>`).join("");
     host.innerHTML = `
-      <div class="qa-card" style="margin-top:10px;background:#0c0f14">
+      <div class="qa-card" style="margin-top:10px;background:var(--bg)">
         <div class="qa-row" style="margin-bottom:10px">
-          <span class="meta" style="color:#7a8494">name</span>
+          <span class="meta" style="color:var(--text-3)">name</span>
           <input class="qa-in qa-e-name" style="flex:1;min-width:160px" value="${bg.esc(bot.name)}">
-          <span class="meta" style="color:#7a8494">match ticks</span>
+          <span class="meta" style="color:var(--text-3)">match ticks</span>
           <input class="qa-in num qa-e-ticks" type="number" min="1" value="${bot.ticks}">
         </div>
-        <div class="meta" style="color:#7a8494;margin-bottom:6px">action schedule (60 ticks ≈ 1 second)</div>
+        <div class="meta" style="color:var(--text-3);margin-bottom:6px">action schedule (60 ticks ≈ 1 second)</div>
         <div id="qa-actions">${rows || '<div class="qa-empty">no actions — add one below.</div>'}</div>
         <div class="qa-row" style="margin-top:8px">
           <button class="qa-btn small" onclick="SeatWS.qa.addAction()">+ action</button>
         </div>
         <datalist id="qa-props">${props.map(p => `<option value="${p}">`).join("")}</datalist>
-        <div class="meta" style="color:#7a8494;margin:14px 0 6px">expectations — what this run has to prove.
+        <div class="meta" style="color:var(--text-3);margin:14px 0 6px">expectations — what this run has to prove.
           A bot with none reports <b class="qa-unknown">UNKNOWN</b>, never PASS.</div>
         <div id="qa-expects">${expRows || '<div class="qa-empty">no expectations — this bot cannot pass.</div>'}</div>
         <div class="qa-row" style="margin-top:8px">
@@ -464,7 +464,7 @@ window.SeatWS.qa = {
         <div class="qa-row" style="gap:10px">
           <span class="qa-vbadge" style="${this._vstyle(d.verdict)}">${this._bg.esc(String(d.verdict || "unknown").toUpperCase())}</span>
           <b>roster verdict</b>
-          <span class="meta" style="color:#7a8494">${["pass", "fail", "error", "unknown"]
+          <span class="meta" style="color:var(--text-3)">${["pass", "fail", "error", "unknown"]
             .map(k => `${counts[k] || 0} ${k}`).join(" · ")}</span>
         </div>
         ${(d.regressions || []).length
@@ -473,7 +473,7 @@ window.SeatWS.qa = {
         ${(d.runs || []).map(r => `<div class="qa-hist">
           <span class="qa-vbadge" style="${this._vstyle(r.verdict)}">${this._bg.esc(String(r.verdict || "?").toUpperCase())}</span>
           <b>${this._bg.esc(r.bot || "bot")}</b>
-          <span class="meta" style="color:#7a8494">${(r.failures || []).length} failed check(s)</span>
+          <span class="meta" style="color:var(--text-3)">${(r.failures || []).length} failed check(s)</span>
         </div>`).join("")}
       </div>`;
   },
@@ -495,11 +495,11 @@ window.SeatWS.qa = {
   },
   _vstyle(v) {
     return {
-      pass: "background:#12301f;border-color:#2f6b48;color:#8fd6a8",
-      fail: "background:#331416;border-color:#7a3535;color:#f0b3b3",
-      error: "background:#332a14;border-color:#7a6a35;color:#e0c15a",
-      unknown: "background:#1c1729;border-color:#453a63;color:#c3a6e0",
-    }[String(v || "unknown").toLowerCase()] || "background:#131922;border-color:#24303c;color:#9fb4c2";
+      pass: "background:var(--good-soft);border-color:var(--good-line);color:var(--good)",
+      fail: "background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)",
+      error: "background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)",
+      unknown: "background:var(--info-soft);border-color:var(--info-line);color:var(--c-narrative)",
+    }[String(v || "unknown").toLowerCase()] || "background:var(--surface-1);border-color:var(--line);color:var(--text-2)";
   },
 
   async _loadRuns() {
@@ -523,7 +523,7 @@ window.SeatWS.qa = {
         <span class="qa-vbadge" style="${this._vstyle(r.verdict)}">${bg.esc(String(r.verdict || "?").toUpperCase())}</span>
         <b>${bg.esc(r.bot || "bot")}</b>
         ${r.is_baseline ? '<span class="qa-tag">baseline</span>' : ""}
-        <span class="meta" style="color:#7a8494">${r.expectations || 0} check(s)${
+        <span class="meta" style="color:var(--text-3)">${r.expectations || 0} check(s)${
           (r.failures || []).length ? ` · ${bg.esc((r.failures[0].reason || r.failures[0].label || "").slice(0, 70))}` : ""}</span>
         <span class="when">${bg.esc(r.created_at || "")}</span>
       </div>`).join("");
@@ -551,9 +551,9 @@ window.SeatWS.qa = {
       <div class="qa-row" style="gap:10px">
         <span class="qa-vbadge" style="${this._vstyle(verdict)}">${bg.esc(verdict.toUpperCase())}</span>
         <b>${bg.esc(r.name || "match")}</b>
-        <span class="meta" style="color:#7a8494">${r.ok ? "drove the game" : bg.esc(r.error || "the probe failed")}</span>
+        <span class="meta" style="color:var(--text-3)">${r.ok ? "drove the game" : bg.esc(r.error || "the probe failed")}</span>
       </div>
-      <span class="meta" style="color:#7a8494">${r.seconds != null ? r.seconds + "s" : ""}</span></div>`;
+      <span class="meta" style="color:var(--text-3)">${r.seconds != null ? r.seconds + "s" : ""}</span></div>`;
     if (verdict === "unknown") {
       html += `<div class="qa-empty qa-unknown">this run asserted nothing — add expectations to the bot so it can pass or fail. Unknown is not a pass.</div>`;
     }
@@ -579,10 +579,10 @@ window.SeatWS.qa = {
       const moved = (diff.changed || []).slice(0, 6).map(c =>
         `${c.property} ${c.was} → ${c.now}`).join(" · ");
       html += `<div class="qa-verdict" style="margin-bottom:8px">
-        <div class="meta" style="color:#7a8494">vs baseline #${bg.esc(diff.baseline_id)} (${bg.esc(diff.verdict_was || "?")} → ${bg.esc(diff.verdict_now || "?")})${
+        <div class="meta" style="color:var(--text-3)">vs baseline #${bg.esc(diff.baseline_id)} (${bg.esc(diff.verdict_was || "?")} → ${bg.esc(diff.verdict_now || "?")})${
           diff.regressed ? ' — <b class="qa-bad">REGRESSION</b>' : ""}</div>
         ${flips ? `<div class="qa-bad" style="font-size:12px;margin-top:4px">${bg.esc(flips)}</div>` : ""}
-        ${moved ? `<div class="meta" style="color:#7a8494;margin-top:4px">${bg.esc(moved)}</div>` : ""}
+        ${moved ? `<div class="meta" style="color:var(--text-3);margin-top:4px">${bg.esc(moved)}</div>` : ""}
       </div>`;
     }
 
@@ -620,7 +620,7 @@ window.SeatWS.qa = {
       html += `<div style="margin-top:8px" class="qa-bad meta">${r.errors.map(e => bg.esc(e)).join("<br>")}</div>`;
     }
     const raw = (r.stdout || "").trim();
-    html += `<div style="margin-top:10px"><div class="meta" style="color:#7a8494;margin-bottom:5px">raw stdout</div>
+    html += `<div style="margin-top:10px"><div class="meta" style="color:var(--text-3);margin-bottom:5px">raw stdout</div>
       <div class="qa-pre">${raw ? bg.esc(raw) : "(no stdout)"}</div></div>`;
     host.innerHTML = html;
   },
@@ -651,7 +651,7 @@ window.SeatWS.qa = {
     const rec = st && st.recording;
     let statusHtml;
     if (!st) {
-      statusHtml = '<span class="meta" style="color:#7a8494">status unavailable</span>';
+      statusHtml = '<span class="meta" style="color:var(--text-3)">status unavailable</span>';
     } else if (rec) {
       const evs = rec.telemetry_events != null ? rec.telemetry_events : 0;
       const lvl = rec.level;
@@ -660,14 +660,14 @@ window.SeatWS.qa = {
         : (typeof lvl === "number" ? ` · mic ${Math.round(lvl * 100)}%` : "");
       const deaf = (lvl && typeof lvl === "object" && lvl.silent === true)
         ? ' · <span class="qa-bad">no mic signal</span>' : "";
-      statusHtml = `<span><span class="qa-dot" style="background:#e0524a"></span>recording
+      statusHtml = `<span><span class="qa-dot" style="background:var(--bad)"></span>recording
         <b>${bg.esc(rec.name || "session")}</b> · session ${bg.esc(rec.id)} · ${evs} telemetry events${
         rec.native ? " · native" : ""}${mic}${deaf}</span>`;
     } else {
       const proc = st.processing;
       statusHtml = proc && proc.length
-        ? `<span><span class="qa-dot" style="background:#d9a441"></span>processing ${proc.length} session(s)</span>`
-        : '<span><span class="qa-dot" style="background:#3a4350"></span>idle</span>';
+        ? `<span><span class="qa-dot" style="background:var(--warn)"></span>processing ${proc.length} session(s)</span>`
+        : '<span><span class="qa-dot" style="background:var(--line)"></span>idle</span>';
     }
     const p = this._preflight;
     const notReady = p && p.ready === false;
@@ -687,12 +687,12 @@ window.SeatWS.qa = {
           <button class="qa-btn small danger" onclick="SeatWS.qa.stopPlaytest()" ${rec ? "" : "disabled"}>■ stop</button>
         </div>
       </div>
-      <div class="meta" style="color:#7a8494;margin-top:8px">${
+      <div class="meta" style="color:var(--text-3);margin-top:8px">${
         notReady
           ? `<span class="qa-bad">not ready: ${bg.esc(blockers.join(" · ") || "preflight failed")}</span>`
           : "records a live human/agent play session — the same path as the overview's record button: preflight, rebuild a stale build, then boot the telemetry frame."
       }</div>
-      <div class="meta" id="qa-pt-msg" style="color:#7a8494;margin-top:4px"></div>`;
+      <div class="meta" id="qa-pt-msg" style="color:var(--text-3);margin-top:4px"></div>`;
   },
 
   /* One record path, not two. The overview rebuilds a stale build, starts the
@@ -796,11 +796,11 @@ window.SeatWS.qa = {
       return;
     }
     const style = {
-      PASS: "background:#12301f;border-color:#2f6b48;color:#8fd6a8",
-      FAIL: "background:#331416;border-color:#7a3535;color:#f0b3b3",
-      ERROR: "background:#332a14;border-color:#7a6a35;color:#e0c15a",
-      UNKNOWN: "background:#1c1729;border-color:#453a63;color:#c3a6e0",
-      REVIEWING: "background:#131922;border-color:#24303c;color:#9fb4c2",
+      PASS: "background:var(--good-soft);border-color:var(--good-line);color:var(--good)",
+      FAIL: "background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)",
+      ERROR: "background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)",
+      UNKNOWN: "background:var(--info-soft);border-color:var(--info-line);color:var(--c-narrative)",
+      REVIEWING: "background:var(--surface-1);border-color:var(--line);color:var(--text-2)",
     };
     host.innerHTML = this._gates.slice(0, 8).map(g => {
       const v = this._verdictOf(g);
@@ -814,14 +814,14 @@ window.SeatWS.qa = {
           .filter(Boolean).slice(0, 5);
         detail = nits.length
           ? `<ul class="qa-nits">${nits.map(n => `<li>${bg.esc(n.slice(0, 160))}</li>`).join("")}</ul>`
-          : `<div class="meta" style="color:#7a8494">${bg.esc((g.result || "").slice(0, 200))}</div>`;
+          : `<div class="meta" style="color:var(--text-3)">${bg.esc((g.result || "").slice(0, 200))}</div>`;
       } else if (v === "PASS" && g.result) {
-        detail = `<div class="meta" style="color:#7a8494">checks: ${bg.esc(g.result.slice(0, 180))}</div>`;
+        detail = `<div class="meta" style="color:var(--text-3)">checks: ${bg.esc(g.result.slice(0, 180))}</div>`;
       } else if (v === "UNKNOWN") {
         detail = `<div class="meta qa-unknown">the gate run finished without writing a VERDICT line — nothing was decided here. Read the log, then reopen the item or re-run the gate.${
           g.result ? " Last output: " + bg.esc(g.result.slice(0, 160)) : ""}</div>`;
       } else if (v === "ERROR") {
-        detail = `<div class="meta" style="color:#e0c15a">gate run died: ${bg.esc((g.result || "no result").slice(0, 160))}</div>`;
+        detail = `<div class="meta" style="color:var(--warn)">gate run died: ${bg.esc((g.result || "no result").slice(0, 160))}</div>`;
       }
       return `<div class="qa-verdict">
         <div class="qa-row qa-sp">
@@ -887,9 +887,9 @@ window.SeatWS.qa = {
       if (act && act.final) feed.innerHTML += `<div class="qa-step"><span class="k">result</span>${bg.esc(act.final.text || "")}</div>`;
       return;
     }
-    const kindColor = { say: "#9fb4c2", tool: "#7fd3b0", result: "#8a93a2", steer: "#e0c15a" };
+    const kindColor = { say: "var(--text-2)", tool: "var(--good)", result: "var(--text-3)", steer: "var(--warn)" };
     let html = act.steps.map(s => {
-      const c = kindColor[s.kind] || "#8a93a2";
+      const c = kindColor[s.kind] || "var(--text-3)";
       const label = s.kind === "tool" ? bg.esc(s.name || "tool") : s.kind;
       const body = s.kind === "tool"
         ? bg.esc(s.hint || "")
@@ -897,7 +897,7 @@ window.SeatWS.qa = {
       return `<div class="qa-step"><span class="k" style="color:${c}">${bg.esc(label)}</span>${body}</div>`;
     }).join("");
     if (act.final) {
-      html += `<div class="qa-step"><span class="k" style="color:#8fd6a8">final</span>${bg.esc(act.final.text || "")}</div>`;
+      html += `<div class="qa-step"><span class="k" style="color:var(--good)">final</span>${bg.esc(act.final.text || "")}</div>`;
     }
     feed.innerHTML = html;
   },
