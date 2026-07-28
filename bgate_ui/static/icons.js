@@ -101,16 +101,34 @@
   }
 
   /* The mark. Tall post, broken post, chevron through the gap.
-     `flat` drops the ember so it can sit on a coloured field. */
+     `flat` drops the ember so it can sit on a coloured field.
+
+     The path data is LIFTED FROM packaging/logo.svg, not redrawn — an earlier
+     version approximated it with three stroked polylines and got the
+     proportions, the bar weight and the chevron's angle all slightly wrong.
+     Coordinates are the artwork's own user units, so the viewBox is a square
+     centred on the mark rather than a tidy 0 0 64 64; that keeps them
+     copy-pasteable from the file if it ever changes.
+
+     Solid fills, not strokes: the real mark's bars are rectangles, and stroking
+     a centre line cannot reproduce the chevron, whose two arms are quads with
+     square-cut ends that meet at a mitre. */
   BGIcon.logo = function (opts) {
     opts = opts || {};
     const size = opts.size || 24;
     const accent = opts.flat ? "currentColor" : EMBER;
-    return `<svg class="bgi bgi-logo" width="${size}" height="${size}" viewBox="0 0 64 64"
-      role="img" aria-label="Builders Gate" fill="none" stroke-linecap="square">
-      <path d="M16 8 V56" stroke="currentColor" stroke-width="4" opacity=".75"/>
-      <path d="M48 8 V26 M48 42 V56" stroke="currentColor" stroke-width="4" opacity=".75"/>
-      <path d="M28 22 L42 34 L28 46" stroke="${accent}" stroke-width="5"/>
+    return `<svg class="bgi bgi-logo" width="${size}" height="${size}"
+      viewBox="149.66 150 1200.02 1200.02"
+      role="img" aria-label="Builders Gate" fill="none">
+      <g fill="currentColor">
+        <path d="M266.46 150H379.2v1200.02H266.46Z"/>
+        <path d="M1120.5 150h112.37v526.79H1120.5Z"/>
+        <path d="M1120.5 823.21h112.37v526.81H1120.5Z"/>
+      </g>
+      <g fill="${accent}">
+        <path d="M584.04 499.5 655.55 428 950.75 723.2 879.25 794.7Z"/>
+        <path d="M879.15 651.2 950.65 722.7 655.42 1018 583.92 946.4Z"/>
+      </g>
     </svg>`;
   };
 

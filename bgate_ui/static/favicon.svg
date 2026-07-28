@@ -1,7 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Builders Gate. Simplified for the tab: at 16px the broken right post
-       turns to mush, so the favicon keeps one post and the chevron through it. -->
-  <rect width="64" height="64" rx="14" fill="#14161c"/>
-  <path d="M14 12 V52" stroke="#9aa3b2" stroke-width="7" stroke-linecap="square"/>
-  <path d="M28 20 L44 32 L28 44" stroke="#ff6a3d" stroke-width="8" fill="none" stroke-linecap="square"/>
+  <!-- Builders Gate, in the brand's own colours.
+
+       The geometry is LIFTED FROM packaging/logo.svg (see BGIcon.logo in
+       icons.js, which carries the same path data). It used to be three stroked
+       polylines redrawn by hand, and it dropped the broken post entirely on the
+       reasoning that the gap turns to mush at 16px. It does not: the gap is a
+       whole pixel at 16 and the mark survives — checked by compositing the
+       rendered icon at every size against both a light and a dark tab strip.
+
+       The plate is white rather than the dashboard's ground because the mark's
+       posts are #1800ad, which all but disappears on a dark field. A favicon
+       carries its own background for exactly this reason; the tab strip is not
+       ours to theme. -->
+  <rect width="64" height="64" rx="14" fill="#fff"/>
+  <g transform="translate(32 32) scale(0.0433) translate(-749.67 -750.01)">
+    <g fill="#1800ad">
+      <path d="M266.46 150H379.2v1200.02H266.46Z"/>
+      <path d="M1120.5 150h112.37v526.79H1120.5Z"/>
+      <path d="M1120.5 823.21h112.37v526.81H1120.5Z"/>
+    </g>
+    <g fill="#ff751f">
+      <path d="M584.04 499.5 655.55 428 950.75 723.2 879.25 794.7Z"/>
+      <path d="M879.15 651.2 950.65 722.7 655.42 1018 583.92 946.4Z"/>
+    </g>
+  </g>
 </svg>

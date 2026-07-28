@@ -31,6 +31,9 @@ datas = [
     # Sibling of bgate_core, because scaffold.py walks up two parents to find it.
     (str(ROOT / "templates"), "templates"),
     (str(ROOT / "bgate_engine"), "bgate_engine"),
+    # Also embedded as resource id 1 by EXE(icon=...) below. This copy is the
+    # fallback bgate_ui/webview2.py reads when the resource lookup fails.
+    (str(ROOT / "packaging" / "icon.ico"), "."),
 ]
 # Pillow ships binary plugins it loads dynamically.
 datas += collect_data_files("PIL", include_py_files=False)
