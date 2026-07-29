@@ -9,6 +9,28 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-07-28
+
+### Fixed
+
+- **Every wheel and exe shipped without the Godot Web export preset.**
+  `templates/shared/.gitignore` is a template — it is copied into scaffolded
+  game projects, where ignoring `export_presets.cfg` is exactly right, because
+  that file holds per-machine export config and can carry an Android signing
+  password. It also sits inside this repository, so git applied it here and the
+  preset every scaffolded project is supposed to ship was never committed.
+
+  It looked fine on the machine that wrote it: the file is on disk, so a local
+  build contained it and the tests passed. A fresh clone — CI, a contributor,
+  the release build — produced an artifact without it, so `bgate publish` failed
+  on the one manual step the preset exists to remove. A package-data glob cannot
+  include a file that is not in the checkout. Force-added, with a test that every
+  file under `templates/`, `bgate_ui/static/`, `bgate_site/theme/` and
+  `bgate_engine/` is tracked.
+
+  0.1.23 and 0.1.24 carry the broken artifact; a repository rule forbids moving a
+  published tag, so this is its own release.
+
 ## [0.1.24] - 2026-07-28
 
 ### Fixed
@@ -336,7 +358,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.24...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.25...HEAD
+[0.1.25]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.21...v0.1.22
