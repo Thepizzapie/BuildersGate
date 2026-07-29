@@ -9,6 +9,22 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-07-28
+
+### Fixed
+
+- **The first-run screen offered to create a project in `C:\Windows\system32`.**
+  A double-clicked executable does not inherit a meaningful working directory —
+  a shortcut with no "Start in", or a launch from the Run dialog, hands the
+  process system32 — and the screen read `Path.cwd()` straight out, then failed
+  with a raw `PermissionError` in a red box. New projects now land under the
+  working directory when it is a real one and `~/BuildersGate` when it is not.
+  Drive roots, `%SystemRoot%`, `%ProgramFiles%` and `%ProgramData%` are refused
+  whether or not they happen to be writable. `bgate serve` from a terminal is
+  unchanged.
+- A `PermissionError` from the create endpoint now answers 400 with the
+  directory and a suggestion instead of leaking `[WinError 5] Access is denied`.
+
 ## [0.1.21] - 2026-07-28
 
 ### Fixed
@@ -174,7 +190,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.22...HEAD
+[0.1.22]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.2...v0.1.21
 [0.1.2]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.0...v0.1.1
