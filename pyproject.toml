@@ -1,6 +1,6 @@
 [project]
 name = "builders-gate"
-version = "0.1.21"
+version = "0.1.22"
 description = "Agentic game development pipeline — design bible, lore canon, and DCC/engine adapters over MCP."
 readme = "README.md"
 license = { file = "LICENSE" }
