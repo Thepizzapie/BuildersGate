@@ -1838,6 +1838,157 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         return _fail(exc)
 
 
+@_tool
+def image_talkhead(subject: str, name: str, anchor: str = "",
+                   res_dir: str = "assets/portraits", cell: int = 128,
+                   fps: float = 10.0, provider: str = "krea",
+                   model: str = "", ref_strength: float = 0.7,
+                   drift_limit: float = 0.0, max_retries: int = 2,
+                   quality: str = "medium", timeout: int = 300) -> dict:
+    """ANIMATED TALKING PORTRAIT: a face whose mouth moves while it speaks.
+
+    Different asset class from image_sprites, and the difference is the point.
+    A sprite set animates a BODY through space, so its frames differ by pose.
+    This animates a FACE at rest: every frame is meant to be identical except
+    the mouth, and "identical twice" is exactly what a generator will not give
+    you. So the work here is holding everything still, not posing anything.
+
+    Worth the four generations: a dialogue card showing a still bust reads as a
+    picture of a character. The same bust with a mouth moving while the line
+    types reads as the character talking to you.
+
+    HOW IT HOLDS STILL, and each of these was learned by it not doing so:
+
+      * ONE ANCHOR, N SIBLINGS. Every frame conditions on `anchor`, never on the
+        frame before it. Chained conditioning drifts, and on a face drift is
+        instantly legible: three frames in, the ears have moved and it is a
+        different character. Pass a `ref_pin` name or a path as `anchor`; with
+        none, the first frame generated becomes the anchor for the rest.
+      * MOUTHS ARE GENERATED, NOT DERIVED. Elsewhere the rule is derive what you
+        can, because a mirrored facing is a transform. There is no transform
+        from a closed mouth to an open one.
+      * REGISTERED ON SILHOUETTE WIDTH. Independent generations do not share a
+        pixel grid, and a head that jumps two pixels reads as a flinch. Width is
+        the rigid measurement; an open jaw grows the silhouette downward, so
+        aligning on height shrinks the face every time it speaks.
+      * DRIFT IS MEASURED AND RETRIED. "Same colours" in the prompt works about
+        three times in four, which is the dangerous amount: the fourth comes
+        back colour-shifted, invisible at 128px and obvious as flicker at 10fps.
+        Any frame past `drift_limit` is regenerated up to `max_retries` times.
+
+    Emits `<name>_talk.png` (4 cells: rest, half, wide, blink) and
+    `<name>_talk.tres` with a looping `talk` animation over rest/half/wide/half
+    and a one-shot `blink`. Blink is kept out of the cycle so it cannot land
+    mid-syllable. Drop the .tres on an AnimatedSprite2D.
+
+    Returns {ok, sheet, tres, frames:[{frame, drift, attempts}], worst_drift}.
+    """
+    try:
+        from bgate_core import talkhead as _th
+
+        root = _Path(_root())
+        limit = float(drift_limit or _th.DRIFT_LIMIT)
+        stage = root / ".bgate_out" / "art" / "talkheads" / name
+        stage.mkdir(parents=True, exist_ok=True)
+
+        # An anchor may be a pinned reference NAME or a path. Resolving the pin
+        # here means an art agent uses the same anchor the rest of the pipeline
+        # already agreed on, instead of inventing a second source of truth.
+        anchor_path = ""
+        if anchor:
+            try:
+                from bgate_core import refs as _refs
+                hit = _refs.resolve(root, anchor)
+                anchor_path = str(hit) if hit else ""
+            except Exception:
+                anchor_path = ""
+            if not anchor_path and _Path(anchor).is_file():
+                anchor_path = anchor
+
+        made: dict[str, str] = {}
+        report: list[dict] = []
+        for frame in _th.MOUTHS:
+            dest = stage / f"{frame}.png"
+            attempts = 0
+            drift_val = None
+            while attempts <= int(max_retries):
+                attempts += 1
+                res = _chroma.generate(
+                    _th.prompt_for(subject, frame,
+                                   has_anchor=bool(anchor_path)),
+                    dest, provider=provider, model=model, task_kind="portrait",
+                    keyed=True, size="1024x1024", quality=quality,
+                    ref_paths=[anchor_path] if anchor_path else (),
+                    ref_strength=ref_strength, timeout=timeout, root=root,
+                    logical_name=f"{name}_{frame}")
+                if not res.get("ok"):
+                    return {"ok": False, "error": res.get("error"),
+                            "frame": frame}
+                made[frame] = str(dest)
+                # The FIRST successful frame becomes the anchor when none was
+                # given, which is what makes a no-anchor call still coherent.
+                if not anchor_path:
+                    anchor_path = str(dest)
+                if len(made) == 1:
+                    drift_val = 0.0
+                    break
+                drift_val = _th.drift(made, limit=limit)[frame]["drift"]
+                if drift_val <= limit:
+                    break
+            report.append({"frame": frame, "drift": drift_val,
+                           "attempts": attempts,
+                           "ok": (drift_val or 0.0) <= limit})
+
+        order = list(_th.MOUTHS)
+        # res_dir and name arrive from the model, and this writes with pathlib
+        # rather than the Write tool — so the PreToolUse lane hook never sees
+        # it. "../../.." would land outside the project entirely; contain it
+        # here, where the write happens.
+        out_dir = (root / "game" / res_dir).resolve()
+        try:
+            out_dir.relative_to(root.resolve())
+        except ValueError:
+            return {"ok": False,
+                    "error": f"res_dir {res_dir!r} escapes the project"}
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            return {"ok": False,
+                    "error": f"name {name!r} must be a bare asset name"}
+        stitched = _th.sheet([(f, made[f]) for f in order],
+                             out_dir / f"{name}_talk.png", cell=cell)
+        tres_path = out_dir / f"{name}_talk.tres"
+        tres_path.write_text(
+            _th.spriteframes(f"{name}_talk.png", cell=cell, fps=fps,
+                             order=order), encoding="utf-8")
+
+        worst = max((r["drift"] or 0.0) for r in report)
+        result = {"ok": True, "sheet": stitched["path"], "tres": str(tres_path),
+                  "frames": report, "worst_drift": worst,
+                  "drift_limit": limit, "registration": stitched["registration"],
+                  "anchor": anchor_path}
+        if worst > limit:
+            # Reported, not raised: three good frames and one off-model is still
+            # worth handing back, and the number tells the agent which to redo.
+            result["warning"] = (
+                f"{sum(1 for r in report if not r['ok'])} frame(s) still past "
+                f"the drift limit after {max_retries} retries")
+
+        archived = _archive_preview(stitched["path"], f"talkhead-{name}")
+        if archived:
+            result["preview"] = archived
+        artifact = _register_artifact(
+            f"{name}_talk", stitched["path"], producer="image_talkhead",
+            model=model or provider, prompt=subject,
+            metadata={"frames": order, "cell": cell, "fps": fps,
+                      "worst_drift": worst, "preview": archived or ""})
+        if artifact:
+            result["artifact"] = artifact
+        _log("art", f"talking portrait {name} ({len(order)} frames, "
+                    f"worst drift {worst})", ref=archived or stitched["path"])
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
 # ---------------------------------------------------------------------------
 # Godot
 # ---------------------------------------------------------------------------
@@ -2733,11 +2884,58 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
 # Work queue
 # ---------------------------------------------------------------------------
 @_tool
-def queue_list(status: Optional[str] = None, seat: Optional[str] = None) -> dict:
-    """The work queue. status: queued | dispatched | done | failed."""
+def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
+               limit: int = 40, full: bool = False) -> dict:
+    """The work queue. status: queued | dispatched | done | failed.
+
+    BRIEFS ARE PREVIEWS and the list is PAGED. This used to answer with every
+    work item a project had ever had, brief text and all — on a real board that
+    is 150,000 characters, which does not fit in a tool result at all: the call
+    failed, the CLI spilled it to a file, and the agent spent its next two turns
+    grepping a dump of its own queue instead of doing the work. A board is a
+    list of titles you scan; the one brief you actually need comes from
+    queue_get(item_id).
+
+    Pass full=True only when you genuinely need brief text for several items at
+    once, and keep the limit small when you do.
+    """
     try:
         from bgate_core import queue as _q
-        return {"items": _q.list_items(_root(), status=status, seat=seat)}
+        rows = _q.list_items(_root(), status=status, seat=seat)
+        cap = max(1, min(int(limit or 40), 200))
+        shown = rows[:cap]
+        items = []
+        for row in shown:
+            item = dict(row)
+            brief = item.get("brief") or ""
+            result = item.get("result") or ""
+            if not full:
+                item["brief"] = brief[:240]
+                item["brief_len"] = len(brief)
+                item["result"] = result[:240]
+            items.append(item)
+        return {
+            "items": items,
+            "shown": len(items),
+            "total": len(rows),
+            "truncated": len(rows) > len(items),
+            "note": ("briefs are previews — queue_get(item_id) returns one item "
+                     "whole" if not full else "full briefs; keep limit small"),
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def queue_get(item_id: int) -> dict:
+    """One work item, whole — brief, result, lineage, cost, status.
+
+    The other half of queue_list's preview: scan the board with the list, read
+    the one item you are about to act on with this.
+    """
+    try:
+        from bgate_core import queue as _q
+        return _q.get(_root(), int(item_id))
     except Exception as exc:
         return _fail(exc)
 
@@ -2820,6 +3018,46 @@ def queue_reopen(item_id: int, reason: str) -> dict:
         _q.update(root, item_id, brief=(item["brief"] or "") + stamp)
         return _q.set_status(root, item_id, "queued",
                              result=f"reopened: {reason[:1900]}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def agent_steer(item_id: int, text: str) -> dict:
+    """Say something to the agent currently running a work item, mid-run.
+
+    The director's other half. queue_add hands work OUT; this is how you correct
+    it while it is happening — "that pose is off-model, use the pinned ref",
+    "stop widening the scope, ship the three screens" — without killing the run
+    and paying for it twice.
+
+    The message is left in the project's steer inbox and delivered by the
+    dashboard, which is the process that owns the agent's input pipe. So:
+
+      * it needs `bgate serve` to be running to land;
+      * the agent reads it when its CURRENT step ends, not instantly;
+      * an item with no live agent gets no delivery — check queue_list(
+        status='dispatched') first, and use queue_update or queue_reopen for
+        work that is not running.
+
+    Delivery, and any failure to deliver, is recorded in the activity ledger
+    against the item.
+    """
+    try:
+        from bgate_core import steerbox as _steerbox
+        from bgate_core import queue as _q
+        root = _root()
+        item = _q.get(root, int(item_id))
+        if item["status"] != "dispatched":
+            return {"ok": False,
+                    "error": f"item {item_id} is {item['status']!r}, not running "
+                             "— there is no agent to steer",
+                    "status": item["status"]}
+        posted = _steerbox.post(root, int(item_id), text,
+                                by=f"seat:{_seat() or 'director'}")
+        return {"ok": True, "item_id": int(item_id), "steer_id": posted["id"],
+                "delivery": "queued for the dashboard to hand over; the agent "
+                            "reads it when its current step ends"}
     except Exception as exc:
         return _fail(exc)
 
