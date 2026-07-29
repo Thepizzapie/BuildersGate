@@ -146,11 +146,53 @@ def _notify(root: str | os.PathLike[str], item: dict) -> None:
         pass
 
 
+def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
+    """Append what the harness SAW this item write to what the agent CLAIMS.
+
+    A QA agent closed a gate reporting "no files were touched" while having
+    written its own checkpoint file. The report was not dishonest -- it answered
+    about the project's files and its own harness file was invisible to it --
+    but nothing in the system could contradict it, which in the one seat whose
+    job is refusing claims at face value is the actual defect.
+
+    ATTACHED, NOT ENFORCED. The obvious alternative is a required disclosure
+    field that queue_complete refuses without, and it fixes the wrong half: an
+    agent that did not realise it wrote a file will not declare it either, so
+    the field catches omission and never inaccuracy, while breaking every
+    existing caller and anything already in flight. The hook already observes
+    every write. Appending its record costs no caller anything, cannot be
+    forgotten, and puts the claim and the evidence in one place -- which is
+    where the QA gate reads from, so a future gate can compare them.
+
+    Terminal statuses only: a queued or dispatched item has not finished writing,
+    so a list taken then would be a snapshot presented as a total. `cancelled`
+    IS on the list, and is arguably the case that needs it most -- a run someone
+    killed is precisely the one where "what did it leave behind" has no other
+    answer.
+
+    The record accumulates across ROUNDS, because the lock owner a dispatch
+    stamps is `item-<id>` and a reopened item keeps its id. That is the intended
+    reading: the list is the item's total footprint, not one attempt's, and a QA
+    gate looking at round two should see what round one wrote.
+    """
+    if status not in ("done", "failed", "cancelled"):
+        return result
+    try:
+        from . import writelog
+        observed = writelog.summary(root, f"item-{item_id}")
+    except Exception:
+        return result          # bookkeeping must never fail a completion
+    if not observed:
+        return result
+    return (result.rstrip() + "\n\n" + observed) if result.strip() else observed
+
+
 def set_status(root: str | os.PathLike[str], item_id: int, status: str,
                result: str = "") -> dict:
     if status not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
     get(root, item_id)
+    result = _with_observed_writes(root, item_id, status, result)
     with db.tx(root) as conn:
         conn.execute(
             "UPDATE work_item SET status = ?, result = ?, "

@@ -477,11 +477,48 @@ def _glob_re(pattern: str) -> re.Pattern:
     return re.compile("^" + "".join(out) + "$")
 
 
+# HARNESS METADATA IS NOT PROJECT CONTENT, and conflating the two made the
+# system's own instructions unfollowable.
+#
+# Every seat's rules end with the WORK MANIFEST: "append one JSON line to
+# .bgate/progress/<your-task>.jsonl after EVERY completed unit of work". No
+# seat's write_globs contain `.bgate/**` — not one of the seven — so with the
+# hook installed that instruction was refused for every seat, and the agent was
+# left choosing between the rule it was given and the gate in front of it.
+#
+# It went unnoticed because the gate only bites where it is installed: projects
+# without `.claude/settings.json` let those writes through, so the trail existed
+# and the contradiction did not surface. Making enforcement machine-wide is what
+# turned a latent contradiction into a live one.
+#
+# NARROW BY CONSTRUCTION, not `.bgate/**`. That directory also holds `game.db`
+# (the entire project store, which agents must reach through tools so the
+# activity ledger and the versioned writes are not bypassed), `ui-token` (the
+# dashboard bearer token, written 0600 precisely because it is a secret),
+# `agents/` (run logs) and `notify.jsonl`. A blanket allow would hand every seat
+# the auth token and a way to corrupt the DB behind the API. So this is a
+# two-entry allow-list of append-only agent trails, and nothing else.
+#
+# NOT LEASED, EITHER. `handoff/thread.jsonl` is one append-only file per project
+# that concurrent agents are MEANT to share; a lease on it would make the second
+# writer's note a blocked write. The hook skips leasing these paths for that
+# reason — see `hook._is_metadata`.
+METADATA_LANES = (".bgate/progress/**", ".bgate/handoff/**")
+
+
+def is_metadata(path: str) -> bool:
+    """Is this an append-only harness trail every seat may write?"""
+    rel = str(path).replace("\\", "/").lstrip("/")
+    return any(_glob_re(g).match(rel) for g in METADATA_LANES)
+
+
 def can_write(root: str | os.PathLike[str], role: str, path: str,
               owner: str = "") -> dict:
     """May this seat write this path? The oracle a PreToolUse hook asks.
 
-    Three independent gates, all must pass:
+    Three independent gates, all must pass — plus one carve-out ahead of them
+    for harness metadata (see METADATA_LANES), because the checkpoint trail every
+    seat is instructed to keep lives outside every seat's lane.
       1. Lane — the path matches one of the seat's write_globs. Fails CLOSED for
          an unknown or disabled seat: no identity, no writes.
       2. Lock — a binary locked by another EXECUTION is off-limits even in-lane.
@@ -499,6 +536,13 @@ def can_write(root: str | os.PathLike[str], role: str, path: str,
     if seat is None:
         return {"allowed": False, "role": role, "path": rel,
                 "reason": f"unknown or disabled seat {role!r} — fails closed"}
+
+    # The carve-out runs AFTER the unknown-seat check, so it never becomes a way
+    # for an unidentified caller to write anything at all, and BEFORE the lane
+    # check, which is the gate that was refusing the system's own instruction.
+    if is_metadata(rel):
+        return {"allowed": True, "role": role, "path": rel, "owner": owner,
+                "metadata": True}
 
     if not any(_glob_re(g).match(rel) for g in seat["write_globs"]):
         return {"allowed": False, "role": role, "path": rel,
