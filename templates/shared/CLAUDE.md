@@ -41,9 +41,12 @@ This is the whole working cycle. Do it in this order.
 1. **Orient.** `project_status`, `bible_read`, `queue_list`.
 2. **Create work.** `queue_add(seat=..., title=..., brief=..., priority=...)`.
    One item = one deliverable a person could check.
-3. **Claim it.** `queue_next(seat)` hands you the highest-priority queued item
-   for that seat and marks it dispatched. This is how work is claimed — do not
-   just start editing files because you saw a TODO.
+3. **Get it run.** With `bgate serve` up, a queued item is picked up and executed
+   by a spawned agent holding that seat — that is the path that gets a QA gate,
+   and it is the one to use. `queue_next(seat)` only *reads* the highest-priority
+   queued item for that seat: it is a peek, not a claim, and it marks nothing, so
+   two agents calling it get the same row. Either way, do not just start editing
+   files because you saw a TODO.
 4. **Adopt the seat.** `seat_brief(role)` gives you that seat's mission, its
    write lanes, and the bible/canon context it needs. Read it before touching
    anything.
