@@ -66,6 +66,58 @@ def _matches_any(rel: str, patterns: list[str]) -> bool:
     return False
 
 
+class TestGitCarriesWhatShips:
+    """A shipped file that git does not track is invisible until CI.
+
+    THE FAILURE THIS EXISTS FOR: `templates/shared/.gitignore` is a template —
+    it is COPIED INTO scaffolded game projects, where ignoring
+    `export_presets.cfg` is exactly right, because that file holds per-machine
+    export config and can carry an Android signing password. But it also sits
+    inside this repository, so git applied it here and the Web export preset
+    that every scaffolded project is supposed to ship was never committed.
+
+    Everything looked fine on the machine that wrote it: the file is on disk, so
+    the wheel built locally contained it and the tests passed. A fresh clone —
+    CI, a contributor, the release build — got a wheel with no export preset, so
+    `bgate publish` would fail on the one step it exists to remove. Package-data
+    globs cannot save you from a file that is not in the checkout.
+
+    Run against the working tree's git index, skipped when there is no checkout
+    (an installed wheel has no .git).
+    """
+
+    def _untracked(self, tree: Path) -> list[str]:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--ignored=matching", "--", str(tree)],
+            cwd=REPO, capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr
+        bad = []
+        for line in out.stdout.splitlines():
+            status, _, path = line.partition(" ")
+            path = path.strip().strip('"')
+            if status in ("!!", "??") and not path.endswith("/"):
+                bad.append(path)
+        return bad
+
+    @pytest.mark.parametrize("tree", [
+        REPO / "templates",
+        REPO / "bgate_ui" / "static",
+        REPO / "bgate_site" / "theme",
+        REPO / "bgate_engine",
+    ], ids=lambda p: p.name)
+    def test_every_shipped_file_is_in_the_checkout(self, tree):
+        if not (REPO / ".git").exists():
+            pytest.skip("not a git checkout")
+        if not tree.is_dir():
+            pytest.skip(f"{tree.name} not present in this checkout")
+        stray = self._untracked(tree)
+        assert not stray, (
+            "these ship in the wheel but git does not carry them, so a fresh "
+            "clone builds without them:\n  " + "\n  ".join(stray)
+            + "\n(if one is ignored on purpose, `git add -f` it — a package-data "
+            "glob cannot include a file that is not in the checkout)")
+
+
 class TestDeclarations:
     def test_data_only_trees_are_installed_packages(self, cfg):
         """templates/ and bgate_engine/ carry no .py, but scaffold.py resolves
