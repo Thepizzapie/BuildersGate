@@ -150,7 +150,14 @@ DEFAULT_SEATS: dict[str, dict] = {
             "palette audit shown the key colour fails every frame, and a "
             "border-bleed audit is wrong for a bust meant to run off all four "
             "edges. An audit that fires on everything gets switched off, which is "
-            "worse than never having had it."
+            "worse than never having had it.\n"
+            "\n"
+            "A SPEAKING CHARACTER GETS image_talkhead, NOT A STILL BUST. Four "
+            "frames, a looping mouth and a blink, stitched and registered on "
+            "silhouette width. A portrait that moves while its line types out is "
+            "the cheapest animation in a game and the one players read as being "
+            "spoken to. Different job from image_sprites: that animates a body "
+            "through space, this holds a face still and moves only the mouth."
         ),
     },
     "audio": {
@@ -384,12 +391,80 @@ def can_write(root: str | os.PathLike[str], role: str, path: str,
 # an agent that needs the rest can page the specific tool (ref_list,
 # playtest_list, asset_status), which is cheaper than shipping everything to
 # everyone forever.
-MAX_REFS = 40
-MAX_ARTIFACTS = 40
-MAX_CANON = 60
-MAX_FEEDBACK = 25
-MAX_LOCKS = 40
-BODY_CHARS = 1200
+#
+# THE CAPS ARE NOT THE WHOLE STORY, WHICH IS WHY THERE IS A BUDGET BELOW THEM.
+# Every list here was individually capped and the brief still came back at
+# 93,000 characters on a real project — over the CLI's tool-result ceiling, so
+# the call FAILED, the output was spilled to a temp file, and the agent's first
+# act on every dispatch was to grep a dump of its own briefing. Forty items of
+# anything is only small if the items are small; a bible section, a note and a
+# promoted complaint are all prose. So the caps are tighter, prose is trimmed
+# where it is quoted, and a final pass shrinks whatever is still biggest until
+# the payload fits. Everything cut is named in ``truncated``.
+MAX_REFS = 20
+MAX_ARTIFACTS = 20
+MAX_CANON = 30
+MAX_FEEDBACK = 12
+MAX_LOCKS = 25
+MAX_SECTIONS = 14        # bible sections quoted in a brief
+BODY_CHARS = 600         # per bible section
+NOTE_CHARS = 300         # per blackboard note
+FEEDBACK_CHARS = 300     # per promoted complaint
+# The ceiling the whole brief has to fit under, in characters. ~6k tokens: big
+# enough to brief a seat, small enough that no CLI spills it to disk.
+BRIEF_CHARS = 24000
+
+
+def _fit(payload: dict) -> dict:
+    """Shrink the brief until it fits BRIEF_CHARS, biggest prose first.
+
+    The per-list caps are guesses about size; this is the measurement. It runs
+    in order — quote less bible, then fewer artifacts, then fewer canon
+    entries, then drop the feedback text — and stops as soon as the payload is
+    under budget, so a small project is never trimmed at all. Each step it
+    takes is named in ``truncated``.
+    """
+    import json as _json
+
+    def size() -> int:
+        try:
+            return len(_json.dumps(payload, default=str))
+        except Exception:
+            return 0
+
+    if size() <= BRIEF_CHARS:
+        return payload
+
+    cuts = payload.setdefault("truncated", {})
+
+    def trim_bible(chars: int) -> None:
+        for group in (payload.get("bible") or {}).values():
+            for section in (group if isinstance(group, list) else [group]):
+                if isinstance(section, dict) and len(section.get("body") or "") > chars:
+                    section["body"] = section["body"][:chars] + \
+                        "\n…[truncated — bible_read for the full section]"
+
+    steps = [
+        lambda: trim_bible(300),
+        lambda: payload.__setitem__("approved_artifacts",
+                                    (payload.get("approved_artifacts") or [])[:8]),
+        lambda: payload.__setitem__("canon", (payload.get("canon") or [])[:12]),
+        lambda: payload.__setitem__("notes", (payload.get("notes") or [])[:4]),
+        lambda: trim_bible(120),
+        lambda: payload.__setitem__(
+            "promoted_feedback",
+            [{k: v for k, v in item.items() if k != "text"}
+             for item in (payload.get("promoted_feedback") or [])[:6]]),
+    ]
+    for step in steps:
+        step()
+        cuts["over_budget"] = {
+            "note": f"this brief exceeded {BRIEF_CHARS} characters and was "
+                    "shrunk — bible_read, ref_list, lore_list, playtest_list "
+                    "and seat_notes all page the full thing"}
+        if size() <= BRIEF_CHARS:
+            break
+    return payload
 
 
 def _capped(items: list, limit: int, what: str) -> tuple[list, dict | None]:
@@ -448,12 +523,38 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
     locked = assets.list_assets(root, locked_only=True)
     # The bible is prose the seat must read, but a 40-page body is not a brief.
     bible_view = bible.overview(root)
-    for group in bible_view.values():
-        for section in (group if isinstance(group, list) else [group]):
-            if isinstance(section, dict) and len(section.get("body") or "") > BODY_CHARS:
-                section["body"] = section["body"][:BODY_CHARS] + "\n…[truncated — bible_read for the full section]"
+    quoted = 0
+    for key, group in list(bible_view.items()):
+        sections = group if isinstance(group, list) else [group]
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            quoted += 1
+            body = section.get("body") or ""
+            if quoted > MAX_SECTIONS:
+                # Past the cap the section is still LISTED — a seat has to know
+                # the chapter exists — but its prose is one bible_read away.
+                section["body"] = "…[not quoted in the brief — bible_read for it]"
+                truncated.setdefault("bible_read", {
+                    "shown": MAX_SECTIONS,
+                    "note": "sections past the cap are listed without their "
+                            "text — bible_read(section) for any of them"})
+            elif len(body) > BODY_CHARS:
+                section["body"] = body[:BODY_CHARS] + \
+                    "\n…[truncated — bible_read for the full section]"
 
-    return {
+    for item in my_feedback:
+        text = item.get("text") or ""
+        if len(text) > FEEDBACK_CHARS:
+            item["text"] = text[:FEEDBACK_CHARS] + "…[playtest_list for the rest]"
+
+    notes = read_notes(root, limit=note_limit)
+    for note in notes:
+        body = note.get("body") or ""
+        if len(body) > NOTE_CHARS:
+            note["body"] = body[:NOTE_CHARS] + "…[seat_notes for the whole note]"
+
+    return _fit({
         "role": role,
         "your_role": SEAT_IDENTITY,
         "title": seat["title"],
@@ -472,7 +573,7 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "others_locks": cap([{"path": a["path"], "seat": a["lock_seat"]}
                              for a in locked if a["lock_seat"] != role],
                             MAX_LOCKS, "asset_status (others)"),
-        "notes": read_notes(root, limit=note_limit),
+        "notes": notes,
         "truncated": truncated,
         "rules": [
             "Write only inside your lanes; can_write is the oracle, not a suggestion.",
@@ -490,7 +591,7 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
             '"next": "<the very next action>"}. Your death must cost your '
             "successor one file read, not an investigation.",
         ],
-    }
+    })
 
 
 # ---------------------------------------------------------------------------

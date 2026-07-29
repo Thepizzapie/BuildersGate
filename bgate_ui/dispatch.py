@@ -39,6 +39,17 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 _live: dict[int, dict] = {}
 _lock = threading.Lock()
 
+# Items between "we decided to start it" and "there is a process". Held under
+# _lock; see dispatch() for the race it closes.
+_starting: set[int] = set()
+
+# The parsed-feed cursors below are now touched by two threads — the per-run
+# watchdog (which reads the feed every couple of seconds to see whether the run
+# errored out) and whatever request thread is painting the console. Advancing
+# the same byte cursor twice absorbs the same lines twice: duplicated steps,
+# doubled step counts, and a clobbered partial-line remainder.
+_feed_lock = threading.Lock()
+
 # Finished runs, kept so their result can actually be READ. A reaped run used to
 # leave the table on the very next poll, taking the agent's final word with it —
 # the one thing the user was waiting three minutes to see was on screen for
@@ -300,11 +311,41 @@ def _live_count() -> int:
     return sum(1 for e in _live.values() if e["proc"].poll() is None)
 
 
-def dispatch(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
-             model: Optional[str] = None, max_runtime_s: Optional[int] = None,
-             max_cost_usd: Optional[float] = None,
-             allow_dirty: Optional[bool] = None,
-             actor: str = "") -> dict:
+def dispatch(root: str, item_id: int, **kwargs) -> dict:
+    """Spawn one agent for one item, with the start RESERVED against a race.
+
+    Everything _spawn does between its `_live` check and the actual Popen — the
+    scope check, the budget check, git dirty-state, cutting a worktree — takes
+    seconds, and the lock is not held across it. Two callers racing through that
+    window both saw `_live` empty and both spawned a claude tree; the second
+    entry overwrote the first in `_live`, so the first process was never reaped,
+    never budget-checked and never killed. It billed until somebody found it in
+    Task Manager, and it also let the concurrency cap be exceeded.
+
+    That race is now routine rather than theoretical: the auto-deploy thread
+    ticks every few seconds and the autopilot endpoint calls tick() inline on a
+    request thread. So the reservation is taken under the lock, before any of
+    the slow work, and released in a finally whatever happens.
+    """
+    with _lock:
+        if item_id in _live and _live[item_id]["proc"].poll() is None:
+            return {"ok": False, "error": f"item {item_id} already has a live agent"}
+        if item_id in _starting:
+            return _refuse("already_starting",
+                           f"item {item_id} is already being dispatched")
+        _starting.add(item_id)
+    try:
+        return _spawn(root, item_id, **kwargs)
+    finally:
+        with _lock:
+            _starting.discard(item_id)
+
+
+def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
+           model: Optional[str] = None, max_runtime_s: Optional[int] = None,
+           max_cost_usd: Optional[float] = None,
+           allow_dirty: Optional[bool] = None,
+           actor: str = "") -> dict:
     """Spawn a Claude session against a queued item. One per item.
 
     Four things must be true before a process exists: the CLI is there, the item
@@ -496,6 +537,43 @@ def _observed_cost(entry: dict) -> float:
     return best
 
 
+# Terminal ``result`` subtypes: the CLI saying this session is over and it did
+# not work. "success" is deliberately absent — see the call site in
+# _watch_completion for why a successful result must NOT settle the run.
+_ERROR_SUBTYPES = ("error", "error_during_execution", "error_max_turns",
+                   "error_max_tokens")
+
+
+def _terminal_error(root: str, item_id: int) -> str:
+    """The sentence to fail this run with, or "" if it has not errored out.
+
+    Read off the CLI's own terminal event, so it carries the CLI's words —
+    "Failed to authenticate: OAuth session expired" is an actionable line, and
+    a generic 'the agent stopped' is not.
+    """
+    final = _final_event(root, item_id)
+    if not final:
+        return ""
+    subtype = str(final.get("subtype") or "")
+    said = str(final.get("text") or "").strip()
+    errored = final.get("is_error") is True or subtype in _ERROR_SUBTYPES
+    if not errored and subtype and subtype != "success":
+        # Some builds report an auth/setup failure as a plain result with no
+        # error flag at all; the CLI's own wording is the only signal left.
+        # Gated on the subtype NOT being success, because an agent reporting
+        # ABOUT auth — "failed to authenticate against the test fixture, so I
+        # stubbed it" — is a run that worked, and reaping it throws the work
+        # away over a sentence.
+        low = said.lower()
+        errored = low.startswith("failed to authenticate") or (
+            "oauth" in low and "expired" in low)
+    if not errored:
+        return ""
+    return (f"the session ended in error ({subtype or 'error'})"
+            + (f": {said[:400]}" if said else "")
+            + " — it was not going to do anything else, so it was reaped")
+
+
 def _trip(root: str, item_id: int, entry: dict, reason: str) -> None:
     """A budget the agent blew through: kill the tree and say why on the item."""
     _kill_tree(entry["proc"].pid)
@@ -563,6 +641,26 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             _assets.heartbeat(root, f"item-{item_id}")
         except Exception:
             pass
+
+        # A RUN THAT ALREADY FAILED IS NOT STILL WORKING.
+        #
+        # The CLI reports a terminal error — expired OAuth, max turns, an
+        # execution error — as a result event and then goes right back to
+        # waiting on the stdin we deliberately hold open for steering. Nothing
+        # else here notices: the item stays 'dispatched', the process stays
+        # alive, and the board says "thinking" for however long the runtime
+        # ceiling is (half an hour by default, or forever with no ceiling) over
+        # a session that is never going to do anything again. An expired login
+        # then reads to the user as a hung dashboard.
+        #
+        # Only ERROR results settle a run. A successful result event without a
+        # queue_complete is an agent pausing mid-work — steerable, and settling
+        # that would break the channel this whole file exists to keep open.
+        if not entry.get("stdin_closed") and not entry.get("stop_reason"):
+            failure = _terminal_error(root, item_id)
+            if failure:
+                _trip(root, item_id, entry, failure)
+                return
         if not entry.get("stdin_closed"):
             try:
                 if _queue.get(root, item_id)["status"] in ("done", "failed"):
@@ -1107,7 +1205,17 @@ STEER_MARKER = "STEER FROM THE DIRECTOR (act on this now): "
 
 def _add_step(state: dict, step: dict) -> None:
     """Append one step to the ring. What falls off the front is counted, not
-    forgotten — see the ``dropped``/``truncated`` fields read_activity returns."""
+    forgotten — see the ``dropped``/``truncated`` fields read_activity returns.
+
+    Every step is stamped with when it was PARSED. That is a few milliseconds
+    after the CLI wrote it and is the only clock the log offers, but it is what
+    lets a phase say which renders and which sound files came out of it: an
+    artifact row carries created_at, a step did not carry anything to compare it
+    to, so the work an agent produced could not be attributed to the part of the
+    run that produced it. Rounded to the second, which is the resolution the
+    artifact table stores anyway.
+    """
+    step.setdefault("ts", time.time())
     state["steps"].append(step)
     state["step_count"] += 1
     if len(state["steps"]) > MAX_STEPS:
@@ -1193,7 +1301,7 @@ def _is_running(item_id: int) -> bool:
 def read_activity(root: str, item_id: int, limit: int = 40,
                   offset: int = 0) -> dict:
     """An agent's stream-json log as a readable feed — parsed FORWARD FROM A
-    BYTE CURSOR, once.
+    BYTE CURSOR, once. Serialized: see _feed_lock.
 
     The log is documented as 10MB and the dashboard polls every ~3s per live
     agent; read_text() + json.loads on every line of it, every poll, re-parsed
@@ -1209,45 +1317,52 @@ def read_activity(root: str, item_id: int, limit: int = 40,
     """
     key = (_pkey(root), int(item_id))
     log_path = Path(root) / ".bgate" / "agents" / f"item-{item_id}.log"
-    try:
-        size = log_path.stat().st_size
-    except OSError:
-        _activity.pop(key, None)
-        return {"steps": [], "running": _is_running(item_id), "final": None,
-                "step_count": 0, "dropped": 0, "truncated": False}
-
-    state = _activity.get(key)
-    if state is None or state["pos"] > size:
-        # First look, or the log was replaced/truncated under us (a cursor past
-        # EOF means the bytes we already parsed are gone) — start clean.
-        state = {"pos": 0, "rem": b"", "steps": [], "final": None,
-                 "step_count": 0, "bytes_read": 0}
-        _activity[key] = state
-    state["touched"] = time.time()
-    if size > state["pos"]:
+    # ONE READER AT A TIME per process. The cursor advance and the remainder
+    # buffer are read-modify-write, and there are two callers now: the request
+    # thread painting the console, and the per-run watchdog checking whether the
+    # session errored out. Interleaved, they absorb the same byte range twice —
+    # duplicate steps, doubled counts — or one clobbers the other's partial
+    # line and a step is lost outright.
+    with _feed_lock:
         try:
-            with open(log_path, "rb") as fh:
-                fh.seek(state["pos"])
-                chunk = fh.read()
-                state["pos"] = fh.tell()
+            size = log_path.stat().st_size
         except OSError:
-            chunk = b""
-        state["bytes_read"] += len(chunk)
-        lines = (state["rem"] + chunk).split(b"\n")
-        state["rem"] = lines.pop()  # possibly-partial last line
-        for raw in lines:
-            _absorb(state, raw)
-    _prune_feeds()
+            _activity.pop(key, None)
+            return {"steps": [], "running": _is_running(item_id), "final": None,
+                    "step_count": 0, "dropped": 0, "truncated": False}
 
-    kept = state["steps"]
-    end = max(0, len(kept) - max(0, int(offset)))
-    start = max(0, end - int(limit)) if limit else 0
-    window = kept[start:end]
-    return {"steps": window, "running": _is_running(item_id),
-            "final": state["final"], "step_count": state["step_count"],
-            "dropped": state["step_count"] - len(kept),
-            "truncated": len(window) < state["step_count"],
-            "offset": max(0, int(offset)), "limit": int(limit)}
+        state = _activity.get(key)
+        if state is None or state["pos"] > size:
+            # First look, or the log was replaced/truncated under us (a cursor past
+            # EOF means the bytes we already parsed are gone) — start clean.
+            state = {"pos": 0, "rem": b"", "steps": [], "final": None,
+                     "step_count": 0, "bytes_read": 0}
+            _activity[key] = state
+        state["touched"] = time.time()
+        if size > state["pos"]:
+            try:
+                with open(log_path, "rb") as fh:
+                    fh.seek(state["pos"])
+                    chunk = fh.read()
+                    state["pos"] = fh.tell()
+            except OSError:
+                chunk = b""
+            state["bytes_read"] += len(chunk)
+            lines = (state["rem"] + chunk).split(b"\n")
+            state["rem"] = lines.pop()  # possibly-partial last line
+            for raw in lines:
+                _absorb(state, raw)
+        _prune_feeds()
+
+        kept = state["steps"]
+        end = max(0, len(kept) - max(0, int(offset)))
+        start = max(0, end - int(limit)) if limit else 0
+        window = kept[start:end]
+        return {"steps": window, "running": _is_running(item_id),
+                "final": state["final"], "step_count": state["step_count"],
+                "dropped": state["step_count"] - len(kept),
+                "truncated": len(window) < state["step_count"],
+                "offset": max(0, int(offset)), "limit": int(limit)}
 
 
 def _prune_feeds() -> None:

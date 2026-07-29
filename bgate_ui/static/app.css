@@ -1404,6 +1404,389 @@
 /* ═══ VIEWS ═══════════════════════════════════════════════════════════════ */
 @layer views {
 
+  /* ── agents cockpit ─────────────────────────────────────────────────────
+     Two panes that read one payload: a conversation with the director on the
+     left, the same work as a live delegation graph on the right. The whole
+     thing is height-bound rather than page-scrolled — a graph inside a
+     scrolling page is a graph you cannot pan. */
+  .cockpit{
+    display:grid; grid-template-columns:minmax(330px,.9fr) 1.6fr; gap:var(--s-6);
+    height:calc(100vh - 200px); min-height:520px;
+  }
+  .cockpit[hidden]{display:none}
+  .ck-left{display:flex; flex-direction:column; gap:var(--s-5); min-width:0; min-height:0}
+  .ck-right{
+    position:relative; display:flex; flex-direction:column; min-width:0; min-height:0;
+    border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
+    overflow:hidden;
+  }
+
+  /* transcript */
+  .ck-chathead{
+    flex:none; display:flex; align-items:center; gap:var(--s-4);
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label); color:var(--text-3);
+  }
+  .ck-sess.archived{color:var(--warn)}
+  .ck-sess b{color:var(--warn)}
+  .ck-archbar{
+    padding:var(--s-4); border:1px dashed var(--warn-line); border-radius:var(--r-sm);
+    background:var(--warn-soft); color:var(--warn); font-size:var(--fs-xs);
+  }
+  .ck-arch{color:var(--text-3); margin-left:auto}
+  .ck-chat{
+    flex:1; min-height:160px; overflow-y:auto; padding:var(--s-6);
+    border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
+    display:flex; flex-direction:column; gap:var(--s-6);
+  }
+  .ck-welcome{color:var(--text-3); font-size:var(--fs-sm); line-height:var(--lh)}
+  .ck-welcome .ck-eg{margin-top:var(--s-5); color:var(--text-dim); font-family:var(--mono); font-size:var(--fs-xs)}
+  .ck-turn{display:flex; flex-direction:column; gap:var(--s-4); cursor:pointer}
+  .ck-msg{border-radius:var(--r-md); padding:var(--s-4) var(--s-5); max-width:100%}
+  .ck-msg.you{background:var(--surface-3); border:1px solid var(--line)}
+  .ck-msg.dir{background:var(--accent-wash); border:1px solid var(--accent-line)}
+  .ck-msg.dir.bad{background:var(--bad-soft); border-color:var(--bad-line)}
+  .ck-who{
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label); color:var(--text-3); margin-bottom:var(--s-3);
+    display:flex; align-items:center; gap:var(--s-3);
+  }
+  .ck-msg.dir .ck-who{color:var(--accent)}
+  .ck-txt{font-size:var(--fs-sm); line-height:var(--lh); color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere}
+  .ck-txt.thinking{color:var(--text-3); font-style:italic}
+  .ck-cost,.ck-steps{margin-top:var(--s-3); font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3)}
+  .ck-dots{display:inline-flex; gap:3px}
+  .ck-dots i{width:3px; height:3px; border-radius:50%; background:var(--accent); animation:ckdot 1s infinite}
+  .ck-dots i:nth-child(2){animation-delay:.15s}
+  .ck-dots i:nth-child(3){animation-delay:.3s}
+  @keyframes ckdot{0%,60%,100%{opacity:.25} 30%{opacity:1}}
+
+  /* composer */
+  .ck-target{
+    display:flex; align-items:center; gap:var(--s-3); align-self:flex-start;
+    padding:var(--s-2) var(--s-3) var(--s-2) var(--s-5); border-radius:var(--r-full);
+    border:1px solid var(--accent-line); background:var(--accent-soft);
+    font-family:var(--mono); font-size:var(--fs-2xs); color:var(--accent);
+    text-transform:uppercase; letter-spacing:.06em;
+  }
+  .ck-target[hidden]{display:none}
+  .ck-target-x{
+    width:16px; height:16px; border:0; border-radius:50%; background:transparent;
+    color:var(--accent); font-size:var(--fs-sm); line-height:1; cursor:pointer; padding:0;
+  }
+  .ck-target-x:hover{background:var(--accent); color:var(--accent-fg)}
+  .ck-msg.steer{background:var(--surface-3); border:1px solid var(--accent-line); border-left-width:3px}
+  .ck-msg.steer .ck-who{color:var(--accent)}
+  .ck-msg.steer.error{border-color:var(--bad-line)}
+  .ck-msg.steer.error .ck-steps{color:var(--bad)}
+  .ck-msg.steer.read .ck-steps{color:var(--good)}
+  .ck-composer{display:flex; gap:var(--s-4); align-items:flex-end}
+  .ck-composer textarea{
+    flex:1; resize:none; min-height:40px; padding:var(--s-5);
+    background:var(--surface-1); border:1px solid var(--line); border-radius:var(--r-md);
+    color:var(--text); font:inherit; font-size:var(--fs-sm); line-height:var(--lh);
+  }
+  .ck-composer textarea:focus{outline:none; border-color:var(--accent)}
+  .ck-composer .qbtn{border-radius:var(--r-full); padding:var(--s-4) var(--s-6)}
+
+  /* the cat */
+  .ck-mascot{
+    display:flex; align-items:center; gap:var(--s-5); padding:var(--s-5);
+    border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
+  }
+  .ck-cat{flex:none; width:112px; height:112px; display:flex; align-items:flex-end; justify-content:center}
+  .ck-cat .ck-sprite{max-width:112px; max-height:112px; image-rendering:pixelated}
+
+  /* THE SPRITE. One 512x128 sheet, four 128px cells: rest, half, wide, blink.
+     background-size:400% means one cell fills the box; background-position-x
+     picks the cell, at 0% / 33.333% / 66.667% / 100%. steps(1,end) on every
+     keyframe is what keeps it a FLIPBOOK -- without it the browser tweens
+     between cells and the face slides instead of cutting. */
+  .cat-sprite{
+    width:112px; height:112px;
+    background:url("img/mascot_talk.png") no-repeat 0 0/400% 100%;
+    image-rendering:pixelated;
+    animation:catidle 6.4s steps(1,end) infinite, catbob 3.4s var(--ease) infinite;
+  }
+  /* Idle sits on the resting mouth and blinks. The blink is 4% of the cycle:
+     long enough to read, short enough that it is not a wink. */
+  @keyframes catidle{
+    0%,94%{background-position-x:0%}
+    95%,98%{background-position-x:100%}
+    99%,100%{background-position-x:0%}
+  }
+  /* Talking walks rest -> half -> wide -> half. It never reaches cell 3, so a
+     blink cannot land mid-syllable. */
+  @keyframes cattalk{
+    0%,24%{background-position-x:0%}
+    25%,49%{background-position-x:33.333%}
+    50%,74%{background-position-x:66.667%}
+    75%,100%{background-position-x:33.333%}
+  }
+  .ck-mascot[data-talking] .cat-sprite{
+    animation:cattalk .34s steps(1,end) infinite, catbob 3.4s var(--ease) infinite;
+  }
+  @keyframes catbob{0%,100%{transform:translateY(0)} 50%{transform:translateY(-2px)}}
+  /* Mood is the whole point: the cat is a readout, not a decoration. With one
+     flat sprite there are no sub-parts to animate, so mood rides the two things
+     a sprite still has -- how fast it moves and how it holds itself. */
+  .ck-mascot[data-mood="working"] .cat-sprite{animation-duration:1.5s, 1.5s}
+  .ck-mascot[data-mood="working"][data-talking] .cat-sprite{animation-duration:.26s, 1.5s}
+  .ck-mascot[data-mood="broken"] .cat-sprite{
+    animation:catidle 6.4s steps(1,end) infinite, catshake .6s var(--ease) infinite;
+  }
+  .ck-mascot[data-mood="broken"][data-talking] .cat-sprite{
+    animation:cattalk .3s steps(1,end) infinite, catshake .6s var(--ease) infinite;
+  }
+  .ck-mascot[data-mood="gate"] .cat-sprite{animation-duration:3.2s, 3.4s}
+  .ck-mascot[data-mood="done"] .cat-sprite{animation-duration:8s, 5s}
+  @keyframes catshake{0%,100%{transform:translateX(0)} 25%{transform:translateX(-1.5px)} 75%{transform:translateX(1.5px)}}
+  .ck-bubble{
+    position:relative; flex:1; min-width:0; padding:var(--s-5) var(--s-6);
+    background:var(--surface-3); border:1px solid var(--line); border-radius:var(--r-lg);
+    font-size:var(--fs-sm); line-height:var(--lh-snug); color:var(--text);
+  }
+  .ck-bubble::before{
+    content:""; position:absolute; left:-7px; top:50%; margin-top:-6px;
+    width:12px; height:12px; background:var(--surface-3);
+    border-left:1px solid var(--line); border-bottom:1px solid var(--line);
+    transform:rotate(45deg);
+  }
+  .ck-bubble.pop{animation:ckpop var(--dur-slow) var(--ease-out)}
+  @keyframes ckpop{from{opacity:0; transform:translateY(3px)} to{opacity:1; transform:none}}
+  .ck-mascot[data-mood="broken"] .ck-bubble{border-color:var(--bad-line); color:var(--bad)}
+  .ck-mascot[data-mood="gate"] .ck-bubble{border-color:var(--warn-line)}
+
+  /* agent responses */
+  /* Two of these stack under the cat (queue, then live responses), so they are
+     capped and scroll internally — the transcript is what gets the slack. */
+  .ck-repwrap{
+    flex:0 0 auto; min-height:96px; max-height:180px; display:flex; flex-direction:column;
+    border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
+    overflow:hidden;
+  }
+  .ck-sec{
+    flex:none; padding:var(--s-4) var(--s-5); border-bottom:1px solid var(--line);
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label); color:var(--text-3);
+    display:flex; align-items:center; gap:var(--s-4);
+  }
+  .ck-sec .n{color:var(--text); font-variant-numeric:tabular-nums}
+  .ck-replies{flex:1; overflow-y:auto; padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2)}
+  .ck-rep{
+    display:grid; grid-template-columns:auto 1fr; gap:var(--s-2) var(--s-4); align-items:baseline;
+    width:100%; text-align:left; padding:var(--s-4); border:1px solid transparent;
+    border-left:2px solid var(--line-strong); border-radius:var(--r-sm);
+    background:var(--surface-1); color:var(--text); font:inherit; cursor:pointer;
+  }
+  .ck-rep:hover{border-color:var(--line); border-left-color:var(--accent); background:var(--surface-3)}
+  .ck-rep.live{border-left-color:var(--accent)}
+  .ck-rep.failed{border-left-color:var(--bad)}
+  .ck-rep.done{border-left-color:var(--good)}
+  .ck-rep-seat{
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label);
+  }
+  .ck-rep-t{font-size:var(--fs-sm); color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .ck-rep-l{
+    grid-column:1 / -1; font-size:var(--fs-xs); color:var(--text-2); line-height:var(--lh-snug);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .ck-rep-l b{color:var(--text); font-family:var(--mono); font-size:var(--fs-2xs)}
+  .ck-empty{padding:var(--s-6); text-align:center; color:var(--text-3); font-size:var(--fs-xs)}
+  .ck-hint{font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-dim)}
+  /* the staging queue: nothing here is on the graph until it is deployed */
+  .ck-q{
+    display:flex; align-items:center; gap:var(--s-4); padding:var(--s-3) var(--s-4);
+    border:1px solid transparent; border-left:2px solid var(--line-strong);
+    border-radius:var(--r-sm); background:var(--surface-1);
+  }
+  .ck-q:hover{border-color:var(--line); border-left-color:var(--warn); background:var(--surface-3)}
+  .ck-q .ck-rep-t{flex:1; min-width:0}
+  .ck-q .qbtn{flex:none}
+  .ck-x{
+    flex:none; width:20px; height:20px; padding:0; border:0; border-radius:var(--r-sm);
+    background:transparent; color:var(--text-dim); font-size:var(--fs-md); line-height:1;
+    cursor:pointer;
+  }
+  .ck-x:hover{background:var(--bad-soft); color:var(--bad)}
+
+  /* graph bar + auto-deploy switch */
+  /* Fixed height, not padding-derived: the detail rail is absolutely
+     positioned under this bar, and a bar whose height moves with its font
+     leaves a sliver of itself under the rail. */
+  .ck-bar{
+    flex:none; height:44px; box-sizing:border-box; display:flex; align-items:center;
+    gap:var(--s-5); padding:0 var(--s-5); border-bottom:1px solid var(--line);
+    background:var(--surface-1);
+  }
+  .ck-spacer{flex:1}
+  .ck-toggle{
+    display:inline-flex; align-items:center; gap:var(--s-4); padding:var(--s-3) var(--s-5);
+    border:1px solid var(--line); border-radius:var(--r-full); background:var(--surface-2);
+    color:var(--text-2); font:inherit; font-size:var(--fs-xs); cursor:pointer;
+  }
+  .ck-toggle:hover{border-color:var(--line-strong); color:var(--text)}
+  .ck-toggle .ck-sw{
+    width:26px; height:14px; border-radius:var(--r-full); background:var(--surface-4);
+    border:1px solid var(--line-strong); position:relative; transition:background var(--dur) var(--ease);
+  }
+  .ck-toggle .ck-sw::after{
+    content:""; position:absolute; top:1px; left:1px; width:10px; height:10px; border-radius:50%;
+    background:var(--text-3); transition:transform var(--dur) var(--ease), background var(--dur) var(--ease);
+  }
+  .ck-toggle.on{border-color:var(--accent-line); color:var(--text); background:var(--accent-soft)}
+  .ck-toggle.on .ck-sw{background:var(--accent); border-color:var(--accent)}
+  .ck-toggle.on .ck-sw::after{transform:translateX(12px); background:var(--accent-fg)}
+  .ck-why{font-size:var(--fs-xs); color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .ck-why.warn{color:var(--warn)}
+
+  /* the canvas + its detail rail */
+  .ck-canvas{flex:1; position:relative; min-height:0}
+  .ck-detail{
+    position:absolute; top:44px; right:0; bottom:0; width:302px; z-index:6;
+    background:var(--surface-1); border-left:1px solid var(--line);
+    padding:var(--s-6); overflow-y:auto;
+    transform:translateX(102%); transition:transform var(--dur) var(--ease-out);
+  }
+  .ck-detail.open{transform:none}
+  .cg-dhead{display:flex; align-items:flex-start; gap:var(--s-4); margin-bottom:var(--s-5)}
+  .cg-de{
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label); color:var(--text-3);
+  }
+  .cg-dt{font-size:var(--fs-md); color:var(--text); line-height:var(--lh-snug)}
+  .cg-dt2{font-size:var(--fs-sm); color:var(--text); line-height:var(--lh-snug); margin-bottom:var(--s-5)}
+  .cg-x{
+    margin-left:auto; flex:none; width:22px; height:22px; border:0; border-radius:var(--r-sm);
+    background:transparent; color:var(--text-3); font-size:var(--fs-lg); line-height:1; cursor:pointer;
+  }
+  .cg-x:hover{background:var(--surface-3); color:var(--text)}
+  .cg-kv{
+    display:flex; justify-content:space-between; gap:var(--s-5);
+    padding:var(--s-3) 0; border-bottom:1px solid var(--line-soft); font-size:var(--fs-sm);
+  }
+  .cg-kv span:first-child{font-family:var(--mono); font-size:var(--fs-xs); color:var(--text-3)}
+  .cg-sec{
+    margin:var(--s-6) 0 var(--s-4); font-family:var(--mono); font-size:var(--fs-3xs);
+    text-transform:uppercase; letter-spacing:var(--track-label); color:var(--text-3);
+  }
+  .cg-quote{
+    padding:var(--s-5); background:var(--surface-3); border-left:2px solid var(--accent);
+    border-radius:var(--r-sm); font-size:var(--fs-sm); line-height:var(--lh); color:var(--text);
+    white-space:pre-wrap;
+  }
+  .cg-answer{
+    padding:var(--s-5); background:var(--surface-2); border:1px solid var(--line);
+    border-radius:var(--r-sm); font-size:var(--fs-sm); line-height:var(--lh); color:var(--text-2);
+    white-space:pre-wrap; max-height:220px; overflow-y:auto;
+  }
+  .cg-answer.live{border-color:var(--accent-line)}
+  .cg-note{margin-top:var(--s-5); font-size:var(--fs-xs); line-height:var(--lh); color:var(--text-3)}
+  .cg-rows{display:flex; flex-direction:column; gap:var(--s-2)}
+  .cg-row{
+    display:flex; align-items:baseline; gap:var(--s-4); width:100%; text-align:left;
+    padding:var(--s-3) var(--s-4); border:0; border-radius:var(--r-sm);
+    background:var(--surface-2); color:var(--text-2); font:inherit; font-size:var(--fs-xs); cursor:pointer;
+  }
+  .cg-row:hover{background:var(--surface-3); color:var(--text)}
+  .cg-row-s{font-family:var(--mono); font-size:var(--fs-3xs); flex:none}
+  .cg-row-t{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .cg-row-m{font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3)}
+  .cg-acts{display:flex; flex-wrap:wrap; gap:var(--s-3); margin-top:var(--s-6)}
+  .cg-steer{display:flex; gap:var(--s-3); margin-top:var(--s-5)}
+  .cg-steer .cg-steer-in{flex:1; min-width:0}
+  .cg-feed{display:flex; flex-direction:column; gap:var(--s-2); max-height:240px; overflow-y:auto}
+  .cg-step{
+    padding:var(--s-3) var(--s-4); border-radius:var(--r-sm); background:var(--surface-2);
+    font-size:var(--fs-xs); line-height:var(--lh-snug); color:var(--text-2); overflow-wrap:anywhere;
+  }
+  .cg-step b{color:var(--text); font-family:var(--mono); font-size:var(--fs-2xs)}
+  .cg-step.k-steer{border-left:2px solid var(--accent); color:var(--text)}
+  /* a step that looked at something, and the reading it gave after looking */
+  .cg-shots{display:flex; gap:var(--s-3); margin-top:var(--s-3); flex-wrap:wrap}
+  .cg-shot-in{
+    max-width:100%; width:auto; max-height:150px; border-radius:var(--r-sm);
+    border:1px solid var(--line); background:var(--surface-1); image-rendering:pixelated;
+    display:block;
+  }
+  .cg-step.analysis{
+    border-left:2px solid var(--info); background:var(--info-soft); color:var(--text);
+  }
+  .cg-tag{
+    display:inline-block; margin-right:var(--s-3); padding:0 var(--s-3);
+    border-radius:var(--r-full); border:1px solid var(--info-line);
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:.08em; color:var(--info);
+  }
+  .cg-step.k-say{color:var(--text)}
+  .cg-empty{padding:var(--s-5); color:var(--text-3); font-size:var(--fs-xs); text-align:center}
+  .cg-shot{
+    width:100%; border-radius:var(--r-sm); border:1px solid var(--line);
+    background:var(--surface-2); image-rendering:pixelated;
+  }
+
+  /* node bodies inside the graph */
+  .cg-meta{
+    display:flex; gap:var(--s-4); font-family:var(--mono); font-size:var(--fs-3xs);
+    color:var(--text-3); text-transform:uppercase; letter-spacing:.06em;
+  }
+  .cg-meta .on{color:var(--good)}
+  .cg-meta .off{color:var(--text-dim)}
+  /* the seat, now that a seat has no node of its own */
+  .cg-chip{
+    color:var(--sc); border:1px solid var(--sc); border-radius:var(--r-full);
+    padding:0 var(--s-3); opacity:.9;
+  }
+  .cg-link{
+    display:block; margin-top:var(--s-4); padding:0; border:0; background:none;
+    color:var(--text-3); font:inherit; font-size:var(--fs-xs); text-decoration:underline;
+    text-underline-offset:2px; cursor:pointer;
+  }
+  .cg-link:hover{color:var(--accent)}
+  .cg-line{
+    margin-top:var(--s-3); font-size:var(--fs-xs); line-height:var(--lh-snug); color:var(--text-2);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .cg-line.live{color:var(--text)}
+  .cg-line b{color:var(--text); font-family:var(--mono); font-size:var(--fs-2xs)}
+  .cg-said{font-size:var(--fs-xs); line-height:var(--lh-snug); color:var(--text)}
+  .cg-meta .cg-warn{color:var(--warn)}
+  .cg-note.bad{color:var(--bad)}
+
+  /* what a pocket of work produced — in the node, and in the rail */
+  .cg-strip{display:flex; gap:var(--s-2); margin-top:var(--s-3); flex-wrap:wrap}
+  /* what it is LOOKING at, as opposed to what it made */
+  .cg-mini.seen{border-style:dashed; opacity:.85}
+  .cg-strip.big{gap:var(--s-3)}
+  .cg-strip.big .cg-thumb{width:64px; height:64px}
+  .cg-eye{display:block; line-height:0}
+  .cg-eye:hover .cg-thumb{border-color:var(--accent)}
+  .cg-mini{
+    width:34px; height:34px; object-fit:cover; border-radius:var(--r-xs);
+    border:1px solid var(--line); background:var(--surface-1); image-rendering:pixelated;
+  }
+  audio.cg-mini{width:118px; height:26px}
+  .cg-made{display:flex; flex-direction:column; gap:var(--s-4)}
+  .cg-madeone{display:flex; gap:var(--s-4); align-items:center}
+  .cg-thumb{
+    width:56px; height:56px; flex:none; object-fit:contain; border-radius:var(--r-sm);
+    border:1px solid var(--line); background:var(--surface-2); image-rendering:pixelated;
+  }
+  audio.cg-thumb{width:100%; height:32px; border:0}
+  .cg-madelabel{
+    min-width:0; font-size:var(--fs-xs); color:var(--text);
+    overflow:hidden; text-overflow:ellipsis;
+  }
+  .cg-madelabel span{
+    display:block; font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3);
+  }
+  .cg-file{
+    display:inline-block; padding:var(--s-2) var(--s-3); border-radius:var(--r-xs);
+    background:var(--surface-1); border:1px solid var(--line);
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-2);
+  }
+
   /* ── overview ──────────────────────────────────────────────────────────── */
   .ov-stats{
     display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
@@ -1865,6 +2248,16 @@
 
   @media(max-width:1250px){
     .col2{grid-template-columns:1fr}
+  }
+
+  /* The cockpit's two panes stop being two panes before either becomes
+     unusable: a 300px-wide node graph is not a node graph. Stacked, the chat
+     keeps its height and the graph gets a fixed slab under it. */
+  @media(max-width:1150px){
+    .cockpit{grid-template-columns:1fr; height:auto; min-height:0}
+    .ck-left{min-height:520px}
+    .ck-right{height:min(62vh,620px)}
+    .ck-detail{width:min(302px,86%)}
   }
 
   @media(max-width:1180px){
