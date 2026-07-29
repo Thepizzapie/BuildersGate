@@ -640,6 +640,20 @@ def console_signoff(payload: dict) -> dict:
     return {"ok": True, "item_id": item_id, "verdict": verdict, "status": "done"}
 
 
+@router.post("/api/console/killswitch")
+def console_killswitch(payload: dict | None = None) -> dict:
+    """Stop every agent on this project and turn auto-deploy off.
+
+    Deliberately one call with no arguments to get right: in the moment you
+    need this you are not going to enumerate item ids. See dispatch.kill_all
+    for the order it does things in and why that order matters.
+    """
+    reason = str((payload or {}).get("reason") or "").strip()
+    r = root()
+    return _dispatch.kill_all(str(r), reason=reason or "stopped from the console",
+                              actor=_activity.current_actor())
+
+
 @router.get("/api/console/autopilot")
 def autopilot_get() -> dict:
     return _autodeploy.state(root())

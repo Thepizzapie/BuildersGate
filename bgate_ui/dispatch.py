@@ -64,6 +64,17 @@ _activity: dict[tuple[str, int], dict] = {}
 MAX_STEPS = 500      # ring per run; what falls off is counted, not hidden
 MAX_FEEDS = 200      # parsed feeds held at once
 
+# The two backstops that make "no rogue agents" true rather than aspirational.
+#
+# HARD_RUNTIME_S is the ceiling that applies when the project's budget names
+# none (max_runtime_s = 0 used to mean forever). STALL_S kills a session that is
+# alive but has produced no observable output at all — no log line, no file —
+# for that long: that is a wedged process holding a concurrency slot, not work.
+# Both are deliberately generous; they are the difference between a bad run and
+# an unbounded one, not a performance policy.
+HARD_RUNTIME_S = int(os.environ.get("BGATE_MAX_RUNTIME_S") or 2 * 60 * 60)
+STALL_S = int(os.environ.get("BGATE_STALL_S") or 25 * 60)
+
 # Projects whose stranded-item reconciliation has already run this process.
 _reconciled: set[str] = set()
 
@@ -622,10 +633,30 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             return
 
         # The ceilings, enforced from spawn — not from completion.
-        limit_s = int(entry.get("max_runtime_s") or 0)
-        if limit_s and time.monotonic() - entry["started_at"] >= limit_s:
+        #
+        # NOTHING RUNS UNBOUNDED. The budget's max_runtime_s is settable to 0,
+        # which used to mean "no wall clock at all" — an agent that never
+        # self-reports then runs until someone notices, which on a machine left
+        # alone overnight is the single most expensive failure this system can
+        # have. 0 now means the hard cap, not infinity.
+        limit_s = int(entry.get("max_runtime_s") or 0) or HARD_RUNTIME_S
+        if time.monotonic() - entry["started_at"] >= limit_s:
             _trip(root, item_id, entry,
                   f"killed: exceeded the {limit_s // 60}-minute runtime budget")
+            return
+
+        # HUNG, as distinct from slow. A wedged agent — one whose MCP child
+        # died holding the pipe — is alive, costs nothing more, and will sit
+        # there occupying a concurrency slot until the wall clock finally fires
+        # half an hour later. Silence is measured against real output (the log
+        # AND files under .bgate_out / game assets) precisely so that a 30-minute
+        # atomic image batch, which writes nothing until it returns, is not
+        # mistaken for a corpse.
+        silent = _last_output_age_s(root, entry)
+        if silent is not None and silent >= STALL_S:
+            _trip(root, item_id, entry,
+                  f"killed: no output of any kind for {silent // 60} minutes — "
+                  "the session was hung, not working")
             return
         limit_usd = float(entry.get("max_cost_usd") or 0)
         if limit_usd:
@@ -1017,6 +1048,74 @@ def _kill_tree(pid: int) -> None:
             os.kill(pid, 9)
     except Exception:
         pass
+
+
+def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
+    """THE KILL SWITCH. Stop every agent on this project, now, and keep it off.
+
+    For the moment where something is wrong and you do not yet know what: a run
+    editing files it should not, a delegation that multiplied, a bill climbing
+    while you read this. It does four things in the order that matters, because
+    doing them in any other order leaves a gap something can restart through:
+
+      1. auto-deploy OFF, first — killing agents while the loop is still on is
+         how you get a fresh one dispatched before the old one has finished
+         dying;
+      2. every live agent in THIS process killed by tree (stop(), so the item
+         records that a human stopped it rather than 'exited without reporting');
+      3. every recorded pid from ANY previous or parallel dashboard reaped —
+         the ledger on disk outlives the process that wrote it, which is the
+         whole reason orphans exist;
+      4. anything still sitting in 'dispatched' settled, so the board does not
+         claim work is running after this returns.
+
+    Safe to call twice; safe to call with nothing running.
+    """
+    stopped, errors = [], []
+    with _lock:
+        live_ids = [k for k, e in _live.items() if e["proc"].poll() is None]
+
+    auto = None
+    try:
+        from bgate_ui import autodeploy as _autodeploy
+        if _autodeploy.enabled(root):
+            _autodeploy.set_enabled(root, False)
+            auto = "auto-deploy turned off"
+    except Exception as exc:  # never let the switch fail on a side concern
+        errors.append(f"auto-deploy: {type(exc).__name__}: {exc}")
+
+    for item_id in live_ids:
+        try:
+            result = stop(item_id, actor=actor or "the kill switch")
+            (stopped if result.get("ok") else errors).append(
+                item_id if result.get("ok") else f"#{item_id}: {result.get('error')}")
+        except Exception as exc:  # one wedged pipe must not save the others
+            errors.append(f"#{item_id}: {type(exc).__name__}: {exc}")
+
+    orphans = {}
+    try:
+        orphans = reap_orphans(root)
+    except Exception as exc:
+        errors.append(f"orphan sweep: {type(exc).__name__}: {exc}")
+
+    settled = {}
+    try:
+        settled = reconcile(root)
+    except Exception as exc:
+        errors.append(f"reconcile: {type(exc).__name__}: {exc}")
+
+    note = reason or "emergency stop"
+    try:
+        from bgate_core import activity as _activity
+        _activity.log(root, "killswitch",
+                      f"KILL SWITCH — {len(stopped)} agent(s) stopped, "
+                      f"{len(orphans.get('killed') or [])} orphan(s) reaped: {note}",
+                      actor=actor or None)
+    except Exception:
+        pass
+    return {"ok": True, "stopped": stopped, "orphans": orphans.get("killed") or [],
+            "settled": settled.get("cleared") or settled.get("settled") or [],
+            "autopilot": auto, "errors": errors, "reason": note}
 
 
 def reap_orphans(root: str) -> dict:
