@@ -30,8 +30,10 @@ from bgate_core import controls as _controls
 from bgate_core import queue as _queue
 from bgate_core.util import rows as _rows
 from bgate_ui import api as _api
+from bgate_ui import autodeploy as _autodeploy
 from bgate_ui import dispatch as _dispatch
 from bgate_ui import qa_gate as _qa_gate
+from bgate_ui import steerpump as _steerpump
 from bgate_ui import routes as _routes
 
 app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None)
@@ -47,6 +49,21 @@ def _start_qa_gate() -> None:
     # before they count. Fail-safe — a missing project just means no gate.
     try:
         _qa_gate.start(str(_root()))
+    except Exception:
+        pass
+    # Auto-deploy: the loop that dispatches queued work so a delegation's
+    # children do not sit waiting for someone to press a button seven times.
+    # The thread starts regardless — it reads the per-project switch every tick,
+    # so turning it on in the browser must not need a restart.
+    try:
+        _autodeploy.start(str(_root()))
+    except Exception:
+        pass
+    # The steer pump: only this process holds the agents' stdin, so it is the
+    # only one that can deliver a message the director (or the MCP server, or a
+    # second dashboard) left for a running agent.
+    try:
+        _steerpump.start(str(_root()))
     except Exception:
         pass
     # Sweep seat agents orphaned by a previous server run (their claude.exe

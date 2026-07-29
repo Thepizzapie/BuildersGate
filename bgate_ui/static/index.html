@@ -76,7 +76,82 @@
       </section>
 
       <section class="deck-view" id="view-agents">
-        <div class="view-heading"><div><span class="eyebrow">Orchestration</span><h2>Agents</h2></div><p>Dispatch work to a seat, then watch and steer it live.</p></div>
+        <div class="view-heading">
+          <div><span class="eyebrow">Orchestration</span><h2>Agents</h2></div>
+          <div class="atlas-modes" id="agents-modes">
+            <button class="atlas-mode active" data-m="console" onclick="setAgentsMode('console')">console · talk &amp; watch</button>
+            <button class="atlas-mode" data-m="board" onclick="setAgentsMode('board')">board</button>
+          </div>
+        </div>
+
+        <!-- The cockpit. Left: one conversation with the director, the cat, and
+             what every other seat has just said. Right: the same work as a live
+             delegation graph. Both read one payload (/api/console/state) polled
+             once by agents_console.js. -->
+        <div class="cockpit" id="cockpit">
+          <div class="ck-left">
+            <div class="ck-chathead">
+              <span class="ck-sess" id="ck-sess">this session</span>
+              <span class="ck-spacer"></span>
+              <button class="qbtn small ghost" id="ck-history" type="button"
+                      title="Earlier conversations — nothing is deleted, the logs are still there">history</button>
+              <button class="qbtn small ghost" id="ck-clear" type="button"
+                      title="File this conversation and start a fresh one">clear</button>
+            </div>
+            <div class="ck-chat" id="ck-chat"><div class="empty">waking the console…</div></div>
+            <!-- The composer talks to the director by default. Aimed at a
+                 running agent (from the graph, or by typing "@41 …") the same
+                 box steers that agent instead. -->
+            <div class="ck-target" id="ck-target" hidden>
+              <span class="ck-target-l"></span>
+              <button class="ck-target-x" id="ck-target-x" type="button" aria-label="Talk to the director again">×</button>
+            </div>
+            <form class="ck-composer" id="ck-say-form">
+              <textarea id="ck-say" rows="1" maxlength="4000"
+                placeholder="tell the director what you want — it answers, then delegates…"></textarea>
+              <button class="qbtn" id="ck-send" type="submit">send</button>
+            </form>
+            <div class="ck-mascot" id="ck-mascot" data-mood="idle">
+              <div class="ck-cat" id="ck-cat"></div>
+              <div class="ck-bubble" id="ck-bubble">saddling up…</div>
+            </div>
+            <!-- Staging. The director queues work here; nothing reaches the
+                 graph until you deploy it, so the canvas only ever shows work
+                 that is actually happening. -->
+            <div class="ck-repwrap">
+              <div class="ck-sec">Queue <span class="n" id="ck-queue-n">0</span>
+                <span class="ck-spacer"></span>
+                <button class="qbtn small ghost" id="ck-clear-queue" type="button"
+                        title="Discard every waiting ticket">clear</button>
+                <button class="qbtn small ghost" id="ck-deploy-all" type="button">deploy all</button>
+              </div>
+              <div class="ck-replies" id="ck-queue"></div>
+            </div>
+            <div class="ck-repwrap">
+              <div class="ck-sec">Agent responses <span class="n" id="ck-replies-n">0</span>
+                <span class="ck-spacer"></span><span class="ck-hint">live only</span></div>
+              <div class="ck-replies" id="ck-replies"></div>
+            </div>
+          </div>
+          <div class="ck-right">
+            <div class="ck-bar">
+              <button class="ck-toggle" id="ck-auto" type="button" aria-pressed="false"
+                      title="Dispatch queued work automatically as slots free up">
+                <span class="ck-sw"></span><span class="ck-auto-l">auto-deploy off</span>
+              </button>
+              <span class="ck-why" id="ck-auto-why"></span>
+              <span class="ck-spacer"></span>
+              <button class="qbtn small ghost" id="ck-filter" type="button"
+                      title="Showing work that is running, queued, broken, or just landed">in flight</button>
+              <button class="qbtn small ghost" id="ck-fit" type="button">fit</button>
+              <button class="qbtn small ghost" id="ck-relayout" type="button">re-lay out</button>
+            </div>
+            <div class="ck-canvas" id="ck-canvas"></div>
+            <aside class="ck-detail" id="ck-detail"></aside>
+          </div>
+        </div>
+
+        <div id="agents-board" hidden>
         <div class="orch-composer">
           <div class="orch-composer-row">
             <select id="q-seat" aria-label="Seat"></select>
@@ -109,6 +184,7 @@
           <details class="orch-activity"><summary>Live activity</summary>
             <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
           </details>
+        </div>
         </div>
       </section>
 
@@ -444,11 +520,37 @@ const DECK_CRUMB = {
  * function runs again once the modules have registered. */
 function activateWorkspace(name){
   const owners = { seats: "SeatShell", studio: "Studio", atlas: "Atlas",
-                   world: "World", assets: "AssetLib" };
+                   world: "World", assets: "AssetLib", agents: "AgentsConsole" };
   if (name === "atlas") return setAtlasMode(atlasMode);
+  // RETURN, like atlas: setAgentsMode already activates the console, and
+  // falling through to the owners map below activated it a second time —
+  // two /api/console/state requests on every click of the rail item.
+  if (name === "agents") return setAgentsMode(agentsMode);
   const mod = window[owners[name]];
   if (mod && typeof mod.activate === "function") { mod.activate(); return true; }
   return !owners[name];   // a view with no module is already "activated"
+}
+
+/* The Agents view has two readings of the same floor. CONSOLE is the cockpit:
+   one conversation with the director, the cat, and a live delegation graph.
+   BOARD is the composer over the kanban lanes it grew out of — kept because
+   picking the seat yourself and watching lanes is still the right tool when you
+   already know exactly who does the work. The choice sticks per browser. */
+let agentsMode = (() => {
+  try { return localStorage.getItem("bgate-agents-mode") || "console"; } catch(e){ return "console"; }
+})();
+function setAgentsMode(mode){
+  agentsMode = mode === "board" ? "board" : "console";
+  try{ localStorage.setItem("bgate-agents-mode", agentsMode); }catch(e){}
+  document.querySelectorAll("#agents-modes .atlas-mode").forEach(b =>
+    b.classList.toggle("active", b.dataset.m === agentsMode));
+  const cockpit = document.getElementById("cockpit");
+  const board = document.getElementById("agents-board");
+  if (cockpit) cockpit.hidden = agentsMode !== "console";
+  if (board) board.hidden = agentsMode !== "board";
+  if (agentsMode === "console" && window.AgentsConsole) AgentsConsole.activate();
+  if (agentsMode === "board") pollQueue();
+  return true;
 }
 
 /* Atlas has two readings of one scan: the LIST (grouped by screen, every node a
@@ -2121,6 +2223,8 @@ setInterval(pollQueue, 3500);
 <!-- Both were written, finished, and never given a script tag — so nothing
      registered them and the Studio showed two flows instead of four. -->
 <script src="/static/flow_agent.js"></script>
+<script src="/static/agents_graph.js"></script>
+<script src="/static/agents_console.js"></script>
 <script src="/static/wf.js"></script>
 <script src="/static/wf_steps_asset.js"></script>
 <script src="/static/wf_steps_model.js"></script>
