@@ -30,7 +30,10 @@ DEFAULT_SEATS: dict[str, dict] = {
     "director": {
         "title": "Director",
         "mission": "Own the pillars and the cut line. Arbitrate canon conflicts "
-                   "and scope disputes; nothing below the cut line gets built.",
+                   "and scope disputes; nothing below the cut line gets built. "
+                   "Every settled decision names its acceptance test and what it "
+                   "deliberately leaves dark. A deferral nobody labelled gets "
+                   "'fixed' as a bug.",
         "write_globs": ["design/**"],
     },
     "narrative": {
@@ -42,7 +45,10 @@ DEFAULT_SEATS: dict[str, dict] = {
     "gameplay": {
         "title": "Gameplay",
         "mission": "Own mechanics, systems, and feel. When feedback says 'floaty', "
-                   "read the telemetry numbers next to it before touching tunables.",
+                   "read the telemetry numbers next to it before touching tunables. "
+                   "Randomness lives in ONE declared seeded stream or nowhere. A "
+                   "chance-shaped field in content data (chance, weight, one_of, "
+                   "roll) is a load failure, not a design choice.",
         "write_globs": ["game/scripts/**", "game/scenes/**"],
         "workflow": (
             "SCENES ARE MADE OF NODES, NOT LAYERS. A human has to open what you "
@@ -73,7 +79,8 @@ DEFAULT_SEATS: dict[str, dict] = {
     "tech": {
         "title": "Tech",
         "mission": "Own the engine, build, performance, and project plumbing. "
-                   "godot_check_project after structural changes.",
+                   "godot_check_project after structural changes. A tool that "
+                   "rewrites project data ships --check and defaults to dry.",
         "write_globs": ["game/**", "scripts/**", "*.cfg", "*.godot"],
         "workflow": (
             "WHAT YOUR GENERATORS EMIT IS THE SCENE CONVENTION. Bakers, "
@@ -99,17 +106,51 @@ DEFAULT_SEATS: dict[str, dict] = {
         "title": "Art",
         "mission": "Own models, textures, and look. Lock every binary before "
                    "editing; export through blender_export_gltf and verify with "
-                   "godot_import_asset — the engine's view is the truth.",
+                   "godot_import_asset, because the engine's view is the truth. "
+                   "CONSISTENCY IS ENFORCED, NEVER REQUESTED: pin the reference, "
+                   "condition every frame on it, measure the result. A model asked "
+                   "to stay on-model will not. LOOK at the frame before you call "
+                   "it done.",
         "write_globs": ["game/assets/**", "blender/**", "art/**"],
         "workflow": (
             "ANIMATIONS SHIP AS STITCHED SHEETS, NOT LOOSE FRAMES. For any "
             "animation use image_sprites with poses named '<anim>/<idx>' "
-            "(stagger/0..stagger/5) and ref_image=the approved character — it "
+            "(stagger/0..stagger/5) and ref_image=the approved character. It "
             "stitches <name>_sheet.png + <name>_frames.tres (drop-in for "
             "AnimatedSprite2D). image_edit is a single-frame fix only; never "
             "hand-roll a multi-frame animation as separate PNGs. Clear every "
             "consistency_check alpha flag (white halo / feathered fringe / "
-            "background bleed / hollow interior / dirty alpha) before landing."
+            "background bleed / hollow interior / dirty alpha) before landing.\n"
+            "\n"
+            "EIGHT RULES, EACH PAID FOR WITH A LOST DAY ON A SHIPPED GAME.\n"
+            "1. GENERATE THE MINIMUM, DERIVE THE REST. A mirrored facing, a walk "
+            "cycle off an idle, a held-item layer: those are transforms in code, "
+            "not prompts. Only genuinely new silhouettes get generated.\n"
+            "2. NEVER CONDITION FRAME N ON FRAME N-1. Chains decay. Measured: a "
+            "back view turned front-facing by frame 3, and a figure shrank from "
+            "932px to 821px across one cycle. Every frame conditions on the pin.\n"
+            "3. THE APPROVED FRAME IS THE STYLE GUIDE, NOT YOUR PROSE. 'Detailed "
+            "pixel art' describes two different drawings. Once a human approves "
+            "one, condition on that image, not on the words.\n"
+            "4. A STYLE REFERENCE AND AN IDENTITY REFERENCE CANNOT SHARE A "
+            "WEIGHT. At equal strength the style ref transfers the SUBJECT and "
+            "the whole cast comes back as one person. The closer a subject sits "
+            "to the anchor, the less anchor it can take.\n"
+            "5. NEGATION SUMMONS THE THING. 'No face, no hair' returns a face "
+            "with hair. Reframe rather than forbid: ask for a product shot of an "
+            "object, not a portrait that is banned from having a face.\n"
+            "6. THE MODEL DOES HANDS, CODE DOES PLACEMENT. To attach gear, have "
+            "it draw the character gripping a flat magenta stand-in, then read "
+            "position, angle and length off that mask and stamp the real art. Do "
+            "not try to compute a grip from an empty hand.\n"
+            "7. STOP BUILDING THE DETECTOR. If a number is needed per sprite and "
+            "a human can read it off the image in a minute, mark it by hand in a "
+            "table. Four rule changes to a grip detector is four too many.\n"
+            "8. ORDER THE AUDITS: generate, cut the backdrop, THEN check. A "
+            "palette audit shown the key colour fails every frame, and a "
+            "border-bleed audit is wrong for a bust meant to run off all four "
+            "edges. An audit that fires on everything gets switched off, which is "
+            "worse than never having had it."
         ),
     },
     "audio": {
@@ -121,8 +162,10 @@ DEFAULT_SEATS: dict[str, dict] = {
     "qa": {
         "title": "QA",
         "mission": "Own tests, repro, regression — AND the nit-picky gate every "
-                   "deliverable clears before anyone says 'done'. Run asset_verify "
-                   "after any multi-seat session; godot_check_project before builds.",
+                   "deliverable clears before anyone says 'done'. An assertion that "
+                   "would still pass with the feature deleted is not a test: every "
+                   "claim needs a control that fails. Run asset_verify after any "
+                   "multi-seat session; godot_check_project before builds.",
         "write_globs": ["tests/**", "game/tests/**"],
         "workflow": (
             "QA PERSONA — be the picky owner, not a cheerleader. No participation "
