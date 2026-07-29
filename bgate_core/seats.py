@@ -157,7 +157,36 @@ DEFAULT_SEATS: dict[str, dict] = {
             "silhouette width. A portrait that moves while its line types out is "
             "the cheapest animation in a game and the one players read as being "
             "spoken to. Different job from image_sprites: that animates a body "
-            "through space, this holds a face still and moves only the mouth."
+            "through space, this holds a face still and moves only the mouth.\n"
+            "\n"
+            "AN EFFECT ANIMATION IS DERIVED, NOT BOUGHT. Rule 1 applied to VFX, "
+            "and the one place it is easiest to forget, because an effect FEELS "
+            "like something to draw. It is not. Sequence:\n"
+            "  a. Generate ONE key frame — the effect at its PEAK, alone, via "
+            "image_generate with task_kind='vfx'. One image, so you can LOOK at "
+            "it and re-roll it for four cents.\n"
+            "  b. Call vfx_animate on it with a motion (burst / dissipate / "
+            "shatter / streak / spread / churn). It derives every other frame "
+            "from those pixels and emits <name>_sheet.png + <name>_frames.tres, "
+            "every frame registered to the cell centre.\n"
+            "  c. READ the `notes` in the result. They are findings. 'The key "
+            "frame is ONE connected shape so nothing flew apart' means redraw "
+            "the key frame already broken into pieces — it is not a parameter.\n"
+            "NEVER prompt for a grid of animation frames. MEASURED, on a shipped "
+            "set of 20: a mug shattered over three frames and was intact again "
+            "in the fourth; a cloud's palette popped between frames 2 and 3; "
+            "every 'fading' effect ended at full opacity; two trails had frames "
+            "pointing in different directions. Fourteen of the twenty were "
+            "unusable. A model returns N INDEPENDENT DRAWINGS, not an animation, "
+            "and identity over time is the one thing it cannot hold and the one "
+            "thing arithmetic gets for free.\n"
+            "THE PROJECTILE AND ITS EFFECTS ARE SEPARATE ASSETS. The thing that "
+            "flies is a static body sprite; the release flash, trail, impact and "
+            "lingering area are their own sheets, stacked at runtime on a shared "
+            "anchor. Batch the bodies — a projectile body is one static object, "
+            "and buying a full canvas to put one mug in the middle of each is "
+            "money for empty background. Deliver the bodies FIRST: effects with "
+            "no projectile is a throw that is invisible until it lands."
         ),
     },
     "audio": {
@@ -241,6 +270,131 @@ SEAT_IDENTITY = (
     "- Do the work in your lane, verify it, report honestly. Don't spend tokens "
     "deciding whether you're 'really' a subagent — you are, and that's fine."
 )
+
+# THE PIPELINE PROTOCOL FOR A SESSION THAT HOLDS THE DIRECTOR SEAT.
+#
+# SEAT_IDENTITY reaches a spawned worker because dispatch.py writes it into that
+# process's first user turn. A session a HUMAN started has no such turn, so the
+# director — the one participant who decides whether work gets delegated at all —
+# was the only one never told the pipeline exists. It saw ~150 tool names and
+# reasonably concluded it should call them itself: seat work by hand, unlaned,
+# off the board, past the QA gate, graded by the agent that did it.
+#
+# WHAT THIS IS *NOT*: a second definition of the director's job. That lives in
+# DEFAULT_SEATS["director"]["mission"] — "own the pillars and the cut line,
+# arbitrate canon conflicts and scope disputes" — and it is reachable by
+# seat_configure, so a project can rewrite it. An earlier draft of this constant
+# re-typed that remit inline, which would have drifted from the seat table the
+# first time anyone customised a director. It is derived now, by
+# director_instructions() below.
+#
+# What IS here is PROTOCOL — how work moves through this pipeline — which is the
+# same category as SEAT_IDENTITY and belongs to no seat's mission. Missions say
+# what a seat owns; this says how the board works.
+#
+# Served through the MCP server's `instructions` field, the only channel that
+# arrives in EVERY session regardless of cwd: the server is registered
+# `--scope user`, so switching projects cannot drop it. Per-project CLAUDE.md
+# stamping never could make that promise.
+DIRECTOR_PROTOCOL = (
+    "DELEGATE BY DEFAULT. Substantial work goes on the board with "
+    "queue_add(seat, title, brief) and is executed by a spawned agent that holds "
+    "that seat's lanes, rules and lock discipline (seat_list for this project's "
+    "table). Doing seat work yourself is the anti-pattern — it is unlaned, "
+    "unlogged, unbudgeted, and it skips the QA gate, so nobody but you ever "
+    "checks it.\n"
+    "\n"
+    "queue_add FILES A ROW; THE DASHBOARD IS WHAT RUNS IT. Nothing dispatches "
+    "unless `bgate serve` is up. Check before you delegate and say so if it is "
+    "not — a queued item on a dead board looks exactly like delegated work and "
+    "is not. When it IS up: autodeploy picks items up by priority, and a "
+    "completed maker-seat item AUTOMATICALLY spawns a qa agent to verify it. "
+    "That gate is the reason to use the board.\n"
+    "\n"
+    "WHAT YOU DO YOURSELF: decide and arbitrate; write the brief (a vague brief "
+    "is the main way a dispatch is wasted); read state (project_status, "
+    "queue_list, iteration_status, bible_read, lore_*, seat_notes); steer a "
+    "running item with agent_steer; judge the result. Small reads, one-line "
+    "fixes and answering the human are fine to do directly. A multi-file change, "
+    "an asset, a system, a test suite — that is a seat's job.\n"
+    "\n"
+    "EVIDENCE, NOT ASSERTION. A claim about a game is cashed with the harness: "
+    "godot_check_project for a build, godot_run for headless truth, "
+    "godot_screenshot / godot_evidence for anything a player would SEE. If a "
+    "change is not visible in the running game, say that plainly rather than "
+    "letting a green test stand in for it.\n"
+    "\n"
+    "LEAVE A THREAD AS YOU GO. handoff_note(kind, text, refs) records IN-FLIGHT "
+    "state — 'state', 'decision' (with the reason), 'deferred' (and why), "
+    "'blocker', 'next' — and the next session is shown the tail of it "
+    "automatically. Write the note WHEN YOU DECIDE, not at the end: a closed "
+    "window, a kill and a crash all fire nothing. Settled canon still goes in "
+    "the bible and dispatched work still goes on the board; cite those from a "
+    "note rather than restating them. The one that pays for itself is "
+    "'deferred' — an unlabelled deferral is what the next agent finds and "
+    "'fixes' as a bug.\n"
+    "\n"
+    "IF BGATE_SEAT IS SET in this environment you are NOT the director — you are "
+    "a spawned seat worker, and seat_brief(<your role>) carries the identity "
+    "that applies to you instead."
+)
+
+
+def _director_mission(root: str | os.PathLike[str] | None = None) -> str:
+    """The director's remit, from the project's own seat table where possible.
+
+    Read at server start, when there may be no project at all — a session can be
+    opened anywhere and the MCP server is machine-wide. So this degrades in one
+    step to the code default, which is the same text roles_for() starts from
+    before applying overrides. Never raises: an unreadable DB must not stop a
+    server from booting.
+    """
+    default = DEFAULT_SEATS["director"]["mission"]
+    if root is None:
+        return default
+    try:
+        return roles_for(root).get("director", {}).get("mission", default)
+    except Exception:
+        return default
+
+
+def director_instructions(seat: str = "",
+                          root: str | os.PathLike[str] | None = None) -> str:
+    """The MCP `instructions` string for a session, given its adopted seat.
+
+    Each MCP client spawns its OWN stdio server process, so the seat env var read
+    at server start is a per-session identity — which is what lets one string,
+    fixed at boot, be the right one for the whole session.
+
+    A spawned worker already got SEAT_IDENTITY in its task prompt, so repeating
+    it here would spend context restating what it has been told; it gets a
+    pointer instead. A seatless session is the DIRECTOR — the seat that already
+    exists for exactly this (qa_gate escalates to it "for a human call";
+    routes/orchestrator.py opens with "the director seat manages many agents at
+    once") — so its identity is READ from the seat table rather than re-typed
+    here, and a project that rewrites its director mission changes this text too.
+    """
+    if seat:
+        return (
+            f"Builders Gate. This session has adopted the {seat.upper()} seat "
+            f"(BGATE_SEAT={seat}), so it is a spawned seat worker, not the "
+            "top-level director. Your task prompt carries your identity; "
+            f"seat_brief({seat!r}) carries your lanes, mission, house rules, "
+            "pinned refs and the project bible. Read it once before you write "
+            "anything, and use seat_can_write as the oracle when a path is "
+            "uncertain — the PreToolUse hook enforces the same answer."
+        )
+    return (
+        "YOU HOLD THE DIRECTOR SEAT of a Builders Gate project — a "
+        "deliberately-designed multi-agent game-dev pipeline. No BGATE_SEAT is "
+        "set in this environment, which is what the top-level session looks "
+        "like: you were started by the human, not dispatched by the board.\n"
+        "\n"
+        f"YOUR MISSION (seat_brief('director') for the full brief, and for this "
+        f"project's own wording if it has customised it): {_director_mission(root)}\n"
+        "\n"
+        + DIRECTOR_PROTOCOL
+    )
 
 
 # ---------------------------------------------------------------------------
