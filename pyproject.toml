@@ -8,7 +8,13 @@ authors = [{ name = "Thepizzapie" }]
 keywords = ["gamedev", "mcp", "godot", "blender", "agents"]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.2.0",
+    # PINNED BELOW 2. The MCP SDK's 2.0 removed `mcp.server.fastmcp` — the whole
+    # of bgate_mcp/server.py is built on FastMCP, and 2.0 replaces it with
+    # `mcp.server.mcpserver` under a different API. A floor with no ceiling meant
+    # a clean install resolved to 2.0.0 and every MCP tool failed to import, on a
+    # machine where nothing had changed but the date. Lifting this is a port,
+    # not a version bump.
+    "mcp>=1.2.0,<2",
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "Pillow>=10.0",
