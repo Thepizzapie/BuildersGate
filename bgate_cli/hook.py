@@ -54,13 +54,70 @@ _PATH_KEYS = {
     "NotebookEdit": "notebook_path",
 }
 
-ALLOW, BLOCK = 0, 2
+# Claude Code's contract: 0 allows, 2 blocks and shows stderr to the MODEL, any
+# other nonzero is a non-blocking error whose stderr is shown to the HUMAN. That
+# third channel is what WARN uses — the write lands, the person sees why it was
+# questionable, and nothing is dammed.
+ALLOW, WARN, BLOCK = 0, 1, 2
 
 # Long enough to cover a working stretch between writes, short enough that a
 # killed agent's claim clears on its own. Refreshed on every write it makes.
 DEFAULT_LEASE_S = 900
 
 LOG_NAME = "hook.log"
+
+# ---------------------------------------------------------------------------
+# THE SEATLESS SESSION — the participant this hook used to ignore completely.
+#
+# `if not seat: return ALLOW` was correct about identity and wrong about what
+# follows from it. A session a human started has no BGATE_SEAT, so the hook went
+# inert — which meant the one agent with the widest reach and no supervisor was
+# the only one nothing checked. Two such sessions in one working tree edited the
+# same file on the same afternoon and neither was told, because leases are taken
+# per EXECUTION and a seatless session had no execution identity to take one for.
+#
+# It is not seatless, though. It holds the DIRECTOR seat — the seat qa_gate
+# escalates to and routes/orchestrator.py is built around. So it gets that seat's
+# identity here rather than a new concept.
+#
+# MODES, because the strict answer is not the safe default. The director's lane
+# is design/**, so full enforcement refuses every game/** write a top-level
+# session makes — occasionally right, frequently a dammed session, and a gate
+# people turn off is worth less than a quieter one they leave on.
+#
+#   off      exactly the old behaviour: no identity, no lease, no checks.
+#   collide  DEFAULT. Adds only what was missing: the session takes path leases
+#            like any other execution, and a write into a file another live run
+#            is holding is BLOCKED and names the holder. Lane violations pass —
+#            the director writing game/** is normal and this mode says nothing
+#            about it. Nothing that was legal yesterday becomes illegal today
+#            unless somebody else is genuinely in the file.
+#   warn     as collide, plus lane violations reported to the human on exit 1.
+#            The write still lands.
+#   block    the director is a seat like any other: out of lane is refused.
+#            Choose this when everything should go through the board.
+DIRECTOR_SEAT = "director"
+DIRECTOR_MODES = ("off", "collide", "warn", "block")
+DEFAULT_DIRECTOR_MODE = "collide"
+
+
+def director_mode() -> str:
+    """How hard to check a session that adopted no seat. Never raises."""
+    mode = os.environ.get("BGATE_DIRECTOR_MODE", "").strip().lower()
+    return mode if mode in DIRECTOR_MODES else DEFAULT_DIRECTOR_MODE
+
+
+def session_owner(payload: dict) -> str:
+    """An execution identity for a session nobody dispatched.
+
+    Dispatched agents get BGATE_LOCK_OWNER=item-<id>. A hand-started session has
+    none, which is why it could never hold or collide with a lease. Claude Code
+    puts a stable session_id in every hook payload, so there IS an identity to
+    use — it was simply never read. Truncated because it is a label in a message,
+    not a key.
+    """
+    sid = str(payload.get("session_id") or "").strip()
+    return f"session:{sid[:12]}" if sid else ""
 
 # ---------------------------------------------------------------------------
 # Bash parsing. Deliberately small: every rule below exists because it is a way
@@ -339,13 +396,20 @@ def analyse_bash(command: str) -> dict:
 # ---------------------------------------------------------------------------
 # The decision
 # ---------------------------------------------------------------------------
-def decide(payload: dict, seat: str, owner: str = "") -> tuple[int, str]:
-    """Pure decision, separated from stdio so tests can hit it directly."""
+def decide(payload: dict, seat: str, owner: str = "",
+           mode: str = "block") -> tuple[int, str]:
+    """Pure decision, separated from stdio so tests can hit it directly.
+
+    `mode` is "block" for a dispatched seat worker — its lane is the whole point
+    of dispatching it — and one of DIRECTOR_MODES for a session that adopted no
+    seat. It only ever softens the LANE gate; a lock or lease collision is a
+    second live writer in the same file and is refused in every mode but "off".
+    """
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     if tool == "Bash":
         return _decide_bash(str(tool_input.get("command") or ""), payload,
-                            seat, owner)
+                            seat, owner, mode)
 
     key = _PATH_KEYS.get(tool)
     if key is None:
@@ -354,7 +418,7 @@ def decide(payload: dict, seat: str, owner: str = "") -> tuple[int, str]:
     target = tool_input.get(key)
     if not target:
         return ALLOW, ""
-    return _judge_path(str(target), payload, seat, owner)
+    return _judge_path(str(target), payload, seat, owner, mode)
 
 
 def _session_cwd(payload: dict):
@@ -366,7 +430,7 @@ def _session_cwd(payload: dict):
 
 
 def _judge_path(target: str, payload: dict, seat: str,
-                owner: str) -> tuple[int, str]:
+                owner: str, mode: str = "block") -> tuple[int, str]:
     """Lane + lock + lease for one concrete path. ALLOW takes the lease."""
     # Lazy imports keep the hook fast on the (common) inert path.
     from pathlib import Path
@@ -395,20 +459,56 @@ def _judge_path(target: str, payload: dict, seat: str,
         _hold(assets, root, str(rel), seat, owner)
         return ALLOW, ""
 
+    # WHICH GATE FAILED, read off the verdict rather than off its prose: only a
+    # lock or a lease names an `owner`, because only those two have somebody on
+    # the other side of them. A lane failure is a rule about one writer; a
+    # collision is a fact about two.
     blocker = verdict.get("owner") or ""
-    return BLOCK, (
-        f"[builders-gate] seat {seat!r} may not write {verdict['path']}: "
-        f"{verdict['reason']}."
-        + (f" {blocker} is in that file — coordinate with it (seat_post_note) or "
-           "work on something else; do not edit around it."
-           if blocker else
-           " Use seat_can_write to find your lanes, or asset_lock if you need to "
-           "claim a binary.")
-    )
+    if not blocker and mode != "block":
+        # THE LANE GATE SHORT-CIRCUITS, and waiving it must not waive the two
+        # gates behind it. can_write runs lane -> lock -> lease and returns on
+        # the FIRST failure, so a director write that is out of lane never
+        # reached the lease check — which made "collide" mode allow precisely
+        # the collision it exists to catch. Ask the collision gates directly.
+        blocker, why = _collision(assets, root, str(rel), seat, owner)
+        if blocker:
+            verdict = {"path": str(rel).replace("\\", "/"), "reason": why}
+        else:
+            # Nobody else is in the file, so the write proceeds — the director
+            # writing outside design/** is ordinary. TAKE THE LEASE FIRST, in
+            # BOTH softened modes: "warn" is "collide plus a sentence", and an
+            # earlier draft returned the warning without holding, which made the
+            # warning the only thing warn mode did and left the next session to
+            # collide with nothing.
+            _hold(assets, root, str(rel), seat, owner)
+            if mode == "collide":
+                return ALLOW, ""
+
+    if blocker:
+        return BLOCK, (
+            f"[builders-gate] {verdict['path']}: {verdict['reason']}. "
+            f"{blocker} is in that file right now — coordinate with it "
+            "(seat_post_note) or work on something else; do not edit around it. "
+            "If that run is dead, the claim expires on its own; asset_status "
+            "shows what is held."
+        )
+
+    level = BLOCK if mode == "block" else WARN
+    lead = ("[builders-gate] you hold the DIRECTOR seat (no BGATE_SEAT set)"
+            if seat == DIRECTOR_SEAT and mode != "block"
+            else f"[builders-gate] seat {seat!r}")
+    tail = (" Put it on the board with queue_add(seat, ...) so a seat agent with "
+            "that lane does it and the QA gate sees it — or set "
+            "BGATE_DIRECTOR_MODE=collide if you mean to edit it here."
+            if seat == DIRECTOR_SEAT else
+            " Use seat_can_write to find your lanes, or asset_lock if you need to "
+            "claim a binary.")
+    return level, (f"{lead} may not write {verdict['path']}: "
+                   f"{verdict['reason']}.{tail}")
 
 
 def _decide_bash(command: str, payload: dict, seat: str,
-                 owner: str) -> tuple[int, str]:
+                 owner: str, mode: str = "block") -> tuple[int, str]:
     """Same lane/lock rules, read off a shell command line.
 
     Order matters: named targets are judged first so the agent gets the precise
@@ -420,17 +520,25 @@ def _decide_bash(command: str, payload: dict, seat: str,
     if not analysis["writes"] and not analysis["unclear"]:
         return ALLOW, ""  # obviously read-only — never in the way
 
+    warning = ""
     for target in analysis["writes"]:
-        code, message = _judge_path(target, payload, seat, owner)
+        code, message = _judge_path(target, payload, seat, owner, mode)
         if code == BLOCK:
             return BLOCK, (message + "\n[builders-gate] that write was in a Bash "
                                      "command; the lane rules are the same there.")
+        if code == WARN and not warning:
+            warning = message
 
     if analysis["unclear"]:
         from bgate_core import db
         # Outside a project there is nothing to protect, so an unreadable
         # command is not our problem. Inside one, it fails closed.
         if db.resolve_root(_session_cwd(payload)) is None:
+            return ALLOW, ""
+        # ...but only for an identity whose lanes are being enforced. Refusing
+        # every unparseable command a top-level session runs would dam the
+        # session over a quoting style, which is the cure being worse.
+        if mode in ("collide", "warn"):
             return ALLOW, ""
         return BLOCK, (
             "[builders-gate] refusing a Bash command this hook cannot verify: "
@@ -440,7 +548,41 @@ def _decide_bash(command: str, payload: dict, seat: str,
             "specific file (they are checked precisely), or run the command "
             "with explicit paths."
         )
-    return ALLOW, ""
+    return (WARN, warning) if warning else (ALLOW, "")
+
+
+def _collision(assets, root, rel: str, seat: str, owner: str) -> tuple[str, str]:
+    """Is another EXECUTION in this file right now? Returns (owner, why).
+
+    The lock and lease gates of seats.can_write, asked on their own, because that
+    function checks the lane first and returns on the first failure — so waiving
+    the lane also skipped these, which is the opposite of what waiving the lane
+    is supposed to mean. Same data, same rules, no ordering dependency.
+
+    Best-effort like everything else here: an unreadable store answers "nobody",
+    because a hook that blocks on its own inability to check is a hook that dams
+    the session.
+    """
+    try:
+        entry = assets.get(root, rel)
+    except Exception:
+        entry = None
+    if entry and entry["lock_seat"]:
+        held = (entry["lock_owner"] or "").strip()
+        if entry["lock_seat"] != seat or (held and held != owner):
+            return (held or f"seat {entry['lock_seat']}",
+                    f"locked by {held or entry['lock_seat']} since "
+                    f"{entry['lock_at']} — binary assets don't merge")
+    try:
+        lease = assets.path_lease_for(root, rel)
+    except Exception:
+        lease = None
+    if lease and (lease["owner"] or "") != owner:
+        return (lease["owner"],
+                f"leased by {lease['owner']} (seat {lease['seat'] or '?'}) since "
+                f"{lease['acquired_at']} until {lease['expires_at'] or 'forever'} "
+                "— that run is editing this file right now")
+    return "", ""
 
 
 def _hold(assets, root, rel: str, seat: str, owner: str) -> None:
@@ -533,9 +675,18 @@ def selftest(start=None, seat: str = "") -> dict:
 
     seat = (seat or os.environ.get("BGATE_SEAT", "")).strip()
     owner = os.environ.get("BGATE_LOCK_OWNER", "").strip()
+    # A seatless session is checked now, so reporting it as inert would be the
+    # status command telling the same lie the hook used to.
+    mode = "block" if seat else director_mode()
+    seated = bool(seat)
+    if not seated and mode != "off":
+        seat = DIRECTOR_SEAT
+        owner = owner or "session:selftest"
     root = db.resolve_root(start or os.getcwd())
     out: dict = {
         "seat": seat,
+        "seated": seated,
+        "mode": mode,
         "owner": owner,
         "project_root": str(root) if root else "",
         "installed": False,
@@ -560,21 +711,27 @@ def selftest(start=None, seat: str = "") -> dict:
             out["settings_error"] = f"cannot read {settings}"
 
     if not seat:
-        out["reason"] = ("BGATE_SEAT is not set in this environment — the hook "
-                         "is inert by design; nothing is being enforced")
+        out["reason"] = ("BGATE_SEAT is unset and BGATE_DIRECTOR_MODE=off — the "
+                         "hook is fully inert; nothing is being enforced")
         return out
     if root is None:
         out["reason"] = "not inside a .bgate project — the hook stays out of the way"
         return out
 
     cwd = str(root)
+    # The out-of-lane probes are BLOCK for a seated worker and for an explicitly
+    # strict director. In "collide"/"warn" the lane is not the gate — the LEASE
+    # is — so asserting BLOCK there would report a working hook as broken. The
+    # expectation follows the configuration, which is the only way this stays
+    # evidence rather than a slogan.
+    lane_verdict = BLOCK if mode == "block" else (WARN if mode == "warn" else ALLOW)
     probes = [
         ("Write out of lane",
          {"tool_name": "Write", "cwd": cwd,
-          "tool_input": {"file_path": PROBE_PATH}}, BLOCK),
+          "tool_input": {"file_path": PROBE_PATH}}, lane_verdict),
         ("Bash redirect out of lane",
          {"tool_name": "Bash", "cwd": cwd,
-          "tool_input": {"command": f"echo probe > {PROBE_PATH}"}}, BLOCK),
+          "tool_input": {"command": f"echo probe > {PROBE_PATH}"}}, lane_verdict),
         ("Bash read-only",
          {"tool_name": "Bash", "cwd": cwd,
           "tool_input": {"command": "git status --porcelain"}}, ALLOW),
@@ -582,7 +739,7 @@ def selftest(start=None, seat: str = "") -> dict:
     passed = True
     for label, payload, expected in probes:
         try:
-            code, message = decide(payload, seat, owner)
+            code, message = decide(payload, seat, owner, mode)
         except Exception as exc:  # a raising oracle IS the finding
             out["probes"].append({"probe": label, "error": f"{type(exc).__name__}: {exc}"})
             passed = False
@@ -593,9 +750,21 @@ def selftest(start=None, seat: str = "") -> dict:
                               "got": code, "ok": good,
                               "message": message[:200]})
     out["enforcing"] = passed
-    out["reason"] = ("lane + lock enforcement is live" if passed else
-                     "a probe did not return the expected verdict — enforcement "
-                     "is NOT trustworthy in this session")
+    if not passed:
+        out["reason"] = ("a probe did not return the expected verdict — "
+                         "enforcement is NOT trustworthy in this session")
+    elif seated:
+        out["reason"] = "lane + lock enforcement is live"
+    elif mode == "collide":
+        out["reason"] = (
+            "no seat adopted, so this session holds the DIRECTOR seat: path "
+            "leases ARE taken and a file another live run is editing WILL be "
+            "refused, but the director's lane is not enforced. "
+            "BGATE_DIRECTOR_MODE=warn to hear about out-of-lane writes, =block "
+            "to refuse them, =off for the old inert behaviour.")
+    else:
+        out["reason"] = (f"no seat adopted; director mode {mode!r} — lanes and "
+                         "leases are both being checked on this session")
     return out
 
 
@@ -607,11 +776,36 @@ def main(argv: list[str] | None = None) -> int:
     payload: dict = {}
     try:
         seat = os.environ.get("BGATE_SEAT", "").strip()
-        if not seat:
-            return ALLOW  # no adopted identity, nothing to enforce
         owner = os.environ.get("BGATE_LOCK_OWNER", "").strip()
+        mode = "block"
+        if not seat:
+            # THIS LINE USED TO BE `return ALLOW`. It read as "no adopted
+            # identity, nothing to enforce", and the first half was true — but a
+            # seatless session is not identity-less, it is the DIRECTOR, and the
+            # thing worth enforcing on it is not its lane but whether somebody
+            # else is already in the file. See DIRECTOR_MODES.
+            mode = director_mode()
+            if mode == "off":
+                return ALLOW
+            seat = DIRECTOR_SEAT
+        # stdin must be read before any decision now: the session identity for a
+        # hand-started session lives in the payload, not the environment.
         payload = json.loads(sys.stdin.read() or "{}")
-        code, message = decide(payload, seat, owner)
+        if mode != "block":
+            # Only the director path invents an owner, and only when it has to.
+            # A SEATED worker with no BGATE_LOCK_OWNER keeps the old semantics —
+            # can_write treats an ownerless caller as unable to write over an
+            # owned lock, which is stricter than anything derived here, and
+            # loosening that to "no owner, no checks" would have quietly turned
+            # the gate off for exactly the agents it was written for.
+            owner = owner or session_owner(payload)
+            if not owner:
+                # Nothing distinguishes this session from any other, so a lease
+                # would be meaningless and a collision unattributable. The
+                # director's lane is advisory anyway; do nothing rather than
+                # something wrong.
+                return ALLOW
+        code, message = decide(payload, seat, owner, mode)
         if message:
             print(message, file=sys.stderr)
         return code

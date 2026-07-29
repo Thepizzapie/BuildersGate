@@ -70,13 +70,54 @@ from bgate_core import canon as _canon
 from bgate_core import chroma as _chroma
 from bgate_core import causal as _causal
 from bgate_core import db as _db
+from bgate_core import handoff as _handoff
 from bgate_core import lore as _lore
 from bgate_core import iterations as _iterations
 from bgate_core import items as _items
 from bgate_core import project as _project
 from bgate_core import search as _search
 
-mcp = FastMCP("builders-gate")
+# THE ONE CHANNEL THAT CANNOT BE DROPPED BY CHANGING DIRECTORY.
+#
+# The working process used to be communicated four ways, and every one of them
+# was conditional: tool docstrings (only if the agent reads the schema), the
+# CLAUDE.md managed block (only if the project was init/adopt-ed AND the agent
+# is standing in it), seat_brief (only if the agent thinks to call it), and the
+# dispatch prompt (only for agents the dashboard spawned). A human-started
+# session in a fresh checkout hit none of them and saw a bare tool list — so it
+# did the work itself, off the board and past the QA gate, which is exactly what
+# the pipeline exists to prevent.
+#
+# `instructions` is the MCP protocol's own answer and it was left empty. The
+# server is registered `--scope user`, so this string arrives in EVERY session on
+# the machine, in every project, with no per-project install step. Switching
+# projects can no longer lobotomize the orchestrator.
+#
+# It is read ONCE, at server start, and that is correct rather than a limitation:
+# each MCP client spawns its own stdio server process, so BGATE_SEAT here is this
+# session's identity for its whole life — the same fact `_seat()` below relies on.
+#
+# The root is resolved here too, and best-effort: a seatless session's brief
+# quotes the DIRECTOR SEAT's own mission, so a project that rewrote it with
+# seat_configure gets its wording rather than the shipped default. A server can
+# legitimately start outside any project, so `None` is an ordinary answer and
+# seats.py falls back to the code default — this must never stop a boot.
+def _boot_root() -> Optional[str]:
+    hint = os.environ.get("BGATE_ROOT", "").strip()
+    if hint:
+        return hint
+    try:
+        found = _db.resolve_root(_Path.cwd())
+    except Exception:
+        return None
+    return str(found) if found else None
+
+
+mcp = FastMCP(
+    "builders-gate",
+    instructions=_seats.director_instructions(
+        os.environ.get("BGATE_SEAT", "").strip(), _boot_root()),
+)
 
 
 _PROJECT_DIR_DOC = (
@@ -2865,6 +2906,57 @@ def seat_post_note(role: str, body: str, topic: str = "") -> dict:
     """
     try:
         return _seats.post_note(_root(), role, body, topic=topic)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def handoff_note(kind: str, text: str, refs: Optional[list] = None) -> dict:
+    """Record IN-FLIGHT state on the project thread, for the next session.
+
+    The board says what was dispatched and the bible says what was settled.
+    Neither says what you were halfway through, why you chose the thing you
+    chose, or what you deliberately did not do — and that is what evaporates
+    when a session ends. This is an append-only trail read back at the start of
+    the next one, so a death costs a successor one read instead of an
+    investigation.
+
+    CALL IT AS YOU GO, not at the end. A closed window, a kill and a crash all
+    fire nothing, and those are the sessions most worth resuming.
+
+    kind:
+      state     where things stand; what is half-done.
+      decision  a call you made, WITH the reason. If it is settled canon it
+                belongs in the bible — bible_add it and cite the section in
+                `refs` rather than restating it here.
+      deferred  something you chose NOT to do, and why. An unlabelled deferral
+                is the most expensive thing to lose: the next agent finds it and
+                "fixes" it as a bug.
+      blocker   what is in the way, and who owns it.
+      next      the very next action.
+
+    refs: ids/paths this note points at — "bible#12", "item 41",
+    "game/data/loot/floor_0.json". Cite, do not duplicate.
+    """
+    try:
+        return _handoff.note(_root(), kind, text, refs=refs)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def handoff_read(limit: int = 0, kind: str = "") -> dict:
+    """The project thread, oldest first — what earlier sessions left behind.
+
+    The SessionStart hook already injects the tail of this into every session, so
+    reach for it when you need MORE than that: the whole history, or one kind
+    (`deferred` before you "fix" something, `decision` before you re-litigate
+    one). limit=0 is everything; a positive limit takes the most recent N.
+    """
+    try:
+        trail = _handoff.read(_root(), limit=limit, kind=kind)
+        return {"notes": trail, "count": len(trail),
+                "path": str(_handoff.path_for(_root()))}
     except Exception as exc:
         return _fail(exc)
 

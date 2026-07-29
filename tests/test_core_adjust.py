@@ -161,10 +161,31 @@ class TestObservability:
         assert [p["ok"] for p in report["probes"]] == [True, True, True]
 
     def test_selftest_says_so_when_nothing_is_enforced(self, root, monkeypatch):
+        """THIS USED TO ASSERT that an unset BGATE_SEAT meant nothing was
+        enforced, which stopped being true when the seatless session started
+        holding the director seat and taking path leases. The property worth
+        protecting was never "no seat means inert" — it was "the status command
+        must not claim enforcement it does not have". So the assertion moves to
+        the case where that is still the situation: mode 'off'.
+        """
         monkeypatch.delenv("BGATE_SEAT", raising=False)
+        monkeypatch.setenv("BGATE_DIRECTOR_MODE", "off")
         report = hook.selftest(str(root))
         assert report["enforcing"] is False
         assert "BGATE_SEAT" in report["reason"]
+
+    def test_selftest_reports_the_seatless_session_honestly(self, root, monkeypatch):
+        """And the other half: it must not claim LESS than it has either.
+
+        A seatless session is checked now — reporting it as inert would send a
+        human looking for a gate that is already there.
+        """
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        monkeypatch.delenv("BGATE_DIRECTOR_MODE", raising=False)
+        report = hook.selftest(str(root))
+        assert report["seated"] is False and report["mode"] == "collide"
+        assert report["enforcing"] is True
+        assert "DIRECTOR" in report["reason"]
 
     def test_selftest_catches_a_broken_oracle(self, root, monkeypatch):
         monkeypatch.setenv("BGATE_SEAT", "gameplay")
