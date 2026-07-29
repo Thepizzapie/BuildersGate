@@ -7,12 +7,15 @@ create, and a CLI that prints the absolute path it wrote to.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from bgate_cli import main as cli
 from bgate_core import db, project
 from bgate_ui.app import app
+from bgate_ui.routes import project as project_routes
 
 
 @pytest.fixture()
@@ -54,6 +57,44 @@ class TestStateWithoutAProject:
         assert got["project"] is None
         assert got["cwd"] == str(empty)
         assert "2d" in got["kinds"]
+
+
+class TestWhereANewProjectLands:
+    """`bgate serve` is run from a directory you chose. A double-clicked
+    executable is not: a shortcut with no "Start in", or a launch from the Run
+    dialog, hands the process C:\\Windows\\system32 as its cwd. The first-run
+    screen read that straight out and offered to unpack a Godot game into it."""
+
+    def test_a_writable_working_directory_is_used_as_is(self, empty, monkeypatch):
+        monkeypatch.chdir(empty)
+        assert project_routes.default_parent() == empty
+
+    @pytest.mark.parametrize("var,leaf", [
+        ("SystemRoot", "System32"),
+        ("ProgramFiles", "SomeApp"),
+        ("ProgramData", "SomeApp"),
+    ])
+    def test_system_locations_are_refused(self, var, leaf, monkeypatch, tmp_path):
+        base = tmp_path / var
+        (base / leaf).mkdir(parents=True)
+        monkeypatch.setenv(var, str(base))
+        assert project_routes._unsuitable(base / leaf) is True
+
+    def test_a_drive_root_is_refused(self):
+        root = Path(Path.cwd().anchor or "/")
+        assert project_routes._unsuitable(root) is True
+
+    def test_the_fallback_is_under_home_and_is_not_created_by_reading(
+            self, monkeypatch, tmp_path):
+        """Rendering the form must not touch the disk."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setattr(project_routes, "_unsuitable", lambda d: True)
+
+        got = project_routes.default_parent()
+        assert got == home / "BuildersGate"
+        assert not got.exists()
 
 
 class TestCreateOverHttp:
