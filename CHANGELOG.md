@@ -135,6 +135,12 @@ repository at first publication. There is no earlier release history to record.
 - **A budget with `max_runtime_s` set to 0 meant no wall clock at all**, so an
   agent that never self-reported ran until somebody noticed. 0 is the hard cap
   (2 hours, `BGATE_MAX_RUNTIME_S`) now, not infinity.
+- **A clean install pulled MCP SDK 2.0 and every MCP tool stopped importing.**
+  The SDK's 2.0 removed `mcp.server.fastmcp`, which the whole of
+  `bgate_mcp/server.py` is built on, and the dependency was a floor with no
+  ceiling — so nothing changed but the date and the server broke on any machine
+  that had not already resolved it. Pinned to `mcp>=1.2.0,<2`; lifting that is a
+  port, not a version bump.
 - `image_talkhead` refuses a near-empty generation instead of scaling its
   two-pixel silhouette up to match the anchor and dying in `MemoryError`, and it
   contains `res_dir`/`name` — it writes with pathlib, so the lane hook never
