@@ -24,13 +24,59 @@ from bgate_ui.deps import root as _root
 router = APIRouter()
 
 
+def _unsuitable(d: Path) -> bool:
+    """True if `d` is somewhere a game project must never be created.
+
+    `bgate serve` is run from a terminal you are already standing in, so the cwd
+    is the right default there. A double-clicked executable has no such cwd: a
+    shortcut without a "Start in", or a launch from the Run dialog, inherits
+    C:\\Windows\\system32. The first-run screen offered to unpack a Godot game
+    into it, and the create failed with a raw PermissionError repr in a red box.
+
+    Being unwritable is not the only disqualifier — an elevated process CAN
+    write to system32, and that is worse than the failure, not better.
+    """
+    try:
+        d = d.resolve()
+    except OSError:
+        return True
+    if d.parent == d:                       # a drive root, C:\ or /
+        return True
+    parts = {p.lower() for p in d.parts}
+    for var in ("SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)",
+                "ProgramData"):
+        base = os.environ.get(var)
+        if base:
+            try:
+                d.relative_to(Path(base).resolve())
+                return True
+            except ValueError:
+                pass
+    if {"windows", "system32", "syswow64"} & parts:
+        return True
+    return not os.access(d, os.W_OK)
+
+
+def default_parent() -> Path:
+    """The directory a new project is created under.
+
+    The cwd when that is a real working directory, and ~/BuildersGate when it is
+    not. The fallback is created lazily by the scaffolder, not here — reading
+    the first-run form must not have side effects on disk.
+    """
+    cwd = Path.cwd()
+    if not _unsuitable(cwd):
+        return cwd
+    return Path.home() / "BuildersGate"
+
+
 def _target(name: str, dest: str) -> Path:
-    """Where a new project goes. A NEW directory under the cwd by default —
+    """Where a new project goes. A NEW directory under `default_parent()` —
     unpacking a game into whatever directory the server happened to start in is
     a data-loss bug wearing a feature's hat."""
     if dest:
         return Path(dest).expanduser().resolve()
-    return (Path.cwd() / slugify(name)).resolve()
+    return (default_parent() / slugify(name)).resolve()
 
 
 @router.get("/api/project")
@@ -44,7 +90,9 @@ def project_read() -> dict:
     body: dict = {
         "project": None,
         "root": None,
-        "cwd": str(Path.cwd()),
+        # NOT Path.cwd(): the form renders this as "will be created at
+        # <cwd>\<slug>", and a double-clicked exe has a cwd of system32.
+        "cwd": str(default_parent()),
         "templates": _scaffold.list_templates(),
         "kinds": list(_scaffold.KINDS),
         "known": _project.known_projects(),
@@ -83,7 +131,16 @@ def project_create(request: Request, payload: dict) -> dict:
         # Not a bad request — the request was fine, the directory is occupied.
         # `force` is offered in the detail so the UI can render the choice.
         raise api.conflict(str(exc), path=str(root), force_available=True)
-    except (ValueError, FileNotFoundError) as exc:
+    except PermissionError as exc:
+        # Reachable even with the default_parent() guard: the operator can type
+        # any path into the form. Say where and what to do instead of leaking
+        # "[WinError 5] Access is denied: 'C:\\\\Windows\\\\System32\\\\...'".
+        raise api.bad_request(
+            f"cannot write to {root.parent} — choose somewhere you own, "
+            f"such as {Path.home() / 'BuildersGate'}",
+            path=str(root), suggested=str(Path.home() / "BuildersGate"),
+        ) from exc
+    except (ValueError, FileNotFoundError, OSError) as exc:
         raise api.bad_request(str(exc))
 
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
