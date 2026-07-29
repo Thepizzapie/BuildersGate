@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 from bgate_cli import hook
 from bgate_cli import session
@@ -454,3 +456,76 @@ class TestSessionStart:
         settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
         assert len(settings["hooks"]["PreToolUse"]) == 1
         assert len(settings["hooks"]["SessionStart"]) == 1
+
+
+class TestHarnessMetadataLane:
+    """The system's own instruction was unfollowable wherever the gate was on.
+
+    Every seat's rules end with the WORK MANIFEST — append to
+    .bgate/progress/<task>.jsonl after every completed unit of work — and no
+    seat's write_globs contain .bgate/**. So the hook refused it for all seven,
+    and the agent was left choosing between the rule it was handed and the gate
+    in front of it. It stayed hidden because the gate only bites where it is
+    installed; a project without .claude/settings.json let the write through, so
+    the trail existed and the contradiction never surfaced.
+    """
+
+    def _judge(self, root, rel, role="qa", owner="item-5"):
+        import os
+        payload = {"tool_name": "Write", "cwd": str(root), "session_id": "s",
+                   "tool_input": {"file_path": os.path.join(root, *rel.split("/"))}}
+        return hook.decide(payload, role, owner, "block")[0]
+
+    @pytest.mark.parametrize("role", ["qa", "art", "gameplay", "tech",
+                                      "narrative", "audio", "director"])
+    def test_every_seat_can_keep_its_instructed_trail(self, root, role):
+        assert self._judge(root, ".bgate/progress/item-5.jsonl",
+                           role=role) == hook.ALLOW
+
+    def test_every_seat_can_append_to_the_project_thread(self, root):
+        assert self._judge(root, ".bgate/handoff/thread.jsonl") == hook.ALLOW
+
+    @pytest.mark.parametrize("rel", [
+        ".bgate/game.db",              # the store — must go through the tools,
+                                       # or the ledger and versioned writes are bypassed
+        ".bgate/ui-token",             # the dashboard bearer token, written 0600
+        ".bgate/agents/item-5.log",    # run logs
+        ".bgate/notify.jsonl",
+        ".bgate/../escape.txt",        # the carve-out must not be a way out of it
+    ])
+    def test_the_carve_out_is_not_a_hole(self, root, rel):
+        """NARROW BY CONSTRUCTION. `.bgate/**` would have handed every seat the
+        dashboard auth token and a way to corrupt the DB behind its own API."""
+        assert self._judge(root, rel) == hook.BLOCK
+
+    def test_an_unknown_seat_still_fails_closed_on_metadata(self, root):
+        """The carve-out sits AFTER the unknown-seat check deliberately, so it
+        never becomes a way for an unidentified caller to write anything."""
+        assert self._judge(root, ".bgate/progress/item-5.jsonl",
+                           role="nonexistent") == hook.BLOCK
+
+    def test_the_shared_thread_is_not_leased(self, root):
+        """handoff/thread.jsonl is ONE append-only file concurrent agents are
+        meant to share. Leasing it would make the second agent's note a blocked
+        write — the opposite of what an append-only log is for. A lease stops a
+        silent overwrite, and appending a line overwrites nothing."""
+        assert self._judge(root, ".bgate/handoff/thread.jsonl",
+                           owner="item-1") == hook.ALLOW
+        assert self._judge(root, ".bgate/handoff/thread.jsonl",
+                           owner="item-2") == hook.ALLOW
+
+    def test_ordinary_files_still_lease(self, root):
+        """The control: if this passes too, the lease was switched off wholesale."""
+        assert self._judge(root, "game/scripts/x.gd", role="gameplay",
+                           owner="item-1") == hook.ALLOW
+        assert self._judge(root, "game/scripts/x.gd", role="gameplay",
+                           owner="item-2") == hook.BLOCK
+
+    def test_the_rule_and_the_lane_now_agree(self, root):
+        """Bind the two together so they cannot drift apart again: the path named
+        in the WORK MANIFEST rule must be one the oracle permits."""
+        from bgate_core import seats
+        brief = seats.brief(root, "qa")
+        manifest = next(r for r in brief["rules"] if r.startswith("WORK MANIFEST"))
+        assert ".bgate/progress/" in manifest
+        assert seats.can_write(root, "qa", ".bgate/progress/item-1.jsonl")["allowed"]

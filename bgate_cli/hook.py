@@ -457,6 +457,7 @@ def _judge_path(target: str, payload: dict, seat: str,
     verdict = seats.can_write(root, seat, str(rel), owner=owner)
     if verdict["allowed"]:
         _hold(assets, root, str(rel), seat, owner)
+        _note_write(root, str(rel), seat, owner, payload)
         return ALLOW, ""
 
     # WHICH GATE FAILED, read off the verdict rather than off its prose: only a
@@ -481,6 +482,11 @@ def _judge_path(target: str, payload: dict, seat: str,
             # warning the only thing warn mode did and left the next session to
             # collide with nothing.
             _hold(assets, root, str(rel), seat, owner)
+            # Recorded in BOTH softened modes, because both let the write land:
+            # warn returns exit 1, which is non-blocking, so the file changes
+            # either way and an audit that skipped it would under-report exactly
+            # the sessions running with the gate loosened.
+            _note_write(root, str(rel), seat, owner, payload)
             if mode == "collide":
                 return ALLOW, ""
 
@@ -551,6 +557,34 @@ def _decide_bash(command: str, payload: dict, seat: str,
     return (WARN, warning) if warning else (ALLOW, "")
 
 
+def _note_write(root, rel: str, seat: str, owner: str, payload: dict) -> None:
+    """Record a PERMITTED write so the file list stops being self-reported.
+
+    A QA agent closed a gate saying "no files were touched" while having written
+    its own `.bgate/progress/item-<id>.jsonl`, which the WORK MANIFEST rule told
+    it to write. Nothing could contradict that: this hook logged only failures,
+    the activity ledger records no writes, and the path lease -- the one trace --
+    is reaped on expiry. The harness was on the path for every write and threw
+    the knowledge away.
+
+    Recorded for METADATA PATHS TOO, and that is the point rather than an
+    oversight: the file the false report missed was a harness file, and
+    `_hold` deliberately does not lease those, so this is the only thing that
+    sees them at all.
+
+    Best effort, like every other side effect here. A write the oracle already
+    allowed must never fail because its bookkeeping did.
+    """
+    if not owner:
+        return
+    try:
+        from bgate_core import writelog
+        writelog.record(root, rel, seat, owner,
+                        tool=str((payload or {}).get("tool_name", "")))
+    except Exception:
+        pass
+
+
 def _collision(assets, root, rel: str, seat: str, owner: str) -> tuple[str, str]:
     """Is another EXECUTION in this file right now? Returns (owner, why).
 
@@ -591,6 +625,14 @@ def _hold(assets, root, rel: str, seat: str, owner: str) -> None:
     never stop a write the oracle already allowed."""
     if not owner:
         return  # no execution identity to attribute the lease to
+    # HARNESS TRAILS ARE APPEND-ONLY AND SHARED ON PURPOSE. handoff/thread.jsonl
+    # is one file per project that concurrent agents are meant to write; leasing
+    # it would make the second agent's note a blocked write, which is the exact
+    # opposite of what an append-only log is for. A lease exists to stop a silent
+    # overwrite, and appending a line overwrites nothing.
+    from bgate_core import seats as _seats
+    if _seats.is_metadata(rel):
+        return
     try:
         lease_s = int(os.environ.get("BGATE_LEASE_S", "") or DEFAULT_LEASE_S)
     except ValueError:

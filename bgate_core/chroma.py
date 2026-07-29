@@ -71,6 +71,8 @@ KEYED_KINDS = frozenset({
     "animation",  # pose frames / sheets
     "item",       # inventory and gear art
     "sprite", "sheet", "gear", "prop", "portrait", "icon",
+    "vfx",        # an effect key frame — composites over the game, so alpha or
+                  # nothing. See bgate_core.vfx for what happens to it next.
 })
 # Full-bleed: the background IS the asset. Keying these produces an empty file.
 # `concept` sits here deliberately — exploration wants to see the model's own
