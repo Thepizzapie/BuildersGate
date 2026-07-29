@@ -94,7 +94,12 @@ def clause(root: str | os.PathLike[str], *, task_kind: str = "",
         return ""
 
     blob = " ".join(str(s.get("body") or "") for s in sections).lower()
-    said = [directive for probe, directive in _VOCABULARY if probe.search(blob)]
+    # Two gates, and they answer different questions. The probe asks "did the
+    # project ASK for this?"; the scope asks "is it TRUE of the thing being
+    # drawn?". A bible that says chibi still means it — just not about a spark.
+    kind = str(task_kind or "").strip().lower()
+    said = [directive for probe, directive, scope in _VOCABULARY
+            if probe.search(blob) and _in_scope(scope, kind)]
     if not said:
         return ""
 
@@ -131,24 +136,74 @@ def clause(root: str | os.PathLike[str], *, task_kind: str = "",
 # characters the model starts treating it as subject matter — the budget in
 # MAX_CLAUSE_CHARS is what enforces that.
 
-_VOCABULARY: list[tuple[re.Pattern, str]] = [
+# ── SCOPE: which KINDS of asset a directive is true of ───────────────────────
+#
+# Every directive used to go on every prompt, and that is wrong in a way that is
+# invisible until you look at the art. MEASURED, on a corporate-satire project:
+# "chibi proportions, large head, short body" is exactly right for that game's
+# characters and is what its bible asks for — and it was being appended to a
+# request for a MUZZLE SPARK. Four generations in a row came back as a
+# big-headed figure with the spark drawn beside it. Nothing in the prompt could
+# outvote it, because the clause is appended last; removing every actor word
+# from the description did not help, and neither did negation.
+#
+# A directive about BODIES is not a directive about a spark, a floor tile or a
+# health bar. So each entry now carries the kinds it is true of, and a kind the
+# entry does not name never sees it. `None` means "true of all art", which most
+# of them are: how the pixels are drawn is universal, what the subject's
+# ANATOMY is is not.
+#
+# Kinds in use across the tools: anchor, animation, background, gear, icon,
+# item, portrait, prop, sheet, sprite, tile, ui, vfx. An unknown or empty kind
+# gets the unscoped directives only — the safe subset, since a caller that did
+# not say what it was making must not be told to draw a body.
+_CHARACTERS = frozenset({"anchor", "animation", "portrait", "sheet", "sprite"})
+_WORLD = frozenset({"anchor", "animation", "background", "gear", "item", "prop",
+                    "sheet", "sprite", "tile"})
+
+_VOCABULARY: list[tuple[re.Pattern, str, Optional[frozenset]]] = [
     (re.compile(r"pixel art|pixel[- ]grid|chunky pixel", re.I),
      "true chunky pixel art with a visible pixel grid, hard-edged, no "
-     "anti-aliased or painterly rendering"),
+     "anti-aliased or painterly rendering", None),
+    # PROJECTION is about things that sit on the world's floor. A radial impact
+    # burst has no projection to be wrong about, and telling it to be isometric
+    # gets a burst drawn on a diamond of ground.
     (re.compile(r"isometric|2:1|3/4", re.I),
      "angled 3/4 isometric view, 2:1 tile geometry, never flat top-down and "
-     "never straight-on front view"),
+     "never straight-on front view", _WORLD),
+    # ANATOMY. The one that cost four generations — see the note above.
     (re.compile(r"chibi", re.I),
-     "chibi proportions, large head, short body"),
+     "chibi proportions, large head, short body", _CHARACTERS),
     (re.compile(r"16-bit|snes", re.I),
-     "16-bit SNES-era sprite work"),
+     "16-bit SNES-era sprite work", None),
     (re.compile(r"dark neon|neon", re.I),
-     "dark palette with neon accents"),
+     "dark palette with neon accents", None),
     (re.compile(r"greyscale|grayscale|monochrome", re.I),
-     "greyscale only, no hue"),
+     "greyscale only, no hue", None),
     (re.compile(r"bold outline|readable silhouette|silhouette", re.I),
-     "bold outlines and a silhouette readable at small size"),
+     "bold outlines and a silhouette readable at small size", None),
 ]
+
+
+def _in_scope(scope: Optional[frozenset], kind: str) -> bool:
+    """SCOPING ONLY EVER SUBTRACTS WHEN THE CALLER SAID WHAT IT IS MAKING.
+
+    An empty `task_kind` means "unspecified", not "none of the above", and the
+    honest reading of it is the historic one: give it everything the bible asked
+    for. Treating unspecified as out-of-scope was the first cut of this and it
+    silently stripped the isometric directive from every caller that had never
+    needed to name its kind — narrowing a hundred working paths to fix one
+    broken one. A directive is withheld only from a kind that has explicitly
+    identified itself as something the directive is not about.
+    """
+    return scope is None or not kind or kind in scope
+
+
+def directives_for(task_kind: str = "") -> list[str]:
+    """The directives in scope for a kind — exposed so a caller can ASK rather
+    than discover by generating a picture and looking at it."""
+    kind = str(task_kind or "").strip().lower()
+    return [d for _, d, scope in _VOCABULARY if _in_scope(scope, kind)]
 
 
 def anchors_for(root: str | os.PathLike[str], *, kinds: Sequence[str] = ("style",),

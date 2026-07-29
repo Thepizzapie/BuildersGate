@@ -159,3 +159,43 @@ class TestWiring:
         # keyed) — what must be absent is the ART DIRECTION text.
         assert "ART DIRECTION" not in seen["prompt"]
         assert "Style direction:" not in seen["prompt"]
+
+
+class TestScopeByKind:
+    """A directive about BODIES is not a directive about a spark.
+
+    Measured on a corporate-satire project: "chibi proportions, large head,
+    short body" — correct for that game's characters, and what its bible asks
+    for — was being appended to a request for a muzzle spark. Four generations
+    in a row came back as a big-headed figure with the spark drawn beside it.
+    The clause is appended last, so nothing in the prompt could outvote it.
+    """
+
+    def test_a_character_still_gets_the_anatomy(self, brief):
+        assert "chibi" in ad.clause(brief, task_kind="animation")
+
+    def test_an_effect_does_not(self, brief):
+        assert "chibi" not in ad.clause(brief, task_kind="vfx")
+
+    def test_a_prop_does_not_either(self, brief):
+        """A desk was being told to have a large head, too — the same bug, just
+        less visible than it was on the spark."""
+        assert "chibi" not in ad.clause(brief, task_kind="prop")
+
+    def test_an_effect_gets_no_projection(self, brief):
+        """A radial burst has no projection to be wrong about; asking for one
+        gets a burst drawn standing on a diamond of ground."""
+        assert "isometric" not in ad.clause(brief, task_kind="vfx")
+
+    def test_a_tile_still_gets_projection(self, brief):
+        assert "isometric" in ad.clause(brief, task_kind="tile")
+
+    def test_the_universal_directives_reach_everything(self, brief):
+        for kind in ("animation", "prop", "tile", "vfx", "ui", ""):
+            assert "pixel art" in ad.clause(brief, task_kind=kind)
+
+    def test_an_unspecified_kind_is_not_narrowed(self, brief):
+        """Scoping subtracts only from a caller that SAID what it was making.
+        Treating "" as none-of-the-above silently stripped the projection
+        directive from every path that had never needed to name its kind."""
+        assert ad.clause(brief) == ad.clause(brief, task_kind="animation")

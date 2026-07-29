@@ -76,6 +76,7 @@ from bgate_core import iterations as _iterations
 from bgate_core import items as _items
 from bgate_core import project as _project
 from bgate_core import search as _search
+from bgate_core import vfx as _vfx
 
 # THE ONE CHANNEL THAT CANNOT BE DROPPED BY CHANGING DIRECTORY.
 #
@@ -1243,6 +1244,80 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
                 "animation": "default", "res_dir": res_dir}
     except Exception as exc:
         return _fail(exc)
+
+
+def vfx_animate(key_frame: str, name: str, motion: str = "burst",
+                frames: int = 4, peak: int = 1, cell: Optional[list[int]] = None,
+                fps: float = 14.0, res_dir: str = "assets/vfx",
+                out_dir: str = "", loop: Optional[bool] = None,
+                overrides: Optional[dict] = None) -> dict:
+    """Turn ONE approved key frame into an effect ANIMATION, arithmetically.
+
+    THE TOOL FOR PROJECTILE AND IMPACT VFX. Do NOT buy an effect animation as a
+    grid of frames from an image model — that returns N INDEPENDENT DRAWINGS,
+    not an animation, and the faults are not promptable away: a mug shatters and
+    is intact again in frame 4, a cloud's palette pops mid-set, a "fading"
+    effect ends at full opacity, a trail's frames point different ways. Identity
+    over time is the one thing the model cannot hold and the one thing
+    arithmetic gets free.
+
+    THE WORKFLOW, in order:
+      1. Generate ONE key frame — the effect at its PEAK, alone on the keyed
+         backdrop, via image_generate/image_edit. One image, so you can LOOK at
+         it and re-roll it cheaply.
+      2. Call this. It derives every other frame from those pixels: frames
+         before `peak` grow into it, frames after decay out of it. Frame 3 is
+         provably the same art as frame 2 because it is made of it.
+      3. Read `notes` in the result. They are findings, not decoration.
+
+    Emits <name>_sheet.png + <name>_frames.tres through the same emitters the
+    character pipeline uses, every frame registered to the cell centre — so the
+    effect stacks on the projectile it belongs to without anyone computing an
+    offset. `anchor` in the result is the pixel a runtime manifest should place.
+
+    MOTIONS:
+{motions}
+    `peak` is which output frame the key frame IS. A burst drawn at its widest
+    wants peak=1 of 4 — one frame snapping in, two coming apart.
+
+    `overrides` tunes one motion's numbers (grow/expand/scatter/drift/fade/
+    gravity/jitter/squash/chunk) without inventing a new one.
+
+    COSTS NOTHING AND CALLS NO MODEL."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, key_frame)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no key frame at {rel}"}
+        dest = (root / out_dir) if out_dir else src.parent
+        res = _vfx.animate(
+            str(src), str(dest), name, motion=motion, frames=int(frames),
+            peak=int(peak), cell=tuple(cell) if cell else (64, 64),
+            fps=float(fps), res_dir=res_dir, loop=loop, overrides=overrides)
+        if not res.get("ok"):
+            return res
+        _register_artifact(name, res["sheet"], producer="vfx_animate",
+                           refs=[str(src)],
+                           metadata={"motion": motion, "frames": frames,
+                                     "anchor": res["anchor"],
+                                     "coverage": res["coverage"]})
+        for key in ("sheet", "tres"):
+            res[key] = _assets.normalize_path(root, res[key])
+        res["frames"] = [_assets.normalize_path(root, p) for p in res["frames"]]
+        return res
+    except Exception as exc:
+        return _fail(exc)
+
+
+# The motion table is written ONCE, in bgate_core.vfx, and interpolated into the
+# tool description here. This must happen BEFORE _tool is applied: functools.wraps
+# copies __doc__ at decoration time and FastMCP reads it then, so a docstring
+# built afterwards would never reach the model. (A `"""...""" % x` docstring is
+# worse still — the % makes it an expression, so __doc__ is simply None and the
+# whole description vanishes silently. It did, for one commit.)
+vfx_animate.__doc__ = vfx_animate.__doc__.format(motions=_vfx.motion_help())
+vfx_animate = _tool(vfx_animate)
 
 
 # Frames the vision judge scores at/below this are flagged for regen.
