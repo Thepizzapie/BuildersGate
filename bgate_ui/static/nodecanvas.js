@@ -122,6 +122,20 @@
       this._renderAll();
     }
     addNode(node) { this.nodes.set(node.id, node); this._renderNode(node); this._renderEdges(); }
+    /** Repaint several nodes with ONE edge pass.
+     *
+     * addNode() re-renders every edge, and each edge measures both its ports
+     * with getBoundingClientRect. Calling it in a loop is quadratic in forced
+     * layout: a live graph patching a dozen nodes per poll spent thousands of
+     * synchronous layouts a second under the user's cursor. The edges only need
+     * drawing once the batch has moved. */
+    patchNodes(nodes) {
+      for (const n of nodes || []) {
+        this.nodes.set(n.id, n);
+        this._renderNode(n);
+      }
+      this._renderEdges();
+    }
     addEdge(from, to) {
       if (this.edges.some(e => e.from[0] === from[0] && e.from[1] === from[1] && e.to[0] === to[0] && e.to[1] === to[1])) return;
       this.edges.push({ from, to }); this._renderEdges();
@@ -129,7 +143,11 @@
     removeNode(id) {
       if (!this.nodes.has(id)) return;
       this.nodes.delete(id);
-      this._paint.delete(id);
+      // Two entries per node: the paint cache is keyed by id + ":ports" and
+      // id + ":body". Deleting the bare id left both behind, which only
+      // mattered once a consumer started churning its node set on a poll.
+      this._paint.delete(id + ":ports");
+      this._paint.delete(id + ":body");
       this.selection.delete(id);
       this.edges = this.edges.filter(e => e.from[0] !== id && e.to[0] !== id);
       const el = this._el(id); if (el) el.remove();
@@ -153,7 +171,11 @@
     _renderAll() {
       const live = new Set(this.nodes.keys());
       this.$world.querySelectorAll(".nc-node").forEach(el => {
-        if (!live.has(el.dataset.node)) { el.remove(); this._paint.delete(el.dataset.node); }
+        if (!live.has(el.dataset.node)) {
+          el.remove();
+          this._paint.delete(el.dataset.node + ":ports");
+          this._paint.delete(el.dataset.node + ":body");
+        }
       });
       for (const n of this.nodes.values()) this._renderNode(n);
       this._applyTransform();
@@ -267,7 +289,17 @@
         const hit = document.createElementNS(NS, "path");
         hit.setAttribute("class", "nc-hit"); hit.setAttribute("d", d); hit.dataset.i = i;
         svg.appendChild(hit);
-        svg.appendChild(this._edgePath(d, false, a.color));
+        const path = this._edgePath(d, false, e.color || a.color);
+        // An edge may say what KIND of relation it is. Delegation and "these
+        // two agents are on the same asset" are not the same line, and a graph
+        // that draws them identically is asserting they are.
+        if (e.cls) path.setAttribute("class", "nc-edge " + e.cls);
+        if (e.title) {
+          const tip = document.createElementNS(NS, "title");
+          tip.textContent = e.title;
+          path.appendChild(tip);
+        }
+        svg.appendChild(path);
       }
       if (this._link) {
         const a = this._portPos(this._link.from[0], this._link.from[1], "out");
@@ -891,6 +923,8 @@
       .nc-edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
       .nc-edge{fill:none;stroke:var(--nc-edge);stroke-width:2;opacity:.8}
       .nc-edge.temp{stroke-dasharray:5 4;opacity:.95}
+      /* a sideways relation, not a delegation — see the e.cls note above */
+      .nc-edge.nc-soft{stroke-dasharray:4 5;stroke-width:1.5;opacity:.6}
       .nc-hit{fill:none;stroke:transparent;stroke-width:16;pointer-events:stroke;cursor:pointer}
       .nc-hit:hover{stroke:var(--nc-edge);opacity:.18}
       .nc-world{position:absolute;top:0;left:0;transform-origin:0 0}
