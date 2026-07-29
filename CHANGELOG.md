@@ -9,6 +9,21 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-07-28
+
+### Fixed
+
+- **A clean install pulled MCP SDK 2.0 and every MCP tool stopped importing.**
+  The SDK's 2.0 removed `mcp.server.fastmcp`, which the whole of
+  `bgate_mcp/server.py` is built on, and the dependency was a floor with no
+  ceiling — so nothing changed but the date and the server broke on any machine
+  that had not already resolved it. Pinned to `mcp>=1.2.0,<2`; lifting that is a
+  port, not a version bump.
+
+  The 0.1.23 tag carries the unbounded requirement and a repository rule forbids
+  moving a published tag, so this is its own release rather than a correction to
+  that one.
+
 ## [0.1.23] - 2026-07-28
 
 ### Added
@@ -135,12 +150,6 @@ repository at first publication. There is no earlier release history to record.
 - **A budget with `max_runtime_s` set to 0 meant no wall clock at all**, so an
   agent that never self-reported ran until somebody noticed. 0 is the hard cap
   (2 hours, `BGATE_MAX_RUNTIME_S`) now, not infinity.
-- **A clean install pulled MCP SDK 2.0 and every MCP tool stopped importing.**
-  The SDK's 2.0 removed `mcp.server.fastmcp`, which the whole of
-  `bgate_mcp/server.py` is built on, and the dependency was a floor with no
-  ceiling — so nothing changed but the date and the server broke on any machine
-  that had not already resolved it. Pinned to `mcp>=1.2.0,<2`; lifting that is a
-  port, not a version bump.
 - `image_talkhead` refuses a near-empty generation instead of scaling its
   two-pixel silhouette up to match the anchor and dying in `MemoryError`, and it
   contains `res_dir`/`name` — it writes with pathlib, so the lane hook never
@@ -327,7 +336,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.2...v0.1.21
