@@ -259,6 +259,59 @@ else works without it.
 
 ---
 
+## Stopping agents — the kill switch
+
+Agents are real processes spending real money, so there is one control that
+stops all of them and it is never more than one click or one command away.
+
+**From the dashboard:** the red `stop all` button in the Agents console, top
+right of the graph.
+
+**From a terminal**, which is what you want when the dashboard itself is wedged
+or was never running:
+
+```bash
+bgate panic
+```
+
+Either one does the same four things, in this order, because any other order
+leaves a gap something restarts through:
+
+1. **auto-deploy off first** — killing agents while the loop is on just
+   dispatches a replacement into the gap;
+2. every live agent killed **by process tree**, not just the `claude` parent
+   (its MCP children hold the pipe open and outlive it otherwise);
+3. every pid in the project's ledger reaped, including ones a *previous*
+   dashboard spawned — the ledger is on disk and outlives the process that
+   wrote it, which is exactly why orphans happen;
+4. anything still marked `dispatched` settled, so the board stops claiming work
+   is running the moment this returns.
+
+Interrupted items are marked **stopped**, not done: you can see what was cut
+off and re-queue it deliberately.
+
+### What stops a run without you
+
+Nothing runs unbounded, and there are three separate backstops because each one
+misses a different failure:
+
+| Backstop | Default | What it catches |
+|---|---|---|
+| Cost ceiling | `$5` per item | a run that keeps paying to go nowhere |
+| Runtime ceiling | 30 min (`max_runtime_s`) | a run that never finishes |
+| Hard runtime cap | 2 h (`BGATE_MAX_RUNTIME_S`) | a budget with its runtime set to 0 |
+| Stall timeout | 25 min (`BGATE_STALL_S`) | a **hung** session: alive, silent, holding a slot |
+| Concurrency cap | 4 agents (`max_concurrent`) | the whole fleet at once |
+
+Silence is measured against real output — the log *and* files under
+`.bgate_out/` and the game's assets — because a 30-minute atomic image batch
+writes nothing until it returns, and killing those was how healthy agents used
+to die. A session that has produced nothing at all for 25 minutes is wedged, not
+working.
+
+The ceilings live in the project's budget (`/api/spend`); the two environment
+variables are escape hatches for a machine that needs different numbers.
+
 ## Two things that will bite you
 
 **Approval is human-only, on purpose.** An agent records a verdict; it does not

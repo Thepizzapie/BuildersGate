@@ -12,6 +12,9 @@
                                 (needs: pip install "builders-gate[desktop]")
     bgate publish [--out DIR]   build the arcade: every game, as a static site
     bgate doctor [DIR] [--json] check every external dependency in one pass
+    bgate panic [DIR] [--json]  EMERGENCY STOP: kill every agent on a project,
+                                reap orphans, and turn auto-deploy off.
+                                Works even when the dashboard is gone or wedged.
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
     bgate hook-status [DIR]     prove the hook is installed AND biting
     bgate hook                  (internal) the PreToolUse hook itself
@@ -515,6 +518,53 @@ def publish(out: str = "", projects: list[str] | None = None,
     return 0
 
 
+def panic(project_dir: str = "", as_json: bool = False) -> int:
+    """THE KILL SWITCH, from a terminal. Stop every agent on a project.
+
+    This exists as a CLI command and not only as a button because the moment
+    you need it is exactly the moment the dashboard may be the thing that is
+    wedged — or not running at all, while the agents it spawned very much are.
+    The pid ledger lives in the project (``.bgate/agents/``), so this works
+    against a dashboard that is already gone.
+
+    Turns auto-deploy off first (otherwise the loop dispatches a replacement
+    into the gap), kills each agent's whole process tree, reaps anything the
+    ledger knows about, and settles the items so the board stops claiming work
+    is running. Exit 0 even when nothing was running — this is the command you
+    hammer, and "nothing to kill" is a success.
+    """
+    from bgate_ui import dispatch as _dispatch
+
+    root = project_dir or os.environ.get("BGATE_ROOT") or ""
+    if not root:
+        try:
+            from bgate_core import project
+            root = str(project.require_root())
+        except Exception:
+            print("no project here — run this inside a game project, "
+                  "or pass the directory: bgate panic <DIR>")
+            return 2
+
+    result = _dispatch.kill_all(str(root), reason="bgate panic", actor="cli")
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return 0
+    stopped, orphans = result.get("stopped") or [], result.get("orphans") or []
+    print(f"stopped {len(stopped)} running agent(s)"
+          + (f": {', '.join('#' + str(i) for i in stopped)}" if stopped else ""))
+    print(f"reaped  {len(orphans)} orphaned process(es)")
+    if result.get("autopilot"):
+        print("auto-deploy is now OFF — turn it back on from the console")
+    settled = result.get("settled") or []
+    if settled:
+        print(f"settled {len(settled)} item(s) that were stuck 'dispatched'")
+    for problem in result.get("errors") or []:
+        print(f"  ! {problem}")
+    if not stopped and not orphans:
+        print("nothing was running.")
+    return 0
+
+
 def doctor(project_dir: str = "", as_json: bool = False) -> int:
     """Print the dependency report. Exit 1 if anything is unavailable.
 
@@ -667,6 +717,11 @@ def main() -> int:
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]
         return doctor(positional[0] if positional else "", as_json="--json" in args)
+
+    if cmd in ("panic", "stop-all", "killswitch"):
+        positional = [a for a in args[1:] if not a.startswith("-")]
+        return panic(positional[0] if positional else "",
+                     as_json="--json" in args)
 
     if cmd == "hook":
         from bgate_cli.hook import main as hook_main
