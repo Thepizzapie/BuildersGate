@@ -1638,6 +1638,15 @@
   .ck-toggle.on{border-color:var(--accent-line); color:var(--text); background:var(--accent-soft)}
   .ck-toggle.on .ck-sw{background:var(--accent); border-color:var(--accent)}
   .ck-toggle.on .ck-sw::after{transform:translateX(12px); background:var(--accent-fg)}
+  /* the kill switch: legible as dangerous without shouting until hovered */
+  .ck-panic{
+    flex:none; padding:var(--s-3) var(--s-5); border-radius:var(--r-full);
+    border:1px solid var(--bad-line); background:var(--bad-soft); color:var(--bad);
+    font:inherit; font-family:var(--mono); font-size:var(--fs-2xs);
+    text-transform:uppercase; letter-spacing:var(--track-label); cursor:pointer;
+  }
+  .ck-panic:hover{background:var(--bad); color:var(--bg); border-color:var(--bad)}
+  .ck-panic:disabled{opacity:.5; cursor:default}
   .ck-why{font-size:var(--fs-xs); color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .ck-why.warn{color:var(--warn)}
 

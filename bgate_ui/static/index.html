@@ -141,6 +141,12 @@
               </button>
               <span class="ck-why" id="ck-auto-why"></span>
               <span class="ck-spacer"></span>
+              <!-- The kill switch. Deliberately always visible and never behind
+                   a menu: the moment it is needed is not the moment to go
+                   looking. `bgate panic` does the same from a terminal, for
+                   when this page is the thing that is wedged. -->
+              <button class="ck-panic" id="ck-panic" type="button"
+                      title="Stop every agent on this project and turn auto-deploy off">stop all</button>
               <button class="qbtn small ghost" id="ck-filter" type="button"
                       title="Showing work that is running, queued, broken, or just landed">in flight</button>
               <button class="qbtn small ghost" id="ck-fit" type="button">fit</button>
