@@ -9,6 +9,103 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.26] - 2026-07-29
+
+### Added
+
+- **The MCP server now ships `instructions`, so a session cannot be lobotomized
+  by changing directory.** The working process was communicated four ways and
+  every one was conditional: tool docstrings if the agent reads the schema, the
+  `CLAUDE.md` block if the project was stamped *and* you are standing in it,
+  `seat_brief` if the agent thinks to call it, and the dispatch prompt only for
+  agents the dashboard spawned. A human-started session hit none of them, saw
+  ~150 tool names, and reasonably concluded it should call them itself: unlaned,
+  unlogged, past the QA gate, graded by the agent that did the work. The server
+  is registered `--scope user`, so this string now arrives in every session on
+  the machine with no per-project install. It is seat-aware for free, because
+  each client spawns its own stdio server and `BGATE_SEAT` at boot is the
+  session's identity. The director's mission is *read from the seat table*, not
+  restated, so a project that customises it customises the brief.
+
+- **A `SessionStart` hook that preloads the board.** `instructions` is fixed at
+  boot, so it can state the role and never the situation: what is queued,
+  whether the dashboard is even up to run it, which files another live session
+  is holding. `clear` and `compact` are on the matcher alongside `startup` and
+  `resume`, because those are precisely when the context is discarded. Silent
+  outside a Builders Gate project, and guarded harder than the PreToolUse hook:
+  a crash there costs one tool call, a crash here costs the session.
+
+- **A project thread for in-flight state** (`handoff_note` / `handoff_read`).
+  The board records what was dispatched and the bible records what was settled;
+  between them sits what a session was halfway through, why it chose what it
+  chose, and what it deliberately did not do. Appended as you go, never
+  generated at the end, because a killed process, a crash and a closed window
+  all fire nothing and those are the sessions worth resuming. One thread per
+  project rather than per session: the per-session design required the server
+  and the hooks to agree on what "this session" is, and they cannot.
+
+- **`bgate hook-install --scope user`** installs both hooks once for every
+  project on the machine, including ones that do not exist yet. The handler was
+  always project-agnostic; only the settings entry was per-repo, and a switch
+  you must remember to flip in each new project is off exactly when a fresh
+  project needs it. User scope pins the absolute interpreter where project scope
+  keeps `python -m`, because the project copy is committed and a bare `python`
+  in `~/.claude` resolves against whatever is on PATH, dies on
+  `ModuleNotFoundError`, fails open, and stops enforcing with no symptom.
+
+- **The VFX pipeline** (`bgate_core/vfx.py`, the `vfx_animate` tool): key-frame
+  motion derivation with art-direction scoping and a keyed chroma kind. See
+  Known issues.
+
+### Fixed
+
+- **An agent's reported file list is now the one the harness observed.** A QA
+  agent closed a gate reporting "no files were touched" while having written its
+  own `.bgate/progress/item-<id>.jsonl`, which the WORK MANIFEST rule tells every
+  seat to keep. The report was not dishonest — it answered about the project's
+  files — but nothing in the system could contradict it: the hook logged only
+  failures, the activity ledger records no writes, and `path_lease` is reaped on
+  expiry by design. A required disclosure field would catch omission and never
+  inaccuracy, so instead the hook records what it already sees and
+  `queue_complete` attaches it.
+
+- **Every seat was instructed to write a file its own lane forbade.** No seat's
+  `write_globs` contain `.bgate/**`, so the WORK MANIFEST instruction was refused
+  for all seven wherever the hook was installed. `METADATA_LANES` is a two-entry
+  carve-out rather than `.bgate/**`, because that directory also holds `game.db`
+  and the 0600 dashboard token.
+
+- **The PreToolUse hook ignored the widest-reach agent in the system.** `if not
+  seat: return ALLOW` was right that a hand-started session adopts no seat and
+  wrong about what follows: it holds the director seat, and what matters is not
+  its lane but whether another run is already in the file. It also had no
+  execution identity, so the lease machinery could never see it — two sessions
+  edited one module on one afternoon and neither was told. `BGATE_DIRECTOR_MODE`
+  is `off` / `collide` (default) / `warn` / `block`; the default only refuses a
+  genuine collision, because a gate people switch off is worth less than a
+  quieter one they leave on.
+
+- `bgate hook-status` no longer reports a seatless session as inert when it is
+  not, and the scaffolded `CLAUDE.md` no longer claims `queue_next` "marks it
+  dispatched" — it is a read-only `SELECT`, so two agents calling it get the
+  same row.
+
+### Known issues
+
+Committed deliberately, with the findings on record rather than discovered later:
+
+- `vfx_animate` joins model-supplied `name` / `out_dir` onto the output directory
+  with no containment, so a traversal writes outside the project root.
+- `peak` is not clamped before the notes slice, so an out-of-range peak emits a
+  false coverage note or silently skips the decay check.
+- `jitter` is omitted from the headroom reservation, so `churn` clips at the cell
+  wall at small cell sizes.
+- `_WORLD` lists only `background` / `tile` while `chroma.PLATE_KINDS` has seven,
+  so `concept`, `plate`, `backdrop` and `splash` lost the isometric directive
+  they previously received.
+- `seats.py` instructs the seat to call `image_generate` with `task_kind='vfx'`,
+  a parameter no MCP tool accepts.
+
 ## [0.1.25] - 2026-07-28
 
 ### Fixed
@@ -358,7 +455,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.25...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.26...HEAD
+[0.1.26]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.22...v0.1.23
