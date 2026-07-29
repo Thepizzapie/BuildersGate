@@ -54,14 +54,78 @@ HOOK_CONFIG = {
     "hooks": [{"type": "command", "command": HOOK_COMMAND}],
 }
 
+# SessionStart carries what `instructions` structurally cannot: the MCP field is
+# fixed when the stdio server boots, so it can state the role and never the
+# situation — which board items are queued, whether the dashboard is even up to
+# run them, which files another live session is already holding. A director that
+# must ask three questions before it can act will skip them.
+#
+# `clear` and `compact` are on the matcher with `startup` and `resume` for the
+# same reason: those are precisely the moments the context is discarded, and
+# re-arriving with no idea what is on the board is the lobotomy this closes.
+SESSION_MATCHER = "startup|resume|clear|compact"
+SESSION_COMMAND = "python -m bgate_cli.session"
+SESSION_CONFIG = {
+    "matcher": SESSION_MATCHER,
+    "hooks": [{"type": "command", "command": SESSION_COMMAND}],
+}
 
-def _is_bgate_hook(entry: dict) -> bool:
-    return any("bgate_cli.hook" in h.get("command", "")
+# event -> (config, module fragment that identifies OUR entry for that event)
+HOOK_EVENTS = {
+    "PreToolUse": (HOOK_CONFIG, "bgate_cli.hook"),
+    "SessionStart": (SESSION_CONFIG, "bgate_cli.session"),
+}
+
+
+def _is_bgate_hook(entry: dict, needle: str = "bgate_cli.hook") -> bool:
+    return any(needle in h.get("command", "")
                for h in entry.get("hooks", []))
 
 
-def install_hook(project_dir: str) -> dict:
-    """Merge the enforcement hook into <project>/.claude/settings.json.
+def _pin(config: dict) -> dict:
+    """The same entry with the interpreter pinned, for user scope. See below."""
+    return {**config, "hooks": [
+        {**h, "command": h["command"].replace(
+            "python -m ", f'"{sys.executable}" -m ', 1)}
+        for h in config["hooks"]]}
+
+
+def _user_hook_config() -> dict:
+    """The same gate, addressed to ONE machine instead of one repo.
+
+    The `python -m` rule above exists because the project copy is COMMITTED and
+    an absolute interpreter path would bake this machine's venv into everyone
+    else's checkout. ~/.claude/settings.json is committed nowhere and shared with
+    nobody, so that argument does not apply — and the opposite hazard does. A
+    bare `python` resolves against whatever is first on PATH when the hook fires,
+    which is routinely not the environment bgate was installed into; the hook
+    then dies on ModuleNotFoundError, fails open, and enforcement stops with no
+    symptom but a line in hook.log. This is the same lesson `claude mcp add`
+    already carries in CLAUDE.md: use the absolute interpreter.
+    """
+    return {
+        "matcher": HOOK_MATCHER,
+        "hooks": [{"type": "command",
+                   "command": f'"{sys.executable}" -m bgate_cli.hook'}],
+    }
+
+
+def install_hook(project_dir: str, scope: str = "project") -> dict:
+    """Merge the enforcement hook into a settings.json.
+
+    scope="project" writes <project>/.claude/settings.json — the committed,
+    per-repo gate. scope="user" writes ~/.claude/settings.json ONCE and covers
+    every Builders Gate project on the machine, including ones that do not exist
+    yet.
+
+    USER SCOPE WORKS BECAUSE THE HANDLER WAS ALWAYS PROJECT-AGNOSTIC. It never
+    read an installed-at path: it resolves the project by walking up from the
+    file being written (hook.py `db.resolve_root(target_path.parent)`) and
+    returns ALLOW when that finds nothing, so a write outside any game project
+    is untouched. The per-project install was therefore never enforcing
+    anything the user-scope one cannot — it was only ever a per-repo switch, and
+    a switch you must remember to flip in each new project is a switch that is
+    off exactly when a fresh project needs it most.
 
     Merges rather than overwrites — a game project may already carry its own
     hooks, and clobbering them is exactly the kind of stomp this tool polices.
@@ -69,7 +133,12 @@ def install_hook(project_dir: str) -> dict:
     matcher (or an absolute interpreter path from another machine) is a gate
     that no longer gates.
     """
-    settings_path = Path(project_dir) / ".claude" / "settings.json"
+    if scope not in ("project", "user"):
+        return {"ok": False, "error": f"unknown scope {scope!r}; use project|user"}
+    if scope == "user":
+        settings_path = Path.home() / ".claude" / "settings.json"
+    else:
+        settings_path = Path(project_dir) / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     settings: dict = {}
@@ -82,34 +151,53 @@ def install_hook(project_dir: str) -> dict:
                              "fix it by hand; refusing to overwrite"}
 
     hooks = settings.setdefault("hooks", {})
-    pre = hooks.setdefault("PreToolUse", [])
-    ours = [entry for entry in pre if _is_bgate_hook(entry)]
-    already = bool(ours)
-    updated = False
-    if not already:
-        pre.append(HOOK_CONFIG)
-    else:
+    installed: list[str] = []
+    updated: list[str] = []
+    commands: dict[str, str] = {}
+    for event, (base, needle) in HOOK_EVENTS.items():
+        config = _pin(base) if scope == "user" else base
+        commands[event] = config["hooks"][0]["command"]
+        bucket = hooks.setdefault(event, [])
+        ours = [entry for entry in bucket if _is_bgate_hook(entry, needle)]
+        if not ours:
+            bucket.append(config)
+            installed.append(event)
+            continue
         for entry in ours:
-            if entry != HOOK_CONFIG:
+            if entry != config:
                 entry.clear()
-                entry.update(HOOK_CONFIG)
-                updated = True
-        # A duplicate entry would run the hook twice per write; keep the first.
+                entry.update(config)
+                if event not in updated:
+                    updated.append(event)
+        # A duplicate entry would run the hook twice per event; keep the first.
         for extra in ours[1:]:
-            pre.remove(extra)
-            updated = True
-    if not already or updated:
+            bucket.remove(extra)
+            if event not in updated:
+                updated.append(event)
+    if installed or updated:
         settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
     return {
         "ok": True,
+        "scope": scope,
         "settings": str(settings_path),
-        "installed": not already,
-        "updated": updated,
+        # Kept as booleans as well as lists: callers (and tests) were reading
+        # these two keys before SessionStart existed, and quietly changing what
+        # `installed` means is how a passing test stops meaning anything.
+        "installed": bool(installed),
+        "updated": bool(updated),
+        "events_installed": installed,
+        "events_updated": updated,
         "matcher": HOOK_MATCHER,
-        "command": HOOK_COMMAND,
-        "note": "set BGATE_SEAT=<role> in the session's environment to enforce; "
-                "without it the hook is inert. `bgate hook-status` proves it.",
+        "command": commands["PreToolUse"],
+        "commands": commands,
+        "covers": ("every Builders Gate project on this machine, including ones "
+                   "not created yet" if scope == "user"
+                   else str(Path(project_dir).resolve())),
+        "note": "PreToolUse enforces lanes/locks (BGATE_DIRECTOR_MODE controls "
+                "how hard for a seatless session); SessionStart preloads the "
+                "board. `bgate hook-status` proves the first one is biting, "
+                "`bgate session-start --print` shows what the second injects.",
     }
 
 
@@ -127,7 +215,10 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
         return 0 if report["enforcing"] else 1
 
     print(f"project   {report['project_root'] or '(none)'}")
-    print(f"seat      {report['seat'] or '(unset — hook is inert)'}")
+    if report.get("seated"):
+        print(f"seat      {report['seat']}")
+    else:
+        print(f"seat      (none adopted) -> director, mode={report.get('mode')}")
     print(f"installed {'yes' if report['installed'] else 'NO'}"
           + (f"  matcher={report.get('matchers') or []}" if report["installed"] else ""))
     for probe in report["probes"]:
@@ -727,10 +818,25 @@ def main() -> int:
         from bgate_cli.hook import main as hook_main
         return hook_main()
 
+    if cmd in ("session-start", "session"):
+        from bgate_cli.session import main as session_main
+        return session_main(args[1:] or ["--print"])
+
     if cmd == "hook-install":
-        target = args[1] if len(args) > 1 else "."
-        print(json.dumps(install_hook(target), indent=2))
-        return 0
+        rest = args[1:]
+        scope = "project"
+        if "--scope" in rest:
+            i = rest.index("--scope")
+            scope = rest[i + 1] if i + 1 < len(rest) else ""
+            # Drop the flag AND its value, or `--scope project ./game` reads
+            # "project" as the directory and installs into ./project.
+            rest = rest[:i] + rest[i + 2:]
+        positional = [a for a in rest if not a.startswith("-")]
+        # `--scope user` takes no directory: it is not about a directory.
+        target = "." if scope == "user" else (positional[0] if positional else ".")
+        result = install_hook(target, scope=scope)
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
 
     if cmd == "hook-status":
         positional = [a for a in args[1:] if not a.startswith("-")]
