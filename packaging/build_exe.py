@@ -30,15 +30,50 @@ APPDIR = DIST / "BuildersGate"
 EXE = APPDIR / "BuildersGate.exe"
 ZIP = DIST / "BuildersGate-windows.zip"
 
+def _routes_ok(body: bytes) -> str:
+    """Every route module imported inside the frozen bundle.
+
+    THE FAILURE THIS EXISTS FOR: routes/__init__.py discovers its modules with
+    pkgutil.iter_modules, which walks a directory. PyInstaller freezes imports,
+    so a module nothing statically imports is simply absent from the bundle —
+    and the discovery loop records the miss and carries on, by design, so half
+    the API can be gone while the dashboard looks perfectly healthy. Fetching a
+    page cannot see that. Asking the registry can.
+    """
+    import json
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        return f"unreadable: {exc}"
+    if data.get("failed"):
+        return "route modules failed to import: " + ", ".join(
+            f"{f.get('module')} ({f.get('error')})" for f in data["failed"])
+    registered = set(data.get("registered") or [])
+    # Named explicitly rather than counted: a count passes while the wrong
+    # module is missing.
+    missing = {"console", "orchestrator", "workspace_doc", "library"} - registered
+    if missing:
+        return f"missing route modules: {sorted(missing)}"
+    return ""
+
+
 # Every one of these is a real past failure: a wheel with no JS, a wheel with
-# no templates. The exe can regress the same way.
+# no templates, a bundle that dropped a route module. The exe can regress the
+# same way. A third element is an extra check on the body — status 200 with the
+# right content type is not proof for anything that reports on itself.
 SMOKE_PATHS = [
     ("/", "text/html"),
     ("/static/app.css", "text/css"),
     ("/static/index.html", "text/html"),
     ("/static/bgselect.js", "javascript"),
     ("/static/seats/art.js", "javascript"),
+    # The Agents console: two modules and a binary asset, none of which any
+    # other smoke path would touch.
+    ("/static/agents_console.js", "javascript"),
+    ("/static/agents_graph.js", "javascript"),
+    ("/static/img/mascot.png", "image/png"),
     ("/api/state", "json"),
+    ("/api/routes/status", "json", _routes_ok),
 ]
 
 
@@ -112,18 +147,24 @@ def smoke() -> None:
             sys.exit("exe never started serving within 60s")
 
         bad = []
-        for path, want in SMOKE_PATHS:
+        for entry in SMOKE_PATHS:
+            path, want = entry[0], entry[1]
+            check = entry[2] if len(entry) > 2 else None
             try:
                 with urllib.request.urlopen(base + path, timeout=10) as r:
                     body = r.read()
                     ctype = r.headers.get("content-type", "")
                     ok = r.status == 200 and len(body) > 0 and want in ctype
-                    print(f"  {'ok  ' if ok else 'FAIL'} {path:26s} "
-                          f"{r.status} {len(body):>8,}B  {ctype}")
+                    why = check(body) if (ok and check) else ""
+                    ok = ok and not why
+                    print(f"  {'ok  ' if ok else 'FAIL'} {path:28s} "
+                          f"{r.status} {len(body):>8,}B  {ctype}"
+                          + (f"  {why}" if why else ""))
                     if not ok:
-                        bad.append(f"{path} -> {r.status} {ctype} {len(body)}B")
+                        bad.append(f"{path} -> "
+                                   + (why or f"{r.status} {ctype} {len(body)}B"))
             except Exception as exc:                            # noqa: BLE001
-                print(f"  FAIL {path:26s} {type(exc).__name__}: {exc}")
+                print(f"  FAIL {path:28s} {type(exc).__name__}: {exc}")
                 bad.append(f"{path} -> {exc}")
 
         if bad:

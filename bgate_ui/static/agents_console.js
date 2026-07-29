@@ -147,6 +147,8 @@
       if (all) all.onclick = () => this.deployAll();
       const clearQ = document.getElementById("ck-clear-queue");
       if (clearQ) clearQ.onclick = () => this.clearQueue();
+      const panic = document.getElementById("ck-panic");
+      if (panic) panic.onclick = () => this.panic();
       const clearBtn = document.getElementById("ck-clear");
       if (clearBtn) clearBtn.onclick = () => this.clearSession();
       const history = document.getElementById("ck-history");
@@ -429,6 +431,39 @@
       this._lastTurnSig = "";
       this.renderChat();
       this.speak("working", true);
+      this.poll();
+    },
+
+    /* ---- the kill switch ------------------------------------------------
+     * One button, one call, no arguments: in the moment you need this you are
+     * not going to enumerate item ids. It turns auto-deploy off FIRST — killing
+     * agents while the loop is still on just dispatches a replacement into the
+     * gap — then kills every tree, reaps orphans from any earlier dashboard,
+     * and settles the items so the board stops claiming work is running. */
+    async panic() {
+      const running = ((this.state || {}).floor || {}).running || 0;
+      const yes = await window.askConfirm({
+        title: running ? `Stop ${running} running agent${running === 1 ? "" : "s"}?`
+                       : "Stop everything?",
+        body: "Every agent on this project is killed, its process tree with it, "
+            + "and auto-deploy is turned off so nothing takes its place.\n\n"
+            + "Work in progress is lost — the items are marked stopped, not "
+            + "done, so you can see exactly what was interrupted and re-queue "
+            + "it.\n\nFrom a terminal, the same thing is `bgate panic`.",
+        ok: "stop everything", cancel: "leave them running", danger: true,
+      });
+      if (!yes) return;
+      const r = await window.mutate("/api/console/killswitch",
+                                    { body: { reason: "stopped from the console" },
+                                      button: "ck-panic" });
+      if (!r.ok) return;
+      const d = r.data || {};
+      const bits = [`${(d.stopped || []).length} agent(s) stopped`];
+      if ((d.orphans || []).length) bits.push(`${d.orphans.length} orphan(s) reaped`);
+      if (d.autopilot) bits.push("auto-deploy off");
+      window.toast(bits.join(" · "), "ok");
+      (d.errors || []).forEach(e => window.toast(e));
+      this.speak("broken", true);
       this.poll();
     },
 
