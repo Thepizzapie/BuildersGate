@@ -76,6 +76,27 @@ work as one.
 Seats leave each other notes with `seat_post_note` / `seat_notes` — use it for
 "I changed the player collider, gameplay should re-tune the jump", not chat.
 
+### Leftovers: the integration you do not own
+
+You will constantly finish a system that needs one line in a file belonging to
+another seat. Do not half-land it and do not silently skip it. Write a
+**LEFTOVERS** block at the top of the file you *do* own, and put the same list
+in your spec:
+
+```
+## LEFTOVERS: the integration this file deliberately does not make.
+## combat.gd is owned by another seat. Each is one line at a named site,
+## and NONE of them is written here.
+##
+##   combat.gd, the KO branch of _apply_damage():
+##     _inv.drop_all(u.id, u.pos)
+```
+
+One line, one named call site, verbatim. When somebody lands it, rewrite the
+entry in place with the date and what replaced it. Do not delete it. A
+leftover that vanishes silently teaches nobody anything, and a half-landed
+integration is indistinguishable from a bug.
+
 ## Bible and lore — read before designing
 
 `bible_read()` first, every time you are about to design something. It is
@@ -150,6 +171,18 @@ twice.**
 5. **Land it in the engine.** `godot_import_asset`, then look at it:
    `godot_screenshot`. The engine's view is the truth, not the PNG in a folder.
 
+Two rules that cost real money to learn:
+
+- **A generation chain decays.** Never condition frame N on frame N-1. Every
+  frame conditions on the pinned ref and one approved base, so there is no chain
+  to drift along and no ordering effect. A three-frame test looks flawless
+  because the drift starts at frame 2.
+- **Generate the minimum, derive the rest.** Spend generation only on
+  silhouettes that are genuinely new. Everything that is the same thing moved
+  (an idle breath, a mirrored facing, a walk cycle off an idle) is a transform,
+  and a transform is exactly consistent by construction where a regeneration is
+  a new chance to become a different character.
+
 Binaries: `asset_lock(path, seat)` before editing, `asset_release(path, seat)`
 after, `asset_status` to see who holds what, `asset_verify` after any session
 where several seats were working.
@@ -181,6 +214,22 @@ next to the telemetry numbers that explain it.
   See "Building scenes".
 - **Do not claim something works because the code looks right.** Screenshot it,
   run it, `godot_check_project` it. Attach the evidence to `queue_complete`.
+- **Do not trust a preview whose legend can go stale.** A plan render, a debug
+  overlay or a contact sheet that classifies things from a hardcoded list will
+  one day draw the wrong thing confidently, which is worse than drawing nothing.
+  Derive what the preview labels from the same source the real thing reads.
+- **Do not write an assertion that would still pass with the feature deleted.**
+  `0 == 0` is green. A determinism check over a run that never used the new code
+  is green. Pair every claim with a control that fails: a different seed that
+  must disagree, a damaged save that must resume differently, a non-zero count.
+- **Do not pin a fixture to whatever is least finished.** It breaks on the day
+  that thing gets finished, which is the worst possible moment to be looking at
+  a red test. Pin to something structurally guaranteed to hold.
+- **Do not put a chance-shaped field in content data.** A key named "chance",
+  "weight", "one_of", "roll" or "drop_chance" anywhere in a content record,
+  top level, nested, or inside a stock line, should be rejected outright, not
+  ignore them. Randomness lives in one declared seeded stream that serializes
+  with the save, or nowhere. A silently-ignored roll is a table that lies.
 - **Do not scaffold over an existing game.** `godot_scaffold` is for new
   projects. This one already exists.
 - **Do not put API keys anywhere but `.env`** at this project's root. The
