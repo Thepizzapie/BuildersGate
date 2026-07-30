@@ -89,6 +89,100 @@ def _work_item_rebuild(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _work_item_chain_rebuild(conn: sqlite3.Connection) -> None:
+    """Rebuild work_item again: chains, and a 'review' status to hold work at.
+
+    Two things the board could not express, both of which a human was doing by
+    hand every session.
+
+    CHAINS. Dependent work had exactly one way to say "this goes after that":
+    priority. That is an ordering, not a dependency — auto-deploy would dispatch
+    a scene-wiring item and its prerequisite at the same moment, and the second
+    agent would write against a file the first had not created yet. So an item
+    can now name the item it waits for (``depends_on``) and the group it belongs
+    to (``chain_id`` + ``chain_pos``), and nothing dispatches ahead of its
+    predecessor.
+
+    'review'. An agent that has finished but not yet been approved is in a state
+    the old CHECK had no word for, and both available lies were expensive:
+    'done' advances the chain before anyone has looked at the work, and
+    'dispatched' claims an agent is still burning money. A CHECK cannot be
+    ALTERed, hence the second full rebuild rather than two ALTERs.
+
+    Same 12-step dance and the same two pragmas as _work_item_rebuild — see its
+    docstring for why ``legacy_alter_table`` is not optional here.
+    """
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("DROP INDEX IF EXISTS idx_work_status")
+        conn.execute("ALTER TABLE work_item RENAME TO work_item_old")
+        conn.execute("""
+            CREATE TABLE work_item (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                seat        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                brief       TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'queued'
+                                CHECK (status IN
+                                    ('queued','dispatched','review','done',
+                                     'failed','cancelled')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                source      TEXT NOT NULL DEFAULT 'manual',
+                source_ref  TEXT NOT NULL DEFAULT '',
+                result      TEXT NOT NULL DEFAULT '',
+                actor         TEXT NOT NULL DEFAULT '',
+                scope_tier_id INTEGER REFERENCES bible_section(id) ON DELETE SET NULL,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                num_turns     INTEGER NOT NULL DEFAULT 0,
+                max_cost_usd  REAL,
+                max_runtime_s INTEGER,
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                base_commit   TEXT NOT NULL DEFAULT '',
+                branch        TEXT NOT NULL DEFAULT '',
+                worktree      TEXT NOT NULL DEFAULT '',
+                -- 0014 additions. depends_on is SET NULL rather than CASCADE: a
+                -- deleted predecessor must not delete the work that followed it,
+                -- and an unblocked orphan is the safe failure — it becomes
+                -- dispatchable, which a human can see, instead of vanishing.
+                chain_id      TEXT NOT NULL DEFAULT '',
+                chain_pos     INTEGER NOT NULL DEFAULT 0,
+                depends_on    INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+                approved_by   TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            INSERT INTO work_item
+                (id, seat, title, brief, status, priority, source, source_ref,
+                 result, actor, scope_tier_id, total_cost_usd, num_turns,
+                 max_cost_usd, max_runtime_s, attempts, base_commit, branch,
+                 worktree, created_at, updated_at)
+            SELECT id, seat, title, brief, status, priority, source, source_ref,
+                   result, actor, scope_tier_id, total_cost_usd, num_turns,
+                   max_cost_usd, max_runtime_s, attempts, base_commit, branch,
+                   worktree, created_at, updated_at
+            FROM work_item_old
+        """)
+        conn.execute("DROP TABLE work_item_old")
+        conn.execute("CREATE INDEX idx_work_status ON work_item(status, priority DESC, id)")
+        conn.execute("CREATE INDEX idx_work_chain ON work_item(chain_id, chain_pos)")
+        conn.execute("CREATE INDEX idx_work_depends ON work_item(depends_on)")
+        conn.commit()
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise RuntimeError(f"work_item rebuild broke {len(broken)} references")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 # ---------------------------------------------------------------------------
 # Schema. Forward-only: append, never rewrite.
 #
@@ -650,6 +744,52 @@ _MIGRATIONS: list = [
     # column per shape.
     """
     ALTER TABLE workflow_run_node ADD COLUMN output_json TEXT NOT NULL DEFAULT '{}';
+    """,
+    # 0014 — work chains, and a place to hold finished work before it counts.
+    # See _work_item_chain_rebuild for why this is a rebuild and not two ALTERs.
+    _work_item_chain_rebuild,
+    # 0016 — the event log, so a finished item can tell somebody.
+    #
+    # Numbered 16 because that is the user_version this entry lands on: the block
+    # labelled 0011 is TWO entries (the rebuild callable and its ALTER script), so
+    # every label after it reads one behind the pragma. The pragma is what a human
+    # debugging a half-migrated database actually looks at, so it wins.
+    #
+    # Every status transition has always been appended to .bgate/notify.jsonl and
+    # nothing has ever read it: the director is not told when its work lands, a
+    # chain advances silently, and a human with the console closed learns nothing.
+    # The three features that fix that (notify, debrief, badge) all need the same
+    # primitive — "what happened since I last looked" — and it cannot be that
+    # file. notify.jsonl is written by whichever process flips the status, and
+    # queue_complete runs in the per-session MCP server while the reaper runs in
+    # the dashboard: multi-writer, no lock, so a monotonic sequence number in it
+    # would need a cross-process lock that does not exist, and torn lines are a
+    # real Windows failure. This table is the one many-writer-safe store here, and
+    # AUTOINCREMENT is the cursor for free — ids are never reused, so a consumer's
+    # position still means something after a prune (see bgate_core.events).
+    #
+    # notify.jsonl keeps being written, unchanged. Its docstring advertises a
+    # tail/long-poll surface; this is additive, not a replacement.
+    """
+    CREATE TABLE event (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind       TEXT NOT NULL,
+        ref        TEXT NOT NULL DEFAULT '',
+        actor      TEXT NOT NULL DEFAULT '',
+        payload    TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- (kind, id) rather than (kind): every read is "events of these kinds AFTER
+    -- id N", so the id has to be in the index or a filtered subscriber scans the
+    -- whole table on every poll.
+    --
+    -- NOT idx_event_kind, which the plan asked for and which 0002 already used
+    -- for playtest_event(session_id, kind). Index names share ONE namespace per
+    -- database regardless of table, so that name fails with 'index already
+    -- exists' — on a fresh project, at first connect, taking the dashboard and
+    -- every MCP server down before anything else runs.
+    CREATE INDEX idx_event_kind_id ON event(kind, id);
     """,
 ]
 
