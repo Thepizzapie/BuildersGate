@@ -514,6 +514,21 @@ TRAIN_MODELS = ("flux_dev",)
 # 27 pins cleared it. A nearest-neighbour upscale of a 64x32 tile is not a
 # 1024px training image, so this refuses rather than quietly sending mush.
 TRAIN_MIN_SIDE = 1024
+# HOW FAR SHORT IS STILL FIXABLE, as a fraction of the floor.
+#
+# The first cut of this refused anything under 1024 outright, and that was a
+# tool being pedantic rather than careful: a concept plate at 1602x981 is 43
+# pixels short, and the difference between it and a legal one is a 4% resize
+# nobody can see. Measured on a real board, that rule threw away FOURTEEN of the
+# project's best plates for being 83px short, and the human's reaction was the
+# correct one.
+#
+# So: anything down to this fraction is upscaled to reach the floor and used,
+# with the resize declared per image. Below it the image is genuinely too small
+# — a 48px item icon carries no style at 1024 and an upscale there is inventing
+# detail, which is the thing the original rule was actually right about.
+# 0.6 caps the enlargement at 1.67x.
+TRAIN_NEAR_FLOOR = 0.6
 TRAIN_MIN_IMAGES = 5          # Krea's hard minimum
 TRAIN_GOOD_IMAGES = 10        # below this it trains, but coverage is thin
 TRAIN_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -550,6 +565,42 @@ def _multipart(fields: dict, filename: str, blob: bytes,
     out += blob + b"\r\n"
     out += f"--{boundary}--\r\n".encode()
     return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
+def prepare_training_image(path: str | os.PathLike, *,
+                           floor: int = TRAIN_MIN_SIDE) -> tuple:
+    """The image as it should be UPLOADED, plus what was done to it.
+
+    Returns ``(path, note)``. A file already over the floor comes back
+    untouched and with an empty note; one under it is resized — aspect kept,
+    LANCZOS — into a temp file, and the note says by how much.
+
+    Separated from :func:`check_training_set` because judging a dataset must not
+    write files: the panel calls that on every poll, and a validator with a side
+    effect is one nobody can call twice.
+    """
+    src = Path(path)
+    try:
+        from PIL import Image
+    except ImportError:
+        return str(src), ""
+    try:
+        with Image.open(src) as im:
+            w, h = im.size
+            short = min(w, h)
+            if short >= floor:
+                return str(src), ""
+            scale = floor / short
+            size = (round(w * scale), round(h * scale))
+            import tempfile
+
+            out = Path(tempfile.gettempdir()) / f"bgate-train-{src.stem}-{size[0]}x{size[1]}.png"
+            im.convert("RGB").resize(size, Image.LANCZOS).save(out)
+    except Exception as exc:                                   # noqa: BLE001
+        # An unreadable image is the caller's problem at check time; here it
+        # just goes up as-is and Krea decides.
+        return str(src), f"could not resize ({type(exc).__name__}: {exc})"
+    return str(out), f"upscaled {w}x{h} -> {size[0]}x{size[1]} ({scale:.2f}x)"
 
 
 def upload(path: str | os.PathLike, *, description: str = "",
@@ -612,6 +663,7 @@ def check_training_set(paths: list) -> dict:
         Image = None                     # type: ignore[assignment]
 
     usable: list[str] = []
+    upscaled: list[dict] = []
     rejected: list[dict] = []
     warnings: list[str] = []
     seen: set[str] = set()
@@ -638,13 +690,22 @@ def check_training_set(paths: list) -> dict:
         except Exception as exc:
             rejected.append({"path": str(p), "why": f"unreadable ({exc})"})
             continue
-        if min(w, h) < TRAIN_MIN_SIDE:
+        short = min(w, h)
+        if short < int(TRAIN_MIN_SIDE * TRAIN_NEAR_FLOOR):
             rejected.append({
                 "path": str(p),
-                "why": f"{w}x{h} — training wants {TRAIN_MIN_SIDE}px on the "
-                       "short side, and upscaling to reach it trains the "
-                       "upscaler's artefacts, not the art"})
+                "why": f"{w}x{h} — too small to reach {TRAIN_MIN_SIDE}px "
+                       "without inventing detail. Upscaling this far trains "
+                       "the upscaler's artefacts, not the art"})
             continue
+        if short < TRAIN_MIN_SIDE:
+            # Usable, and honest about what will happen to it. The resize is
+            # applied at upload (prepare_training_image), not here: judging a
+            # dataset must not write files.
+            upscaled.append({"path": str(p), "size": [w, h],
+                             "scale": round(TRAIN_MIN_SIDE / short, 3),
+                             "to": [round(w * TRAIN_MIN_SIDE / short),
+                                    round(h * TRAIN_MIN_SIDE / short)]})
         usable.append(str(p))
 
     if Image is None:
@@ -655,9 +716,15 @@ def check_training_set(paths: list) -> dict:
         warnings.append(f"{len(usable)} images is above Krea's minimum but below "
                         f"{TRAIN_GOOD_IMAGES}; coverage will be thin and the LoRA "
                         "will over-fit what it did see")
+    if upscaled:
+        warnings.append(
+            f"{len(upscaled)} image(s) are under {TRAIN_MIN_SIDE}px and will be "
+            "upscaled to reach it — the largest is "
+            f"{max(u['scale'] for u in upscaled):.2f}x")
     return {
         "ok": len(usable) >= TRAIN_MIN_IMAGES,
-        "usable": usable, "rejected": rejected, "warnings": warnings,
+        "usable": usable, "upscaled": upscaled,
+        "rejected": rejected, "warnings": warnings,
         "reason": "" if len(usable) >= TRAIN_MIN_IMAGES else (
             f"only {len(usable)} usable image(s); Krea needs at least "
             f"{TRAIN_MIN_IMAGES}"),
@@ -738,7 +805,16 @@ def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev
         return {"ok": False, "error": verdict["reason"], "check": verdict,
                 "seconds": round(time.monotonic() - started, 2)}
     try:
-        uploaded = [upload(p, description=name, root=root) for p in verdict["usable"]]
+        uploaded = []
+        resized = []
+        for original in verdict["usable"]:
+            ready, note = prepare_training_image(original)
+            got = upload(ready, description=name, root=root)
+            got["path"] = original          # the ANCHOR, not the temp file
+            if note:
+                got["note"] = note
+                resized.append({"path": original, "note": note})
+            uploaded.append(got)
         job = train_style(name, [u["image_url"] for u in uploaded], model=model,
                           kind=kind, trigger_word=trigger_word,
                           max_train_steps=max_train_steps,
@@ -762,6 +838,7 @@ def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev
         "ok": True, "style_id": style_id, "job_id": job_id, "name": name,
         "kind": kind, "model": model, "trigger_word": trigger_word,
         "images": len(uploaded), "sources": [u["path"] for u in uploaded],
+        "resized": resized,
         "check": verdict, "pending": False,
         # Deliberately not a number: see TRAIN_USD.
         "estimated_usd": TRAIN_USD,
