@@ -75,7 +75,8 @@ REGISTRY_SEAT = "director"
 REGISTRY_KEY = "settings"
 
 # Group order is the display order, in both the panel and `bgate doctor`.
-GROUPS = ("Dispatch", "Gates", "Follow-up", "Notifications", "Budget", "Console")
+GROUPS = ("Dispatch", "Gates", "Art", "Follow-up", "Notifications",
+          "Budget", "Console")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
 # imported from events.py so that a settings panel still renders when the event
@@ -87,7 +88,8 @@ GROUPS = ("Dispatch", "Gates", "Follow-up", "Notifications", "Budget", "Console"
 # unselectable in the panel at the same time.
 EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.approved",
                "item.rejected", "item.aging", "chain.filed", "chain.advanced",
-               "chain.stalled", "gate.mode", "settings.guard", "budget.refused",
+               "chain.stalled", "gate.mode", "settings.guard", "style.trained",
+               "budget.refused",
                "director.question", "agent.spawned", "agent.exited")
 
 _TRUE = ("1", "true", "yes", "on")
@@ -214,6 +216,24 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=1, maximum=168, store=("registry", "signoff.hours"),
         help="How long a finished item keeps asking for sign-off in the "
              "console before it stops being surfaced there."),
+
+    # -- Art ----------------------------------------------------------------
+    Setting(
+        key="art.style_source", group="Art", kind=ENUM, default="refs",
+        choices=("refs", "lora"),
+        store=("workspace", "art", "styles", "mode"),
+        help="Where a generation gets this project's LOOK. `refs` sends the "
+             "pinned anchors as style references, which is how it has always "
+             "worked. `lora` uses the style trained from those same anchors, "
+             "which frees the reference slot to carry IDENTITY instead — the "
+             "job it competes with today. Needs a trained style; without one "
+             "this falls back to refs rather than generating unanchored."),
+    Setting(
+        key="art.lora_strength", group="Art", kind=FLOAT, default=0.85,
+        minimum=0.0, maximum=1.0, store=("registry", "art.lora_strength"),
+        help="How hard the trained style pulls, 0-1. Krea recommends 0.8-0.9; "
+             "1.0 is where a style stops being a style and becomes a stamp. A "
+             "style's own record can override this per style."),
 
     # -- Follow-up ----------------------------------------------------------
     Setting(

@@ -453,6 +453,22 @@ def finish(path: str | os.PathLike[str], chroma: Sequence[int], *,
 # The one door both providers walk through
 # ---------------------------------------------------------------------------
 
+def _trained_styles(root: Any) -> list:
+    """This project's trained style as Krea wants it, or [].
+
+    Guarded and lazy: a generation must not fail because a settings doc will not
+    parse, and `styles` imports the adapter, which this module is imported BY in
+    some paths. Returning [] means "generate the way this project always did",
+    which is also what happens when nothing has been trained.
+    """
+    try:
+        from . import styles as _styles
+
+        return _styles.for_generation(root)
+    except Exception:
+        return []
+
+
 def generate(prompt: str, out_path: str | os.PathLike[str], *,
              provider: str, model: str = "", task_kind: str = "",
              keyed: Optional[bool] = None, size: str = "1024x1024",
@@ -528,9 +544,22 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     try:
         if provider == "krea":
             refs = [krea.style_ref(p, ref_strength) for p in ref_paths]
+            # THE TRAINED STYLE, IF THIS PROJECT HAS ONE AND ASKED FOR IT.
+            # Read at the same door the bible is appended at, for the same
+            # reason: a look that applies to the art seat but not to a workflow
+            # node is not this project's look. Empty unless art.style_source is
+            # `lora` AND a style has finished training, so nothing changes for a
+            # project that has not trained one.
+            #
+            # It rides ALONGSIDE the references rather than replacing them, and
+            # that is the point of training: the LoRA carries the style, which
+            # frees the reference slot to carry identity — the two jobs that
+            # have been competing for one array.
+            trained = _trained_styles(root)
             result = krea.generate(prompt, str(out_path),
                                    model=model or krea.DEFAULT_MODEL, size=size,
                                    seed=seed, style_refs=refs or None,
+                                   styles=trained or None,
                                    quality=quality,
                                    timeout=timeout, root=root)
         elif provider in ("openai", "gpt-image", "imagegen"):

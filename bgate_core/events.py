@@ -66,6 +66,7 @@ KINDS = (
     "chain.stalled",     # heartbeat: the head of a chain has not moved
     "gate.mode",         # who signs off changed
     "settings.guard",    # a switch that widens a safety guard was changed
+    "style.trained",     # a project trained a style from its pinned anchors
     "budget.refused",    # a dispatch was refused for spend
     "director.question", # ask_human: the director wants a human answer
     "agent.spawned",
