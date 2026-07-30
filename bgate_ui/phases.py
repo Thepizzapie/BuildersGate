@@ -122,19 +122,38 @@ _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _SPLIT = re.compile(r"[\s\"'`,;()\[\]{}<>|]+")
 
 
-def _image_tokens(blob: str) -> list[str]:
-    """Whitespace/punctuation-separated tokens that end in an image extension."""
+def _tokens(blob: str, exts: tuple) -> list[str]:
+    """Whitespace/punctuation-separated tokens that end in one of ``exts``."""
     out: list[str] = []
     for token in _SPLIT.split(blob or ""):
         if not token or len(token) > 400:
             continue
         cleaned = token.rstrip(".:=")
-        if cleaned.lower().endswith(_IMG_EXT) and cleaned not in out:
+        if cleaned.lower().endswith(exts) and cleaned not in out:
             out.append(cleaned)
     return out
+
+
+def _image_tokens(blob: str) -> list[str]:
+    return _tokens(blob, _IMG_EXT)
+
+
+# THE FILES THAT ARE THE WORK, not pictures of it. An agent's run is mostly
+# reading and writing source, scenes and data, and the log said so in prose — a
+# 90-character absolute path in the middle of a sentence, which you could read
+# but not open. These are the extensions worth turning into something clickable.
+_READ_EXT = (".gd", ".gdshader", ".tscn", ".tres", ".godot", ".import",
+             ".py", ".js", ".css", ".html", ".json", ".md", ".txt", ".cfg",
+             ".ini", ".toml", ".yml", ".yaml", ".csv", ".sh", ".ps1", ".bat",
+             ".gitignore", ".env.example")
+
 # Files an agent touches that are not the work: its own log, temp dumps.
 _IGNORE = (".bgate/agents/", ".bgate\\agents\\")
 MAX_SEEN = 8
+# Per step, and per phase. A step that greps a tree can name forty files; the
+# rail is a rail, and the full list is one "full log" click away.
+MAX_STEP_FILES = 5
+MAX_READ = 12
 
 
 def _relative(root: Path, raw: str) -> str:
@@ -172,6 +191,7 @@ def look(root: str | os.PathLike[str], phases: list[dict]) -> list[dict]:
     base = Path(root)
     for phase in phases or []:
         seen: list[str] = []
+        read: list[str] = []
         after_image = False
         for step in phase.get("steps") or []:
             blob = " ".join(str(step.get(k) or "") for k in ("hint", "text", "name"))
@@ -184,6 +204,20 @@ def look(root: str | os.PathLike[str], phases: list[dict]) -> list[dict]:
                     here.append(rel)
                 if rel and rel not in seen:
                     seen.append(rel)
+            # The same trick for the files that are not pictures. Stamped on the
+            # step so the feed can offer the file where the agent named it,
+            # rather than leaving a path in prose for you to copy out by hand.
+            files: list[str] = []
+            for match in _tokens(blob, _READ_EXT):
+                if len(files) >= MAX_STEP_FILES:
+                    break
+                rel = _relative(base, match)
+                if rel and rel not in files:
+                    files.append(rel)
+                if rel and rel not in read and len(read) < MAX_READ:
+                    read.append(rel)
+            if files:
+                step["files"] = files
             # Stamped on the STEP, not just collected for the phase: the feed
             # shows the picture where the agent looked at it, in line, instead
             # of a file path you have to go and find.
@@ -200,6 +234,7 @@ def look(root: str | os.PathLike[str], phases: list[dict]) -> list[dict]:
                 for a in phase.get("artifacts") or []}
         # What it MADE is already its own list; this is the rest of its view.
         phase["seen"] = [p for p in seen if p not in made]
+        phase["read"] = [p for p in read if p not in made]
     return phases
 
 

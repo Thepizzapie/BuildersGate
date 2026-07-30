@@ -36,6 +36,11 @@
     atlas:     `<rect x="3.5" y="3.5" width="7" height="7"/><rect x="13.5" y="3.5" width="7" height="7"/><rect x="3.5" y="13.5" width="7" height="7"/><rect class="e" x="13.5" y="13.5" width="7" height="7"/>`,
     world:     `<circle cx="6" cy="7" r="2.5"/><circle cx="18" cy="7" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path class="e" d="M8.5 7 H15.5 M7 9.5 L11 15.5 M17 9.5 L13 15.5"/>`,
     timeline:  `<path d="M3.5 12 H20.5"/><path d="M7 9 V15 M17 9 V15"/><path class="e" d="M12 7 V17"/>`,
+    // Three sliders, one of them ember: the switches that decide how much of the
+    // floor runs without you. Drawn here rather than inline in index.html
+    // because every rail item is required to NAME an icon — an inline glyph
+    // cannot be restyled with the set and test_icons enforces exactly that.
+    settings:  `<path d="M4 6.5 H20 M4 12 H20 M4 17.5 H20"/><path d="M9 4.5 V8.5 M7 15.5 V19.5"/><path class="e" d="M15 10 V14"/>`,
 
     /* ---- seats ---- */
     director:  `<circle cx="12" cy="12" r="7.5"/><path class="e" d="M12 2.5 V7 M12 17 V21.5 M2.5 12 H7 M17 12 H21.5"/>`,
