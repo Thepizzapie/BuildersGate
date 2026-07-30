@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -457,6 +458,42 @@ class TestSessionStart:
         assert "NO GAME" in text
         assert "project_dir" in text
         assert "Corporate Quest" in text and str(game) in text
+        db.close_all()
+
+    def test_the_temp_filter_survives_two_spellings_of_one_directory(
+            self, tmp_path, monkeypatch):
+        """CAUGHT BY CI, NOT BY THIS SUITE, WHICH IS THE POINT OF THE TEST.
+
+        A GitHub Actions runner reports the temp directory as
+        `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp` while every path the process
+        builds says `C:\\Users\\runneradmin\\...`. normcase and normpath fix
+        slashes and case and leave the 8.3 short name alone, so the prefix test
+        never matched and a fixture project was listed as a real game. On a
+        developer machine both spellings are already long, so it passed.
+
+        The 8.3 form cannot be manufactured portably, so this asserts the
+        property that fixes it: two spellings of ONE directory must compare
+        equal after `_real`.
+        """
+        from bgate_core import db, project
+        fixture = tmp_path / "fixture-game"
+        fixture.mkdir()
+        project.init(fixture, "Fixture Game")
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        (checkout / db.DB_DIRNAME).mkdir()
+        db.connect(checkout)
+
+        # The same directory, spelled the way a different API would hand it back:
+        # trailing separator, mixed case, and a redundant `.` segment.
+        spelled = str(tmp_path).upper() + os.sep + "." + os.sep
+        monkeypatch.setattr(session, "_temp_dir", lambda: session._real(spelled))
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
+
+        text = session.build_context(str(checkout))
+        assert "Fixture Game" not in text, (
+            "two spellings of one directory did not compare equal — the fixture "
+            "filter is back to a raw string prefix test")
         db.close_all()
 
     def test_fixture_projects_in_temp_do_not_crowd_out_the_real_one(
