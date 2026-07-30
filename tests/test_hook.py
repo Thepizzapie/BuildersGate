@@ -432,6 +432,102 @@ class TestSessionStart:
         assert session.main([]) == 0
         assert capsys.readouterr().out.strip() == ""
 
+    def test_a_bgate_dir_with_no_project_says_so_and_names_the_games(
+            self, tmp_path, monkeypatch):
+        """THE TEN MINUTES THIS BLOCK EXISTS TO BUY BACK.
+
+        A .bgate with no project row is the Builders Gate checkout itself, and a
+        session starting there was handed an empty board for a root that is not a
+        game — which reads exactly like "the game has nothing on it". The session
+        then spent its first four turns grepping the desktop for the project it
+        had been asked about by name.
+        """
+        from bgate_core import db, project
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        (checkout / db.DB_DIRNAME).mkdir()
+        db.connect(checkout)                       # a schema, deliberately no project
+        game = tmp_path / "a-real-game"
+        game.mkdir()
+        project.init(game, "Corporate Quest")
+        monkeypatch.setattr(session, "_temp_dir", lambda: "")   # fixtures live in temp
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
+
+        text = session.build_context(str(checkout))
+        assert "NO GAME" in text
+        assert "project_dir" in text
+        assert "Corporate Quest" in text and str(game) in text
+        db.close_all()
+
+    def test_fixture_projects_in_temp_do_not_crowd_out_the_real_one(
+            self, tmp_path, monkeypatch):
+        """The registry is machine-wide and the suite writes to it. Four dead
+        pytest tmpdirs ahead of the one game is a list that answers nothing."""
+        from bgate_core import db, project
+        fixture = tmp_path / "fixture-game"
+        fixture.mkdir()
+        project.init(fixture, "Fixture Game")      # registered, and inside temp
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        (checkout / db.DB_DIRNAME).mkdir()
+        db.connect(checkout)
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
+        # The filter must drop it — an honest "nothing registered" beats a list
+        # of four dead fixtures with the real game hidden under "...and 1 more".
+        text = session.build_context(str(checkout))
+        assert "Fixture Game" not in text
+        assert "no other project is registered" in text
+        db.close_all()
+
+    def test_a_board_serving_another_root_is_not_this_project_s_board(
+            self, root, monkeypatch):
+        """A dashboard is per-root: it dispatches for ONE project. `something is
+        listening on 7788` therefore does not mean `your queued item will run`,
+        and a session that read the port as its own queued work onto a board that
+        was never going to pick it up."""
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
+        monkeypatch.setattr(session, "_board_root", lambda *a, **k: r"D:\some\other\game")
+        text = session.build_context(str(root))
+        assert "SERVING ANOTHER ROOT" in text and "will NOT dispatch" in text
+
+        monkeypatch.setattr(session, "_board_root", lambda *a, **k: str(root))
+        assert "SERVING ANOTHER ROOT" not in session.build_context(str(root))
+
+    def test_an_up_board_that_still_dispatches_nothing_says_why(
+            self, root, monkeypatch):
+        """Autopilot is a persisted switch that survives a restart OFF, and
+        dispatch() refuses outright on a dirty tree. Either one makes 'the board
+        is UP' a lie, and neither is visible from the queue."""
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: True)
+        monkeypatch.setattr(session, "_board_root", lambda *a, **k: str(root))
+        from bgate_core import gitwork
+        monkeypatch.setattr(gitwork, "dirty",
+                            lambda *a, **k: {"available": True, "dirty": True,
+                                             "paths": ["game/scripts/a.gd"]})
+        text = session.build_context(str(root))
+        assert "autopilot is OFF" in text
+        assert "DIRTY" in text and "allow_dirty" in text
+
+        from bgate_core import workspace
+        workspace.set(root, "director", "autopilot", {"on": True})
+        monkeypatch.setattr(gitwork, "dirty",
+                            lambda *a, **k: {"available": True, "dirty": False,
+                                             "paths": []})
+        clean = session.build_context(str(root))
+        assert "autopilot is OFF" not in clean and "DIRTY" not in clean
+
+    def test_a_project_root_registers_itself_for_the_next_session(
+            self, root, monkeypatch):
+        """Discovery only works if the registry knows the game. It was written by
+        init/adopt/select alone, so a game worked on for a week could still be
+        missing from it — and then the block above has nothing to offer."""
+        from bgate_core import project
+        reg = project.user_dir() / "projects.json"
+        reg.unlink(missing_ok=True)
+        monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
+        session.build_context(str(root))
+        assert str(root.resolve()) in json.loads(reg.read_text()).values()
+
     def test_install_registers_both_events(self, tmp_path):
         got = install_hook(str(tmp_path), scope="project")
         assert set(got["events_installed"]) == {"PreToolUse", "SessionStart"}
