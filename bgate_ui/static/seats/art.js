@@ -1111,9 +1111,27 @@
         // is visible on the tile rather than buried in a warning line.
         const up = {};
         (ds.upscaled || []).forEach(u => { up[String(u.path)] = u; });
+        // WHICH ANCHORS ACTUALLY GO IN. Selection is the human's, not the
+        // floor's: "everything that passes" is a starting point, not an
+        // instruction, and a dataset is a curatorial decision — a title plate
+        // and a wall tile teach different things and you may not want both.
+        // Held on the module and RENDERED FROM, so a poll cannot lose it.
+        const names = (ds.usable_names || []);
+        if (!this._stylePick) this._stylePick = new Set(names);
+        // A shelf switch brings different anchors; keep only what still exists,
+        // and default anything new to selected rather than silently excluded.
+        const known = new Set(names);
+        [...this._stylePick].forEach(n => { if (!known.has(n)) this._stylePick.delete(n); });
+        names.forEach(n => { if (!this._styleTouched) this._stylePick.add(n); });
+        const picked = this._stylePick;
+
         const thumbs = (list, cls) => list.map(a => `
-          <figure class="art-stthumb ${cls}" title="${bg.esc(a.name || "")}${
-            a.why ? " — " + bg.esc(a.why) : ""}">
+          <figure class="art-stthumb ${cls}${
+              cls === "ok" ? (picked.has(a.name) ? " picked" : " skipped") : ""}"
+            ${cls === "ok" ? `data-stpick="${bg.esc(a.name)}" role="checkbox"
+              aria-checked="${picked.has(a.name)}" tabindex="0"` : ""}
+            title="${bg.esc(a.name || "")}${
+            a.why ? " — " + bg.esc(a.why) : cls === "ok" ? " — click to include or exclude" : ""}">
             ${a.rel
               ? `<img src="/api/preview?rel=${encodeURIComponent(a.rel)}" alt="" loading="lazy">`
               : `<div class="art-stmissing"></div>`}
@@ -1143,8 +1161,9 @@
                Number(run.images || 0)} anchors — 5 to 15 minutes.</span>`
           : run.status === "failed"
             ? `<span class="art-stwarn">last run failed: ${bg.esc(run.error || "")}</span>`
-            : !ds.ok
-              ? `<span class="art-stwarn">${bg.esc(ds.reason || "not enough usable anchors")}</span>`
+            : picked.size < 5
+              ? `<span class="art-stwarn">${picked.size} selected — Krea needs at
+                 least 5${ds.ok ? "" : ". " + bg.esc(ds.reason || "")}</span>`
               : `<span class="art-stnote">5-15 minutes, and it costs money. Krea
                  publishes no training price, so this is NOT bounded by the spend
                  ceiling the way a generation is.</span>`;
@@ -1173,15 +1192,18 @@
                 <input class="art-stname" id="art-stname" placeholder="name this style"
                        maxlength="60"${busy ? " disabled" : ""}>
                 <button class="qbtn small" id="art-sttrain"${
-                  busy || !ds.ok ? " disabled" : ""}>train</button>
+                  busy || picked.size < 5 ? " disabled" : ""}>train ${
+                  picked.size ? picked.size : ""}</button>
               </div>
               ${cost}
               ${(ds.warnings || []).map(w =>
                   `<div class="art-stwarn">${bg.esc(w)}</div>`).join("")}
             </div>
             <div class="art-stright">
-              <div class="art-stsec">the dataset · ${anchors.length} of ${
-                Number(ds.candidates || 0)} will train
+              <div class="art-stsec">the dataset · ${picked.size} of ${
+                anchors.length} selected
+                <button class="art-stlink" data-stall="1">all</button>
+                <button class="art-stlink" data-stnone="1">none</button>
                 <span class="art-stseg art-stsrc">
                   ${(d.sources || ["pins", "assets", "both"]).map(src => `
                     <button class="art-stopt${d.source === src ? " on" : ""}"
@@ -1223,6 +1245,34 @@
                 ? "generating with the trained style" : "generating with references" });
           if (r.ok) this._reload();
         });
+        const repaint = () => { this._styleForce = true; this._renderStyle(); };
+        const toggle = el => {
+          const name = el.dataset.stpick;
+          if (!name) return;
+          this._styleTouched = true;      // stop auto-selecting new arrivals
+          if (this._stylePick.has(name)) this._stylePick.delete(name);
+          else this._stylePick.add(name);
+          repaint();
+        };
+        host.querySelectorAll("[data-stpick]").forEach(el => {
+          el.onclick = () => toggle(el);
+          el.onkeydown = e => {
+            if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(el); }
+          };
+        });
+        const all = host.querySelector("[data-stall]");
+        if (all) all.onclick = () => {
+          this._styleTouched = true;
+          (ds.usable_names || []).forEach(n => this._stylePick.add(n));
+          repaint();
+        };
+        const none = host.querySelector("[data-stnone]");
+        if (none) none.onclick = () => {
+          this._styleTouched = true;
+          this._stylePick.clear();
+          repaint();
+        };
+
         host.querySelectorAll("[data-stsrc]").forEach(b => b.onclick = async () => {
           const r = await window.mutate("/api/settings",
             { method: "PATCH", body: { "art.style_dataset": b.dataset.stsrc },
@@ -1242,9 +1292,12 @@
       const input = host && host.querySelector("#art-stname");
       const name = String((input && input.value) || "").trim();
       if (!name) { this._bg.toast("name the style first", true); return; }
-      const ds = (this._style || {}).dataset || {};
+      const chosen = [...(this._stylePick || [])];
+      if (chosen.length < 5) {
+        this._bg.toast("select at least 5 anchors", true); return;
+      }
       const yes = await window.askConfirm({
-        title: `Train “${name}” from ${(ds.usable_names || []).length} anchors?`,
+        title: `Train “${name}” from ${chosen.length} anchors?`,
         body: "This uploads those anchors to Krea and trains a LoRA. It takes 5 "
             + "to 15 minutes and it costs money — Krea publishes no price for "
             + "training, so it is NOT bounded by the spend ceiling the way a "
@@ -1254,7 +1307,8 @@
       });
       if (!yes) return;
       const r = await window.mutate("/api/art/style/train",
-        { body: { name }, button: host.querySelector("#art-sttrain"),
+        { body: { name, names: chosen },
+          button: host.querySelector("#art-sttrain"),
           ok: "training started — this panel updates when it lands" });
       if (r.ok) this._reload();
     },
@@ -1684,7 +1738,17 @@
     .art-stthumb img,.art-stmissing{width:88px;height:66px;object-fit:cover;
       border-radius:var(--r-sm);border:1px solid var(--seam);background:var(--plate2);
       display:block;image-rendering:pixelated}
-    .art-stthumb.ok img{border-color:var(--accent-line)}
+    .art-stthumb[data-stpick]{cursor:pointer}
+    .art-stthumb.picked img{border-color:var(--accent-line);box-shadow:0 0 0 1px var(--accent-line)}
+    /* Excluded, not hidden: you are choosing FROM a set, so the set has to stay
+       visible or the choice is being made blind. */
+    .art-stthumb.skipped img{filter:grayscale(1) brightness(.55);border-color:var(--seam)}
+    .art-stthumb.skipped figcaption,.art-stthumb.skipped .art-stup{opacity:.5}
+    .art-stthumb[data-stpick]:focus-visible img{outline:2px solid var(--accent);outline-offset:1px}
+    .art-stlink{padding:0 4px;border:0;background:transparent;color:var(--text-3);
+      font:inherit;font-family:var(--mono);font-size:var(--fs-3xs);cursor:pointer;
+      text-decoration:underline}
+    .art-stlink:hover{color:var(--accent)}
     .art-stthumb.no img{filter:grayscale(1)}
     .art-stup{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--accent)}
     .art-stthumb figcaption{font-family:var(--mono);font-size:var(--fs-3xs);
