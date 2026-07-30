@@ -445,6 +445,22 @@ class Window:
         navigate(self.url)
 
     # ---- public -----------------------------------------------------------
+    def set_title(self, text: str) -> bool:
+        """Retitle the window. Safe to call from another thread.
+
+        SetWindowTextW posts WM_SETTEXT rather than running code on the caller's
+        thread, so the badge watcher can use it without touching the message
+        pump. Returns False before the window exists (the watcher starts first
+        by design — a badge is not worth ordering the startup around).
+        """
+        if not self.hwnd:
+            return False
+        try:
+            self.title = str(text)
+            return bool(user32.SetWindowTextW(self.hwnd, self.title))
+        except Exception:                                      # noqa: BLE001
+            return False
+
     def run(self) -> Optional[str]:
         """Open the window and pump messages. Returns None, or an error string."""
         ok, why = available()
