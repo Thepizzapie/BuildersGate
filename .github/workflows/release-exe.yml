@@ -106,10 +106,50 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Release notes, from the changelog
+        # WITHOUT THIS THE RELEASE BODY IS THE TAG ANNOTATION, which is one line
+        # somebody typed at 2am — v0.1.27 shipped a 10k-line release described as
+        # "completion routing, notifications, and one settings surface" and
+        # nothing else. The changelog entry already exists and is already the
+        # thing worth reading, so the release should BE it rather than link to it.
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          python - "${GITHUB_REF_NAME}" <<'PY'
+          import pathlib, re, sys
+
+          tag = sys.argv[1]
+          version = tag.lstrip("v")
+          repo = "Thepizzapie/BuildersGate"
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+          # This version's section, up to the next version heading. Keep a
+          # Changelog puts the newest first, so a greedy match would swallow
+          # every earlier release into one body.
+          found = re.search(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
+              text, re.S | re.M)
+          if found:
+              body = found.group(1).strip()
+          else:
+              # A tag with no changelog entry is a mistake, but failing here
+              # would throw away an exe that is already built and signed. Say so
+              # loudly in the log and ship something honest instead of nothing.
+              print(f"::warning::CHANGELOG.md has no section for {version}")
+              body = (f"No changelog entry for {version} — see "
+                      f"https://github.com/{repo}/blob/main/CHANGELOG.md")
+
+          body += (f"\n\n---\n\nFull diff: "
+                   f"https://github.com/{repo}/compare/...{tag}\n")
+          pathlib.Path("RELEASE_NOTES.md").write_text(body, encoding="utf-8")
+          print(f"release notes: {len(body)} chars from CHANGELOG.md")
+          PY
+
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           files: |
             dist/BuildersGate-windows.zip
             dist/BuildersGate-windows.zip.sha256
