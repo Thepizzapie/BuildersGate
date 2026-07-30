@@ -637,6 +637,139 @@
   .lamp.bad{background:var(--accent); box-shadow:0 0 10px var(--accent); animation:throb 1.1s infinite}
   .lamp.waiting{background:var(--warn); box-shadow:0 0 8px var(--warn)}
 
+  /* ── the bell + its drawer (notify.js) ────────────────────────────────────
+     Lives in the status bar beside the two counter chips, so the badge is on
+     screen in every workspace rather than only in the view that reads the log.
+
+     THE DRAWER IS ABSOLUTE INSIDE .nt-wrap, which means nothing between here and
+     the panel may clip: the one thing that can break this block is an
+     overflow:hidden on the host. The status bar's own overflow-x on narrow
+     widths is handled in the responsive layer by taking the panel out of flow
+     entirely rather than by unclipping the chips, which need to scroll. */
+  .nt-wrap{position:relative; display:inline-flex}
+  .nt-bell{
+    position:relative; display:inline-flex; align-items:center; justify-content:center;
+    width:30px; height:30px; padding:0; background:transparent;
+    border:1px solid transparent; border-radius:var(--r-sm);
+    color:var(--text-2); cursor:pointer;
+    transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+               border-color var(--dur-fast) var(--ease);
+  }
+  .nt-bell:hover{background:var(--surface-3); color:var(--text); border-color:var(--line)}
+  .nt-bell.on{background:var(--surface-4); color:var(--text); border-color:var(--line-strong)}
+  /* notify.in_app is off. The bell still opens and the drawer still lists
+     everything — the setting turns off the interruption, not the record. */
+  .nt-bell.muted{color:var(--text-dim)}
+  .nt-badge{
+    position:absolute; top:-2px; right:-3px; min-width:16px; height:16px; padding:0 var(--s-2);
+    display:inline-flex; align-items:center; justify-content:center;
+    background:var(--accent); color:var(--accent-fg); border-radius:var(--r-full);
+    font-family:var(--mono); font-size:var(--fs-3xs); font-weight:var(--fw-bold);
+    line-height:1; font-variant-numeric:tabular-nums; box-shadow:var(--shadow-1);
+  }
+  .nt-badge.hidden{display:none}
+  .nt-drawer{
+    position:absolute; top:calc(100% + var(--s-3)); right:0; width:400px; max-width:92vw;
+    background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r-lg);
+    box-shadow:var(--shadow-3); z-index:var(--z-drawer); overflow:hidden;
+    font-size:var(--fs-sm); color:var(--text); text-align:left;
+  }
+  .nt-drawer[hidden]{display:none}
+  .nt-head{
+    display:flex; align-items:center; gap:var(--s-4); padding:var(--s-5) var(--s-6);
+    border-bottom:1px solid var(--line-soft);
+  }
+  .nt-title{font-size:var(--fs-md); font-weight:var(--fw-semi)}
+  .nt-count{font-family:var(--mono); font-size:var(--fs-2xs); color:var(--accent)}
+  .nt-acts{margin-left:auto; display:flex; gap:var(--s-3)}
+  .nt-act{
+    padding:var(--s-2) var(--s-4); background:var(--surface-3);
+    border:1px solid var(--line); border-radius:var(--r-sm); color:var(--text-2);
+    font:inherit; font-size:var(--fs-xs); cursor:pointer;
+    transition:border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  }
+  .nt-act:hover:not(:disabled){border-color:var(--accent); color:var(--text)}
+  .nt-act:disabled{opacity:.45; cursor:default}
+  .nt-act.primary{background:var(--accent-soft); border-color:var(--accent-line); color:var(--text)}
+  .nt-body{max-height:min(60vh,520px); overflow-y:auto}
+  .nt-row{
+    display:flex; flex-direction:column; gap:var(--s-2); width:100%;
+    padding:var(--s-4) var(--s-6); background:transparent; border:0;
+    border-bottom:1px solid var(--line-soft); border-left:2px solid transparent;
+    color:var(--text-2); font:inherit; text-align:left;
+  }
+  .nt-row:hover{background:var(--surface-3)}
+  /* Only a row that resolves to an item is a way back to something. */
+  .nt-row[data-nt]{cursor:pointer}
+  .nt-row:not([data-nt]){cursor:default}
+  /* Above the stored read cursor — not "recent", UNSEEN. */
+  .nt-row.nt-new{border-left-color:var(--accent)}
+  /* A kind outside notify.kinds: recorded, listed, did not ring. */
+  .nt-row.quiet{opacity:.72}
+  .nt-top{display:flex; align-items:center; gap:var(--s-3)}
+  .nt-dot{width:6px; height:6px; border-radius:var(--r-full); background:currentColor; flex:none}
+  .nt-k{
+    font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-wide);
+  }
+  .nt-k.ok,.nt-dot.ok{color:var(--good)}
+  .nt-k.warn,.nt-dot.warn{color:var(--warn)}
+  .nt-k.bad,.nt-dot.bad{color:var(--bad)}
+  .nt-k.info,.nt-dot.info{color:var(--info)}
+  .nt-k.mute,.nt-dot.mute{color:var(--text-3)}
+  .nt-item{font-family:var(--mono); font-size:var(--fs-2xs)}
+  .nt-when{
+    margin-left:auto; font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-dim);
+  }
+  .nt-line{
+    font-size:var(--fs-sm); line-height:var(--lh-snug); color:var(--text-2);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .nt-line b{color:var(--text); font-weight:var(--fw-semi)}
+  /* A question is a card, not a row: the one kind that is waiting on a sentence
+     from you rather than on your attention. */
+  .nt-q{
+    margin:var(--s-4) var(--s-5); padding:var(--s-5);
+    background:var(--accent-wash); border:1px solid var(--accent-line);
+    border-radius:var(--r-md); display:flex; flex-direction:column; gap:var(--s-4);
+  }
+  .nt-q-top{display:flex; align-items:center; gap:var(--s-3)}
+  .nt-q-q{color:var(--text); font-size:var(--fs-md); line-height:var(--lh-snug)}
+  .nt-q-refs{display:flex; flex-wrap:wrap; gap:var(--s-2)}
+  .nt-q-refs code{
+    font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-3);
+    background:var(--surface-1); border:1px solid var(--line);
+    border-radius:var(--r-xs); padding:var(--s-1) var(--s-3);
+  }
+  .nt-q-reply{
+    width:100%; resize:vertical; min-height:44px; padding:var(--s-4);
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
+    color:var(--text); font:inherit; font-size:var(--fs-sm);
+  }
+  .nt-q-reply:focus{outline:none; border-color:var(--accent)}
+  .nt-q-row{display:flex; align-items:center; gap:var(--s-4)}
+  .nt-q-hint{flex:1; font-size:var(--fs-2xs); color:var(--text-3); line-height:var(--lh-snug)}
+  .nt-empty,.nt-note{
+    padding:var(--s-6); color:var(--text-3); font-size:var(--fs-xs); line-height:var(--lh);
+  }
+  /* Unreachable and pruned are DIFFERENT from quiet, and both say so. */
+  .nt-err{
+    padding:var(--s-4) var(--s-6); background:var(--bad-soft);
+    border-bottom:1px solid var(--bad-line); color:var(--bad); font-size:var(--fs-xs);
+  }
+  .nt-gap{
+    padding:var(--s-4) var(--s-6); background:var(--warn-soft);
+    border-bottom:1px solid var(--warn-line); color:var(--warn); font-size:var(--fs-xs);
+  }
+  .nt-foot{
+    display:flex; flex-direction:column; gap:var(--s-2);
+    padding:var(--s-4) var(--s-6); border-top:1px solid var(--line-soft);
+    background:var(--surface-1); color:var(--text-3);
+    font-size:var(--fs-2xs); line-height:var(--lh);
+  }
+  /* "A closed tab is not notified." It stays on the page rather than in a doc. */
+  .nt-honest{color:var(--text-dim)}
+
   /* ── empty states ──────────────────────────────────────────────────────── */
   .empty{
     display:block; padding:var(--s-7); color:var(--text-3);
@@ -1604,12 +1737,57 @@
   .ck-q:hover{border-color:var(--line); border-left-color:var(--warn); background:var(--surface-3)}
   .ck-q .ck-rep-t{flex:1; min-width:0}
   .ck-q .qbtn{flex:none}
+  /* A chain link that is not its turn yet. Dimmed rather than hidden: the point
+     is that you can see the work is filed and see what it is waiting for. */
+  .ck-q.held{border-left-color:var(--line); opacity:.72}
+  .ck-q.held:hover{border-left-color:var(--line-strong)}
+  .ck-hold{
+    flex:none; font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-dim);
+    white-space:nowrap;
+  }
+  /* Finished, unapproved, and holding up its chain — the one row on this panel
+     that is waiting on a person rather than on a slot. */
+  .ck-q.review{border-left-color:var(--accent); background:var(--accent-soft)}
   .ck-x{
     flex:none; width:20px; height:20px; padding:0; border:0; border-radius:var(--r-sm);
     background:transparent; color:var(--text-dim); font-size:var(--fs-md); line-height:1;
     cursor:pointer;
   }
   .ck-x:hover{background:var(--bad-soft); color:var(--bad)}
+
+  /* a question waiting on a sentence from you (ask_human) ────────────────────
+     Room for one whole card — question, refs, reply box — and the rest scroll
+     inside: a reply box you have to scroll a panel to find is a reply box that
+     does not get used.
+
+     UNLIKE its neighbours this one SHRINKS (flex:0 1 auto). They are 0 0 auto,
+     which is affordable at 180px each; a fourth rigid panel this tall pushes the
+     column past the cockpit's fixed height on a short window and the composer
+     goes under the fold. Squeezed, the card list scrolls instead. */
+  .ck-repwrap.ask{flex:0 1 auto; min-height:120px; max-height:240px}
+  .ck-ask{
+    display:flex; flex-direction:column; gap:var(--s-4); padding:var(--s-4);
+    background:var(--accent-wash); border:1px solid var(--accent-line);
+    border-left:2px solid var(--accent); border-radius:var(--r-sm);
+  }
+  .ck-ask-top{display:flex; align-items:center; gap:var(--s-4)}
+  .ck-ask-item{font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3)}
+  .ck-ask-q{font-size:var(--fs-sm); line-height:var(--lh); color:var(--text)}
+  .ck-ask-refs{display:flex; flex-wrap:wrap; gap:var(--s-2)}
+  .ck-ask-refs code{
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3);
+    background:var(--surface-1); border:1px solid var(--line);
+    border-radius:var(--r-xs); padding:var(--s-1) var(--s-3);
+  }
+  .ck-ask-reply{
+    width:100%; resize:vertical; min-height:42px; padding:var(--s-4);
+    background:var(--bg); border:1px solid var(--line); border-radius:var(--r-sm);
+    color:var(--text); font:inherit; font-size:var(--fs-sm); line-height:var(--lh-snug);
+  }
+  .ck-ask-reply:focus{outline:none; border-color:var(--accent)}
+  .ck-ask-row{display:flex; align-items:center; gap:var(--s-4)}
+  .ck-ask-row .ck-hint{flex:1; line-height:var(--lh-snug); white-space:normal}
+  .ck-ask-row .qbtn{flex:none}
 
   /* graph bar + auto-deploy switch */
   /* Fixed height, not padding-derived: the detail rail is absolutely
@@ -1649,6 +1827,26 @@
   .ck-panic:disabled{opacity:.5; cursor:default}
   .ck-why{font-size:var(--fs-xs); color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .ck-why.warn{color:var(--warn)}
+  /* The approval gate: none / agent / builder's. A segmented control rather than
+     a second switch, because these are three states of one question and two
+     toggles would let a user pick a fourth that does not exist. */
+  .ck-gate{
+    flex:none; display:inline-flex; align-items:center; gap:0;
+    border:1px solid var(--line); border-radius:var(--r-full); overflow:hidden;
+    background:var(--surface-2);
+  }
+  .ck-gopt{
+    padding:var(--s-3) var(--s-5); border:0; background:transparent;
+    color:var(--text-3); font:inherit; font-family:var(--mono);
+    font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label); cursor:pointer;
+  }
+  .ck-gopt + .ck-gopt{border-left:1px solid var(--line)}
+  .ck-gopt:hover{color:var(--text); background:var(--surface-3)}
+  .ck-gopt.on{background:var(--accent-soft); color:var(--accent); font-weight:var(--fw-semi)}
+  /* An env var is overriding the stored mode; the control is display-only. */
+  .ck-gate.forced{opacity:.6}
+  .ck-gate.forced .ck-gopt{cursor:not-allowed}
 
   /* the canvas + its detail rail */
   .ck-canvas{flex:1; position:relative; min-height:0}
@@ -1739,7 +1937,11 @@
   .cg-meta{
     display:flex; gap:var(--s-4); font-family:var(--mono); font-size:var(--fs-3xs);
     color:var(--text-3); text-transform:uppercase; letter-spacing:.06em;
+    flex-wrap:wrap;
   }
+  /* Which run owns this node, said in words — hue is the fast channel, this is
+     the one that works in greyscale and at 40% zoom. */
+  .cg-meta .cg-owner{font-weight:var(--fw-semi); letter-spacing:.04em}
   .cg-meta .on{color:var(--good)}
   .cg-meta .off{color:var(--text-dim)}
   /* the seat, now that a seat has no node of its own */
@@ -1778,6 +1980,25 @@
   audio.cg-mini{width:118px; height:26px}
   .cg-made{display:flex; flex-direction:column; gap:var(--s-4)}
   .cg-madeone{display:flex; gap:var(--s-4); align-items:center}
+  /* A tile that opens the file. Hover state exists so it reads as a control —
+     a thumbnail you cannot enlarge and a filename you cannot open are both
+     just decoration, which is what these were. */
+  .cg-madeone.open{
+    cursor:pointer; padding:var(--s-2); margin:calc(var(--s-2) * -1);
+    border-radius:var(--r-sm); border:1px solid transparent;
+  }
+  .cg-madeone.open:hover, .cg-madeone.open:focus-visible{
+    border-color:var(--accent-line); background:var(--accent-soft); outline:none;
+  }
+  /* The paths an agent named in prose, as things you can press. */
+  .cg-fchips{display:flex; flex-wrap:wrap; gap:var(--s-2); margin-top:var(--s-3)}
+  .cg-fchip{
+    max-width:100%; padding:2px var(--s-3); border-radius:var(--r-xs);
+    border:1px solid var(--line); background:var(--surface-1);
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-2);
+    cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .cg-fchip:hover{border-color:var(--accent-line); color:var(--accent); background:var(--accent-soft)}
   .cg-thumb{
     width:56px; height:56px; flex:none; object-fit:contain; border-radius:var(--r-sm);
     border:1px solid var(--line); background:var(--surface-2); image-rendering:pixelated;
@@ -1832,6 +2053,146 @@
   .ov-run-row .rs{
     font-family:var(--mono); font-size:var(--fs-3xs);
     text-transform:uppercase; letter-spacing:.06em;
+  }
+
+  /* ── settings (settingsview.js) ───────────────────────────────────────────
+     Rendered entirely from GET /api/settings, so nothing here may name a key, a
+     group or a range — one row per registry field, one control per declared
+     KIND. A new switch is a Python entry and no rule in this block.
+
+     The two states worth reading in the markup: .locked is a field the
+     environment owns (dashed, sunken, tagged with the variable's name, control
+     disabled — a panel that offers to edit a value BGATE_QA_GATE has already
+     forced is the most expensive lie a settings surface can tell), and .bad is
+     the row a write was just refused on, holding the registry's own sentence. */
+  .st-wrap{display:block; color:var(--text); font-size:var(--fs-sm)}
+  .st-shell{max-width:920px; margin:0 auto}
+  .st-head{
+    display:grid; grid-template-columns:1fr auto; gap:var(--s-3) var(--s-5);
+    align-items:start; padding-bottom:var(--s-6); margin-bottom:var(--s-6);
+    border-bottom:1px solid var(--line);
+  }
+  .st-h1{
+    grid-column:1; font-size:var(--fs-xl); font-weight:var(--fw-medium);
+    color:var(--text); letter-spacing:var(--track-tight);
+  }
+  .st-sub{grid-column:1; font-size:var(--fs-xs); color:var(--text-3); line-height:var(--lh)}
+  .st-warnline{color:var(--warn)}
+  .st-head .st-btn{grid-column:2; grid-row:1 / span 2; align-self:center}
+  .st-btn{
+    padding:var(--s-4) var(--s-5); background:var(--surface-3);
+    border:1px solid var(--line); border-radius:var(--r-sm); color:var(--text-2);
+    font:inherit; font-size:var(--fs-xs); cursor:pointer;
+    transition:border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  }
+  .st-btn:hover{border-color:var(--accent); color:var(--text)}
+  .st-group{margin-bottom:var(--s-8)}
+  .st-gh{
+    display:flex; align-items:center; gap:var(--s-4); margin-bottom:var(--s-5);
+    font-size:var(--fs-md); font-weight:var(--fw-medium); color:var(--text);
+  }
+  .st-gn{
+    font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-3);
+    background:var(--surface-3); border:1px solid var(--line);
+    border-radius:var(--r-full); padding:var(--s-1) var(--s-3);
+    font-variant-numeric:tabular-nums;
+  }
+  .st-rows{display:flex; flex-direction:column; gap:var(--s-4)}
+  .st-row{
+    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:var(--s-3) var(--s-6);
+    align-items:center; padding:var(--s-5) var(--s-6); background:var(--surface-2);
+    border:1px solid var(--line); border-radius:var(--r-md);
+  }
+  .st-row.locked{background:var(--surface-1); border-style:dashed}
+  .st-row.bad{border-color:var(--bad-line)}
+  .st-label{grid-column:1; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s-3)}
+  .st-key{font-family:var(--mono); font-size:var(--fs-sm); color:var(--text)}
+  .st-tag{
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3);
+    background:var(--surface-3); border:1px solid var(--line);
+    border-radius:var(--r-xs); padding:var(--s-1) var(--s-3);
+  }
+  .st-tag.env{color:var(--warn); background:var(--warn-soft); border-color:var(--warn-line)}
+  .st-src{
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-dim);
+    text-transform:uppercase; letter-spacing:var(--track-wide);
+  }
+  .st-src.stored{color:var(--accent)}
+  .st-src.env{color:var(--warn)}
+  .st-ctl{
+    grid-column:2; grid-row:1; display:flex; align-items:center; gap:var(--s-4);
+    justify-content:flex-end; flex-wrap:wrap; max-width:420px;
+  }
+  .st-help{
+    grid-column:1 / span 2; font-size:var(--fs-xs); color:var(--text-3); line-height:var(--lh);
+  }
+  .st-foot{
+    grid-column:1 / span 2; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s-4);
+    font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-dim);
+  }
+  .st-envnote{
+    color:var(--warn); font-family:var(--sans); font-size:var(--fs-xs); line-height:var(--lh-snug);
+  }
+  .st-badnote{
+    color:var(--bad); font-family:var(--sans); font-size:var(--fs-xs); line-height:var(--lh-snug);
+  }
+  .st-link{
+    background:none; border:0; padding:0; color:var(--accent); font:inherit;
+    font-size:var(--fs-2xs); text-decoration:underline; cursor:pointer;
+  }
+  .st-toggle{
+    position:relative; width:38px; height:20px; flex:none; padding:0;
+    background:var(--surface-4); border:1px solid var(--line-strong);
+    border-radius:var(--r-full); cursor:pointer;
+    transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  }
+  .st-toggle .st-knob{
+    position:absolute; top:2px; left:2px; width:14px; height:14px;
+    border-radius:var(--r-full); background:var(--text-3);
+    transition:transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+  }
+  .st-toggle.on{background:var(--accent-soft); border-color:var(--accent)}
+  .st-toggle.on .st-knob{transform:translateX(18px); background:var(--accent)}
+  .st-toggle:disabled{opacity:.5; cursor:not-allowed}
+  /* Three states of one question, like the console's gate control — a segmented
+     bar rather than N toggles, which would let you pick a state that is not one. */
+  .st-seg{display:inline-flex; border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden}
+  .st-segb{
+    padding:var(--s-3) var(--s-5); background:var(--surface-2); border:0;
+    border-right:1px solid var(--line); color:var(--text-3); font:inherit;
+    font-size:var(--fs-xs); cursor:pointer;
+  }
+  .st-segb:last-child{border-right:0}
+  .st-segb:hover:not(:disabled){background:var(--surface-3); color:var(--text)}
+  .st-segb.on{background:var(--accent-soft); color:var(--text); box-shadow:inset 0 -2px 0 var(--accent)}
+  .st-segb:disabled{opacity:.5; cursor:not-allowed}
+  .st-chips{display:flex; flex-wrap:wrap; gap:var(--s-2); justify-content:flex-end}
+  .st-chip{
+    padding:var(--s-1) var(--s-4); background:var(--surface-2);
+    border:1px solid var(--line); border-radius:var(--r-full); color:var(--text-3);
+    font-family:var(--mono); font-size:var(--fs-2xs); cursor:pointer;
+    transition:border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  }
+  .st-chip:hover:not(:disabled){border-color:var(--accent); color:var(--text)}
+  .st-chip.on{background:var(--accent-soft); border-color:var(--accent-line); color:var(--text)}
+  .st-chip:disabled{opacity:.5; cursor:not-allowed}
+  .st-in{
+    width:220px; max-width:100%; padding:var(--s-3) var(--s-4); background:var(--bg);
+    border:1px solid var(--line); border-radius:var(--r-sm); color:var(--text);
+    font:inherit; font-size:var(--fs-sm);
+  }
+  .st-num{width:120px; font-family:var(--mono); text-align:right; font-variant-numeric:tabular-nums}
+  .st-in:focus{outline:none; border-color:var(--accent)}
+  .st-in:disabled{opacity:.6; cursor:not-allowed; background:var(--surface-1)}
+  .st-val{font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-3)}
+  /* A kind this dashboard has no control for: shown, never editable. */
+  .st-val.ro{font-family:var(--sans); font-size:var(--fs-xs)}
+  .st-val i{color:var(--text-dim)}
+  .st-empty{padding:var(--s-8) var(--s-6); color:var(--text-3); line-height:var(--lh-loose)}
+  .st-err{
+    padding:var(--s-5) var(--s-6); margin-bottom:var(--s-6); background:var(--bad-soft);
+    border:1px solid var(--bad-line); border-radius:var(--r-md);
+    color:var(--bad); font-size:var(--fs-xs);
   }
 
   /* ── sub-navigation (seats, studio, world) ─────────────────────────────── */
@@ -2247,6 +2608,161 @@
     font-size:var(--fs-3xs); color:var(--text-3); letter-spacing:.12em;
     max-width:1680px; margin:0 auto;
   }
+
+  /* ── the agents canvas: one visual system, three axes ─────────────────────
+   *
+   * Everything on that canvas used to be the same card in one of three border
+   * colours, and the colour meant STATE — so a running node, whichever seat it
+   * belonged to, went the same orange, and a phase, its task, the seat above it
+   * and a gate blocking it were told apart by reading their titles. Three
+   * questions, one channel.
+   *
+   * They are separated now:
+   *   HUE       = WHOSE. The seat's colour (--c-art, --c-tech …), carried by the
+   *               task and inherited by its phases. The seat boxes are the key.
+   *   STRUCTURE = WHAT. Width, left edge and title treatment per node kind, so
+   *               the type survives at 40% zoom where text does not.
+   *   STATE     = a treatment, not a colour: a pulse while running, muted when
+   *               finished, red only for failure — which is the one state that
+   *               deserves to override the hue.
+   */
+  .nc-node[data-kind]{border-left:3px solid var(--nc-a)}
+
+  /* WHAT YOU SAID. Not a seat's work and not on anyone's lane — the human's
+     voice, so it is the only kind with a soft filled plate. */
+  .nc-node[data-kind="turn"]{
+    border-left-style:double; border-left-width:5px;
+    background:linear-gradient(to right, var(--accent-soft), var(--plate) 42%);
+  }
+  /* THE FLOOR. Small, mono, loud left bar: these are labels, not work. */
+  .nc-node[data-kind="seat"] .nc-title{
+    font-family:var(--mono); font-size:11px;
+    letter-spacing:var(--track-label); text-transform:uppercase;
+  }
+  .nc-node[data-kind="seat"]{border-left-width:5px}
+  /* A POCKET OF WORK inside a run: subordinate to the task that owns it. Same
+     hue, dimmer plate, thinner edge — a stack of full-strength cards read as
+     five more agents rather than one agent's five steps. */
+  .nc-node[data-kind="phase"]{
+    border-left-width:2px;
+    background:color-mix(in srgb, var(--plate) 88%, var(--bg));
+  }
+  .nc-node[data-kind="phase"] .nc-title{font-size:11.5px; color:var(--text-2)}
+  .nc-node[data-kind="phase"] .nc-body{font-size:11px}
+  /* A STOP. Dashed all the way round: the only node here that is waiting on a
+     person rather than working. */
+  .nc-node[data-kind="gate"]{
+    border-style:dashed; border-left-style:solid;
+    background:color-mix(in srgb, var(--spark) 8%, var(--plate));
+  }
+
+  /* State. The pulse is 2s and opacity-only — cheap to composite, and it stops
+     dead under prefers-reduced-motion (see the global rule at the bottom). */
+  @keyframes nc-live{
+    0%,100%{box-shadow:0 0 0 1px var(--nc-a), 0 10px 30px rgba(0,0,0,.5)}
+    50%{box-shadow:0 0 0 3px color-mix(in srgb, var(--nc-a) 45%, transparent),
+                  0 10px 30px rgba(0,0,0,.5)}
+  }
+  .nc-node[data-status="running"]{animation:nc-live 2s var(--ease) infinite}
+  /* Finished work is context, not news: it recedes until you hover it. */
+  .nc-node[data-status="passed"]{opacity:.72}
+  .nc-node[data-status="passed"]:hover, .nc-node[data-status="passed"].sel{opacity:1}
+  .nc-node[data-status="failed"]{border-color:var(--bad)}
+
+  /* ── peek.js: the file viewer the agent rails open ────────────────────────
+     Modal rather than a third panel: the rail is 380px wide and a scene file is
+     not, and the question "what is actually in this file" deserves the screen
+     for the ten seconds it takes to answer. */
+  .pk-wrap{
+    position:fixed; inset:0; z-index:120; display:flex; align-items:center;
+    justify-content:center; padding:var(--s-6);
+    background:color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter:blur(2px);
+  }
+  .pk-wrap[hidden]{display:none}
+  .pk-card{
+    display:flex; flex-direction:column; width:min(1100px, 100%);
+    max-height:min(860px, 92vh); background:var(--surface-2);
+    border:1px solid var(--line-strong); border-radius:var(--r-lg);
+    box-shadow:0 24px 64px rgba(0,0,0,.5); overflow:hidden;
+  }
+  .pk-head{
+    flex:none; display:flex; align-items:center; gap:var(--s-4);
+    padding:var(--s-4) var(--s-5); border-bottom:1px solid var(--line);
+    background:var(--surface-1);
+  }
+  .pk-name{
+    font-family:var(--mono); font-size:var(--fs-xs); color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl;
+    text-align:left; max-width:46%;
+  }
+  .pk-meta{font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3); white-space:nowrap}
+  .pk-sp{flex:1}
+  .pk-tabs{display:inline-flex; border:1px solid var(--line); border-radius:var(--r-full); overflow:hidden}
+  .pk-tab{
+    padding:var(--s-2) var(--s-5); border:0; background:transparent;
+    color:var(--text-3); font:inherit; font-family:var(--mono);
+    font-size:var(--fs-3xs); text-transform:uppercase;
+    letter-spacing:var(--track-label); cursor:pointer; text-decoration:none;
+  }
+  .pk-tab + .pk-tab{border-left:1px solid var(--line)}
+  .pk-tab:hover{color:var(--text); background:var(--surface-3)}
+  .pk-tab.on{background:var(--accent-soft); color:var(--accent)}
+  a.pk-tab{border:1px solid var(--line); border-radius:var(--r-full); margin-left:var(--s-2)}
+  .pk-x{
+    flex:none; width:26px; height:26px; padding:0; border:0; border-radius:var(--r-sm);
+    background:transparent; color:var(--text-3); font-size:var(--fs-lg);
+    line-height:1; cursor:pointer;
+  }
+  .pk-x:hover{background:var(--bad-soft); color:var(--bad)}
+  .pk-body{flex:1; min-height:0; overflow:auto; padding:var(--s-5); background:var(--bg)}
+  .pk-note{
+    padding:var(--s-3) 0; font-family:var(--mono); font-size:var(--fs-3xs);
+    color:var(--text-3);
+  }
+  .pk-note.err{color:var(--bad)}
+  .pk-img{
+    max-width:100%; max-height:74vh; display:block; margin:0 auto;
+    object-fit:contain; cursor:zoom-in;
+    /* Game art is pixel art far more often than not, and a browser's smooth
+       upscale of a 32px sprite is a different image than the one shipping. */
+    image-rendering:pixelated; background:var(--surface-1);
+    border:1px solid var(--line); border-radius:var(--r-sm);
+  }
+  /* 1:1. The body scrolls, so a sheet bigger than the card is pannable rather
+     than resized — resizing is the thing that hides the defect you opened it for. */
+  .pk-img.actual{
+    max-width:none; max-height:none; width:auto; height:auto; cursor:zoom-out;
+  }
+  /* Stepping through the set the viewer was opened from. */
+  .pk-nav{
+    flex:none; width:22px; height:22px; padding:0; border:1px solid var(--line);
+    border-radius:var(--r-sm); background:var(--surface-2); color:var(--text-2);
+    font-size:var(--fs-md); line-height:1; cursor:pointer;
+  }
+  .pk-nav:hover{border-color:var(--accent-line); color:var(--accent)}
+  .pk-nav[hidden]{display:none}
+  .pk-count{
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3);
+    min-width:34px; text-align:center;
+  }
+  .pk-count[hidden]{display:none}
+  .pk-audio{width:100%; margin-top:var(--s-4)}
+  .pk-code{
+    margin:0; font-family:var(--mono); font-size:var(--fs-2xs); line-height:1.6;
+    color:var(--text); white-space:pre; tab-size:4;
+  }
+  .pk-ln{
+    display:inline-block; width:44px; margin-right:var(--s-4); text-align:right;
+    color:var(--text-dim); user-select:none;
+  }
+  .pk-diff{font-family:var(--mono); font-size:var(--fs-2xs); line-height:1.55}
+  .pk-dl{white-space:pre-wrap; word-break:break-word; padding:0 var(--s-3)}
+  .pk-dl.k-add{background:color-mix(in srgb, var(--good) 14%, transparent); color:var(--good)}
+  .pk-dl.k-del{background:color-mix(in srgb, var(--bad) 14%, transparent); color:var(--bad)}
+  .pk-dl.k-hunk{color:var(--info); background:var(--surface-1); margin-top:var(--s-3)}
+  .pk-dl.k-meta{color:var(--text-dim)}
+  .pk-dl.k-ctx{color:var(--text-2)}
 }
 
 /* ═══ RESPONSIVE ══════════════════════════════════════════════════════════ */
@@ -2309,6 +2825,13 @@
     .stage{overflow:visible}
     .stage-body{overflow:visible; padding:var(--s-7) var(--s-6) 48px}
     .statusbar{padding:0 var(--s-6); gap:var(--s-4); overflow-x:auto}
+    /* The chips have to scroll at this width, and a scroll container clips its
+       absolutely-positioned children — which is the notification panel. So it
+       stops hanging off the bell and becomes a sheet pinned to the top right:
+       fixed escapes the scroller, where unclipping the bar would cost the chips
+       their scroll. It is a popover either way — outside-click and Escape close
+       it — so a few pixels of drift from its trigger is the cheap side. */
+    .nt-drawer{position:fixed; top:calc(var(--bar-h) + var(--s-5)); right:var(--s-5); left:auto}
     .ptbar{flex-wrap:wrap}
     .ptbar #pt-msg{flex:1 1 100%; order:2}
     .pt-goal{flex:1 1 100%}
@@ -2325,6 +2848,12 @@
     html,body{max-width:100%; overflow-x:hidden}
     .panel,.playpanel{min-width:0; max-width:100%}
     .playhint{max-width:100%; overflow-wrap:anywhere}
+    /* A settings row is a label and a control side by side until the control has
+       nowhere to go. Stacked, the control goes left with the label it belongs to
+       rather than staying right-aligned against nothing. */
+    .st-row{grid-template-columns:minmax(0,1fr)}
+    .st-ctl{grid-column:1; grid-row:auto; justify-content:flex-start; max-width:none}
+    .st-chips{justify-content:flex-start}
   }
 
   @media(max-width:680px){
