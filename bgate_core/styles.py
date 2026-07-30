@@ -275,7 +275,7 @@ def _shown(root, entry: Optional[dict]) -> dict:
     except Exception:
         rel = ""
     return {"name": entry.get("name", ""), "kind": entry.get("kind", ""),
-            "rel": rel}
+            "rel": rel, "path": entry.get("path", "")}
 
 
 def describe(root: str | os.PathLike[str]) -> dict:

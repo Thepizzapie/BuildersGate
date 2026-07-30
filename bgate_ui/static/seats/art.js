@@ -1078,6 +1078,10 @@
           badge.className = "art-sth" + (lora && active ? " on" : "");
         }
 
+        // Which anchors will be enlarged to reach the floor, so a 1.09x resize
+        // is visible on the tile rather than buried in a warning line.
+        const up = {};
+        (ds.upscaled || []).forEach(u => { up[String(u.path)] = u; });
         const thumbs = (list, cls) => list.map(a => `
           <figure class="art-stthumb ${cls}" title="${bg.esc(a.name || "")}${
             a.why ? " — " + bg.esc(a.why) : ""}">
@@ -1085,6 +1089,8 @@
               ? `<img src="/api/preview?rel=${encodeURIComponent(a.rel)}" alt="" loading="lazy">`
               : `<div class="art-stmissing"></div>`}
             <figcaption>${bg.esc(a.name || "")}</figcaption>
+            ${up[String(a.path || "")]
+              ? `<div class="art-stup">↑${up[String(a.path)].scale}x</div>` : ""}
           </figure>`).join("");
 
         const trainedRow = active
@@ -1641,6 +1647,7 @@
       display:block;image-rendering:pixelated}
     .art-stthumb.ok img{border-color:var(--accent-line)}
     .art-stthumb.no img{filter:grayscale(1)}
+    .art-stup{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--accent)}
     .art-stthumb figcaption{font-family:var(--mono);font-size:var(--fs-3xs);
       color:var(--text-3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .art-stdrop{margin-top:var(--s-5)}

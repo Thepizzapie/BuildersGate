@@ -250,3 +250,60 @@ class TestGenerateWithATrainedStyle:
             krea.submit("x", model="imagen-4", styles=[{"id": "s"}])
         assert "krea-2-medium" in str(exc.value)
         assert not captured
+
+
+class TestTheFloorIsAResizeNotARefusal:
+    """The first cut refused anything under 1024 outright, and that was the tool
+    being pedantic rather than careful: a concept plate at 1602x981 is 43 pixels
+    short, and the difference between it and a legal one is a 4% resize nobody
+    can see. On a real board that rule threw away FOURTEEN of the project's best
+    plates for being 83px short.
+
+    What the original rule was right about survives: a 48px item icon carries no
+    style at 1024, and reaching the floor from there is inventing detail."""
+
+    def test_a_near_miss_is_usable_and_says_it_will_be_enlarged(self, tmp_path):
+        near = _png(tmp_path / "plate.png", 1602, 981)
+        got = krea.check_training_set([near] + [_png(tmp_path / f"g{i}.png")
+                                                for i in range(5)])
+        assert near in got["usable"]
+        row = [u for u in got["upscaled"] if u["path"] == near][0]
+        assert row["scale"] == pytest.approx(1.044, abs=0.01)
+        assert row["to"] == [1672, 1024]
+        assert any("upscaled" in w for w in got["warnings"])
+
+    def test_something_genuinely_tiny_is_still_refused(self, tmp_path):
+        icon = _png(tmp_path / "icon.png", 48, 48)
+        got = krea.check_training_set([icon])
+        why = got["rejected"][0]["why"]
+        assert "inventing detail" in why
+
+    def test_the_cap_is_where_the_constant_says(self, tmp_path):
+        """0.6 of the floor — an enlargement past 1.67x is the line."""
+        just_ok = _png(tmp_path / "ok.png", 640, 620)      # 620 >= 614
+        just_no = _png(tmp_path / "no.png", 640, 600)      # 600 < 614
+        got = krea.check_training_set([just_ok, just_no])
+        assert just_ok in got["usable"]
+        assert any(r["path"] == just_no for r in got["rejected"])
+
+    def test_checking_a_dataset_writes_nothing(self, tmp_path):
+        """The panel calls this on every poll. A validator with a side effect is
+        one nobody can call twice."""
+        near = _png(tmp_path / "plate.png", 1602, 981)
+        before = {p.name for p in tmp_path.iterdir()}
+        krea.check_training_set([near])
+        assert {p.name for p in tmp_path.iterdir()} == before
+
+    def test_the_resize_happens_at_upload_and_keeps_the_aspect(self, tmp_path):
+        from PIL import Image
+        near = _png(tmp_path / "plate.png", 1602, 981)
+        ready, note = krea.prepare_training_image(near)
+        assert ready != near and "upscaled" in note
+        w, h = Image.open(ready).size
+        assert (w, h) == (1672, 1024)
+        assert abs((w / h) - (1602 / 981)) < 0.01     # aspect unchanged
+
+    def test_an_image_already_over_the_floor_is_untouched(self, tmp_path):
+        big = _png(tmp_path / "big.png", 1400, 1200)
+        ready, note = krea.prepare_training_image(big)
+        assert ready == big and note == ""
