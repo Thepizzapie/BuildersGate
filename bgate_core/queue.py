@@ -22,12 +22,22 @@ from .util import rows
 # 'cancelled' is a human calling work off — distinct from 'failed', which is an
 # agent (or the watchdog) reporting it could not finish. Only the second is
 # worth reopening; the audit needs to tell them apart.
-STATUSES = ("queued", "dispatched", "done", "failed", "cancelled")
+#
+# 'review' is finished-but-not-counted: the agent is gone, the work is on disk,
+# and under the builder's gate (bgate_core.gates) a human has not yet said yes.
+# It is deliberately NOT 'done' — a chain must not advance on unapproved work —
+# and deliberately not 'dispatched', which would claim an agent is still running.
+STATUSES = ("queued", "dispatched", "review", "done", "failed", "cancelled")
+
+# Statuses a dependent item is allowed to start on top of. 'review' is not one
+# of them: the whole point of the hold is that the next link waits.
+SATISFIED = ("done",)
 
 
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
-        scope_tier_id: Optional[int] = None) -> dict:
+        scope_tier_id: Optional[int] = None, chain_id: str = "",
+        chain_pos: int = 0, depends_on: Optional[int] = None) -> dict:
     if seat not in _seats.DEFAULT_SEATS:
         raise ValueError(f"unknown seat {seat!r}; seats are {tuple(_seats.DEFAULT_SEATS)}")
     if not title.strip():
@@ -36,17 +46,101 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
     # OutOfScope subclasses ValueError, so every caller that already maps
     # ValueError -> 400 reports this correctly without knowing about scope.
     _scope.enforce(root, scope_tier_id)
+    if depends_on is not None:
+        get(root, int(depends_on))          # LookupError if the link is a fiction
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
-            "source_ref, scope_tier_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "source_ref, scope_tier_id, chain_id, chain_pos, depends_on) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
-             scope_tier_id),
+             scope_tier_id, chain_id.strip(), int(chain_pos),
+             int(depends_on) if depends_on is not None else None),
         )
         item_id = int(cur.lastrowid)
-    activity.log(root, "queue", f"queued for {seat}: {title.strip()[:80]}",
+    waits = f" (waits for #{int(depends_on)})" if depends_on is not None else ""
+    activity.log(root, "queue",
+                 f"queued for {seat}: {title.strip()[:80]}{waits}",
                  ref=str(item_id))
     return get(root, item_id)
+
+
+def add_chain(root: str | os.PathLike[str], links: list[dict],
+              chain_id: str = "", source: str = "manual",
+              source_ref: str = "") -> list[dict]:
+    """File dependent work as ONE ordered group, each link waiting on the last.
+
+    THE GAP THIS CLOSES. Splitting an ask across seats produced N independent
+    rows whose only relationship was priority, and priority is an ordering, not
+    a dependency: auto-deploy dispatches everything it can reach, so the item
+    that needed a scene and the item that CREATES that scene started in the same
+    tick. The second agent then wrote against a file that did not exist yet,
+    reported done, and the failure surfaced two items later as a mystery.
+
+    Each link is a dict of the same fields ``add`` takes (seat + title are
+    required). The chain is strictly linear — link N waits for link N-1 — because
+    a DAG needs a graph editor to be legible and every real case so far has been
+    a line. Priority still decides which READY item goes first; the chain only
+    decides what is ready.
+
+    Returns the created items in order. Raises before writing anything if a link
+    is malformed, so a bad chain does not half-land.
+    """
+    if not links:
+        raise ValueError("a chain needs at least one link")
+    for i, link in enumerate(links):
+        if not str(link.get("seat") or "").strip():
+            raise ValueError(f"chain link {i + 1} has no seat")
+        if str(link.get("seat")) not in _seats.DEFAULT_SEATS:
+            raise ValueError(f"chain link {i + 1}: unknown seat "
+                             f"{link.get('seat')!r}; seats are "
+                             f"{tuple(_seats.DEFAULT_SEATS)}")
+        if not str(link.get("title") or "").strip():
+            raise ValueError(f"chain link {i + 1} has no title")
+    if len(links) == 1:
+        raise ValueError("a one-link chain is just an item — use queue_add")
+
+    chain_id = (chain_id or "").strip() or _new_chain_id(root)
+    made: list[dict] = []
+    previous: Optional[int] = None
+    for pos, link in enumerate(links, start=1):
+        item = add(root, str(link["seat"]), str(link["title"]),
+                   brief=str(link.get("brief") or ""),
+                   priority=int(link.get("priority") or 0),
+                   source=str(link.get("source") or source),
+                   source_ref=str(link.get("source_ref") or source_ref),
+                   scope_tier_id=link.get("scope_tier_id"),
+                   chain_id=chain_id, chain_pos=pos, depends_on=previous)
+        previous = int(item["id"])
+        made.append(item)
+    activity.log(root, "queue",
+                 f"chain {chain_id}: {len(made)} linked items — "
+                 + " -> ".join(f"#{m['id']}[{m['seat']}]" for m in made),
+                 ref=chain_id)
+    # ref is the chain id, not an item id: everything downstream that reasons
+    # about a chain (one debrief per chain, the stall reminder, "what is blocked
+    # behind this") keys on the chain, and a subscriber that had to infer the
+    # group from N separate item events would guess at the boundary.
+    _emit(root, "chain.filed", ref=chain_id,
+          payload={"chain_id": chain_id, "count": len(made),
+                   "links": [{"item": int(m["id"]), "seat": m["seat"],
+                              "title": str(m["title"])[:200],
+                              "chain_pos": int(m.get("chain_pos") or 0)}
+                             for m in made]})
+    return made
+
+
+def _new_chain_id(root: str | os.PathLike[str]) -> str:
+    """A short, human-sayable chain id. Sequential per project rather than a
+    uuid: these get read aloud and typed into briefs ("chain c3"), and a uuid is
+    neither."""
+    row = db.connect(root).execute(
+        "SELECT chain_id FROM work_item WHERE chain_id LIKE 'c%' "
+        "ORDER BY id DESC LIMIT 1").fetchone()
+    last = 0
+    if row and str(row["chain_id"] or "")[1:].isdigit():
+        last = int(str(row["chain_id"])[1:])
+    return f"c{last + 1}"
 
 
 def get(root: str | os.PathLike[str], item_id: int) -> dict:
@@ -117,9 +211,11 @@ def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
         sql += " AND seat = ?"
         params.append(seat)
     # Live work first, then finished, then the abandoned — a cancelled item is
-    # not a result anyone is waiting on, so it sinks below done/failed.
+    # not a result anyone is waiting on, so it sinks below done/failed. 'review'
+    # sits with the live work because it IS live: it is holding up its chain and
+    # the only thing that moves it is somebody looking at it.
     sql += " ORDER BY CASE status WHEN 'queued' THEN 0 WHEN 'dispatched' THEN 1 "
-    sql += "WHEN 'cancelled' THEN 3 ELSE 2 END, priority DESC, id"
+    sql += "WHEN 'review' THEN 2 WHEN 'cancelled' THEN 4 ELSE 3 END, priority DESC, id"
     return rows(conn.execute(sql, params))
 
 
@@ -144,6 +240,56 @@ def _notify(root: str | os.PathLike[str], item: dict) -> None:
             }) + "\n")
     except Exception:
         pass
+
+
+# Terminal statuses -> the event kind a subscriber filters on. Only completions
+# map here: a rejection parks an item as 'failed' on its way back to 'queued'
+# (see reject), and emitting item.failed for that would tell the router an agent
+# crashed when a human simply said no.
+_COMPLETION_KINDS = {"done": "item.done", "review": "item.review",
+                     "failed": "item.failed"}
+
+
+def _emit(root, kind: str, ref: str = "", payload: Optional[dict] = None) -> None:
+    """Put one event on the bus (bgate_core.events), never at the cost of the
+    transition that caused it.
+
+    The event log is a notification substrate: subscribers read it to debrief the
+    director, ring the bell and fire a webhook. All of that is worth less than the
+    status change itself, so a locked database — or an events module that will not
+    even import — loses the line and nothing else. events.emit already swallows
+    its own failures; this guards the import as well, because the transition path
+    must not depend on any of it being present.
+    """
+    try:
+        from . import events as _events
+
+        _events.emit(root, kind, ref=ref, payload=payload)
+    except Exception:
+        pass
+
+
+def _item_event_payload(item: dict) -> dict:
+    """The context a subscriber needs without re-reading the row.
+
+    Deliberately includes the chain fields: "done and nothing follows" versus
+    "done and link 3 of 4 just became ready" are different notifications, and a
+    consumer that has to query the board to tell them apart is a consumer that
+    races the next transition. The result note is TRIMMED — the full text stays on
+    the item, and a payload is context for a ping, not a place to store a diff.
+    """
+    return {
+        "item": int(item["id"]),
+        "seat": item["seat"],
+        "title": str(item["title"])[:200],
+        "status": item["status"],
+        "source": item.get("source") or "",
+        "source_ref": str(item.get("source_ref") or ""),
+        "chain_id": item.get("chain_id") or "",
+        "chain_pos": int(item.get("chain_pos") or 0),
+        "attempts": int(item.get("attempts") or 0),
+        "result": str(item.get("result") or "")[:400],
+    }
 
 
 def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
@@ -225,6 +371,139 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
     return item
 
 
+def blocker(root: str | os.PathLike[str], item_id: int) -> Optional[dict]:
+    """The predecessor this item is still waiting on, or None if it can run.
+
+    Returns the blocking row (id/seat/title/status) rather than a bool because
+    every caller that refuses a dispatch has to SAY what it is waiting for —
+    "blocked" with no antecedent is the least actionable refusal there is.
+    """
+    item = get(root, item_id)
+    if not item.get("depends_on"):
+        return None
+    try:
+        dep = get(root, int(item["depends_on"]))
+    except LookupError:
+        return None            # deleted predecessor: unblock rather than strand
+    if dep["status"] in SATISFIED:
+        return None
+    return {"id": dep["id"], "seat": dep["seat"], "title": dep["title"],
+            "status": dep["status"]}
+
+
+def chain(root: str | os.PathLike[str], chain_id: str) -> list[dict]:
+    """Every link of one chain, in running order."""
+    return rows(db.connect(root).execute(
+        "SELECT * FROM work_item WHERE chain_id = ? ORDER BY chain_pos, id",
+        (str(chain_id),)))
+
+
+def successors(root: str | os.PathLike[str], item_id: int) -> list[dict]:
+    """Items waiting directly on this one."""
+    return rows(db.connect(root).execute(
+        "SELECT * FROM work_item WHERE depends_on = ? ORDER BY chain_pos, id",
+        (int(item_id),)))
+
+
+def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
+             failed: bool = False) -> dict:
+    """An agent reporting the end of its own run — THROUGH the approval gate.
+
+    Every completion path funnels here (the MCP queue_complete tool, the
+    dispatcher's exit handler) so the gate is one decision in one place. Before
+    this existed, "done" was written directly by three callers, which is exactly
+    how a setting like this ends up honoured in two of them.
+
+    A failure is always a failure: the builder's gate holds work for approval, it
+    does not ask anyone to bless a crash.
+
+    THIS is where the completion event is emitted, not set_status: set_status is
+    also how a reopen, a reject's parking step and the reaper's bookkeeping move
+    an item, and emitting there would put transitions on the bus that no
+    subscriber can act on — a router seeing item.failed for the failed half of a
+    rejection would try to auto-reopen work a human is already sending back.
+    """
+    from . import gates as _gates
+
+    if failed:
+        item = set_status(root, item_id, "failed", result=result)
+    elif _gates.holds_for_human(root):
+        item = set_status(root, item_id, "review", result=result)
+    else:
+        item = set_status(root, item_id, "done", result=result)
+    kind = _COMPLETION_KINDS.get(item["status"])
+    if kind:
+        _emit(root, kind, ref=str(item_id), payload=_item_event_payload(item))
+    return item
+
+
+def approve(root: str | os.PathLike[str], item_id: int, note: str = "",
+            by: str = "") -> dict:
+    """The human saying yes: 'review' -> 'done', which releases the chain.
+
+    ``by`` is recorded because an approval nobody signed is not an approval —
+    and because an agent must not be able to approve its own work, the caller
+    that stamps this is the dashboard (a human session), not a seat tool.
+    """
+    item = get(root, item_id)
+    if item["status"] != "review":
+        raise ValueError(f"item {item_id} is {item['status']!r} — only an item "
+                         "waiting in review can be approved")
+    actor = by or activity.current_actor()
+    with db.tx(root) as conn:
+        conn.execute("UPDATE work_item SET approved_by = ? WHERE id = ?",
+                     (actor[:120], item_id))
+    note = (note or "").strip()
+    tail = f"\n\nAPPROVED by {actor}" + (f": {note[:400]}" if note else "")
+    released = set_status(root, item_id, "done",
+                         result=(item.get("result") or "") + tail)
+    # item.approved rather than item.done: the completion was already announced
+    # when the item parked in 'review', and a second item.done would make every
+    # subscriber act twice on one piece of work. What is new here is that a human
+    # signed it and the chain behind it is now free.
+    _emit(root, "item.approved", ref=str(item_id),
+          payload={**_item_event_payload(released), "by": actor[:120],
+                   "note": note[:400]})
+    return released
+
+
+def reject(root: str | os.PathLike[str], item_id: int, reason: str,
+           by: str = "") -> dict:
+    """The human saying no: back to 'queued' with the reason in the brief.
+
+    Same motion as ``reopen`` (and it reuses it) so a rejected item is
+    indistinguishable from a QA-failed one downstream — one fix path, one round
+    counter, one place the next agent looks for what to change.
+    """
+    item = get(root, item_id)
+    if item["status"] != "review":
+        raise ValueError(f"item {item_id} is {item['status']!r} — only an item "
+                         "waiting in review can be rejected")
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("a rejection needs a reason — say exactly what to fix")
+    actor = by or activity.current_actor()
+    # reopen() guards on done/failed/cancelled, which 'review' is not: it is not
+    # a finished state, it is a held one. Park it as failed first so the one
+    # reopen path (and its round counter) stays the only way work comes back.
+    set_status(root, item_id, "failed", result=f"rejected by {actor}")
+    sent_back = reopen(root, item_id, f"REJECTED by {actor}: {reason}")
+    # After the reopen, so the payload's status is 'queued' — what a subscriber
+    # would see if it went and looked. Emitting between the two writes would
+    # publish the 'failed' half, which is bookkeeping, not what happened.
+    _emit(root, "item.rejected", ref=str(item_id),
+          payload={**_item_event_payload(sent_back), "by": actor[:120],
+                   "reason": reason[:400]})
+    return sent_back
+
+
+def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:
+    """What the human owes an answer on, oldest first — a drain list."""
+    return rows(db.connect(root).execute(
+        "SELECT * FROM work_item WHERE status = 'review' "
+        "ORDER BY updated_at, id"))
+
+
 def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
     """Send a done/failed item back to 'queued' for another round.
 
@@ -268,10 +547,19 @@ def set_run_fields(root: str | os.PathLike[str], item_id: int, **fields) -> dict
 
 
 def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:
-    """The highest-priority queued item for a seat — what an agent works next."""
+    """The highest-priority READY item for a seat — what an agent works next.
+
+    Ready excludes a link whose predecessor has not landed. Handing an agent
+    blocked work is worse than handing it nothing: it cannot tell the difference,
+    so it starts, finds the file it was promised missing, and either stalls or
+    invents one.
+    """
     row = db.connect(root).execute(
-        "SELECT * FROM work_item WHERE status = 'queued' AND seat = ? "
-        "ORDER BY priority DESC, id LIMIT 1", (seat,)).fetchone()
+        "SELECT i.* FROM work_item i "
+        "LEFT JOIN work_item d ON d.id = i.depends_on "
+        "WHERE i.status = 'queued' AND i.seat = ? "
+        "  AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
+        "ORDER BY i.priority DESC, i.id LIMIT 1", (seat,)).fetchone()
     return dict(row) if row else None
 
 
