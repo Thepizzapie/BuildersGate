@@ -675,7 +675,12 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
 
     report = _doctor.check(root or None, refresh=True)
     if as_json:
-        print(json.dumps(report, indent=2))
+        # Nested under its own key, not merged: the top level of this document is
+        # one row per dependency and a consumer that iterates it would read
+        # "settings" as a missing binary.
+        print(json.dumps({**report,
+                          "settings": _doctor.settings_report(root or None)},
+                         indent=2))
     else:
         width = max(len(name) for name in report)
         for name in _doctor.CHECKS:
@@ -687,6 +692,12 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
             print(f"{mark}  {name.ljust(width)}  {detail}")
         print()
         print(_doctor.summary(report))
+        # The other half of "why is this board not doing what I told it": an env
+        # var in a shell profile silently winning over what the panel shows.
+        # AFTER the summary and deliberately outside the exit code — a setting
+        # that is merely non-default is not a missing dependency.
+        print()
+        _doctor.print_settings(root or None)
     return 0 if all(row["available"] for row in report.values()) else 1
 
 

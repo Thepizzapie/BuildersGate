@@ -8,12 +8,14 @@ Run: bgate serve [--port 7788]   (from anywhere inside a project, or BGATE_ROOT)
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import quote
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -32,7 +34,7 @@ from bgate_core.util import rows as _rows
 from bgate_ui import api as _api
 from bgate_ui import autodeploy as _autodeploy
 from bgate_ui import dispatch as _dispatch
-from bgate_ui import qa_gate as _qa_gate
+from bgate_ui import followup as _followup
 from bgate_ui import steerpump as _steerpump
 from bgate_ui import routes as _routes
 
@@ -44,11 +46,15 @@ _api.install_error_handlers(app)
 
 
 @app.on_event("startup")
-def _start_qa_gate() -> None:
-    # Auto-QA gate: agent-completed maker items get a nit-picky QA review
-    # before they count. Fail-safe — a missing project just means no gate.
+def _start_reactors() -> None:
+    # The follow-up router: ONE subscriber on the event bus that owns everything
+    # that happens after an agent finishes — the auto-QA gate (which used to have
+    # its own thread and its own "only since the server started" cutoff), the
+    # chain handoff narration, the notice/webhook fan-out, the time-based stall
+    # rules, and the opt-in director debrief. Fail-safe: a missing project just
+    # means nothing is routed.
     try:
-        _qa_gate.start(str(_root()))
+        _followup.start(str(_root()))
     except Exception:
         pass
     # Auto-deploy: the loop that dispatches queued work so a delegation's
@@ -385,7 +391,36 @@ def index() -> str:
     except ValueError:
         bust = str(int(time.time()))
     html = re.sub(r'(/static/[\w/-]+\.js)', r"\1?v=" + bust, html)
-    return _inject_token(html)
+    return _inject_token(_inject_settings(html))
+
+
+def _inject_settings(html: str) -> str:
+    """Ride the client-side settings into the page as ``window.BGATE_SETTINGS``.
+
+    Three registry keys are consumed by JS, not Python: the console's two poll
+    intervals and the graph's phase cap. They were module constants, and putting
+    them in the registry without delivering them made the Settings panel offer
+    three fields that saved a value nothing ever read — which is worse than not
+    listing them, because a switch that does nothing looks like a bug in the
+    thing it was supposed to configure.
+
+    In the page bootstrap rather than a second fetch on load, for the reason the
+    cache-busting stamp above is: the browser already has to read this HTML, and a
+    settings request on load is one more round trip before the first paint. Every
+    consumer keeps its hardcoded fallback — a page served by an older build, or
+    one whose project could not be read, must still poll at SOME rate.
+    """
+    try:
+        from bgate_core import settings as _settings
+        values = _settings.client(_root())
+    except Exception:
+        return html          # no project, no registry: the JS fallbacks stand
+    if not values:
+        return html
+    shim = "<script>window.BGATE_SETTINGS=%s;</script>" % json.dumps(values)
+    if "</head>" in html:
+        return html.replace("</head>", shim + "</head>", 1)
+    return shim + html
 
 
 def _inject_token(html: str) -> str:
@@ -539,6 +574,94 @@ def activity_feed(request: Request, after_id: int = 0,
         legacy_limit=60)
 
 
+# What a peek will read as text, and how much of it. The rail is a rail: a
+# 4000-line scene file scrolled inside a 400px panel is not a viewer, it is a
+# denial of service on the reader — and the whole file is one "raw" click away.
+PEEK_MAX_LINES = 400
+PEEK_MAX_BYTES = 400_000
+_AUDIO_SUFFIXES = {".wav", ".mp3", ".ogg", ".flac", ".m4a"}
+
+
+@app.get("/api/peek")
+def peek(rel: str, item_id: int = 0, offset: int = 0,
+         lines: int = PEEK_MAX_LINES) -> dict:
+    """Look at a file an agent is working on, without leaving the console.
+
+    THE GAP: the live rail could name every file a run touched and open none of
+    them. A path in a log line is not evidence — you cannot tell whether the
+    scene the agent says it baked has anything in it, and the answer was a
+    second editor window and a manual hunt.
+
+    Answers metadata for anything and TEXT for what is text. Images and audio
+    are named here but streamed by /api/preview and /api/audio/file, which
+    already do byte ranges and content types properly. ``item_id`` looks inside
+    that run's worktree when it has one, because a file an isolated agent is
+    editing does not exist at the project root yet.
+    """
+    root = _root().resolve()
+    base = root
+    if item_id:
+        try:
+            worktree = str(_queue.get(root, int(item_id)).get("worktree") or "")
+        except LookupError:
+            worktree = ""
+        if worktree and Path(worktree).is_dir():
+            base = Path(worktree).resolve()
+
+    target = (base / rel).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        # Same rule as /api/preview: the console is loopback-only, but a path
+        # parameter that walks out of the project is still how a dashboard turns
+        # into a file browser for the whole disk.
+        raise _api.forbidden("path escapes the project root", rel=rel)
+
+    out = {"rel": str(rel).replace("\\", "/"), "item_id": item_id,
+           "worktree": "" if base == root else str(base)}
+    if not target.is_file():
+        out.update({"kind": "missing", "bytes": 0})
+        return out
+
+    stat = target.stat()
+    suffix = target.suffix.lower()
+    out.update({"bytes": stat.st_size, "mtime": stat.st_mtime,
+                "name": target.name, "suffix": suffix})
+    if suffix in _IMAGE_SUFFIXES or suffix in {".gif"}:
+        out["kind"] = "image"
+        out["url"] = f"/api/preview?rel={quote(out['rel'])}"
+        return out
+    if suffix in _AUDIO_SUFFIXES:
+        out["kind"] = "audio"
+        out["url"] = f"/api/audio/file?rel={quote(out['rel'])}"
+        return out
+    if stat.st_size > PEEK_MAX_BYTES:
+        out.update({"kind": "too_big", "lines": [],
+                    "note": f"{stat.st_size:,} bytes — too large to read here"})
+        return out
+
+    try:
+        text = target.read_text(encoding="utf-8", errors="strict")
+    except (UnicodeDecodeError, OSError):
+        # Binary, or something we cannot read. Say which rather than rendering
+        # mojibake and calling it a file.
+        out.update({"kind": "binary", "lines": []})
+        return out
+
+    all_lines = text.splitlines()
+    start = max(0, int(offset))
+    count = max(1, min(int(lines or PEEK_MAX_LINES), PEEK_MAX_LINES))
+    window = all_lines[start:start + count]
+    out.update({
+        "kind": "text",
+        "lines": window,
+        "first_line": start + 1,
+        "lines_total": len(all_lines),
+        "truncated": start + len(window) < len(all_lines),
+    })
+    return out
+
+
 @app.get("/api/preview")
 def preview(rel: str) -> FileResponse:
     """Serve one image from inside the project. Root-relative paths only."""
@@ -573,12 +696,40 @@ def queue_list(request: Request, status: Optional[str] = None,
         source += " AND status = ?"
         params.append(status)
     # Same ordering queue.list_items uses — actionable first, then priority.
+    # 'review' ranks with the live work: it is what a human owes an answer on,
+    # and it is holding up everything chained behind it.
     order = ("CASE status WHEN 'queued' THEN 0 WHEN 'dispatched' THEN 1 "
-             "ELSE 2 END, priority DESC, id")
+             "WHEN 'review' THEN 2 ELSE 3 END, priority DESC, id")
     return _listing(
         request, page, "items",
         lambda limit, offset: _sql_page(
-            root, source, order, params, limit, offset))
+            root, source, order, params, limit, offset,
+            decode=lambda row: _with_chain_state(root, row)))
+
+
+def _with_chain_state(root: Path, row: dict) -> dict:
+    """Tell the client WHY a queued row has no deploy button.
+
+    A chained link that is not ready looks exactly like a normal queued item from
+    the outside, so the UI happily offered a DEPLOY button that could only ever
+    refuse. One extra lookup per row that actually has a predecessor; rows
+    without one (the overwhelming majority) cost nothing.
+    """
+    row = dict(row)
+    row["ready"] = True
+    if not row.get("depends_on"):
+        return row
+    dep = db.connect(root).execute(
+        "SELECT id, seat, title, status FROM work_item WHERE id = ?",
+        (int(row["depends_on"]),)).fetchone()
+    if dep is None:
+        return row                       # predecessor deleted: no longer blocked
+    if dep["status"] == "done":
+        return row
+    row["ready"] = False
+    row["waiting_on"] = {"id": dep["id"], "seat": dep["seat"],
+                         "title": dep["title"], "status": dep["status"]}
+    return row
 
 
 @app.post("/api/queue")
@@ -717,6 +868,85 @@ def queue_steer(item_id: int, payload: dict) -> dict:
 @app.post("/api/queue/import-orbit")
 def queue_import_orbit() -> dict:
     return _queue.import_orbit(_root())
+
+
+@app.post("/api/queue/chain")
+def queue_add_chain(payload: dict) -> dict:
+    """File an ordered chain: link N does not start until link N-1 is done."""
+    links = payload.get("links")
+    if not isinstance(links, list) or not links:
+        raise _api.bad_request("a chain needs a non-empty `links` array")
+    try:
+        rows = _queue.add_chain(_root(), [dict(x) for x in links],
+                                chain_id=str(payload.get("chain_id") or ""),
+                                source=str(payload.get("source") or "manual"))
+    except (TypeError, ValueError) as exc:
+        raise _api.bad_request(str(exc))
+    return {"chain_id": rows[0]["chain_id"], "count": len(rows), "items": rows}
+
+
+@app.get("/api/queue/chain/{chain_id}")
+def queue_chain(chain_id: str) -> dict:
+    items = _queue.chain(_root(), chain_id)
+    if not items:
+        raise _api.not_found(f"no chain {chain_id!r}")
+    return {"chain_id": chain_id, "count": len(items), "items": items}
+
+
+# ---------------------------------------------------------------------------
+# The approval gate: none / agent / builder's. See bgate_core.gates.
+# ---------------------------------------------------------------------------
+@app.get("/api/gate")
+def gate_state() -> dict:
+    from bgate_core import gates as _gates
+    return _gates.state(_root())
+
+
+@app.post("/api/gate")
+def gate_set(payload: dict) -> dict:
+    from bgate_core import gates as _gates
+    mode = str(payload.get("mode") or "").strip()
+    try:
+        return _gates.set_mode(_root(), mode)
+    except ValueError as exc:
+        raise _api.bad_request(str(exc), mode=mode, modes=list(_gates.MODES))
+
+
+@app.get("/api/queue/review")
+def queue_review() -> dict:
+    """What the human owes an answer on. The drain list for the builder's gate."""
+    items = _queue.awaiting_review(_root())
+    return {"count": len(items), "items": items}
+
+
+@app.post("/api/queue/{item_id}/approve")
+def queue_approve(item_id: int, payload: Optional[dict] = None) -> dict:
+    """Sign off held work: 'review' -> 'done', which releases the next link.
+
+    Deliberately an HTTP route and not an MCP tool: the point of this gate is
+    that a human clears it, and a tool an agent can call is a gate an agent can
+    clear on its own behalf.
+    """
+    payload = payload or {}
+    try:
+        return _queue.approve(_root(), item_id,
+                              note=str(payload.get("note") or ""))
+    except LookupError as exc:
+        raise _api.not_found(str(exc))
+    except ValueError as exc:
+        raise _api.bad_request(str(exc), item_id=item_id)
+
+
+@app.post("/api/queue/{item_id}/reject")
+def queue_reject(item_id: int, payload: dict) -> dict:
+    """Send held work back with a reason — same fix path as a QA failure."""
+    try:
+        return _queue.reject(_root(), item_id,
+                             reason=str((payload or {}).get("reason") or ""))
+    except LookupError as exc:
+        raise _api.not_found(str(exc))
+    except ValueError as exc:
+        raise _api.bad_request(str(exc), item_id=item_id)
 
 
 @app.get("/api/agents")
