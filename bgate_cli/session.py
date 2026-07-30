@@ -29,6 +29,7 @@ import json
 import os
 import socket
 import sys
+from pathlib import Path
 
 # Enough to see the shape of the board without pasting it into the context. A
 # director that needs the sixth item can call queue_list; one that needs to know
@@ -65,8 +66,25 @@ def _board_root(port: int = BOARD_PORT) -> str:
         return ""
 
 
+def _real(path) -> str:
+    """A path in the one form two of them can be compared in.
+
+    RESOLVED, not just normcased. On Windows the two spellings of the same
+    directory are not string-equal: a GitHub Actions runner reports
+    ``C:\\Users\\RUNNER~1\\AppData\\Local\\Temp`` for the temp directory while
+    everything else in the process says ``C:\\Users\\runneradmin\\...``. normpath
+    and normcase fix slashes and case and leave the 8.3 short name alone, so a
+    prefix test between them silently never matches — which is exactly how the
+    fixture filter below passed locally and failed in CI.
+    """
+    try:
+        return os.path.normcase(str(Path(path).resolve()))
+    except Exception:
+        return os.path.normcase(os.path.normpath(str(path)))
+
+
 def _temp_dir() -> str:
-    """The system temp directory, normalised — projects under it are fixtures.
+    """The system temp directory, resolved — projects under it are fixtures.
 
     The test suite registers its fixture projects in the same machine-wide
     registry the human's games live in, and a pytest tmpdir outlives the run that
@@ -76,7 +94,7 @@ def _temp_dir() -> str:
     """
     try:
         import tempfile
-        return os.path.normcase(os.path.normpath(tempfile.gettempdir()))
+        return _real(tempfile.gettempdir())
     except Exception:
         return ""
 
@@ -102,7 +120,7 @@ def _known_lines(here) -> list[str]:
     for name, root in (_project.known_projects() or {}).items():
         if str(root) == str(here):
             continue
-        if tmp and os.path.normcase(os.path.normpath(str(root))).startswith(tmp):
+        if tmp and _real(root).startswith(tmp):
             continue
         try:
             row = _db.connect(root).execute(
