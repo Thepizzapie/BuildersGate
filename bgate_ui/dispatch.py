@@ -29,9 +29,11 @@ from pathlib import Path
 from typing import Optional
 
 from bgate_core import assets as _assets
+from bgate_core import gates as _gates
 from bgate_core import gitwork as _git
 from bgate_core import queue as _queue
 from bgate_core import scope as _scope
+from bgate_core import settings as _settings
 from bgate_core import spend as _spend
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -101,6 +103,41 @@ def _user_msg(text: str) -> str:
     """A stream-json user turn — the wire format the CLI reads from stdin."""
     return json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
+
+
+def _emit(root, kind: str, ref: str = "", payload: Optional[dict] = None) -> None:
+    """Put one event on the bus, never at the cost of the dispatch that caused it.
+
+    Same shape and same reasoning as ``queue._emit``: the event log is a
+    notification substrate, so a locked database — or an events module that will
+    not import at all, on a project whose migration has not run — loses the line
+    and nothing else. Without it ``agent.spawned``/``agent.exited`` and
+    ``budget.refused`` are three of the fourteen kinds the vocabulary offers a
+    notification checkbox for and nobody writes.
+    """
+    try:
+        from bgate_core import events as _events
+
+        _events.emit(root, kind, ref=ref, payload=payload)
+    except Exception:
+        pass
+
+
+def _flag(root, key: str, env_name: str) -> bool:
+    """A boolean dispatch switch, through the settings registry.
+
+    The registry declares ``env=<env_name>`` for these, so the variable still
+    wins — what this adds is that the STORED value is read at all. Before it,
+    both switches were read straight from ``os.environ``, so the Settings panel
+    offered a toggle whose only effect was to write a doc nothing looked at.
+    Falls back to the bare variable if the registry will not read: a dispatch
+    must not be blocked by a settings doc.
+    """
+    try:
+        return bool(_settings.get(root, key))
+    except Exception:
+        return os.environ.get(env_name, "").strip().lower() in {
+            "1", "true", "yes", "on"}
 
 
 def find_claude() -> Optional[str]:
@@ -315,6 +352,15 @@ def _prompt_for(root: str, item: dict) -> str:
         "5. seat_post_note with what changed.\n"
         f"6. Mark the item: call queue_complete with item_id={item['id']} and a "
         "one-paragraph result (status 'done', or 'failed' with the honest reason).\n"
+        # What "done" costs and who checks it, stated up front. An agent that
+        # thinks its word closes the item writes a thinner result note than one
+        # that knows a picky reviewer — or the owner — reads it next.
+        + "\n" + _gates.describe(root, item["seat"]) + "\n"
+        + (f"\nCHAIN: this item is link {item['chain_pos']} of chain "
+           f"{item['chain_id']}. Work waiting on yours does not start until this "
+           "item reaches 'done', so an honest 'failed' is cheaper than a "
+           "hopeful one — a wrong 'done' releases the next agent onto a "
+           "foundation that is not there.\n" if item.get("chain_id") else "")
     )
 
 
@@ -375,7 +421,22 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         return _refuse("not_found", f"work item {item_id} does not exist",
                        item_id=item_id)
     if item["status"] != "queued":
-        return {"ok": False, "error": f"item {item_id} is {item['status']}, not queued"}
+        extra = ("" if item["status"] != "review" else
+                 " — it is finished and waiting for approval, not for an agent")
+        return {"ok": False,
+                "error": f"item {item_id} is {item['status']}, not queued{extra}"}
+
+    # THE CHAIN. A link whose predecessor has not landed must not start, and this
+    # is the last gate before a process exists — autodeploy filters blocked items
+    # out of its candidate list, but "dispatch all" and the per-row button do not.
+    held = _queue.blocker(root, item_id)
+    if held:
+        return _refuse("blocked_on_dependency",
+                       f"item {item_id} waits on #{held['id']} "
+                       f"[{held['seat']}] which is {held['status']}: "
+                       f"{str(held['title'])[:70]}",
+                       item_id=item_id, waiting_on=held["id"],
+                       waiting_on_status=held["status"])
 
     # The cut line, enforced at the last possible moment. queue.add refuses to
     # FILE work below the line, but the line moves — an item queued legitimately
@@ -406,6 +467,19 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     ceiling_s = int(max_runtime_s or _spend.runtime_ceiling(root, item) or 0)
     verdict = _spend.check(root, projected_usd=ceiling_usd)
     if not verdict["allowed"]:
+        # budget.refused ships in the default notify.kinds, and this is the
+        # refusal it is for: a board that stops dispatching because it hit a
+        # ceiling looks exactly like a board with nothing to do, and the console
+        # shows the reason only in the "last refusal" slot of whoever asked.
+        _emit(root, "budget.refused", ref=str(item_id),
+              payload={"what": "agent dispatch", "item": item_id,
+                       "seat": item.get("seat") or "",
+                       "title": str(item.get("title") or "")[:200],
+                       "reason": str(verdict.get("reason") or ""),
+                       "projected_usd": ceiling_usd,
+                       "scope": verdict.get("scope"),
+                       "spent": verdict.get("spent"),
+                       "ceiling": verdict.get("ceiling")})
         return _refuse("budget_exceeded", verdict["reason"],
                        projected_usd=ceiling_usd, **{
                            k: v for k, v in verdict.items()
@@ -415,8 +489,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # diff that cannot tell the agent's edits from the human's, so mixing them
     # has to be asked for.
     if allow_dirty is None:
-        allow_dirty = os.environ.get("BGATE_ALLOW_DIRTY", "").strip().lower() in {
-            "1", "true", "yes", "on"}
+        allow_dirty = _flag(root, "dispatch.allow_dirty", "BGATE_ALLOW_DIRTY")
     state = _git.dirty(root)
     if state["available"] and state["dirty"] and not allow_dirty:
         return _refuse("dirty_tree",
@@ -426,7 +499,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     base_commit = _git.head(root) if state["available"] else ""
     branch, worktree = "", ""
     cwd = str(root)
-    if base_commit and _git.isolation_enabled():
+    # Through the registry (which declares BGATE_GIT_ISOLATION as the supplying
+    # var, so the variable still wins) rather than gitwork's env-only reader,
+    # which left the Settings toggle writing a value nothing consulted.
+    if base_commit and _flag(root, "dispatch.isolation", "BGATE_GIT_ISOLATION"):
         made = _git.make_worktree(root, item_id, base=base_commit)
         if not made["available"]:
             return _refuse("worktree_failed", made["reason"])
@@ -512,6 +588,16 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # self-reports so it exits even when no dashboard is polling /api/agents.
     threading.Thread(target=_watch_completion, args=(root, item_id),
                      daemon=True).start()
+    _emit(root, "agent.spawned", ref=str(item_id),
+          payload={"item": item_id, "seat": item.get("seat") or "",
+                   "title": str(item.get("title") or "")[:200],
+                   "source": item.get("source") or "",
+                   "chain_id": item.get("chain_id") or "",
+                   "chain_pos": int(item.get("chain_pos") or 0),
+                   "attempts": int(item.get("attempts") or 0),
+                   "pid": proc.pid, "actor": actor,
+                   "max_cost_usd": ceiling_usd, "max_runtime_s": ceiling_s,
+                   "worktree": worktree})
     return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path),
             "base_commit": base_commit, "branch": branch, "worktree": worktree,
             "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd}
@@ -831,9 +917,12 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
     outcome, result = _exit_verdict(root, item_id, code, entry)
     try:
         # Only if the agent never spoke for itself: queue_complete's own result
-        # is the better answer and must never be overwritten.
+        # is the better answer and must never be overwritten. Through complete()
+        # rather than set_status so a session that exits cleanly without
+        # self-reporting still lands in the approval gate instead of skipping it.
         if _queue.get(root, item_id)["status"] == "dispatched":
-            _queue.set_status(root, item_id, outcome, result=result)
+            _queue.complete(root, item_id, result=result,
+                            failed=(outcome != "done"))
     except LookupError:
         pass
     _finalize(root, item_id, entry)
@@ -850,6 +939,22 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
     with _lock:
         _done[(_pkey(root), item_id)] = row
     _prune_retained()
+    # After the status write, so a subscriber that goes and reads the item sees
+    # the state this event is describing rather than 'dispatched'. Emitted for
+    # every exit including a kill: "the agent is gone" is the fact, and the item's
+    # own item.done/item.failed says whether the work landed.
+    _emit(root, "agent.exited", ref=str(item_id),
+          payload={"item": item_id, "outcome": outcome, "code": code,
+                   "stopped_by": entry.get("stopped_by", ""),
+                   "cost_usd": round(float(entry.get("cost_usd") or 0), 4),
+                   # started_at is a monotonic stamp, so 0 means "not recorded"
+                   # rather than "the epoch" — subtracting it would report the
+                   # machine's uptime as the run's duration.
+                   "seconds": (int(max(0.0, time.monotonic()
+                                       - float(entry["started_at"])))
+                               if entry.get("started_at") else 0),
+                   "actor": entry.get("actor") or "",
+                   "result": str(result or "")[:400]})
     return row
 
 
@@ -935,7 +1040,8 @@ def reconcile(root: str) -> dict:
             result = ("stranded by a dashboard restart — the process did not "
                       "survive it and never reported a result")
         try:
-            _queue.set_status(root, item_id, outcome, result=result)
+            _queue.complete(root, item_id, result=result,
+                            failed=(outcome != "done"))
         except Exception:
             continue
         settled.append({"item_id": item_id, "status": outcome})
