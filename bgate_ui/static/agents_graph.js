@@ -38,6 +38,24 @@
   // sit at COL.task, each handoff a STEP further right.
   const COL = { turn: 30, seat: 350, task: 620, step: 300 };
   const ROW = { turn: 122, seat: 96, task: 104, phase: 86 };
+  // PHASES ARE COLLAPSED UNLESS YOU ARE LOOKING AT THAT RUN.
+  //
+  // Three agents, eight phases each, is twenty-seven nodes in three columns that
+  // reserved room for three — every stack grew down through the task below it and
+  // the canvas auto-fitted to 49%, which is a picture of a mess rather than a
+  // mess you can read. A run's phases are detail about ONE run; the graph's job
+  // with three live is to show three runs. So the stack opens for the selected
+  // task (and for a lone runner, where there is nothing to crowd), and every
+  // other task carries its phase count on the node instead.
+  //
+  // From the settings registry (graph.phase_cap) via the page bootstrap; the
+  // literal is the fallback for a page with no bootstrap, and it is clamped
+  // because a stored 0 would draw no phase rows at all and read as a broken
+  // graph rather than as a setting.
+  const PHASE_CAP = (() => {
+    const raw = Number((window.BGATE_SETTINGS || {}).phase_cap);
+    return Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.min(raw, 50)) : 6;
+  })();
   // Every node lands to the RIGHT of what spawned it (that is the column) and a
   // little BELOW it (this). Levelling a child with its parent made a wide run
   // read as one flat row where the causal direction was carried only by the
@@ -77,23 +95,64 @@
     return `<span class="${cls} cg-file" title="${esc(rel)}">${esc(
       rel.split(/[\\/]/).pop())}</span>`;
   }
+  /* A grid of files the run touched, every one of them openable.
+   *
+   * The three sections it serves — looked at, read, made — were three different
+   * shapes rendering the same thing, and none of them was clickable: a thumbnail
+   * you cannot enlarge and a filename you cannot open are decoration. One tile,
+   * one data-peek attribute, and peek.js does the rest through a single
+   * delegated listener (these tiles are re-rendered on every poll, so per-tile
+   * handlers would need re-binding every three seconds).
+   */
+  function fileGrid(entries, itemId, artifacts) {
+    const run = itemId ? ` data-peek-item="${Number(itemId)}"` : "";
+    return `<div class="cg-made">${(entries || []).map(a => {
+      const rel = String((a && a.path) || "").replace(/\\/g, "/");
+      if (!rel) return "";
+      const label = artifacts ? (a.logical_name || rel.split("/").pop())
+                              : rel.split("/").pop();
+      const sub = artifacts
+        ? `${esc(a.status || "")}${a.revision ? " · r" + a.revision : ""}`
+        : esc(rel);
+      return `<div class="cg-madeone open" role="button" tabindex="0"
+                   data-peek="${esc(rel)}"${run} title="${esc(rel)}">
+                ${thumb(a, "cg-thumb")}
+                <div class="cg-madelabel">${esc(label)}<span>${sub}</span></div>
+              </div>`;
+    }).join("")}</div>`;
+  }
+
   /* One row of the activity feed. A step that looked at a picture SHOWS the
      picture, and the narration straight after it is marked as what the agent
      concluded from looking — being told an agent "read anchor_vfx.r2.png" and
      then that it is "fixing the cut" is two facts with the evidence missing
      between them. */
-  function stepRow(s) {
+  function stepRow(s, itemId) {
     const k = s.kind === "tool" ? "tool" : s.kind === "steer" ? "steer"
       : s.kind === "result" ? "res" : "say";
     const txt = s.kind === "tool"
       ? `<b>${esc(s.name || "tool")}</b> ${esc(trunc(s.hint || "", 110))}`
       : esc(trunc(s.text || "", 400));
+    const run = itemId ? ` data-peek-item="${Number(itemId)}"` : "";
+    // A picture opens IN the page now. It used to open a raw image in a new tab,
+    // which loses the diff, the size and the run it belongs to — and costs you
+    // the console you were watching.
+    // target=_blank stays as the fallback: peek.js calls preventDefault, so the
+    // viewer wins whenever it is loaded, and the link still opens the image
+    // rather than navigating the whole console away when it is not.
     const shots = (s.images || []).map(rel =>
       `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}"
-          target="_blank" title="${esc(rel)}">${thumb({ path: rel }, "cg-shot-in")}</a>`).join("");
+          target="_blank" rel="noopener" data-peek="${esc(rel)}"${run}
+          title="${esc(rel)}">${thumb({ path: rel }, "cg-shot-in")}</a>`).join("");
+    // The files it NAMED. The log always had these paths; it had them in prose,
+    // 90 characters wide, in the middle of a sentence you could read and not open.
+    const files = (s.files || []).map(rel =>
+      `<button class="cg-fchip" type="button" data-peek="${esc(rel)}"${run}
+               title="${esc(rel)}">${esc(rel.split("/").pop())}</button>`).join("");
     return `<div class="cg-step k-${k}${s.analysis ? " analysis" : ""}">`
       + (s.analysis ? `<span class="cg-tag">what it sees</span>` : "")
       + txt
+      + (files ? `<div class="cg-fchips">${files}</div>` : "")
       + (shots ? `<div class="cg-shots">${shots}</div>` : "")
       + `</div>`;
   }
@@ -272,6 +331,24 @@
         return y;
       };
 
+      // WHOSE PHASES ARE OPEN, decided before anything is placed — the stack has
+      // to be reserved for at the moment its task takes a row, or the next task
+      // in that column lands inside it.
+      const phaseMap = s.phases || {};
+      const withPhases = Object.keys(phaseMap)
+        .filter(k => (phaseMap[k] || []).length
+          && (live.has(Number(k)) || byId.has(Number(k))))
+        .map(Number);
+      // A selected PHASE counts as selecting its task — otherwise opening a
+      // pocket collapses the stack it lives in and the rail shuts on itself.
+      const sel = String(this.sel || "");
+      const selectedItem = sel.startsWith("task_") ? Number(sel.slice(5))
+        : sel.startsWith("phase_") ? Number(sel.split("_")[1]) : 0;
+      const openFor = withPhases.length <= 1 ? new Set(withPhases)
+        : new Set(withPhases.filter(id => id === selectedItem));
+      const phaseRows = id => (openFor.has(Number(id))
+        ? Math.min((phaseMap[String(id)] || []).length, PHASE_CAP) : 0);
+
       // ── what you said
       turns.forEach((t, i) => {
         const id = "turn_" + t.id;
@@ -306,6 +383,9 @@
           id, type: "seat", seat, title: seat.toUpperCase(), glyph: "▪",
           w: 206, x: p.x, y: p.y, accent: seatColor(seat), counts: c,
           badge: c.running ? "live" : "", running: !!c.running,
+          // The seat boxes double as the canvas's colour key — this hue is that
+          // seat, everywhere, for the rest of the graph.
+          status: c.running ? "running" : "",
           ports: { in: IN, out: OUT },
         });
       });
@@ -320,15 +400,37 @@
         const depth = depthOf(it.id);
         const col = COL.task + (depth - 1) * COL.step;
         const p = this.place(id, col, nextY(col, wantY));
+        // Reserve the band its phase stack will occupy — in this column, so the
+        // next sibling clears it, and in the phase column, so a CHILD task laid
+        // there later does not land on top of the stack. This is the whole bug
+        // behind the pile-up: the stack was drawn after the fact and never
+        // claimed the space it took.
+        const rows = phaseRows(it.id);
+        if (rows) {
+          const band = p.y + rows * ROW.phase + DROP;
+          cursor[col] = Math.max(cursor[col] || 0, band);
+          cursor[col + COL.step] = Math.max(cursor[col + COL.step] || 20, band);
+        }
+        const stack = Math.min((phaseMap[String(it.id)] || []).length, 99);
         add({
           id, type: "task", item: it, running, seat: it.seat,
           title: trunc(it.title, 40),
           glyph: running ? "▶" : it.status === "done" ? "✓"
             : it.status === "failed" ? "×" : "▷",
-          w: 268, x: p.x, y: p.y,
-          accent: running ? "var(--accent)" : it.status === "failed" ? "var(--bad)"
-            : it.status === "done" ? "var(--good)" : seatColor(it.seat),
-          badge: running ? "running" : it.status,
+          w: 268, x: p.x, y: p.y, phases: stack, phasesOpen: !!rows,
+          // HUE IS WHOSE, NOT WHAT STATE. A task wears its seat's colour for its
+          // whole life; running/done/failed is carried by the border treatment
+          // and the badge (see data-status). Painting a running node accent-
+          // orange and a finished one green meant the canvas told you the status
+          // of everything and the owner of nothing — which is backwards, because
+          // the status is already written on the node in words.
+          accent: it.status === "failed" ? "var(--bad)" : seatColor(it.seat),
+          status: running ? "running" : it.status === "failed" ? "failed"
+            : it.status === "done" ? "passed" : "",
+          // A collapsed stack says so on the node, so "where did its steps go"
+          // has an answer you can see instead of a feature that looks broken.
+          badge: (!rows && stack) ? `${stack} phase${stack === 1 ? "" : "s"}`
+            : running ? "running" : it.status,
           step: running ? lastStep(steps[String(it.id)]) : null,
           cost: it.total_cost_usd ? "$" + Number(it.total_cost_usd).toFixed(2) : "",
           ports: { in: IN, out: OUT },
@@ -367,22 +469,32 @@
       Object.keys(phases).forEach(itemId => {
         const anchor = nodes.get("task_" + itemId);
         if (!anchor) return;
-        const list = (phases[itemId] || []).slice(-8);
+        // Collapsed: the count is on the task node and the rail still lists every
+        // phase. Select the task to open the stack.
+        if (!openFor.has(Number(itemId))) return;
+        const list = (phases[itemId] || []).slice(-PHASE_CAP);
         let prev = null;
         list.forEach((ph, i) => {
           const id = `phase_${itemId}_${ph.n}`;
           const col = anchor.x + COL.step;
-          const p = this.place(id, col, (anchor.y || 20) + DROP + i * ROW.phase);
+          // Aligned with its task rather than dropped below it: the band that was
+          // reserved starts at the anchor's row, and a stack that starts lower
+          // than the space claimed for it is a stack that runs out the bottom.
+          const p = this.place(id, col, (anchor.y || 20) + i * ROW.phase);
           const arts = ph.artifacts || [];
           add({
             id, type: "phase", phase: ph, itemId: Number(itemId),
             title: trunc(`${ph.n} · ${ph.title}`, 40),
             glyph: ph.state === "running" ? "▶" : ph.state === "trouble" ? "!" : "✓",
-            w: 250, x: p.x, y: p.y,
-            accent: ph.state === "running" ? "var(--accent)"
-              : ph.state === "trouble" ? "var(--bad)" : "var(--good)",
+            // Narrower than its task and in its task's colour: a phase is part
+            // OF a run, and a stack of full-width cards in a fourth colour read
+            // as five more agents rather than one agent's five pockets.
+            w: 226, x: p.x, y: p.y, seat: anchor.seat,
+            accent: ph.state === "trouble" ? "var(--bad)" : seatColor(anchor.seat),
             badge: arts.length ? `${arts.length} made` : "",
             running: ph.state === "running",
+            status: ph.state === "running" ? "running"
+              : ph.state === "trouble" ? "failed" : "passed",
             ports: { in: IN, out: OUT },
           });
           edges.push(prev
@@ -410,15 +522,19 @@
         const id = "gate_" + g.id;
         const over = g.over_item_id;
         const anchor = over ? nodes.get("task_" + over) : null;
-        // Past the phase column when the item has one, or it lands on top of it.
-        const hasPhases = over && (s.phases || {})[String(over)];
-        const col = anchor ? anchor.x + COL.step * (hasPhases ? 2 : 1)
+        // Past the phase column only when that stack is actually OPEN — a gate
+        // shoved two columns right of a collapsed task is a gate nobody scrolls to.
+        const col = anchor ? anchor.x + COL.step * (openFor.has(Number(over)) ? 2 : 1)
           : COL.task + COL.step * 2;
         const p = this.place(id, col, nextY(col, anchor ? anchor.y + DROP : 0));
         add({
           id, type: "gate", gate: g, title: trunc(g.title, 34),
           glyph: g.kind === "art" ? "◇" : "!", w: 236, x: p.x, y: p.y,
           accent: g.kind === "escalation" ? "var(--bad)" : "var(--spark)",
+          // A gate is the one node that is NOT a seat's work — it is the board
+          // waiting on a person, so it keeps its own colour and gets the dashed
+          // outline that means "stopped here".
+          status: "",
           badge: g.kind === "art" ? "approval"
             : g.kind === "escalation" ? "escalated" : "qa gate",
           ports: { in: IN },
@@ -478,8 +594,14 @@
       for (const [id, fresh] of next.nodes) {
         const cur = this.nodes.get(id);
         if (!cur) continue;
+        // `status` is in both lists deliberately. It drives the pulse and the
+        // finished-work fade, and a field that is signed but never copied (or
+        // copied but never signed) is a node that keeps painting its old state
+        // until the graph's SHAPE happens to change — a finished agent that
+        // pulses for another ten minutes.
         const sigOf = n => JSON.stringify([n.badge, n.accent, n.glyph, n.cost,
-                                           n.counts, n.step, n.title,
+                                           n.counts, n.step, n.title, n.status,
+                                           n.seat, n.phasesOpen,
                                            n.phase && n.phase.state,
                                            n.phase && (n.phase.artifacts || []).length]);
         const before = sigOf(cur);
@@ -487,7 +609,8 @@
           item: fresh.item, turn: fresh.turn, gate: fresh.gate, counts: fresh.counts,
           phase: fresh.phase, badge: fresh.badge, accent: fresh.accent,
           glyph: fresh.glyph, running: fresh.running, step: fresh.step,
-          cost: fresh.cost, title: fresh.title,
+          cost: fresh.cost, title: fresh.title, status: fresh.status,
+          seat: fresh.seat, phases: fresh.phases, phasesOpen: fresh.phasesOpen,
         });
         const after = sigOf(cur);
         if (before !== after) changed.push(cur);
@@ -521,10 +644,16 @@
         const strip = arts.slice(0, 4).map(a => thumb(a, "cg-mini"))
           .concat((ph.seen || []).slice(0, 4 - Math.min(4, arts.length))
             .map(rel => thumb({ path: rel }, "cg-mini seen"))).join("");
+        // WHOSE POCKET THIS IS, in words as well as in hue. Colour alone fails
+        // the two people who need it most — anyone who cannot separate pink from
+        // red, and anyone at 40% zoom on a canvas with three runs on it.
         return `<div class="cg-meta">
+            ${n.seat ? `<span class="cg-owner" style="color:${seatColor(n.seat)}">${
+              esc(n.seat)} · #${Number(n.itemId)}</span>` : ""}
             <span>${(ph.tools || []).length} tools</span>
             <span>${ph.results || 0} results</span>
             ${(ph.seen || []).length ? `<span>${ph.seen.length} seen</span>` : ""}
+            ${(ph.read || []).length ? `<span>${ph.read.length} files</span>` : ""}
             ${ph.steers ? `<span class="cg-warn">${ph.steers} steer</span>` : ""}
           </div>
           ${strip ? `<div class="cg-strip">${strip}</div>` : ""}
@@ -674,33 +803,41 @@
       if (n.type === "phase") {
         const ph = n.phase || {};
         const arts = ph.artifacts || [];
-        const feed = (ph.steps || []).map(stepRow).join("")
+        // The state payload keeps step text only for the newest few phases —
+        // repeating every step inside every phase was two thirds of the poll.
+        // An older pocket says how many it had and points at the log, which is
+        // the honest version of the empty state it would otherwise render.
+        const dropped = Number(ph.steps_dropped || 0);
+        const feed = (ph.steps || []).map(s => stepRow(s, n.itemId)).join("")
+          + (dropped ? `<div class="cg-empty">${dropped} earlier step${
+              dropped === 1 ? "" : "s"} in this pocket — open the full log</div>` : "")
           || `<div class="cg-empty">nothing recorded in this pocket</div>`;
         // What it had in front of it. First, because when an agent is working
         // the question is not "what did it file" — it is "what is it looking
         // at", and that was the one thing this panel could not answer.
         const seen = (ph.seen || []);
         const looking = seen.length
-          ? `<div class="cg-sec">looking at · ${seen.length}</div>
-             <div class="cg-made">${seen.map(rel => `<div class="cg-madeone">
-               ${thumb({ path: rel }, "cg-thumb")}
-               <div class="cg-madelabel">${esc(rel.split("/").pop())}
-                 <span>${esc(rel)}</span></div>
-             </div>`).join("")}</div>`
+          ? `<div class="cg-sec">looking at · ${seen.length}</div>`
+            + fileGrid(seen.map(rel => ({ path: rel })), n.itemId)
+          : "";
+        // The source, scenes and data it read. Same grid, different question:
+        // "looking at" is pictures, this is the work itself — and both are now
+        // openable rather than quoted.
+        const read = (ph.read || []);
+        const reading = read.length
+          ? `<div class="cg-sec">files it read · ${read.length}</div>`
+            + fileGrid(read.map(rel => ({ path: rel })), n.itemId)
           : "";
         const made = arts.length
-          ? `<div class="cg-sec">made here · ${arts.length}</div>
-             <div class="cg-made">${arts.map(a => `<div class="cg-madeone">
-               ${thumb(a, "cg-thumb")}
-               <div class="cg-madelabel">${esc(a.logical_name || "")}
-                 <span>${esc(a.status || "")}${a.revision ? " · r" + a.revision : ""}</span></div>
-             </div>`).join("")}</div>`
+          ? `<div class="cg-sec">made here · ${arts.length}</div>`
+            + fileGrid(arts, n.itemId, true)
           : "";
         return head(`Phase ${ph.n} · item #${n.itemId}`, ph.title || "working")
           + `<div class="cg-kv"><span>state</span><span>${esc(ph.state || "")}</span></div>`
           + `<div class="cg-kv"><span>tools</span><span>${esc((ph.tools || []).join(", ")) || "—"}</span></div>`
           + (ph.error ? `<div class="cg-note bad">${esc(ph.error)}</div>` : "")
           + looking
+          + reading
           + made
           + `<div class="cg-sec">what happened</div><div class="cg-feed">${feed}</div>`
           + `<div class="cg-acts">
@@ -757,23 +894,41 @@
       // The live tail comes from the newest phase, because that is where the
       // steps carry their pictures — the flat `steps` map is only the summary.
       const tail = (runPhases.slice(-1)[0] || {}).steps || steps;
-      const feed = tail.slice(-8).map(stepRow).join("")
+      const feed = tail.slice(-8).map(s => stepRow(s, it.id)).join("")
         || `<div class="cg-empty">${n.running ? "warming up…" : "no live steps"}</div>`;
 
       // Everything this run has had in front of it, newest phase first. The
       // whole complaint this answers: watching an agent "work" without knowing
       // what it is looking at.
-      const eyes = [];
-      for (let i = runPhases.length - 1; i >= 0 && eyes.length < 6; i--) {
-        (runPhases[i].seen || []).forEach(rel => {
-          if (eyes.length < 6 && !eyes.includes(rel)) eyes.push(rel);
-        });
-      }
+      const newestFirst = (key, cap) => {
+        const out = [];
+        for (let i = runPhases.length - 1; i >= 0 && out.length < cap; i--) {
+          (runPhases[i][key] || []).forEach(rel => {
+            if (out.length < cap && !out.includes(rel)) out.push(rel);
+          });
+        }
+        return out;
+      };
+      const eyes = newestFirst("seen", 6);
       const eyesHTML = eyes.length
         ? `<div class="cg-sec">looking at</div>
            <div class="cg-strip big">${eyes.map(rel =>
              `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}"
-                 target="_blank" title="${esc(rel)}">${thumb({ path: rel }, "cg-thumb")}</a>`
+                 target="_blank" rel="noopener"
+                 data-peek="${esc(rel)}" data-peek-item="${Number(it.id)}"
+                 title="${esc(rel)} — click to expand">${thumb({ path: rel }, "cg-thumb")}</a>`
+           ).join("")}</div>`
+        : "";
+      // The files the run is working IN, and — because this is the task rail and
+      // the question here is "what is this run doing to my repo" — each one
+      // opens straight onto its diff.
+      const touched = newestFirst("read", 8);
+      const readHTML = touched.length
+        ? `<div class="cg-sec">files it read</div>
+           <div class="cg-fchips">${touched.map(rel =>
+             `<button class="cg-fchip" type="button" data-peek="${esc(rel)}"
+                      data-peek-item="${Number(it.id)}" data-peek-view="diff"
+                      title="${esc(rel)} — opens the diff">${esc(rel.split("/").pop())}</button>`
            ).join("")}</div>`
         : "";
 

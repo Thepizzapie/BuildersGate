@@ -34,6 +34,10 @@
       <div class="rail-group">Command</div>
       <button class="rail-item" data-view="overview" onclick="setWorkspace('overview',this)"><span class="ic" data-icon="overview"></span> Overview</button>
       <button class="rail-item" data-view="agents" onclick="setWorkspace('agents',this)"><span class="ic" data-icon="agents"></span> Agents<span class="ct" id="rc-agents">0</span></button>
+      <!-- Settings sits under Command with Overview and Agents because that is
+           what it is: the switches that decide how much of the floor runs
+           without you. -->
+      <button class="rail-item" data-view="settings" onclick="setWorkspace('settings',this)"><span class="ic" data-icon="settings"></span> Settings</button>
       <div class="rail-group">Build</div>
       <button class="rail-item" data-view="studio" onclick="setWorkspace('studio',this)"><span class="ic" data-icon="studio"></span> Studio</button>
       <button class="rail-item" data-view="seats" onclick="setWorkspace('seats',this)"><span class="ic" data-icon="seats"></span> Seat workspaces</button>
@@ -63,6 +67,12 @@
       <div class="spacer"></div>
       <div class="schip" id="sb-agents" title="Agents currently executing a task."><span class="l"></span> <b>0</b> running</div>
       <button class="schip" id="sb-vault" onclick="setWorkspace('assets',document.querySelector('.rail-item[data-view=&quot;assets&quot;]'))"><span class="l"></span> vault <b>—</b></button>
+      <!-- The bell. Beside the two counters because it answers the same question
+           they do — "what is the floor doing" — for the things that already
+           happened. notify.js fills this slot; it is EMPTY until then, and the
+           slot lives in the status bar rather than in a view so the badge is on
+           screen whichever workspace you are standing in. -->
+      <div id="nt-host"></div>
     </div>
     <div class="stage-body">
 
@@ -127,6 +137,29 @@
               </div>
               <div class="ck-replies" id="ck-queue"></div>
             </div>
+            <!-- A seat asked YOU something and is waiting on a sentence. Above
+                 the approval drain because this is the only thing on the page
+                 that has an agent stopped on it, and hidden when empty for the
+                 same reason that list is: a panel that is always there and
+                 always empty is a panel people stop reading. The bell shows the
+                 same questions when you are in another view. -->
+            <div class="ck-repwrap ask" id="ck-askwrap" hidden>
+              <div class="ck-sec">Asked you <span class="n" id="ck-ask-n">0</span>
+                <span class="ck-spacer"></span>
+                <span class="ck-hint">goes back to the agent that asked</span>
+              </div>
+              <div class="ck-replies" id="ck-ask"></div>
+            </div>
+            <!-- The builder's gate drain list. Only rendered when something is
+                 actually waiting on the owner: an always-visible empty panel
+                 trains people to stop looking at the place approvals appear. -->
+            <div class="ck-repwrap" id="ck-reviewwrap" hidden>
+              <div class="ck-sec">Waiting on you <span class="n" id="ck-review-n">0</span>
+                <span class="ck-spacer"></span>
+                <span class="ck-hint">approve to release the chain</span>
+              </div>
+              <div class="ck-replies" id="ck-review"></div>
+            </div>
             <div class="ck-repwrap">
               <div class="ck-sec">Agent responses <span class="n" id="ck-replies-n">0</span>
                 <span class="ck-spacer"></span><span class="ck-hint">live only</span></div>
@@ -140,6 +173,18 @@
                 <span class="ck-sw"></span><span class="ck-auto-l">auto-deploy off</span>
               </button>
               <span class="ck-why" id="ck-auto-why"></span>
+              <!-- WHO SIGNS OFF. Sits next to auto-deploy because the two
+                   together are the whole "how much am I in the loop" decision:
+                   auto-deploy says whether work STARTS without you, this says
+                   whether it FINISHES without you. -->
+              <span class="ck-gate" id="ck-gate" role="group" aria-label="Approval gate">
+                <button class="ck-gopt" data-gate="none" type="button"
+                        title="No gate — an agent's own word closes its item">none</button>
+                <button class="ck-gopt" data-gate="agent" type="button"
+                        title="Agent gate — the QA seat verifies every deliverable">agent</button>
+                <button class="ck-gopt" data-gate="builders" type="button"
+                        title="Builder's gate — you approve before anything counts as done">builder's</button>
+              </span>
               <span class="ck-spacer"></span>
               <!-- The kill switch. Deliberately always visible and never behind
                    a menu: the moment it is needed is not the moment to go
@@ -192,6 +237,16 @@
           </details>
         </div>
         </div>
+      </section>
+
+      <!-- Every switch in one place. There is deliberately NO .view-heading here:
+           settingsview.js renders the registry's own header — the title, the
+           precedence line (env > project stored > default) and the re-read
+           button — and a second "Settings" above it would be two headings for
+           one page. The module mounts into #st-host, not into the section, so
+           anything added here survives its innerHTML. -->
+      <section class="deck-view" id="view-settings">
+        <div id="st-host"><div class="empty">loading settings…</div></div>
       </section>
 
       <section class="deck-view" id="view-studio">
@@ -512,9 +567,9 @@ function toast(message, kind){
 }
 
 const DECK_CRUMB = {
-  overview:"Overview", agents:"Agents", studio:"Studio", seats:"Seat workspaces",
-  playtests:"Playtests", assets:"Assets", atlas:"Atlas", world:"World bible",
-  timeline:"Timeline",
+  overview:"Overview", agents:"Agents", settings:"Settings", studio:"Studio",
+  seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
+  world:"World bible", timeline:"Timeline",
 };
 /* Hand the view to whichever module owns it.
  *
@@ -526,7 +581,8 @@ const DECK_CRUMB = {
  * function runs again once the modules have registered. */
 function activateWorkspace(name){
   const owners = { seats: "SeatShell", studio: "Studio", atlas: "Atlas",
-                   world: "World", assets: "AssetLib", agents: "AgentsConsole" };
+                   world: "World", assets: "AssetLib", agents: "AgentsConsole",
+                   settings: "SettingsView" };
   if (name === "atlas") return setAtlasMode(atlasMode);
   // RETURN, like atlas: setAgentsMode already activates the console, and
   // falling through to the owners map below activated it a second time —
@@ -2221,6 +2277,10 @@ setInterval(pollQueue, 3500);
      here because it calls askConfirm; it hooks fetch, so it needs no
      cooperation from the nine modules that post a dispatch. -->
 <script src="/static/dirtygate.js"></script>
+<!-- The file viewer the agent rails open. Above the rails that use it for the
+     same reason ask.js is above everything: it registers window.Peek and one
+     delegated click listener, and the rails only emit data-peek attributes. -->
+<script src="/static/peek.js"></script>
 <!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
 <script src="/static/nodecanvas.js"></script>
 <script src="/static/flows.js"></script>
@@ -2231,6 +2291,14 @@ setInterval(pollQueue, 3500);
 <script src="/static/flow_agent.js"></script>
 <script src="/static/agents_graph.js"></script>
 <script src="/static/agents_console.js"></script>
+<!-- The header bell and the Settings view. Below the console for one reason:
+     notify.js hands a click on an event row to AgentsGraph.select, and both
+     reach window.readJSON / mutate / toast, which the inline script above
+     defines. Neither module mounts itself — the bell is mounted from the load
+     handler at the bottom of this file (its slot is in the status bar, so no
+     view would ever do it) and the panel by activateWorkspace(). -->
+<script src="/static/notify.js"></script>
+<script src="/static/settingsview.js"></script>
 <script src="/static/wf.js"></script>
 <script src="/static/wf_steps_asset.js"></script>
 <script src="/static/wf_steps_model.js"></script>
@@ -2263,6 +2331,14 @@ setInterval(pollQueue, 3500);
     // Same for the world view — setWorkspace ran before world.js was parsed.
     if (window.World &&
         document.getElementById("view-world")?.classList.contains("active")) World.activate();
+    // THE BELL BELONGS TO NO VIEW, so nothing else would ever mount it. It is
+    // driven by the console's poll (AgentsConsole calls Notify.update) and by
+    // its own slow watchdog when that view has never been opened. mount()
+    // returns false rather than throwing if the slot is missing, so a shell
+    // without #nt-host degrades to no bell instead of a dead page.
+    // (The Settings panel needs no line here: activateWorkspace()'s owners map
+    // mounts it on the DOMContentLoaded restore like every other view module.)
+    if (window.Notify) { try { Notify.mount("nt-host"); } catch (e) {} }
   });
 </script>
 <script>

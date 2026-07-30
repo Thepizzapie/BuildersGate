@@ -23,7 +23,27 @@
 (function () {
   "use strict";
 
-  const POLL_MS = 3000;
+  // POLL CADENCE, MATCHED TO WHETHER ANYTHING IS ACTUALLY HAPPENING.
+  // A fixed 3s tick meant an idle board — nothing running, nothing queued —
+  // still rebuilt the whole cockpit twenty times a minute and re-read every live
+  // agent's log server-side to do it. 3s is right when you are watching an agent
+  // work; it is pure heat when the floor is empty.
+  //
+  // The numbers come from the settings registry (console.poll_live_ms /
+  // console.poll_idle_ms), delivered in the page bootstrap as
+  // window.BGATE_SETTINGS — not a second fetch on load. THE FALLBACK IS NOT
+  // DECORATION: a page served by an older build, or by a dashboard whose project
+  // could not be read, has no bootstrap, and a console that then polls at NaN ms
+  // is a console that never refreshes. Clamped as well as defaulted, because a
+  // stored 0 would busy-loop the browser against the most expensive endpoint on
+  // the server.
+  const cfg = (key, fallback, lo, hi) => {
+    const raw = Number((window.BGATE_SETTINGS || {})[key]);
+    return Number.isFinite(raw) && raw > 0
+      ? Math.max(lo, Math.min(raw, hi)) : fallback;
+  };
+  const POLL_LIVE_MS = cfg("poll_live_ms", 3000, 500, 60000);
+  const POLL_IDLE_MS = cfg("poll_idle_ms", 12000, 1000, 300000);
 
   const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"];
   // A seat name lands inside var(--c-…). esc() stops an attribute escape but not
@@ -98,6 +118,9 @@
     // this is the human doing it without going through it.
     target: null,
     steers: [],
+    // Half-typed answers to open questions, seq -> text. Kept out of the DOM so
+    // a repaint of this column cannot take a sentence with it.
+    answers: {}, _askSig: "",
     // An archived session being read instead of the live one. The poll keeps
     // running underneath — the graph stays live while you read history.
     viewing: null,
@@ -131,6 +154,8 @@
 
       const auto = document.getElementById("ck-auto");
       if (auto) auto.onclick = () => this.toggleAuto();
+      document.querySelectorAll("#ck-gate [data-gate]").forEach(b =>
+        b.onclick = () => this.setGate(b.dataset.gate, b));
       const filter = document.getElementById("ck-filter");
       if (filter) filter.onclick = () => {
         const mode = window.AgentsGraph
@@ -163,11 +188,28 @@
       }
       this.findSprite();
       this.poll();
+      this.retime(POLL_LIVE_MS);
+      return true;
+    },
+
+    /* One timer, re-armed only when the cadence actually changes. */
+    retime(ms) {
+      if (this._pollMs === ms && this.timer) return;
+      this._pollMs = ms;
+      if (this.timer) clearInterval(this.timer);
       this.timer = setInterval(() => {
         if (!this.visible()) return;
         this.poll();
-      }, POLL_MS);
-      return true;
+      }, ms);
+    },
+
+    /* Is there anything worth a fast tick? Running agents, queued work about to
+       be picked up, or something held for approval. An empty board is not. */
+    busy() {
+      const f = (this.state || {}).floor || {};
+      const a = (this.state || {}).autopilot || {};
+      return !!(f.running || f.dispatched
+        || (a.on && f.queued) || f.review);
     },
 
     visible() {
@@ -188,7 +230,26 @@
     async poll() {
       const state = await window.readJSON("/api/console/state", { turns: [], items: [] });
       if (state.__error) { this.renderError(state.__error); return; }
+      const before = this._sig;
       this.state = state;
+      this._sig = this.signature(state);
+      // THE BELL IS DRIVEN FROM HERE AND HAS NO POLL OF ITS OWN. notify.js keeps
+      // one watchdog that every update() pushes back, so while this view is open
+      // it never fires and /api/events is read on the drawer's own throttle
+      // rather than on a second interval racing this one.
+      //
+      // ABOVE the repaint skip on purpose. Placed after it, the bell would stop
+      // being driven the moment the payload stopped changing — an idle board is
+      // exactly when the badge is the only thing on the page that still moves,
+      // and it would have gone quiet for the 45s the watchdog takes to notice.
+      if (window.Notify) { try { Notify.update(state); } catch (e) { /* never the console's problem */ } }
+      this.retime(this.busy() ? POLL_LIVE_MS : POLL_IDLE_MS);
+      // NOTHING MOVED: skip the repaint. The graph's rebuild walks every node and
+      // the panels rebuild their innerHTML wholesale, and on an idle board that
+      // work produced a pixel-identical page. A steer being typed, a dragged
+      // node and a scrolled rail all survive better for not being touched.
+      if (before && before === this._sig && !this._forceRender) return;
+      this._forceRender = false;
       try {
         // An agent that has finished cannot be steered, and a composer still
         // aimed at it would swallow the next thing typed.
@@ -199,11 +260,39 @@
         }
         this.renderChat();
         this.renderQueue();
+        this.renderQuestions();
+        this.renderReview();
         this.renderReplies();
         this.renderAuto();
+        this.renderGate();
         this.renderMood();
         if (window.AgentsGraph) AgentsGraph.apply(state);
       } catch (e) { try { console.warn("[agents-console]", e); } catch (_) {} }
+    },
+
+    /* A 32-bit digest of the whole payload.
+     *
+     * Deliberately hashed from the FULL state rather than a hand-picked list of
+     * fields: a signature that misses a field is a cockpit that silently stops
+     * updating, which is a far worse bug than one wasted stringify. One pass,
+     * and only the number is kept — holding the string itself would trade paint
+     * time for GC churn every three seconds. */
+    signature(state) {
+      let text;
+      try { text = JSON.stringify(state); } catch (e) { return 0; }
+      // THE UNREAD COUNT IS NOT ON THIS PAYLOAD. It comes from /api/events, read
+      // by notify.js on its own throttle, and it moves for things this payload
+      // cannot show — an event pruned, another tab pressing "mark all read", an
+      // answer landing somewhere else. Folded in because the question cards in
+      // the column below are painted behind this signature, so without it a card
+      // could sit there claiming to be open until something unrelated moved on
+      // the board.
+      if (window.Notify && window.Notify.mounted) {
+        text += `|nt${Notify.readSeq}:${Notify.unread}:${Notify.head}`;
+      }
+      let h = 5381;
+      for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+      return h || 1;
     },
 
     renderError(message) {
@@ -332,6 +421,9 @@
     aim(itemId, item) {
       this.target = itemId ? { id: Number(itemId), seat: (item && item.seat) || "",
                                title: (item && item.title) || "" } : null;
+      // The composer's aim is client state, not payload state, so the next poll
+      // would skip the repaint that shows it.
+      this._forceRender = true;
       const chip = document.getElementById("ck-target");
       const input = document.getElementById("ck-say");
       if (chip) {
@@ -576,15 +668,23 @@
       const clear = document.getElementById("ck-clear-queue");
       if (clear) clear.disabled = !queued.length;
 
-      box.innerHTML = queued.slice(0, 20).map(i => `
-        <div class="ck-q${i._turn ? " turn" : ""}" data-id="${i.id}">
+      box.innerHTML = queued.slice(0, 20).map(i => {
+        // A chain link whose predecessor has not landed cannot be deployed, and
+        // the button used to be offered anyway — one click, one refusal, no
+        // explanation of what it was waiting for.
+        const w = i.waiting_on;
+        const held = i.ready === false && w;
+        return `
+        <div class="ck-q${i._turn ? " turn" : ""}${held ? " held" : ""}" data-id="${i.id}">
           <span class="ck-rep-seat" style="color:${seatColor(i.seat)}">${
             i._turn ? "your ask" : esc(i.seat)}</span>
           <span class="ck-rep-t" title="${esc(i.brief_preview || i.title)}">${esc(trunc(i.title, 52))}</span>
-          <button class="qbtn small" data-deploy="${i.id}">deploy</button>
+          ${held
+            ? `<span class="ck-hold" title="${esc(w.title || "")}">waits on #${w.id} ${esc(w.seat)} · ${esc(w.status)}</span>`
+            : `<button class="qbtn small" data-deploy="${i.id}">deploy</button>`}
           <button class="ck-x" data-discard="${i.id}" title="Discard this ticket"
                   aria-label="Discard">×</button>
-        </div>`).join("")
+        </div>`; }).join("")
         || `<div class="ck-empty">nothing waiting — ask for something above</div>`;
       box.querySelectorAll("[data-deploy]").forEach(b =>
         b.onclick = () => this.deploy(Number(b.dataset.deploy), b));
@@ -636,8 +736,17 @@
     },
 
     async deployAll() {
-      const queued = this.queuedItems();
-      if (!queued.length) return;
+      // A chain link whose predecessor has not landed would refuse, and one
+      // refusal aborts the loop — so "deploy all" on a board with one chain in
+      // it used to stop dead at the second link and report the chain as an
+      // error. Deploy what is READY; the rest follow their own predecessors.
+      const all = this.queuedItems();
+      const queued = all.filter(i => i.ready !== false);
+      const held = all.length - queued.length;
+      if (!queued.length) {
+        window.toast(held ? `${held} item(s) are waiting on earlier links` : "nothing to deploy");
+        return;
+      }
       const btn = document.getElementById("ck-deploy-all");
       if (btn) btn.disabled = true;
       let sent = 0;
@@ -649,7 +758,8 @@
         window.toast(sent ? `deployed ${sent} — then stopped: ${r.error}` : r.error);
         break;
       }
-      if (sent) window.toast(`deployed ${sent} item(s)`, "ok");
+      if (sent) window.toast(`deployed ${sent} item(s)`
+        + (held ? ` — ${held} still waiting on earlier links` : ""), "ok");
       this.poll();
     },
 
@@ -710,6 +820,210 @@
             : "queued work dispatches itself as slots free up";
         why.classList.toggle("warn", !!(a.on && ref));
       }
+    },
+
+    /* ---- the approval gate ---------------------------------------------- */
+    renderGate() {
+      const host = document.getElementById("ck-gate");
+      if (!host) return;
+      const g = (this.state && this.state.gate) || {};
+      const active = g.mode || "agent";
+      host.querySelectorAll("[data-gate]").forEach(b => {
+        b.classList.toggle("on", b.dataset.gate === active);
+        b.setAttribute("aria-pressed", b.dataset.gate === active ? "true" : "false");
+      });
+      // A panel showing 'agent' while BGATE_QA_GATE=0 forces 'none' is the most
+      // expensive lie a settings control can tell, so the override says so.
+      host.classList.toggle("forced", !!g.env_override);
+      host.title = g.env_override
+        ? `${g.env_override} — this control is overridden`
+        : (g.labels && g.labels[active]) || "";
+    },
+
+    async setGate(mode, btn) {
+      const g = (this.state && this.state.gate) || {};
+      if (g.mode === mode) return;
+      const r = await window.mutate("/api/gate",
+        { body: { mode }, button: btn,
+          ok: (g.labels && g.labels[mode]) || `gate: ${mode}` });
+      if (!r.ok) return;
+      this.poll();
+    },
+
+    /* ---- a seat asked YOU something -------------------------------------
+     * ask_human is not a work item on purpose — a question that becomes a queued
+     * row is a row somebody has to dispatch in order to read it. So it arrives on
+     * this payload as state.questions and is answered from here, which is the one
+     * panel already sitting next to the conversation the question came out of.
+     *
+     * The bell renders the same list in the drawer for when you are in another
+     * view. Both post the same body to the same endpoint; neither is the primary.
+     *
+     * ONLY UNANSWERED ONES. An answered card that stays reads as still open, and
+     * the answer is already on the event and in the handoff thread. */
+    openQuestions() {
+      const raw = (this.state || {}).questions;
+      if (!Array.isArray(raw)) return [];
+      return raw
+        .map(q => ({
+          seq: Number(q.event_seq || q.seq) || 0,
+          item: Number(q.item_id) || 0,
+          seat: String(q.seat || ""),
+          question: String(q.question || ""),
+          asked_at: String(q.asked_at || ""),
+          refs: Array.isArray(q.refs) ? q.refs.map(String) : [],
+          answer: String(q.answer || ""),
+        }))
+        .filter(q => q.seq && !q.answer);
+    },
+
+    renderQuestions() {
+      const wrap = document.getElementById("ck-askwrap");
+      const box = document.getElementById("ck-ask");
+      if (!wrap || !box) return;
+      const open = this.openQuestions();
+      wrap.hidden = !open.length;
+      const n = document.getElementById("ck-ask-n");
+      if (n) n.textContent = String(open.length);
+      if (!open.length) { box.innerHTML = ""; this._askSig = ""; return; }
+
+      // Its own signature, like the transcript's. The rest of this column
+      // repaints whenever anything on the board moves, and rebuilding a textarea
+      // somebody is mid-sentence in is how a half-typed answer disappears.
+      const sig = open.map(q => q.seq).join(",");
+      if (sig !== this._askSig) {
+        this._askSig = sig;
+        // The caret, so a repaint that DOES land while you are typing (a new
+        // question arriving) puts you back where you were. The text itself is in
+        // this.answers, not in the DOM, for the same reason.
+        const active = document.activeElement;
+        const focused = active && active.dataset && active.dataset.answer;
+        const caret = focused ? active.selectionStart : 0;
+
+        box.innerHTML = open.map(q => {
+          const who = q.seat || "director";
+          return `<div class="ck-ask" data-seq="${q.seq}">
+            <div class="ck-ask-top">
+              <span class="ck-rep-seat" style="color:${seatColor(who)}">${esc(who)}</span>
+              ${q.item ? `<span class="ck-ask-item">#${q.item}</span>` : ""}
+              <span class="ck-spacer"></span>
+              <span class="ck-hint">${esc(q.asked_at.slice(11, 16))}</span>
+            </div>
+            <div class="ck-ask-q">${esc(q.question)}</div>
+            ${q.refs.length ? `<div class="ck-ask-refs">${q.refs
+              .map(r => `<code>${esc(trunc(r, 52))}</code>`).join(" ")}</div>` : ""}
+            <textarea class="ck-ask-reply" rows="2" data-answer="${q.seq}"
+              placeholder="answer it in a sentence"></textarea>
+            <div class="ck-ask-row">
+              <span class="ck-hint">${q.item
+                ? "a running agent reads it as a steer; a finished one gets a handoff note"
+                : "filed as a decision the next session reads"}</span>
+              <button class="qbtn small" data-send="${q.seq}">answer</button>
+            </div>
+          </div>`;
+        }).join("");
+
+        // value, not markup: a draft with "</textarea>" in it would otherwise
+        // close the element early, and esc() inside a textarea is its own trap.
+        box.querySelectorAll("[data-answer]").forEach(t => {
+          t.value = this.answers[t.dataset.answer] || "";
+          t.oninput = () => { this.answers[t.dataset.answer] = t.value; };
+        });
+        if (focused) {
+          const again = box.querySelector(`[data-answer="${focused}"]`);
+          if (again) {
+            again.focus();
+            try { again.setSelectionRange(caret, caret); } catch (e) { /* not fatal */ }
+          }
+        }
+      }
+      box.querySelectorAll("[data-send]").forEach(b =>
+        b.onclick = () => this.answer(Number(b.dataset.send), b));
+    },
+
+    /* The answer goes where the asker can still read it, and the toast says
+       WHICH of the three paths that was — a steer to a live agent, a handoff note
+       for a finished one, a decision on the record. "Sent" would hide the one
+       difference that matters. */
+    async answer(seq, btn) {
+      const key = String(seq || "");
+      const text = String(this.answers[key] || "").trim();
+      if (!text) {
+        window.toast("write the answer first — an empty reply is not an answer");
+        return;
+      }
+      const r = await window.mutate("/api/console/answer",
+        { body: { seq: Number(key), answer: text }, button: btn, quiet: true });
+      if (!r.ok) {
+        window.toast(r.error);
+        // 409 is somebody else answering first; the stored answer wins and the
+        // draft does not, so re-read rather than retry.
+        if (r.status === 409) { this._askSig = ""; this.poll(); }
+        return;
+      }
+      const d = r.data || {};
+      delete this.answers[key];
+      window.toast(String(d.delivery || "answer recorded"), "ok");
+      if (d.delivery_error) window.toast(`partly delivered — ${d.delivery_error}`);
+      this._askSig = "";
+      // The bell is showing the same question; make it re-read rather than wait
+      // out its throttle with a card that is no longer open.
+      if (window.Notify) { try { Notify.refresh(true); } catch (e) {} }
+      this.poll();
+    },
+
+    /* ---- what is waiting on the human ----------------------------------- */
+    reviewItems() {
+      return ((this.state || {}).items || []).filter(i => i.status === "review");
+    },
+
+    renderReview() {
+      const wrap = document.getElementById("ck-reviewwrap");
+      const box = document.getElementById("ck-review");
+      if (!wrap || !box) return;
+      const held = this.reviewItems();
+      wrap.hidden = !held.length;
+      const n = document.getElementById("ck-review-n");
+      if (n) n.textContent = String(held.length);
+      if (!held.length) { box.innerHTML = ""; return; }
+      box.innerHTML = held.slice(0, 20).map(i => `
+        <div class="ck-q review" data-id="${i.id}">
+          <span class="ck-rep-seat" style="color:${seatColor(i.seat)}">${esc(i.seat)}</span>
+          <span class="ck-rep-t" title="${esc(i.result || i.brief_preview || i.title)}">${esc(trunc(i.title, 44))}</span>
+          <button class="qbtn small" data-approve="${i.id}">approve</button>
+          <button class="qbtn small ghost" data-rejectq="${i.id}">reject</button>
+        </div>`).join("");
+      box.querySelectorAll("[data-approve]").forEach(b =>
+        b.onclick = () => this.approve(Number(b.dataset.approve), b));
+      box.querySelectorAll("[data-rejectq]").forEach(b =>
+        b.onclick = () => this.rejectItem(Number(b.dataset.rejectq), b));
+    },
+
+    async approve(id, btn) {
+      const r = await window.mutate(`/api/queue/${id}/approve`,
+        { body: {}, button: btn, ok: `#${id} approved — anything chained behind it can start` });
+      if (!r.ok) return;
+      this.poll();
+    },
+
+    /* Rejection needs a reason for the same purpose a QA fail does: it is
+       appended to the brief, so the next agent reads what to change instead of
+       repeating the run that was turned down. */
+    async rejectItem(id, btn) {
+      const reason = await window.askText({
+        title: `Reject #${id}`,
+        body: "Say exactly what is wrong and what would fix it. This is appended "
+            + "to the item's brief, so the next agent on it reads what you wrote "
+            + "instead of repeating the run you turned down.",
+        placeholder: "the parity assertion is missing — add it and re-bake…",
+        ok: "send it back", required: true,
+      });
+      if (reason == null || !String(reason).trim()) return;
+      const r = await window.mutate(`/api/queue/${id}/reject`,
+        { body: { reason: String(reason).trim() }, button: btn,
+          ok: `#${id} sent back for another round` });
+      if (!r.ok) return;
+      this.poll();
     },
 
     async toggleAuto() {

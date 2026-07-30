@@ -43,7 +43,7 @@ It prints the URL and the project it opened, because a command that starts the
 product and says nothing looks like a hang. With no project it does not error. It
 shows a first-run screen that creates one.
 
-Nine views over the same store:
+Ten views over the same store:
 
 | View | What it is |
 |---|---|
@@ -56,6 +56,13 @@ Nine views over the same store:
 | Atlas | Every screen wired to every asset it uses, derived live from the scenes, scripts and SpriteFrames. Click a node to file work against it |
 | World bible | A write surface, not a viewer: pillars, constraints, and one drag-ordered list of scope tiers with the cut line as a draggable row in it, plus the lore graph. Every narrative write runs `canon_check` first. A conflict is a 409 carrying its flags, and only a human may override it |
 | Timeline | The causal chain per iteration: goal, source and build snapshot, assets, playtest evidence, decisions, work, resulting build, outcome |
+| Settings | Every switch in one place, from one registry: dispatch, the approval gate, follow-up, notifications, budget, console. Each row says whether the value is the default, stored, or overridden by an environment variable — and a switch that widens a safety guard (`dispatch.allow_dirty`) asks before it is turned off and records that it was |
+
+The header carries a **bell**: what has happened since you last looked, read
+from the event table the follow-up router drives (`bgate_core/events.py`). It
+only reaches you while the page is open — `bgate app` puts the count in the
+window title, and one optional https webhook is the only channel that leaves
+the machine.
 
 The cockpit owns explicit user-facing mutations: queue and dispatch, recording,
 feedback disposition, bible authoring, and artifact approval. Production

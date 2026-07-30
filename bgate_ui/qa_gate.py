@@ -8,57 +8,83 @@ that gate; this module makes it AUTOMATIC: when a maker seat's item transitions
 to done, a QA work item is created and dispatched to verify it, and a FAIL
 reopens the original with the nitpick list.
 
-Runs as a daemon thread inside the dashboard server (the process that already
-owns dispatch). Deliberately NOT in bgate_core: core stays pure data/logic;
-spawning agents is a UI-server concern.
+THE LOOP MOVED. This module used to own a daemon thread that scanned for
+completed items every ten seconds, and the cutoff that thread carried was a real
+hole: it reviewed "only transitions after the server started", so every
+completion that happened while the dashboard was down was never reviewed and
+nothing said so. ``bgate_ui.followup`` now drives the gate from the event bus'
+cursor, which is a row id rather than a wall clock — a dashboard that was off for
+an hour resumes exactly where it stopped. What is left here is the part that was
+always worth having on its own: WHAT a QA round is, when one is owed, and the
+brief the reviewer reads.
+
+Deliberately NOT in bgate_core: core stays pure data/logic; spawning agents is a
+UI-server concern.
 
 Contract:
-- Only reviews items completed AFTER the server started (no startup QA-bomb of
-  the whole historical queue).
-- Maker seats gated: art, gameplay, audio. QA/director items are never gated
-  (no recursion); items created by the gate itself (source='qa-gate') are never
-  gated either.
+- Maker seats gated: art, gameplay, audio, narrative. QA/director items are never
+  gated (no recursion); items created by the gate itself (source='qa-gate') are
+  never gated either.
 - One open QA follow-up per original item at a time; a re-done original (the
   fix round) gets a fresh QA round once the prior one closed.
 - BOUNDED. fail -> reopen -> re-dispatch -> fail is a money pump on a subjective
   deliverable, and an uncompromising reviewer will ride it forever. After
-  MAX_ROUNDS reviewed rounds (work_item.attempts, which queue.reopen increments,
-  is the round counter) the gate stops reviewing that item and files ONE
-  escalation for the director — queued, never dispatched, because the whole
+  ``qa.max_rounds`` reviewed rounds (work_item.attempts, which queue.reopen
+  increments, is the round counter) the gate stops reviewing that item and files
+  ONE escalation for the director — queued, never dispatched, because the whole
   point is that a human now decides whether the thing is good enough.
-- Disable with BGATE_QA_GATE=0. Fail-safe: the watcher never raises.
+- Disable with BGATE_QA_GATE=0, which is the legacy kill switch and now reads
+  through ``bgate_core.settings`` as a coercion of ``gate.mode`` to "none".
 """
 from __future__ import annotations
 
 import os
-import threading
-import time
-from datetime import datetime, timezone
 
-from bgate_core import activity, db, queue as _queue
+from bgate_core import activity, db, gates as _gates, queue as _queue, \
+    settings as _settings
 
 GATED_SEATS = ("art", "gameplay", "audio", "narrative")
-POLL_S = 10.0
 
 # Rounds of QA an item may go through before a human is asked to arbitrate.
 # 3 = the original attempt plus two fix rounds; past that the disagreement is
 # about taste, not correctness, and another agent will not settle it.
+#
+# The live value is the registry's ``qa.max_rounds``; this stays as the default
+# and as the fallback for an unreadable settings doc, because a gate that cannot
+# read its cap must keep the cap it always had rather than run uncapped.
 MAX_ROUNDS = 3
 
 ESCALATION_SOURCE = "qa-gate-escalation"
 
-_started = threading.Event()
+# How far back the backstop sweep looks. The sweep exists because
+# ``events.emit`` is best-effort — a completion that hit a locked database writes
+# no event, so the cursor-driven path never sees it — and it is WINDOWED because
+# an unbounded sweep on first run is the startup QA-bomb of the whole historical
+# queue that the old cutoff existed to prevent.
+SWEEP_WINDOW_MIN = 120
 
 
-def _brief_for(item: dict) -> str:
+def max_rounds(root: str | os.PathLike[str]) -> int:
+    """The round cap for this project. Read per call, not captured at startup.
+
+    A studio that raises the cap because it is watching a specific fight must not
+    have to restart the dashboard for it to apply.
+    """
+    try:
+        return max(1, int(_settings.get(root, "qa.max_rounds") or MAX_ROUNDS))
+    except Exception:
+        return MAX_ROUNDS
+
+
+def _brief_for(item: dict, cap: int = MAX_ROUNDS) -> str:
     rounds = int(item.get("attempts") or 0) + 1
     last_round = (
-        f"\n\nTHIS IS ROUND {rounds} OF {MAX_ROUNDS} — the last automatic one. "
+        f"\n\nTHIS IS ROUND {rounds} OF {cap} — the last automatic one. "
         "A FAIL here does not buy another agent: the item is escalated to the "
         "director for a human call. So make this verdict count: if it fails, "
         "the nitpick list must be the complete, ranked set, each item naming the "
         "exact problem and the exact fix.\n"
-    ) if rounds >= MAX_ROUNDS else f"\n\nRound {rounds} of at most {MAX_ROUNDS}.\n"
+    ) if rounds >= cap else f"\n\nRound {rounds} of at most {cap}.\n"
     return (
         f"AUTO-QA GATE for work item #{item['id']} ({item['seat']}): "
         f"\"{item['title']}\" — the {item['seat']} seat reports it DONE. "
@@ -101,6 +127,25 @@ def _latest_gate_created(root: str, ref: str) -> str:
     return (row["c"] if row and row["c"] else "")
 
 
+def escalated(root: str | os.PathLike[str], ref: str) -> bool:
+    """Has this item already been escalated to the director, ever?
+
+    The one-per-item rule is what makes the cap a cap: without this an item at
+    the round limit files a fresh escalation on every scan, and the director's
+    queue fills with the same argument. Exposed because the follow-up router
+    checks it before deciding, not only when applying.
+    """
+    try:
+        row = db.connect(root).execute(
+            "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? LIMIT 1",
+            (ESCALATION_SOURCE, str(ref))).fetchone()
+    except Exception:
+        # Unreadable board: claim it IS escalated. The direction that errs
+        # towards silence is right here — the other one files duplicates.
+        return True
+    return row is not None
+
+
 def _escalation_brief(item: dict, rounds: int) -> str:
     return (
         f"QA LOOP BROKEN — work item #{item['id']} ({item['seat']}): "
@@ -124,10 +169,7 @@ def _escalation_brief(item: dict, rounds: int) -> str:
 
 def _escalate(root: str, item: dict, ref: str, rounds: int) -> None:
     """File one escalation per item, ever. Queued, never dispatched."""
-    seen = db.connect(root).execute(
-        "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? LIMIT 1",
-        (ESCALATION_SOURCE, ref)).fetchone()
-    if seen is not None:
+    if escalated(root, ref):
         return
     _queue.add(root, "director",
                f"QA loop: #{item['id']} failed {rounds} rounds — {item['title'][:60]}",
@@ -139,9 +181,53 @@ def _escalate(root: str, item: dict, ref: str, rounds: int) -> None:
                  seat="qa", ref=ref)
 
 
+def open_round(root: str | os.PathLike[str], item: dict) -> dict:
+    """File one QA round for a completed item. Returns ``{ok, gate, why}``.
+
+    The FILING only — the caller dispatches, because the two callers want
+    different things from a refusal (the router records it as an action result,
+    the sweep just moves on) and because a function that both creates a row and
+    spawns a process cannot be used by either without doing the other.
+
+    Guarded here as well as by the caller: this is the last point before a row
+    exists, and delivery of the event that triggered it is at-least-once.
+    """
+    ref = str(item["id"])
+    if _open_gate_exists(root, ref):
+        return {"ok": False, "gate": 0,
+                "why": "a QA round for this item is already open"}
+    cap = max_rounds(root)
+    gate = _queue.add(root, "qa",
+                      f"QA gate: verify #{item['id']} — {item['title'][:70]}",
+                      brief=_brief_for(item, cap), priority=8,
+                      source="qa-gate", source_ref=ref)
+    return {"ok": True, "gate": int(gate["id"]), "why": ""}
+
+
 def _scan_once(root: str, cutoff_utc: str) -> None:
+    """The backstop sweep: review anything completed since ``cutoff_utc`` that
+    has no QA round.
+
+    NOT the normal path any more — ``bgate_ui.followup`` routes completions off
+    the event bus, which is what fixed the startup cutoff. This survives as the
+    recovery path for a completion whose EVENT was never written: ``events.emit``
+    is best-effort by design and returns 0 rather than raising when the database
+    is locked, so without a sweep a lost event means an unreviewed deliverable
+    with nothing anywhere saying so. Every action it takes runs the same
+    idempotency guards as the event path, so the two cannot double-review.
+    """
     from bgate_ui import dispatch as _dispatch
+
+    # WHICH GATE IS THIS PROJECT USING. Read every scan, not once at startup:
+    # the mode is a live setting and a studio that switches to the builder's gate
+    # mid-session must not keep paying for QA agents it stopped wanting. Under
+    # 'builders' a finished item never reaches 'done' unreviewed anyway — it sits
+    # in 'review' — so this loop would find nothing to do regardless; the early
+    # return is what makes that explicit rather than incidental.
+    if not _gates.wants_qa_agent(root):
+        return
     conn = db.connect(root)
+    cap = max_rounds(root)
     # Placeholders derived from GATED_SEATS: a hardcoded "?, ?, ?" fell out of
     # sync when narrative was added as a 4th gated seat — the binding mismatch
     # raised on EVERY scan and the fail-safe swallowed it, so the gate silently
@@ -159,7 +245,7 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
             continue
         # attempts counts the reopens; the first pass is attempt 1.
         rounds = int(item.get("attempts") or 0) + 1
-        if rounds > MAX_ROUNDS:
+        if rounds > cap:
             _escalate(root, item, ref, rounds - 1)
             continue
         # A closed gate exists and the original hasn't moved since -> already
@@ -167,32 +253,27 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
         last = _latest_gate_created(root, ref)
         if last and item["updated_at"] <= last:
             continue
-        qa = _queue.add(root, "qa",
-                        f"QA gate: verify #{item['id']} — {item['title'][:70]}",
-                        brief=_brief_for(item), priority=8,
-                        source="qa-gate", source_ref=ref)
-        _dispatch.dispatch(root, qa["id"])
+        opened = open_round(root, item)
+        if opened.get("ok"):
+            _dispatch.dispatch(root, int(opened["gate"]))
 
 
-def _run(root: str) -> None:
-    # Only gate transitions that happen while we're alive — SQLite stores
-    # datetime('now') (UTC, second resolution), so compare in the same format.
-    cutoff = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    while True:
-        time.sleep(POLL_S)
-        try:
-            _scan_once(root, cutoff)
-        except Exception:
-            pass  # fail-safe: the gate must never take the dashboard down
+def sweep(root: str | os.PathLike[str], minutes: int = SWEEP_WINDOW_MIN) -> None:
+    """Run the backstop over the last ``minutes`` of completions.
 
-
-def start(root: str) -> bool:
-    """Idempotently start the watcher for this server process."""
-    if os.environ.get("BGATE_QA_GATE", "1").strip() in ("0", "false", "off"):
-        return False
-    if _started.is_set():
-        return True
-    _started.set()
-    threading.Thread(target=_run, args=(str(root),), daemon=True,
-                     name="bgate-qa-gate").start()
-    return True
+    Windowed, because the failure it recovers from is recent by definition (a
+    locked database during one completion) while an unbounded version would
+    review the entire history of a project the first time it ran — which is the
+    startup QA-bomb the old thread's cutoff existed to prevent. Never raises: the
+    router calls this from inside its tick.
+    """
+    try:
+        row = db.connect(root).execute(
+            "SELECT datetime('now', ?) AS c", (f"-{int(minutes)} minutes",)
+        ).fetchone()
+        cutoff = str(row["c"]) if row else ""
+        if not cutoff:
+            return
+        _scan_once(str(root), cutoff)
+    except Exception:
+        pass
