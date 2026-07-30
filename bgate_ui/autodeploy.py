@@ -31,6 +31,13 @@ Three things it deliberately does NOT do:
 The switch itself is persisted per project (workspace doc ``director/autopilot``)
 so it survives a restart, and read fresh on every tick so flipping it in one tab
 takes effect everywhere.
+
+IT IS READ THROUGH ``bgate_core.settings`` (key ``autopilot.on``) — same doc,
+same field, one precedence rule. The reason that matters here is
+``BGATE_AUTODEPLOY``: it decides whether the thread starts, so a project whose
+stored switch says ON looked ON in the console while nothing was ever dispatched.
+The registry makes that var coerce the value it is really controlling, and
+``state()`` now says which layer won.
 """
 from __future__ import annotations
 
@@ -39,10 +46,11 @@ import threading
 import time
 from typing import Optional
 
-from bgate_core import activity, db, workspace as _ws
+from bgate_core import activity, db, settings as _settings, workspace as _ws
 
 SEAT = "director"
 KEY = "autopilot"
+SETTING = "autopilot.on"
 POLL_S = 4.0
 
 # Sources auto-deploy will not touch, and why.
@@ -84,7 +92,16 @@ def _mem(root: str) -> dict:
 
 
 def enabled(root: str | os.PathLike[str]) -> bool:
-    return bool(_ws.get(root, SEAT, KEY, {}).get("on"))
+    """Is autopilot on, after the env kill switch has had its say.
+
+    Falls back to the raw doc if the registry will not read: a tick that cannot
+    answer this question is a tick that dispatches nothing, and an unreadable
+    settings doc should not silently freeze the board.
+    """
+    try:
+        return bool(_settings.get(root, SETTING))
+    except Exception:
+        return bool(_ws.get(root, SEAT, KEY, {}).get("on"))
 
 
 def state(root: str | os.PathLike[str]) -> dict:
@@ -92,11 +109,27 @@ def state(root: str | os.PathLike[str]) -> dict:
 
     ``last`` is the last refusal, not the last success: a success is visible on
     the board as a running agent, a refusal is visible nowhere else.
+
+    ``on`` is the EFFECTIVE value — with ``BGATE_AUTODEPLOY=0`` set, the stored
+    switch is not what the board is doing, and reporting the stored value there
+    is how a console shows a green autopilot on a loop that never started.
+    ``stored_on``/``source``/``env_override`` say which layer won.
     """
     doc = _ws.get(root, SEAT, KEY, {})
     mem = _mem(str(root))
+    try:
+        on, source = bool(_settings.get(root, SETTING)), _settings.source(root, SETTING)
+    except Exception:
+        on, source = bool(doc.get("on")), _settings.SOURCE_STORED
+    forced = os.environ.get("BGATE_AUTODEPLOY", "").strip().lower() in (
+        "0", "false", "off")
     return {
-        "on": bool(doc.get("on")),
+        "on": on,
+        "stored_on": bool(doc.get("on")),
+        "source": source,
+        "setting": SETTING,
+        "env_override": ("BGATE_AUTODEPLOY=0 keeps auto-deploy off — the loop is "
+                         "not running in this process") if forced else "",
         "since": doc.get("since") or "",
         "by": doc.get("by") or "",
         "dispatched": int(mem.get("dispatched") or 0),
@@ -107,6 +140,19 @@ def state(root: str | os.PathLike[str]) -> dict:
 
 
 def set_enabled(root: str | os.PathLike[str], on: bool) -> dict:
+    """Flip the switch, clear the cooldowns, log it.
+
+    Still writes the doc directly rather than going through ``settings.set``:
+    this path also has to drop the per-item cooldowns (otherwise turning
+    autopilot off and on again leaves 90 seconds of items still sitting out) and
+    write the activity line. Same doc, same field, and the value is validated by
+    the registry so the two writers cannot disagree about what "on" means — a
+    route that passed the string "0" set it to True before this.
+    """
+    try:
+        on = _settings.coerce(SETTING, on)
+    except _settings.SettingError:
+        on = bool(on)
     doc = _ws.get(root, SEAT, KEY, {})
     doc["on"] = bool(on)
     doc["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
@@ -126,12 +172,22 @@ def set_enabled(root: str | os.PathLike[str], on: bool) -> dict:
 
 
 def _candidates(root: str) -> list[dict]:
-    """Queued items, most deserving first, minus the ones we hold back."""
+    """Queued items, most deserving first, minus the ones we hold back.
+
+    A chained item whose predecessor has not landed is filtered out HERE rather
+    than left to dispatch()'s refusal, because a refusal costs the item a
+    cooldown and fills the "last refusal" slot with a non-event: the board is
+    working exactly as designed, the link is simply next rather than ready. The
+    tick that follows its predecessor's completion picks it up on its own.
+    """
     marks = ", ".join("?" * len(HELD_SOURCES))
     rows = db.connect(root).execute(
-        f"SELECT id, seat, title, source FROM work_item WHERE status = 'queued' "
-        f"AND source NOT IN ({marks}) AND brief NOT LIKE ? "
-        "ORDER BY priority DESC, id LIMIT 40",
+        f"SELECT i.id, i.seat, i.title, i.source FROM work_item i "
+        f"LEFT JOIN work_item d ON d.id = i.depends_on "
+        f"WHERE i.status = 'queued' "
+        f"AND i.source NOT IN ({marks}) AND i.brief NOT LIKE ? "
+        "AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
+        "ORDER BY i.priority DESC, i.id LIMIT 40",
         (*HELD_SOURCES, PLACEHOLDER_BRIEF)).fetchall()
     return [dict(r) for r in rows]
 

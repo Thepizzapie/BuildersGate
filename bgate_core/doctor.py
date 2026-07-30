@@ -20,6 +20,15 @@ BECAUSE something might be broken, and it must still get an answer.
 Results are cached for a few seconds (CACHE_SECONDS) because the honest usage
 pattern is a poll loop: a dashboard tick, a preflight, and an agent all asking
 inside the same second should cost one probe, not three.
+
+It also prints the EFFECTIVE SETTINGS and where each value came from
+(:func:`settings_report`). That belongs next to the dependency rows for the same
+reason they exist: the second-most expensive class of "why is this board not
+doing what I told it" is not a missing binary, it is an env var in a shell
+profile silently winning over what the panel shows. Nothing else in the tool
+answers "what is this project actually configured to do" in one line, and it is
+kept OUT of :func:`check` so the exit code keeps meaning "a dependency is
+missing" — a setting that is merely non-default is not a failure.
 """
 from __future__ import annotations
 
@@ -320,3 +329,92 @@ def summary(report: dict) -> str:
     if not missing:
         return f"all {len(CHECKS)} dependencies available"
     return f"{len(missing)} unavailable: " + ", ".join(missing)
+
+
+# ---------------------------------------------------------------------------
+# Effective settings — the other half of "why is it behaving like that"
+# ---------------------------------------------------------------------------
+def settings_report(root: Optional[str] = None) -> list[dict]:
+    """Every registered setting as ``{key, group, value, default, source, env,
+    help}``, in registry order.
+
+    Never raises and never opens a probe: a project whose DB is unreadable
+    reports the defaults, because the point of the row is to show what the code
+    will use, and with no store that IS the default.
+    """
+    try:
+        from bgate_core import settings as _settings
+        rows_out: list[dict] = []
+        # Passing "" is deliberate rather than skipped: every store read in the
+        # registry is individually guarded, so with no project the answer is
+        # defaults plus whatever the environment forces — which is exactly what
+        # somebody running `bgate doctor` outside a project needs to see.
+        live = _settings.effective(root or "")
+        for one in _settings.SETTINGS:
+            got = live.get(one.key) or {}
+            value = got.get("value", one.default)
+            rows_out.append({
+                "key": one.key,
+                "group": one.group,
+                "value": list(value) if isinstance(value, (list, tuple)) else value,
+                "default": (list(one.default)
+                            if isinstance(one.default, (list, tuple)) else one.default),
+                "source": got.get("source", "default"),
+                "env": got.get("env", ""),
+                "help": one.help,
+            })
+        return rows_out
+    except Exception:
+        return []
+
+
+def _render(value) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(part) for part in value) or "(none)"
+    text = str(value)
+    return text if text != "" else "(empty)"
+
+
+def settings_lines(root: Optional[str] = None) -> list[str]:
+    """The printable settings block: one line per setting, grouped.
+
+    An overridden or non-default value is marked, because a wall of thirty rows
+    in which everything looks the same is a wall nobody reads — the two facts
+    worth finding here are "the environment took this away from you" and "this
+    is not what ships by default".
+    """
+    rows_out = settings_report(root)
+    if not rows_out:
+        return ["settings   (registry unavailable)"]
+    width = max(len(row["key"]) for row in rows_out)
+    lines: list[str] = []
+    group = ""
+    for row in rows_out:
+        if row["group"] != group:
+            group = row["group"]
+            lines.append(f"  {group}")
+        if row["source"] == "env":
+            note = f"  <- {row['env'] or 'env'}"
+        elif row["source"] == "stored":
+            changed = _render(row["value"]) != _render(row["default"])
+            note = "  <- stored" + (f" (default {_render(row['default'])})"
+                                    if changed else "")
+        else:
+            note = ""
+        lines.append(f"    {row['key'].ljust(width)}  "
+                     f"{_render(row['value'])}{note}")
+    forced = [row["key"] for row in rows_out if row["source"] == "env"]
+    if forced:
+        lines.append("")
+        lines.append(f"  {len(forced)} setting(s) forced by the environment: "
+                     + ", ".join(forced))
+    return lines
+
+
+def print_settings(root: Optional[str] = None) -> None:
+    """Print the settings block to stdout. Used by ``bgate doctor``."""
+    print("effective settings  (env > stored > default)")
+    for line in settings_lines(root):
+        print(line)
