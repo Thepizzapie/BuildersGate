@@ -268,13 +268,20 @@ class TestStudioFlowsAreDerived:
         Godot tree, screenshotted and dispatched queue items, all of which
         Playtests and Agents already do.
 
+        "Agent flow" is now the third: it drew a second orchestration canvas
+        over the same data the Agents console already owns, and between two
+        places to watch one floor the one with the conversation, the queue and
+        the live rails is the one that survived. With it went the last
+        flow_*.js, so this no longer asserts that any exist — an empty registry
+        and an empty directory AGREE, and demanding at least one would make
+        removing the last module fail a test whose subject is agreement.
+
         Pinning the file list re-broke the moment the product changed, so what
         gets asserted now is the property the original test was protecting: the
         registry and the files on disk agree, in both directions.
         """
         src = _read("flows.js")
         registered = set(re.findall(r'"/static/(flow_\w+\.js)"', src))
-        assert registered, "flows.js registers no flow modules at all"
         for module in sorted(registered):
             assert (STATIC / module).is_file(),                 f"flows.js loads {module}, which is not on disk"
         on_disk = {p.name for p in STATIC.glob("flow_*.js")}

@@ -74,18 +74,21 @@
               <div class="art-side">
                 <div class="art-card"><h3 class="art-h">${BGICON("reference")} References &amp; anchoring</h3>
                   <div id="art-refs"></div></div>
-                <!-- The trained style sits directly under the references it is
-                     trained FROM. Anywhere else and the two read as unrelated
-                     features, when the whole idea is that these anchors ARE the
-                     dataset. -->
-                <div class="art-card"><h3 class="art-h">${BGICON("art")} Trained style</h3>
-                  <div id="art-style"><div class="art-empty">loading…</div></div></div>
                 <div class="art-card"><h3 class="art-h">⧉ Flow map — assets rigged into Godot</h3>
                   <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div></div>
                 <div class="art-card"><h3 class="art-h">⛨ Locks &amp; contention</h3>
                   <div id="art-locks"><div class="art-empty">loading locks…</div></div></div>
               </div>
               <div class="art-main">
+                <!-- Full width, above the lab, because this is not a reference
+                     panel: it decides what EVERY image this project generates
+                     looks like. The anchors are shown rather than counted —
+                     "6 of 26" is the least useful way to describe a dataset of
+                     pictures, and "which of my anchors is in this" is the
+                     question actually being asked. -->
+                <div class="art-card art-stcard"><h3 class="art-h">${BGICON("art")} Trained style
+                  <span class="art-sth" id="art-stmode"></span></h3>
+                  <div id="art-style"><div class="art-empty">loading…</div></div></div>
                 <div class="art-card" id="art-lab">
                   <h3 class="art-h">Iteration lab</h3>
                   <div class="art-empty">loading candidates…</div>
@@ -102,6 +105,7 @@
           lab: container.querySelector("#art-lab"),
           lightbox: container.querySelector("#art-lightbox"),
           style: container.querySelector("#art-style"),
+          stmode: container.querySelector("#art-stmode"),
         };
         // fix the stray glyph typo in a way that can't break: overwrite header text
         const labH = this._els.lab.querySelector(".art-h");
@@ -1048,86 +1052,123 @@
      */
     _renderStyle() {
       const bg = this._bg, host = this._els && this._els.style;
+      const badge = this._els && this._els.stmode;
       if (!host) return;
       try {
         const d = this._style;
         if (!d) {
           host.innerHTML = '<div class="art-empty">style training needs a newer '
             + 'dashboard — restart <code>bgate serve</code>.</div>';
+          if (badge) badge.textContent = "";
           return;
         }
         const ds = d.dataset || {};
         const active = d.active || null;
         const run = d.running || {};
         const lora = d.mode === "lora";
+        const anchors = ds.anchors || [];
+        const rejected = ds.rejected || [];
 
-        const modeRow = `
-          <div class="art-strow">
-            <span class="art-stlabel">generate with</span>
-            <span class="art-stseg">
-              <button class="art-stopt${lora ? "" : " on"}" data-stmode="refs"
-                      title="Send the pinned anchors as style references — how it has always worked">references</button>
-              <button class="art-stopt${lora ? " on" : ""}" data-stmode="lora"
-                      title="Use the style trained from those anchors, freeing the reference slot for identity"
-                      ${active ? "" : "disabled"}>trained style</button>
-            </span>
-          </div>`;
+        // The header badge answers "what is this project generating with" from
+        // across the room, which is the question a baked-in style makes hard.
+        if (badge) {
+          badge.textContent = lora && active
+            ? `using ${active.name || active.style_id}`
+            : "using references";
+          badge.className = "art-sth" + (lora && active ? " on" : "");
+        }
 
-        // Said plainly rather than left as a disabled button nobody can explain.
-        const noStyle = !active
-          ? `<div class="art-stnote">Nothing trained yet, so generations use the
-             references. Training does not change that until you switch it.</div>`
-          : "";
+        const thumbs = (list, cls) => list.map(a => `
+          <figure class="art-stthumb ${cls}" title="${bg.esc(a.name || "")}${
+            a.why ? " — " + bg.esc(a.why) : ""}">
+            ${a.rel
+              ? `<img src="/api/preview?rel=${encodeURIComponent(a.rel)}" alt="" loading="lazy">`
+              : `<div class="art-stmissing"></div>`}
+            <figcaption>${bg.esc(a.name || "")}</figcaption>
+          </figure>`).join("");
 
-        const activeRow = active
+        const trainedRow = active
           ? `<div class="art-stactive">
-               <b>${bg.esc(active.name || active.style_id)}</b>
-               <span class="art-stdim">${bg.esc(active.style_id)} · ${
+               <div class="art-stactname">${bg.esc(active.name || active.style_id)}</div>
+               <div class="art-stdim">${bg.esc(active.style_id)} · ${
                  Number(active.images || 0)} anchors · strength ${
-                 Number(active.strength ?? 0.85)}</span>
+                 Number(active.strength ?? 0.85)} · trained ${
+                 bg.esc(String(active.trained_at || "").slice(0, 16))}</div>
                ${(active.sources || []).length
-                 ? `<div class="art-stdim">from ${(active.sources || []).slice(0, 8)
+                 ? `<div class="art-stdim">from ${(active.sources || []).slice(0, 10)
                       .map(n => bg.esc(n)).join(", ")}${
-                      (active.sources || []).length > 8 ? " …" : ""}</div>`
+                      (active.sources || []).length > 10 ? " …" : ""}</div>`
                  : ""}
              </div>`
           : "";
 
-        const usable = (ds.usable_names || []).length;
-        const rejected = ds.rejected || [];
-        const dataRow = `
-          <div class="art-stdata">
-            <b>${usable}</b> of ${Number(ds.candidates || 0)} pinned anchors can train
-            ${rejected.length
-              ? `<details class="art-stdrop"><summary>${rejected.length} cannot</summary>
-                   ${rejected.slice(0, 12).map(r =>
-                     `<div class="art-stdim">${bg.esc(r.name || r.path || "")} — ${
-                        bg.esc(r.why || "")}</div>`).join("")}</details>`
-              : ""}
-            ${(ds.warnings || []).map(w =>
-                `<div class="art-stwarn">${bg.esc(w)}</div>`).join("")}
-          </div>`;
-
         const busy = run.status === "running";
-        const trainRow = `
-          <div class="art-strow">
-            <input class="art-stname" id="art-stname" placeholder="name this style"
-                   maxlength="60"${busy ? " disabled" : ""}>
-            <button class="qbtn small" id="art-sttrain"${
-              busy || !ds.ok ? " disabled" : ""}>train</button>
-          </div>
-          ${busy
-            ? `<div class="art-stnote">training “${bg.esc(run.name || "")}” from ${
-                 Number(run.images || 0)} anchors — 5 to 15 minutes.</div>`
-            : run.status === "failed"
-              ? `<div class="art-stwarn">last run failed: ${bg.esc(run.error || "")}</div>`
-              : !ds.ok
-                ? `<div class="art-stnote">${bg.esc(ds.reason || "not enough usable anchors")}</div>`
-                : `<div class="art-stnote">Costs money and takes 5-15 minutes. Krea
-                   publishes no price for training, so this is not counted against
-                   the spend ceiling — it cannot be.</div>`}`;
+        const cost = busy
+          ? `<span class="art-stnote">training “${bg.esc(run.name || "")}” from ${
+               Number(run.images || 0)} anchors — 5 to 15 minutes.</span>`
+          : run.status === "failed"
+            ? `<span class="art-stwarn">last run failed: ${bg.esc(run.error || "")}</span>`
+            : !ds.ok
+              ? `<span class="art-stwarn">${bg.esc(ds.reason || "not enough usable anchors")}</span>`
+              : `<span class="art-stnote">5-15 minutes, and it costs money. Krea
+                 publishes no training price, so this is NOT bounded by the spend
+                 ceiling the way a generation is.</span>`;
 
-        host.innerHTML = activeRow + modeRow + noStyle + dataRow + trainRow;
+        host.innerHTML = `
+          <div class="art-stgrid">
+            <div class="art-stleft">
+              <div class="art-strow">
+                <span class="art-stlabel">generate with</span>
+                <span class="art-stseg">
+                  <button class="art-stopt${lora ? "" : " on"}" data-stmode="refs"
+                          title="Send the pinned anchors as style references — how it has always worked">references</button>
+                  <button class="art-stopt${lora ? " on" : ""}" data-stmode="lora"
+                          title="Use the style trained from those anchors, freeing the reference slot for identity"
+                          ${active ? "" : "disabled"}>trained style</button>
+                </span>
+              </div>
+              <p class="art-stwhy">A style reference and an identity reference
+                cannot share a weight — at equal strength the style ref transfers
+                the <b>subject</b>, and the cast comes back as one person.
+                Training the look into a model frees that slot for identity.</p>
+              ${trainedRow || `<div class="art-stnote">Nothing trained yet, so
+                generations use the references. Training does not change that
+                until you switch the toggle.</div>`}
+              <div class="art-strow">
+                <input class="art-stname" id="art-stname" placeholder="name this style"
+                       maxlength="60"${busy ? " disabled" : ""}>
+                <button class="qbtn small" id="art-sttrain"${
+                  busy || !ds.ok ? " disabled" : ""}>train</button>
+              </div>
+              ${cost}
+              ${(ds.warnings || []).map(w =>
+                  `<div class="art-stwarn">${bg.esc(w)}</div>`).join("")}
+            </div>
+            <div class="art-stright">
+              <div class="art-stsec">the dataset · ${anchors.length} of ${
+                Number(ds.candidates || 0)} will train
+                <span class="art-stseg art-stsrc">
+                  ${(d.sources || ["pins", "assets", "both"]).map(src => `
+                    <button class="art-stopt${d.source === src ? " on" : ""}"
+                            data-stsrc="${src}"
+                            title="${src === "pins"
+                              ? "The anchors a human approved through ref_pin"
+                              : src === "assets"
+                                ? "The game's own shipped art under game/assets"
+                                : "Both shelves, de-duplicated"}">${src}</button>`).join("")}
+                </span>
+              </div>
+              <div class="art-stfilm">${
+                thumbs(anchors, "ok") || '<div class="art-empty">no pinned anchor clears 1024px on its short side.</div>'}</div>
+              ${rejected.length
+                ? `<details class="art-stdrop">
+                     <summary>${rejected.length} pinned anchor${
+                       rejected.length === 1 ? "" : "s"} cannot — mostly too small</summary>
+                     <div class="art-stfilm dim">${thumbs(rejected, "no")}</div>
+                   </details>`
+                : ""}
+            </div>
+          </div>`;
 
         host.querySelectorAll("[data-stmode]").forEach(b => b.onclick = async () => {
           if (b.disabled) return;
@@ -1135,6 +1176,12 @@
             { method: "PATCH", body: { "art.style_source": b.dataset.stmode },
               button: b, ok: b.dataset.stmode === "lora"
                 ? "generating with the trained style" : "generating with references" });
+          if (r.ok) this._reload();
+        });
+        host.querySelectorAll("[data-stsrc]").forEach(b => b.onclick = async () => {
+          const r = await window.mutate("/api/settings",
+            { method: "PATCH", body: { "art.style_dataset": b.dataset.stsrc },
+              button: b, ok: `dataset: ${b.dataset.stsrc}` });
           if (r.ok) this._reload();
         });
         const train = host.querySelector("#art-sttrain");
@@ -1552,32 +1599,60 @@
     .art-h{display:flex;align-items:center;gap:var(--s-4);margin:0 0 var(--s-5);font-size:var(--fs-2xs);font-weight:var(--fw-bold);text-transform:uppercase;letter-spacing:var(--track-label);color:var(--text-3)}
     .art-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
 
-    /* Trained style. The toggle is the loud element in this card on purpose:
-       a LoRA's drift is baked into the model rather than visible in a payload,
-       so "which look is this project generating with" has to be answerable at a
-       glance rather than by reading a settings page. */
+    /* Trained style. Full width above the lab, because it decides what EVERY
+       image this project generates looks like — and a LoRA's drift is baked
+       into the model rather than visible in a payload, so "which look is on"
+       has to be answerable from across the room. */
+    .art-stcard{border-color:var(--accent-line)}
+    .art-sth{margin-left:auto;font-family:var(--mono);font-size:var(--fs-3xs);
+      font-weight:400;color:var(--text-3);text-transform:none;letter-spacing:0}
+    .art-sth.on{color:var(--accent)}
+    .art-stgrid{display:grid;grid-template-columns:minmax(280px,1fr) minmax(0,1.15fr);
+      gap:var(--s-6)}
     .art-strow{display:flex;align-items:center;gap:var(--s-4);margin:var(--s-4) 0}
     .art-stlabel{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);
       text-transform:uppercase;letter-spacing:var(--track-label);white-space:nowrap}
     .art-stseg{display:inline-flex;border:1px solid var(--seam);border-radius:var(--r-full);overflow:hidden}
-    .art-stopt{padding:4px 11px;border:0;background:transparent;color:var(--text-3);
+    .art-stopt{padding:5px 13px;border:0;background:transparent;color:var(--text-3);
       font:inherit;font-family:var(--mono);font-size:var(--fs-3xs);cursor:pointer}
     .art-stopt + .art-stopt{border-left:1px solid var(--seam)}
     .art-stopt:hover:not(:disabled){color:var(--bone);background:var(--plate2)}
     .art-stopt.on{background:var(--accent-soft);color:var(--accent);font-weight:var(--fw-semi)}
     .art-stopt:disabled{opacity:.45;cursor:not-allowed}
+    .art-stwhy{font-size:12px;color:var(--text-2);line-height:1.55;margin:var(--s-4) 0}
+    .art-stwhy b{color:var(--bone)}
     .art-stactive{padding:var(--s-4);border-radius:var(--r-sm);
-      background:var(--accent-soft);border:1px solid var(--accent-line);font-size:12px}
+      background:var(--accent-soft);border:1px solid var(--accent-line)}
+    .art-stactname{font-size:13px;font-weight:var(--fw-semi);color:var(--bone)}
     .art-stdim{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);margin-top:2px}
-    .art-stnote{font-size:11.5px;color:var(--text-3);line-height:1.5;margin-top:var(--s-3)}
-    .art-stwarn{font-size:11.5px;color:var(--warn);line-height:1.5;margin-top:var(--s-3)}
-    .art-stdata{font-size:12px;color:var(--text-2);margin:var(--s-4) 0}
+    .art-stnote{display:block;font-size:11.5px;color:var(--text-3);line-height:1.5;margin-top:var(--s-3)}
+    .art-stwarn{display:block;font-size:11.5px;color:var(--warn);line-height:1.5;margin-top:var(--s-3)}
+    .art-stsec{display:flex;align-items:center;gap:var(--s-4);flex-wrap:wrap;
+      font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);
+      text-transform:uppercase;letter-spacing:var(--track-label);margin-bottom:var(--s-3)}
+    .art-stsrc{margin-left:auto}
+    /* The anchors themselves. "6 of 26" is the least useful way to describe a
+       dataset of pictures; the pictures are the description. */
+    .art-stfilm{display:flex;flex-wrap:wrap;gap:var(--s-3)}
+    .art-stfilm.dim{opacity:.55}
+    .art-stthumb{margin:0;width:88px}
+    .art-stthumb img,.art-stmissing{width:88px;height:66px;object-fit:cover;
+      border-radius:var(--r-sm);border:1px solid var(--seam);background:var(--plate2);
+      display:block;image-rendering:pixelated}
+    .art-stthumb.ok img{border-color:var(--accent-line)}
+    .art-stthumb.no img{filter:grayscale(1)}
+    .art-stthumb figcaption{font-family:var(--mono);font-size:var(--fs-3xs);
+      color:var(--text-3);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .art-stdrop{margin-top:var(--s-5)}
     .art-stdrop summary{cursor:pointer;font-family:var(--mono);font-size:var(--fs-3xs);
-      color:var(--text-3);margin-top:var(--s-2)}
-    .art-stname{flex:1;min-width:0;padding:5px 9px;background:var(--plate2);
+      color:var(--text-3)}
+    .art-stdrop summary:hover{color:var(--bone)}
+    .art-stdrop .art-stfilm{margin-top:var(--s-3)}
+    .art-stname{flex:1;min-width:0;padding:6px 10px;background:var(--plate2);
       border:1px solid var(--seam);border-radius:var(--r-sm);color:var(--bone);
       font:inherit;font-size:12px}
     .art-stname:focus{outline:none;border-color:var(--accent-line)}
+    @media(max-width:1100px){.art-stgrid{grid-template-columns:1fr}}
     .art-muted{color:var(--ash);font-size:11px}
     .art-btn{padding:6px 11px;background:var(--plate2);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;cursor:pointer}
     .art-btn:hover{border-color:var(--ember)}

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from . import activity, refs as _refs, workspace as _ws
@@ -158,8 +159,55 @@ def forget(root: str | os.PathLike[str], style_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # The dataset: what the art seat already approved
 # ---------------------------------------------------------------------------
+SOURCES = ("pins", "assets", "both")
+
+# Where shipped art lives, relative to the project. The game's own tree, not the
+# tool's: .bgate/refs is the pin store and .bgate_out is scratch, and training on
+# either means training on the tool instead of the game.
+ASSET_DIRS = ("game/assets",)
+ASSET_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+# A cap, because an assets tree is thousands of files and every one of them gets
+# opened to read its size. The floor rejects most pixel art anyway; what this
+# stops is a scan that takes a minute to tell you so.
+MAX_SCAN = 4000
+
+
+def _from_assets(root) -> list[dict]:
+    """Shipped art as training candidates.
+
+    THE PINS ARE NOT ALWAYS THE DATASET. `ref_pin` holds the anchors a human
+    approved as on-model, which is the right default and a small set — six
+    images on a real project. But a game that has been generating for weeks has
+    hundreds of finished, in-game, on-model pieces in `game/assets/`, and
+    refusing to train on them because nobody re-pinned them is refusing the
+    project's own output.
+
+    Everything here still goes through the same floor and the same human
+    confirmation; what changes is only which shelf is offered.
+    """
+    base = Path(root)
+    out: list[dict] = []
+    for rel_dir in ASSET_DIRS:
+        folder = base / rel_dir
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*")):
+            if len(out) >= MAX_SCAN:
+                break
+            if not path.is_file() or path.suffix.lower() not in ASSET_SUFFIXES:
+                continue
+            rel = path.relative_to(base).as_posix()
+            out.append({
+                # The name is the path under the assets root, because two files
+                # called "idle.png" in different character folders are not the
+                # same anchor and a bare stem would read as a duplicate.
+                "name": path.relative_to(folder).as_posix(),
+                "path": str(path), "kind": "asset", "rel": rel})
+    return out
+
+
 def dataset(root: str | os.PathLike[str],
-            names: Optional[list] = None) -> dict:
+            names: Optional[list] = None, source: str = "pins") -> dict:
     """The pinned references this project would train on, judged before spending.
 
     Returns ``{ok, usable, rejected, warnings, reason, candidates}`` — the
@@ -173,27 +221,61 @@ def dataset(root: str | os.PathLike[str],
     """
     from bgate_adapters import krea
 
+    source = str(source or "pins").strip().lower()
+    if source not in SOURCES:
+        source = "pins"
     wanted = {str(n).strip() for n in (names or []) if str(n).strip()}
     candidates: list[dict] = []
-    for pin in _refs.list_refs(root) or []:
-        name = str(pin.get("name") or "")
-        if wanted and name not in wanted:
-            continue
-        path = str(pin.get("path") or "")
-        if not path:
-            continue
-        candidates.append({"name": name, "path": path,
-                           "kind": str(pin.get("kind") or "")})
+    if source in ("pins", "both"):
+        for pin in _refs.list_refs(root) or []:
+            path = str(pin.get("path") or "")
+            if path:
+                candidates.append({"name": str(pin.get("name") or ""),
+                                   "path": path,
+                                   "kind": str(pin.get("kind") or "")})
+    if source in ("assets", "both"):
+        seen = {c["path"] for c in candidates}
+        candidates += [c for c in _from_assets(root) if c["path"] not in seen]
+    if wanted:
+        candidates = [c for c in candidates if c["name"] in wanted]
 
     verdict = krea.check_training_set([c["path"] for c in candidates])
-    by_path = {c["path"]: c["name"] for c in candidates}
+    by_path = {c["path"]: c for c in candidates}
     # Names, not paths: the human pinned "concept-battle", and telling them
     # ".bgate/refs/concept-battle.png is 1672x941" makes them do the lookup.
-    verdict["rejected"] = [{**r, "name": by_path.get(r.get("path"), "")}
+    verdict["rejected"] = [{**r, **_shown(root, by_path.get(r.get("path")))}
                            for r in verdict.get("rejected") or []]
-    verdict["usable_names"] = [by_path.get(p, "") for p in verdict.get("usable") or []]
+    verdict["usable_names"] = [
+        (by_path.get(p) or {}).get("name", "") for p in verdict.get("usable") or []]
+    # The anchors themselves, so a panel can SHOW the six images that will
+    # define the style rather than print the number six. This is an art
+    # feature; a count is the least useful way to describe a dataset of
+    # pictures, and "which of my anchors is in this" is the question actually
+    # being asked.
+    verdict["anchors"] = [_shown(root, by_path.get(p))
+                          for p in verdict.get("usable") or []]
     verdict["candidates"] = len(candidates)
+    verdict["source"] = source
     return verdict
+
+
+def _shown(root, entry: Optional[dict]) -> dict:
+    """One anchor as a panel needs it: its name, kind, and a servable path.
+
+    ``rel`` is project-relative because /api/preview refuses anything else — it
+    resolves against the root and rejects an escape, so an absolute path from
+    the pin table is a 403 rather than a thumbnail.
+    """
+    if not entry:
+        return {"name": "", "kind": "", "rel": ""}
+    rel = ""
+    try:
+        rel = str(Path(entry["path"]).resolve().relative_to(
+            Path(root).resolve())).replace("\\", "/")
+    except Exception:
+        rel = ""
+    return {"name": entry.get("name", ""), "kind": entry.get("kind", ""),
+            "rel": rel}
 
 
 def describe(root: str | os.PathLike[str]) -> dict:
@@ -208,9 +290,14 @@ def describe(root: str | os.PathLike[str]) -> dict:
         strength = float(_settings.get(root, "art.lora_strength"))
     except Exception:
         strength = 0.85
+    try:
+        source = _settings.get(root, "art.style_dataset")
+    except Exception:
+        source = "pins"
     return {"trained": trained(root), "active": active(root),
-            "mode": mode, "strength": strength,
-            "dataset": dataset(root)}
+            "mode": mode, "strength": strength, "source": source,
+            "sources": list(SOURCES),
+            "dataset": dataset(root, source=source)}
 
 
 def for_generation(root: Any) -> list[dict]:
