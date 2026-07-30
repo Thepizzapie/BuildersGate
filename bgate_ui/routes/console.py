@@ -31,6 +31,7 @@ last few per live agent, and briefs are previews.
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
@@ -39,6 +40,7 @@ from bgate_core import activity as _activity
 from bgate_core import artifacts as _artifacts
 from bgate_core import db
 from bgate_core import queue as _queue
+from bgate_core import steerbox as _steerbox
 from bgate_core import workspace as _ws
 from bgate_ui import api as _api
 from bgate_ui import autodeploy as _autodeploy
@@ -66,6 +68,22 @@ SESSION_KEY = "console"
 # nobody is thinking about — which is the exact failure the candidate gate had.
 SIGNOFF_HOURS = 8
 
+
+def _signoff_hours(root_dir) -> float:
+    """The sign-off window, from the registry (``signoff.hours``).
+
+    Read per request rather than captured in the constant above: the constant is
+    now only the fallback, and a project that raised the window because it is
+    catching up on a weekend of work must not have to restart the dashboard for
+    it. Without this the Settings panel offered the field and nothing read it —
+    a switch that silently does nothing is worse than no switch.
+    """
+    try:
+        from bgate_core import settings as _settings
+        return max(0.25, float(_settings.get(root_dir, "signoff.hours")))
+    except Exception:
+        return float(SIGNOFF_HOURS)
+
 # The human's message, verbatim, inside the brief. See _chat_brief.
 SAID_OPEN = "<<<SAID"
 SAID_CLOSE = "SAID>>>"
@@ -82,6 +100,7 @@ STEPS = 6
 
 _CARD_FIELDS = ("id", "seat", "title", "status", "priority", "source",
                 "source_ref", "attempts", "total_cost_usd", "result",
+                "chain_id", "chain_pos", "depends_on", "approved_by",
                 "created_at", "updated_at")
 
 
@@ -92,6 +111,87 @@ def _card(row) -> dict:
     item["brief_len"] = len(brief)
     item["result"] = (item["result"] or "")[:600]
     return item
+
+
+# How much of a phase's step feed goes over the wire. MEASURED on a live board:
+# 20 phases for one art agent shipped 106KB of a 162KB payload, two thirds of it
+# raw step text repeated inside each phase — and the client only ever renders the
+# newest phase's tail on the task rail plus one open phase's feed. Every poll of
+# every open tab paid for all twenty.
+STEP_PHASES = 3      # phases that keep their steps (the ones a rail actually opens)
+PHASE_STEPS = 6      # steps kept per phase; the rail renders a tail, not a history
+
+# Rebuilding phases is the expensive half of this endpoint: split() walks the
+# whole ring and look() stats every path it finds on disk, per live agent, per
+# poll, per tab. Keyed on the run's own step count, so a poll that brings no new
+# steps costs a dict lookup and a poll that does rebuilds exactly once for every
+# tab watching.
+_PHASE_CACHE: dict[tuple, tuple] = {}
+_PHASE_LOCK = threading.Lock()
+_PHASE_CACHE_MAX = 64
+
+
+def _trim_phases(phases: list[dict]) -> list[dict]:
+    """Drop step text the client cannot show, and SAY it was dropped.
+
+    An older phase shipping `steps: []` silently would render as "nothing
+    recorded in this pocket", which is a lie about a run that did work. The count
+    rides along so the rail can point at the full log instead.
+    """
+    out = []
+    for i, phase in enumerate(phases or []):
+        keep = i >= len(phases) - STEP_PHASES
+        held = list(phase.get("steps") or [])
+        trimmed = dict(phase)
+        trimmed["steps"] = held[-PHASE_STEPS:] if keep else []
+        trimmed["steps_dropped"] = len(held) - len(trimmed["steps"])
+        out.append(trimmed)
+    return out
+
+
+def _phases_for(root, item_id: int, feed: dict, all_steps: list,
+                artifacts: list) -> list[dict]:
+    key = (str(root), int(item_id))
+    stamp = (int(feed.get("step_count") or 0), len(all_steps), len(artifacts),
+             bool(feed.get("running")))
+    with _PHASE_LOCK:
+        hit = _PHASE_CACHE.get(key)
+        if hit and hit[0] == stamp:
+            return hit[1]
+    built = _trim_phases(_phases.look(root, _phases.attach(
+        _phases.split(all_steps, running=bool(feed.get("running"))),
+        artifacts)))
+    with _PHASE_LOCK:
+        if len(_PHASE_CACHE) >= _PHASE_CACHE_MAX:
+            _PHASE_CACHE.clear()      # a finished run never comes back
+        _PHASE_CACHE[key] = (stamp, built)
+    return built
+
+
+def _chain_state(conn, items: list[dict]) -> None:
+    """Stamp readiness onto the cards, in ONE query for the whole board.
+
+    A chained item that is not ready is indistinguishable from a plain queued one
+    on the wire, so the console offered a deploy button whose only possible
+    outcome was a refusal. Resolved here rather than per row because the console
+    payload is already the expensive call on this page.
+    """
+    need = {int(it["depends_on"]) for it in items if it.get("depends_on")}
+    if not need:
+        for it in items:
+            it["ready"] = True
+        return
+    marks = ", ".join("?" * len(need))
+    deps = {int(row["id"]): dict(row) for row in conn.execute(
+        f"SELECT id, seat, title, status FROM work_item WHERE id IN ({marks})",
+        tuple(sorted(need)))}
+    for it in items:
+        dep = deps.get(int(it["depends_on"] or 0))
+        # A missing predecessor (deleted) unblocks rather than strands: an item
+        # nobody can release is worse than one that ran a step early.
+        it["ready"] = not dep or dep["status"] == "done"
+        if not it["ready"]:
+            it["waiting_on"] = dep
 
 
 def _chat_brief(text: str, turn_id: int) -> str:
@@ -270,7 +370,8 @@ def _gates(root_dir, conn, active: set[int]) -> list[dict]:
     # the moment it is acted on, which is what makes it a gate rather than a
     # backlog — see POST /api/console/signoff.
     acked = set((_ws.get(root_dir, SEAT, SIGNOFF_KEY, {}).get("acked") or {}))
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=SIGNOFF_HOURS)
+    cutoff = (datetime.now(timezone.utc)
+              - timedelta(hours=_signoff_hours(root_dir))
               ).strftime("%Y-%m-%d %H:%M:%S")
     for row in conn.execute(
             "SELECT id, seat, title, result, source, updated_at FROM work_item "
@@ -309,6 +410,52 @@ def _gates(root_dir, conn, active: set[int]) -> list[dict]:
             "path": art.get("path") or "",
         })
     return out
+
+
+def _questions(root_dir) -> list[dict]:
+    """Open ``ask_human`` questions — what an agent is waiting on a human for.
+
+    A question is an event rather than a work item (see bgate_core.steerbox): a
+    queued row is a row somebody has to dispatch in order to read it, which turns
+    "ask the human" into "spawn an agent to ask the human". So it arrives here,
+    on the payload the console already polls, instead of in the board list.
+
+    Guarded and read whole rather than off the notification cursor: a question
+    stays open until it is answered, so a cursor that has already passed the
+    event would show it once and then never again.
+    """
+    try:
+        return _steerbox.open_questions(root_dir)
+    except Exception:
+        return []
+
+
+def _question_reminders(root_dir, questions: list[dict]) -> None:
+    """Fire the ONE stale-question reminder, on the poll that is already here.
+
+    The bus is transition-driven and an unanswered question makes no transitions,
+    so without this the new routing keeps the quiet failure mode it exists to fix.
+    It rides this endpoint rather than a fourth daemon thread, and the decision to
+    do any work at all is made from the list already in hand — so the ordinary
+    poll costs a string comparison, not a query. Fully guarded: a reminder must
+    never be the reason the console stops painting.
+    """
+    if not questions:
+        return
+    try:
+        from bgate_core import settings as _settings
+        hours = float(_settings.get(root_dir, "notify.question_stale_h") or 12.0)
+    except Exception:
+        hours = 12.0
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(0.25, hours))
+              ).strftime("%Y-%m-%d %H:%M:%S")
+    if not any((q.get("asked_at") or "") < cutoff and not q.get("reminded_at")
+               for q in questions):
+        return
+    try:
+        _steerbox.remind_stale(root_dir, hours=hours)
+    except Exception:
+        pass
 
 
 def _artifacts_by_item(root_dir, item_ids: set[int]) -> dict[int, list[dict]]:
@@ -427,8 +574,8 @@ def console_state(steps: bool = True) -> dict:
 
     rows = conn.execute(
         "SELECT * FROM work_item ORDER BY CASE status WHEN 'dispatched' THEN 0 "
-        "WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END, "
-        "priority DESC, id DESC LIMIT ?", (BOARD,)).fetchall()
+        "WHEN 'review' THEN 1 WHEN 'queued' THEN 2 WHEN 'failed' THEN 3 "
+        "ELSE 4 END, priority DESC, id DESC LIMIT ?", (BOARD,)).fetchall()
     items = [_card(row) for row in rows]
     seen = {it["id"] for it in items}
     # A running agent's item is always in the payload even if the window cut it
@@ -454,9 +601,8 @@ def console_state(steps: bool = True) -> dict:
             feed = _dispatch.read_activity(str(r), item_id, limit=0)
             all_steps = feed.get("steps") or []
             live_steps[str(item_id)] = all_steps[-STEPS:]
-            live_phases[str(item_id)] = _phases.look(r, _phases.attach(
-                _phases.split(all_steps, running=bool(feed.get("running"))),
-                by_item.get(item_id, [])))
+            live_phases[str(item_id)] = _phases_for(
+                r, item_id, feed, all_steps, by_item.get(item_id, []))
 
     counts = {row["status"]: int(row["n"]) for row in conn.execute(
         "SELECT status, count(*) AS n FROM work_item GROUP BY status")}
@@ -466,21 +612,30 @@ def console_state(steps: bool = True) -> dict:
         "SELECT id FROM work_item WHERE status IN ('queued', 'dispatched')")}
     active |= live_ids
 
+    _chain_state(conn, items)
+
+    questions = _questions(r)
+    _question_reminders(r, questions)
+
+    from bgate_core import gates as _gatemode
     return {
         "turns": turns,
         "items": items,
         "agents": agents,
         "lineage": _lineage(r),
         "gates": _gates(r, conn, active),
+        "questions": questions,
         "steps": live_steps,
         "phases": live_phases,
         "collab": _collab(r, conn, active),
         "sessions": list(reversed(doc.get("sessions") or []))[:20],
         "autopilot": _autodeploy.state(r),
+        "gate": _gatemode.state(r),
         "floor": {
             "running": len(live_ids),
             "queued": counts.get("queued", 0),
             "dispatched": counts.get("dispatched", 0),
+            "review": counts.get("review", 0),
             "done": counts.get("done", 0),
             "failed": counts.get("failed", 0),
         },
@@ -638,6 +793,43 @@ def console_signoff(payload: dict) -> dict:
     _activity.log(r, "signoff", f"accepted #{item_id}: {item['title'][:80]}",
                   seat=item["seat"], ref=str(item_id))
     return {"ok": True, "item_id": item_id, "verdict": verdict, "status": "done"}
+
+
+@router.post("/api/console/answer")
+def console_answer(payload: dict) -> dict:
+    """Answer a director's question, and send the answer where it will be read.
+
+    ``{"seq": <the question's event id>, "answer": "..."}``. Where it lands
+    depends on whether the asker is still alive, which is the whole reason this is
+    an endpoint and not a text field on a work item: a live agent gets it as a
+    steer mid-run, a finished one leaves behind a handoff `decision` note. Either
+    way it is attached to the question event, so the drawer, the next session and
+    the next debrief all see it without this tab being open.
+
+    409 on a second answer: the first one has already been delivered, and a
+    silent overwrite would contradict a message that is already gone.
+    """
+    try:
+        seq = int(payload.get("seq"))
+    except (TypeError, ValueError):
+        raise _api.bad_request("seq (the question's event id) is required")
+    text = str(payload.get("answer") or "").strip()
+    r = root()
+    try:
+        result = _steerbox.answer(r, seq, text, by=_activity.current_actor())
+    except _steerbox.AlreadyAnswered as exc:
+        raise _api.conflict(str(exc), seq=seq, answer=exc.existing)
+    except LookupError as exc:
+        raise _api.not_found(str(exc))
+    except ValueError as exc:
+        raise _api.bad_request(str(exc))
+    try:
+        _activity.log(r, "question",
+                      f"answered question {seq} ({result['route']}): {text[:120]}",
+                      seat=SEAT, ref=str(result.get("item_id") or seq))
+    except Exception:
+        pass  # the answer is already recorded and delivered; the ledger is not
+    return result
 
 
 @router.post("/api/console/killswitch")

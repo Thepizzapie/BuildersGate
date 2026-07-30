@@ -10,10 +10,14 @@ a raise is a failure instead of a shrug.
 """
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from bgate_core import db, queue
 from bgate_ui import dispatch as _dispatch
+from bgate_ui import followup
 from bgate_ui import qa_gate
 
 EPOCH = "1970-01-01 00:00:00"
@@ -153,51 +157,68 @@ class TestRounds:
 
 
 class TestStart:
+    """THE LOOP MOVED, so these test its new owner.
+
+    This module used to own a daemon thread with a wall-clock cutoff — it
+    reviewed "only transitions after the server started", so every completion
+    that happened while the dashboard was down was never reviewed and nothing
+    said so. `bgate_ui.followup` drives the gate from the event bus' cursor now,
+    which is a row id and therefore survives a restart. What is asserted here is
+    what the old tests asserted about the thread: the kill switch, idempotence,
+    and that a raising tick cannot take the dashboard down.
+    """
+
+    def test_qa_gate_no_longer_owns_a_thread(self):
+        """The regression this class exists to prevent from coming back. Two
+        loops scanning for completed items is two QA rounds per deliverable."""
+        for gone in ("start", "_run", "_started", "POLL_S"):
+            assert not hasattr(qa_gate, gone), (
+                f"qa_gate.{gone} is back — the router owns the loop now, and a "
+                "second scanner double-gates every item")
+
     def test_disabled_by_env(self, root, monkeypatch):
-        monkeypatch.setattr(qa_gate, "_started", qa_gate.threading.Event())
+        followup.reset()
         for value in ("0", "false", "off"):
-            monkeypatch.setenv("BGATE_QA_GATE", value)
-            assert qa_gate.start(str(root)) is False
+            monkeypatch.setenv("BGATE_FOLLOWUP", value)
+            assert followup.start(str(root)) is False
 
     def test_start_is_idempotent_and_does_not_block(self, root, monkeypatch):
-        monkeypatch.setattr(qa_gate, "_started", qa_gate.threading.Event())
-        monkeypatch.delenv("BGATE_QA_GATE", raising=False)
-        # POLL_S is long enough that the thread sleeps for the whole test; it is
-        # a daemon, so it cannot outlive the run.
-        # Count only the threads THIS test starts. Any earlier test that built a
-        # TestClient ran the app's startup hook, which starts a gate of its own;
-        # it is a sleeping daemon that never exits, so a global enumeration by
-        # name attributes someone else's thread to us and fails out of order.
-        def gate_threads() -> set:
-            return {t for t in qa_gate.threading.enumerate()
-                    if t.name == "bgate-qa-gate"}
+        followup.reset()
+        monkeypatch.delenv("BGATE_FOLLOWUP", raising=False)
+        # The tick interval is long enough that the thread sleeps for the whole
+        # test; it is a daemon, so it cannot outlive the run. Count only the
+        # threads THIS test starts — an earlier test that built a TestClient ran
+        # the app's startup hook, and its sleeping daemon would otherwise be
+        # attributed here and fail out of order.
+        def router_threads() -> set:
+            return {t for t in threading.enumerate() if t.name == "bgate-followup"}
 
-        before = gate_threads()
-        assert qa_gate.start(str(root)) is True
-        assert qa_gate.start(str(root)) is True
-        started = gate_threads() - before
-        assert len(started) == 1, "the second start() spawned another watcher"
+        before = router_threads()
+        assert followup.start(str(root)) is True
+        assert followup.start(str(root)) is True
+        started = router_threads() - before
+        assert len(started) == 1, "the second start() spawned another router"
         assert next(iter(started)).daemon
 
-    def test_the_watcher_swallows_a_broken_scan(self, root, monkeypatch):
-        """Fail-safe: the gate must never take the dashboard down. (It is also
-        why the placeholder bug went unseen — hence the direct _scan_once tests
-        above.)"""
+    def test_the_router_swallows_a_broken_tick(self, root, monkeypatch):
+        """Fail-safe: the router must never take the dashboard down. It is also
+        why the gate's decision logic is tested directly — a swallowed exception
+        is exactly how the placeholder bug went unseen for so long."""
         boom = []
 
         def _raise(*_a, **_k):
             boom.append(1)
             raise RuntimeError("seeded failure")
 
-        monkeypatch.setattr(qa_gate, "_scan_once", _raise)
-        monkeypatch.setattr(qa_gate, "POLL_S", 0.01)
-        monkeypatch.setattr(qa_gate, "_started", qa_gate.threading.Event())
-        monkeypatch.delenv("BGATE_QA_GATE", raising=False)
-        assert qa_gate.start(str(root)) is True
-        deadline = qa_gate.time.monotonic() + 5
-        while not boom and qa_gate.time.monotonic() < deadline:
-            qa_gate.time.sleep(0.01)
-        assert boom, "the watcher never scanned"
-        # Still alive after raising.
-        assert any(t.name == "bgate-qa-gate" and t.is_alive()
-                   for t in qa_gate.threading.enumerate())
+        followup.reset()
+        monkeypatch.setattr(followup, "tick", _raise)
+        monkeypatch.setattr(followup, "POLL_S", 0.01, raising=False)
+        monkeypatch.delenv("BGATE_FOLLOWUP", raising=False)
+        assert followup.start(str(root)) is True
+        deadline = time.monotonic() + 5
+        while not boom and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert boom, "the router never ticked"
+        assert any(t.name == "bgate-followup" and t.is_alive()
+                   for t in threading.enumerate())
+        followup.reset()
