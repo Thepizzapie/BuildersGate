@@ -273,3 +273,52 @@ class TestTheOtherShelf:
 
     def test_an_unknown_shelf_falls_back_rather_than_scanning_the_disk(self, shipped):
         assert styles.dataset(shipped, source="everything")["source"] == "pins"
+
+
+class TestChoosingTheAnchors:
+    """"Everything that passes the floor" is a starting point, not an
+    instruction. A dataset is a curatorial decision — a title plate and a wall
+    tile teach different things, and the human is the one who knows which of
+    those this style is supposed to be."""
+
+    def test_a_subset_is_honoured_and_still_judged(self, anchors):
+        got = styles.dataset(anchors, names=["concept-0", "concept-1", "concept-2",
+                                             "concept-3", "concept-4"])
+        assert got["usable_names"] == [f"concept-{i}" for i in range(5)]
+        assert got["ok"] is True
+
+    def test_a_subset_below_the_minimum_is_refused_not_padded(self, anchors):
+        got = styles.dataset(anchors, names=["concept-0", "concept-1"])
+        assert got["ok"] is False and "at least 5" in got["reason"]
+
+    def test_a_name_that_is_not_on_the_shelf_is_simply_absent(self, anchors):
+        got = styles.dataset(anchors, names=["concept-0", "never-pinned"])
+        assert got["usable_names"] == ["concept-0"]
+
+    def test_the_route_trains_only_what_was_chosen(self, root, anchors, monkeypatch):
+        """The selection has to reach the adapter — a picker the server ignores
+        is worse than no picker, because it lies about what was trained."""
+        from fastapi.testclient import TestClient
+        from bgate_adapters import krea
+        from bgate_ui.app import app
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("KREA_API_KEY", "test-key")
+
+        seen: dict = {}
+        monkeypatch.setattr(krea, "train",
+                            lambda name, paths, **kw: seen.update(
+                                {"name": name, "paths": list(paths)}) or
+                            {"ok": True, "style_id": "s1", "images": len(paths)})
+        chosen = ["concept-0", "concept-1", "concept-2", "concept-3", "concept-4"]
+        got = TestClient(app).post("/api/art/style/train",
+                                   json={"name": "Picked", "names": chosen})
+        assert got.status_code == 200
+        body = got.json().get("data", got.json())
+        assert sorted(body["sources"]) == sorted(chosen)
+        # And the adapter was handed exactly those files, not the whole shelf.
+        import time
+        for _ in range(50):
+            if seen.get("paths"):
+                break
+            time.sleep(0.05)
+        assert len(seen.get("paths") or []) == len(chosen)
