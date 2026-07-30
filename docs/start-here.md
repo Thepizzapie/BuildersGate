@@ -41,9 +41,9 @@ call the tools it exposes, the same way it calls "read a file". A "custom MCP"
 is nothing more exotic than a server somebody wrote for their own domain instead
 of using an off-the-shelf one.
 
-Builders Gate is one of those, for game development. It exposes 78 tools:
-`godot_run`, `image_sprites`, `bible_add`, `asset_lock`, `playtest_start`, and
-so on. It runs on your machine as a local process talking
+Builders Gate is one of those, for game development. It exposes some eighty
+tools: `godot_run`, `image_sprites`, `bible_add`, `asset_lock`,
+`playtest_start`, and so on. It runs on your machine as a local process talking
 over stdin and stdout. There is no network service, no account, no cloud. Each
 game gets one SQLite file at `.bgate/game.db` that travels with the repo.
 
@@ -169,13 +169,26 @@ persist and are re-applied at boot.
 bgate serve          # http://127.0.0.1:7788
 ```
 
-Nine views over the same database: the queue, live agents you can steer, the
-seat workspaces, the world bible, assets, playtests, and the iteration timeline.
-No build step, no node, no CDN.
+Ten views over the same database: the queue, live agents you can steer, the seat
+workspaces, the world bible, assets, playtests, the iteration timeline, and
+**Settings**. No build step, no node, no CDN.
 
 Mutations require a per-project bearer token from `.bgate/ui-token`, because
 127.0.0.1 is not a security boundary. Any page in your browser can POST to
 localhost.
+
+**The bell** in the header counts what has happened since you last looked —
+agents finishing, work parked for your approval, a chain that has stopped moving,
+a question the director wants answered. It reads the same event log the follow-up
+router does. It can only tell you things while the page is open, though, so if you
+walk away: `bgate app` puts the unread count in the window title, and one optional
+webhook (Settings → Notifications) is the only channel that leaves the machine.
+
+**Settings** is every switch in one place, grouped, each row saying whether its
+value is the default, something you stored, or an environment variable overriding
+both — so a shell profile can never quietly disagree with what the panel shows.
+The two that decide how much runs without you are `autopilot` (does work START
+without you) and the approval gate (does it FINISH without you).
 
 ### 3. Register the server and install the hook
 
