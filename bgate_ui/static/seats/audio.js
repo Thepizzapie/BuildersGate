@@ -28,11 +28,6 @@
       this._root = container;
       container.innerHTML = this._style() + `
         <div class="aud-wrap">
-          <div class="aud-note">
-            <b>Audio workspace v1</b> — seat spec is open; this covers library +
-            playback + cue mapping.
-            <span class="aud-todo">TODO: waveform view, generation, in-engine hookup.</span>
-          </div>
           <div class="aud-card" id="aud-lib">
             <h3 class="aud-h">${BGICON("audio")} Sound library <span class="aud-sub" id="aud-lib-count"></span>
               <span class="aud-actions">
@@ -395,9 +390,6 @@
     _style() {
       return `<style>
         .aud-wrap{display:flex;flex-direction:column;gap:14px;color:var(--text);font-size:13px}
-        .aud-note{background:var(--surface-1);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:10px 14px;color:var(--text);line-height:1.5}
-        .aud-note b{color:var(--text)}
-        .aud-todo{color:var(--text-3);font-style:italic;margin-left:4px}
         .aud-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
         .aud-h{font-size:13px;font-weight:var(--fw-semi);color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:12px}
         .aud-sub{font-weight:400;color:var(--text-3);font-size:11px}

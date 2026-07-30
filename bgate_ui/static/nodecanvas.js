@@ -216,6 +216,12 @@
       el.classList.toggle("sel", n.id === this.sel || this.selection.has(n.id));
       el.classList.toggle("nc-collapsed", !!n.collapsed);
       el.classList.toggle("nc-note-node", n.kind === "note");
+      // WHAT KIND OF THING THIS IS, as a styling hook. Every node on the agents
+      // canvas was the same card in one of three border colours, so a phase, the
+      // task that owns it, the seat it belongs to and a gate blocking it were
+      // told apart by reading their titles. Consumers style
+      // .nc-node[data-kind="…"]; the engine itself stays type-agnostic.
+      if (n.type) el.dataset.kind = n.type; else delete el.dataset.kind;
       el.querySelector(".nc-caret").textContent = n.collapsed ? "▶" : "▼";
       if (n.status) el.dataset.status = n.status; else delete el.dataset.status;
 
@@ -930,7 +936,10 @@
       .nc-world{position:absolute;top:0;left:0;transform-origin:0 0}
       .nc-node{position:absolute;background:var(--plate);border:1px solid var(--seam);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.35);transition:border-color .12s,box-shadow .12s}
       .nc-node.sel{border-color:var(--nc-a);box-shadow:0 0 0 1px var(--nc-a),0 10px 30px rgba(0,0,0,.5)}
-      .nc-node[data-status="running"]{border-color:var(--text);box-shadow:0 0 0 1px var(--text),0 10px 30px rgba(0,0,0,.5)}
+      /* RUNNING KEEPS THE NODE'S OWN COLOUR. It used to be forced to --text,
+         which is white — so every live node on a seven-colour canvas went the
+         same colour at exactly the moment you most need to know WHOSE it is. */
+      .nc-node[data-status="running"]{border-color:var(--nc-a);box-shadow:0 0 0 1px var(--nc-a),0 10px 30px rgba(0,0,0,.5)}
       .nc-node[data-status="passed"]{border-color:var(--accent)}
       .nc-node[data-status="failed"]{border-color:var(--bad)}
       .nc-head{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--seam);cursor:grab;border-radius:12px 12px 0 0;user-select:none}

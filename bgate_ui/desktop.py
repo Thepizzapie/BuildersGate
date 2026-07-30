@@ -164,8 +164,9 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
             print(f"native window failed ({exc}); trying pywebview",
                   file=sys.stderr)
 
+    stop_badge = threading.Event()
     try:
-        webview.create_window(
+        window = webview.create_window(
             WINDOW_TITLE,
             url,
             width=DEFAULT_SIZE[0],
@@ -174,7 +175,12 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
             background_color="#0a0a0c",  # --bg, so first paint is not a white flash
             text_select=True,            # log lines and paths are meant to be copied
         )
+        # Same badge as the native path — this is the fallback window, and a
+        # notification channel that exists on one of two windows is one a user
+        # cannot rely on.
+        stop_badge = _start_badge(_root_or_none(), window.set_title)
         webview.start(debug=debug)
+        stop_badge.set()
     except Exception as exc:                                   # noqa: BLE001
         # The window is a convenience, not the product. Losing it must not cost
         # the user the app.
@@ -191,6 +197,7 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
         # This used to print to stderr and return 1. In a console=False build
         # there is no stderr anyone can see, so the app simply vanished on
         # double-click while the disk spun. That was the actual bug report.
+        stop_badge.set()
         return _fallback_to_browser(url, exc, server, thread)
 
     # webview.start() returns when the last window closes. Ask uvicorn to stop
@@ -198,6 +205,60 @@ def run(port: Optional[int] = None, debug: bool = False) -> int:
     server.should_exit = True
     thread.join(timeout=5.0)
     return 0
+
+
+# How often the window title asks how many events are unread. Slow on purpose:
+# this is a badge, not a feed, and the drawer inside the page is already polling.
+BADGE_EVERY_S = 20.0
+
+
+def _badge_title(count: int) -> str:
+    return f"({count}) {WINDOW_TITLE}" if count > 0 else WINDOW_TITLE
+
+
+def badge_watcher(root, set_title, stop) -> None:
+    """Keep the unread count in the window title. Runs on a daemon thread.
+
+    THE ONLY IN-APP CHANNEL THAT SURVIVES A CLOSED TAB. The bell and the drawer
+    live inside the page, so they can only tell you something while you are
+    already looking at the thing they are telling you about; the plan named the
+    window title and the webhook as the two that do not have that problem, and
+    only the webhook got built. A number in the title bar is answerable from the
+    taskbar, which is where somebody who walked away actually is.
+
+    Deliberately NOT a message box: `MessageBoxW` blocks the thread it is called
+    on and steals focus, so a run that finishes while you are typing somewhere
+    else interrupts you to say a thing you did not ask to be interrupted for.
+    Fail-safe in every direction — the window is a convenience, and losing a
+    badge must never cost the user the app.
+    """
+    from bgate_core import events as _events
+
+    read_consumer = "ui"
+    last = None
+    while not stop.is_set():
+        try:
+            seq = _events.cursor_get(root, read_consumer)
+            unread = len(_events.since(root, seq, limit=99)["events"])
+        except Exception:
+            unread = 0
+        if unread != last:
+            last = unread
+            try:
+                set_title(_badge_title(unread))
+            except Exception:
+                return          # the window is gone, or cannot be retitled
+        stop.wait(BADGE_EVERY_S)
+
+
+def _start_badge(root, set_title):
+    """Start the title watcher and hand back its stop switch."""
+    stop = threading.Event()
+    if not root:
+        return stop
+    threading.Thread(target=badge_watcher, args=(root, set_title, stop),
+                     daemon=True, name="bgate-badge").start()
+    return stop
 
 
 def _run_native(webview2, port, url, server, thread) -> int:
@@ -211,13 +272,30 @@ def _run_native(webview2, port, url, server, thread) -> int:
         # workspace) survive a restart.
         user_data_dir=str(_profile_dir()),
     )
+    stop_badge = _start_badge(_root_or_none(), win.set_title)
     err = win.run()
+    stop_badge.set()
     if err:
         return _fallback_to_browser(url, err, server, thread)
 
     server.should_exit = True
     thread.join(timeout=5.0)
     return 0
+
+
+def _root_or_none():
+    """The project this window is showing, or None outside one.
+
+    The badge reads the event log directly rather than through HTTP: it is in
+    the same process as the server, and a thread that polls its own app through
+    a socket is a thread that can hang on its own request.
+    """
+    try:
+        from bgate_core import db
+
+        return db.resolve_root(os.getcwd())
+    except Exception:                                          # noqa: BLE001
+        return None
 
 
 def _profile_dir() -> Path:
