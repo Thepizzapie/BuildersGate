@@ -395,9 +395,17 @@ def _request(path: str, key: str, *, payload: Optional[dict] = None,
 def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
            seed: Optional[int] = None, style_refs: Optional[list[dict]] = None,
            image_url: str = "", strength: Optional[float] = None,
-           creativity: str = "", quality: str = "", root: Any = None,
+           creativity: str = "", quality: str = "",
+           styles: Optional[list[dict]] = None, root: Any = None,
            timeout: float = 60.0) -> dict:
-    """Start a generation. Returns the job envelope with `job_id`."""
+    """Start a generation. Returns the job envelope with `job_id`.
+
+    ``styles`` is trained LoRAs — [{id, strength}], from style() — and is a
+    DIFFERENT axis from ``style_refs``: a reference is an image sent with this
+    request, a style is a model that already learned the look. Sending both is
+    the intended combination, not a conflict: the LoRA carries the style so the
+    reference slot is free to carry identity.
+    """
     key = api_key(root)
     if not key:
         raise KreaError(available(root)["reason"])
@@ -454,6 +462,16 @@ def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
         dropped = len(usable) - cap
         if dropped > 0:
             payload["_dropped_refs"] = dropped  # stripped below; caller-visible
+    if styles:
+        if "styles" not in spec["supports"]:
+            raise KreaError(
+                f"{model} cannot use a trained style — the models that can are "
+                + ", ".join(sorted(k for k, v in MODELS.items()
+                                   if "styles" in v["supports"])))
+        payload["styles"] = [
+            {"id": str(s["id"]), "strength": max(0.0, min(1.0, float(s.get("strength", 0.85))))}
+            for s in styles if s.get("id")
+        ]
     if image_url:
         if "image_url" not in spec["supports"]:
             raise KreaError(f"{model} cannot take a source image (img2img)")
@@ -471,6 +489,296 @@ def submit(prompt: str, *, model: str = DEFAULT_MODEL, size: str = "1024x1024",
         job["_warning"] = (f"{model} accepts {spec.get('ref_max', 10)} style "
                            f"reference(s); {dropped} were dropped")
     return job
+
+
+# ---------------------------------------------------------------------------
+# Trained styles (LoRA). The other half of "stay on model".
+#
+# WHY THIS EXISTS, in the words of the art seat's own rule: "A style reference
+# and an identity reference cannot share a weight. At equal strength the style
+# ref transfers the SUBJECT and the whole cast comes back as one person." That is
+# the ceiling on reference-conditioned work — one slot, two jobs. Training the
+# STYLE into a model empties the slot: style comes from the LoRA, and the
+# reference is free to carry identity alone.
+#
+# Three calls, and the first one is new: /assets takes multipart and hands back a
+# hosted URL, /styles/train takes those URLs, and /jobs/<id> is the same poll
+# generation already uses. The data URIs the rest of this module sends are NOT
+# accepted here — training wants URLs.
+# ---------------------------------------------------------------------------
+STYLE_TYPES = ("Style", "Character", "Object", "Default")
+TRAIN_MODELS = ("flux_dev",)
+
+# The floor Krea documents, and the reason most of a pixel-art project's pinned
+# anchors cannot be training data as they stand: measured on a real board, 6 of
+# 27 pins cleared it. A nearest-neighbour upscale of a 64x32 tile is not a
+# 1024px training image, so this refuses rather than quietly sending mush.
+TRAIN_MIN_SIDE = 1024
+TRAIN_MIN_IMAGES = 5          # Krea's hard minimum
+TRAIN_GOOD_IMAGES = 10        # below this it trains, but coverage is thin
+TRAIN_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+# Krea publishes no price for a training run. NOT guessed at: an under-quote is
+# worse than a missing quote, because the spend ceiling would let it through.
+# Callers that enforce a budget must treat this as unknown and ask the human.
+TRAIN_USD: Optional[float] = None
+
+
+def _multipart(fields: dict, filename: str, blob: bytes,
+               field: str = "file") -> tuple[bytes, str]:
+    """A multipart/form-data body, stdlib only.
+
+    /assets is the one endpoint here that is not JSON, and pulling in requests
+    for one call would put a dependency on the critical path of a tool whose
+    whole HTTP surface is otherwise four urllib calls wide.
+    """
+    boundary = "----bgate" + base64.urlsafe_b64encode(os.urandom(9)).decode()
+    out = bytearray()
+    for name, value in (fields or {}).items():
+        if value is None:
+            continue
+        out += f"--{boundary}\r\n".encode()
+        out += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        out += f"{value}\r\n".encode()
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".webp": "image/webp"}.get(Path(filename).suffix.lower(),
+                                       "application/octet-stream")
+    out += f"--{boundary}\r\n".encode()
+    out += (f'Content-Disposition: form-data; name="{field}"; '
+            f'filename="{filename}"\r\n').encode()
+    out += f"Content-Type: {mime}\r\n\r\n".encode()
+    out += blob + b"\r\n"
+    out += f"--{boundary}--\r\n".encode()
+    return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
+def upload(path: str | os.PathLike, *, description: str = "",
+           root: Any = None, timeout: float = 180.0) -> dict:
+    """Put one local image on Krea's asset store. Returns {id, image_url}.
+
+    Training takes URLs, and every anchor in this tool is a local file, so this
+    is the bridge. Uploading is not generating: nothing is charged and nothing is
+    trained until /styles/train is called with the URLs this hands back.
+    """
+    key = api_key(root)
+    if not key:
+        raise KreaError(available(root)["reason"])
+    p = Path(path)
+    if not p.is_file():
+        raise KreaError(f"no such image: {p}")
+    if p.suffix.lower() not in TRAIN_SUFFIXES:
+        raise KreaError(f"unsupported training image type {p.suffix!r} — "
+                        f"{'/'.join(sorted(s.lstrip('.') for s in TRAIN_SUFFIXES))} only")
+    body, content_type = _multipart({"description": description or p.stem},
+                                    p.name, p.read_bytes())
+    req = urllib.request.Request(API_BASE + "/assets", data=body, method="POST",
+                                 headers={"Authorization": f"Bearer {key}",
+                                          "Content-Type": content_type,
+                                          "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            got = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+        except Exception:
+            pass
+        raise KreaError(f"Krea rejected the upload of {p.name} "
+                        f"(HTTP {exc.code}): {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise KreaError(f"could not reach Krea to upload {p.name} ({exc.reason})") from exc
+    url = got.get("image_url") or got.get("url")
+    if not url:
+        raise KreaError(f"Krea accepted {p.name} but returned no image_url: "
+                        f"{str(got)[:200]}")
+    return {"id": got.get("id") or "", "image_url": url, "path": str(p)}
+
+
+def check_training_set(paths: list) -> dict:
+    """Judge a dataset BEFORE anything is uploaded or charged.
+
+    Every check here is one Krea documents, and the point is to fail on this side
+    of the network: a training run is 5-15 minutes and an unknown amount of money,
+    and finding out afterwards that one image was 297px wide costs both.
+
+    Returns {ok, usable, rejected: [{path, why}], warnings}. Pillow is optional —
+    without it the resolution floor cannot be checked, and that is REPORTED
+    rather than assumed to pass.
+    """
+    try:
+        from PIL import Image            # noqa: PLC0415 — optional dependency
+    except ImportError:
+        Image = None                     # type: ignore[assignment]
+
+    usable: list[str] = []
+    rejected: list[dict] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+
+    for raw in paths or []:
+        p = Path(raw)
+        keyed = str(p.resolve()).lower() if p.exists() else str(p).lower()
+        if keyed in seen:
+            rejected.append({"path": str(p), "why": "the same image twice"})
+            continue
+        seen.add(keyed)
+        if not p.is_file():
+            rejected.append({"path": str(p), "why": "not a file"})
+            continue
+        if p.suffix.lower() not in TRAIN_SUFFIXES:
+            rejected.append({"path": str(p), "why": f"{p.suffix} is not png/jpg/webp"})
+            continue
+        if Image is None:
+            usable.append(str(p))
+            continue
+        try:
+            with Image.open(p) as img:
+                w, h = img.size
+        except Exception as exc:
+            rejected.append({"path": str(p), "why": f"unreadable ({exc})"})
+            continue
+        if min(w, h) < TRAIN_MIN_SIDE:
+            rejected.append({
+                "path": str(p),
+                "why": f"{w}x{h} — training wants {TRAIN_MIN_SIDE}px on the "
+                       "short side, and upscaling to reach it trains the "
+                       "upscaler's artefacts, not the art"})
+            continue
+        usable.append(str(p))
+
+    if Image is None:
+        warnings.append("Pillow is not installed, so image sizes were NOT "
+                        "checked — Krea will refuse anything under "
+                        f"{TRAIN_MIN_SIDE}px on the short side")
+    if len(usable) < TRAIN_GOOD_IMAGES and len(usable) >= TRAIN_MIN_IMAGES:
+        warnings.append(f"{len(usable)} images is above Krea's minimum but below "
+                        f"{TRAIN_GOOD_IMAGES}; coverage will be thin and the LoRA "
+                        "will over-fit what it did see")
+    return {
+        "ok": len(usable) >= TRAIN_MIN_IMAGES,
+        "usable": usable, "rejected": rejected, "warnings": warnings,
+        "reason": "" if len(usable) >= TRAIN_MIN_IMAGES else (
+            f"only {len(usable)} usable image(s); Krea needs at least "
+            f"{TRAIN_MIN_IMAGES}"),
+    }
+
+
+def train_style(name: str, urls: list, *, model: str = "flux_dev",
+                kind: str = "Style", trigger_word: str = "",
+                max_train_steps: Optional[int] = None,
+                learning_rate: Optional[float] = None,
+                batch_size: Optional[int] = None,
+                root: Any = None, timeout: float = 60.0) -> dict:
+    """Start a LoRA training job. Returns the envelope with `job_id`.
+
+    ``kind`` is Krea's `type` field, renamed because `type` shadows the builtin
+    in every caller that would pass it as a keyword.
+    """
+    key = api_key(root)
+    if not key:
+        raise KreaError(available(root)["reason"])
+    if not str(name).strip():
+        raise KreaError("a trained style needs a name — it is how you find it again")
+    urls = [str(u) for u in (urls or []) if str(u).strip()]
+    if len(urls) < TRAIN_MIN_IMAGES:
+        raise KreaError(f"{len(urls)} training image(s) — Krea needs at least "
+                        f"{TRAIN_MIN_IMAGES}")
+    if any(u.startswith("data:") for u in urls):
+        # The trap this module invites: every other call here sends anchors as
+        # data URIs, and /styles/train takes hosted URLs only.
+        raise KreaError("training takes hosted URLs, not data URIs — upload each "
+                        "image with upload() first and pass the image_url values")
+    if kind not in STYLE_TYPES:
+        raise KreaError(f"type must be one of {STYLE_TYPES}")
+    if model not in TRAIN_MODELS:
+        raise KreaError(f"unknown training base {model!r} — known: {TRAIN_MODELS}")
+
+    payload: dict[str, Any] = {"name": str(name).strip(), "urls": urls,
+                              "model": model, "type": kind}
+    if trigger_word:
+        payload["trigger_word"] = str(trigger_word).strip()
+    if max_train_steps is not None:
+        steps = int(max_train_steps)
+        if not 1 <= steps <= 2000:
+            raise KreaError("max_train_steps must be between 1 and 2000")
+        payload["max_train_steps"] = steps
+    if learning_rate is not None:
+        rate = float(learning_rate)
+        if not 0.0 < rate <= 0.01:
+            raise KreaError("learning_rate outside anything sane — Krea "
+                            "recommends 0.0001 to 0.001")
+        payload["learning_rate"] = rate
+    if batch_size is not None:
+        payload["batch_size"] = int(batch_size)
+
+    job = _request("/styles/train", key, payload=payload, method="POST",
+                   timeout=timeout)
+    job["_images"] = len(urls)
+    job["_style_name"] = payload["name"]
+    return job
+
+
+def train(name: str, paths: list, *, kind: str = "Style", model: str = "flux_dev",
+          trigger_word: str = "", max_train_steps: Optional[int] = None,
+          learning_rate: Optional[float] = None, root: Any = None,
+          timeout: float = 1800.0, wait: bool = True) -> dict:
+    """Validate, upload, train, wait. The whole thing as one call.
+
+    Order is deliberate: EVERY image is judged before ANY is uploaded, so a
+    dataset with one 297px anchor in it fails for free instead of halfway through
+    an upload loop with a half-formed set on Krea's side.
+
+    `wait=False` returns after submitting — training is 5-15 minutes, which is
+    longer than an interactive caller should block for.
+    """
+    started = time.monotonic()
+    verdict = check_training_set(paths)
+    if not verdict["ok"]:
+        return {"ok": False, "error": verdict["reason"], "check": verdict,
+                "seconds": round(time.monotonic() - started, 2)}
+    try:
+        uploaded = [upload(p, description=name, root=root) for p in verdict["usable"]]
+        job = train_style(name, [u["image_url"] for u in uploaded], model=model,
+                          kind=kind, trigger_word=trigger_word,
+                          max_train_steps=max_train_steps,
+                          learning_rate=learning_rate, root=root)
+        job_id = str(job.get("job_id") or job.get("id") or "")
+        if not job_id:
+            raise KreaError(f"Krea did not return a training job id: {str(job)[:200]}")
+        if not wait:
+            return {"ok": True, "job_id": job_id, "style_id": "", "pending": True,
+                    "images": len(uploaded), "check": verdict,
+                    "seconds": round(time.monotonic() - started, 2)}
+        done = poll(job_id, root=root, timeout=timeout, interval=10.0)
+        style_id = str((done.get("result") or {}).get("style_id") or "")
+        if not style_id:
+            raise KreaError("training completed with no style_id: "
+                            f"{str(done)[:200]}")
+    except KreaError as exc:
+        return {"ok": False, "error": str(exc), "check": verdict,
+                "seconds": round(time.monotonic() - started, 2)}
+    return {
+        "ok": True, "style_id": style_id, "job_id": job_id, "name": name,
+        "kind": kind, "model": model, "trigger_word": trigger_word,
+        "images": len(uploaded), "sources": [u["path"] for u in uploaded],
+        "check": verdict, "pending": False,
+        # Deliberately not a number: see TRAIN_USD.
+        "estimated_usd": TRAIN_USD,
+        "seconds": round(time.monotonic() - started, 2),
+    }
+
+
+def style(style_id: str, strength: float = 0.85) -> dict:
+    """A trained style shaped the way the `styles` array wants it.
+
+    0.85 because Krea recommends 0.8-0.9 as the starting point, and a default of
+    1.0 is how a trained style stops being a style and starts being a stamp.
+    """
+    if not str(style_id).strip():
+        raise KreaError("a trained style needs its style_id")
+    return {"id": str(style_id).strip(),
+            "strength": max(0.0, min(1.0, float(strength)))}
 
 
 def poll(job_id: str, *, root: Any = None, timeout: float = 300.0,
@@ -526,7 +834,8 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
              size: str = "1024x1024", seed: Optional[int] = None,
              style_refs: Optional[list[dict]] = None, image_url: str = "",
              strength: Optional[float] = None, creativity: str = "",
-             quality: str = "", timeout: float = 300.0, root: Any = None) -> dict:
+             quality: str = "", styles: Optional[list[dict]] = None,
+             timeout: float = 300.0, root: Any = None) -> dict:
     """Submit, wait, download. The whole three-step dance as one call.
 
     Shaped to match imagegen.generate's return so the art pipeline does not care
@@ -537,7 +846,7 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         job = submit(prompt, model=model, size=size, seed=seed,
                      style_refs=style_refs, image_url=image_url,
                      strength=strength, creativity=creativity,
-                     quality=quality, root=root)
+                     quality=quality, styles=styles, root=root)
         job_id = job.get("job_id") or job.get("id")
         if not job_id:
             raise KreaError(f"Krea did not return a job id: {str(job)[:200]}")
