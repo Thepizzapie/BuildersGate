@@ -74,6 +74,12 @@
               <div class="art-side">
                 <div class="art-card"><h3 class="art-h">${BGICON("reference")} References &amp; anchoring</h3>
                   <div id="art-refs"></div></div>
+                <!-- The trained style sits directly under the references it is
+                     trained FROM. Anywhere else and the two read as unrelated
+                     features, when the whole idea is that these anchors ARE the
+                     dataset. -->
+                <div class="art-card"><h3 class="art-h">${BGICON("art")} Trained style</h3>
+                  <div id="art-style"><div class="art-empty">loading…</div></div></div>
                 <div class="art-card"><h3 class="art-h">⧉ Flow map — assets rigged into Godot</h3>
                   <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div></div>
                 <div class="art-card"><h3 class="art-h">⛨ Locks &amp; contention</h3>
@@ -95,6 +101,7 @@
           locks: container.querySelector("#art-locks"),
           lab: container.querySelector("#art-lab"),
           lightbox: container.querySelector("#art-lightbox"),
+          style: container.querySelector("#art-style"),
         };
         // fix the stray glyph typo in a way that can't break: overwrite header text
         const labH = this._els.lab.querySelector(".art-h");
@@ -150,7 +157,7 @@
     // --- data ------------------------------------------------------------
     async _loadAll(full) {
       const bg = this._bg;
-      const [arts, ws, queue, cost, locks] = await Promise.all([
+      const [arts, ws, queue, cost, locks, style] = await Promise.all([
         bg.get("/api/artifacts").catch(() => ({ artifacts: [] })),
         bg.get("/api/assets/workspace").catch(() => ({ groups: [] })),
         bg.get("/api/queue").catch(() => ({ items: [] })),
@@ -159,7 +166,11 @@
         // means this dashboard process predates /api/locks, which is a restart,
         // not a mystery.
         bg.get("/api/locks").catch(e => ({ ok: false, error: { message: String((e && e.message) || "unreachable").slice(0, 120) } })),
+        // A dashboard that predates this route 404s; the panel says so rather
+        // than rendering an empty card that looks like "no styles trained".
+        bg.get("/api/art/style").catch(() => null),
       ]);
+      this._style = this._data(style);
       this._arts = (arts && arts.artifacts) || [];
       this._groups = (ws && ws.groups) || [];
       this._queueArt = ((queue && queue.items) || []).filter(i => i && i.seat === "art");
@@ -177,6 +188,7 @@
       this._renderPicker();
       this._renderFlow();
       this._renderLocks();
+      this._renderStyle();
       // ensure a valid selection
       const names = this._logicalNames();
       if (!this._logical || names.indexOf(this._logical) === -1) {
@@ -1022,6 +1034,139 @@
       } catch (e) { bg.toast("action failed", true); console.error("[art] action", e); }
     },
 
+
+    /* ---- the trained style ------------------------------------------------
+     * The art seat's own rule is that a style reference and an identity
+     * reference cannot share a weight — at equal strength the style ref
+     * transfers the SUBJECT and the whole cast comes back as one person. This
+     * panel is how a project stops paying that: train the look from the anchors
+     * a human already approved, and the reference slot is free for identity.
+     *
+     * The toggle is the loud part on purpose. A LoRA's drift is baked into the
+     * model rather than visible in a payload, so "which look is this project
+     * generating with right now" has to be answerable at a glance.
+     */
+    _renderStyle() {
+      const bg = this._bg, host = this._els && this._els.style;
+      if (!host) return;
+      try {
+        const d = this._style;
+        if (!d) {
+          host.innerHTML = '<div class="art-empty">style training needs a newer '
+            + 'dashboard — restart <code>bgate serve</code>.</div>';
+          return;
+        }
+        const ds = d.dataset || {};
+        const active = d.active || null;
+        const run = d.running || {};
+        const lora = d.mode === "lora";
+
+        const modeRow = `
+          <div class="art-strow">
+            <span class="art-stlabel">generate with</span>
+            <span class="art-stseg">
+              <button class="art-stopt${lora ? "" : " on"}" data-stmode="refs"
+                      title="Send the pinned anchors as style references — how it has always worked">references</button>
+              <button class="art-stopt${lora ? " on" : ""}" data-stmode="lora"
+                      title="Use the style trained from those anchors, freeing the reference slot for identity"
+                      ${active ? "" : "disabled"}>trained style</button>
+            </span>
+          </div>`;
+
+        // Said plainly rather than left as a disabled button nobody can explain.
+        const noStyle = !active
+          ? `<div class="art-stnote">Nothing trained yet, so generations use the
+             references. Training does not change that until you switch it.</div>`
+          : "";
+
+        const activeRow = active
+          ? `<div class="art-stactive">
+               <b>${bg.esc(active.name || active.style_id)}</b>
+               <span class="art-stdim">${bg.esc(active.style_id)} · ${
+                 Number(active.images || 0)} anchors · strength ${
+                 Number(active.strength ?? 0.85)}</span>
+               ${(active.sources || []).length
+                 ? `<div class="art-stdim">from ${(active.sources || []).slice(0, 8)
+                      .map(n => bg.esc(n)).join(", ")}${
+                      (active.sources || []).length > 8 ? " …" : ""}</div>`
+                 : ""}
+             </div>`
+          : "";
+
+        const usable = (ds.usable_names || []).length;
+        const rejected = ds.rejected || [];
+        const dataRow = `
+          <div class="art-stdata">
+            <b>${usable}</b> of ${Number(ds.candidates || 0)} pinned anchors can train
+            ${rejected.length
+              ? `<details class="art-stdrop"><summary>${rejected.length} cannot</summary>
+                   ${rejected.slice(0, 12).map(r =>
+                     `<div class="art-stdim">${bg.esc(r.name || r.path || "")} — ${
+                        bg.esc(r.why || "")}</div>`).join("")}</details>`
+              : ""}
+            ${(ds.warnings || []).map(w =>
+                `<div class="art-stwarn">${bg.esc(w)}</div>`).join("")}
+          </div>`;
+
+        const busy = run.status === "running";
+        const trainRow = `
+          <div class="art-strow">
+            <input class="art-stname" id="art-stname" placeholder="name this style"
+                   maxlength="60"${busy ? " disabled" : ""}>
+            <button class="qbtn small" id="art-sttrain"${
+              busy || !ds.ok ? " disabled" : ""}>train</button>
+          </div>
+          ${busy
+            ? `<div class="art-stnote">training “${bg.esc(run.name || "")}” from ${
+                 Number(run.images || 0)} anchors — 5 to 15 minutes.</div>`
+            : run.status === "failed"
+              ? `<div class="art-stwarn">last run failed: ${bg.esc(run.error || "")}</div>`
+              : !ds.ok
+                ? `<div class="art-stnote">${bg.esc(ds.reason || "not enough usable anchors")}</div>`
+                : `<div class="art-stnote">Costs money and takes 5-15 minutes. Krea
+                   publishes no price for training, so this is not counted against
+                   the spend ceiling — it cannot be.</div>`}`;
+
+        host.innerHTML = activeRow + modeRow + noStyle + dataRow + trainRow;
+
+        host.querySelectorAll("[data-stmode]").forEach(b => b.onclick = async () => {
+          if (b.disabled) return;
+          const r = await window.mutate("/api/settings",
+            { method: "PATCH", body: { "art.style_source": b.dataset.stmode },
+              button: b, ok: b.dataset.stmode === "lora"
+                ? "generating with the trained style" : "generating with references" });
+          if (r.ok) this._reload();
+        });
+        const train = host.querySelector("#art-sttrain");
+        if (train) train.onclick = () => this._trainStyle();
+      } catch (e) {
+        host.innerHTML = '<div class="art-empty">style panel error</div>';
+        console.error("[art] style", e);
+      }
+    },
+
+    async _trainStyle() {
+      const host = this._els && this._els.style;
+      const input = host && host.querySelector("#art-stname");
+      const name = String((input && input.value) || "").trim();
+      if (!name) { this._bg.toast("name the style first", true); return; }
+      const ds = (this._style || {}).dataset || {};
+      const yes = await window.askConfirm({
+        title: `Train “${name}” from ${(ds.usable_names || []).length} anchors?`,
+        body: "This uploads those anchors to Krea and trains a LoRA. It takes 5 "
+            + "to 15 minutes and it costs money — Krea publishes no price for "
+            + "training, so it is NOT bounded by the spend ceiling the way a "
+            + "generation is.\n\nIt does not change how anything generates "
+            + "until you switch the toggle above.",
+        ok: "train it", cancel: "not now",
+      });
+      if (!yes) return;
+      const r = await window.mutate("/api/art/style/train",
+        { body: { name }, button: host.querySelector("#art-sttrain"),
+          ok: "training started — this panel updates when it lands" });
+      if (r.ok) this._reload();
+    },
+
     _reload() { this._detailSig = ""; this._loadAll(false); },
 
     // ---- the three review verbs, batch-shaped ---------------------------
@@ -1406,6 +1551,33 @@
     .art-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6);margin-bottom:var(--s-6)}
     .art-h{display:flex;align-items:center;gap:var(--s-4);margin:0 0 var(--s-5);font-size:var(--fs-2xs);font-weight:var(--fw-bold);text-transform:uppercase;letter-spacing:var(--track-label);color:var(--text-3)}
     .art-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
+
+    /* Trained style. The toggle is the loud element in this card on purpose:
+       a LoRA's drift is baked into the model rather than visible in a payload,
+       so "which look is this project generating with" has to be answerable at a
+       glance rather than by reading a settings page. */
+    .art-strow{display:flex;align-items:center;gap:var(--s-4);margin:var(--s-4) 0}
+    .art-stlabel{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);
+      text-transform:uppercase;letter-spacing:var(--track-label);white-space:nowrap}
+    .art-stseg{display:inline-flex;border:1px solid var(--seam);border-radius:var(--r-full);overflow:hidden}
+    .art-stopt{padding:4px 11px;border:0;background:transparent;color:var(--text-3);
+      font:inherit;font-family:var(--mono);font-size:var(--fs-3xs);cursor:pointer}
+    .art-stopt + .art-stopt{border-left:1px solid var(--seam)}
+    .art-stopt:hover:not(:disabled){color:var(--bone);background:var(--plate2)}
+    .art-stopt.on{background:var(--accent-soft);color:var(--accent);font-weight:var(--fw-semi)}
+    .art-stopt:disabled{opacity:.45;cursor:not-allowed}
+    .art-stactive{padding:var(--s-4);border-radius:var(--r-sm);
+      background:var(--accent-soft);border:1px solid var(--accent-line);font-size:12px}
+    .art-stdim{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);margin-top:2px}
+    .art-stnote{font-size:11.5px;color:var(--text-3);line-height:1.5;margin-top:var(--s-3)}
+    .art-stwarn{font-size:11.5px;color:var(--warn);line-height:1.5;margin-top:var(--s-3)}
+    .art-stdata{font-size:12px;color:var(--text-2);margin:var(--s-4) 0}
+    .art-stdrop summary{cursor:pointer;font-family:var(--mono);font-size:var(--fs-3xs);
+      color:var(--text-3);margin-top:var(--s-2)}
+    .art-stname{flex:1;min-width:0;padding:5px 9px;background:var(--plate2);
+      border:1px solid var(--seam);border-radius:var(--r-sm);color:var(--bone);
+      font:inherit;font-size:12px}
+    .art-stname:focus{outline:none;border-color:var(--accent-line)}
     .art-muted{color:var(--ash);font-size:11px}
     .art-btn{padding:6px 11px;background:var(--plate2);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;cursor:pointer}
     .art-btn:hover{border-color:var(--ember)}
