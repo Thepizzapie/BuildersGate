@@ -224,3 +224,52 @@ class TestOverTheWire:
         got = client.delete("/api/art/style/w29t6pvy0")
         assert got.status_code == 200
         assert "still exists" in (got.json().get("data") or got.json())["note"]
+
+
+class TestTheOtherShelf:
+    """`ref_pin` is the right default and a small set — six images on a real
+    project. A game that has been generating for weeks has hundreds of finished,
+    in-game, on-model pieces under game/assets that nobody re-pinned, and
+    refusing to train on the project's own output because of that is a rule
+    serving itself."""
+
+    @pytest.fixture()
+    def shipped(self, root, tmp_path):
+        pytest.importorskip("PIL.Image")
+        art = root / "game" / "assets" / "characters"
+        for i in range(4):
+            _png(art / f"hero_{i}.png")
+        _png(art / "tiny_sprite.png", 32, 32)          # under the floor
+        (art / "notes.txt").write_text("not an image", encoding="utf-8")
+        return root
+
+    def test_assets_are_offered_and_still_pass_the_floor(self, shipped):
+        got = styles.dataset(shipped, source="assets")
+        assert got["source"] == "assets"
+        # Named relative to the assets ROOT, so the folder is part of the name.
+        assert set(got["usable_names"]) == {f"characters/hero_{i}.png"
+                                            for i in range(4)}
+        assert any(r["name"] == "characters/tiny_sprite.png"
+                   for r in got["rejected"])
+
+    def test_a_nested_name_keeps_its_folder(self, shipped):
+        """Two files called idle.png in different character folders are not the
+        same anchor, and a bare stem would render them as a duplicate."""
+        deep = shipped / "game" / "assets" / "characters" / "paladin"
+        _png(deep / "idle.png")
+        names = styles.dataset(shipped, source="assets")["usable_names"]
+        assert "characters/paladin/idle.png" in names
+
+    def test_both_merges_without_double_counting(self, shipped, anchors):
+        pins = styles.dataset(shipped, source="pins")["usable"]
+        assets = styles.dataset(shipped, source="assets")["usable"]
+        both = styles.dataset(shipped, source="both")["usable"]
+        assert len(both) == len(set(pins) | set(assets))
+
+    def test_the_default_shelf_is_still_the_approved_one(self, root):
+        from bgate_core import settings
+        assert settings.setting("art.style_dataset").default == "pins"
+        assert styles.describe(root)["source"] == "pins"
+
+    def test_an_unknown_shelf_falls_back_rather_than_scanning_the_disk(self, shipped):
+        assert styles.dataset(shipped, source="everything")["source"] == "pins"

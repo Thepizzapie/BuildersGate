@@ -22,12 +22,13 @@
      two finished flows (asset, agent) unreachable, and their script tags were
      never added either, so nothing registered them. Loading is lazy and
      idempotent; a module that fails to load falls back to the built-in below. */
-  const MODULES = {
-    agent: "/static/flow_agent.js",
-  };
+  // AGENT FLOW WAS REMOVED. It drew a second orchestration canvas over the same
+  // data the Agents console already owns — two places to watch one floor, and
+  // the one with the conversation, the queue and the live rails is the one that
+  // survived. Its module is gone from the tree; nothing lazily loads here now.
+  const MODULES = {};
   // Flows this file implements itself — the fallback when a module is absent.
   const BUILTIN = {
-    agent: { label: "Agent flow", icon: "agents" },
     // The sprite editor and the audio mixer were reachable only as fullscreen
     // overlays launched from a small button on the Assets view. They are full
     // editors, so they get tabs of their own; SpriteEdit.embed()/AudioLab.embed()

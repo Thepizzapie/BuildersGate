@@ -173,10 +173,28 @@ def usage_index(smap: dict) -> dict[str, list[str]]:
     edges = smap.get("edges") or []
     screen_ids = {s["id"] for s in smap.get("screens") or []}
 
+    # A SCRIPT NOBODY REACHES IS STILL A ROOT. Screens are not the only things
+    # that hold an asset: a helper a scene attaches, a class_name registry, an
+    # autoload — none of them is a screen, and a file one of them preloads is
+    # shipping. Seeding only from screens made every such asset an orphan, and
+    # the orphan list is what a human deletes from.
+    #
+    # Only UNREACHED scripts, because a script a screen already reaches is
+    # covered by the walk below and seeding it again would attribute its assets
+    # to the script instead of to the screen that actually shows them.
+    reached = {e["to"] for e in edges}
+    roots = set(screen_ids) | {
+        # Every node the map calls a screen, not only the ones in the screens
+        # LIST — project.godot is a root that is not a .tscn, and it holds the
+        # icon, the audio bus layout and the autoloads.
+        nid for nid, node in nodes.items() if node.get("kind") == "screen"} | {
+        nid for nid, node in nodes.items()
+        if node.get("kind") == "script" and nid not in reached}
+
     direct: dict[str, set[str]] = {}
     children: dict[str, list[str]] = {}
     for e in edges:
-        if e["from"] in screen_ids:
+        if e["from"] in roots:
             direct.setdefault(e["to"], set()).add(e["from"])
         else:
             children.setdefault(e["from"], []).append(e["to"])

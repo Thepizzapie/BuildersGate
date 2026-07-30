@@ -9,8 +9,8 @@
  * expected to know what a git tree is.
  *
  * WHY THIS PATCHES fetch RATHER THAN THE CALL SITES.
- * Dispatch is posted from at least nine places — flows.js, flow_agent.js and
- * seven seat modules — and each one rolls its own fetch wrapper and its own
+ * Dispatch is posted from at least eight places — flows.js and seven seat
+ * modules — and each one rolls its own fetch wrapper and its own
  * error toast. There is no shared client to hook. Patching each would mean
  * nine near-identical edits, missing one silently reintroduces the dead end,
  * and the tenth call site somebody adds next month gets nothing. One narrow

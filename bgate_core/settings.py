@@ -229,6 +229,16 @@ SETTINGS: tuple[Setting, ...] = (
              "job it competes with today. Needs a trained style; without one "
              "this falls back to refs rather than generating unanchored."),
     Setting(
+        key="art.style_dataset", group="Art", kind=ENUM, default="pins",
+        choices=("pins", "assets", "both"),
+        store=("workspace", "art", "styles", "source"),
+        help="Which shelf a training run draws from. `pins` is the anchors a "
+             "human approved through ref_pin — the right default and a small "
+             "set. `assets` is the game's own shipped art, which on a project "
+             "that has been generating for weeks is hundreds of finished, "
+             "in-game pieces nobody re-pinned. Everything still passes the "
+             "1024px floor and your confirmation either way."),
+    Setting(
         key="art.lora_strength", group="Art", kind=FLOAT, default=0.85,
         minimum=0.0, maximum=1.0, store=("registry", "art.lora_strength"),
         help="How hard the trained style pulls, 0-1. Krea recommends 0.8-0.9; "

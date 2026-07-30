@@ -52,6 +52,10 @@ _KIND_BY_SUFFIX = {
 # addons) and non-asset trees stay out of the picture.
 _ORPHAN_SUFFIXES = (".png", ".webp", ".jpg", ".svg", ".wav", ".ogg", ".mp3",
                     ".tres")
+# Data files whose res:// strings are real references. A manifest a script reads
+# at runtime holds the same edges a preload would, and the game ships whatever
+# it names.
+_DATA_SUFFIXES = (".json", ".cfg", ".csv", ".txt")
 # Trees whose contents are not part of the game. .bgate_out holds the tool's own
 # scene/sheet backups — counting a backup .tscn as a screen would double every
 # screen in the map the first time anything was wired.
@@ -117,6 +121,7 @@ def scan(root: str | os.PathLike[str]) -> dict:
     screens = []
     tscns = [p for p in gd.rglob("*.tscn") if not _skip(p)]
     screen_ids = {f"res://{p.relative_to(gd).as_posix()}" for p in tscns}
+    parsed_scripts: set = set()
     for tscn in sorted(tscns):
         sid = f"res://{tscn.relative_to(gd).as_posix()}"
         nodes[sid] = {"id": sid, "kind": "screen", "label": tscn.stem,
@@ -141,6 +146,7 @@ def scan(root: str | os.PathLike[str]) -> dict:
             disk = res_to_disk(sp)
             if not disk.is_file():
                 continue
+            parsed_scripts.add(disk)
             source = disk.read_text(encoding="utf-8", errors="replace")
             templates += [(sid, t) for t in set(_RES_TMPL_RE.findall(source))]
             for lit in set(_RES_LIT_RE.findall(source)):
@@ -151,12 +157,20 @@ def scan(root: str | os.PathLike[str]) -> dict:
                 nid = add_node(lit, _kind_for("", lit))
                 add_edge(sid, nid, "script")
 
-    # --- standalone scripts (class_name helpers like an Arena registry) ------
-    # Not attached to any scene, but their res:// literals are real references
-    # (e.g. the arena list the fight swaps backgrounds from). Edges hang off
-    # the script's own node.
-    covered = {res_to_disk(n) for n, node in nodes.items()
-               if node["kind"] == "script"}
+    # --- every other script ---------------------------------------------------
+    # Their res:// literals are real references (the arena list the fight swaps
+    # backgrounds from, the sheets a marker preloads), and edges hang off the
+    # script's own node.
+    #
+    # COVERED IS WHAT WAS PARSED, NOT WHAT IS A NODE. It used to be every script
+    # NODE, and that dropped a whole class of file on the floor: a script
+    # attached to a scene that is not one of the top-level SCREENS becomes a node
+    # in the scene pass, but its literals are only read for screens — so it was
+    # skipped here as "already covered" while nothing had actually read it.
+    # Measured on a real project: 37 asset families were reported unused while a
+    # script preloaded them, `unit_marker.gd` alone accounting for the whole
+    # enemy sprite set.
+    covered = {d for d in parsed_scripts}
     for gdfile in gd.rglob("*.gd"):
         if _skip(gdfile) or gdfile in covered:
             continue
@@ -174,6 +188,24 @@ def scan(root: str | os.PathLike[str]) -> dict:
                 add_edge(snid, lit, "script")
                 continue
             add_edge(snid, add_node(lit, _kind_for("", lit)), "script")
+
+    # --- project.godot: the engine holds assets too --------------------------
+    # The icon, the audio bus layout, the autoloads and the main scene are
+    # referenced by the PROJECT rather than by any scene, so a graph seeded only
+    # from .tscn files reported them as dead art — and `icon.svg` showing up on
+    # a delete-me list is how you learn the orphan list cannot be trusted.
+    proj = gd / "project.godot"
+    if proj.is_file():
+        pid = "res://project.godot"
+        nodes[pid] = {"id": pid, "kind": "screen", "label": "project.godot",
+                      "path": rel(proj), "exists": True, "preview": None}
+        source = proj.read_text(encoding="utf-8", errors="replace")
+        # Autoloads are written "*res://scripts/audio.gd" — the star is Godot's
+        # "enabled" marker, not part of the path.
+        for lit in set(_RES_LIT_RE.findall(source.replace('"*res://', '"res://'))):
+            if lit == pid:
+                continue
+            add_edge(pid, add_node(lit, _kind_for("", lit)), "project")
 
     # --- SpriteFrames chains: .tres -> its sheet textures --------------------
     for nid, node in list(nodes.items()):
@@ -209,6 +241,37 @@ def scan(root: str | os.PathLike[str]) -> dict:
                 continue
             nid = add_node(f"res://{candidate}", _kind_for("", candidate))
             add_edge(owner, nid, "template")
+
+    # --- data files: a manifest the game loads is part of the graph ----------
+    # THE OTHER HALF OF DATA-DRIVEN LOADING. Template paths were already
+    # followed because "every data-driven loader in a real project reaches its
+    # art this way" — but the commonest shape is not a %s in the source, it is a
+    # JSON the script reads at runtime with the res:// paths INSIDE IT. Stopping
+    # at the .json reported a whole VFX set as dead while the game shipped it:
+    # vfx_manifest.gd -> vfx_manifest.json -> *_frames.tres -> *_sheet.png, and
+    # the walk gave up at the arrow nothing parsed.
+    #
+    # Scoped to data files that are ALREADY NODES, i.e. something in the project
+    # references them. Scanning every .json under the project would drag in tool
+    # output and build manifests that the game never opens — a title manifest an
+    # art run wrote but nothing has wired yet SHOULD read as unused.
+    #
+    # Runs after the template pass on purpose: a manifest is most often reached
+    # BY a template ("res://data/items/%s/%s.json"), so scanning earlier would
+    # find it is not a node yet and follow none of its references.
+    for nid, node in list(nodes.items()):
+        if not node.get("exists") or Path(nid).suffix.lower() not in _DATA_SUFFIXES:
+            continue
+        disk = res_to_disk(nid)
+        try:
+            source = disk.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        templates += [(nid, t) for t in set(_RES_TMPL_RE.findall(source))]
+        for lit in set(_RES_LIT_RE.findall(source)):
+            if lit == nid:
+                continue
+            add_edge(nid, add_node(lit, _kind_for("", lit)), "data")
 
     # --- orphans: assets on disk that nothing references ---------------------
     # "Derived variant" carve-out: paths built at runtime by string concat
