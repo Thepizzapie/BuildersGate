@@ -1056,6 +1056,35 @@
       if (!host) return;
       try {
         const d = this._style;
+
+        // DO NOT REBUILD OVER SOMEBODY'S TYPING. This seat refreshes every ~3
+        // seconds and this method replaces the card's whole innerHTML, so a
+        // name being typed into the field was destroyed mid-keystroke — the
+        // field emptied itself every three seconds and the style could not be
+        // named at all. Same rule the graph already follows for a half-typed
+        // steer: a poll may repaint what the SERVER owns, never what the
+        // person is in the middle of.
+        //
+        // Two guards, because either alone is not enough: identical payload =>
+        // nothing to repaint at all, and a focused field => keep what is in it
+        // (with the caret) across the repaint that a real change forces.
+        const sig = JSON.stringify([d && d.mode, d && d.source,
+                                    d && d.active && d.active.style_id,
+                                    d && d.running,
+                                    d && d.dataset && d.dataset.usable_names]);
+        const held = host.querySelector("#art-stname");
+        const typing = held && document.activeElement === held;
+        // The signature alone is not enough: switching seats REBUILDS the
+        // container, so the card comes back empty while the payload is
+        // unchanged — and a skip there leaves "loading…" on screen forever.
+        // Compare the host element too; a new one always paints.
+        const sameHost = this._styleHost === host;
+        this._styleHost = host;
+        if (sameHost && sig === this._styleSig && !this._styleForce) return;
+        const carry = held ? { value: held.value, start: held.selectionStart,
+                               end: held.selectionEnd, focused: typing } : null;
+        this._styleSig = sig;
+        this._styleForce = false;
         if (!d) {
           host.innerHTML = '<div class="art-empty">style training needs a newer '
             + 'dashboard — restart <code>bgate serve</code>.</div>';
@@ -1176,6 +1205,16 @@
             </div>
           </div>`;
 
+        // Put the half-typed name back, caret included.
+        const fresh = host.querySelector("#art-stname");
+        if (fresh && carry && carry.value) {
+          fresh.value = carry.value;
+          if (carry.focused) {
+            fresh.focus();
+            try { fresh.setSelectionRange(carry.start, carry.end); } catch (e) {}
+          }
+        }
+
         host.querySelectorAll("[data-stmode]").forEach(b => b.onclick = async () => {
           if (b.disabled) return;
           const r = await window.mutate("/api/settings",
@@ -1220,7 +1259,7 @@
       if (r.ok) this._reload();
     },
 
-    _reload() { this._detailSig = ""; this._loadAll(false); },
+    _reload() { this._detailSig = ""; this._styleForce = true; this._loadAll(false); },
 
     // ---- the three review verbs, batch-shaped ---------------------------
     /* Verdicts go through /react, never /review. React fans one decision three
