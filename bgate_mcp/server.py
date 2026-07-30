@@ -3119,6 +3119,46 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0) -> dict
 
 
 @_tool
+def queue_add_chain(links: list, chain_id: str = "") -> dict:
+    """File DEPENDENT work as one ordered chain instead of N loose items.
+
+    USE THIS WHENEVER THE SPLIT YOU JUST MADE HAS AN ORDER. The tell is a brief
+    that has to say "AFTER #41 lands" or "this needs the scene from the tech
+    item": if one agent must not start before another finishes, priority cannot
+    express it. Priority is a preference among things that are all ready; a chain
+    is what decides which are ready. Filed as separate items, both agents start
+    in the same auto-deploy tick and the second writes against a file that does
+    not exist yet — reports done, and the failure surfaces two items later
+    looking like something else.
+
+    ``links`` is an ORDERED list of dicts, each taking queue_add's fields:
+    {"seat": ..., "title": ..., "brief": ..., "priority": ...}. Link N waits for
+    link N-1 to reach 'done' — approved, if this project runs an approval gate.
+    Chains are strictly linear; model a fan-out as separate chains that share a
+    first link, or as one link whose brief covers both halves.
+
+    WRITE EACH BRIEF AS IF ITS PREDECESSOR ALREADY LANDED, because it will have.
+    Name what it produced (the file, the function, the scene) rather than saying
+    "wait for it" — the waiting is now the board's job, not the brief's.
+
+    Returns {chain_id, items: [...]} in running order. Nothing dispatches until
+    `bgate serve` is up, exactly as with queue_add.
+    """
+    try:
+        from bgate_core import queue as _q
+        rows = _q.add_chain(
+            _root(),
+            [dict(link) for link in (links or [])],
+            chain_id=chain_id, source=f"seat:{_seat() or 'unknown'}")
+        return {"chain_id": rows[0]["chain_id"], "count": len(rows),
+                "items": [{"id": r["id"], "seat": r["seat"], "title": r["title"],
+                           "chain_pos": r["chain_pos"],
+                           "depends_on": r["depends_on"]} for r in rows]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str] = None,
                  seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
     """Edit an existing work item in place (title/brief/seat/priority).
@@ -3153,11 +3193,17 @@ def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
 
     failed=True when the work did not land — say why plainly; a false 'done'
     poisons the queue's trustworthiness for everyone.
+
+    WHAT "CLOSED" MEANS DEPENDS ON THE PROJECT'S APPROVAL GATE, and the returned
+    row says which happened. Under the agent gate the item goes to 'done' and a
+    QA agent is spawned to verify the claim; under the builder's gate it goes to
+    'review' and waits for the human — you are finished either way, but anything
+    chained behind it does not start until it reaches 'done'. Do not "fix" a
+    'review' status by re-reporting: it is the gate working.
     """
     try:
         from bgate_core import queue as _q
-        return _q.set_status(_root(), item_id, "failed" if failed else "done",
-                             result=result)
+        return _q.complete(_root(), item_id, result=result, failed=failed)
     except Exception as exc:
         return _fail(exc)
 
@@ -3225,6 +3271,56 @@ def agent_steer(item_id: int, text: str) -> dict:
         return {"ok": True, "item_id": int(item_id), "steer_id": posted["id"],
                 "delivery": "queued for the dashboard to hand over; the agent "
                             "reads it when its current step ends"}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def ask_human(question: str, refs: Optional[list] = None) -> dict:
+    """Ask the human who owns this project ONE question — and keep working.
+
+    The director's ping. Use it for the calls that are genuinely not yours: which
+    of two directions to take, whether a scope cut is acceptable, whether a thing
+    you just finished is what they meant. It returns immediately and DOES NOT
+    BLOCK — do not poll for the answer, and do not sit idle waiting for one. Say
+    in your result note that you asked and what you assumed in the meantime.
+
+    NOT A WORK ITEM, DELIBERATELY. A question that becomes a queued row is a row
+    somebody has to dispatch in order to read, which is how "ask the human" turns
+    into "spawn an agent to ask the human" — paid, laned, and still in front of
+    nobody. This lands on the event bus instead, so it reaches the console card,
+    the drawer and any notification channel the project has switched on.
+
+    WHERE THE ANSWER COMES BACK depends on whether you are still running when it
+    arrives, and you do not have to do anything either way:
+
+      * still running -> it arrives as a steer, the same channel a mid-run
+        correction uses; you read it when your current step ends;
+      * already finished -> it is filed as a handoff `decision` note (so the next
+        session reads it from one file) and attached to the question itself.
+
+    Unanswered questions are reminded about ONCE, past notify.question_stale_h.
+    So: ask one thing, make it decidable, and name the options — "A or B?" gets an
+    answer, "any thoughts?" does not. `refs` are ids or paths the human should
+    look at ("item 41", "bible#12", "game/scenes/hub.tscn"); cite, do not paste.
+    """
+    try:
+        from bgate_core import steerbox as _steerbox
+        root = _root()
+        item_id = _work_item_id() or 0
+        result = _steerbox.ask(root, question, refs=refs, item_id=item_id,
+                               seat=_seat() or "director", by=_actor())
+        _log("question", f"asked the human: {str(question)[:120]}",
+             ref=str(item_id or result["seq"]))
+        if item_id:
+            arrives = ("as a steer into this run if you are still going when "
+                       "they answer, otherwise as a handoff decision note for "
+                       "the next session")
+        else:
+            arrives = ("as a handoff decision note — this session is not a "
+                       "dispatched work item, so there is no run to steer")
+        return {**result, "answer_arrives": arrives,
+                "note": "returns immediately — do not wait for the answer"}
     except Exception as exc:
         return _fail(exc)
 
