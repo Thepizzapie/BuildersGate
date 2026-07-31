@@ -24,6 +24,123 @@ from . import assets, bible, db, lore
 from .util import rows
 
 # ---------------------------------------------------------------------------
+# THE LAYERED 3D SEQUENCE — KIND-KEYED, NOT ALWAYS-ON.
+#
+# This used to be 669 words wedged into the art seat's always-on workflow, and
+# every request for a 2D sprite carried the whole of it: armature binding, decal
+# z-fighting, sweep discipline. The brief is the program an agent actually runs,
+# and at that length the review's prediction is the observed behaviour — a model
+# keeps the mechanically-rewarded steps (build layers, call blender_combine,
+# read `checks`) and drops the expensive unenforced ones. The block is out here
+# now, appended by brief() only for a project whose `dimension` says it makes
+# meshes, so a 2D project's art agent never reads a word of it.
+#
+# WHAT IS NOT HERE ANY MORE, AND WHERE IT WENT. A rule a tool reports does not
+# need shouting in prose:
+#   * "EIGHT IS THE CEILING" — blender_combine already returns it in
+#     `warnings` (MAX_LAYERS in bgate_adapters/blender.py) and assembles anyway.
+#     The brief says the true thing, that nothing refuses you.
+#   * "OPEN THE IMAGES" — blender_turnaround hands the frames back as MCP image
+#     content now, plus a per-frame verdict. An instruction to look is
+#     unenforceable; a picture in the transport is not.
+#   * "re-run that one layer, not the character" — was a promise nothing kept
+#     until blender_layer_rerun landed. It reads the recipe back off the
+#     manifest, so placement, binding and the rig survive the rebuild. The brief
+#     names the tool now instead of describing a manual reassembly.
+#
+# AND WHAT WAS SIMPLY FALSE. "image_generate conditioned on the pinned refs" was
+# instruction for a tool that had no reference parameter, so the only ways to
+# obey were to switch tools silently or not to obey. It has ref_images,
+# use_pinned and task_kind now; the brief uses them by name, and
+# tests/test_seat_briefs.py fails if either side moves without the other.
+#
+# WHAT THIS PATH IS ACTUALLY FOR is the first thing in it, because the honest
+# answer changes which tool an agent reaches for.
+ART_3D_WORKFLOW = (
+    "THE 3D PATH MAKES MESHES OUT OF PRIMITIVES, AND THAT IS ITS CEILING. "
+    "bg_box / bg_cyl / bg_ball / bg_plane, mirrored, tapered, joined: good "
+    "props, vehicles, terrain and block-out, not a hero character seen up close. "
+    "MEASURED, on a user's baseball player: the pose read fine, the hands and "
+    "cap did not, the logo was scrambled. Come here when the game needs a MESH — "
+    "something that rotates, collides, or is lit. For a character, SAY SO AND "
+    "OFFER THE PAINTED PATH: image_sprites(provider='krea', ref_image=the "
+    "approved character) is the strongest tool here and a real user shipped an "
+    "excellent character through it.\n"
+    "\n"
+    "TEN STEPS, IN ORDER.\n"
+    "1. JUDGE WHETHER IT IS LAYERED. A figure wearing things is; a rock is not, "
+    "and goes straight through. This sequence is a cost; paying it for a crate "
+    "is waste.\n"
+    "2. NAME LAYERS AT THE LEVEL A PERSON DESCRIBES THE THING — body, uniform, "
+    "cap, glove, cleats, logo. SIX, not laces. blender_combine warns above eight "
+    "and assembles anyway: nothing refuses you, so the ceiling is yours to keep, "
+    "and more than eight is two assets.\n"
+    "3. ASK BEFORE THE SPEND, THEN KEEP WORKING. ask_human RETURNS IMMEDIATELY "
+    "AND DOES NOT BLOCK — you cannot stop and wait, so do not plan on it. Send "
+    "the numbered list, build in an order nothing gets cut from (rig and body "
+    "first, logo and accessories last), say what you assumed. The answer arrives "
+    "as a steer or a handoff note, and when it lands it wins.\n"
+    "4. READ bg_help() BEFORE YOUR FIRST LAYER SCRIPT, AND WRITE NO HELPERS. The "
+    "kit and one running humanoid script are in scope inside blender_run. "
+    "MEASURED: an agent wrote 33 KB of exactly these, then lost twenty minutes "
+    "to what bg_clean does in four lines. bg_finish last, every script.\n"
+    "5. EVERY LAYER GETS A GENERATED MAP. image_generate(ref_images=[the pinned "
+    "refs], task_kind='texture') — the reference and the kind are parameters, "
+    "and 'texture' is what forces the square flat-albedo map a UV can take; a "
+    "logo is task_kind='decal'. blender_texture it on BEFORE assembly. "
+    "MEASURED: the first assembled character had 21 materials and ZERO images. "
+    "bg_mat blocks in; a shipped layer has an image. Not an exception to "
+    "GENERATE THE MINIMUM: that rule counts FRAMES of one subject, and a second "
+    "surface is not a second frame.\n"
+    "6. ASSEMBLE WITH blender_combine, NEVER BY HAND. Text or a logo is its own "
+    "layer with decal_on=<its surface>: baked into the body it comes back "
+    "scrambled, modelled flush it z-fights and reads in-engine as tearing. Hard "
+    "things ride a bone (bind='bone:Head'), soft things deform (bind='deform'), "
+    "and rig=<the armature layer> or you shipped a statue.\n"
+    "7. `checks` NAMES A LAYER, SO RE-RUN THAT LAYER. `unbound` and "
+    "`unweighted_verts` name what detaches or tears on first animation; `bound` "
+    "says how each weighted — deform:heat wanted, envelope acceptable, nearest "
+    "means that mesh needs bg_clean. blender_layer_rerun rebuilds ONE layer off "
+    "the manifest recipe and re-assembles, placement and binding untouched. "
+    "Never re-model the character.\n"
+    "8. blender_turnaround HANDS BACK THE FRAMES AND A VERDICT EACH, answering "
+    "different questions. The verdict answers 'is this render readable' — a "
+    "blown or black frame is fixed with exposure=, never with geometry. Your "
+    "eyes answer 'is this the right model', which no number reports. MEASURED: "
+    "four white turnarounds of a correctly-coloured model shipped unopened.\n"
+    "9. WRITE INSIDE THE PROJECT OR NOBODY REVIEWS IT. combine, texture and "
+    "turnaround register candidate artifacts only for paths under the root. "
+    "Check an `artifact_id` came back.\n"
+    "10. blender_sweep WHEN ACCEPTED, dry_run FIRST. It drops that run's "
+    "intermediates and keeps the asset, the renders and the manifest — the only "
+    "record of what was built from what. Never delete a layer file by hand."
+)
+
+# Which project dimensions get ART_3D_WORKFLOW appended. `project.dimension` is
+# one of project.DIMENSIONS ('2d' | '3d' | '2d+3d'); a 2D project's art agent
+# reads none of it.
+WORKFLOW_BY_DIMENSION: dict[str, dict[str, str]] = {
+    "art": {"3d": ART_3D_WORKFLOW, "2d+3d": ART_3D_WORKFLOW},
+}
+
+
+def _kind_note(role: str, dimension: str) -> str:
+    """What a seat is told when a kind-keyed block was deliberately withheld.
+
+    Silence would be indistinguishable from the block not existing, and an agent
+    that improvises a layered character from memory is exactly what cutting it
+    was meant to prevent. So say which knob decides.
+    """
+    return (
+        f"THIS PROJECT'S DIMENSION IS {dimension!r}, so the layered 3D sequence "
+        "is not in this brief. If a mesh is genuinely needed, set the project's "
+        "dimension (project_init) and re-read this brief — do not reconstruct "
+        "the 3D sequence from memory. For a character, the painted path "
+        "(image_sprites, image_talkhead) is the stronger tool here anyway."
+    )
+
+
+# ---------------------------------------------------------------------------
 # The seven seats. Lanes assume the scaffold layout (<root>/game, <root>/design).
 # ---------------------------------------------------------------------------
 DEFAULT_SEATS: dict[str, dict] = {
@@ -186,7 +303,7 @@ DEFAULT_SEATS: dict[str, dict] = {
             "anchor. Batch the bodies — a projectile body is one static object, "
             "and buying a full canvas to put one mug in the middle of each is "
             "money for empty background. Deliver the bodies FIRST: effects with "
-            "no projectile is a throw that is invisible until it lands."
+            "no projectile is a throw that is invisible until it lands.\n"
         ),
     },
     "audio": {
@@ -699,6 +816,37 @@ def _capped(items: list, limit: int, what: str) -> tuple[list, dict | None]:
                 f"capped; use the {what} tool to page the rest"}
 
 
+def _dimension(root: str | os.PathLike[str]) -> str:
+    """This project's '2d' | '3d' | '2d+3d', degrading to '2d'.
+
+    A brief must never fail because the project row is unreadable, and '2d' is
+    the safe default in the only direction that matters: it withholds the 3D
+    sequence rather than handing a sprite job 500 words about armature binding.
+    """
+    try:
+        from . import project
+        return str((project.get(root) or {}).get("dimension") or "2d")
+    except Exception:
+        return "2d"
+
+
+def workflow_for(role: str, dimension: str, base: str) -> str:
+    """A seat's workflow text for this project's dimension.
+
+    The kind-keyed block is APPENDED to the always-on one rather than replacing
+    it: the eight painted-art rules are true whatever the project makes, and a
+    3D project still generates textures, decals and concept refs through them.
+    """
+    table = WORKFLOW_BY_DIMENSION.get(role)
+    if not table:
+        return base
+    extra = table.get(dimension)
+    if extra:
+        return f"{base}\n\n{extra}" if base else extra
+    note = _kind_note(role, dimension)
+    return f"{base}\n\n{note}" if base else note
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -711,6 +859,7 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
     if role not in seats:
         raise ValueError(f"unknown or disabled seat {role!r}; active: {sorted(seats)}")
     seat = seats[role]
+    dimension = _dimension(root)
     conn = db.connect(root)
 
     my_feedback = rows(conn.execute(
@@ -781,7 +930,8 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "your_role": SEAT_IDENTITY,
         "title": seat["title"],
         "mission": seat["mission"],
-        "workflow": seat.get("workflow", ""),
+        "dimension": dimension,
+        "workflow": workflow_for(role, dimension, seat.get("workflow", "")),
         "write_lanes": seat["write_globs"],
         "pinned_refs": cap(_refs.list_refs(root), MAX_REFS, "ref_list"),
         "approved_artifacts": cap(artifact_rows, MAX_ARTIFACTS, "artifact list"),

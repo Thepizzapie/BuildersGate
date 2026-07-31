@@ -82,32 +82,49 @@ def constraints(root: str | os.PathLike[str], *, locked_only: bool = False) -> l
 
 
 def clause(root: str | os.PathLike[str], *, task_kind: str = "",
-           limit: int = MAX_CLAUSE_CHARS) -> str:
+           limit: int = MAX_CLAUSE_CHARS, tileable: bool = False) -> str:
     """The art-direction text to append to an image prompt.
 
     Locked constraints are stated as requirements; the rest as direction. Kept
     short — a prompt that is 80% boilerplate stops steering the model, so this
     is budgeted and truncated rather than allowed to grow without limit.
+
+    Two clauses come back joined, and they have different provenance. The FORM
+    clause (see :func:`form_clause`) says what the asset physically is and is
+    true whether or not the project ever wrote a bible; the STYLE clause is
+    read out of the bible every time. Form goes first, because a style clause
+    is a nudge and the form is the shape of the file.
+
+    ``tileable`` only means anything to a texture kind, and is ignored
+    elsewhere. Every kind that is not a texture or a decal gets a clause
+    byte-identical to the one it got before these existed.
     """
+    kind = str(task_kind or "").strip().lower()
+    form = form_clause(kind, tileable=tileable)
+
     sections = constraints(root)
     if not sections:
-        return ""
+        return form
 
     blob = " ".join(str(s.get("body") or "") for s in sections).lower()
     # Two gates, and they answer different questions. The probe asks "did the
     # project ASK for this?"; the scope asks "is it TRUE of the thing being
     # drawn?". A bible that says chibi still means it — just not about a spark.
-    kind = str(task_kind or "").strip().lower()
     said = [directive for probe, directive, scope in _VOCABULARY
             if probe.search(blob) and _in_scope(scope, kind)]
     if not said:
-        return ""
+        return form
 
     # The failure this whole function exists to prevent: bible prose handed to
     # an image model gets DRAWN. It is appended AFTER the budget is applied,
     # because truncation used to cut the one directive that matters most.
-    no_text = (" No text, letters, words, numbers, labels or signage anywhere "
-               "in the image.")
+    #
+    # THE ONE EXEMPTION, and it is not a loophole: on a texture or a decal the
+    # lettering is frequently the asset — a stencilled crate, a jersey number,
+    # the team logo the 3D brief asks for as its own layer. A blanket ban made
+    # that impossible to ASK for, so the tool forbade by construction the thing
+    # the brief instructed. It stays exactly as it was everywhere else.
+    no_text = "" if _drops_no_text(kind) else _NO_TEXT
     # Fill to the budget rather than to a fixed count: a caller that asks for
     # more room wants more direction, and a whole directive is worth more than
     # a truncated one.
@@ -119,7 +136,11 @@ def clause(root: str | os.PathLike[str], *, task_kind: str = "",
             break
         kept.append(directive)
     style = "; ".join(kept)[:room]
-    return f"\n\nStyle: {style}.{no_text}"
+    return f"{form}\n\nStyle: {style}.{no_text}"
+
+
+_NO_TEXT = (" No text, letters, words, numbers, labels or signage anywhere "
+            "in the image.")
 
 
 # DETECT what the bible asks for; EMIT a clean directive. Salvaging sentence
@@ -154,12 +175,121 @@ def clause(root: str | os.PathLike[str], *, task_kind: str = "",
 # ANATOMY is is not.
 #
 # Kinds in use across the tools: anchor, animation, background, gear, icon,
-# item, portrait, prop, sheet, sprite, tile, ui, vfx. An unknown or empty kind
+# item, portrait, prop, sheet, sprite, texture, decal, tile, ui, vfx —
+# KNOWN_KINDS below is the machine-readable list. An unknown or empty kind
 # gets the unscoped directives only — the safe subset, since a caller that did
 # not say what it was making must not be told to draw a body.
 _CHARACTERS = frozenset({"anchor", "animation", "portrait", "sheet", "sprite"})
 _WORLD = frozenset({"anchor", "animation", "background", "gear", "item", "prop",
                     "sheet", "sprite", "tile"})
+
+# ── FORM: what the asset physically IS, before any style is applied ──────────
+#
+# A texture map is not a picture of a surface, it is data a shader multiplies.
+# It gets sampled flat across a UV island, so anything the model painted INTO
+# it — a highlight, a cast shadow, a rim light — is multiplied a second time by
+# the scene's own lights when it lands on the mesh. MEASURED on the layered 3D
+# path: a "great looking" plank came back as a lit illustration with baked
+# highlights, a soft shadow and a background behind it, and on the mesh it read
+# as muddy. None of those three things survive contact with a UV, and no amount
+# of style direction fixes them, because they are not style.
+#
+# Two more things went wrong at the same door and both are here:
+#
+#   * the character/world directives (chibi anatomy, isometric projection) were
+#     reaching texture prompts. They are excluded the same way every other
+#     out-of-scope kind is — by not appearing in _CHARACTERS or _WORLD — so
+#     this adds no special case to _in_scope.
+#   * the blanket no-text ban made a LOGO LAYER impossible to ask for. See the
+#     exemption in clause().
+#
+# The form clause is NOT sourced from the bible. It is true of the asset kind
+# whether or not a project ever wrote one down, so it is emitted even when
+# clause() would otherwise return "", and it goes FIRST.
+#
+# Aliases are included because an agent naming this itself will reach for
+# "material" or "albedo" as readily as "texture", and a near-miss kind silently
+# means "unknown" — which is the failure mode this whole file exists to close.
+TEXTURE_KINDS = frozenset({"texture", "material", "albedo"})
+DECAL_KINDS = frozenset({"decal", "logo", "insignia", "emblem", "sticker"})
+
+# Every kind any tool in this repo actually asks for, named rather than implied.
+# It exists so a directive can be scoped to "things that have a subject and a
+# silhouette" without that quietly coming to mean "everything except whatever
+# kind was added last". Adding a kind here is how it opts IN.
+_SUBJECTS = frozenset({
+    "anchor", "animation", "background", "backdrop", "concept", "gear", "icon",
+    "item", "plate", "portrait", "prop", "sheet", "splash", "sprite", "tile",
+    "ui", "vfx",
+}) | DECAL_KINDS
+
+KNOWN_KINDS: tuple[str, ...] = tuple(sorted(_SUBJECTS | TEXTURE_KINDS))
+
+_TEXTURE_FORM = (
+    "\n\nTEXTURE MAP (mandatory): this is a flat albedo / base-colour map, not "
+    "a picture of a surface. Orthographic and straight-on — no perspective, no "
+    "camera angle, no depth of field, no foreshortening. Completely even "
+    "ambient illumination: no light source, no directional light, no "
+    "highlights, no specular, no gloss, no reflections, no cast shadow, no "
+    "ambient occlusion, no baked shading, no bevel and no emboss. The material "
+    "fills the entire frame edge to edge — no background, no border, no "
+    "vignette, no drop shadow, no props, no scene, no mock-up and nothing "
+    "resting on top of the surface."
+)
+
+_TILEABLE_FORM = (
+    " Seamlessly tileable: the pattern runs off every edge and continues, so "
+    "the left edge matches the right and the top matches the bottom. No "
+    "border, no framing element, no single hero feature centred in the frame — "
+    "an even, repeating field."
+)
+
+_DECAL_FORM = (
+    "\n\nDECAL (mandatory): the lettering and marks ARE the subject. Render "
+    "them crisply — legible, high contrast, exact spelling, even stroke weight, "
+    "sharp edges, correctly kerned, nothing cropped or cut off. Flat "
+    "vector-like colour, straight-on, no perspective, no lighting, no gloss, "
+    "no bevel, no drop shadow, no photographic texture, no mock-up and no "
+    "product shot. The graphic is isolated on a completely flat, uniform, "
+    "single-colour background with a clear margin on all four sides, and "
+    "nothing else is in the frame."
+)
+
+
+def is_texture_kind(task_kind: str) -> bool:
+    """Is this a flat map sampled across a UV, rather than a picture?
+
+    Exported because two other decisions key off it — the square-size
+    constraint in the imagegen adapter and the tiling post-pass — and each of
+    them re-deriving its own list is how the lists drift apart.
+    """
+    return str(task_kind or "").strip().lower() in TEXTURE_KINDS
+
+
+def is_decal_kind(task_kind: str) -> bool:
+    """Is this a graphic whose whole point is the text or mark it carries?"""
+    return str(task_kind or "").strip().lower() in DECAL_KINDS
+
+
+def _drops_no_text(kind: str) -> bool:
+    return kind in TEXTURE_KINDS or kind in DECAL_KINDS
+
+
+def form_clause(task_kind: str = "", *, tileable: bool = False) -> str:
+    """What the asset physically is — bible-independent, and empty for the
+    kinds that had no form clause before this existed.
+
+    ``tileable`` asks the model for a repeating field. It is an ASK: the
+    guarantee that the edges actually join lives in the mirrored post-pass
+    (``bgate_adapters.imagegen.make_tileable``), not in this sentence.
+    """
+    kind = str(task_kind or "").strip().lower()
+    if kind in TEXTURE_KINDS:
+        return _TEXTURE_FORM + (_TILEABLE_FORM if tileable else "")
+    if kind in DECAL_KINDS:
+        return _DECAL_FORM
+    return ""
+
 
 _VOCABULARY: list[tuple[re.Pattern, str, Optional[frozenset]]] = [
     (re.compile(r"pixel art|pixel[- ]grid|chunky pixel", re.I),
@@ -180,8 +310,13 @@ _VOCABULARY: list[tuple[re.Pattern, str, Optional[frozenset]]] = [
      "dark palette with neon accents", None),
     (re.compile(r"greyscale|grayscale|monochrome", re.I),
      "greyscale only, no hue", None),
+    # A SILHOUETTE is a property of a thing standing against a background. A
+    # tiling floor material has neither, and "bold outlines readable at small
+    # size" on a flat map gets an outlined tile — a black border baked into the
+    # albedo, repeated across the mesh. Scoped to the kinds that were already
+    # getting it, so nothing existing changes.
     (re.compile(r"bold outline|readable silhouette|silhouette", re.I),
-     "bold outlines and a silhouette readable at small size", None),
+     "bold outlines and a silhouette readable at small size", _SUBJECTS),
 ]
 
 
