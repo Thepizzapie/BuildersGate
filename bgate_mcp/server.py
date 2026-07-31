@@ -732,13 +732,29 @@ def blender_status() -> dict:
 @_tool
 def blender_run(script: str, blend_file: Optional[str] = None, render: bool = False,
                 engine: str = "BLENDER_WORKBENCH", timeout: int = 180,
-                label: str = "") -> dict:
+                label: str = "", kit: bool = True) -> dict:
     """Run a bpy script in headless Blender and get the scene back as facts.
 
     `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
     modifiers count), UV warnings, materials, your print() output, and — with
     render=True — a PNG of the active camera view (archived to the project's
     preview gallery; give a `label` so humans can tell renders apart).
+
+    THE MODELLING KIT IS ALREADY THERE (kit=True, the default). Do not write your
+    own material/UV/hygiene helpers — an agent burned 33 KB and most of an hour
+    doing exactly that on the first real character run. Available:
+      bg_wipe()                      empty the scene (no default cube)
+      bg_box/bg_cyl/bg_ball/bg_plane named primitives
+      bg_mirror/bg_smooth/bg_taper   symmetry, subsurf, limb taper
+      bg_join(objs, name)            one layer should leave as ONE mesh
+      bg_clean(obj)                  doubles/loose/degenerate/normals — THIS is
+                                     what makes automatic weighting work later
+      bg_unwrap(obj)                 smart-project UVs (no UVs = no texture)
+      bg_mat(obj, name, rgb)         a BLOCKING-IN colour, not a shipped surface
+      bg_bone_chain(name, bones)     an armature with NAMED bones
+      bg_finish(obj, colour=...)     clean + apply + unwrap + material, in order
+      bg_stats(obj)                  verts/faces/loose/nonmanifold/ngons
+    Pass kit=False only for a script that must run against bare bpy.
 
     A broken script is a normal result with ok=False plus the traceback, so read
     the result and iterate rather than assuming it worked. engine:
@@ -754,7 +770,8 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
         out_dir = None  # modeling before project_init is allowed
     try:
         result = _blender.run_script(script, blend_file=blend_file, render=render,
-                                     out_dir=out_dir, engine=engine, timeout=timeout)
+                                     out_dir=out_dir, engine=engine, timeout=timeout,
+                                     kit=kit)
         rendered = result.get("render", {}) if isinstance(result.get("render"), dict) else {}
         if rendered.get("rendered") and rendered.get("path"):
             archived = _archive_preview(rendered["path"], label or "render")
@@ -818,6 +835,113 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
     try:
         return _blender.export_gltf(out_path, blend_file=blend_file,
                                     script=script, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_combine(parts: list, out_path: str, rig: str = "",
+                    root_name: str = "Assembled", timeout: int = 300) -> dict:
+    """Assemble separately-modelled LAYERS into one rigged .glb, and test it.
+
+    The end of the layered 3D path: model body, clothing, hard accessories and
+    any logo as their own files, then join them here. Built in ONE pass instead,
+    a figure comes back with the parts that lost the attention budget deformed —
+    on a real baseball player, the hands, the cap, and a scrambled team logo.
+
+    `parts` is the layer list, each a path or a dict:
+      {"path": "out/uniform.glb",   # .glb / .gltf / .blend
+       "name": "uniform",           # how it is reported and referenced
+       "at": [0,0,0], "rotate": [0,0,0], "scale": 1.0,
+       "bind": "deform",            # deform | bone:<Name> | none
+       "decal_on": "cap"}           # conform to that layer's surface
+
+    A LOGO OR ANY TEXT GOES IN AS ITS OWN LAYER WITH decal_on. Flush against the
+    surface it z-fights and tears in-engine; shrinkwrap plus an offset fixes it.
+    Hard geometry rides a bone (a cap does not bend), soft geometry deforms.
+    `rig` names the layer holding the armature — without it nothing binds, which
+    is right for a prop and a shipped statue for a character.
+
+    Returns per-layer objects/tris/binding, plus `checks`: `unbound` and
+    `unweighted_verts` name the layer that detaches or tears the first time it
+    animates, so you re-run that layer instead of the whole character.
+    """
+    try:
+        return _blender.combine(parts, out_path, rig=rig,
+                                root_name=root_name, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_texture(model: str, image: str, out_path: str, material: str = "",
+                    timeout: int = 240) -> dict:
+    """Put a GENERATED image on a 3D layer's material and re-export it.
+
+    The surface half of the layered path. Measured on the first real character
+    run: the assembled asset carried 21 materials and ZERO images — every
+    surface a flat colour an agent typed by hand, because nothing connected the
+    image adapter to the 3D layers. Generate the texture with image_generate
+    conditioned on the project's pinned references, then apply it here, per
+    layer, before blender_combine.
+
+    `material` narrows it to one slot; empty means every material on every mesh.
+    Meshes with no UVs are unwrapped first — a map on an unwrapped mesh is
+    silently ignored, which looks exactly like the generation having failed.
+    """
+    try:
+        return _blender.apply_texture(model, image, out_path,
+                                      material=material, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
+                       width: int = 640, height: int = 960,
+                       engine: str = "BLENDER_EEVEE_NEXT",
+                       exposure: float = 0.0, timeout: int = 480) -> dict:
+    """Render a model from four angles under a fixed rig — and JUDGE each frame.
+
+    LOOK AT THE ASSET. Measured: four turnarounds of a correctly-coloured model
+    came back white because the lights were far too hot, and were reported as
+    finished without anybody opening them. The model was fine; the render was
+    not, and nothing could tell the difference.
+
+    Camera and three-point lighting are scaled to the subject's own bounding
+    box, so a giant and a doll both frame correctly. Every frame returns a
+    `blown`/`mean` reading and a verdict; `ok` is False when any frame is
+    unreadable. A failing frame is a lighting problem, not a modelling one —
+    do not go back and change the mesh because a render was white.
+    """
+    try:
+        return _blender.turnaround(model, out_dir, stem=stem,
+                                   size=(width, height), engine=engine,
+                                   exposure=exposure, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_sweep(out_path: str, dry_run: bool = True,
+                  keep_renders: bool = True) -> dict:
+    """Delete a finished asset's intermediate layer files, keeping the record.
+
+    A character run leaves a per-layer .glb each, a .blend rig, the assembled
+    asset and its renders — fourteen files for one request. This removes the
+    layer sources listed in that asset's manifest and NOTHING ELSE, so a
+    neighbouring asset's layers survive.
+
+    Kept: the assembled file, its manifest, the renders. What was removed is
+    written back into the manifest, so the run's history outlives its files and
+    a single layer can still be identified and rebuilt later.
+
+    Defaults to dry_run=True. Look at the list, then call again with
+    dry_run=False.
+    """
+    try:
+        return _blender.sweep(out_path, dry_run=dry_run,
+                              keep_renders=keep_renders)
     except Exception as exc:
         return _fail(exc)
 
