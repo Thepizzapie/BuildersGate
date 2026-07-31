@@ -22,7 +22,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27"]
+# ruff is here rather than installed loose in CI so that the lint job and a
+# contributor's local run cannot disagree about the version — a rule that fires
+# only on the runner is a rule nobody can fix before pushing. The ceiling is
+# because ruff adds checks in minor releases, and a lint gate that goes red on
+# an unchanged tree teaches everyone to ignore it.
+dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.12,<0.13"]
 stt = ["faster-whisper>=1.0"]
 record = ["sounddevice>=0.4", "numpy>=1.26"]
 # `bgate app` — the dashboard in a native window. On Windows this renders
