@@ -9,7 +9,56 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
-### Added
+## [1.3.0] - 2026-07-31
+
+The version jumps from `0.1.29` because the 3D path stopped being a blockout
+generator. Everything below `### Added — 3D` is the difference between "a
+correctly-proportioned mannequin with paddle arms and no face" and a generated
+mesh that survives the same gates as one modelled by hand.
+
+### Added — 3D
+
+- **Image-to-3D on the user's own GPU.** `bgate_adapters/imageto3d.py` and the
+  `blender_generate` MCP tool. The primary backends are open-weight models
+  running locally over loopback HTTP — TRELLIS.cpp, ComfyUI with a 3D node
+  pack, Hunyuan3D — because everything else in this product is local and
+  renting a mesh generator would have been the one place that stopped being
+  true. Hosted APIs (Stability, Tripo, Meshy) sit behind the same interface as
+  a fallback, not as the design centre. It imports nothing heavy: no torch, no
+  CUDA, no model library, ever, in this process — the GPU is probed with
+  `nvidia-smi` and a local server with a short HTTP GET, the rule
+  `transcribe.py` established for faster-whisper. It works with nothing
+  configured, prices the request rather than the backend, and **states the
+  licence before it generates**: a local backend is a transport, ComfyUI being
+  MIT says nothing about the weights it loads, so `BGATE_LOCAL_MODEL` has to be
+  declared and a backend whose terms carry conditions never becomes an
+  automatic choice.
+- **Krea 3D**, through the `KREA_API_KEY` that was already configured — the
+  same open-weight models one would otherwise self-host, with no GPU, no CUDA
+  toolchain and no 16 GB of weights.
+- **`bg_adopt` — a generation is not an asset.** Measured on real output: a
+  crate came back as 20,748 shells and 495,061 triangles, a mannequin as 604
+  shells with 21,796 non-manifold edges. Weld, decimate, scale, orient, ground,
+  in that order, because grounding before scaling leaves the mesh floating.
+  Welding is gentle on purpose — chasing one shell took the mannequin to 20,285
+  non-manifold edges, after which the decimator could not reach budget at all,
+  since collapse will not cross a non-manifold junction. And it reports
+  asked/got/met with a reason instead of returning a mesh 50× over budget under
+  an ok-looking report.
+- **Orientation is refused rather than guessed.** Generated meshes face any
+  direction and nothing was checking — a mannequin rendered its BACK in the
+  frame labelled "front". Two wrong attempts are recorded in the design: "up is
+  the tallest axis" put a cap's up along its brim, and centroid offset scored a
+  mannequin and a crate within 0.1% of each other. Foot reach separates them.
+  `kind="none"` and unreadable geometry both leave the mesh untouched.
+- **`doctor` gains an `imageto3d` row** with no floor — red means only that
+  path is unavailable — asking `nvidia-smi` rather than torch, because a
+  CPU-only torch in the default interpreter would call a working GPU "no GPU".
+- **`spend` gains a `mesh` kind.** It was landing in `other` with genuinely
+  uncategorised spend, and a textured generation is ~$0.30, an order of
+  magnitude over an image.
+
+### Added — CI
 
 - **A CI pipeline that gates on more than pytest.** `.github/workflows/ci.yml`
   replaces `tests.yml` and adds three checks the repo had already written down
@@ -756,7 +805,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...v1.3.0
 [0.1.29]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.26...v0.1.27
