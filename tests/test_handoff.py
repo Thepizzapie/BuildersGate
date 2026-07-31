@@ -8,9 +8,6 @@ its own copies of those is a third store that will drift from both.
 """
 from __future__ import annotations
 
-import io
-import json
-import sys
 
 import pytest
 
