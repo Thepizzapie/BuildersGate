@@ -76,10 +76,26 @@ KINDS = ("like", "fix", "add", "change", "question", "note")
 # Segments that carry no signal — filler, plus the canned phrases whisper
 # hallucinates into silence (it was trained on subtitles, so quiet stretches come
 # back as "Thanks for watching!"). Matched after punctuation is stripped.
+#
+# THE OUTER QUANTIFIER IS POSSESSIVE (`*+`) AND HAS TO STAY THAT WAY. With a
+# plain `*`, a run of one letter can be partitioned between repetitions in
+# exponentially many ways — `mm+` inside `(?:…)*` is the textbook shape — and
+# every one of them is tried before the match is refused. Measured on this
+# pattern: 32 m's took 0.5s, 36 took 3.6s, 41 took 26 SECONDS, doubling every
+# two characters. is_noise() runs on every transcript segment, and a stretch of
+# someone humming is exactly what whisper hands back, so the input that triggers
+# it is ordinary use rather than an attack. Possessive: 4000 m's in 0.0000s.
+#
+# It costs nothing that anyone asks. Diffing both patterns over ~5,700 generated
+# cases turned up four disagreements and no others — `uhhello`, `uhhelloo`,
+# `uhhhello`, `uhhhelloo`, where `uh+` eats the h of hello and possessive will
+# not give it back — and is_noise() still answers True for all four, because a
+# string under three words is noise on the word count alone and never reaches
+# this pattern's verdict.
 _NOISE = re.compile(
     r"^(?:o?k(?:ay)?|um+|uh+|hmm+|mm+|yeah|yep|nope|right|so|and|but|well|"
     r"you|thanks? (?:for )?watching|thanks? (?:so much )?for watching|"
-    r"subscribe|like and subscribe|bye+|hello+)*$", re.I)
+    r"subscribe|like and subscribe|bye+|hello+)*+$", re.I)
 
 _PUNCT = re.compile(r"[^\w\s']+")
 
