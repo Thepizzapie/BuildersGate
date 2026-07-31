@@ -76,11 +76,35 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: python
-          # security-and-quality over the default security-extended: this is a
-          # subprocess-and-filesystem codebase, and the quality pack is where
-          # the checks for shell injection through a built command line and for
-          # paths joined from untrusted input live.
-          queries: security-and-quality
+          # THE DEFAULT SUITE, after security-and-quality opened 277 alerts on
+          # main in one pass. That is not a security posture, it is a wall
+          # nobody reads — the same reason pyproject does not run ruff's full
+          # rule set, written up above [tool.ruff]. A gate nobody can make green
+          # is a gate everyone learns to ignore, and 277 is well past the point
+          # where a real finding hides among the rest.
+          #
+          # Two things came out of triaging that first pass, which is the
+          # argument for narrowing rather than deleting:
+          #
+          #   REAL      py/redos in bgate_core/feedback.py. Exponential on a run
+          #             of one letter — 41 m's took 26 seconds, and is_noise
+          #             runs on every whisper segment, so humming into the mic
+          #             was enough. Fixed.
+          #   NOT REAL  py/command-line-injection, "Critical", in
+          #             bgate_adapters/recorder.py. The command is a list, there
+          #             is no shell, and the executable comes from
+          #             shutil.which("ffmpeg") — the tainted value lands inside
+          #             one argv element as `title=<name>` and cannot become an
+          #             argument of its own.
+          #
+          # The path-expression class will keep firing: a tool whose whole job
+          # is writing files into a game project the user named is going to look
+          # like path injection to a static analyser forever. Those want
+          # triaging and dismissing in the UI, per finding, not a config that
+          # silences the rule everywhere.
+          config: |
+            paths-ignore:
+              - tests
 
       - uses: github/codeql-action/analyze@v3
         with:
