@@ -123,13 +123,21 @@ def package() -> None:
     print(f"sha256 {h}")
 
 
-def smoke() -> None:
-    """Boot the frozen exe in server mode and fetch real files out of it."""
+def serve_and_fetch(cmd: list[str], cwd: Path, label: str) -> None:
+    """Boot ``cmd`` as a dashboard server and fetch SMOKE_PATHS out of it.
+
+    Split out of smoke() because the wheel can regress in exactly the same way
+    the exe can, for a different reason (package-data patterns rather than
+    PyInstaller's import graph) and with the same symptom — a server that starts
+    and 404s its own assets. packaging/smoke_wheel.py is the other caller. One
+    path list and one fetch loop, so a check added for one artifact is not
+    silently absent from the other.
+    """
     port = free_port()
-    print(f"smoke test: {EXE.name} serve --port {port}")
+    print(f"smoke test: {label} serve --port {port}")
     proc = subprocess.Popen(
-        [str(EXE), "serve", "--port", str(port)],
-        cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        [*cmd, "serve", "--port", str(port)],
+        cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     try:
         base = f"http://127.0.0.1:{port}"
@@ -137,14 +145,14 @@ def smoke() -> None:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 out = (proc.stdout.read() or b"").decode("utf-8", "replace")
-                sys.exit(f"exe exited early (code {proc.returncode}):\n{out}")
+                sys.exit(f"{label} exited early (code {proc.returncode}):\n{out}")
             try:
                 urllib.request.urlopen(base + "/", timeout=1).read()
                 break
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
                 time.sleep(0.25)
         else:
-            sys.exit("exe never started serving within 60s")
+            sys.exit(f"{label} never started serving within 60s")
 
         bad = []
         for entry in SMOKE_PATHS:
@@ -169,13 +177,18 @@ def smoke() -> None:
 
         if bad:
             sys.exit("smoke test FAILED:\n  " + "\n  ".join(bad))
-        print("smoke test passed — the exe serves its own assets")
+        print(f"smoke test passed — {label} serves its own assets")
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def smoke() -> None:
+    """Boot the frozen exe in server mode and fetch real files out of it."""
+    serve_and_fetch([str(EXE)], ROOT, EXE.name)
 
 
 def main() -> int:

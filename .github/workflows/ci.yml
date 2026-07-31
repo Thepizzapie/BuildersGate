@@ -1,0 +1,194 @@
+# Everything that has to be true before a change lands.
+#
+# This replaces tests.yml, which ran pytest and nothing else. The three jobs
+# added around it are not new ideas — they are guarantees this repo already
+# wrote down and then never actually ran:
+#
+#   lint         pyproject has carried a deliberately-chosen ruff rule set
+#                (E9+F: bugs, not taste) since someone picked it. Nothing in CI
+#                invoked it. Turning it on found eight dead imports and three
+#                pointless f-strings on main.
+#   test-linux   CONTRIBUTING.md has claimed "the suite runs there but marks it
+#                continue-on-error" while no Linux job existed at all.
+#   wheel-smoke  tests/test_packaging.py names this workflow and this job, by
+#                file and by job name, as the place the build-install-import
+#                loop lives. It did not live anywhere.
+#
+# Windows is first among the test jobs because it is the supported platform and
+# much of this code is about Windows specifically — process trees,
+# CREATE_NO_WINDOW, WebView2, the path handling around .bgate. A green run on
+# Linux proves less, which is exactly why it does not gate.
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here writes to the repo. release-exe.yml asks for contents:write
+# separately, in the one place that needs it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Superseded PR runs are noise. A superseded push to main is a commit left
+  # with no verdict against it, so those are allowed to finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ruff is pinned in the dev extra rather than installed loose here, so
+      # that a contributor's `pip install -e ".[dev]"` and this job agree on the
+      # version, and so dependabot can see it move.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check --output-format=github .
+
+  test:
+    name: pytest (windows, py${{ matrix.python }})
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      # A 3.11-only failure is information, not a reason to cancel the 3.12 run.
+      fail-fast: false
+      matrix:
+        # 3.11 because pyproject says requires-python = ">=3.11" and until now
+        # nothing verified that claim; 3.12 is what the exe is built against.
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      # node is what tests/test_shell_adjust.py hands the shell's inline
+      # scripts to. Without it those checks SKIP rather than fail, which would
+      # quietly retire the one guard that the dashboard still parses.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Route modules must all import
+        # The suite covers this too, but a missing route module is the failure
+        # that looks healthiest from the outside, so it gets its own step with
+        # BGATE_STRICT_ROUTES on: import failure becomes a hard error.
+        env:
+          BGATE_STRICT_ROUTES: "1"
+        run: |
+          python -c "import os, tempfile; d = tempfile.mkdtemp(); os.environ['BGATE_ROOT'] = d; from bgate_core import db; db.connect(d); from bgate_ui.app import app; from fastapi.testclient import TestClient; body = TestClient(app).get('/api/routes/status').json(); print(body); assert body['ok'], body"
+
+      - name: pytest
+        # -m "not slow" is what CONTRIBUTING tells contributors to run, so it is
+        # what CI runs. It changes nothing about which tests execute here — the
+        # slow ones skipif on a missing Blender or whisper and no hosted runner
+        # has either — but it makes that a stated choice rather than an accident
+        # of the runner image. The real Blender and Godot paths therefore have
+        # NO coverage in this workflow; that is what a nightly job is for.
+        run: python -m pytest -m "not slow" -q
+
+  test-linux:
+    name: pytest (linux, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Linux is best-effort per CONTRIBUTING.md: the suite runs, tests that need
+    # Windows tooling (taskkill, tasklist) skip, and a red result is a report
+    # worth reading rather than a merge blocker. Making that true in CI is the
+    # point of this job — the claim has been in the docs for longer than any
+    # Linux run has existed.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: pytest
+        run: python -m pytest -m "not slow" -q
+
+  wheel-smoke:
+    # THE JOB tests/test_packaging.py ALREADY DOCUMENTS. That module is the fast
+    # half of the guard — it reads pyproject and asserts every shipped tree is
+    # covered by a package-data pattern, without building anything. This is the
+    # half that installs the artifact and looks inside it, which is the only way
+    # to catch a pattern that is present, plausible, and wrong.
+    #
+    # Windows, because scaffolding and the dashboard's path handling are where
+    # this breaks and that is where users are.
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+
+      - name: Install it into a clean interpreter
+        shell: bash
+        # A fresh venv, NOT the job's interpreter: the checkout is on disk right
+        # here, and an editable or path install would let every import resolve
+        # to the source tree — which is precisely the mistake that let a wheel
+        # with no JavaScript ship green.
+        run: |
+          python -m venv .wheelenv
+          .wheelenv/Scripts/python -m pip install --upgrade pip
+          .wheelenv/Scripts/python -m pip install dist/*.whl
+
+      - name: Smoke the installed wheel
+        shell: bash
+        # Refuses to run if its own imports resolved to the checkout, then
+        # checks the shipped trees, runs doctor, scaffolds a real project out of
+        # templates/, and serves the dashboard's assets out of site-packages.
+        run: .wheelenv/Scripts/python packaging/smoke_wheel.py
+
+      - uses: actions/upload-artifact@v4
+        # Worth having on a red run: the wheel that failed is the evidence.
+        if: always()
+        with:
+          name: wheel
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
