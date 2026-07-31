@@ -28,6 +28,16 @@ brown gradient — but for Krea it is the ONLY path to a usable sprite, so any
 caller here doing sprite/sheet/gear work must go through chroma.generate rather
 than calling this module directly.
 
+KREA ALSO GENERATES 3D, and that is the only image-to-3D this product can reach
+— see MODELS_3D and generate_3d at the bottom. It runs the same open-weight
+models one would otherwise self-host (TRELLIS, TRELLIS 2, Hunyuan3D, Tripo)
+behind the key we already load, so it needs no GPU, no CUDA toolchain and no
+16 GB of weights. Two things make it unlike the image path and both are load
+bearing: its per-generation price is NOT PUBLISHED anywhere, so a 3D call
+cannot be quoted before it runs; and what comes back is geometry and texture
+with NO RIG, so it is a draft that still owes the pipeline a clean, a scale,
+an orientation and a skeleton before it is an asset.
+
 Everything here is stdlib — no SDK. One less dependency to pin, and the surface
 we use is four HTTP calls wide.
 """
@@ -913,16 +923,22 @@ def poll(job_id: str, *, root: Any = None, timeout: float = 300.0,
         f"{last.get('status') or 'unknown'})")
 
 
-def download(url: str, out_path: str, *, timeout: float = 120.0) -> int:
-    """Fetch the finished image to disk. Returns bytes written."""
+def download(url: str, out_path: str, *, timeout: float = 120.0,
+             accept: str = "image/*") -> int:
+    """Fetch the finished file to disk. Returns bytes written.
+
+    `accept` exists because this is also how a .glb comes back, and a server
+    that honours Accept would be within its rights to refuse `image/*` for a
+    model. Default unchanged, so every image caller is untouched.
+    """
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"Accept": "image/*"})
+    req = urllib.request.Request(url, headers={"Accept": accept})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
     except Exception as exc:
-        raise KreaError(f"could not download the finished image: {exc}") from exc
+        raise KreaError(f"could not download the finished file: {exc}") from exc
     if not data:
         raise KreaError("Krea returned an empty image")
     out.write_bytes(data)
@@ -996,3 +1012,332 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         # for, so a post-pass that cannot run must degrade to a note.
         result["tileable"] = make_tileable(str(out_path))
     return result
+
+
+# ---------------------------------------------------------------------------
+# 3D. The same job/poll/download dance, a different family of models.
+# ---------------------------------------------------------------------------
+#
+# This is the only image-to-3D the product can reach, and it arrives through the
+# key that is already configured — no GPU, no CUDA toolchain, no weight
+# download. Krea runs the open-weight models one would otherwise self-host.
+#
+# TWO THINGS ARE NOT LIKE THE IMAGE PATH.
+#
+# 1. THERE IS NO PUBLISHED PRICE. Krea's API price list covers image, video and
+#    Topaz upscaling; no 3D model appears in it, and trellis-2's own API
+#    reference says so outright. The "compute token" figures in Krea's user
+#    guide are the WEB APP's subscription meter, which is a different currency
+#    from the API's USD prepaid balance — quoting them here would be inventing
+#    a number. So price_for_3d returns None, never 0.0, and generate_3d refuses
+#    to spend until a caller says confirm_unpriced=True. An unknown price that
+#    reads as free is how a budget gets spent without anyone deciding to.
+#
+# 2. NOTHING COMES BACK RIGGED. Geometry and texture, no armature, no unit
+#    convention, no guaranteed pose. Measured on a real user's character: 940
+#    fragmented shells, wrong pose, missing lettering. `decimation_target`
+#    (trellis-2) and `face_count` (hunyuan3d-3.1-pro) are the knobs aimed at
+#    exactly that, and are worth turning before writing any cleanup code.
+#
+# Per-model payload shapes differ as much as they do for images — trellis-2
+# takes a resolution tier and a decimation target, hunyuan3d-3.1-pro takes PBR
+# and seven extra view URLs, tripo takes neither. Sending the wrong pair is a
+# 422 "Unrecognized keys", so `supports` is enforced here rather than hoped for.
+MODELS_3D: dict[str, dict] = {
+    "trellis-2": {
+        "path": "/generate/3d/microsoft/trellis-2",
+        # MEASURED, not published: two text-to-3D jobs at default settings on
+        # 2026-07-31 each billed $0.30 on Krea's usage page, which labels the
+        # column "Estimated cost". Both ran the same parameters, so this is the
+        # DEFAULT-CONFIG price and nothing is known about how resolution,
+        # texture_size or decimation_target move it. Treat it as a floor.
+        "usd": 0.30,
+        "usd_measured": "2026-07-31, text-to-3D, default parameters",
+        "supports": {"seed", "input_mode", "generate_texture", "resolution",
+                     "texture_size", "decimation_target", "image_urls"},
+        "resolution": ("512", "1024", "1536"),
+        "texture_size": ("1024", "2048", "4096"),
+        "decimation_target": (100_000, 2_000_000),
+        "note": "the current best, and the only one with a decimation target — "
+                "the knob for a mesh that arrives as fragmented shells.",
+    },
+    "trellis": {
+        "path": "/generate/3d/microsoft/trellis",
+        "supports": {"seed", "input_mode", "generate_texture", "texture_size",
+                     "image_urls"},
+        "note": "the older TRELLIS. Keep for comparison; prefer trellis-2.",
+    },
+    "tripo": {
+        "path": "/generate/3d/tripo/tripo",
+        "supports": {"seed", "input_mode", "generate_texture", "image_urls"},
+        "note": "fewest knobs of the five — prompt, seed, texture on or off.",
+    },
+    "hunyuan3d-2.1": {
+        "path": "/generate/3d/tencent/hunyuan3d-2.1",
+        "supports": {"seed", "input_mode", "generate_texture", "image_urls"},
+        "note": "Tencent's 2.x line.",
+    },
+    "hunyuan3d-3.1-pro": {
+        "path": "/generate/3d/tencent/hunyuan3d-3.1-pro",
+        "supports": {"seed", "input_mode", "generate_texture", "enable_pbr",
+                     "face_count", "image_urls", "back_image_url",
+                     "left_image_url", "right_image_url", "top_image_url",
+                     "bottom_image_url", "left_front_image_url",
+                     "right_front_image_url"},
+        "face_count": (40_000, 1_500_000),
+        "views": ("back", "left", "right", "top", "bottom", "left_front",
+                  "right_front"),
+        "note": "the only MULTI-VIEW model here and the only one taking PBR. "
+                "Extra views are how a back nobody photographed stops being "
+                "invented — pass them when the subject has a defined back.",
+    },
+}
+
+DEFAULT_MODEL_3D = "trellis-2"
+
+
+def models_3d() -> dict:
+    """The 3D catalogue, for a caller choosing a model."""
+    return {name: {k: v for k, v in spec.items() if k != "supports"}
+            for name, spec in MODELS_3D.items()}
+
+
+def price_for_3d(model: str = DEFAULT_MODEL_3D) -> Optional[float]:
+    """USD where it has been MEASURED, None where it is still unknown.
+
+    Krea publishes no 3D price anywhere — not in the API price list, and the
+    trellis-2 reference says so outright. The only figures on the docs site are
+    "compute tokens", which are the WEB APP's subscription meter and not the
+    API's USD balance; quoting those would be inventing a number.
+
+    So a price here comes from a real invoice or it does not exist. None means
+    unknown and a spend gate can refuse on it; 0.0 is never returned, because
+    every budget check in the product would read that as free.
+    """
+    spec = MODELS_3D.get(model)
+    if not spec:
+        raise KreaError(f"unknown 3D model {model!r} — known: {sorted(MODELS_3D)}")
+    usd = spec.get("usd")
+    return float(usd) if usd is not None else None
+
+
+def _image_ref(source: str | os.PathLike) -> str:
+    """A local file becomes a data URI; a URL is passed through.
+
+    `image_urls` accepts external URLs, base64 data URIs and Krea asset URLs,
+    so a caller can hand this a path from disk or a URL it already holds.
+    """
+    text = str(source)
+    if text.startswith(("http://", "https://", "data:")):
+        return text
+    return data_uri(text)
+
+
+def submit_3d(prompt: str = "", *, model: str = DEFAULT_MODEL_3D,
+              images=(), seed: Optional[int] = None,
+              generate_texture: bool = True, resolution: str = "",
+              texture_size: str = "", decimation_target: Optional[int] = None,
+              face_count: Optional[int] = None,
+              enable_pbr: Optional[bool] = None,
+              views: Optional[dict] = None, webhook: str = "",
+              root: Any = None, timeout: float = 60.0) -> dict:
+    """Start a 3D generation. Returns the job envelope with `job_id`.
+
+    `images` are the input plate(s), local paths or URLs. Empty means
+    text-to-3D, and input_mode is set from that rather than making every caller
+    remember to. `views` maps extra angle names (back, left, right, top,
+    bottom, left_front, right_front) to sources and is hunyuan3d-3.1-pro only.
+
+    A parameter the chosen model does not declare is REFUSED, not dropped.
+    Dropping it would send the request, charge for it, and hand back the
+    default — so a caller who asked for a decimation target on a model that has
+    none would get exactly the fragmented mesh they were trying to avoid, with
+    nothing saying why.
+    """
+    spec = MODELS_3D.get(model)
+    if not spec:
+        raise KreaError(f"unknown 3D model {model!r} — known: {sorted(MODELS_3D)}")
+
+    # SHAPE FIRST, KEY SECOND. Checking the key up here would answer a bad
+    # decimation_target with "KREA_API_KEY not set", which names the wrong
+    # problem and makes every refusal below untestable without a live key.
+    # Building the payload costs nothing and touches no network.
+    plates = [_image_ref(p) for p in (images or ())]
+    if not plates and not str(prompt).strip():
+        raise KreaError("a 3D generation needs an image or a prompt — got neither")
+
+    payload: dict = {"prompt": prompt or "",
+                     "input_mode": "image" if plates else "text",
+                     "generate_texture": bool(generate_texture)}
+    if plates:
+        payload["image_urls"] = plates
+    if seed is not None:
+        payload["seed"] = int(seed)
+
+    def _want(field: str, value, allowed=()) -> None:
+        if value in (None, ""):
+            return
+        if field not in spec["supports"]:
+            takes = sorted(n for n, s in MODELS_3D.items()
+                           if field in s["supports"])
+            raise KreaError(
+                f"{model} does not take {field} — it would be ignored and you "
+                f"would be charged for the default. Models that do: {takes}")
+        if allowed and str(value) not in allowed:
+            raise KreaError(
+                f"{field}={value!r} is not one of {list(allowed)} for {model}")
+        payload[field] = value
+
+    def _ranged(field: str, value) -> None:
+        if value is None:
+            return
+        lo, hi = spec.get(field, (0, 0))
+        if lo and not (lo <= int(value) <= hi):
+            raise KreaError(f"{field} must be {lo}..{hi} for {model}, got {value}")
+        _want(field, int(value))
+
+    _want("resolution", resolution, spec.get("resolution", ()))
+    _want("texture_size", texture_size, spec.get("texture_size", ()))
+    _ranged("decimation_target", decimation_target)
+    _ranged("face_count", face_count)
+    if enable_pbr is not None:
+        _want("enable_pbr", bool(enable_pbr))
+    for name, source in (views or {}).items():
+        field = name if name.endswith("_image_url") else f"{name}_image_url"
+        _want(field, _image_ref(source))
+
+    key = api_key(root)
+    if not key:
+        raise KreaError(available(root)["reason"])
+
+    path = spec["path"]
+    if not webhook:
+        return _request(path, key, payload=payload, method="POST", timeout=timeout)
+    # A webhook is a HEADER, and _request has no header hook. One narrow
+    # duplicate beats widening the shared helper for a single caller.
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(API_BASE + path, data=body, method="POST",
+                                 headers={"Authorization": f"Bearer {key}",
+                                          "Content-Type": "application/json",
+                                          "Accept": "application/json",
+                                          "X-Webhook-URL": webhook})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        raise KreaError(f"Krea HTTP {exc.code} on POST {path}") from exc
+    except urllib.error.URLError as exc:
+        raise KreaError(f"could not reach Krea ({exc.reason})") from exc
+
+
+def _model_url(result: dict) -> str:
+    """Dig the .glb URL out of a completed 3D job.
+
+    MEASURED on the first live call, which is the only reason this is not one
+    line: the image path documents `result.urls` as an array of STRINGS, and
+    the 3D path returns an array of OBJECTS. Passing one to urllib raised
+    "unknown url type: {'type'" after the generation had already been paid
+    for. The 3D job's completed body is not published, so this reads the
+    documented shape, the measured shape, and the obvious singular fields,
+    and gives up loudly rather than guessing further.
+    """
+    def _one(entry) -> str:
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, dict):
+            for field in ("url", "signed_url", "href", "download_url"):
+                value = entry.get(field)
+                if isinstance(value, str) and value:
+                    return value
+        return ""
+
+    for entry in (result.get("urls") or []):
+        found = _one(entry)
+        if found:
+            return found
+    for field in ("model_url", "glb_url", "url", "asset_url", "model", "glb"):
+        found = _one(result.get(field))
+        if found:
+            return found
+    return ""
+
+
+def generate_3d(out_path: str, *, prompt: str = "", images=(),
+                model: str = DEFAULT_MODEL_3D, seed: Optional[int] = None,
+                generate_texture: bool = True, resolution: str = "",
+                texture_size: str = "", decimation_target: Optional[int] = None,
+                face_count: Optional[int] = None,
+                enable_pbr: Optional[bool] = None, views: Optional[dict] = None,
+                confirm_unpriced: bool = False, timeout: float = 900.0,
+                root: Any = None) -> dict:
+    """Submit, wait, download a .glb. The 3D twin of :func:`generate`.
+
+    WHAT COMES BACK IS A DRAFT, NOT AN ASSET, and `draft` is True in the result
+    to say so. Geometry and texture, no armature, no unit convention, no
+    guaranteed pose. It still owes the pipeline a clean, a scale to the
+    project's convention, an orientation and a weighting before combine or
+    delivery will make anything of it.
+
+    `confirm_unpriced` is not ceremony. Krea publishes no 3D price, so unlike
+    every other spend in this module the cost cannot be quoted first and the
+    caller has to accept an unknown charge out loud. `estimated_usd` stays None
+    throughout — never 0.0, which reads as free.
+
+    The timeout defaults high because a 3D job runs in minutes where an image
+    runs in seconds.
+    """
+    started = time.monotonic()
+    quote = price_for_3d(model)
+    base = {"provider": "krea", "model": model, "kind": "3d",
+            "estimated_usd": quote, "draft": True}
+    job_id = ""
+    finished: dict = {}
+
+    # The gate is for an UNKNOWN price, not for spending. A model with a
+    # measured rate quotes itself and runs like any other paid call; only the
+    # ones nobody has invoiced yet need a caller to accept a blind charge.
+    if quote is None and not confirm_unpriced:
+        return {**base, "ok": False, "seconds": 0.0,
+                "error": f"no measured price for {model} — Krea publishes none "
+                         "for 3D, so this call cannot be quoted before it runs "
+                         "and nothing has been spent. Pass confirm_unpriced=True "
+                         "to accept an unknown charge against the API balance.",
+                "price_note": "the compute-token figures in Krea's user guide "
+                              "are the web app's subscription meter, not the "
+                              "API's USD balance — they do not apply here"}
+    try:
+        job = submit_3d(prompt, model=model, images=images, seed=seed,
+                        generate_texture=generate_texture,
+                        resolution=resolution, texture_size=texture_size,
+                        decimation_target=decimation_target,
+                        face_count=face_count, enable_pbr=enable_pbr,
+                        views=views, root=root)
+        job_id = job.get("job_id") or job.get("id")
+        if not job_id:
+            raise KreaError(f"Krea did not return a job id: {str(job)[:200]}")
+        finished = poll(str(job_id), root=root, timeout=timeout)
+        result = finished.get("result") or {}
+        url = _model_url(result)
+        if not url:
+            raise KreaError("Krea reported completed with no model URL — the "
+                            f"result body was {str(result)[:300]}")
+        written = download(url, out_path, accept="model/gltf-binary,*/*",
+                           timeout=300.0)
+    except KreaError as exc:
+        # CARRY THE JOB. A 3D generation is minutes of paid compute, and the
+        # first live call failed at the DOWNLOAD, after the job had completed
+        # and been charged for — dropping the id here made a finished result
+        # unrecoverable and cost a second generation to learn the same thing.
+        # `GET /jobs/<id>` still has it.
+        return {**base, "ok": False, "error": str(exc),
+                "job_id": str(job_id), "result": (finished or {}).get("result"),
+                "recover": (f"the job is done and paid for — poll /jobs/{job_id} "
+                            "and download from its result") if job_id else "",
+                "seconds": round(time.monotonic() - started, 2)}
+    return {**base, "ok": True, "path": str(out_path), "bytes": written,
+            "job_id": str(job_id), "url": url,
+            "seconds": round(time.monotonic() - started, 2),
+            "next_steps": ("merge and clean the shells",
+                           "scale to the project's unit convention",
+                           "orient forward", "weight to a skeleton",
+                           "then combine or deliver")}
