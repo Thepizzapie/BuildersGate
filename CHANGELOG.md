@@ -35,9 +35,147 @@ repository at first publication. There is no earlier release history to record.
 
 ### Fixed
 
+- **An interrupted migration wedged the database permanently.** `executescript()`
+  issues a COMMIT before it runs, so a step's DDL landed in its own transaction
+  and `PRAGMA user_version` was written afterwards — anything in that gap (a
+  crash, `bgate panic`, a taskkill, the loser of the concurrent-startup race
+  `_migrate` documents but does not actually prevent) left a database whose
+  schema said "applied" and whose version said "pending". Every later
+  `connect()` replayed the step, raised `table event already exists`, and took
+  the dashboard and every agent's MCP server down for good. This repository's
+  own `.bgate/game.db` was in that state: `user_version` 15, `event` table
+  present, `GET /api/state` answering 500 on a database that was in substance
+  fully migrated. SQLite DDL and `user_version` are both transactional, so each
+  SQL step and its version bump are now one commit, and a replay of a step whose
+  objects already exist repairs the version instead of raising.
 - Eight `ruff` findings on `main`: three f-strings with no placeholders in
   `bgate_adapters/godot.py`, and unused imports in `bgate_core/vfx.py`,
-  `bgate_ui/webview2.py` and `tests/test_handoff.py`.
+  `bgate_ui/webview2.py` and `tests/test_handoff.py`. Plus a bare `Path` in
+  `bgate_mcp/server.py` where the module imports it as `_Path` — a `NameError`
+  waiting for the first `blender_generate` that registered an artifact.
+
+## [0.1.29] - 2026-07-30
+
+### Fixed
+
+- **Every quality gate in the 3D path was a false negative.** `combine()`
+  returned `ok=True` with `checks=[]` on an assembled asset carrying zero
+  materials, zero images and zero textures — the exact "21 materials and ZERO
+  images" failure the layered path was written to prevent, one level up, because
+  the runner's `issues` were computed and then dropped on the floor. Measured
+  against real Blender 4.5, before → after: a cap bound to a bone landed at
+  `(0,-2,1)` rotated 90° → `(0,0,2)` rot 0; a layer's `rotate=[0,0,90]` was a
+  silent no-op → applied; an authored `(2,2,3)` scale was flattened to `(1,1,1)`
+  → preserved; `unweighted_verts` reported 0 of 940 → 8 of 8 and 200 of 940.
+  `parent_type='BONE'` positions a child relative to the bone *tail* in
+  bone-local space, so inverting `armature.matrix_world` misplaced every rigid
+  layer, and `matrix_world` is a stale cache — without `view_layer.update()` the
+  composition read identity and every turnaround subject was displaced by the
+  whole of `centre`.
+
+- **The importer's `Icosphere` was the whole story on weighting.**
+  `io_scene_gltf2` links a bone custom shape at the world origin, parentless and
+  rendering. It was the only object failing envelope weighting — dragging entire
+  body layers down to `deform:nearest`, i.e. rigid — and the only thing the
+  turnaround pivot was rotating, which is why four "angles" came back
+  byte-identical. Body layers now settle on `deform:envelope`, and bone-heat
+  across a glTF round trip went from 200/940 unweighted to 0/940 (glTF stores no
+  bone tails, so leaf tails are restored from the layer record or grown).
+
+- **The turnaround could not detect the failure it was written for.** `blown` and
+  `mean` were measured over a frame that is 75–85% opaque background encoding to
+  114/255, so a fully blown-white figure scored 0.20 against a 0.35 threshold and
+  `mean` could never reach the dark floor. Lighting energy scaled such that a
+  0.3 m prop received ~20× the irradiance of a 2 m character. Both fixed and
+  measured: blown-white now rejected, 0.3 m and 10 m subjects within 1 luma.
+
+- **`blender_sweep` could delete outside the project root.** A shared
+  `base_human.blend` passed as a layer, or a hand-edited manifest, made it an
+  arbitrary-file delete with `dry_run` as the only guard. Now confined through
+  `assets.normalize_path` with a suffix gate, keeps the rig, and returns
+  `refused` with reasons.
+
+- **The tool told to make the logo was forbidden from drawing text.**
+  `image_generate` passed no `task_kind`, and an empty kind means "give it
+  everything" — so a texture prompt received the full 2D-sprite clause including
+  "No text, letters, words, numbers, labels or signage anywhere", while the art
+  brief instructed the agent to generate the team logo as its own layer.
+
+- **Decals shipped opaque.** The image's `Alpha` was never linked, so the
+  exporter wrote `alphaMode: OPAQUE` and a keyed logo rendered in Godot as a
+  solid rectangle — worse than the z-fighting it replaced. `alphaMode` derives
+  from the Alpha socket's *graph*, not from `blend_method`: through a
+  `GREATER_THAN` it exports `MASK`.
+
+### Added
+
+- **A proportioned rigged base, so the agent stops inventing a body.**
+  `bg_human` / `bg_quadruped` / `bg_prop_frame` return a clean, unwrapped,
+  weight-ready mesh with a named 22-deform-bone skeleton and queryable
+  landmarks. Measured: 940 verts at detail 1, 0 loose / 0 non-manifold /
+  0 flipped / 0 ngons, height exact to 2e-6 m, and `ARMATURE_AUTO` binding with
+  **zero** unweighted vertices. A cap fitted via `bg_fit(head_top, "on")` rests
+  on the crown at 10% overlap; the same cap at a guessed 1.7 m — what gets
+  written without a proportion frame — is 89% *inside* the skull, and passed
+  every check the pipeline had.
+
+- **`godot_deliver_asset`** — the last mile. Import, write `.import` with
+  collider generation, purge cache, reimport, generate a `.tscn` under a
+  `CharacterBody3D`, load it through the engine and screenshot it. The path used
+  to stop at the `.glb`, so the only "look at it" was a Blender render of a
+  Blender scene. The in-engine check now counts `Skeleton3D`/`AnimationPlayer`,
+  asserts materials carry an `albedo_texture`, and measures the AABB through the
+  accumulated transform — a character 40× too big read as 30.8 m locally and
+  2880 m in truth.
+
+- **`blender_layer_rerun`** — the manifest now carries the full recipe
+  (`at`/`rotate`/`scale`/`bind`/`rig`) and each layer's generating script, so
+  "re-run that one layer, not the character" is true for the first time.
+
+- **3D is visible to QA.** Turnaround frames return as MCP image content and
+  register one artifact *per angle*, and combined assets register at status
+  `candidate`, so `art_qa_verdict` can reach a 3D asset at all.
+
+- **`task_kind` `"texture"` and `"decal"`**, with a bible-independent form clause
+  — flat albedo, no baked shading, no background for textures; "the lettering IS
+  the subject" for decals.
+
+### Changed
+
+- **Characters face `+Y` in Blender**, with the turnaround's angle labels
+  remapped to match rather than hiding a compensating rotation in the export
+  path. glTF maps Blender `+Y` to `-Z`, which is what Godot calls forward.
+
+- **`blender_texture`** takes `roughness`/`metallic`/`normal`/`emission` and
+  alpha control. Every surface previously shipped as uniform 0.6-rough plastic.
+
+- **The art seat brief: 1,442 → 773 words**, with the 3D block cut to ten
+  numbered steps and keyed on `project.dimension` so a 2D project no longer
+  carries 669 words about armature binding. It had been instructing things the
+  tools could not do — conditioning on pinned refs through a tool with no
+  reference parameter, and "DECLARE IT AND STOP" through an `ask_human` that
+  never blocks. A test now reads the tool surface out of `server.py` by AST and
+  fails in *both* directions if the brief drifts from it again.
+
+- `pyproject.toml` had missed the `0.1.28` bump and still said `0.1.27`.
+
+### Known
+
+- The primitive path raises the **floor**, not the ceiling. The base mesh has no
+  face and no fingers — a proportioned blockout, right for props, vehicles,
+  terrain and block-out, and not a hero character seen close up.
+
+- `bg_flipped` returns `0` on an internal error, which reads as "no flipped
+  faces". Advisory only, but it is a check that reports clean when it failed.
+
+## [0.1.28] - 2026-07-30
+
+Nothing. `v0.1.28` is a second tag on `b2959a7` — the same commit `v0.1.27`
+points at — so there is no diff to describe and no release that contains
+anything `0.1.27` does not. The version in `pyproject.toml` was never bumped to
+match it, which is how it stayed invisible; `0.1.29` corrects the number and
+`.github/workflows/release-exe.yml` now refuses a tag whose version and
+changelog do not agree, so a tag cannot go out undescribed again.
 
 ## [0.1.27] - 2026-07-30
 
@@ -618,7 +756,9 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.27...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...HEAD
+[0.1.29]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.28...v0.1.29
+[0.1.28]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.24...v0.1.25
