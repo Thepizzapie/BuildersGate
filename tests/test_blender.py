@@ -262,6 +262,28 @@ bpy.context.active_object.name = "Logo"
 """
 
 
+def _textured_part(tmp_path, name, script, colour=(102, 28, 163)):
+    """One layer with a real image texture on it — a SHIPPABLE layer.
+
+    A bare primitive round-tripped through glTF carries no material and no
+    image, and combine() refuses to call that pile an asset. That refusal is
+    correct, so the way to earn ok=True is to texture the fixture rather than
+    to lower the bar — which also walks the same road a real run walks: model
+    the layer, generate the map, apply_texture it on.
+    """
+    from PIL import Image
+
+    raw = _part(tmp_path, name, script)
+    image = tmp_path / f"{name}_texture.png"
+    Image.new("RGB", (64, 64), colour).save(image)
+
+    out = tmp_path / f"{name}_textured.glb"
+    got = blender.apply_texture(raw, image, out, timeout=300)
+    assert got["ok"] is True, got.get("error")
+    assert got["textured"], f"{name}: no material received the image"
+    return out
+
+
 class TestCombineValidation:
     """Rejected before Blender is launched — every one of these would otherwise
     surface minutes later as a traceback, or as a silently missing layer."""
@@ -312,8 +334,12 @@ class TestCombineValidation:
 
 class TestCombine:
     def test_layers_assemble_into_one_glb(self, tmp_path):
-        parts = [{"path": str(_part(tmp_path, "body", BODY)), "name": "body"},
-                 {"path": str(_part(tmp_path, "cap", CAP)), "name": "cap"}]
+        # TEXTURED layers on purpose. This is the one test that claims the whole
+        # round trip produces a finished asset, so it has to hand combine()
+        # something that IS one — ok=True is earned here, not asserted over a
+        # grey blob the way it used to be.
+        parts = [{"path": str(_textured_part(tmp_path, "body", BODY)), "name": "body"},
+                 {"path": str(_textured_part(tmp_path, "cap", CAP)), "name": "cap"}]
         out = tmp_path / "player.glb"
 
         got = blender.combine(parts, out, timeout=300)
@@ -321,6 +347,54 @@ class TestCombine:
         assert got["glb"]["exported"] is True
         assert out.exists()
         assert got["layers"] == 2
+        assert all(p["imported"] for p in got["parts"])
+        # What "finished" means, and what the assembly used to report empty.
+        assert got["materials"], got["checks"]
+        assert got["images"], got["checks"]
+
+    def test_an_untextured_pile_of_layers_is_not_called_an_asset(self, tmp_path):
+        """The gate, asserted FIRING — which nothing in this suite ever did.
+
+        MEASURED: combine() returned ok=True, checks=[] and warnings=[] over an
+        assembly carrying zero materials, zero images and zero textures. It
+        assembled fine. It was not an asset, and every check that would have
+        said so was thrown away on the way out.
+        """
+        parts = [{"path": str(_part(tmp_path, "body", BODY)), "name": "body"},
+                 {"path": str(_part(tmp_path, "cap", CAP)), "name": "cap"}]
+        got = blender.combine(parts, tmp_path / "grey.glb", timeout=300)
+
+        # The verdict is a VERDICT, not a refusal: the layers still assembled
+        # and the file is still on disk to look at.
+        assert got["glb"]["exported"] is True
+        assert (tmp_path / "grey.glb").exists()
+        assert all(p["imported"] for p in got["parts"])
+
+        assert got["ok"] is False
+        fired = {c["check"] for c in got["checks"]}
+        assert "no_materials" in fired, got["checks"]
+        assert "no_textures" in fired, got["checks"]
+        # An ok=False with no reason reads downstream as a broken tool.
+        assert "not an asset" in (got["error"] or "")
+        assert any("no image texture" in w for w in got["warnings"]), got["warnings"]
+
+    def test_the_runners_readiness_issues_reach_the_checks(self, tmp_path):
+        """`issues` was present in the return and read by nobody.
+
+        The runner measures game-readiness on every run; combine() merged the
+        result wholesale and then reported checks=[] anyway, so a caller reading
+        the two keys that matter saw a clean bill.
+        """
+        parts = [{"path": str(_part(tmp_path, "body", BODY)), "name": "body"}]
+        got = blender.combine(parts, tmp_path / "bare.glb", timeout=300)
+
+        promoted = [c for c in got["checks"] if c["check"] == "no_material"]
+        assert promoted, got["checks"]
+        # Named by LAYER, because a re-run costs one layer and that needs
+        # knowing which one.
+        assert promoted[0]["layer"] == "body"
+        assert promoted[0]["object"]
+        assert any("no_material" in w for w in got["warnings"]), got["warnings"]
 
     def test_each_layer_reports_its_own_tris(self, tmp_path):
         parts = [{"path": str(_part(tmp_path, "body", BODY)), "name": "body"},
@@ -341,10 +415,15 @@ class TestCombine:
                   "decal_on": "cap"}]
         got = blender.combine(parts, tmp_path / "player.glb", timeout=300)
 
-        assert got["ok"] is True, got.get("error")
+        # This test is about the FIT. These primitives carry no texture, so the
+        # asset gate correctly withholds ok — what proves the assembly ran is
+        # the export and the layers arriving.
+        assert got["glb"]["exported"] is True
+        assert all(p["imported"] for p in got["parts"])
         # The whole reason the decal is its own layer: it gets conformed to the
         # surface instead of being modelled flush against it.
-        assert not [c for c in got["checks"] if c["check"] == "decal_not_fitted"]
+        assert not [c for c in got["checks"]
+                    if c["check"] == "decal_not_fitted"], got["checks"]
 
     def test_binding_without_a_rig_says_so(self, tmp_path):
         parts = [{"path": str(_part(tmp_path, "body", BODY)), "name": "body",
@@ -361,7 +440,13 @@ class TestCombine:
         got = blender.combine(parts, tmp_path / "many.glb", timeout=420)
 
         assert any("planning ceiling" in w for w in got["warnings"])
-        assert got["ok"] is True, got.get("error")
+        # "still assembles" is the claim, and the export is what settles it —
+        # the ceiling is a warning, not a refusal, and it must not turn into one
+        # just because the fixture is untextured.
+        assert got["glb"]["exported"] is True
+        assert (tmp_path / "many.glb").exists()
+        assert got["layers"] == blender.MAX_LAYERS + 1
+        assert all(p["imported"] for p in got["parts"])
 
 
 RIG = """
@@ -394,7 +479,10 @@ class TestCombineRig:
         got = blender.combine(parts, tmp_path / "player.glb", rig="skeleton",
                               timeout=420)
 
-        assert got["ok"] is True, got.get("error")
+        # About the BIND, not about shippability: bare primitives are not an
+        # asset and combine() says so, which is a different question from
+        # whether the rig took.
+        assert got["glb"]["exported"] is True
         assert got["armature"]
         by_name = {p["name"]: p for p in got["parts"]}
         # A jersey deforms with the body; a cap does not bend, it rides a bone.
@@ -480,9 +568,13 @@ class TestBaseballPlayer:
         got = blender.combine(self._layers(tmp_path), tmp_path / "player.glb",
                               rig="skeleton", timeout=600)
 
-        assert got["ok"] is True, got.get("error")
         assert got["glb"]["exported"] is True
         assert (tmp_path / "player.glb").exists()
+        assert got["armature"]
+        # "whole" is about the layers arriving and the binds taking. These
+        # fixtures are untextured primitives, so the asset gate withholds ok —
+        # that is a different failure from a character coming apart.
+        assert not [c for c in got["checks"] if c["check"] == "unbound"], got["checks"]
 
         # Seven layers is under the ceiling — a real character does not need
         # eight, which is the number the ceiling exists to keep it under.
@@ -499,7 +591,14 @@ class TestBaseballPlayer:
         assert not [c for c in got["checks"] if c["check"] == "unbound"], got["checks"]
         assert not [c for c in got["checks"]
                     if c["check"] == "unweighted_verts"], got["checks"]
-        assert not got["warnings"], got["warnings"]
+        # The third way a character comes apart: a layer that never arrived.
+        #
+        # NOT an empty warnings list. warnings now also carries the honest
+        # complaints about this fixture — untextured primitives with no
+        # materials — and asserting emptiness meant asserting that combine()
+        # noticed nothing, which is exactly the bug that survived here.
+        assert not [w for w in got["warnings"]
+                    if "imported nothing" in w], got["warnings"]
 
     def test_the_logo_is_fitted_to_the_cap_not_flush_against_it(self, tmp_path):
         got = blender.combine(self._layers(tmp_path), tmp_path / "player.glb",
@@ -654,7 +753,12 @@ class TestManifestAndSweep:
                  {"path": str(_part(tmp_path, "cap", CAP)), "name": "cap"}]
         out = tmp_path / "player.glb"
         got = blender.combine(parts, out, timeout=300)
-        assert got["ok"] is True, got.get("error")
+        # These tests are about the RECORD, not about shippability. Untextured
+        # primitives assemble and export; combine() declines to call the result
+        # a finished asset, and the manifest is written either way — which is
+        # the point, because the run that needs re-running is the failed one.
+        assert got["glb"]["exported"] is True, got.get("error")
+        assert out.exists()
         return out, got
 
     def test_a_run_records_itself_beside_its_output(self, tmp_path):
