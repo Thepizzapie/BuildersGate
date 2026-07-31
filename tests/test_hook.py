@@ -484,9 +484,21 @@ class TestSessionStart:
         (checkout / db.DB_DIRNAME).mkdir()
         db.connect(checkout)
 
-        # The same directory, spelled the way a different API would hand it back:
-        # trailing separator, mixed case, and a redundant `.` segment.
-        spelled = str(tmp_path).upper() + os.sep + "." + os.sep
+        # The same directory, spelled the way a different API would hand it
+        # back: trailing separator, a redundant `.` segment, and case variation
+        # ONLY WHERE CASE IS NOT PART OF THE NAME.
+        #
+        # Uppercasing is another spelling of one directory on Windows and macOS
+        # and a different directory on Linux, where `/TMP/pytest-of-...` simply
+        # does not exist — so applying it unconditionally asserted that _real
+        # resolves two paths that are not the same path to the same string,
+        # which is neither true nor wanted. That is what failed the advisory
+        # Linux job. Probed rather than keyed on sys.platform, because the
+        # filesystem decides this, not the OS.
+        spelled = str(tmp_path)
+        if os.path.exists(spelled.upper()):
+            spelled = spelled.upper()
+        spelled += os.sep + "." + os.sep
         monkeypatch.setattr(session, "_temp_dir", lambda: session._real(spelled))
         monkeypatch.setattr(session, "_serve_is_up", lambda *a, **k: False)
 

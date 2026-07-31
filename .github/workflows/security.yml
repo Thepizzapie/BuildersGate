@@ -1,0 +1,87 @@
+# The scans that do not belong in the merge-blocking path.
+#
+# SECURITY.md is candid that this tool executes code and spends money on the
+# user's behalf — it shells out to Godot and Blender, runs arbitrary GDScript
+# that can reach OS.execute(), and loads API keys from a project-local .env.
+# None of that was scanned by anything.
+#
+# Deliberately NOT here: a third-party secret-scanning action. GitHub's own
+# secret scanning with push protection is free on public repos, scans the whole
+# history, and refuses the push instead of telling you about the key after it is
+# already on the internet. It is a repository setting, not a workflow, and it
+# is the better answer for the failure this repo has already had once (a
+# committed API key). Turn it on under Settings → Code security.
+name: security
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  schedule:
+    # Weekly, because a dependency becomes vulnerable while the code sits still.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Audit the dependencies this project actually resolves to
+        # A clean venv with ONLY this package installed, so the audit sees the
+        # runtime dependency tree and nothing the runner image happened to ship.
+        # Auditing the job's own interpreter would report on setuptools and pip
+        # instead, which tells you nothing about what a user installs.
+        #
+        # NO --strict, deliberately. builders-gate itself is always reported as
+        # "not found on PyPI and could not be audited" — correct, nothing has
+        # been published to an index yet — and --strict promotes exactly that
+        # skip to a failure, so the job could never go green until the day the
+        # package is published. The exit code still fails on an actual
+        # vulnerability; --strict only governs skips.
+        #
+        # Revisit if builders-gate is ever published: at that point the skip
+        # disappears and --strict becomes worth having, because a dependency
+        # silently going unaudited is a real gap.
+        run: |
+          python -m venv .auditenv
+          .auditenv/bin/python -m pip install --upgrade pip
+          .auditenv/bin/python -m pip install .
+          .auditenv/bin/python -m pip install pip-audit
+          .auditenv/bin/python -m pip_audit
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # security-and-quality over the default security-extended: this is a
+          # subprocess-and-filesystem codebase, and the quality pack is where
+          # the checks for shell injection through a built command line and for
+          # paths joined from untrusted input live.
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"

@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 # The alpha at or below which a pixel is "not there". Kept well above 0 because
 # a keyed cut-out carries a rim of near-zero alpha that is not art.

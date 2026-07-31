@@ -830,7 +830,7 @@ def character_scene_text(model_res: str, *, node_name: str,
     offset = (-(pos_x + size_x * 0.5), -(pos_y + size_y * 0.5),
               -(pos_z + size_z * 0.5))
 
-    ext = [f'[ext_resource type="PackedScene" '
+    ext = ['[ext_resource type="PackedScene" '
            + (f'uid="{model_uid}" ' if model_uid else "")
            + f'path="{model_res}" id="1_model"]']
     if script_res:
@@ -928,10 +928,10 @@ def preview_scene_text(character_res: str, *, longest_axis: float,
         "ambient_light_color = Color(0.55, 0.58, 0.68, 1)",
         "ambient_light_energy = 0.55",
         "",
-        f'[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]',
+        '[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]',
         f"size = Vector3({span:.4f}, {slab:.4f}, {span:.4f})",
         "",
-        f'[sub_resource type="BoxMesh" id="BoxMesh_floor"]',
+        '[sub_resource type="BoxMesh" id="BoxMesh_floor"]',
         f"size = Vector3({span:.4f}, {slab:.4f}, {span:.4f})",
         "",
         '[node name="Preview" type="Node3D"]',

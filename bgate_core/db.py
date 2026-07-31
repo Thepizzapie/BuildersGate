@@ -7,7 +7,9 @@ entry to ``_MIGRATIONS`` and never edit a shipped one.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -835,14 +837,76 @@ def connect(root: str | os.PathLike[str]) -> sqlite3.Connection:
     return conn
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Apply pending migrations under an exclusive lock.
+_ALREADY_EXISTS = re.compile(r"already exists", re.I)
 
-    Every process that opens the DB runs this. Unguarded, two starting at once
-    both read user_version=N and both replay migration N+1, and the second one
-    dies on 'table already exists' — taking a dashboard or an agent's MCP server
-    down at startup. The lock serialises them; the re-read inside it means the
-    loser sees the winner's work and does nothing.
+# CREATE TABLE / INDEX / VIEW that does not already say IF NOT EXISTS. The
+# trailing group(0) ends in whitespace, so the replacement re-attaches cleanly.
+_CREATE_STMT = re.compile(
+    r"\bCREATE\s+(?:UNIQUE\s+)?(?:VIRTUAL\s+)?(?:TABLE|INDEX|VIEW)\s+"
+    r"(?!IF\s+NOT\s+EXISTS)",
+    re.I,
+)
+
+
+def _apply_sql_step(conn: sqlite3.Connection, sql: str, version: int) -> None:
+    """Apply one SQL migration and its version bump AS ONE COMMIT.
+
+    THE BUG THIS EXISTS FOR, found in this repository's own .bgate/game.db:
+    user_version said 15 while the `event` table migration 16 creates was
+    already there. Every connect() therefore replayed 16, hit 'table event
+    already exists', and took the dashboard and every MCP server down — for
+    good, since nothing about that state improves on its own. /api/state
+    answered 500 on a database that was, in substance, fully migrated.
+
+    It was reachable because ``executescript()`` issues a COMMIT before it runs:
+    the CREATE TABLEs landed in their own transaction and ``PRAGMA
+    user_version`` was a separate write afterwards. Anything at all in that gap
+    — a crash, `bgate panic`, a taskkill, the loser of the concurrent-startup
+    race the caller documents — wedged the file permanently.
+
+    SQLite DDL is transactional and so is user_version (it lives in the database
+    header and rolls back with everything else), so the two belong in one
+    transaction. An interrupted migration now rolls back whole and is simply
+    retried on the next connect.
+
+    The retry with IF NOT EXISTS is the repair path for databases already wedged
+    by the old code, and it is what makes a lost startup race harmless rather
+    than fatal: replaying a step whose objects exist becomes a no-op that
+    finishes by recording the version that was missing.
+    """
+    script = f"BEGIN;\n{sql}\nPRAGMA user_version = {version};\nCOMMIT;"
+    try:
+        conn.executescript(script)
+        return
+    except sqlite3.OperationalError as exc:
+        if not _ALREADY_EXISTS.search(str(exc)):
+            raise
+        conn.rollback()
+        collided = exc
+
+    healed = _CREATE_STMT.sub(lambda m: m.group(0) + "IF NOT EXISTS ", sql)
+    if healed == sql:
+        # 'already exists' from something this does not know how to skip — a
+        # TRIGGER, say. Raise the original rather than guessing: a bare `raise`
+        # out here is past the handler and would surface as RuntimeError, which
+        # would bury the one line saying what actually collided.
+        raise collided
+    conn.executescript(
+        f"BEGIN;\n{healed}\nPRAGMA user_version = {version};\nCOMMIT;")
+    print(f"bgate: migration {version} was already applied but unrecorded — "
+          f"user_version repaired", file=sys.stderr)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply pending migrations.
+
+    Every process that opens the DB runs this. Two starting at once both read
+    user_version=N and both replay migration N+1 — the BEGIN EXCLUSIVE below
+    does NOT prevent that, because the pending list has to be committed before
+    the loop runs (the callable steps manage their own transactions, and the
+    12-step table rebuild needs PRAGMA foreign_keys OFF, which SQLite refuses
+    inside a transaction). What makes the race survivable is that each SQL step
+    is now atomic and replay-safe: see _apply_sql_step.
     """
     if conn.execute("PRAGMA user_version").fetchone()[0] >= len(_MIGRATIONS):
         return  # fast path: no lock, no write, nothing pending
@@ -858,11 +922,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     for i, step in pending:
         if callable(step):
+            # A callable cannot be folded into one commit for the reason above,
+            # so those are written to be re-runnable instead.
             step(conn)
+            conn.execute(f"PRAGMA user_version = {i}")
+            conn.commit()
         else:
-            conn.executescript(step)
-        conn.execute(f"PRAGMA user_version = {i}")
-        conn.commit()
+            _apply_sql_step(conn, step, i)
 
 
 @contextmanager
