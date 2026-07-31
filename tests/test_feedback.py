@@ -6,6 +6,8 @@ is the trap, and it's tested explicitly.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from bgate_core import feedback
@@ -56,6 +58,43 @@ class TestNoise:
     ])
     def test_real_feedback_is_not_noise(self, text):
         assert feedback.is_noise(text) is False
+
+    def test_a_long_hum_does_not_hang_the_transcript(self):
+        """The filler pattern used to be exponential in the length of a run.
+
+        `mm+` inside a plain `(?:…)*` can partition a run of one letter between
+        repetitions in exponentially many ways, and a refusal tries all of them.
+        Measured before the fix: 32 m's 0.5s, 36 m's 3.6s, 41 m's 26 SECONDS.
+        is_noise runs on every segment whisper returns and a stretch of humming
+        is exactly what it returns for one, so this was reachable by recording a
+        playtest rather than by attacking anything.
+
+        4000 characters would not finish this century unfixed; the bound is
+        loose because what is being asserted is 'not exponential', and a laptop
+        under load should not be able to fail it spuriously.
+        """
+        started = time.perf_counter()
+        feedback.is_noise("m" * 4000 + "z")
+        assert time.perf_counter() - started < 1.0
+
+    @pytest.mark.parametrize("text", ["uhhello", "uhhelloo",
+                                      "uhhhello", "uhhhelloo"])
+    def test_the_possessive_quantifier_changed_nothing_that_is_asked(self, text):
+        """The exact four strings the possessive quantifier cost, pinned.
+
+        Diffing both patterns over ~5,700 generated cases turned up four
+        disagreements and no others: `uh+` eats the h of hello and possessive
+        will not hand it back, so the PATTERN stops matching them.
+
+        is_noise still says True for all four, because a string under three
+        words is noise on the word count alone and never reaches the pattern's
+        answer. So the fix costs nothing at the only surface anyone calls — but
+        the two facts are asserted separately, because a later change to the
+        word floor would otherwise silently turn this into a real behaviour
+        change nobody chose.
+        """
+        assert feedback._NOISE.match(text) is None
+        assert feedback.is_noise(text) is True
 
 
 class TestRouting:
