@@ -322,6 +322,28 @@ def style_ref(path: str | os.PathLike, strength: float = 0.5) -> dict:
     return {"url": data_uri(path), "strength": strength}
 
 
+def refs_from_paths(paths, strength: float = 0.5) -> list[dict]:
+    """Local anchor FILES -> the style-reference array. The whole bridge.
+
+    Every pinned ref in this tool is a path on disk and every model here wants
+    a url, so a caller that has anchors and wants them conditioned on needs
+    exactly this and nothing else. A missing or wrong-typed file raises
+    KreaError HERE, before any money moves, rather than surfacing as a 422
+    three round trips later.
+    """
+    return [style_ref(p, strength) for p in (paths or []) if str(p).strip()]
+
+
+def supports_style_refs(model: str = DEFAULT_MODEL) -> bool:
+    """Can this model condition on reference images at all?
+
+    Worth asking BEFORE quoting a price: imagen and flux-1.1-pro are
+    prompt-only, so "generate conditioned on the pinned refs" is not a slower
+    or dearer version of the request on those — it is not the request.
+    """
+    return bool((MODELS.get(model) or {}).get("style_refs"))
+
+
 def pixels_for(size: str, *, lo: int = 512, hi: int = 2368) -> tuple[int, int]:
     """WxH clamped to what the pixel-sized models accept."""
     try:
@@ -912,16 +934,42 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
              style_refs: Optional[list[dict]] = None, image_url: str = "",
              strength: Optional[float] = None, creativity: str = "",
              quality: str = "", styles: Optional[list[dict]] = None,
-             timeout: float = 300.0, root: Any = None) -> dict:
+             timeout: float = 300.0, root: Any = None,
+             ref_paths=(), ref_strength: float = 0.5,
+             task_kind: str = "", tileable: bool = False) -> dict:
     """Submit, wait, download. The whole three-step dance as one call.
 
     Shaped to match imagegen.generate's return so the art pipeline does not care
     which provider produced the file: {ok, path, bytes, seconds, estimated_usd}.
+
+    ``ref_paths`` are LOCAL anchor files and are the ergonomic half of
+    ``style_refs``: they are turned into the reference array here rather than
+    every caller learning :func:`style_ref`. The two ADD — a caller already
+    holding built refs keeps them, and paths are appended — so this is additive
+    for anyone who was already passing ``style_refs``. ``estimated_usd`` counts
+    the merged set, because Krea charges more for a request WITH references
+    (krea-2-large is $0.06 plain and $0.065 anchored) and a quote that reads
+    only the model name under-quotes every anchored generation the art seat
+    makes.
+
+    ``task_kind`` forces a texture kind square (see imagegen.size_for) and
+    ``tileable`` runs the mirrored post-pass over the downloaded file. Both
+    default off; neither changes anything for existing 2D work.
     """
     started = time.monotonic()
+    from bgate_adapters.imagegen import make_tileable, size_for
+
+    size = size_for(size, task_kind=task_kind)
+    refs = list(style_refs or [])
+    try:
+        refs += refs_from_paths(ref_paths, ref_strength)
+    except KreaError as exc:
+        return {"ok": False, "error": str(exc), "provider": "krea",
+                "model": model, "seconds": round(time.monotonic() - started, 2),
+                "estimated_usd": 0.0}
     try:
         job = submit(prompt, model=model, size=size, seed=seed,
-                     style_refs=style_refs, image_url=image_url,
+                     style_refs=refs or None, image_url=image_url,
                      strength=strength, creativity=creativity,
                      quality=quality, styles=styles, root=root)
         job_id = job.get("job_id") or job.get("id")
@@ -936,10 +984,15 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         return {"ok": False, "error": str(exc), "provider": "krea",
                 "model": model, "seconds": round(time.monotonic() - started, 2),
                 "estimated_usd": 0.0}
-    return {
+    result = {
         "ok": True, "path": str(out_path), "bytes": written,
         "provider": "krea", "model": model,
         "job_id": str(job_id), "url": urls[0],
         "seconds": round(time.monotonic() - started, 2),
-        "estimated_usd": price_for(model, style_refs=len(style_refs or [])),
+        "estimated_usd": price_for(model, style_refs=len(refs)),
     }
+    if tileable:
+        # After the download, never instead of it: the image is already paid
+        # for, so a post-pass that cannot run must degrade to a note.
+        result["tileable"] = make_tileable(str(out_path))
+    return result

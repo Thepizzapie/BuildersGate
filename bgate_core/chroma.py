@@ -64,6 +64,22 @@ MIN_SAFE_DISTANCE = 120.0
 # ---------------------------------------------------------------------------
 # Which work gets a keyable background — the split, stated explicitly
 # ---------------------------------------------------------------------------
+# Kinds where THE TEXT IS THE ASSET — a wordmark, a team logo, an insignia.
+# Mirrors artdirection.DECAL_KINDS (imported lazily below to keep this module
+# free of a cycle; :func:`text_is_subject` prefers the live set when it can
+# reach it, so the two cannot drift apart silently).
+#
+# These are sprite-shaped — a decal composites onto a cap, a wall or a shirt, so
+# its background is waste exactly like a sprite's. They were held OFF the keyed
+# path for one reason only: :func:`clause` hard-coded "NO text" into the
+# background contract, so routing a logo through it reintroduced the very ban
+# that made logos impossible, and the caller had to fall back to asking the API
+# for transparency — which no model in either provider actually grants. The
+# clause now has a text-is-the-subject variant, so they belong here.
+TEXT_SUBJECT_KINDS = frozenset({
+    "decal", "logo", "insignia", "emblem", "sticker",
+})
+
 # Sprite-shaped: the thing composites OVER game art, so its background is not
 # part of the asset and every pixel of it is waste that has to come out.
 KEYED_KINDS = frozenset({
@@ -73,7 +89,7 @@ KEYED_KINDS = frozenset({
     "sprite", "sheet", "gear", "prop", "portrait", "icon",
     "vfx",        # an effect key frame — composites over the game, so alpha or
                   # nothing. See bgate_core.vfx for what happens to it next.
-})
+}) | TEXT_SUBJECT_KINDS
 # Full-bleed: the background IS the asset. Keying these produces an empty file.
 # `concept` sits here deliberately — exploration wants to see the model's own
 # framing and lighting, and a concept pass is not a shippable sprite.
@@ -91,6 +107,23 @@ def needs_key(task_kind: str) -> bool:
     and a human can re-run. Fail toward the recoverable mistake.
     """
     return str(task_kind or "").strip().lower() in KEYED_KINDS
+
+
+def text_is_subject(task_kind: str) -> bool:
+    """Is the writing on this asset the POINT of it?
+
+    A decal is the one keyable kind whose background contract must not forbid
+    lettering. Asks artdirection for the live list first — that module owns the
+    decal vocabulary and its aliases — and falls back to the local mirror when
+    it cannot be imported (chroma is imported BY artdirection in some paths).
+    """
+    kind = str(task_kind or "").strip().lower()
+    try:
+        from . import artdirection as _ad
+
+        return _ad.is_decal_kind(kind)
+    except Exception:
+        return kind in TEXT_SUBJECT_KINDS
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +257,7 @@ def strip_transparency_asks(prompt: str) -> str:
 
 
 def clause(chroma: tuple[str, tuple[int, int, int]] | None = None, *,
-           subject: str = "character") -> str:
+           subject: str = "character", text_is_subject: bool = False) -> str:
     """The background contract, as prompt text. Blunt and redundant on purpose.
 
     Every phrase here is scar tissue from a real generation: "no gradient"
@@ -233,18 +266,40 @@ def clause(chroma: tuple[str, tuple[int, int, int]] | None = None, *,
     tripped the halo audit), "fully inside the frame" (a limb touching the edge
     reads as background bleed to the audit and cannot be trimmed). Naming the
     exact RGB triple matters too — "magenta" alone gets a tasteful mauve.
+
+    ``text_is_subject`` is the DECAL variant of the same contract, and it exists
+    because "NO text" was written in here unconditionally. A logo or a wordmark
+    is sprite-shaped — it composites onto a cap, a wall or a shirt, so it needs
+    alpha exactly like a sprite does — but routing one through the keyed path
+    handed the model an instruction to omit the only thing being asked for, and
+    the kind had to stay off :data:`KEYED_KINDS` and rely on the caller passing
+    ``transparent=True``, which no provider actually honours. The ban is scoped
+    to the BACKGROUND here instead and the lettering is demanded rather than
+    forbidden. Everything the audit depends on — the flatness, the exact RGB,
+    the margin — is unchanged, because the cut still has to be clean.
     """
     name, rgb = chroma or DEFAULT_CHROMA
+    # The one clause that flips. Everything else in this contract is about the
+    # BACKDROP; "NO text" was the only line that reached onto the subject.
+    forbidden = ("NO other objects" if text_is_subject
+                 else "NO other objects, NO text")
+    demanded = (
+        f" The lettering, wordmark or mark IS the {subject} and must be "
+        f"rendered in full — complete, crisp, high-contrast and exactly as "
+        f"specified. The ban on text above applies to the BACKGROUND ONLY: the "
+        f"flat {name} field carries no writing, no watermark, no label and no "
+        f"caption of its own."
+        if text_is_subject else "")
     return (
         f" BACKGROUND (mandatory): place the {subject} on a COMPLETELY FLAT, "
         f"UNIFORM, SINGLE SOLID {name} background, exact colour RGB "
         f"{rgb[0]},{rgb[1]},{rgb[2]}, filling the entire frame edge to edge "
         f"behind the subject. NO gradient, NO vignette, NO lighting falloff, NO "
         f"texture, NO pattern, NO ground plane, NO cast shadow on the "
-        f"background, NO other objects, NO text. That exact {name} must appear "
-        f"NOWHERE on the {subject} itself. The {subject} must be entirely "
-        f"inside the frame with a clear margin on all four sides — nothing "
-        f"touching or crossing the edge."
+        f"background, {forbidden}. That exact {name} must appear "
+        f"NOWHERE on the {subject} itself.{demanded} The {subject} must be "
+        f"entirely inside the frame with a clear margin on all four sides — "
+        f"nothing touching or crossing the edge."
     )
 
 
@@ -476,7 +531,8 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
              ref_paths: Sequence[str] = (), ref_strength: float = 0.5,
              anchors: Sequence[str] = (), transparent: bool = False,
              timeout: float = 300.0, root: Any = None,
-             logical_name: str = "", work_item_id: Optional[int] = None) -> dict:
+             logical_name: str = "", work_item_id: Optional[int] = None,
+             tileable: bool = False) -> dict:
     """Generate one image through the keyable-background contract.
 
     This is the ONLY thing sprite-shaped work should call. It picks the key
@@ -489,6 +545,18 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     explicitly to override. When keying is OFF the prompt goes through
     untouched and ``transparent`` is honoured as the caller asked — a backdrop
     plate must not be handed a green screen.
+
+    A DECAL KIND (decal/logo/insignia/emblem/sticker) is keyed like any other
+    sprite-shaped asset and gets the text-is-the-subject variant of the
+    contract — see :func:`clause`. It does not need, and must not be given,
+    ``transparent=True``: that was the workaround for this kind being locked out
+    of the keyed path, and asking the API for alpha has never worked.
+
+    ``task_kind`` now reaches the ADAPTERS as well as the clause, because two
+    decisions live down there and cannot be made from the prompt: a texture
+    kind is forced square (a non-square map stretches across a unit UV and
+    nothing downstream can undo it) and ``tileable`` runs the mirrored
+    post-pass. Both are no-ops for every kind that is not a texture.
 
     Returns the adapters' shared result shape plus ``chroma`` (the pick and its
     evidence) and ``alpha`` (the audit). ``ok=False`` with an ``error`` when the
@@ -506,13 +574,20 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     # that changes nothing, which is exactly how a corporate-satire project
     # generated a painterly fantasy paladin.
     art_clause = ""
-    if root:
-        try:
-            art_clause = artdirection.clause(root, task_kind=task_kind)
-        except Exception:
-            art_clause = ""   # a missing bible must never block the work
-        if art_clause:
-            prompt = prompt + art_clause
+    try:
+        if root:
+            art_clause = artdirection.clause(root, task_kind=task_kind,
+                                             tileable=tileable)
+        else:
+            # No project, so no bible to read — but the FORM clause is not read
+            # out of a bible. "A texture map carries no baked lighting" is true
+            # of the asset kind, not of the project, so it must survive a
+            # rootless call the way the style direction cannot.
+            art_clause = artdirection.form_clause(task_kind, tileable=tileable)
+    except Exception:
+        art_clause = ""   # a missing bible must never block the work
+    if art_clause:
+        prompt = prompt + art_clause
 
     report = {}
     chroma_rgb = None
@@ -523,7 +598,15 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
         report = pick_report(ref_paths[0] if ref_paths else None,
                              anchors=list(anchors) + list(ref_paths[1:]))
         chroma_name, chroma_rgb = report["name"], tuple(report["rgb"])
-        prompt = strip_transparency_asks(prompt) + clause((chroma_name, chroma_rgb))
+        # A decal's whole content is writing, so it gets the variant of the
+        # contract that scopes "NO text" to the backdrop. Without this the
+        # keyable path and the decal art direction contradict each other in the
+        # same prompt, and the model resolves that by dropping the logo.
+        wordmark = text_is_subject(task_kind)
+        prompt = strip_transparency_asks(prompt) + clause(
+            (chroma_name, chroma_rgb),
+            subject="graphic" if wordmark else "character",
+            text_is_subject=wordmark)
         # NEVER also ask for transparency on the keyed path. Measured: gpt-image
         # honours neither reliably, and asking for both gets a transparent-ish
         # image with a gradient THROUGH it — two half-cuts instead of one clean
@@ -560,7 +643,8 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                                    model=model or krea.DEFAULT_MODEL, size=size,
                                    seed=seed, style_refs=refs or None,
                                    styles=trained or None,
-                                   quality=quality,
+                                   quality=quality, task_kind=task_kind,
+                                   tileable=tileable,
                                    timeout=timeout, root=root)
         elif provider in ("openai", "gpt-image", "imagegen"):
             if ref_paths:
@@ -570,14 +654,17 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                                        str(out_path), size=size, quality=quality,
                                        transparent=transparent, timeout=timeout,
                                        root=root, logical_name=logical_name,
-                                       work_item_id=work_item_id)
+                                       work_item_id=work_item_id,
+                                       task_kind=task_kind, tileable=tileable)
             else:
                 result = imagegen.generate(prompt, str(out_path), size=size,
                                            quality=quality,
                                            transparent=transparent,
                                            timeout=timeout, root=root,
                                            logical_name=logical_name,
-                                           work_item_id=work_item_id)
+                                           work_item_id=work_item_id,
+                                           task_kind=task_kind,
+                                           tileable=tileable)
         else:
             return {"ok": False, "provider": provider, "model": model,
                     "error": f"unknown provider {provider!r} — 'krea' or 'openai'"}
