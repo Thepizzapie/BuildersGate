@@ -50,6 +50,15 @@ def everything_present(monkeypatch):
     monkeypatch.setattr("bgate_adapters.transcribe.available",
                         lambda: {"available": True, "python": "C:/py.exe",
                                  "version": "1.2.1"})
+    # A GPU, stubbed like everything else here. The imageto3d row asks
+    # nvidia-smi, and `shutil.which` above answers None for it — so on a
+    # machine WITH a GPU this fixture was accidentally honest and on a CI
+    # runner it was not, which is exactly how this test passed on two
+    # developer machines and failed on every runner.
+    monkeypatch.setattr("bgate_adapters.imageto3d.doctor_row",
+                        lambda: {"available": True, "path": "nvidia-smi",
+                                 "version": "NVIDIA GeForce RTX 3060 (12.0 GB)",
+                                 "min_required": "", "reason": ""})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
 
@@ -68,6 +77,10 @@ def nothing_present(monkeypatch):
     monkeypatch.setattr("bgate_adapters.transcribe.available",
                         lambda: {"available": False, "python": "C:/py.exe",
                                  "reason": "faster-whisper not installed"})
+    monkeypatch.setattr("bgate_adapters.imageto3d.doctor_row",
+                        lambda: {"available": False, "path": "", "version": "",
+                                 "min_required": "",
+                                 "reason": "nvidia-smi not found"})
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
@@ -99,16 +112,24 @@ def test_present_binaries_report_available_with_a_path(everything_present):
 
 
 def test_absent_binaries_report_a_reason_not_an_exception(nothing_present):
+    """DERIVED FROM doctor.CHECKS, not a list written out again here.
+
+    This used to name the seven rows and assert the string "7 unavailable".
+    Adding the imageto3d row broke both halves, and only on machines without a
+    GPU — so it passed on the two boxes it was written on and failed on every
+    runner. A count and a list that have to be edited in step with CHECKS will
+    be forgotten again; asking CHECKS cannot be.
+    """
     report = doctor.check()
-    for name in ("blender", "godot", "godot_web_templates", "ffmpeg", "ffprobe",
-                 "whisper", "openai_key"):
+    absent = [n for n in doctor.CHECKS if n != "python"]
+    for name in absent:
         row = report[name]
         assert row["available"] is False, name
         assert row["reason"], name
         assert row["path"] in ("", "C:/py.exe"), name
     # python is the interpreter running this — it is always there.
     assert report["python"]["available"]
-    assert "7 unavailable" in doctor.summary(report)
+    assert f"{len(absent)} unavailable" in doctor.summary(report)
 
 
 def test_export_templates_must_match_the_editor_version(monkeypatch, tmp_path):

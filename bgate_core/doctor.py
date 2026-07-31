@@ -48,7 +48,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # The order is the report order — cheap/local first, subprocess-spawning last.
 CHECKS = ("python", "openai_key", "ffmpeg", "ffprobe", "blender", "godot",
-          "godot_web_templates", "whisper")
+          "godot_web_templates", "whisper", "imageto3d")
 
 # What the code in this repo actually assumes, not aspirational floors.
 # blender: the default warmup engine is BLENDER_EEVEE_NEXT, which is 4.2+.
@@ -63,6 +63,12 @@ MIN_REQUIRED = {
     "godot": "4.0",
     "godot_web_templates": "",
     "whisper": "0.10",
+    # No floor. A red row here means image-to-3D is unavailable and every
+    # other path still works — same status as ffmpeg or whisper. It reports a
+    # GPU, not a binary, and it asks nvidia-smi rather than torch: this
+    # machine's default interpreter carries torch 2.8.0+cpu, so a torch probe
+    # would call a perfectly good RTX 3060 "no GPU" and never recover.
+    "imageto3d": "",
 }
 
 CACHE_SECONDS = 5.0
@@ -249,6 +255,24 @@ def _probe_whisper() -> dict:
     return _finish("whisper", probe.get("python", ""), probe.get("version", ""))
 
 
+def _probe_imageto3d() -> dict:
+    """GPU capable of local image-to-3D, or the reason there is none.
+
+    Imported inside the function on purpose. The adapter is careful never to
+    pull torch, but doctor is on the startup path of every CLI invocation and
+    an adapter import belongs behind the probe that needs it, not above it.
+    """
+    try:
+        from bgate_adapters import imageto3d
+    except Exception as exc:                       # adapter absent or broken
+        return _missing("imageto3d", f"adapter unavailable: {exc}")
+    row = imageto3d.doctor_row()
+    return _row(available=bool(row.get("available")),
+                path=row.get("path", ""), version=row.get("version", ""),
+                min_required=row.get("min_required", ""),
+                reason=row.get("reason", ""))
+
+
 _PROBES: dict[str, Callable[[], dict]] = {
     "python": _probe_python,
     "openai_key": _probe_openai_key,
@@ -258,6 +282,7 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "godot": _probe_godot,
     "godot_web_templates": _probe_godot_web_templates,
     "whisper": _probe_whisper,
+    "imageto3d": _probe_imageto3d,
 }
 
 
