@@ -176,7 +176,7 @@ def available() -> tuple[bool, str]:
 # slots this module actually calls are defined; the rest are padded so the
 # indices line up. Getting an index wrong is a hard crash rather than an
 # exception, which is why each vtable below is written out in full order.
-from ctypes import HRESULT, POINTER, c_void_p, c_wchar_p, c_int, byref, Structure  # noqa: E402
+from ctypes import HRESULT, POINTER, c_void_p, c_wchar_p, byref, Structure  # noqa: E402
 from ctypes import WINFUNCTYPE  # noqa: E402
 
 S_OK = 0
