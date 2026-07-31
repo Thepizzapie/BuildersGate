@@ -49,16 +49,31 @@ they are not promised a fix.
 ```bash
 pip install -e ".[dev]"
 python -m pytest -m "not slow" -q
+ruff check .
 ```
 
 `-m "not slow"` deselects the tests that drive real Blender and real whisper.
 Drop it only if you have both installed and want to wait. This is the same
-command to use.
+command CI runs.
+
+`ruff` is a merge gate and is pinned in the `dev` extra so your run and CI's
+cannot disagree. The rule set is deliberately narrow — `E9` and `F`, which catch
+bugs rather than taste — and is explained in `pyproject.toml`. A finding is
+almost never a style opinion: turning it on found eight dead imports and
+pointless f-strings on `main`, and a `NameError` waiting to happen in a branch
+that had not landed yet.
 
 If you are changing anything the wheel ships (JavaScript under
 `bgate_ui/static/`, anything in `templates/`, the engine schemas), check the
 wheel smoke test in the suite. A wheel that quietly ships no
-JavaScript is a bug this repo has already had once.
+JavaScript is a bug this repo has already had once. The full build-install-serve
+loop is the `wheel-smoke` job in CI, and you can run it yourself:
+
+```bash
+python -m build --wheel
+python -m venv .wheelenv && .wheelenv/Scripts/python -m pip install dist/*.whl
+.wheelenv/Scripts/python packaging/smoke_wheel.py
+```
 
 ## Pull requests
 

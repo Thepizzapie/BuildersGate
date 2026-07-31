@@ -9,6 +9,36 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+
+- **A CI pipeline that gates on more than pytest.** `.github/workflows/ci.yml`
+  replaces `tests.yml` and adds three checks the repo had already written down
+  and never run: `ruff` (configured in `pyproject.toml` since someone chose the
+  rule set, invoked by nobody), a Linux run marked advisory exactly as
+  `CONTRIBUTING.md` has claimed for months, and `wheel-smoke` — the job
+  `tests/test_packaging.py` names by file and job name as the home of the
+  build-install-import loop, which did not exist.
+- **`packaging/smoke_wheel.py`** — installs the built wheel into a clean
+  interpreter, refuses to run if its imports resolved to the checkout instead,
+  then checks the shipped trees, runs `doctor`, scaffolds a real project out of
+  `templates/`, and serves the dashboard's assets out of `site-packages`. It
+  shares one path list and one fetch loop with the exe smoke test, so a check
+  added for one artifact cannot be silently missing from the other.
+- **A release guard.** `release-exe.yml` now fails in five seconds, before
+  anything is built or signed, when the tag, `pyproject`'s version and the
+  changelog disagree. `v0.1.28` and `v0.1.29` were both tagged against a tree
+  declaring `0.1.27`, with no changelog section for either, and both shipped
+  release bodies that described nothing.
+- **`.github/workflows/security.yml`** — `pip-audit` against the dependency tree
+  a user actually resolves to, and CodeQL. For a tool that runs arbitrary
+  GDScript and reads API keys off disk, neither existed.
+
+### Fixed
+
+- Eight `ruff` findings on `main`: three f-strings with no placeholders in
+  `bgate_adapters/godot.py`, and unused imports in `bgate_core/vfx.py`,
+  `bgate_ui/webview2.py` and `tests/test_handoff.py`.
+
 ## [0.1.27] - 2026-07-30
 
 ### Added

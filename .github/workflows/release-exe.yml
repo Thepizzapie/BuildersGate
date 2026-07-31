@@ -25,7 +25,60 @@ permissions:
   contents: write
 
 jobs:
+  # THE JOB THAT SHOULD HAVE EXISTED TWO RELEASES AGO. v0.1.28 and v0.1.29 were
+  # both tagged against a tree whose pyproject still said 0.1.27, and CHANGELOG
+  # .md has no section for either of them — so the release-notes step below fell
+  # through to its "no changelog entry" fallback twice, and shipped two releases
+  # described by a link to a file that does not mention them.
+  #
+  # Every one of those facts is knowable in three seconds, before anything is
+  # built or signed. Failing here costs a re-tag. Failing after the notes step
+  # costs a published release that has to be edited by hand.
+  #
+  # There is no job-level `if:` on purpose. A skipped job SKIPS everything that
+  # `needs:` it, so gating the job itself would silently disable the build on
+  # the PR and workflow_dispatch paths. The job always runs; the check inside it
+  # is what is tag-only.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag, pyproject and the changelog must agree
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          python - "${GITHUB_REF_NAME}" <<'PY'
+          import pathlib, re, sys, tomllib
+
+          tag = sys.argv[1]
+          version = tag.lstrip("v")
+          declared = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          )["project"]["version"]
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+
+          problems = []
+          if declared != version:
+              problems.append(
+                  f"tag {tag} does not match pyproject version {declared}. "
+                  f"Bump the version and re-tag, or tag the commit that has it.")
+          if not re.search(rf"^## \[{re.escape(version)}\]", changelog, re.M):
+              problems.append(
+                  f"CHANGELOG.md has no '## [{version}]' section. The release "
+                  f"body is built from it, so without one the release ships "
+                  f"describing nothing.")
+
+          if problems:
+              for p in problems:
+                  print(f"::error::{p}")
+              sys.exit(1)
+          print(f"{tag} == pyproject {declared} == CHANGELOG [{version}]")
+          PY
+
   build:
+    needs: [guard]
     runs-on: windows-latest
     timeout-minutes: 30
 
