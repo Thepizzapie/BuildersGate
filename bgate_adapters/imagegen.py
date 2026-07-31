@@ -15,7 +15,7 @@ import base64
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 # Model routing. DIRECTOR DIRECTIVE (2026-07-20): gpt-image-2 is BANNED —
 # gpt-image-1 for everything (gpt-image-1-mini acceptable for cheap drafts via
@@ -25,6 +25,79 @@ DEFAULT_OPAQUE_MODEL = "gpt-image-1"
 DEFAULT_TRANSPARENT_MODEL = "gpt-image-1"
 SIZES = ("1024x1024", "1536x1024", "1024x1536", "auto")
 QUALITIES = ("low", "medium", "high", "auto")
+
+# The only square this API offers, and the one every UV-sampled map has to use.
+SQUARE_SIZE = "1024x1024"
+
+
+def size_for(size: str = SQUARE_SIZE, *, task_kind: str = "") -> str:
+    """The size a generation should ACTUALLY use for this kind of asset.
+
+    Texture maps are forced square and everything else is returned untouched,
+    so this is a no-op for every path that already works.
+
+    Why it is not optional: the sizes above are 1:1, 3:2 and 2:3, a UV island is
+    unit square, and a 1536x1024 map sampled across one is stretched 1.5x in a
+    single axis. Nothing downstream can undo that — the mesh gets a wood grain
+    wider than it is deep and the only symptom is that the material "looks
+    off", which is not a symptom anyone can act on. A caller that genuinely
+    wants a non-square map can still pass one by not naming a texture kind.
+    """
+    try:
+        from bgate_core.artdirection import is_texture_kind
+    except Exception:                                          # pragma: no cover
+        return size
+    return SQUARE_SIZE if is_texture_kind(task_kind) else size
+
+
+def make_tileable(path: str, out_path: Optional[str] = None) -> dict:
+    """Make an image tile against itself by MIRRORING it. In place by default.
+
+    NOT a seamless-texture synthesiser, and this does not claim to be one. It
+    builds the 2x2 mirrored composite — original, h-flip, v-flip, both — and
+    scales it back down to the original size. That makes the left edge the
+    exact mirror of the right and the top of the bottom, so the tile joins with
+    no seam BY CONSTRUCTION rather than by the model having been lucky.
+
+    What you pay for the guarantee, stated so nobody is surprised by it on a
+    mesh: the result is bilaterally symmetric, which reads as a repeating
+    butterfly on anything with strong directional structure — wood grain,
+    brickwork, planking, lettering. It is right for noise, plaster, dirt, rock,
+    rust and fabric weave; it is wrong for anything laid out in rows. Halving
+    the composite also costs about half the fine detail.
+
+    The prompt-side ask (``artdirection.form_clause(..., tileable=True)``) is
+    what gets a genuinely seamless map when the model can manage one; this is
+    the floor underneath it. Returns ``{ok, path, method, note}`` and never
+    raises — a texture that failed to tile is still a texture.
+    """
+    src = Path(path)
+    dst = Path(out_path or path)
+    try:
+        from PIL import Image
+    except ImportError:
+        return {"ok": False, "path": str(src), "method": "",
+                "note": "Pillow is not installed — the image was left as it is, "
+                        "so its edges are only as seamless as the model made them"}
+    try:
+        with Image.open(src) as im:
+            im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+            w, h = im.size
+            flip_h = im.transpose(Image.FLIP_LEFT_RIGHT)
+            canvas = Image.new(im.mode, (w * 2, h * 2))
+            canvas.paste(im, (0, 0))
+            canvas.paste(flip_h, (w, 0))
+            canvas.paste(im.transpose(Image.FLIP_TOP_BOTTOM), (0, h))
+            canvas.paste(flip_h.transpose(Image.FLIP_TOP_BOTTOM), (w, h))
+            canvas.resize((w, h), Image.LANCZOS).save(dst)
+    except Exception as exc:                                   # noqa: BLE001
+        return {"ok": False, "path": str(src), "method": "",
+                "note": f"could not mirror-tile ({type(exc).__name__}: {exc}) — "
+                        "the image was left as it is"}
+    return {"ok": True, "path": str(dst), "method": "mirror-2x2",
+            "note": "edges join by mirroring, so the map is bilaterally "
+                    "symmetric — right for noise and plaster, wrong for grain "
+                    "or brick laid in rows"}
 
 # Approximate per-image spend (gpt-image-1, 1024x1024) by quality — every leg
 # that spends through this adapter estimates from THIS table, so tools can
@@ -136,8 +209,22 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
              quality: str = "medium", transparent: bool = False,
              allow_multi: bool = False, timeout: float = 300.0,
              root: Any = None, logical_name: str = "",
-             work_item_id: Optional[int] = None) -> dict:
+             work_item_id: Optional[int] = None,
+             ref_paths: Sequence[str] = (), task_kind: str = "",
+             tileable: bool = False) -> dict:
     """Generate one image to out_path. Returns {ok, path, bytes, ...} or an error.
+
+    ``ref_paths`` conditions the generation on reference image(s) — the pinned
+    style anchors. gpt-image has no separate reference input, so this DELEGATES
+    to :func:`edit`, which is that model's only way to hold an anchor. It is
+    here so that "generate, conditioned on the pinned refs" is one call at the
+    adapter surface for both providers instead of a branch every caller has to
+    know about. Empty by default: an existing caller is unaffected.
+
+    ``task_kind`` is advisory except for texture kinds, which are forced square
+    (see :func:`size_for`). ``tileable`` runs the mirrored post-pass over the
+    finished file (see :func:`make_tileable`) and is meaningful only on a
+    texture. Both default off.
 
     transparent=True REQUESTS a transparent background (PNG alpha). Requests it —
     does not get it. MEASURED 2026-07-25 on a 4-frame character sheet:
@@ -153,10 +240,17 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
     to also append the spend to the project ledger, keyed by ``logical_name`` so
     the art lab can show a running total per asset.
     """
+    size = size_for(size, task_kind=task_kind)
     if size not in SIZES:
         raise ValueError(f"size must be one of {SIZES}, got {size!r}")
     if quality not in QUALITIES:
         raise ValueError(f"quality must be one of {QUALITIES}, got {quality!r}")
+    if ref_paths:
+        return edit(prompt, [str(p) for p in ref_paths], out_path, size=size,
+                    quality=quality, transparent=transparent,
+                    allow_multi=allow_multi, timeout=timeout, root=root,
+                    logical_name=logical_name, work_item_id=work_item_id,
+                    task_kind=task_kind, tileable=tileable)
     rejected = _reject_multi_pose(prompt, allow_multi)
     if rejected:
         return rejected
@@ -191,22 +285,43 @@ def generate(prompt: str, out_path: str, *, size: str = "1024x1024",
 
     saved = _save(result, out_path, model, size, quality, transparent,
                   seconds=round(time.monotonic() - started, 2))
+    _tile(saved, tileable)
     _account(saved, root, logical_name or Path(out_path).stem, work_item_id,
              f"generate {size} {quality}" + (" transparent" if transparent else ""))
     return saved
+
+
+def _tile(result: dict, tileable: bool) -> None:
+    """Run the mirrored pass over a finished file and record what it did.
+
+    Best-effort in the same sense the ledger is: the generation has already been
+    paid for, and a post-pass that could not run must not turn a good image into
+    an error. The result carries the note so a human can see which files are
+    only tiling because they were mirrored.
+    """
+    if not tileable or not result.get("ok") or not result.get("path"):
+        return
+    result["tileable"] = make_tileable(result["path"])
 
 
 def edit(prompt: str, ref_paths: list[str], out_path: str, *,
          size: str = "1024x1024", quality: str = "medium",
          transparent: bool = False, allow_multi: bool = False,
          timeout: float = 300.0, root: Any = None, logical_name: str = "",
-         work_item_id: Optional[int] = None) -> dict:
+         work_item_id: Optional[int] = None, task_kind: str = "",
+         tileable: bool = False) -> dict:
     """Generate an image CONDITIONED ON reference image(s) — the consistency
     primitive. A fresh generation invents a new character every time; an edit
     against a reference keeps the same one. This is how sprite poses stay the
     same fighter: one approved reference, then every pose derived from it.
     ONE frame per call — multi-pose prompts are refused (see _reject_multi_pose).
+
+    ``task_kind`` and ``tileable`` mean exactly what they mean on
+    :func:`generate`, and are here so an anchored TEXTURE (edit against the
+    pinned refs) gets the same square constraint and the same tiling pass a
+    fresh one does.
     """
+    size = size_for(size, task_kind=task_kind)
     if size not in SIZES:
         raise ValueError(f"size must be one of {SIZES}, got {size!r}")
     if quality not in QUALITIES:
@@ -257,6 +372,7 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
 
     saved = _save(result, out_path, model, size, quality, transparent,
                   seconds=round(time.monotonic() - started, 2))
+    _tile(saved, tileable)
     _account(saved, root, logical_name or Path(out_path).stem, work_item_id,
              f"edit {size} {quality} ({len(ref_paths)} ref)")
     return saved
