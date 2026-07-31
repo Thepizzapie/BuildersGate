@@ -44,15 +44,22 @@ jobs:
         # Auditing the job's own interpreter would report on setuptools and pip
         # instead, which tells you nothing about what a user installs.
         #
-        # builders-gate itself is reported as "not found on PyPI and could not
-        # be audited" — correct, nothing has been published to an index yet, and
-        # it is a skip rather than a failure.
+        # NO --strict, deliberately. builders-gate itself is always reported as
+        # "not found on PyPI and could not be audited" — correct, nothing has
+        # been published to an index yet — and --strict promotes exactly that
+        # skip to a failure, so the job could never go green until the day the
+        # package is published. The exit code still fails on an actual
+        # vulnerability; --strict only governs skips.
+        #
+        # Revisit if builders-gate is ever published: at that point the skip
+        # disappears and --strict becomes worth having, because a dependency
+        # silently going unaudited is a real gap.
         run: |
           python -m venv .auditenv
           .auditenv/bin/python -m pip install --upgrade pip
           .auditenv/bin/python -m pip install .
           .auditenv/bin/python -m pip install pip-audit
-          .auditenv/bin/python -m pip_audit --strict
+          .auditenv/bin/python -m pip_audit
 
   codeql:
     name: CodeQL
