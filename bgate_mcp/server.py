@@ -847,12 +847,50 @@ def recall(query: str, limit: int = 10, kind: Optional[str] = None) -> dict:
 # ---------------------------------------------------------------------------
 @_tool
 def blender_status() -> dict:
-    """Is Blender available to this machine, and which version? Check before modeling."""
+    """Is Blender available to this machine, and which version? Check before modeling.
+
+    Also reports `generate`: whether image-to-3D is reachable, and from where.
+    Folded in here rather than given its own tool — one question ("what can I
+    build with?") should cost one call.
+    """
     try:
         probe = _blender.available()
-        return {**probe, **(_blender.version() if probe["available"] else {})}
+        out = {**probe, **(_blender.version() if probe["available"] else {})}
+        out["generate"] = _imageto3d_summary()
+        return out
     except Exception as exc:
         return _fail(exc)
+
+
+def _imageto3d_summary() -> dict:
+    """A few lines, not the whole catalogue.
+
+    imageto3d.status() carries every backend's full licence prose — right for
+    a doctor row a human reads once, far too expensive to hand an agent on
+    every status call. Names what is usable and why the rest is not, and
+    leaves the reading to blender_generate's own failure.
+    """
+    try:
+        from bgate_adapters import imageto3d as _i3d
+    except Exception:
+        return {"available": False, "reason": "adapter unavailable"}
+    try:
+        full = _i3d.status()
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+    gpu = full.get("gpu") or {}
+    usable = list(full.get("usable") or [])
+    blocked = {b["backend"]: b.get("reason", "")
+               for b in full.get("backends") or []
+               if not b.get("available") and b.get("implemented")}
+    return {"available": bool(usable), "usable": usable,
+            "gpu": gpu.get("name", ""), "vram_gb": gpu.get("vram_gb"),
+            "blocked": blocked,
+            "note": ("nothing configured — see .env.example; a generated mesh "
+                     "is a DRAFT and still has to be cleaned, scaled, oriented "
+                     "and rigged before it is an asset")
+            if not usable else
+            "a generated mesh is a DRAFT: clean, scale, orient and rig it"}
 
 
 @_tool
@@ -1265,6 +1303,83 @@ def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
                            + (f", {unreadable} unreadable" if unreadable else ""),
                  ref=str(out_dir))
         return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_generate(image: str, out_path: str, backend: str = "",
+                     label: str = "", timeout: int = 900,
+                     dry_run: bool = False,
+                     options: Optional[dict] = None) -> dict:
+    """Turn ONE generated image into a draft mesh. The other way to get geometry.
+
+    The primitive path (blender_run + the kit) is for props, vehicles, terrain
+    and block-out — things made of boxes and cylinders. It tops out at a
+    proportioned blockout with no face and no fingers, so a hero character
+    seen close up comes from here instead: generate the plate with
+    image_generate, then hand it over.
+
+    WHAT COMES BACK IS A DRAFT, NOT AN ASSET. Expect dense, unpredictable
+    topology, no armature, no unit convention, and possibly baked lighting in
+    the texture. It has to be scaled to 1.8 m, faced +Y, cleaned, unwrapped
+    and weighted to a skeleton before blender_combine will make anything of
+    it — bg_human's rig is the one to weight it to. `draft` is True in the
+    result and `next_steps` says so; there is no path straight to
+    godot_deliver_asset and that is deliberate.
+
+    Nothing runs until you configure a backend (see .env.example) — this
+    machine ships no model and downloads none. blender_status reports what is
+    reachable. A local backend costs nothing per generation; a hosted one is
+    priced before it submits, and `dry_run=True` returns that quote plus the
+    licence verdict without spending anything.
+
+    LICENCE IS PART OF THE RESULT. A local server is only a transport, so the
+    model must be declared (BGATE_LOCAL_MODEL) — undeclared reads as unknown,
+    never as permission. Some grants exclude whole territories and some
+    forbid commercial use outright, which is a shipping problem rather than a
+    technical one, so read `licence` before building on the mesh.
+    """
+    try:
+        from bgate_adapters import imageto3d as _i3d
+    except Exception as exc:
+        return _fail(exc)
+    try:
+        root = _root()
+    except Exception:
+        root = None                        # modelling before project_init is allowed
+    try:
+        plate = _i3d.check_input(image)
+        if not plate.get("ok"):
+            return {"ok": False, "error": plate.get("reason", "unusable plate"),
+                    "input": plate}
+        picked = backend or (_i3d.choose(root) or {}).get("backend", "")
+        if not picked:
+            return {"ok": False, "error": "no image-to-3D backend is configured "
+                    "— see .env.example; blender_status reports what is reachable",
+                    "status": _imageto3d_summary()}
+        opts = dict(options or {})
+        quote = {"backend": picked,
+                 "usd": _i3d.price_for(picked, **{k: v for k, v in opts.items()
+                                                  if k in ("texture", "quad", "rig")}),
+                 "licence": _i3d.model_licence(_i3d.declared_model())}
+        if dry_run:
+            return {"ok": True, "dry_run": True, "quote": quote,
+                    "input": plate, "next_steps": list(_i3d.NEXT_STEPS)}
+        got = _i3d.generate(image, out_path, backend=picked, root=root,
+                            timeout=float(timeout), logical_name=label,
+                            **opts)
+        got.setdefault("quote", quote)
+        if got.get("ok") and root and got.get("out_path"):
+            try:
+                got["artifact"] = _register_artifact(
+                    root, got["out_path"], label or _Path(out_path).stem,
+                    producer="blender_generate", refs=[str(image)],
+                    metadata={"backend": picked, "draft": True,
+                              "licence": quote["licence"], "plate": str(image)})
+            except Exception:
+                pass                       # a mesh on disk beats a bookkeeping raise
+        return got
     except Exception as exc:
         return _fail(exc)
 

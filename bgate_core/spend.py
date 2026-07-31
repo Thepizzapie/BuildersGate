@@ -16,7 +16,11 @@ from typing import Optional
 
 from bgate_core import db
 
-KINDS = ("agent", "image", "audio", "other")
+# "mesh" is image-to-3D. It was landing under "other" alongside genuinely
+# uncategorised spend, which is the one bucket nobody reads — and a textured
+# generation is ~$0.30, an order of magnitude over an image, so it is exactly
+# the line an author wants to find when the month looks wrong.
+KINDS = ("agent", "image", "audio", "mesh", "other")
 
 
 def budget(root: str | os.PathLike[str]) -> dict:
