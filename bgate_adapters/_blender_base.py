@@ -1356,6 +1356,253 @@ def bg_base_assert(base, expect_height=None):
     return report
 
 
+
+
+def bg_weld(obj, *, fraction=0.0006, merge=0.0):
+    """Weld a generated mesh gently, and report whether it can be decimated.
+
+    GENTLY. The obvious move is to merge hard until the confetti becomes one
+    shell, and it is wrong — MEASURED on a generated mannequin, chasing one
+    shell took non-manifold edges from 3 to 20,285, and the decimator then
+    could not reach an 8,000 triangle budget at all, stalling at 49,261 no
+    matter how many passes it was given. The same mesh at a sixth of that merge
+    distance sat in 4 shells with 3 non-manifold edges and decimated to 7,999.
+
+    So NON-MANIFOLD COUNT is what predicts decimatability, not shell count.
+    Collapse will not cross a non-manifold junction, and over-merging
+    manufactures them faster than it removes shells.
+
+    Distance is a fraction of the object's own bounding-box diagonal, so one
+    setting serves a 0.2 m cap and a 2 m figure. Pass `merge` to override with
+    an absolute distance.
+    """
+    diag = max((sum(d * d for d in obj.dimensions)) ** 0.5, 1e-6)
+    used = float(merge) if merge else diag * float(fraction)
+    bg_clean(obj, merge=used)
+    shells, nonmanifold = bg_shells(obj), bg_nonmanifold(obj)
+    tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
+    thin = nonmanifold <= max(64, tris * 0.005)
+    return {"merge": round(used, 6), "fraction": round(used / diag, 5),
+            "shells": shells, "nonmanifold": nonmanifold, "tris": tris,
+            "decimatable": thin,
+            "verdict": ("%d shell(s), %d non-manifold — decimates cleanly"
+                        % (shells, nonmanifold)) if thin else
+                       ("%d non-manifold edges on %d triangles — collapse will "
+                        "stall well above any low budget, and merging harder "
+                        "makes this worse, not better" % (nonmanifold, tris))}
+
+
+def bg_nonmanifold(obj):
+    """Edges that are not shared by exactly two faces. The decimation blocker."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    count = sum(1 for edge in bm.edges if not edge.is_manifold)
+    bm.free()
+    return count
+
+
+def bg_shells(obj):
+    """How many disconnected pieces this mesh is in. 1 is a surface."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    seen, count = set(), 0
+    for vert in bm.verts:
+        if vert.index in seen:
+            continue
+        count += 1
+        stack = [vert]
+        while stack:
+            here = stack.pop()
+            if here.index in seen:
+                continue
+            seen.add(here.index)
+            for edge in here.link_edges:
+                stack.append(edge.other_vert(here))
+    bm.free()
+    return count
+
+
+def bg_axes(obj, *, kind="humanoid", up=2):
+    """Which way is this mesh's lateral, forward and up — for a KNOWN kind.
+
+    THERE IS NO UNIVERSAL RULE HERE and the first version of this pretended
+    there was. MEASURED: "up is the tallest axis" put a cap's up along its brim,
+    because a cap lying flat is longer front-to-back than it is tall; and
+    "widest horizontal is lateral" is a T-POSE rule that reads a cap exactly
+    backwards, since a cap's longest horizontal IS its forward.
+
+    So `up` is world up unless you say otherwise, and the lateral/forward split
+    is chosen per kind:
+
+      humanoid  arms span side to side, so lateral is the wider horizontal
+      long      the subject is longer than it is wide along its own forward —
+                a cap, a shoe, a vehicle, a fish
+      none      no opinion; forward is Y and nothing will be rotated
+
+    `certainty` is how lopsided the two horizontals are. Near zero they are the
+    same width and the split is a coin toss whatever the kind says.
+    """
+    dims = [max(d, 1e-9) for d in obj.dimensions]
+    up = int(up) % 3
+    flat = [i for i in (0, 1, 2) if i != up]
+    wide, narrow = (flat if dims[flat[0]] >= dims[flat[1]]
+                    else [flat[1], flat[0]])
+    if kind == "long":
+        lateral, forward = narrow, wide
+    else:
+        lateral, forward = wide, narrow
+    span = max(dims[wide], 1e-9)
+    return {"up": up, "lateral": lateral, "forward": forward, "kind": kind,
+            "dims": tuple(round(d, 4) for d in dims),
+            "certainty": round(abs(dims[wide] - dims[narrow]) / span, 3)}
+
+
+def bg_facing(obj, axes=None):
+    """Which way along the forward axis is the FRONT. Reads the lowest slab.
+
+    Toes are the most reliable asymmetry an upright figure has: a foot reaches
+    much further forward of the ankle than the heel does behind it, so the
+    bottom of a standing mesh has its centre of mass on the toe side. A face is
+    no use — a generated head is often featureless, and ours is an egg by
+    design.
+
+    THIS ONLY MEANS ANYTHING FOR SOMETHING THAT STANDS ON FEET. Asked about a
+    cap it answered "toes lead by 152.8%", which is not a fact about a cap.
+    `confident` is the field to read; the sign without it is noise.
+    """
+    axes = axes or bg_axes(obj)
+    up, forward = axes["up"], axes["forward"]
+    world = [obj.matrix_world @ v.co for v in obj.data.vertices]
+    if not world:
+        return {"sign": 1, "strength": 0.0, "confident": False,
+                "verdict": "no geometry to read"}
+    lows = [p[up] for p in world]
+    floor, ceiling = min(lows), max(lows)
+    cut = floor + (ceiling - floor) * 0.06
+    slab = [p[forward] for p in world if p[up] <= cut] or [p[forward] for p in world]
+    body = sum(p[forward] for p in world) / len(world)
+
+    # REACH, not centroid. A foot is not shifted forward so much as it EXTENDS
+    # forward: the toe reaches much further from the ankle than the heel does.
+    # MEASURED, and the reason this is not the obvious one-liner: by centroid
+    # offset a mannequin scored 2.7% and a CRATE scored 2.8%, so the signal did
+    # not discriminate at all and the mannequin was simply lucky.
+    ahead, behind = max(slab) - body, body - min(slab)
+    bigger, smaller = max(ahead, behind), max(min(ahead, behind), 1e-9)
+    ratio = bigger / smaller
+    ok = ratio >= 1.25 and axes.get("kind") == "humanoid"
+    return {"sign": 1 if ahead >= behind else -1, "strength": round(ratio, 3),
+            "confident": ok,
+            "verdict": ("toes reach %.2fx further than the heel" % ratio) if ok
+                       else ("no readable front — the two sides reach %.2fx, "
+                             "which is not a foot" % ratio)}
+
+
+def bg_orient(obj, *, kind="humanoid", forward=None, assume=None, up=2):
+    """Turn a mesh so it faces the project's forward. REFUSES TO GUESS.
+
+    This is the step a generated layer cannot skip. A wrong scale is obvious in
+    a render and a wrong position is obvious in a check; facing the wrong way
+    is invisible in a symmetric silhouette and then everything downstream is
+    quietly mirrored — the turnaround's labels, a bone-parented cap, Godot's
+    -Z convention, the collider.
+
+    But it only rotates when it can justify it: a confident reading, or an
+    explicit `assume` of +1/-1. MEASURED on real generated output, guessing
+    turned a crate 90 degrees onto a different footprint for no reason. An
+    asset with no front is not a problem to be solved, so `kind="none"` and
+    unreadable geometry both leave the mesh exactly where it was.
+
+    Rotation is in 90-degree steps about the up axis, which is what a generated
+    mesh actually needs — it comes out roughly axis-aligned and turned by a
+    quarter or a half. A mesh tilted off-axis is not corrected; that is what
+    bg_axes' `certainty` is for.
+    """
+    import math
+    target = tuple(forward if forward is not None else BG_FORWARD)
+    axes = bg_axes(obj, kind=kind, up=up)
+    read = bg_facing(obj, axes)
+    forced = assume in (1, -1)
+    if kind == "none" or not (read["confident"] or forced):
+        return {"turned_deg": 0, "was": read, "axes": axes, "confident": False,
+                "note": "left alone — " + ("this kind has no front"
+                        if kind == "none" else read["verdict"] +
+                        "; pass assume=+1/-1 if you know which way it faces")}
+
+    sign = assume if forced else read["sign"]
+    want = 0 if abs(target[0]) > abs(target[1]) else 1
+    want_sign = 1 if (target[want] or 1) > 0 else -1
+
+    turns = 1 if axes["forward"] != want else 0
+    if sign != want_sign:
+        turns += 2
+    turns %= 4
+    if turns:
+        bg_only(obj)
+        obj.rotation_mode = "XYZ"
+        obj.rotation_euler.rotate_axis("Z", math.radians(90.0 * turns))
+        bg_apply(obj, location=False, rotation=True, scale=False)
+    bpy.context.view_layer.update()
+    return {"turned_deg": 90 * turns, "was": read, "axes": axes,
+            "confident": True, "note": ""}
+
+
+def bg_adopt(obj, *, kind="humanoid", height=None, ground=True, orient=True,
+             assume=None, merge=0.0015, budget=0):
+    """Take a generated mesh and make it something this pipeline can use.
+
+    One call for everything a generation arrives WITHOUT: it is a pile of
+    disconnected shells at an arbitrary scale, facing an arbitrary direction,
+    floating at an arbitrary height. MEASURED on real Krea output: a crate came
+    back as 20,748 shells and 495,061 tris; a cap as 628 shells; a mannequin as
+    604 shells, 21,796 non-manifold edges and 95,232 tris that cleaned down to
+    4 shells and 7,928 tris and scaled to 1.800 m exactly.
+
+    Order matters and it is not obvious: clean first so the decimator has
+    welded geometry to work on, then scale, then orient, then drop to the
+    ground — orienting before scaling is fine, but grounding before scaling
+    leaves the mesh floating by whatever the scale factor was.
+    """
+    report = {"before": bg_stats(obj)}
+    # WELD BEFORE DECIMATING. Not a nicety of ordering — the decimator cannot
+    # cross a shell boundary, so on unwelded confetti a low budget is simply
+    # unreachable and comes back silently over.
+    report["weld"] = bg_weld(obj, merge=merge) if merge else {}
+    if budget:
+        tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
+        if tris > budget:
+            mod = obj.modifiers.new("BGateDecimate", "DECIMATE")
+            mod.ratio = max(0.005, float(budget) / float(tris))
+            bg_only(obj)
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+            bg_clean(obj, merge=merge)
+        got = sum(len(p.vertices) - 2 for p in obj.data.polygons)
+        # SAY SO WHEN THE BUDGET WAS NOT MET. Returning a mesh 50x over budget
+        # with an ok-looking report is the failure this whole pass exists to
+        # stop.
+        report["budget"] = {"asked": budget, "got": got, "met": got <= budget * 1.1,
+                            "reason": "" if got <= budget * 1.1 else
+                            "collapse stalled at %d — %s" % (
+                                got, report.get("weld", {}).get("verdict", ""))}
+    if height:
+        tall = max(obj.dimensions[2], 1e-9)
+        factor = float(height) / tall
+        obj.scale = (factor, factor, factor)
+        bg_apply(obj, location=False, rotation=False, scale=True)
+    if orient:
+        report["orient"] = bg_orient(obj, kind=kind, assume=assume)
+    if ground:
+        bpy.context.view_layer.update()
+        low = min((obj.matrix_world @ v.co).z for v in obj.data.vertices)
+        obj.location.z -= (low - BG_GROUND)
+        bpy.context.view_layer.update()
+    report["after"] = bg_stats(obj)
+    return report
+
+
 def bg_base_help():
     """Print the worked base-mesh script. Read it before you model a character."""
     print(BG_BASE_EXAMPLE)
