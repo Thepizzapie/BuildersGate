@@ -192,6 +192,67 @@ def _root() -> str:
 # first non-empty one becomes the unified "error" string.
 _REASON_KEYS = ("error", "reason", "message", "detail", "stderr", "traceback")
 
+# The same question, asked of a SUB-result. `verdict` is in this list and not in
+# the one above because at the top level it is usually an ANSWER (canon_check
+# replies "ok" or "conflict") while on a per-item entry that failed it is the
+# statement of what went wrong.
+_NESTED_REASON_KEYS = ("verdict",) + _REASON_KEYS
+
+# What a per-item entry calls itself, so a joined reason names WHICH item.
+_ENTRY_LABEL_KEYS = ("label", "name", "pose", "part", "layer")
+
+# How many per-item reasons are worth carrying up. Four is a turnaround.
+_NESTED_REASON_CAP = 4
+
+
+def _reason_text(value) -> str:
+    """One reason string out of whatever a tool put under a reason key.
+
+    Lists are joined rather than dropped: a tool that states its reason as the
+    frame-by-frame verdicts has stated it, and reading only `str` there was one
+    of the two ways a populated reason still got overwritten.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return "; ".join(text for text in (_reason_text(item) for item in value)
+                         if text)
+    return ""
+
+
+def _nested_reasons(result: dict) -> str:
+    """The reason a STRUCTURED failure states one level down.
+
+    Some tools fail per item and say so per item: blender_turnaround comes back
+    ok=False with the exposure verdict living in renders[i]["verdict"], and the
+    top level carries no reason key at all. Collapsing that to "the call failed
+    without stating a reason" threw away the one mechanical signal the tool
+    exists to produce — and the standard response to a tool that looks broken is
+    to retry it or move on, not to turn the lights down.
+
+    Only entries that themselves claim failure contribute, so the three good
+    frames of a four-frame turnaround stay quiet, and only the top level's own
+    values are inspected — this reads a result, it does not walk a tree.
+    """
+    found: list[str] = []
+    for value in result.values():
+        for entry in (value if isinstance(value, list) else [value]):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("ok") is not False and entry.get("available") is not False:
+                continue
+            reason = next((text for text in (_reason_text(entry.get(key))
+                                             for key in _NESTED_REASON_KEYS)
+                           if text), "")
+            if not reason:
+                continue
+            label = next((str(entry[key]) for key in _ENTRY_LABEL_KEYS
+                          if entry.get(key)), "")
+            stated = f"{label}: {reason}" if label else reason
+            if stated not in found:
+                found.append(stated)
+    return "; ".join(found[:_NESTED_REASON_CAP])
+
 
 def _normalize(result):
     """Collapse the three legacy failure shapes onto one predicate.
@@ -206,6 +267,11 @@ def _normalize(result):
     Only the top level is touched, and only when the result claims failure: a
     doctor report whose `blender` row is unavailable is a SUCCESSFUL answer to
     "what is installed", and stamping an error on it would be a lie.
+
+    A REASON THE TOOL DID STATE IS NEVER REPLACED. That includes one stated per
+    item — see _nested_reasons. The generic string is the last resort, not the
+    first: it says "this tool is broken", which is a different fact from any
+    verdict the tool actually reached, and the model acts differently on it.
     """
     if not isinstance(result, dict):
         return result
@@ -215,18 +281,68 @@ def _normalize(result):
         return result
     reason = ""
     for key in _REASON_KEYS:
-        value = result.get(key)
-        text = value.strip() if isinstance(value, str) else ""
+        text = _reason_text(result.get(key))
         if text:
             reason = text
             break
     return {**result, "ok": False,
-            "error": reason or "the call failed without stating a reason"}
+            "error": (reason or _nested_reasons(result)
+                      or "the call failed without stating a reason")}
 
 
-def _tool(fn: Callable) -> Callable:
+# Handing a render BACK to the model, rather than a path to one.
+#
+# "LOOK AT THE ASSET" was imperative prose in a docstring, and the tool it was
+# written on returned four file paths and two floats. Nothing in the transport
+# ever carried a pixel, so an agent could only obey the instruction by believing
+# it had. FastMCP's Image content block is the mechanism that makes looking
+# possible at all; the exposure verdict stays, because a number the model cannot
+# talk itself out of is worth more than an image it can.
+#
+# Downscaled first: four 640x960 PNGs are several megabytes of base64 in one
+# response, and every defect these frames exist to catch — blown out, black,
+# imported nothing, wrong colour entirely — survives a long edge of 512.
+_IMAGE_RETURN_EDGE = 512
+_IMAGE_RETURN_CAP = 6
+
+
+def _image_blocks(paths) -> list:
+    """The frames themselves as MCP image content. Never raises."""
+    from io import BytesIO
+
+    from mcp.server.fastmcp import Image as _McpImage
+
+    blocks = []
+    for path in list(paths or [])[:_IMAGE_RETURN_CAP]:
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(path) as frame:
+                shrunk = frame.convert("RGB")
+                shrunk.thumbnail((_IMAGE_RETURN_EDGE, _IMAGE_RETURN_EDGE))
+                buffer = BytesIO()
+                shrunk.save(buffer, format="PNG")
+            blocks.append(_McpImage(data=buffer.getvalue(), format="png"))
+        except Exception:
+            # Pillow missing, or a frame this build cannot decode. The file is
+            # still a real render; hand it over whole rather than not at all.
+            try:
+                blocks.append(_McpImage(path=str(path)))
+            except Exception:
+                continue
+    return blocks
+
+
+def _tool(fn: Optional[Callable] = None, *,
+          images: Optional[Callable] = None) -> Callable:
     """Register a function as an MCP tool, with `project_dir` bolted on, run OFF
     the event loop, and its failures normalized to one shape.
+
+    `images` is an optional callable taking the (already normalized) result and
+    returning the image paths to hand back as MCP image content alongside the
+    JSON payload. The payload is unchanged and still LAST, so a caller reading
+    the text block reads exactly what it read before; the frames are simply
+    also in the response.
 
     Every tool gets the same optional trailing parameter rather than 70-odd
     hand-edited signatures, and the wrapper binds it into `_CALL_ROOT` for the
@@ -249,6 +365,9 @@ def _tool(fn: Callable) -> Callable:
     there, and drops it — call N's project_dir cannot reach call N+1 no matter
     which thread either one runs on.
     """
+    if fn is None:
+        return functools.partial(_tool, images=images)
+
     signature = inspect.signature(fn, eval_str=True)
     if "project_dir" in signature.parameters:
         # Guard, not politeness: a tool carrying its own `project_dir` meaning
@@ -265,7 +384,14 @@ def _tool(fn: Callable) -> Callable:
         def _call():
             token = _CALL_ROOT.set(given)
             try:
-                return _normalize(fn(*args, **kwargs))
+                payload = _normalize(fn(*args, **kwargs))
+                if images is None or not isinstance(payload, dict):
+                    return payload
+                try:
+                    blocks = _image_blocks(images(payload))
+                except Exception:
+                    blocks = []  # a picture is a bonus; never lose the result
+                return [*blocks, payload] if blocks else payload
             finally:
                 _CALL_ROOT.reset(token)
 
@@ -732,13 +858,94 @@ def blender_status() -> dict:
 @_tool
 def blender_run(script: str, blend_file: Optional[str] = None, render: bool = False,
                 engine: str = "BLENDER_WORKBENCH", timeout: int = 180,
-                label: str = "") -> dict:
+                label: str = "", kit: bool = True) -> dict:
     """Run a bpy script in headless Blender and get the scene back as facts.
 
     `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
     modifiers count), UV warnings, materials, your print() output, and — with
     render=True — a PNG of the active camera view (archived to the project's
     preview gallery; give a `label` so humans can tell renders apart).
+
+    THE MODELLING KIT IS ALREADY THERE (kit=True, the default). Do not write your
+    own material/UV/hygiene helpers — an agent burned 33 KB and most of an hour
+    doing exactly that on the first real character run. Available:
+      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT — a
+                                     humanoid built from one head-height, a
+                                     named rig with roll, the checks, bg_finish
+                                     last. Read it before writing your first one.
+      bg_wipe()                      empty the scene (no default cube)
+      bg_box/bg_cyl/bg_ball/bg_plane named primitives
+      bg_mirror/bg_smooth/bg_taper   symmetry, subsurf, limb taper
+      bg_join(objs, name)            one layer should leave as ONE mesh
+      bg_clean(obj)                  doubles/loose/degenerate/normals — THIS is
+                                     what makes automatic weighting work later
+      bg_unwrap(obj)                 smart-project UVs (no UVs = no texture)
+      bg_mat(obj, name, rgb)         a BLOCKING-IN colour, not a shipped surface
+      bg_bone_chain(name, bones)     an armature with NAMED bones. Entries are
+                                     (name, head, tail, parent=None, roll_deg=0);
+                                     order does not matter, parents are wired in
+                                     a second pass, and ROLL IS IN DEGREES — set
+                                     it on limbs or a humanoid retarget gives you
+                                     the twisted-forearm look.
+      bg_finish(obj, colour=...)     clean + apply + unwrap + material, in order
+      bg_stats(obj)                  verts/faces/loose/nonmanifold/ngons/flipped
+                                     PLUS world-space dims/centre/min/max
+      bg_bounds(obj)                 world-space min/max/dims/centre, in metres
+      bg_flipped(obj)                how many faces point INWARD (count, measured
+                                     on a throwaway copy — the mesh is untouched)
+      bg_overlap(a, b)               do two layers' world bounds intersect, and
+                                     by how much. Layers are built in isolated
+                                     scenes, so "is the cap sunk into the head"
+                                     is a question NOTHING else in the pipeline
+                                     can ask until they are already combined.
+
+    bg_bone_chain RAISES — deliberately, and it is the only thing in the kit that
+    does. Everything else swallows its problems because a helper that raises
+    takes the whole run down; a rig cannot afford that trade, because a wrong rig
+    looks built and comes apart in the engine several steps later. It refuses: a
+    parent no bone in the list defines (which used to produce silent parentless
+    roots), a duplicate bone name, head == tail (Blender DELETES zero-length
+    bones on leaving edit mode and says nothing, so the bone simply is not in the
+    armature you get back), and a name Blender had to rename or truncate (bind=
+    'bone:Head' then matches nothing in blender_combine). Every message names the
+    bone. Read the message and fix the chain — do not wrap it in a try.
+
+    START A BODY FROM THE BASE MESH LIBRARY, NOT FROM PRIMITIVES. Same kit, same
+    namespace, no import:
+      bg_human(height=1.8, heads=7.5, build, limbs, shoulders, detail,
+               pose="t"|"a", convention="godot"|"blender", rig=True)
+      bg_quadruped(...) / bg_prop_frame(...)
+                                     each returns {"obj","rig","marks","props",
+                                     "convention","pose"} — a correctly
+                                     proportioned, closed, unwrapped,
+                                     weight-ready body with a NAMED skeleton.
+      bg_proportions(...)            45 measurements out of one number
+      bg_mark(base, "head_top")      one landmark: position, radius, girth.
+                                     RAISES on a name that is not there.
+      bg_fit(obj, mark, mode="at"|"on"|"around"|"in", clearance, scale)
+                                     places AND resizes a layer onto a landmark
+      bg_shell / bg_human_chain / bg_human_skeleton / bg_roll
+      bg_bone(base, "hand.R")        the real bone name (RAISES on an unknown
+                                     role); BG_BONE_NAMES carries Godot's
+                                     SkeletonProfileHumanoid spelling by default
+      bg_weight(obj, rig)            binds AND counts what stayed unweighted
+      bg_base_report / bg_base_assert  the base's own self-check (assert RAISES)
+      bg_base_help()                 prints BG_BASE_EXAMPLE, the worked script
+      BG_UNIT="metre", BG_HUMAN_HEIGHT=1.8, BG_GROUND=0.0, BG_FORWARD=(0,1,0),
+      BG_LEFT=(-1,0,0), BG_SIDES — the base FACES +Y, which the glTF exporter
+                                     turns into -Z, which is what Godot calls
+                                     forward. Author faces, visors and emblems
+                                     on the +Y side; the figure's own left is -X.
+      bg_unit_check / bg_unit_assert (RAISES) / bg_rescale
+
+    FIT LAYERS ONTO LANDMARKS INSTEAD OF GUESSING COORDINATES. MEASURED: a cap
+    placed with bg_fit(cap, bg_mark(base, "head_top"), "on") rests on the crown
+    at 10% overlap; the same cap at a hand-typed 1.7 m is 89% INSIDE the skull
+    and passed every check the old pipeline had. The honest limit — the base has
+    no face and no fingers. It is a correctly-proportioned blockout to build the
+    character ONTO, not a finished character.
+
+    Pass kit=False only for a script that must run against bare bpy.
 
     A broken script is a normal result with ok=False plus the traceback, so read
     the result and iterate rather than assuming it worked. engine:
@@ -754,7 +961,8 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
         out_dir = None  # modeling before project_init is allowed
     try:
         result = _blender.run_script(script, blend_file=blend_file, render=render,
-                                     out_dir=out_dir, engine=engine, timeout=timeout)
+                                     out_dir=out_dir, engine=engine, timeout=timeout,
+                                     kit=kit)
         rendered = result.get("render", {}) if isinstance(result.get("render"), dict) else {}
         if rendered.get("rendered") and rendered.get("path"):
             archived = _archive_preview(rendered["path"], label or "render")
@@ -818,6 +1026,423 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
     try:
         return _blender.export_gltf(out_path, blend_file=blend_file,
                                     script=script, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _register_assembly(result: dict, out_path: str, *, root_name: str,
+                       rig: str, producer: str) -> Optional[dict]:
+    """Put an assembled .glb on the artifact ledger. One shape, two callers.
+
+    blender_combine and blender_layer_rerun produce the SAME asset by the same
+    route, so they must register it the same way — one logical name means a
+    re-run is revision N+1 of the character rather than a second unrelated one,
+    which is the whole reason the QA gate can see a 3D asset at all.
+    """
+    layers = result.get("parts") or []
+    return _register_artifact(
+        root_name or _Path(out_path).stem, out_path, producer=producer,
+        metadata={"layers": [layer.get("name", "") for layer in layers],
+                  "sources": [layer.get("source", "") for layer in layers],
+                  "armature": result.get("armature", ""),
+                  "rig": rig,
+                  "checks": result.get("checks") or [],
+                  "warnings": result.get("warnings") or [],
+                  "manifest": result.get("manifest", ""),
+                  "tris": sum(int(layer.get("tris") or 0) for layer in layers)})
+
+
+@_tool
+def blender_combine(parts: list, out_path: str, rig: str = "",
+                    root_name: str = "Assembled", timeout: int = 300) -> dict:
+    """Assemble separately-modelled LAYERS into one rigged .glb, and test it.
+
+    The end of the layered 3D path: model body, clothing, hard accessories and
+    any logo as their own files, then join them here. Built in ONE pass instead,
+    a figure comes back with the parts that lost the attention budget deformed —
+    on a real baseball player, the hands, the cap, and a scrambled team logo.
+
+    `parts` is the layer list, each a path or a dict:
+      {"path": "out/uniform.glb",   # .glb / .gltf / .blend
+       "name": "uniform",           # how it is reported and referenced
+       "at": [0,0,0], "rotate": [0,0,0], "scale": 1.0,
+       "bind": "deform",            # deform | bone:<Name> | none
+       "decal_on": "cap"}           # conform to that layer's surface
+
+    A LOGO OR ANY TEXT GOES IN AS ITS OWN LAYER WITH decal_on. Flush against the
+    surface it z-fights and tears in-engine; shrinkwrap plus an offset fixes it.
+    Hard geometry rides a bone (a cap does not bend), soft geometry deforms.
+    `rig` names the layer holding the armature — without it nothing binds, which
+    is right for a prop and a shipped statue for a character.
+
+    Returns per-layer objects/tris/binding, plus `checks`: `unbound` and
+    `unweighted_verts` name the layer that detaches or tears the first time it
+    animates, so you re-run that layer instead of the whole character.
+
+    The assembled file is REGISTERED as a candidate artifact (`artifact_id`),
+    which is what puts it under the same QA gate every 2D asset passes through.
+    Write out_path inside the project — an artifact cannot be recorded for a
+    file outside it, and an unregistered asset is one no reviewer ever sees.
+    """
+    try:
+        result = _blender.combine(parts, out_path, rig=rig,
+                                  root_name=root_name, timeout=timeout)
+        if result.get("ok"):
+            layers = result.get("parts") or []
+            artifact = _register_assembly(result, out_path, root_name=root_name,
+                                          rig=rig, producer="blender_combine")
+            if artifact:
+                result["artifact"] = artifact
+                result["artifact_id"] = artifact["id"]
+            _log("blender", f"assembled {root_name!r} from {len(layers)} layers",
+                 ref=str(out_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_texture(model: str, image: str, out_path: str, material: str = "",
+                    all_slots: bool = False, roughness: str = "",
+                    metallic: str = "", normal: str = "", emission: str = "",
+                    normal_strength: float = 1.0, alpha: str = "auto",
+                    alpha_cutoff: float = 0.5,
+                    backface_cull: Optional[bool] = None, decal: bool = False,
+                    timeout: int = 240) -> dict:
+    """Put GENERATED maps on a 3D layer's material and re-export it.
+
+    The surface half of the layered path. Measured on the first real character
+    run: the assembled asset carried 21 materials and ZERO images — every
+    surface a flat colour an agent typed by hand, because nothing connected the
+    image adapter to the 3D layers. Generate the maps with image_generate
+    (task_kind="texture", conditioned on the pinned refs via use_pinned), then
+    apply them here, per layer, before blender_combine.
+
+    `image` is the albedo / base colour and is what the one-image call has
+    always meant. The rest are optional and each drives its own BSDF input.
+    WITHOUT THEM EVERY SURFACE IS THE SAME PLASTIC — the modelling kit types
+    rough=0.6, metal=0.0, so cloth, leather, skin and steel all ship as one
+    dielectric and colour is the only thing that varies across an asset:
+      roughness   how glossy, per texel        metallic  0 dielectric, 1 metal
+      normal      tangent-space normals        emission  what glows
+    Those four are DATA and are loaded Non-Color; `image` and `emission` feed
+    colour sockets and stay sRGB. Pass image="" to apply maps without changing
+    the base colour. normal_strength scales the Normal Map node.
+
+    ALPHA — auto | opaque | clip | blend. MEASURED: a decal needs alpha="clip"
+    to export `alphaMode: MASK`. Without it the logo layer ships as a solid
+    rectangle of key colour glued over the cap, which is worse than the
+    z-fighting the decal layer exists to prevent. `auto` inspects the base image
+    and picks clip only when it ACTUALLY carries transparent pixels — an opaque
+    PNG with an RGBA header is not a cut-out — so say clip explicitly when you
+    know it is one. alpha_cutoff is the MASK threshold. decal=True is shorthand
+    for a conformed graphic and implies backface culling; backface_cull
+    overrides it either way.
+
+    `material` names ONE slot. IT IS EFFECTIVELY REQUIRED on a model carrying
+    more than one authored material: `all_slots=True` is the explicit opt-in
+    that says you meant to paint every slot, because that used to be the DEFAULT
+    and it put one image over skin, eyes and mouth and called the layer
+    textured. A named material matching no slot is a failure, not a cheerful
+    ok=True with an empty list. Meshes with no UVs are unwrapped first — a map
+    on an unwrapped mesh is silently ignored, which looks exactly like the
+    generation having failed.
+
+    The re-exported layer is REGISTERED as a candidate artifact (`artifact_id`)
+    and carries the maps it was given, so the surface a reviewer is judging can
+    be traced to the images that produced it. Write out_path inside the
+    project; a file outside it cannot be recorded.
+    """
+    try:
+        maps = {"roughness": roughness, "metallic": metallic,
+                "normal": normal, "emission": emission}
+        result = _blender.apply_texture(
+            model, image or None, out_path, material=material,
+            all_slots=all_slots,
+            **{kind: (path or None) for kind, path in maps.items()},
+            normal_strength=normal_strength, alpha=alpha,
+            alpha_cutoff=alpha_cutoff, backface_cull=backface_cull,
+            decal=decal, timeout=timeout)
+        if result.get("ok"):
+            given = {kind: str(path) for kind, path in
+                     {"base_color": image, **maps}.items() if path}
+            artifact = _register_artifact(
+                _Path(out_path).stem, out_path, producer="blender_texture",
+                refs=list(given.values()),
+                metadata={"model": str(model), "texture": str(image),
+                          "material": material, "all_slots": bool(all_slots),
+                          "maps": given, "decal": bool(decal),
+                          # The mode the adapter RESOLVED, not the one asked
+                          # for: `auto` is the common call and the answer it
+                          # reached is what decides alphaMode in the glTF.
+                          "alpha": result.get("alpha") or alpha,
+                          "alpha_cutoff": alpha_cutoff,
+                          "textured": result.get("textured") or [],
+                          "unwrapped": result.get("unwrapped") or []})
+            if artifact:
+                result["artifact"] = artifact
+                result["artifact_id"] = artifact["id"]
+            _log("blender", f"textured {_Path(out_path).name} with "
+                            f"{len(given)} map(s)", ref=str(out_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _turnaround_frames(result: dict) -> list[str]:
+    """The frame files this turnaround actually wrote, for the image blocks."""
+    return [frame["path"] for frame in (result.get("renders") or [])
+            if isinstance(frame, dict) and frame.get("exists") and frame.get("path")]
+
+
+@_tool(images=_turnaround_frames)
+def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
+                       width: int = 640, height: int = 960,
+                       engine: str = "BLENDER_EEVEE_NEXT",
+                       exposure: float = 0.0, timeout: int = 480) -> dict:
+    """Render a model from four angles under a fixed rig — and JUDGE each frame.
+
+    THE FRAMES COME BACK IN THIS RESULT AS IMAGES, not as paths you are trusted
+    to go and open. Measured: four turnarounds of a correctly-coloured model
+    came back white because the lights were far too hot, and were reported as
+    finished without anybody opening them. The model was fine; the render was
+    not, and nothing could tell the difference. Look at what you were handed,
+    and read the verdicts — they are the half of the check you cannot argue with.
+
+    Camera and three-point lighting are scaled to the subject's own bounding
+    box, so a giant and a doll both frame correctly. Every frame returns a
+    `blown`/`mean` reading and a verdict; `ok` is False when any frame is
+    unreadable, and the verdict of the frame that failed is the `error`. A
+    failing frame is a lighting problem, not a modelling one — do not go back
+    and change the mesh because a render was white.
+
+    Each frame is archived to the preview gallery and REGISTERED as a candidate
+    artifact, so a turnaround can be handed to an independent reviewer by
+    `artifact_id` (see art_qa_verdict) and shows up in the dashboard beside the
+    2D work. Point out_dir INSIDE the project — frames written outside it cannot
+    be registered, and an unregistered render is one nobody reviews.
+    """
+    try:
+        result = _blender.turnaround(model, out_dir, stem=stem,
+                                     size=(width, height), engine=engine,
+                                     exposure=exposure, timeout=timeout)
+        frames = [f for f in (result.get("renders") or []) if isinstance(f, dict)]
+        registered = []
+        for frame in frames:
+            path = frame.get("path")
+            if not path or not frame.get("exists"):
+                continue
+            label = str(frame.get("label") or "frame")
+            archived = _archive_preview(path, f"{stem}-{label}")
+            if archived:
+                frame["preview"] = archived
+            # One logical name PER ANGLE: a re-render after fixing the lights is
+            # revision 2 of "hero-front", not a second unrelated artifact, which
+            # is what lets a reviewer see that the white one was superseded.
+            artifact = _register_artifact(
+                f"{stem}-{label}", path, producer="blender_turnaround",
+                metadata={"model": str(model), "angle": label,
+                          "degrees": frame.get("degrees"),
+                          "engine": engine, "exposure": exposure,
+                          "blown": frame.get("blown"), "mean": frame.get("mean"),
+                          "readable": bool(frame.get("ok")),
+                          "verdict": frame.get("verdict") or "",
+                          "preview": archived or ""})
+            if artifact:
+                frame["artifact"] = artifact
+                frame["artifact_id"] = artifact["id"]
+                registered.append(artifact["id"])
+        if registered:
+            result["artifact_ids"] = registered
+        elif frames:
+            result["artifact_note"] = (
+                "no artifact was registered for these frames — out_dir is "
+                "outside the project root, so art QA and the dashboard cannot "
+                "see them; re-render into the project to put them on the ledger")
+        if frames:
+            unreadable = len(result.get("unreadable") or [])
+            _log("render", f"turnaround {stem!r}: {len(frames)} frames"
+                           + (f", {unreadable} unreadable" if unreadable else ""),
+                 ref=str(out_dir))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_sweep(out_path: str, dry_run: bool = True,
+                  keep_renders: bool = True) -> dict:
+    """Delete a finished asset's intermediate layer files, keeping the record.
+
+    A character run leaves a per-layer .glb each, a .blend rig, the assembled
+    asset and its renders — fourteen files for one request. This removes the
+    layer sources listed in that asset's manifest and NOTHING ELSE, so a
+    neighbouring asset's layers survive.
+
+    Kept: the assembled file, its manifest, the renders. What was removed is
+    written back into the manifest, so the run's history outlives its files and
+    a single layer can still be identified and rebuilt later.
+
+    Defaults to dry_run=True. Look at the list, then call again with
+    dry_run=False.
+    """
+    try:
+        return _blender.sweep(out_path, dry_run=dry_run,
+                              keep_renders=keep_renders)
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _manifest_layers(asset: str) -> dict:
+    """The assembled manifest's per-layer record, by name. {} if unreadable.
+
+    Read BEFORE re-assembling: combine rewrites the manifest at the same path,
+    so the tri counts and object lists a re-run is compared against exist only
+    until the moment it succeeds.
+    """
+    try:
+        doc = _json.loads(_blender.manifest_path(asset).read_text(encoding="utf-8"))
+        return {str(layer.get("name", "")): layer
+                for layer in (doc.get("layers") or [])}
+    except Exception:
+        return {}
+
+
+@_tool
+def blender_layer_rerun(asset: str, layer: str, script: str = "",
+                        source: str = "", kit: bool = True,
+                        out_path: str = "", timeout: int = 300) -> dict:
+    """Rebuild ONE layer of an assembled asset and re-assemble it. Not the
+    character — the layer.
+
+    "Re-run that one layer, not the whole character" is the promise the layered
+    3D path is built on, and until this tool existed there was no way to keep
+    it: the recipe lived in the manifest and nothing read it back, so a bad cap
+    meant re-modelling, re-texturing and re-assembling everything beside it.
+    blender_combine names the layer that failed (`checks`: unbound,
+    unweighted_verts, and the per-layer tri counts) — this is what you do with
+    that name.
+
+    `asset` is the ASSEMBLED .glb (the manifest sits beside it). `layer` is the
+    layer name as blender_combine reported it. Then ONE of:
+      script   bpy source for that layer, run and exported over the layer's own
+               file. The modelling kit is injected (kit=True) exactly as in
+               blender_run, and the script is recorded beside the layer so the
+               next re-run has it.
+      source   a .glb/.gltf/.blend you already built — used in place, nothing
+               is run.
+      neither  the layer's RECORDED script is re-run. After blender_sweep the
+               layer files are gone and this is the recovery path: each swept
+               layer's manifest entry carries the script that built it. If the
+               file is still on disk and no script is given, it is reused as-is.
+
+    Everything else — placement, rotation, scale, binding, decal_on, which layer
+    holds the rig, the root name — comes back off the manifest untouched. A
+    layer put back at the origin unrotated is a different asset, which is why
+    those arguments are recorded rather than re-typed.
+
+    Refuses BEFORE spending time in Blender when another layer's source is
+    missing, and names those layers: combine would otherwise assemble happily
+    around the hole and hand back a character with no arms. Re-run those first.
+
+    The re-assembled file is registered under the SAME logical name, so it is
+    revision N+1 of the asset a reviewer already saw, not a new one. Returns the
+    combine result plus `changed` — the layer's tri and object counts before and
+    after — so "did that fix it" is a number rather than an impression.
+    """
+    try:
+        recipe = _blender.manifest_recipe(asset)
+        parts = [dict(part) for part in recipe.get("parts") or []]
+        names = [str(part.get("name", "")) for part in parts]
+        index = next((i for i, name in enumerate(names) if name == layer), -1)
+        if index < 0:
+            return {"ok": False, "error": (
+                f"{layer!r} is not a layer of {_Path(asset).name} — this asset's "
+                f"layers are: {', '.join(n for n in names if n) or 'none'}")}
+        target = parts[index]
+        before = _manifest_layers(asset).get(layer, {})
+        recorded = {entry.get("name", ""): entry
+                    for entry in recipe.get("missing") or []}
+
+        # 1. Every OTHER layer has to be on disk, or the assembly quietly loses
+        #    it — combine assembles happily around the hole and hands back a
+        #    character with no arms, ok=True. Refuse FIRST, before a rebuild
+        #    spends minutes in Blender on an assembly that cannot happen, and
+        #    say which of the missing ones still carry a script.
+        gone = [part for i, part in enumerate(parts)
+                if i != index and not _Path(str(part.get("path") or "")).is_file()]
+        if gone:
+            return {"ok": False, "error": (
+                "cannot re-assemble: "
+                + "; ".join(
+                    f"layer {part.get('name')!r} has no file at "
+                    f"{part.get('path')} ("
+                    + ("its script is in the manifest — re-run it too"
+                       if recorded.get(part.get("name", ""), {}).get("script")
+                       else "and the manifest recorded no script for it")
+                    + ")" for part in gone))}
+
+        # 2. Put the layer's file back, by whichever of the three routes applies.
+        built: dict = {}
+        if source:
+            replacement = _Path(source)
+            if not replacement.is_file():
+                return {"ok": False, "error": f"no such layer file: {source}"}
+            target["path"] = str(replacement.resolve())
+            rebuilt = "file"
+        else:
+            text = script or (recorded.get(layer, {}).get("script")
+                              or _blender.read_layer_record(
+                                  target.get("path", "")).get("script", ""))
+            if text:
+                built = _blender.run_script(text, export_glb=target["path"],
+                                            kit=kit, timeout=timeout)
+                if not built.get("ok"):
+                    return {**built, "ok": False, "layer": layer,
+                            "stage": "layer",
+                            "error": built.get("error")
+                                     or f"the script for layer {layer!r} failed"}
+                rebuilt = "script"
+            elif _Path(target.get("path", "")).is_file():
+                rebuilt = "reused"
+            else:
+                return {"ok": False, "error": (
+                    f"layer {layer!r} has no file at {target.get('path')!r} and "
+                    "the manifest recorded no script for it — pass script= to "
+                    "rebuild it, or source= to point at a file you already have")}
+
+        out = str(out_path or asset)
+        # The SAME name the first assembly used, so the re-run supersedes it
+        # rather than sitting beside it as an unrelated asset.
+        root_name = recipe.get("root_name", "") or _Path(asset).stem
+        result = _blender.combine(parts, out, rig=recipe.get("rig", ""),
+                                  root_name=root_name, timeout=timeout)
+        after = next((part for part in (result.get("parts") or [])
+                      if part.get("name") == layer), {})
+        result.update({
+            "layer": layer, "rebuilt": rebuilt, "source": target.get("path", ""),
+            "asset": out,
+            "layer_run": {k: built.get(k) for k in ("ok", "seconds", "print")
+                          if k in built},
+            "changed": {
+                "tris_before": before.get("tris"), "tris_after": after.get("tris"),
+                "objects_before": before.get("objects") or [],
+                "objects_after": after.get("objects") or [],
+                "bound_before": before.get("bound"),
+                "bound_after": after.get("bound"),
+            },
+            "reassembled": [name for name in names if name],
+        })
+        if result.get("ok"):
+            artifact = _register_assembly(
+                result, out, root_name=root_name, rig=recipe.get("rig", ""),
+                producer="blender_layer_rerun")
+            if artifact:
+                result["artifact"] = artifact
+                result["artifact_id"] = artifact["id"]
+            _log("blender", f"re-ran layer {layer!r} ({rebuilt}) and re-assembled "
+                            f"{_Path(out).name}", ref=out)
+        return result
     except Exception as exc:
         return _fail(exc)
 
@@ -888,16 +1513,90 @@ def image_status() -> dict:
         return _fail(exc)
 
 
+# How many pinned anchors an automatic pull may put in front of the model.
+# A project accumulates pins; conditioning one generation on nine of them is
+# both expensive and incoherent, and gpt-image weights the first ones hardest.
+_PINNED_REF_CAP = 4
+
+# What `use_pinned` accepts beyond a ref kind. Spelled out so a typo answers
+# with the list instead of silently pulling nothing, which reads exactly like a
+# project with no pins.
+_PINNED_ALL = ("all", "*", "any")
+
+
+def _pinned_refs(root, spec: str) -> tuple[list[str], list[str]]:
+    """The project's pinned anchors as (names, paths), for `use_pinned`.
+
+    THE POINT: the art seat brief tells an agent to generate "conditioned on the
+    pinned refs", and until now the only tool that took a reference at all was
+    image_edit — so obeying the brief meant knowing a path the brief never
+    stated. A pin already knows where it lives; this is the tool asking.
+    """
+    want = str(spec or "").strip().lower()
+    if not want:
+        return [], []
+    kind = None if want in _PINNED_ALL else want
+    pins = _refs.list_refs(root, kind=kind)
+    if not pins and not kind:
+        raise LookupError(
+            "this project has no pinned references — use_pinned asked for "
+            "anchors that do not exist. Pin the approved art with ref_pin, or "
+            "drop use_pinned to generate unconditioned deliberately.")
+    if not pins and kind:
+        kinds = sorted({p.get("kind", "") for p in _refs.list_refs(root)})
+        raise LookupError(
+            f"no pinned reference of kind {kind!r} — pinned kinds here: "
+            f"{', '.join(k for k in kinds if k) or 'none'}. Pass "
+            f"use_pinned='all', a kind that exists, or pin one with ref_pin.")
+    chosen = pins[:_PINNED_REF_CAP]
+    return ([p["name"] for p in chosen], [p["path"] for p in chosen])
+
+
 @_tool
 def image_generate(prompt: str, filename: str, size: str = "1024x1024",
-                   quality: str = "medium", transparent: bool = False) -> dict:
+                   quality: str = "medium", transparent: bool = False,
+                   ref_images: Optional[list[str]] = None,
+                   use_pinned: str = "", anchors: Optional[list[str]] = None,
+                   task_kind: str = "", tileable: bool = False,
+                   ref_strength: float = 0.5) -> dict:
     """Generate PAINTED art via gpt-image — portraits, select-screen cards,
-    title splashes, stage paint-overs. Costs real money per image (~$0.02-0.19).
+    title splashes, textures, decals, stage paint-overs. Costs real money per
+    image (~$0.02-0.19).
 
     Division of labor: use blender_sprites for anything needing the SAME
     character across multiple frames (an image model can't hold a rig steady);
-    use this for one-off illustrated pieces. transparent=True for art that
-    composites over the game; false for full backdrops.
+    use this for one-off illustrated pieces and for the maps that go onto 3D
+    layers via blender_texture.
+
+    CONDITIONING ON THE PINNED REFERENCES IS PART OF THIS TOOL NOW. It used to
+    take no reference at all while every seat brief said to generate "against
+    the pinned refs", so the instruction could only be obeyed by switching to
+    image_edit or by not obeying it:
+      ref_images   pin NAMES (see ref_list — preferred) or absolute paths.
+                   `name@r2` reaches an older revision.
+      use_pinned   pull the project's own anchors with NO paths passed by hand:
+                   a ref kind (character | style | ui | concept) or "all".
+                   Capped at the first 4 pins, explicit ref_images first.
+      anchors      extra images used ONLY to choose the key colour, never sent
+                   to the model — the identity whose palette the chroma must
+                   avoid colliding with.
+      ref_strength how hard a reference pulls (Krea-side; 0-1).
+
+    task_kind names WHAT IS BEING MADE and changes real decisions, not wording:
+      texture   forced square (a non-square map stretches across a unit UV and
+                nothing downstream can undo it), given the flat-albedo clause —
+                no baked light, no camera angle — and not keyed, because the
+                surface IS the whole frame. Pair with tileable=True for a
+                repeating field; the seam guarantee is a mirrored post-pass, not
+                a sentence in the prompt.
+      decal     a logo, wordmark or insignia, where THE TEXT IS THE SUBJECT.
+                Keyed to real alpha like a sprite, with the one variant of the
+                background contract that does not forbid lettering. Do not pass
+                transparent=True for these; the keying is automatic.
+      anchor/animation/item/sprite/... keyed sprite work.
+      background/tile/ui/concept      full-bleed plates, never keyed.
+    Omit it and nothing changes: keying then follows `transparent` exactly as
+    it always did.
 
     transparent=True does NOT ask the API for alpha — measured, gpt-image
     answers that request with a gradient. It runs the KEYABLE-BACKGROUND
@@ -913,27 +1612,50 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         root = _Path(_root())
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
+        named = [str(r) for r in (ref_images or []) if str(r).strip()]
+        resolved = [_refs.resolve(root, r) for r in named]
+        pinned_names, pinned_paths = _pinned_refs(root, use_pinned)
+        for name, path in zip(pinned_names, pinned_paths):
+            if path not in resolved:          # an explicit ref wins its slot
+                named.append(name)
+                resolved.append(path)
+        anchor_paths = [_refs.resolve(root, a)
+                        for a in (anchors or []) if str(a).strip()]
+        # keyed=None hands the decision to task_kind (chroma.needs_key). With no
+        # task_kind that answers False, which is exactly what this tool did
+        # before any of these parameters existed.
         result = _chroma.generate(prompt, str(out), provider="openai",
-                                  keyed=bool(transparent), size=size,
-                                  quality=quality, transparent=False, root=root,
+                                  task_kind=task_kind,
+                                  keyed=True if transparent else None,
+                                  size=size, quality=quality, transparent=False,
+                                  ref_paths=resolved, ref_strength=ref_strength,
+                                  anchors=anchor_paths, tileable=tileable,
+                                  root=root,
                                   logical_name=_Path(filename).stem,
                                   work_item_id=_work_item_id())
+        result["refs_used"] = named
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
             if archived:
                 result["preview"] = archived
             artifact = _register_artifact(
                 _Path(filename).stem, result["path"], producer="image_generate",
-                model=result.get("model", ""), prompt=prompt,
+                model=result.get("model", ""), prompt=prompt, refs=named,
                 metadata={"size": size, "quality": quality,
                           "transparent": transparent,
+                          "task_kind": task_kind, "tileable": tileable,
+                          "resolved_refs": resolved,
+                          "pinned_refs": pinned_names,
+                          "anchors": anchor_paths,
+                          "keyed": result.get("keyed"),
                           "chroma": result.get("chroma"),
                           "alpha": result.get("alpha"),
                           "preview": archived or "",
                           **imagegen.cost_meta(result)})
             if artifact:
                 result["artifact"] = artifact
-            _log("art", f"generated painted art {filename} ({size}, {quality})",
+            _log("art", f"generated painted art {filename} ({size}, {quality}"
+                        + (f", {task_kind}" if task_kind else "") + ")",
                  ref=archived or result["path"])
         return result
     except Exception as exc:
@@ -2215,6 +2937,119 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
                         _root(), src_path, "engine_import", result)
             except Exception:
                 pass
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _delivery_shot(result: dict) -> list[str]:
+    """The in-engine frame this delivery captured, for the image block."""
+    path = result.get("screenshot")
+    return [path] if path else []
+
+
+@_tool(images=_delivery_shot)
+def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
+                        dest_rel: str = "assets", scene_rel: str = "scenes",
+                        script_res: str = "", physics: str = "auto",
+                        shape_type: str = "trimesh", body_type: str = "static",
+                        character_body: str = "CharacterBody3D",
+                        at: float = 1.2, min_size_m: float = 0.05,
+                        max_size_m: Optional[float] = None,
+                        nominal_size_m: float = 1.8, label: str = "",
+                        timeout: int = 300) -> dict:
+    """Take a finished .glb the rest of the way — into the engine, into a scene.
+
+    THE STEP THE 3D PATH WAS MISSING. Everything before this ends at a file:
+    blender_combine writes a .glb, and blender_turnaround photographs a BLENDER
+    scene under BLENDER lights. Neither asks the engine anything, so a rig that
+    did not import, a texture that did not travel, a 40x scale and an asset with
+    no collider were invisible by construction. THIS is where an asset stops
+    being a file and becomes a thing in the game: imported, given generated
+    colliders, instanced under a CharacterBody3D in its own .tscn, stood on a
+    lit floor, and photographed by Godot's own renderer.
+
+    THE SCREENSHOT COMES BACK IN THIS RESULT AS AN IMAGE, and it is the first
+    time anyone — you included — sees the asset under the renderer that will
+    ship it. Look at it, then read `checks`: the measurements are the half you
+    cannot argue with.
+
+    `checks` is the gate. loads_in_engine, has_geometry,
+    materials_carry_a_texture, real_world_size and has_collider are required;
+    has_skeleton / has_animations / has_blend_shapes report without failing, so
+    a prop is not marked broken for having no rig. A FAILING GATE STILL WRITES
+    THE SCENE AND TAKES THE SCREENSHOT, deliberately — a 2880 m `giant_hero`
+    fails real_world_size and you still get the frame, because a gate that hides
+    the asset is one you cannot debug.
+
+    physics: auto (colliders on every UNSKINNED mesh — a skinned character gets
+    the .tscn's capsule instead, since a trimesh body would make it a wall) |
+    all | none. Leave max_size_m unset and the bound comes from what the asset
+    IS: 4 m skinned, 50 m otherwise.
+
+    The frame is archived to the preview gallery and REGISTERED as an artifact
+    (`artifact_id`), so art_qa_verdict can be pointed at the in-engine shot
+    rather than at a Blender render of a Blender scene.
+
+    godot_project: the directory holding project.godot. `glb`: the asset to
+    deliver, e.g. the out_path blender_combine just wrote.
+    """
+    stem = name or _Path(glb).stem
+    try:
+        shot_dir = str(_Path(_root()) / ".bgate_out" / "3d" /
+                       _run_tag(label or stem))
+    except Exception:
+        shot_dir = None  # no project: the adapter falls back inside the game
+    try:
+        result = _godot.deliver_asset(
+            godot_project, glb, name=name or None, dest_rel=dest_rel,
+            scene_rel=scene_rel, script_res=script_res, physics=physics,
+            shape_type=shape_type, body_type=body_type,
+            character_body=character_body, screenshot_dir=shot_dir, at=at,
+            min_size_m=min_size_m, max_size_m=max_size_m,
+            nominal_size_m=nominal_size_m, timeout=timeout)
+        checks = result.get("checks") or []
+        failed = [str(check.get("check")) for check in checks
+                  if check.get("required") and not check.get("ok")]
+        # Say WHICH gate row failed. Left to the normalizer, the reason comes
+        # out of whichever nested `detail` it finds first, which is a sentence
+        # about metres rather than the name of the check to go and fix.
+        if failed and not result.get("error"):
+            result["error"] = (
+                "the asset was delivered but the gate failed on "
+                + ", ".join(failed) + " — the scene and the screenshot were "
+                "written anyway; look at the frame and the `checks` rows")
+        shot = result.get("screenshot")
+        if shot:
+            # Registered whether or not the gate passed. The failing delivery is
+            # the one a reviewer most needs to look at, and an unregistered
+            # frame is one art QA cannot name.
+            archived = _archive_preview(shot, f"delivered-{stem}")
+            if archived:
+                result["screenshot_preview"] = archived
+            artifact = _register_artifact(
+                f"{stem}-in-engine", shot, producer="godot_deliver_asset",
+                refs=[str(glb)],
+                metadata={"glb": str(glb), "res_path": result.get("res_path", ""),
+                          "scene": result.get("scene", ""),
+                          "preview_scene": result.get("preview", ""),
+                          "delivered": bool(result.get("ok")),
+                          "checks": checks,
+                          "failed_checks": [c.get("check") for c in checks
+                                            if c.get("required")
+                                            and not c.get("ok")],
+                          "preview": archived or ""})
+            if artifact:
+                result["artifact"] = artifact
+                result["artifact_id"] = artifact["id"]
+            else:
+                result["artifact_note"] = (
+                    "no artifact was registered for this frame — it was written "
+                    "outside the project root, so art QA and the dashboard "
+                    "cannot see it")
+            _log("asset", f"delivered {stem} into the engine"
+                          + (" (gate failed)" if not result.get("ok") else ""),
+                 ref=archived or shot)
         return result
     except Exception as exc:
         return _fail(exc)

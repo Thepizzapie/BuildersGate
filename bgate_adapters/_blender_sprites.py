@@ -51,8 +51,12 @@ def _ensure_camera():
     cam_data.ortho_scale = span * 1.15
 
     cam = bpy.data.objects.new("SpriteCam", cam_data)
-    cam.location = (cx, min(ys) - span * 2.0, cz)
-    cam.rotation_euler = (1.5707963, 0.0, 0.0)  # face +Y
+    # Stand on +Y looking back along -Y. Subjects face +Y (BG_FORWARD in
+    # _blender_base), so a camera on -Y renders the subject's back — and a
+    # sprite sheet carries no angle labels, so nothing downstream would ever
+    # report it. The old camera stood at min(ys) - span*2 facing +Y.
+    cam.location = (cx, max(ys) + span * 2.0, cz)
+    cam.rotation_euler = (1.5707963, 0.0, 3.1415927)  # look along -Y
     bpy.context.collection.objects.link(cam)
     scene.camera = cam
     return "auto"
