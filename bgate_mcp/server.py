@@ -1370,13 +1370,20 @@ def blender_generate(image: str, out_path: str, backend: str = "",
                             timeout=float(timeout), logical_name=label,
                             **opts)
         got.setdefault("quote", quote)
-        if got.get("ok") and root and got.get("out_path"):
+        # generate() names the written file `path`, the same key every other
+        # adapter here returns. This asked for `out_path` — the name of THIS
+        # function's argument, never a key on the result — so the guard was
+        # always false and the mesh landed on disk unregistered: invisible to
+        # the dashboard and to art QA, which is the one failure a generated
+        # draft must not have.
+        if got.get("ok") and root and got.get("path"):
             try:
                 got["artifact"] = _register_artifact(
-                    root, got["out_path"], label or _Path(out_path).stem,
+                    root, got["path"], label or _Path(out_path).stem,
                     producer="blender_generate", refs=[str(image)],
                     metadata={"backend": picked, "draft": True,
-                              "licence": quote["licence"], "plate": str(image)})
+                              "licence": got.get("licence") or quote["licence"],
+                              "plate": str(image)})
             except Exception:
                 pass                       # a mesh on disk beats a bookkeeping raise
         return got

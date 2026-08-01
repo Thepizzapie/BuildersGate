@@ -215,6 +215,27 @@ def model_licence(name: str = "") -> dict:
     return {**found, "model": key}
 
 
+def effective_licence(spec: dict) -> dict:
+    """The licence a backend's OUTPUT actually carries.
+
+    A transport backend (ComfyUI, a Gradio app) has no licence of its own — the
+    model behind it does. Resolve from the declared model when the user has
+    said, and keep the row's "we cannot tell you" wording when they have not.
+
+    This is one function because it used to be two: available() resolved, and
+    generate()'s result copied the raw spec row. So the report an agent read
+    before generating named Hunyuan3D's region exclusions, and the manifest
+    recording what the mesh was MADE under said "this adapter cannot clear the
+    licence for you" — the uninformative one, written to the durable record.
+    """
+    licence = dict(spec.get("licence") or {})
+    if spec.get("licence_from_model"):
+        declared = model_licence()
+        if declared.get("model"):
+            licence = declared
+    return licence
+
+
 # ---------------------------------------------------------------------------
 # What the pipeline can take
 # ---------------------------------------------------------------------------
@@ -967,18 +988,9 @@ def available(backend: str, root: Any = None, *, probe: bool = False) -> dict:
         return {"available": False, "backend": backend,
                 "reason": f"unknown backend {backend!r} — known: "
                           f"{', '.join(sorted(BACKENDS))}"}
-    # A transport backend (ComfyUI, a Gradio app) has no licence of its own —
-    # the model behind it does. Resolve from the declared model when the user
-    # has said, and keep the row's "we cannot tell you" wording when they have
-    # not.
-    licence = dict(spec["licence"])
-    if spec.get("licence_from_model"):
-        declared = model_licence()
-        if declared.get("model"):
-            licence = declared
     common = {
         "backend": backend, "kind": spec["kind"], "label": spec["label"],
-        "licence": licence,
+        "licence": effective_licence(spec),
         "rigged": spec.get("rigged") or False,
         "formats": list(spec.get("formats") or ()),
         "implemented": spec.get("implemented", True),
@@ -1139,7 +1151,7 @@ def capabilities(backend: str) -> dict:
         "vram_gb": spec.get("vram_gb"),
         "windows": spec.get("windows", ""),
         "weights": spec.get("weights", ""),
-        "licence": dict(spec["licence"]),
+        "licence": effective_licence(spec),
         "implemented": spec.get("implemented", True),
         "note": spec.get("note", ""),
     }
@@ -1864,7 +1876,7 @@ def _result(backend: str, **fields) -> dict:
         # `draft=True` is not decoration: nothing downstream may treat this as
         # a finished asset.
         "draft": True, "textured": False, "rigged": False,
-        "licence": dict(spec.get("licence") or {}),
+        "licence": effective_licence(spec),
         "source_image": "", "stage": "",
         "checks": [], "warnings": [], "notes": [],
     }

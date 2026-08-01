@@ -62,6 +62,26 @@ def _ensure_camera():
     return "auto"
 
 
+def _set_engine(scene, name):
+    """Set the engine, trying EEVEE's other spelling before falling back.
+
+    4.2 named the rewrite BLENDER_EEVEE_NEXT; 5.x took BLENDER_EEVEE back.
+    Which one is real is asked of bpy rather than inferred from a version.
+    """
+    aliases = {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE",
+               "BLENDER_EEVEE": "BLENDER_EEVEE_NEXT"}
+    for candidate in (name, aliases.get(name)):
+        if not candidate:
+            continue
+        try:
+            scene.render.engine = candidate
+            return candidate
+        except TypeError:
+            continue
+    scene.render.engine = "BLENDER_WORKBENCH"
+    return "BLENDER_WORKBENCH"
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     job = json.loads(open(argv[0], encoding="utf-8").read())
@@ -72,7 +92,16 @@ def main():
         exec(compile(job["base_script"], "<base_script>", "exec"), namespace)
 
         scene = bpy.context.scene
-        scene.render.engine = job.get("engine", "BLENDER_EEVEE_NEXT")
+        # EEVEE is BLENDER_EEVEE_NEXT on 4.x and BLENDER_EEVEE again on 5.x.
+        # This was a bare assignment, so the wrong spelling raised TypeError
+        # here and took the whole sprite run down before the first frame.
+        asked = job.get("engine", "BLENDER_EEVEE_NEXT")
+        used = _set_engine(scene, asked)
+        if used != asked:
+            result["engine_fallback"] = (
+                "%s is not available in this Blender — rendered with %s instead"
+                % (asked, used))
+        result["engine"] = used
         scene.render.film_transparent = True  # the whole point: sprite alpha
         scene.render.resolution_x = job["size"][0]
         scene.render.resolution_y = job["size"][1]
