@@ -9,12 +9,13 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
-## [1.3.0] - 2026-07-31
+## [0.1.30] - 2026-07-31
 
-The version jumps from `0.1.29` because the 3D path stopped being a blockout
-generator. Everything below `### Added — 3D` is the difference between "a
-correctly-proportioned mannequin with paddle arms and no face" and a generated
-mesh that survives the same gates as one modelled by hand.
+The 3D path stops being a blockout generator. Everything below `### Added — 3D`
+is the difference between "a correctly-proportioned mannequin with paddle arms
+and no face" and a generated mesh that survives the same gates as one modelled
+by hand. It stays on the `0.x` line: the design is still moving, which is what
+`CONTRIBUTING.md` tells contributors and what the version should keep saying.
 
 ### Added — 3D
 
@@ -805,8 +806,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v1.3.0...HEAD
-[1.3.0]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...v1.3.0
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.30...HEAD
+[0.1.30]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.26...v0.1.27

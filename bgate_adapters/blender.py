@@ -2626,3 +2626,375 @@ def sweep(out_path: str | os.PathLike[str], *, dry_run: bool = False,
             "refused": refused,
             "root": str(root),
             "bytes_freed": freed}
+
+
+_RIG_MARK = "BGATE_RIG:"
+
+# Adopt and bind in ONE Blender session. Splitting them across a file is what
+# produced a rigged-looking character with nothing bound: glTF re-import carries
+# a root transform, so a skeleton built afterwards sits in a different space
+# from the mesh, bone heat finds no vertices near any bone, and it creates all
+# 22 vertex groups and fills NONE of them while reporting success. Measured:
+# 64,878 of 64,878 unweighted through a round trip, 3 of 19,556 in one session,
+# same mesh both times.
+_RIG_SCRIPT = '''
+import bpy, json
+from mathutils import Vector
+
+def landmarks(mesh):
+    """Where the body actually is, measured off the mesh instead of assumed."""
+    mw = mesh.matrix_world
+    vs = [mw @ v.co for v in mesh.data.vertices]
+    zs = [v.z for v in vs]
+    lo, hi = min(zs), max(zs)
+    h = hi - lo
+    half_w = max(abs(v.x) for v in vs)
+    out = {"floor": lo, "top": hi, "height": h, "half_width": half_w}
+    # ARM CLOUD: everything past 55% of the half-width is arm, not torso.
+    for side, sgn in (("Left", -1.0), ("Right", 1.0)):
+        cloud = [v for v in vs if sgn * v.x > half_w * 0.55]
+        if not cloud:
+            continue
+        tip = max(cloud, key=lambda v: sgn * v.x)
+        inner = sorted(cloud, key=lambda v: sgn * v.x)[:max(20, len(cloud)//40)]
+        sh = sum(inner, Vector((0, 0, 0))) / len(inner)
+        # THE SHOULDER JOINT IS WHERE THE TORSO ENDS, not where the arm cloud
+        # starts. Taking the innermost slice of "everything past 55% of the
+        # half-width" lands out at the bicep: measured on this character the
+        # joint went to x=0.39 against a torso half-width of 0.198, so the arm
+        # hung correctly from a shoulder 20 cm outside her body and every pose
+        # read as a zombie holding buckets. Width is sampled BELOW the armpit,
+        # where a T-pose has no arm to contaminate the band, and shoulders sit
+        # a little wider than the ribcage.
+        band = [abs(v.x) for v in vs if abs(v.z - (lo + h * 0.62)) < h * 0.03]
+        torso = (max(band) if band else abs(sh.x)) * 1.12
+        sh.x = sgn * min(abs(sh.x), torso)
+        out[side] = {"shoulder": list(sh), "tip": list(tip), "torso_w": torso}
+    # LEGS: below the hip line, split by side; the foot is the lowest cluster.
+    hip_z = lo + h * 0.52
+    for side, sgn in (("Left", -1.0), ("Right", 1.0)):
+        leg = [v for v in vs if v.z < hip_z and sgn * v.x > 0.01]
+        if not leg:
+            continue
+        foot = [v for v in leg if v.z < lo + h * 0.06]
+        fc = (sum(foot, Vector((0, 0, 0))) / len(foot)) if foot else min(
+            leg, key=lambda v: v.z)
+        out.setdefault(side, {})["foot"] = list(fc)
+        out[side]["hip_x"] = sum(abs(v.x) for v in leg) / len(leg) * 0.55
+    return out
+
+
+def fit_bones(arm, mesh):
+    """Move the template's bones onto the measured body. Same bones, same
+    names, same hierarchy — only their positions become this character's."""
+    L = landmarks(mesh)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = arm.data.edit_bones
+    moved = []
+    for side in ("Left", "Right"):
+        d = L.get(side) or {}
+        if "shoulder" in d and "tip" in d:
+            sh, tip = Vector(d["shoulder"]), Vector(d["tip"])
+            # wrist sits back from the fingertip; hand bone spans the rest
+            wrist = sh + (tip - sh) * 0.82
+            elbow = sh + (tip - sh) * 0.45
+            for name, head, tail in ((f"{side}UpperArm", sh, elbow),
+                                     (f"{side}LowerArm", elbow, wrist),
+                                     (f"{side}Hand", wrist, tip)):
+                b = eb.get(name)
+                if b:
+                    b.head, b.tail = head, tail
+                    moved.append(name)
+            s = eb.get(f"{side}Shoulder")
+            if s:
+                s.tail = sh
+                moved.append(f"{side}Shoulder")
+        if "foot" in d:
+            foot = Vector(d["foot"])
+            hip_x = d.get("hip_x", abs(foot.x))
+            hip = Vector((foot.x if abs(foot.x) > 0.01 else hip_x,
+                          0.0, L["floor"] + L["height"] * 0.52))
+            hip.x = hip_x * (-1 if side == "Left" else 1)
+            knee = hip.lerp(Vector((foot.x, 0.0, L["floor"])), 0.5)
+            ankle = Vector((foot.x, foot.y * 0.4, L["floor"] + L["height"] * 0.055))
+            toe = Vector((foot.x, foot.y, L["floor"] + L["height"] * 0.02))
+            for name, head, tail in ((f"{side}UpperLeg", hip, knee),
+                                     (f"{side}LowerLeg", knee, ankle),
+                                     (f"{side}Foot", ankle, toe)):
+                b = eb.get(name)
+                if b:
+                    b.head, b.tail = head, tail
+                    moved.append(name)
+            t = eb.get(f"{side}Toes")
+            if t:
+                t.head = toe
+                t.tail = Vector((toe.x, toe.y - L["height"] * 0.03, toe.z))
+                moved.append(f"{side}Toes")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return {"moved": moved, "landmarks": {k: v for k, v in L.items()
+                                          if not isinstance(v, dict)}}
+
+PAY = json.loads(r"""__PAYLOAD__""")
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=PAY["model"])
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+if not meshes:
+    print("__MARK__" + json.dumps({"ok": False, "error": "no mesh in " + PAY["model"]}))
+else:
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    out = {"ok": True, "imported_objects": len(meshes)}
+    out["adopt"] = bg_adopt(mesh, kind=PAY["kind"], height=PAY["height"],
+                            budget=PAY["budget"], orient=PAY["orient"])
+    bpy.context.view_layer.update()
+
+    # HEIGHT ALONE IS NOT A FIT. bg_human's base stands in a wide A-pose and a
+    # generated character rarely matches it. MEASURED on a pirate whose arms
+    # hang closer to her sides: the hand bones landed at x=+/-0.693 against a
+    # mesh half-width of 0.556 — FOURTEEN CENTIMETRES outside her body, floating
+    # in open air. Heat then weighted her fingers to a bone that is not where
+    # her hand is, and posing dragged them into claws. Every bone read as
+    # "bound" and the unweighted count was 3, because a bone outside the mesh
+    # still claims the vertices nearest it.
+    #
+    # Hand reach scales linearly with `limbs` (0.693 / 0.638 / 0.583 / 0.528 at
+    # 1.0 / 0.9 / 0.8 / 0.7), so one measurement gives the ratio and a second
+    # build applies it. Solved, not searched.
+    from mathutils import Vector as _V
+    _bb = [mesh.matrix_world @ _V(c) for c in mesh.bound_box]
+    half_w = max(abs(v.x) for v in _bb) or 0.01
+    height_m = max(mesh.dimensions[2], 0.01)
+
+    def _build(limbs):
+        for stray in [x for x in bpy.context.scene.objects if x is not mesh]:
+            bpy.data.objects.remove(stray, do_unlink=True)
+        bg_human(height=height_m, limbs=limbs, rig=True, name="RigBase",
+                 pose=PAY["pose"], finish=False)
+        found = next((o for o in bpy.context.scene.objects
+                      if o.type == "ARMATURE"), None)
+        for stray in [x for x in bpy.context.scene.objects
+                      if x.type == "MESH" and x is not mesh]:
+            bpy.data.objects.remove(stray, do_unlink=True)
+        return found
+
+    arm = _build(1.0)
+    fit = {"mesh_half_width": round(half_w, 4), "limbs": 1.0, "refitted": False}
+    if arm is not None:
+        hand = arm.data.bones.get("LeftHand") or arm.data.bones.get("RightHand")
+        if hand:
+            def _reach(a):
+                b = a.data.bones.get("LeftHand") or a.data.bones.get("RightHand")
+                return abs((a.matrix_world @ b.head_local).x) if b else 0.0
+
+            reach = _reach(arm)
+            fit["reach_at_1"] = round(reach, 4)
+            target = half_w * 0.95   # wrist just inside the skin, not on it
+            if reach > target:
+                # AFFINE, NOT PROPORTIONAL. reach = shoulder_offset + limbs *
+                # arm_length, and the shoulder half-width does not scale with
+                # `limbs` at all. Solving reach/target as a plain ratio put the
+                # wrist 6 mm OUTSIDE the mesh on the first attempt — right
+                # direction, wrong model. Two probes give the line exactly.
+                probe = _build(0.5)
+                reach_half = _reach(probe) if probe else reach * 0.5
+                slope = (reach - reach_half) / 0.5 or 1e-6
+                offset = reach - slope
+                limbs = max(0.25, min(1.0, (target - offset) / slope))
+                arm = _build(limbs)
+                fit.update({"limbs": round(limbs, 3), "refitted": True,
+                            "reach_at_half": round(reach_half, 4),
+                            "model": {"offset": round(offset, 4),
+                                      "slope": round(slope, 4)},
+                            "reach_fitted": round(_reach(arm), 4),
+                            "target": round(target, 4)})
+                fit["inside"] = fit["reach_fitted"] <= half_w
+    out["fit"] = fit
+    if arm is not None:
+        # PLACEMENT, not just length. Scaling the template by height put
+        # 16 of 24 bones more than 6 cm from any vertex — hands 13 cm out
+        # in open air — and every check still passed, because a bone
+        # outside the mesh still claims the vertices nearest it. Moving
+        # the arm and leg chains onto landmarks measured off this mesh
+        # takes that to 0 of 23 when the plate was posed to the template,
+        # 5 of 23 when it was not.
+        out["placed"] = fit_bones(arm, mesh)
+
+    if arm is None:
+        out["ok"] = False
+        out["error"] = "bg_human returned no armature"
+    else:
+        arm.name = PAY["armature_name"]
+        out["bones"] = len(arm.data.bones)
+        if bpy.context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        attempts = []
+        for how in ("ARMATURE_AUTO", "ARMATURE_ENVELOPE"):
+            for vg in mesh.vertex_groups[:]:
+                mesh.vertex_groups.remove(vg)
+            for mod in [m for m in mesh.modifiers if m.type == "ARMATURE"]:
+                mesh.modifiers.remove(mod)
+            bpy.ops.object.select_all(action="DESELECT")
+            mesh.select_set(True)
+            arm.select_set(True)
+            bpy.context.view_layer.objects.active = arm
+            try:
+                with bpy.context.temp_override(
+                        object=arm, active_object=arm,
+                        selected_objects=[mesh, arm],
+                        selected_editable_objects=[mesh, arm]):
+                    bpy.ops.object.parent_set(type=how)
+                err = ""
+            except Exception as exc:
+                err = str(exc)[:160]
+            bpy.context.view_layer.update()
+            total = len(mesh.data.vertices)
+            loose = sum(1 for v in mesh.data.vertices if not v.groups)
+            attempts.append({"bind": how, "verts": total, "unweighted": loose,
+                             "pct": round(100.0 * loose / max(total, 1), 3),
+                             "groups": len(mesh.vertex_groups), "error": err})
+            # THE OPERATOR'S RETURN VALUE IS NOT EVIDENCE. parent_set succeeds
+            # and vertex groups exist whether or not a single weight was
+            # written. The unweighted count is the only thing that knows.
+            if not err and loose <= max(8, total * PAY["tolerance"]):
+                break
+        out["attempts"] = attempts
+        best = min(attempts, key=lambda a: a["unweighted"])
+        out["bound_with"] = best["bind"]
+        out["unweighted"] = best["unweighted"]
+        out["unweighted_pct"] = best["pct"]
+        out["rigged"] = bool(best["unweighted"] <=
+                             max(8, best["verts"] * PAY["tolerance"]))
+        if not out["rigged"]:
+            out["reason"] = ("%d of %d vertices carry no bone weight (%.2f%%) — "
+                             "they will not deform. Heat refuses to cross "
+                             "non-manifold junctions, so clean the mesh further "
+                             "or accept a rigid envelope bind."
+                             % (best["unweighted"], best["verts"], best["pct"]))
+        if attempts[0]["unweighted"] > max(8, attempts[0]["verts"] * PAY["tolerance"]) \
+                and len(attempts) > 1:
+            out["heat_failed"] = attempts[0]
+    print("__MARK__" + json.dumps(out, default=str))
+'''.replace("__MARK__", _RIG_MARK)
+
+
+def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
+        kind: str = "humanoid", height: float = 1.8, budget: int = 0,
+        orient: bool = True, armature_name: str = "Skeleton", pose: str = "a",
+        tolerance: float = 0.01, timeout: int = 900) -> dict:
+    """Take a generated mesh to a bound, weighted, exported character.
+
+    A generator hands back geometry and nothing else — `rigged: false` on every
+    local backend. This is the step between that and something an engine can
+    animate: adopt it (weld, decimate, scale, orient, ground), fit a skeleton to
+    the mesh's own measured height, bind, and PROVE the bind took.
+
+    THE PROOF IS THE UNWEIGHTED COUNT, and nothing cheaper works. `parent_set`
+    returns cleanly, creates all 22 vertex groups, and can leave every one of
+    them empty; the modifier is attached; Godot shows a Skeleton3D; the
+    character animates not at all. Measured on a real generation: 64,878 of
+    64,878 vertices unweighted, with every other check green.
+
+    Bone heat first because it deforms properly, envelope only as a fallback
+    because it is rigid and pinches at the joints. Whichever binds more is what
+    ships, and `rigged` is False when neither reaches `tolerance` — a caller
+    that ignores it is shipping a statue.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    payload = {"model": str(src).replace("\\", "/"), "kind": kind,
+               "height": float(height), "budget": int(budget),
+               "orient": bool(orient), "armature_name": armature_name,
+               # A-POSE BY DEFAULT, not bg_human's T. Measured against a real
+               # generation: the template's A-pose hand sits 8.9 cm from the
+               # mesh's own half-width where the T-pose sits 13.7 cm out. The
+               # generator draws characters with their arms down, so starting
+               # from the stance it already favours means `limbs` compensates
+               # less and two characters end up closer to each other.
+               "pose": pose if pose in ("a", "t") else "a",
+               "tolerance": float(tolerance)}
+    script = _RIG_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, export_glb=str(out_path), timeout=timeout,
+                        record=False)
+    report = _marked(result, _RIG_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["out_path"] = str(out_path)
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+# ---------------------------------------------------------------------------
+# The shipped humanoid template
+# ---------------------------------------------------------------------------
+# WHY THIS SHIPS RATHER THAN BEING BUILT PER PROJECT. Every generated character
+# used to invent its own proportions, so the skeleton had to be bent to fit each
+# one and no two characters could share an animation. Conditioning the PLATE on
+# a fixed reference inverts that: the art conforms to the skeleton, `limbs`
+# stays at 1.0, and a clip authored for one character plays on the next.
+#
+# Measured on one character, bones further than 6 cm from any mesh vertex:
+#   template scaled by height only ............ 16 of 24
+#   landmark fitting alone ..................... 5 of 23
+#   plate conditioned on this reference alone .. 8 of 23
+#   both ....................................... 0 of 23, and 0 unweighted
+# NOT templates/3d — that directory IS the Godot project scaffold that
+# `bgate init --kind 3d` copies wholesale into a user's game, so anything
+# dropped there lands in every new project root. templates/humanoid is
+# shipped by the same package-data glob and copied by nothing.
+TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates" / "humanoid"
+HUMANOID_SKELETON = TEMPLATE_DIR / "humanoid_skeleton.glb"
+HUMANOID_POSE_FRONT = TEMPLATE_DIR / "humanoid_pose_front.png"
+HUMANOID_POSE_SIDE = TEMPLATE_DIR / "humanoid_pose_side.png"
+
+# The bone set every humanoid out of this pipeline carries. Godot's humanoid
+# profile names, so BoneMap retargeting works and clips move between characters.
+HUMANOID_BONES = (
+    "Root", "Hips", "Spine", "Chest", "UpperChest", "Neck", "Head",
+    "LeftShoulder", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightShoulder", "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot", "RightToes",
+)
+
+# What a plate has to say to come back in the template's stance. Handed to the
+# caller rather than hidden, because the art seat writes the rest of the prompt.
+POSE_CLAUSE = (
+    "standing in a T-pose exactly like the reference figure: arms straight out "
+    "sideways at shoulder height, palms down, legs straight, feet flat and "
+    "shoulder width apart, symmetrical, facing the camera. Entire body visible "
+    "from head to feet with clear margin, even flat lighting, no cast shadows"
+)
+
+
+def humanoid_template() -> dict:
+    """The shipped skeleton, its pose plates, and how to use them.
+
+    Everything a caller needs to make a character that rigs on the first try:
+    the reference image to condition the plate on, the bone names it will get,
+    and the prompt clause that keeps the art in the template's stance.
+    """
+    present = HUMANOID_SKELETON.is_file() and HUMANOID_POSE_FRONT.is_file()
+    return {
+        "ok": present,
+        "skeleton": str(HUMANOID_SKELETON),
+        "pose_front": str(HUMANOID_POSE_FRONT),
+        "pose_side": str(HUMANOID_POSE_SIDE),
+        "bones": list(HUMANOID_BONES),
+        "pose_clause": POSE_CLAUSE,
+        "reason": "" if present else
+                  f"template assets missing from {TEMPLATE_DIR} — a source "
+                  "checkout without them, or a wheel built before they shipped",
+        "how": [
+            "image_generate(..., ref_images=[pose_front]) — the plate comes "
+            "back in the template's stance instead of inventing one",
+            "KEY THE PLATE. An opaque background becomes geometry: measured "
+            "2.8x slower and 21% non-manifold against 16% for the same subject",
+            "blender_generate(plate, out) — draft mesh",
+            "blender_rig(mesh, out) — adopt, fit, bind, and prove the bind",
+            "godot_deliver_asset(project, rigged) — .tscn, verified in-engine",
+        ],
+    }

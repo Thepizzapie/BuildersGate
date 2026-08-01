@@ -1140,6 +1140,90 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
 
 @_tool
+def blender_humanoid_template() -> dict:
+    """The shipped humanoid skeleton and the pose plate to generate against.
+
+    START A CHARACTER HERE. Every generated mesh used to invent its own
+    proportions, so the skeleton had to be bent to fit each one and no two
+    characters could share an animation. Conditioning the PLATE on this
+    reference inverts that — the art conforms to the skeleton, and a clip
+    authored for one character plays on the next.
+
+    Measured on one character, bones further than 6 cm from any mesh vertex:
+      template scaled by height only ............ 16 of 24
+      landmark fitting alone ..................... 5 of 23
+      plate conditioned on this reference alone .. 8 of 23
+      BOTH ....................................... 0 of 23, and 0 unweighted
+
+    Returns the reference image to pass as `ref_images` to image_generate, the
+    prompt clause that holds the stance, and the 23 Godot-profile bone names
+    every humanoid from this pipeline carries — so BoneMap retargeting works
+    and animations move between characters.
+
+    The five-step path:
+      1. image_generate(prompt + pose_clause, ref_images=[pose_front])
+      2. key it — an opaque plate becomes geometry, measured 2.8x slower and
+         21% non-manifold against 16% keyed
+      3. blender_generate(plate, out)          draft mesh
+      4. blender_rig(mesh, out)                adopt, fit, bind, PROVE it
+      5. godot_deliver_asset(project, rigged)  .tscn, verified in-engine
+    """
+    try:
+        return _blender.humanoid_template()
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_rig(model: str, out_path: str, kind: str = "humanoid",
+                height: float = 1.8, budget: int = 0, orient: bool = True,
+                armature_name: str = "Skeleton", timeout: int = 900) -> dict:
+    """Take a GENERATED mesh to a bound, weighted character an engine can move.
+
+    Every image-to-3D backend returns `rigged: false` — geometry and nothing
+    else. This is the missing step between that and a character: adopt the mesh
+    (weld, decimate, scale, orient, ground), fit a skeleton to its own measured
+    height, bind it, and PROVE the bind took.
+
+    THE PROOF IS `unweighted`, AND NOTHING CHEAPER WORKS. Blender's parent_set
+    returns cleanly, creates all 22 vertex groups, and can leave every one of
+    them empty. The modifier attaches. Godot loads it and shows a Skeleton3D.
+    The character animates not at all. MEASURED on a real generation: 64,878 of
+    64,878 vertices carrying no weight with every other check green.
+
+    Adopt and bind happen in ONE Blender session on purpose. Round-tripping
+    through a file between them is what produced that failure: glTF re-import
+    carries a root transform, the skeleton lands in a different space from the
+    mesh, and heat finds no vertices near any bone. Same mesh in one session:
+    3 of 19,556.
+
+    Bone heat is tried first because it deforms properly; ARMATURE_ENVELOPE is
+    the fallback and is rigid, so elbows and shoulders pinch. `bound_with` says
+    which one shipped. **`rigged` False means the asset is not animatable** —
+    it is not a warning to pass along, it is a refusal.
+
+    kind    "humanoid" reads a front from foot reach; "none" refuses to guess.
+            A subject with no feet (a prop, a bust) wants "none", and then
+            orientation is NEVER ESTABLISHED — check the turnaround yourself.
+    budget  0 leaves the density alone. A local backend with no face_count knob
+            hands back ~280k faces, and post-decimation here is the only lever
+            those users have. 8k shattered a character; 45-60k was clean.
+    """
+    try:
+        result = _blender.rig(model, out_path, kind=kind, height=height,
+                              budget=budget, orient=orient,
+                              armature_name=armature_name, timeout=timeout)
+        if result.get("ok"):
+            _log("blender",
+                 f"rigged {model} -> {result.get('bound_with')} "
+                 f"({result.get('unweighted_pct')}% unweighted)",
+                 ref=str(out_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def blender_texture(model: str, image: str, out_path: str, material: str = "",
                     all_slots: bool = False, roughness: str = "",
                     metallic: str = "", normal: str = "", emission: str = "",

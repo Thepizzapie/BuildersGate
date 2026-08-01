@@ -125,6 +125,13 @@ def bg_flipped(obj):
     renders as a hole in the model. Measured by recalculating normals on a throw-
     away copy and counting the ones that had to turn around; the mesh is not
     touched. `bg_clean(recalc=True)` is the fix.
+
+    RETURNS -1, NOT 0, WHEN THE CHECK ITSELF FAILS. This used to answer 0 on an
+    internal error, which is the same answer as "no inverted faces" — a check
+    that reports clean when it broke. It went unnoticed while nothing depended
+    on it; bg_adopt's quality verdict now does, and a gate that cannot tell "I
+    found none" from "I could not look" is worse than no gate. Callers must
+    treat a negative count as UNKNOWN and fail closed.
     """
     if obj is None or obj.type != "MESH" or not obj.data.polygons:
         return 0
@@ -138,7 +145,7 @@ def bg_flipped(obj):
         return sum(1 for i, f in enumerate(bm.faces)
                    if f.normal.dot(before[i]) < 0)
     except Exception:
-        return 0
+        return -1
     finally:
         bm.free()
 
