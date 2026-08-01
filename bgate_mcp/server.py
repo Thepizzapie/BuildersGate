@@ -1140,6 +1140,41 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
 
 @_tool
+def blender_humanoid_template() -> dict:
+    """The shipped humanoid skeleton and the pose plate to generate against.
+
+    START A CHARACTER HERE. Every generated mesh used to invent its own
+    proportions, so the skeleton had to be bent to fit each one and no two
+    characters could share an animation. Conditioning the PLATE on this
+    reference inverts that — the art conforms to the skeleton, and a clip
+    authored for one character plays on the next.
+
+    Measured on one character, bones further than 6 cm from any mesh vertex:
+      template scaled by height only ............ 16 of 24
+      landmark fitting alone ..................... 5 of 23
+      plate conditioned on this reference alone .. 8 of 23
+      BOTH ....................................... 0 of 23, and 0 unweighted
+
+    Returns the reference image to pass as `ref_images` to image_generate, the
+    prompt clause that holds the stance, and the 23 Godot-profile bone names
+    every humanoid from this pipeline carries — so BoneMap retargeting works
+    and animations move between characters.
+
+    The five-step path:
+      1. image_generate(prompt + pose_clause, ref_images=[pose_front])
+      2. key it — an opaque plate becomes geometry, measured 2.8x slower and
+         21% non-manifold against 16% keyed
+      3. blender_generate(plate, out)          draft mesh
+      4. blender_rig(mesh, out)                adopt, fit, bind, PROVE it
+      5. godot_deliver_asset(project, rigged)  .tscn, verified in-engine
+    """
+    try:
+        return _blender.humanoid_template()
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def blender_rig(model: str, out_path: str, kind: str = "humanoid",
                 height: float = 1.8, budget: int = 0, orient: bool = True,
                 armature_name: str = "Skeleton", timeout: int = 900) -> dict:

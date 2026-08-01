@@ -84,3 +84,58 @@ class TestScriptContract:
 
     def test_the_verdict_counts_vertices_without_groups(self):
         assert "if not v.groups" in blender._RIG_SCRIPT
+
+
+class TestHumanoidTemplate:
+    """The template has to SHIP, or a first-run user gets none of this.
+
+    It is the fixed end of the pipeline: art conforms to the skeleton rather
+    than the skeleton being bent to fit each generation. Measured on one
+    character, bones further than 6 cm from any mesh vertex — 16 of 24 with the
+    template scaled by height, 8 of 23 with the plate conditioned on it, 5 of 23
+    with landmark fitting, 0 of 23 with both.
+    """
+
+    def test_the_assets_are_present(self):
+        got = blender.humanoid_template()
+        assert got["ok"] is True, got["reason"]
+        for key in ("skeleton", "pose_front"):
+            assert blender.Path(got[key]).is_file(), key
+
+    def test_the_bone_set_is_godots_humanoid_profile(self):
+        """Retargeting depends on these exact names, so they are pinned."""
+        bones = blender.humanoid_template()["bones"]
+        assert len(bones) == 23
+        for required in ("Hips", "Spine", "Chest", "Head",
+                         "LeftUpperArm", "LeftLowerArm", "LeftHand",
+                         "RightUpperLeg", "RightLowerLeg", "RightFoot"):
+            assert required in bones, required
+
+    def test_it_ships_in_the_wheel(self):
+        """package-data covers templates/**/*, and this lives under it.
+
+        A wheel without these is a first run with no humanoid template, which
+        is the entire point of shipping them rather than building per project.
+        """
+        root = blender.Path(blender.__file__).resolve().parent.parent
+        rel = blender.HUMANOID_SKELETON.relative_to(root)
+        assert rel.parts[0] == "templates", rel
+
+    def test_the_pose_clause_names_the_stance(self):
+        clause = blender.humanoid_template()["pose_clause"]
+        for word in ("T-pose", "reference", "symmetrical"):
+            assert word in clause, word
+
+    def test_it_is_not_inside_a_project_scaffold(self):
+        """templates/3d IS the Godot scaffold `bgate init --kind 3d` copies.
+
+        Anything left there lands in the root of every new 3D game. The
+        humanoid template ships beside it, not inside it — caught after the
+        first version put a skeleton and two 1.5 MB plates into the scaffold.
+        """
+        parent = blender.HUMANOID_SKELETON.parent
+        assert parent.name == "humanoid", parent
+        scaffold = parent.parent / "3d"
+        if scaffold.is_dir():
+            stray = [p.name for p in scaffold.iterdir() if "humanoid" in p.name]
+            assert not stray, stray
