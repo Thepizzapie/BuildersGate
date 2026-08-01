@@ -1049,6 +1049,23 @@ def _alive(backend: str, *, timeout: float = 1.5) -> dict:
                                      headers={"Accept": "*/*"})
         with urllib.request.urlopen(req, timeout=timeout):
             return {"ok": True, "reason": ""}
+    except urllib.error.HTTPError as exc:
+        # ANY HTTP STATUS PROVES A SERVER IS THERE, INCLUDING 404. urlopen
+        # raises on 4xx/5xx, so a blanket except reported "nothing answered"
+        # for a backend that was running perfectly — reported from the field
+        # against a trellis.cpp release whose build serves the submit and poll
+        # paths but not /health. available(probe=True) called it dead and
+        # choose() could never select it, while naming the backend by hand
+        # worked, which is the signature of a probe wrong about liveness rather
+        # than a server that is down.
+        #
+        # Liveness is "something is listening and speaking HTTP". Whether that
+        # something implements this particular path is a different question, and
+        # not one a reachability check should refuse a working server over.
+        return {"ok": True, "reason": "",
+                "note": f"{url} answered {exc.code} rather than a health body — "
+                        f"the server is up; this build does not implement that "
+                        f"path"}
     except Exception as exc:                                     # noqa: BLE001
         reason = getattr(exc, "reason", None) or exc
         return {"ok": False,
@@ -1275,9 +1292,22 @@ def check_input(path: str | os.PathLike[str]) -> dict:
         # Not fatal anywhere, but it is the failure that produces geometry made
         # of background. bgate_core.chroma already produces the keyed plate for
         # the sprite path, and it is the right input here for the same reason.
+        #
+        # MEASURED, same prompt and model, alpha the only difference:
+        #   opaque plate   605s, 21% non-manifold after adopt — quality REFUSED
+        #   keyed plate    216s, 16% — passes
+        # 2.8x the wall clock spent reconstructing a backdrop, and a mesh the
+        # gate then throws out. Worth saying louder than "or expect loose
+        # parts", because the cost lands ten minutes after the mistake.
+        #
+        # NOTE task_kind: chroma.needs_key("character") is False, so a character
+        # plate generated for this path arrives opaque unless keyed=True is
+        # passed. That is the common case, not an edge one.
         warnings.append("the plate has no alpha channel — background pixels "
                         "become geometry on several backends. Key it out first "
-                        "(bgate_core.chroma) or expect loose parts")
+                        "(bgate_core.chroma, keyed=True) or expect loose parts: "
+                        "measured 2.8x slower and 21% non-manifold against 16% "
+                        "for the same subject keyed")
     return {"ok": True, "path": str(p), "size": [w, h], "reason": "",
             "warnings": warnings}
 
