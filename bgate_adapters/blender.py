@@ -2594,3 +2594,190 @@ def sweep(out_path: str | os.PathLike[str], *, dry_run: bool = False,
             "refused": refused,
             "root": str(root),
             "bytes_freed": freed}
+
+
+_RIG_MARK = "BGATE_RIG:"
+
+# Adopt and bind in ONE Blender session. Splitting them across a file is what
+# produced a rigged-looking character with nothing bound: glTF re-import carries
+# a root transform, so a skeleton built afterwards sits in a different space
+# from the mesh, bone heat finds no vertices near any bone, and it creates all
+# 22 vertex groups and fills NONE of them while reporting success. Measured:
+# 64,878 of 64,878 unweighted through a round trip, 3 of 19,556 in one session,
+# same mesh both times.
+_RIG_SCRIPT = '''
+import bpy, json
+PAY = json.loads(r"""__PAYLOAD__""")
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=PAY["model"])
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+if not meshes:
+    print("__MARK__" + json.dumps({"ok": False, "error": "no mesh in " + PAY["model"]}))
+else:
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    out = {"ok": True, "imported_objects": len(meshes)}
+    out["adopt"] = bg_adopt(mesh, kind=PAY["kind"], height=PAY["height"],
+                            budget=PAY["budget"], orient=PAY["orient"])
+    bpy.context.view_layer.update()
+
+    # HEIGHT ALONE IS NOT A FIT. bg_human's base stands in a wide A-pose and a
+    # generated character rarely matches it. MEASURED on a pirate whose arms
+    # hang closer to her sides: the hand bones landed at x=+/-0.693 against a
+    # mesh half-width of 0.556 — FOURTEEN CENTIMETRES outside her body, floating
+    # in open air. Heat then weighted her fingers to a bone that is not where
+    # her hand is, and posing dragged them into claws. Every bone read as
+    # "bound" and the unweighted count was 3, because a bone outside the mesh
+    # still claims the vertices nearest it.
+    #
+    # Hand reach scales linearly with `limbs` (0.693 / 0.638 / 0.583 / 0.528 at
+    # 1.0 / 0.9 / 0.8 / 0.7), so one measurement gives the ratio and a second
+    # build applies it. Solved, not searched.
+    from mathutils import Vector as _V
+    _bb = [mesh.matrix_world @ _V(c) for c in mesh.bound_box]
+    half_w = max(abs(v.x) for v in _bb) or 0.01
+    height_m = max(mesh.dimensions[2], 0.01)
+
+    def _build(limbs):
+        for stray in [x for x in bpy.context.scene.objects if x is not mesh]:
+            bpy.data.objects.remove(stray, do_unlink=True)
+        bg_human(height=height_m, limbs=limbs, rig=True, name="RigBase",
+                 finish=False)
+        found = next((o for o in bpy.context.scene.objects
+                      if o.type == "ARMATURE"), None)
+        for stray in [x for x in bpy.context.scene.objects
+                      if x.type == "MESH" and x is not mesh]:
+            bpy.data.objects.remove(stray, do_unlink=True)
+        return found
+
+    arm = _build(1.0)
+    fit = {"mesh_half_width": round(half_w, 4), "limbs": 1.0, "refitted": False}
+    if arm is not None:
+        hand = arm.data.bones.get("LeftHand") or arm.data.bones.get("RightHand")
+        if hand:
+            def _reach(a):
+                b = a.data.bones.get("LeftHand") or a.data.bones.get("RightHand")
+                return abs((a.matrix_world @ b.head_local).x) if b else 0.0
+
+            reach = _reach(arm)
+            fit["reach_at_1"] = round(reach, 4)
+            target = half_w * 0.95   # wrist just inside the skin, not on it
+            if reach > target:
+                # AFFINE, NOT PROPORTIONAL. reach = shoulder_offset + limbs *
+                # arm_length, and the shoulder half-width does not scale with
+                # `limbs` at all. Solving reach/target as a plain ratio put the
+                # wrist 6 mm OUTSIDE the mesh on the first attempt — right
+                # direction, wrong model. Two probes give the line exactly.
+                probe = _build(0.5)
+                reach_half = _reach(probe) if probe else reach * 0.5
+                slope = (reach - reach_half) / 0.5 or 1e-6
+                offset = reach - slope
+                limbs = max(0.25, min(1.0, (target - offset) / slope))
+                arm = _build(limbs)
+                fit.update({"limbs": round(limbs, 3), "refitted": True,
+                            "reach_at_half": round(reach_half, 4),
+                            "model": {"offset": round(offset, 4),
+                                      "slope": round(slope, 4)},
+                            "reach_fitted": round(_reach(arm), 4),
+                            "target": round(target, 4)})
+                fit["inside"] = fit["reach_fitted"] <= half_w
+    out["fit"] = fit
+
+    if arm is None:
+        out["ok"] = False
+        out["error"] = "bg_human returned no armature"
+    else:
+        arm.name = PAY["armature_name"]
+        out["bones"] = len(arm.data.bones)
+        if bpy.context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        attempts = []
+        for how in ("ARMATURE_AUTO", "ARMATURE_ENVELOPE"):
+            for vg in mesh.vertex_groups[:]:
+                mesh.vertex_groups.remove(vg)
+            for mod in [m for m in mesh.modifiers if m.type == "ARMATURE"]:
+                mesh.modifiers.remove(mod)
+            bpy.ops.object.select_all(action="DESELECT")
+            mesh.select_set(True)
+            arm.select_set(True)
+            bpy.context.view_layer.objects.active = arm
+            try:
+                with bpy.context.temp_override(
+                        object=arm, active_object=arm,
+                        selected_objects=[mesh, arm],
+                        selected_editable_objects=[mesh, arm]):
+                    bpy.ops.object.parent_set(type=how)
+                err = ""
+            except Exception as exc:
+                err = str(exc)[:160]
+            bpy.context.view_layer.update()
+            total = len(mesh.data.vertices)
+            loose = sum(1 for v in mesh.data.vertices if not v.groups)
+            attempts.append({"bind": how, "verts": total, "unweighted": loose,
+                             "pct": round(100.0 * loose / max(total, 1), 3),
+                             "groups": len(mesh.vertex_groups), "error": err})
+            # THE OPERATOR'S RETURN VALUE IS NOT EVIDENCE. parent_set succeeds
+            # and vertex groups exist whether or not a single weight was
+            # written. The unweighted count is the only thing that knows.
+            if not err and loose <= max(8, total * PAY["tolerance"]):
+                break
+        out["attempts"] = attempts
+        best = min(attempts, key=lambda a: a["unweighted"])
+        out["bound_with"] = best["bind"]
+        out["unweighted"] = best["unweighted"]
+        out["unweighted_pct"] = best["pct"]
+        out["rigged"] = bool(best["unweighted"] <=
+                             max(8, best["verts"] * PAY["tolerance"]))
+        if not out["rigged"]:
+            out["reason"] = ("%d of %d vertices carry no bone weight (%.2f%%) — "
+                             "they will not deform. Heat refuses to cross "
+                             "non-manifold junctions, so clean the mesh further "
+                             "or accept a rigid envelope bind."
+                             % (best["unweighted"], best["verts"], best["pct"]))
+        if attempts[0]["unweighted"] > max(8, attempts[0]["verts"] * PAY["tolerance"]) \
+                and len(attempts) > 1:
+            out["heat_failed"] = attempts[0]
+    print("__MARK__" + json.dumps(out, default=str))
+'''.replace("__MARK__", _RIG_MARK)
+
+
+def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
+        kind: str = "humanoid", height: float = 1.8, budget: int = 0,
+        orient: bool = True, armature_name: str = "Skeleton",
+        tolerance: float = 0.01, timeout: int = 900) -> dict:
+    """Take a generated mesh to a bound, weighted, exported character.
+
+    A generator hands back geometry and nothing else — `rigged: false` on every
+    local backend. This is the step between that and something an engine can
+    animate: adopt it (weld, decimate, scale, orient, ground), fit a skeleton to
+    the mesh's own measured height, bind, and PROVE the bind took.
+
+    THE PROOF IS THE UNWEIGHTED COUNT, and nothing cheaper works. `parent_set`
+    returns cleanly, creates all 22 vertex groups, and can leave every one of
+    them empty; the modifier is attached; Godot shows a Skeleton3D; the
+    character animates not at all. Measured on a real generation: 64,878 of
+    64,878 vertices unweighted, with every other check green.
+
+    Bone heat first because it deforms properly, envelope only as a fallback
+    because it is rigid and pinches at the joints. Whichever binds more is what
+    ships, and `rigged` is False when neither reaches `tolerance` — a caller
+    that ignores it is shipping a statue.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    payload = {"model": str(src).replace("\\", "/"), "kind": kind,
+               "height": float(height), "budget": int(budget),
+               "orient": bool(orient), "armature_name": armature_name,
+               "tolerance": float(tolerance)}
+    script = _RIG_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, export_glb=str(out_path), timeout=timeout,
+                        record=False)
+    report = _marked(result, _RIG_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["out_path"] = str(out_path)
+    report["seconds"] = result.get("seconds")
+    return report
