@@ -1037,6 +1037,23 @@ def _alive(backend: str, *, timeout: float = 1.5) -> dict:
                                      headers={"Accept": "*/*"})
         with urllib.request.urlopen(req, timeout=timeout):
             return {"ok": True, "reason": ""}
+    except urllib.error.HTTPError as exc:
+        # ANY HTTP STATUS PROVES A SERVER IS THERE, INCLUDING 404. urlopen
+        # raises on 4xx/5xx, so a blanket except reported "nothing answered"
+        # for a backend that was running perfectly — reported from the field
+        # against a trellis.cpp release whose build serves the submit and poll
+        # paths but not /health. available(probe=True) called it dead and
+        # choose() could never select it, while naming the backend by hand
+        # worked, which is the signature of a probe wrong about liveness rather
+        # than a server that is down.
+        #
+        # Liveness is "something is listening and speaking HTTP". Whether that
+        # something implements this particular path is a different question, and
+        # not one a reachability check should refuse a working server over.
+        return {"ok": True, "reason": "",
+                "note": f"{url} answered {exc.code} rather than a health body — "
+                        f"the server is up; this build does not implement that "
+                        f"path"}
     except Exception as exc:                                     # noqa: BLE001
         reason = getattr(exc, "reason", None) or exc
         return {"ok": False,
