@@ -48,8 +48,40 @@ def _spawn(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
 
 RUNNER = Path(__file__).with_name("_blender_runner.py")
 
-ENGINES = ("BLENDER_WORKBENCH", "BLENDER_EEVEE_NEXT", "CYCLES")
+# EEVEE HAS TWO IDENTIFIERS AND WHICH ONE IS REAL DEPENDS ON THE BINARY.
+# 4.2 shipped the rewrite as BLENDER_EEVEE_NEXT; 5.x dropped the legacy engine
+# and took the plain BLENDER_EEVEE name back. Both spellings are accepted here
+# and the choice between them is made INSIDE Blender, by _bg_engine below,
+# against the enum that install actually offers — a version number parsed out
+# here would be one more thing to get wrong on the next rename.
+EEVEE = "BLENDER_EEVEE_NEXT"          # canonical spelling for this codebase
+EEVEE_ALIASES = ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE")
+
+ENGINES = ("BLENDER_WORKBENCH", *EEVEE_ALIASES, "CYCLES")
 DEFAULT_ENGINE = "BLENDER_WORKBENCH"  # fast, GPU-optional — a preview, not a beauty pass
+
+# Set scene.render.engine to `name`, trying EEVEE's other spelling before
+# giving up. Injected into every script this adapter runs in Blender, because
+# the three places that assign the engine are in three different files and two
+# of them had no fallback at all: on 5.x they raised TypeError mid-render.
+# Returns the identifier that took, which is what callers report.
+ENGINE_SHIM = '''
+def _bg_engine(scene, name):
+    import bpy
+    tried, aliases = [], {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE",
+                          "BLENDER_EEVEE": "BLENDER_EEVEE_NEXT"}
+    for candidate in (name, aliases.get(name)):
+        if not candidate or candidate in tried:
+            continue
+        tried.append(candidate)
+        try:
+            scene.render.engine = candidate
+            return candidate
+        except TypeError:
+            continue
+    scene.render.engine = "BLENDER_WORKBENCH"
+    return "BLENDER_WORKBENCH"
+'''
 
 # Measured on this machine (Blender 4.5, Windows): the FIRST EEVEE render after a
 # cold boot blew past a 240s timeout; every run after it took 1-12s, and the same
@@ -60,7 +92,7 @@ DEFAULT_ENGINE = "BLENDER_WORKBENCH"  # fast, GPU-optional — a preview, not a 
 # So: warmup() pays it once on purpose, and the first GPU-engine call gets a
 # generous timeout. Never let an agent's first render be the one that eats this.
 COLD_START_TIMEOUT = 420
-GPU_ENGINES = ("BLENDER_EEVEE_NEXT", "CYCLES")
+GPU_ENGINES = (*EEVEE_ALIASES, "CYCLES")
 
 _warmed: set[str] = set()
 
@@ -1878,7 +1910,7 @@ if bg:
     bg.inputs[1].default_value = 0.6
 
 scene = bpy.context.scene
-scene.render.engine = P["engine"]
+_bg_engine(scene, P["engine"])
 scene.render.resolution_x, scene.render.resolution_y = res_x, res_y
 scene.render.image_settings.file_format = "PNG"
 scene.render.image_settings.color_mode = "RGBA"
@@ -2048,7 +2080,7 @@ def turnaround(model: str | os.PathLike[str], out_dir: str | os.PathLike[str], *
                "fov": float(fov), "margin": float(margin),
                "size": [int(size[0]), int(size[1])],
                "angles": [[str(a[0]), float(a[1])] for a in angles]}
-    script = ("import json\nfrom mathutils import Vector\n" +
+    script = ("import json\nfrom mathutils import Vector\n" + ENGINE_SHIM +
               _TURNAROUND_SCRIPT.replace("__PAYLOAD__", json.dumps(payload)))
     if engine in GPU_ENGINES:
         timeout = max(timeout, COLD_START_TIMEOUT)
