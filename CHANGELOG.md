@@ -9,6 +9,73 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.31] - 2026-08-01
+
+A generated mesh becomes a rigged character an engine can move, and the skeleton
+it binds to is the same one every time.
+
+### Added
+
+- **`blender_rig` — the missing step between geometry and a character.** Every
+  image-to-3D backend returns `rigged: false`. This adopts the mesh, fits the
+  template skeleton to it, binds, and **proves the bind took**. The proof is the
+  unweighted vertex count and nothing cheaper works: `parent_set` returns
+  cleanly, creates all 22 vertex groups, and can leave every one of them empty —
+  the modifier attaches, Godot shows a `Skeleton3D`, and the character animates
+  not at all. Measured on a real generation: **64,878 of 64,878 vertices
+  carrying no weight with every other check green**. Adopt and bind run in ONE
+  Blender session because round-tripping through a file caused exactly that:
+  glTF re-import carries a root transform, so the skeleton lands in a different
+  space and heat finds nothing to weight. Same mesh in one session: 3 of 19,556.
+- **A shipped humanoid template.** `templates/humanoid/` carries the 23-bone
+  skeleton and the pose plates to generate against, and `blender_humanoid_template`
+  hands a caller the reference image, the prompt clause and the bone names. It is
+  the fixed end of the pipeline: art conforms to the skeleton instead of the
+  skeleton being bent to fit each generation. Bones further than 6 cm from any
+  mesh vertex, measured on one character — template scaled by height **16 of 24**,
+  landmark fitting alone **5 of 23**, plate conditioned on the reference alone
+  **8 of 23**, both **0 of 23 with 0 unweighted**. Bone names are Godot's
+  humanoid profile, so BoneMap retargeting works and clips move between
+  characters. It lives beside `templates/3d` rather than inside it — that
+  directory is the Godot scaffold `bgate init --kind 3d` copies wholesale, and
+  the first version of this put a skeleton and two 1.5 MB plates into the root of
+  every new 3D game.
+
+### Fixed
+
+- **The shoulder joint was 20 cm outside the body.** `fit_bones` took "the
+  innermost slice of everything past 55% of the half-width" as the shoulder, and
+  on a T-pose figure that lands at the bicep — measured x=0.396 against a torso
+  half-width of 0.198. The arm hung correctly from a joint outside her body, so
+  every pose read as a zombie holding buckets and no animation could fix it.
+  Sampling the torso below the armpit puts it at 0.157, with the hand inside the
+  silhouette.
+- **`bg_flipped` answered `0` both when it found nothing and when it broke** — a
+  check that reports clean when it failed. It returns `-1` for "could not look"
+  now, and `bg_collapse_ok` fails closed on it.
+- **A collapse could meet its budget and destroy the asset.** A generated head
+  decimated 143,534 → 39,803 faces reported `met: true` with no complaint and was
+  ruined; the number that said so was in the same report — 20,799 flipped faces,
+  52% of the surface inside out. Thresholds come from the runs either side of
+  that failure: clean adopts measured 0.5–0.9% flipped and 8–11% non-manifold,
+  the ruined one 52% and 33%.
+- **A 404 meant "server missing" when it means "server answering".** `urlopen`
+  raises on 4xx, the blanket except caught it, and a running trellis.cpp whose
+  build has no `/health` was reported dead — so `choose()` could never select it
+  while naming it by hand worked. Reported from the field.
+- **EEVEE answers to two names** and which one is real depends on the binary. 4.2
+  shipped the rewrite as `BLENDER_EEVEE_NEXT`; 5.x dropped the legacy engine and
+  took `BLENDER_EEVEE` back. Two of the three places that assigned the engine had
+  no fallback and raised `TypeError` mid-render on 5.x. The choice is made inside
+  Blender against the enum the install offers.
+
+### Changed
+
+- The unkeyed-plate warning carries its measurement. Same prompt and model,
+  alpha the only difference: opaque **605 s and 21% non-manifold** (quality
+  refused), keyed **216 s and 16%** (passes). `chroma.needs_key("character")` is
+  `False`, so a character plate arrives opaque unless `keyed=True` is passed.
+
 ## [0.1.30] - 2026-07-31
 
 The 3D path stops being a blockout generator. Everything below `### Added — 3D`
@@ -806,7 +873,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.30...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.31...HEAD
+[0.1.31]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.27...v0.1.28
