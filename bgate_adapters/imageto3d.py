@@ -1280,9 +1280,22 @@ def check_input(path: str | os.PathLike[str]) -> dict:
         # Not fatal anywhere, but it is the failure that produces geometry made
         # of background. bgate_core.chroma already produces the keyed plate for
         # the sprite path, and it is the right input here for the same reason.
+        #
+        # MEASURED, same prompt and model, alpha the only difference:
+        #   opaque plate   605s, 21% non-manifold after adopt — quality REFUSED
+        #   keyed plate    216s, 16% — passes
+        # 2.8x the wall clock spent reconstructing a backdrop, and a mesh the
+        # gate then throws out. Worth saying louder than "or expect loose
+        # parts", because the cost lands ten minutes after the mistake.
+        #
+        # NOTE task_kind: chroma.needs_key("character") is False, so a character
+        # plate generated for this path arrives opaque unless keyed=True is
+        # passed. That is the common case, not an edge one.
         warnings.append("the plate has no alpha channel — background pixels "
                         "become geometry on several backends. Key it out first "
-                        "(bgate_core.chroma) or expect loose parts")
+                        "(bgate_core.chroma, keyed=True) or expect loose parts: "
+                        "measured 2.8x slower and 21% non-manifold against 16% "
+                        "for the same subject keyed")
     return {"ok": True, "path": str(p), "size": [w, h], "reason": "",
             "warnings": warnings}
 
