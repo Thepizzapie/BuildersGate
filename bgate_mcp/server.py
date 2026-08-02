@@ -1140,6 +1140,64 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
 
 @_tool
+def character_generate(prompt: str, out_dir: str, name: str = "character",
+                       provider: str = "", backend: str = "",
+                       height: float = 1.8, budget: int = 45000,
+                       size: str = "1024x1536", godot_project: str = "",
+                       dry_run: bool = True, timeout: int = 2400) -> dict:
+    """"I want a model that looks like X." Plate, mesh, rig, into the engine.
+
+    THE WHOLE CHARACTER PATH AS ONE CALL. Every stage was already reachable and
+    a caller still had to know: condition the plate on the humanoid template or
+    the skeleton will not fit; key it or the backdrop arrives as geometry no
+    bone can reach; which backend takes which knobs; that a bind reports success
+    having weighted nothing. Get any of those wrong and it costs ten GPU minutes
+    to find out. They are the same five steps in the same order every time.
+
+    Each stage gates the next, so a failure costs the stage that found it.
+    Measured on the runs this was built from — an unkeyed plate took 605 s and
+    came back 21% non-manifold, refused by the quality gate, against 216 s and
+    16% for the same subject keyed; a collapse met its triangle budget with
+    20,799 of 39,803 faces inside out; a bind created all 22 vertex groups and
+    filled NONE, 64,878 of 64,878 vertices carrying no weight with every other
+    check green.
+
+    DRY_RUN IS TRUE BY DEFAULT. It quotes the backend and stops. This spends
+    real money at the plate and again at the mesh, and a tool that bills on the
+    first call is a tool nobody trusts twice — pass dry_run=False to run it.
+
+    backend   "" asks choose(), which REFUSES to pick a backend whose licence
+              carries conditions. That refusal is the design: this tool does not
+              know your revenue, territory or monthly actives. Name one after
+              reading its terms.
+    godot_project  set it and the rigged .glb is imported, given a body and
+              collider suited to what it is, wired into a .tscn and loaded
+              through the engine to prove it opens. Leave it empty and nothing
+              is written into a game project.
+
+    Returns every artifact by path, the gate result from each stage, and `stage`
+    naming where it stopped. `ok` is True only if a RIGGED character came out —
+    a mesh that failed to bind reports ok=False with the unweighted count, and
+    that is a refusal, not a warning.
+    """
+    # The decorator injects project_dir on every tool and _root() reads it, so
+    # keys and spend land in the project the CALL named rather than whatever a
+    # previous call left behind.
+    try:
+        root = _root()
+    except Exception:
+        root = None
+    try:
+        return _blender.character(
+            prompt, out_dir, name=name, provider=provider, backend=backend,
+            height=height, budget=budget, size=size,
+            godot_project=godot_project, root=root, dry_run=dry_run,
+            timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def blender_humanoid_template() -> dict:
     """The shipped humanoid skeleton and the pose plate to generate against.
 
