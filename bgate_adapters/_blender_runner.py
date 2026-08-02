@@ -264,20 +264,49 @@ def _export_glb(path):
     }
 
 
+def _set_engine(scene, name):
+    """Set the engine, trying EEVEE's other spelling before falling back.
+
+    4.2 named the rewrite BLENDER_EEVEE_NEXT; 5.x took BLENDER_EEVEE back. The
+    fallback below used to go straight to Workbench on the unknown name, so a
+    5.x box silently rendered every EEVEE request in Workbench and reported
+    success. Which spelling is real is asked of bpy, not inferred from a
+    version string.
+    """
+    aliases = {"BLENDER_EEVEE_NEXT": "BLENDER_EEVEE",
+               "BLENDER_EEVEE": "BLENDER_EEVEE_NEXT"}
+    for candidate in (name, aliases.get(name)):
+        if not candidate:
+            continue
+        try:
+            scene.render.engine = candidate
+            return candidate
+        except TypeError:
+            continue
+    scene.render.engine = "BLENDER_WORKBENCH"
+    return "BLENDER_WORKBENCH"
+
+
 def _render(path, engine):
     scene = bpy.context.scene
     if not scene.camera:
         # Without a camera there is nothing to render; say so rather than
         # failing the whole run — the stats are still worth returning.
         return {"rendered": False, "reason": "scene has no camera"}
-    try:
-        scene.render.engine = engine
-    except TypeError:
-        scene.render.engine = "BLENDER_WORKBENCH"
+    asked = engine
+    used = _set_engine(scene, engine)
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
-    return {"rendered": True, "path": path, "engine": scene.render.engine}
+    out = {"rendered": True, "path": path, "engine": scene.render.engine}
+    if used != asked:
+        # A downgrade must be stated. Reporting rendered=True under a quietly
+        # different engine is how a Workbench frame gets signed off as EEVEE.
+        out["requested_engine"] = asked
+        out["engine_fallback"] = (
+            "%s is not available in this Blender — rendered with %s instead"
+            % (asked, used))
+    return out
 
 
 def main():

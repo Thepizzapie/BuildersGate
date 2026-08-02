@@ -1600,7 +1600,54 @@ def bg_adopt(obj, *, kind="humanoid", height=None, ground=True, orient=True,
         obj.location.z -= (low - BG_GROUND)
         bpy.context.view_layer.update()
     report["after"] = bg_stats(obj)
+    report["quality"] = bg_collapse_ok(report["after"])
+    report["ok"] = bool(report["quality"]["ok"]
+                        and report.get("budget", {"met": True})["met"])
     return report
+
+
+def bg_collapse_ok(stats):
+    """Did the collapse leave an ASSET, or a triangle count that happens to fit?
+
+    THE HOLE THIS FILLS, measured: a generated head decimated from 143,534 to
+    39,803 faces reported budget met=True with no complaint, and was ruined —
+    every hair strand a ribbon, the face shredded. The number that said so was
+    already in the same report: 20,799 flipped faces out of 39,803, i.e. 52% of
+    the surface inside out. A budget check counts triangles; it cannot see that
+    the thing those triangles describe was destroyed.
+
+    Thresholds come from the runs either side of that failure, not from taste.
+    Clean adopts of the same generator measured 0.5-0.9% flipped and 8-11%
+    non-manifold; the ruined one measured 52% and 33%. 5% and 20% sit in the gap
+    with room on both sides.
+
+    A NEGATIVE COUNT IS UNKNOWN AND FAILS CLOSED — see bg_flipped, which used to
+    answer 0 both when it found nothing and when it broke. A gate that cannot
+    tell those apart is the failure this exists to stop.
+    """
+    faces = max(int(stats.get("faces", 0)), 1)
+    flipped, nonmanifold = stats.get("flipped", -1), stats.get("nonmanifold", -1)
+    reasons = []
+    if flipped < 0 or nonmanifold < 0:
+        reasons.append("mesh checks did not complete — treating as unverified")
+    else:
+        if flipped > faces * 0.05:
+            reasons.append("%d of %d faces inside out (%.0f%%) — the collapse "
+                           "turned the surface inside out rather than "
+                           "simplifying it"
+                           % (flipped, faces, 100.0 * flipped / faces))
+        if nonmanifold > faces * 0.20:
+            reasons.append("%d non-manifold edges on %d faces (%.0f%%) — the "
+                           "surface is shredded rather than welded"
+                           % (nonmanifold, faces, 100.0 * nonmanifold / faces))
+    return {"ok": not reasons, "faces": faces, "flipped": flipped,
+            "nonmanifold": nonmanifold,
+            "flipped_ratio": round(flipped / faces, 4) if flipped >= 0 else None,
+            "nonmanifold_ratio": (round(nonmanifold / faces, 4)
+                                  if nonmanifold >= 0 else None),
+            "reason": "; ".join(reasons),
+            "advice": ("raise the budget or skip decimation — this mesh does "
+                       "not survive it" if reasons else "")}
 
 
 def bg_base_help():
