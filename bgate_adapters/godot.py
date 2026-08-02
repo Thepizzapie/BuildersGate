@@ -14,11 +14,13 @@ discovery has to look in Downloads and the usual per-user program dirs.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+from glob import escape as glob_escape
 from glob import glob
 from pathlib import Path
 from typing import Optional
@@ -578,14 +580,35 @@ func _init():
 """
 
 
+def _digest(path: Path) -> str:
+    """Short sha256 of a file — enough to say "a different mesh", not a key."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
 def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
-                 timeout: int = 240) -> dict:
+                 timeout: int = 240, *, allow_overwrite: bool = True) -> dict:
     """Bring an asset into a Godot project and VERIFY the engine loads it.
 
     Copies src into <project>/<dest_rel>/, triggers a headless import, then loads
     the resource in-engine and reports the meshes Godot actually built. Copying a
     file in is not integration — an asset that imports with zero surfaces is a
     silent failure, so this checks the ENGINE's view, not the file's presence.
+
+    THE DESTINATION IS KEYED ON THE FILENAME ALONE. Two different `hero.glb`,
+    from two different Blender output directories, land on the same
+    `assets/hero.glb` and the second one wins. Keeping the existing `.import`
+    and its uid is correct — every .tscn in the project references that uid, and
+    a new one would orphan them all — but the SILENCE was not: the mesh under
+    that uid changed and nothing said so. `replaced` in the result now carries
+    the evidence (whether the bytes actually differ, and the old size and
+    digest). allow_overwrite=False refuses instead, for a caller that would
+    rather stop than find out later.
     """
     project = Path(project_dir)
     if not (project / "project.godot").exists():
@@ -597,6 +620,32 @@ def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
     dest_dir = project / dest_rel
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / src.name
+
+    replaced = None
+    if dest.exists():
+        before, after = _digest(dest), _digest(src)
+        replaced = {
+            "path": str(dest),
+            # The distinction that matters. Re-delivering the SAME .glb after a
+            # re-export is the normal iteration loop and is not news; a set of
+            # bytes that has changed under an existing uid is.
+            "content_changed": before != after,
+            "previous_bytes": dest.stat().st_size,
+            "previous_sha256": before,
+            "new_sha256": after,
+            "note": ("a DIFFERENT mesh now lives at this path — the existing "
+                     ".import and its uid are kept, so every scene referencing "
+                     "it now shows this asset instead"
+                     if before != after else
+                     "same bytes, so this overwrite changed nothing"),
+        }
+        if replaced["content_changed"] and not allow_overwrite:
+            return {"ok": False,
+                    "error": f"{dest.relative_to(project)} already exists with "
+                             "different content — pass allow_overwrite=True to "
+                             "replace the mesh under its existing uid",
+                    "replaced": replaced}
+
     shutil.copy2(src, dest)
 
     imported = check_project(str(project), timeout=timeout)
@@ -607,6 +656,9 @@ def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
         "ok": bool(inspected.get("ok")),
         "copied_to": str(dest),
         "res_path": res_path,
+        # None when nothing was there; a dict naming what was overwritten
+        # otherwise. Never absent, so a caller can test one key.
+        "replaced": replaced,
         "import": {"ok": imported["ok"], "errors": imported.get("errors", [])},
         "engine_view": inspected,
     }
@@ -635,14 +687,97 @@ SHAPE_TYPES = {
 # `physics/body_type`.
 BODY_TYPES = {"static": 0, "dynamic": 1, "area": 2}
 
-# Two forms, and missing the first one is a real bug rather than a cosmetic
-# one: Godot writes the EMPTY dictionary as a single line, `_subresources={}`,
-# which is what every freshly-imported asset has. A pattern that only knows the
-# multi-line form silently appends a SECOND `_subresources` key instead of
-# replacing the first, and which one the engine honours is then down to
-# ConfigFile's duplicate-key behaviour.
-_SUBRES_RE = re.compile(
-    r"^_subresources=\{\}[ \t]*$|^_subresources=\{\n.*?^\}[ \t]*$", re.S | re.M)
+# Two forms, and missing either one is a real bug rather than a cosmetic one:
+# Godot writes the EMPTY dictionary as a single line, `_subresources={}`, which
+# is what every freshly-imported asset has, and the populated one is a nested
+# multi-line block. Anything that only knows one form silently appends a SECOND
+# `_subresources` key instead of replacing the first, and which one the engine
+# honours is then down to ConfigFile's duplicate-key behaviour.
+#
+# THE VALUE IS NESTED, SO IT IS NOT A REGEX JOB. The pattern that used to live
+# here (`^_subresources=\{\n.*?^\}[ \t]*$`) is lazy, so it stopped at the FIRST
+# line-anchored `}` — the one closing the inner `"PATH:<node>": {` dict, two
+# braces short of the end of the value. REPRODUCED: the first delivery is safe
+# because a fresh `.import` still has the single-line empty form, and the SECOND
+# delivery of the same asset — i.e. every art iteration — replaced the head of
+# the block and left `}\n}` stranded after it, giving a 3-open/5-close file that
+# Godot's ConfigFile cannot parse at all. Counting braces is the only reading
+# that ends where the value ends.
+_SUBRES_START = re.compile(r"^_subresources=\{", re.M)
+
+
+def _subresources_span(body: str) -> Optional[tuple[int, int, int]]:
+    """(key_start, value_start, end) of the `_subresources=` entry, or None.
+
+    None when there is no key at all, and ALSO when the block never closes — a
+    file that is already unbalanced is one we cannot safely edit, and guessing
+    at where the value ends is exactly how it got broken the first time.
+    """
+    match = _SUBRES_START.search(body)
+    if not match:
+        return None
+
+    depth = 0
+    in_string = False
+    value_start = match.end() - 1            # sitting on the opening brace
+    i = value_start
+    while i < len(body):
+        char = body[i]
+        if in_string:
+            # Node paths are quoted and Godot escapes with a backslash; a `}`
+            # inside a quoted key must not close the block.
+            if char == "\\":
+                i += 2
+                continue
+            if char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                while end < len(body) and body[end] in " \t":
+                    end += 1
+                return match.start(), value_start, end
+        i += 1
+    return None
+
+
+def _replace_subresources(body: str, rendered: str) -> tuple[str, bool]:
+    """Swap the whole `_subresources=` value for `rendered`, braces balanced.
+
+    Returns (text, replaced); False means there was nothing safely replaceable.
+    """
+    span = _subresources_span(body)
+    if span is None:
+        return body, False
+    start, _value_start, end = span
+    return body[:start] + rendered + body[end:], True
+
+
+def _read_subresources(body: str) -> tuple[dict, str]:
+    """Parse the existing `_subresources` value. Returns (dict, error).
+
+    Godot's variant-text dictionary is JSON in every form this key takes —
+    quoted keys, and values that are strings, ints, floats, bools or arrays of
+    those. Parsing it is what lets us MERGE. An error string (with an empty
+    dict) means the value used a Variant constructor we cannot read, and the
+    caller has to say so instead of silently discarding it.
+    """
+    span = _subresources_span(body)
+    if span is None:
+        return {}, ""
+    _start, value_start, end = span
+    raw = body[value_start:end].strip()
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {}, f"{exc}"
+    return (parsed, "") if isinstance(parsed, dict) else (
+        {}, f"_subresources is a {type(parsed).__name__}, not a dictionary")
 
 
 def _gd_literal(value) -> str:
@@ -653,35 +788,91 @@ def _gd_literal(value) -> str:
     return '"{}"'.format(str(value).replace('"', '\\"'))
 
 
+def _gd_value(value) -> str:
+    """Godot's variant-text form, nested. Matches the engine's own layout: a
+    dictionary opens its brace, then one `"key": value` per line, unindented."""
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        inner = ",\n".join(f'"{k}": {_gd_value(v)}' for k, v in value.items())
+        return "{\n" + inner + "\n}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_gd_value(v) for v in value) + "]"
+    return _gd_literal(value)
+
+
 def _render_subresources(nodes: dict) -> str:
     """Godot's variant-text form of the `_subresources` dictionary."""
     if not nodes:
         return "_subresources={}"
-    blocks = []
-    for node_path, opts in nodes.items():
-        body = ",\n".join(f'"{k}": {_gd_literal(v)}' for k, v in opts.items())
-        blocks.append(f'"PATH:{node_path}": {{\n{body}\n}}')
-    return '_subresources={\n"nodes": {\n' + ",\n".join(blocks) + "\n}\n}"
+    return _render_subresources_value(
+        {"nodes": {f"PATH:{path}": opts for path, opts in nodes.items()}})
 
 
-def _purge_import_cache(project: Path, asset: Path) -> list[str]:
+def _render_subresources_value(value: dict) -> str:
+    """The whole key line, for an already-merged `_subresources` dictionary."""
+    return "_subresources=" + _gd_value(value) if value else "_subresources={}"
+
+
+_DEST_FILES = re.compile(r"^dest_files=\[(.*?)\]", re.M | re.S)
+
+
+def _purge_import_cache(project: Path, asset: Path,
+                        import_text: str = "") -> list[str]:
     """Drop the cached import products so the next --import genuinely re-runs.
 
     Godot decides "already imported" from the .md5 sidecar of the SOURCE file.
     Changing only the .import params leaves that md5 identical, so a reimport is
     skipped and the new settings never take — the failure looks exactly like the
     settings being wrong, which is a long afternoon.
+
+    WHICH files, though. Godot keys the cache `<basename>-<hash of the res
+    path>`, so a `<basename>-*` glob is wrong twice over:
+
+      * `props/crate.glb` and `enemies/crate.glb` share a prefix, and purging
+        one dropped the other's cached .scn and .md5. Bounded — delivery
+        re-imports immediately and .godot/ is gitignored — so it cost time, not
+        data.
+      * An asset named `hero[1].glb` turns into a glob with a CHARACTER CLASS in
+        it, which cannot match its own entries. The purge then silently
+        no-opped, the reimport was skipped, and the new collider settings never
+        took: the exact "the settings are wrong" afternoon this function exists
+        to prevent, arriving through the function meant to prevent it.
+
+    So the .import file's own `dest_files` is the authority when it is there —
+    the engine wrote it and it names the cache entries exactly. The escaped
+    prefix glob is the fallback for an .import too old or too fresh to carry it.
     """
     removed = []
     imported = project / ".godot" / "imported"
     if not imported.is_dir():
         return removed
-    for path in imported.glob(asset.name + "-*"):
+
+    def drop(path: Path) -> None:
         try:
             path.unlink()
             removed.append(path.name)
         except OSError:
             pass
+
+    declared = _DEST_FILES.search(import_text or "")
+    dest_files = (re.findall(r'"([^"]+)"', declared.group(1))
+                  if declared else [])
+    if dest_files:
+        for res in dest_files:
+            cached = project / res.replace("res://", "").replace("/", os.sep)
+            if cached.exists():
+                drop(cached)
+            # The .md5 sidecar sits beside the product under the same key, and
+            # it is the file Godot reads to decide "already imported" — leaving
+            # it behind is leaving the whole bug behind.
+            sidecar = cached.with_suffix(".md5")
+            if sidecar.exists():
+                drop(sidecar)
+        return removed
+
+    for path in imported.glob(glob_escape(asset.name) + "-*"):
+        drop(path)
     return removed
 
 
@@ -696,8 +887,20 @@ def write_import_settings(project_dir: str, asset_rel: str, *,
                    — collider generation, per mesh node. This is the whole point.
     params         extra flat `[params]` overrides ("animation/import": True, ...).
 
+    "Preserving what we don't set" was true of the flat `[params]` keys and a
+    LIE about `_subresources`: the value was rendered fresh from physics_nodes
+    and written over whatever was there. Everything a user sets in Godot's
+    Import dock that lands under that key — per-node material extraction,
+    animation loop mode and slices, LOD generation, "skip import" on a node —
+    was deleted by one godot_deliver_asset, silently, in a file nobody opens.
+    So it MERGES now: other top-level keys survive, nodes we do not name survive
+    whole, and for a node we do name only the three collider keys are touched.
+
     The `.import` must already exist, which means the asset has been imported
-    once. Returns {ok, path, physics_nodes, purged}.
+    once. Returns {ok, path, physics_nodes, purged, preserved_nodes,
+    merge_error}. A non-empty merge_error means the existing value used a
+    Variant form we cannot parse and was REPLACED rather than merged — the one
+    case where the old behaviour survives, and it says so out loud.
     """
     project = Path(project_dir)
     asset = project / asset_rel
@@ -723,10 +926,30 @@ def write_import_settings(project_dir: str, asset_rel: str, *,
             entry["physics/shape_type"] = SHAPE_TYPES[shape]
         nodes[node_path] = entry
 
-    rendered = _render_subresources(nodes)
-    if _SUBRES_RE.search(body):
-        body = _SUBRES_RE.sub(lambda _m: rendered, body, count=1)
-    else:
+    existing, merge_error = _read_subresources(body)
+    merged = dict(existing)
+    # Only the "nodes" sub-dictionary is ours. Godot puts other keys here too
+    # (materials/, animations/ on some importers), and they are none of our
+    # business.
+    existing_nodes = merged.get("nodes")
+    merged_nodes = dict(existing_nodes) if isinstance(existing_nodes, dict) else {}
+    preserved = [key for key in merged_nodes
+                 if key not in {f"PATH:{p}" for p in nodes}]
+    for node_path, entry in nodes.items():
+        key = f"PATH:{node_path}"
+        settings_for_node = merged_nodes.get(key)
+        settings_for_node = (dict(settings_for_node)
+                             if isinstance(settings_for_node, dict) else {})
+        # Update, never replace: a node can carry "use_external/enabled" from
+        # the Import dock's material extraction alongside our collider keys.
+        settings_for_node.update(entry)
+        merged_nodes[key] = settings_for_node
+    if merged_nodes:
+        merged["nodes"] = merged_nodes
+
+    rendered = _render_subresources_value(merged)
+    body, replaced = _replace_subresources(body, rendered)
+    if not replaced:
         body = body.rstrip() + "\n" + rendered + "\n"
 
     for key, value in (params or {}).items():
@@ -736,9 +959,13 @@ def write_import_settings(project_dir: str, asset_rel: str, *,
                 if pattern.search(body) else body.rstrip() + "\n" + line + "\n")
 
     ini.write_text(head + "[params]" + body, encoding="utf-8")
-    purged = _purge_import_cache(project, asset) if purge else []
+    purged = _purge_import_cache(project, asset, text) if purge else []
     return {"ok": True, "path": str(ini), "physics_nodes": nodes,
-            "purged": purged}
+            "purged": purged,
+            # What survived that used to be destroyed. Empty is the normal case
+            # on a freshly imported asset; non-empty is the whole point.
+            "preserved_nodes": preserved,
+            "merge_error": merge_error}
 
 
 def _import_uid(project_dir: str, asset_rel: str) -> str:
@@ -809,20 +1036,84 @@ def _transform3d(basis_columns, origin) -> str:
         ", ".join(f"{n + 0.0:.6g}" for n in nums))
 
 
+# How wide a capsule may be relative to how tall, for something shaped like a
+# person. 0.17 puts a 1.8 m humanoid in a 0.61 m wide capsule — inside the
+# 0.3-0.4 m radius every shipped FPS controller uses, and clear of a 0.9 m
+# doorway with room on both sides.
+_HUMANOID_RADIUS_RATIO = 0.17
+
+
+def _capsule_for_bounds(size_x, size_y, size_z) -> tuple[float, float]:
+    """(radius, height) for a capsule that fits the ASSET, not its pose.
+
+    REPRODUCED on a delivered 1.75 m character: the old rule was
+    `max(size_x, size_z) * 0.5` over the merged AXIS-ALIGNED bounds of every
+    mesh, so an A-pose handed it the ARM SPAN and the capsule came out
+    radius=0.8158 — a 1.63 m wide cylinder around a person. She could not fit
+    through a human-sized door and stood 0.8 m off every wall. The downward
+    clamp below does not catch it: at 1.75 m tall, 0.8158 is still under half
+    the height. `has_collider` only counts shapes, so it shipped green.
+
+    Two rules, and both have to hold:
+
+      * Take the SMALLER horizontal extent, not the larger. Limbs inflate one
+        horizontal axis far more than the other — arms out along X leave Z
+        reading the torso's depth (0.3-0.5 m on a human) — and it is
+        span-agnostic, because a character modelled facing +X inflates Z
+        instead and the same rule still picks the torso.
+
+      * Cap an UPRIGHT figure at a human proportion of its own height. That is
+        the backstop for the pose which inflates BOTH horizontal axes (arms
+        forward AND out), which the first rule alone cannot see.
+
+    The cap is gated on "taller than it is wide" because a crate, a car and a
+    turret have none of a person's proportions: a 1x1x1 m crate must keep its
+    0.5 m radius, and a 4.5 m long vehicle must not be squeezed to a human's.
+
+    Erring SMALL is deliberate. An oversized capsule is invisible and blocks the
+    player everywhere; an undersized one lets a corner clip, which is visible,
+    local, and not the bug anyone loses an afternoon to.
+    """
+    height = max(float(size_y), 0.05)
+    horizontals = (abs(float(size_x)), abs(float(size_z)))
+    radius = max(min(horizontals) * 0.5, 0.01)
+    if height > max(horizontals):
+        radius = min(radius, height * _HUMANOID_RADIUS_RATIO)
+    # Godot rejects a capsule whose radius exceeds half its height; a squat
+    # asset (a crate, a turret) hits this immediately.
+    if height > 0.03:
+        radius = min(radius, height * 0.5 - 0.001)
+    return max(radius, 0.01), height
+
+
 def character_scene_text(model_res: str, *, node_name: str,
                          bounds_size, bounds_position,
                          script_res: str = "", model_uid: str = "",
-                         camera_height: float = 0.7,
+                         camera_height: float = 0.7, with_camera: bool = False,
+                         with_capsule: bool = True,
                          body_type: str = "CharacterBody3D") -> str:
-    """The .tscn source: model instanced under a body, capsule fitted to it."""
+    """The .tscn source: model instanced under a body, capsule fitted to it.
+
+    with_camera adds a first-person Camera3D at eye height. OFF by default, and
+    that default is the fix for an OBSERVED boot failure: a delivered pirate was
+    instanced into a level that already had a player camera, Godot made one of
+    the two current, and the game booted looking out of the pirate's eye
+    sockets. A scene meant to be dropped into a level cannot ship a camera that
+    might win. Turn it on only when this scene IS the player — templates/3d's
+    player.gd does `@onready var _camera := $Camera3D` and will null-deref on
+    the first mouse move without it.
+
+    with_capsule adds the fitted CollisionShape3D on the root. OFF is for an
+    asset whose colliders the IMPORTER built from its real geometry: a crate
+    used to get an accurate trimesh StaticBody3D inside the imported model AND
+    an invisible capsule on the root body, both live at once, and `has_collider`
+    counting `> 0` was satisfied by either so it was never surfaced. Exactly one
+    collision strategy per asset — see deliver_asset.
+    """
     size_x, size_y, size_z = (float(v) for v in bounds_size)
     pos_x, pos_y, pos_z = (float(v) for v in bounds_position)
 
-    height = max(size_y, 0.05)
-    radius = max(max(size_x, size_z) * 0.5, 0.01)
-    # Godot rejects a capsule whose radius exceeds half its height; a squat
-    # asset (a crate, a turret) hits this immediately.
-    radius = min(radius, height * 0.5 - 0.001) if height > 0.03 else radius
+    radius, height = _capsule_for_bounds(size_x, size_y, size_z)
 
     # The model's centre goes to the body's origin, because that is where the
     # template's capsule already is and where player.gd's camera offset assumes
@@ -837,18 +1128,22 @@ def character_scene_text(model_res: str, *, node_name: str,
         ext.append(f'[ext_resource type="Script" path="{script_res}" '
                    'id="2_script"]')
 
-    steps = len(ext) + 1 + 1  # ext resources + the capsule sub_resource + 1
+    # ext resources + the capsule sub_resource (when there is one) + 1
+    steps = len(ext) + (1 if with_capsule else 0) + 1
     lines = [
         f"[gd_scene load_steps={steps} format=3]",
         "",
         *ext,
         "",
-        '[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]',
-        f"radius = {radius:.4f}",
-        f"height = {height:.4f}",
-        "",
-        f'[node name="{node_name}" type="{body_type}"]',
     ]
+    if with_capsule:
+        lines += [
+            '[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]',
+            f"radius = {radius:.4f}",
+            f"height = {height:.4f}",
+            "",
+        ]
+    lines.append(f'[node name="{node_name}" type="{body_type}"]')
     if script_res:
         lines.append('script = ExtResource("2_script")')
     lines += [
@@ -860,16 +1155,69 @@ def character_scene_text(model_res: str, *, node_name: str,
         _transform3d(((1, 0, 0), (0, 1, 0), (0, 0, 1)), offset).replace(
             "Transform3D", "transform = Transform3D"),
         "",
-        '[node name="CollisionShape3D" type="CollisionShape3D" parent="."]',
-        'shape = SubResource("CapsuleShape3D_body")',
-        "",
-        '[node name="Camera3D" type="Camera3D" parent="."]',
-        _transform3d(((1, 0, 0), (0, 1, 0), (0, 0, 1)),
-                     (0.0, min(camera_height, height * 0.5 - 0.05), 0.0)
-                     ).replace("Transform3D", "transform = Transform3D"),
-        "",
     ]
+    if with_capsule:
+        lines += [
+            '[node name="CollisionShape3D" type="CollisionShape3D" parent="."]',
+            'shape = SubResource("CapsuleShape3D_body")',
+            "",
+        ]
+    if with_camera:
+        lines += [
+            '[node name="Camera3D" type="Camera3D" parent="."]',
+            _transform3d(((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+                         (0.0, min(camera_height, height * 0.5 - 0.05), 0.0)
+                         ).replace("Transform3D", "transform = Transform3D"),
+            # Never `current`, even when asked for. Godot makes the first camera
+            # into the tree current, so an instanced character used to decide the
+            # view for a whole level by accident of node order — that is what put
+            # the boot frame inside the pirate's head. The scene that owns the
+            # view has to say so, and this one never is that scene.
+            "current = false",
+            "",
+        ]
     return "\n".join(lines)
+
+
+# Which ext_resource in an existing .tscn is "the model". id="1_model" is what
+# character_scene_text writes, but a human who reorganised the scene may have
+# renumbered it, so the extension is the fallback identifier.
+_MODEL_SUFFIXES = (".glb", ".gltf", ".fbx", ".obj", ".dae", ".escn", ".blend")
+_EXT_RESOURCE_LINE = re.compile(r'^\[ext_resource\b[^\]]*\]$', re.M)
+
+
+def _rewire_model_ext_resource(text: str, model_res: str,
+                               model_uid: str = "") -> tuple[str, bool]:
+    """Repoint an existing character .tscn at a re-imported model, nothing else.
+
+    Returns (text, rewired). `rewired` is False when the scene has no model
+    ext_resource to repoint — the caller has to say so rather than pretend the
+    delivery landed, because the visible symptom is the OLD mesh in the game.
+    """
+    def is_model(line: str) -> bool:
+        if 'id="1_model"' in line:
+            return True
+        path = re.search(r'path="([^"]+)"', line)
+        return bool(path) and path.group(1).lower().endswith(_MODEL_SUFFIXES)
+
+    rewired = False
+
+    def replace(match: re.Match) -> str:
+        nonlocal rewired
+        line = match.group(0)
+        if rewired or not is_model(line):
+            return line
+        rewired = True
+        # `(?<![\w])` and not a bare `id="`: uid="uid://..." CONTAINS id=", and
+        # matching it renamed the resource to its own uid — caught by the test
+        # that asserts the old uid is gone.
+        res_id = re.search(r'(?<![\w])id="([^"]+)"', line)
+        return ('[ext_resource type="PackedScene" '
+                + (f'uid="{model_uid}" ' if model_uid else "")
+                + f'path="{model_res}" '
+                + f'id="{res_id.group(1) if res_id else "1_model"}"]')
+
+    return _EXT_RESOURCE_LINE.sub(replace, text), rewired
 
 
 def preview_scene_text(character_res: str, *, longest_axis: float,
@@ -966,11 +1314,13 @@ def preview_scene_text(character_res: str, *, longest_axis: float,
         # 40 degrees is a portrait lens and fills the frame with the subject.
         "fov = 40.0",
         # MEASURED, and the reason the first frame off this path was a
-        # full-screen blur: the character scene carries its own first-person
-        # Camera3D (player.gd needs $Camera3D), and Godot makes the FIRST camera
-        # to enter the tree current. The subject is instanced before this node,
-        # so without an explicit current the screenshot is taken from INSIDE the
-        # character's head, looking at the back of its own mesh.
+        # full-screen blur: when the character scene still shipped its own
+        # first-person Camera3D, Godot made the FIRST camera to enter the tree
+        # current, and the subject is instanced before this node — so the
+        # screenshot was taken from INSIDE the character's head, looking at the
+        # back of its own mesh. The character no longer carries a camera by
+        # default, but this stays: with_camera=True and any camera a human adds
+        # to the subject would both take the frame back off us silently.
         "current = true",
         f"near = {max(reach * 0.01, 0.01):.4f}",
         f"far = {max(reach * 40.0, 100.0):.1f}",
@@ -1028,21 +1378,144 @@ def inspect_resource(project_dir: str, res_path: str, timeout: int = 180, *,
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Injection — running the user's game with an autoload it does not contain
+# ---------------------------------------------------------------------------
+#
+# screenshot() and evidence() both work by writing an `override.cfg` and a
+# dotfile .gd into the user's PROJECT ROOT, running the game, and deleting them
+# in a `finally`. That covers an exception and a timeout. It does not cover the
+# MCP server being killed mid-run — and then an autoload stays wired into the
+# user's project permanently, every later capture refuses with "override.cfg
+# already exists", and nothing in the message says the file is ours or that
+# deleting it is safe.
+#
+# So both files carry this marker on their first line. A leftover we can prove
+# is ours gets cleaned and reported; anything else is still refused, because a
+# project may legitimately have its own override.cfg and clobbering it would be
+# the same class of bug pointed the other way.
+_INJECT_MARK = "BGATE-INJECTED"
+_INJECT_BANNER = (
+    f"# {_INJECT_MARK} — written by Builders Gate for one capture and deleted\n"
+    "# straight afterwards. If you are reading this in your project, a capture\n"
+    "# was killed mid-run: this file and override.cfg are safe to delete.\n")
+
+# THE MOUSE. Neither capture passes --headless, because on 4.7.1 --headless
+# selects the dummy rendering driver and `get_viewport().get_texture()` returns
+# null — MEASURED, the run dies with `Parameter "t" is null` at
+# dummy/storage/texture_storage.h:110 and no PNG is written at all. So a capture
+# has to run the game for real, and templates/3d's player.gd (like every FPS
+# controller) grabs the mouse in _ready because DisplayServer is not "headless".
+# The user's pointer then belongs to the game for up to the whole timeout.
+#
+# Releasing it from _process is what works: autoloads enter the tree before the
+# main scene, so an autoload _ready loses to the player's _ready, but _process
+# runs every frame afterwards and wins. VERIFIED headlessly with a proxy value
+# (headless ignores mouse_mode itself): 75 frames, autoload holds the value.
+# The cost is that a captured-mouse look control stops responding during a
+# capture, which for a still frame is not a cost.
+_RELEASE_MOUSE_GD = """
+func _process(_delta: float) -> void:
+	if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+"""
+
 # Injected autoload that screenshots the RUNNING game. Uses env for its
 # parameters so nothing project-side needs editing.
-_SHOT_GD = """
+_SHOT_GD = _INJECT_BANNER + """
 extends Node
 
 func _ready() -> void:
 	var at := float(OS.get_environment("BGATE_SHOT_AT"))
 	get_tree().create_timer(maxf(at, 0.1)).timeout.connect(_shoot)
-
+""" + _RELEASE_MOUSE_GD + """
 func _shoot() -> void:
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(OS.get_environment("BGATE_SHOT_PATH"))
 	print("BGATE_SHOT_SAVED")
 	get_tree().quit()
 """
+
+
+def clear_injection(project_dir: str) -> dict:
+    """Remove a capture injection left behind by a killed run. Ours only.
+
+    Returns {ok, removed, blocked}. `blocked` names an override.cfg that is NOT
+    ours — a project's own override.cfg is a legitimate thing to have, and this
+    function existing is not a licence to delete it.
+    """
+    project = Path(project_dir)
+    removed: list[str] = []
+    blocked: list[str] = []
+
+    override = project / "override.cfg"
+    if override.exists():
+        try:
+            text = override.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if "BGateShot" in text or "BGateEvidence" in text:
+            try:
+                override.unlink()
+                removed.append(override.name)
+            except OSError:
+                blocked.append(override.name)
+        else:
+            blocked.append(override.name)
+
+    for name in (".bgate_shot.gd", ".bgate_evidence.gd"):
+        script = project / name
+        if not script.exists():
+            continue
+        try:
+            head = script.read_text(encoding="utf-8", errors="replace")[:400]
+        except OSError:
+            head = ""
+        if _INJECT_MARK not in head:
+            blocked.append(name)
+            continue
+        for path in (script, project / (name + ".uid")):
+            try:
+                path.unlink(missing_ok=True)
+                if path.name == name:
+                    removed.append(name)
+            except OSError:
+                blocked.append(path.name)
+
+    return {"ok": not blocked, "removed": removed, "blocked": blocked}
+
+
+def _begin_injection(project: Path, script_name: str, script_body: str,
+                     autoload: str) -> dict:
+    """Write the override.cfg + autoload pair, cleaning our own leftovers.
+
+    Returns {} on success, or {"error": ...} to be handed straight back. The old
+    code guarded override.cfg against clobbering and NOT the .gd beside it, so a
+    project that happened to own a `.bgate_shot.gd` had it silently replaced and
+    then deleted.
+    """
+    recovered = clear_injection(str(project))
+    if recovered["blocked"]:
+        return {"error": "refusing to clobber "
+                         + ", ".join(sorted(set(recovered["blocked"])))
+                         + f" in {project} — these are not ours; remove or "
+                           "rename them first",
+                "blocked": recovered["blocked"]}
+
+    (project / script_name).write_text(script_body, encoding="utf-8")
+    (project / "override.cfg").write_text(
+        f'[autoload]\n{autoload}="*res://{script_name}"\n', encoding="utf-8")
+    return {"recovered": recovered["removed"]}
+
+
+def _end_injection(project: Path, script_name: str) -> None:
+    """Never leave the injection behind — a stray override.cfg silently changes
+    how the user's project runs forever after."""
+    for name in ("override.cfg", script_name, script_name + ".uid"):
+        try:
+            (project / name).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
@@ -1055,27 +1528,23 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
 
     Mechanism: Godot auto-reads `override.cfg` next to project.godot, and
     autoloads are just settings — so we inject a screenshot autoload there,
-    run, and remove it. The project's own files are never modified; if a stale
-    override.cfg already exists we refuse rather than clobber it.
+    run, and remove it. The project's own files are never modified. A leftover
+    from a run that was KILLED (not merely failed — the finally covers that) is
+    recognised as ours, cleaned, and reported in `recovered`; anything of the
+    user's with those names is refused rather than clobbered.
     """
     project = Path(project_dir)
     if not (project / "project.godot").exists():
         return {"ok": False, "error": f"no project.godot in {project_dir}"}
 
-    override = project / "override.cfg"
-    if override.exists():
-        return {"ok": False, "error": "override.cfg already exists in the project — "
-                                      "refusing to clobber it; remove it first"}
+    started = _begin_injection(project, ".bgate_shot.gd", _SHOT_GD, "BGateShot")
+    if started.get("error"):
+        return {"ok": False, **started}
 
-    shot_script = project / ".bgate_shot.gd"
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        shot_script.write_text(_SHOT_GD, encoding="utf-8")
-        override.write_text(
-            '[autoload]\nBGateShot="*res://.bgate_shot.gd"\n', encoding="utf-8")
-
         cmd = [find_godot(), "--path", str(project),
                "--resolution", "1280x720"]
         if scene:
@@ -1095,21 +1564,13 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
             return {"ok": False, "error": "no screenshot produced",
                     "exit_code": proc.returncode,
                     "saved_marker": "BGATE_SHOT_SAVED" in output,
+                    "recovered": started.get("recovered") or [],
                     "output": output[-1500:], "errors": _errors(output)}
         return {"ok": True, "path": str(out), "bytes": out.stat().st_size,
-                "at": at, "errors": _errors(output)}
+                "at": at, "recovered": started.get("recovered") or [],
+                "errors": _errors(output)}
     finally:
-        # Never leave the injection behind — a stray override.cfg silently
-        # changes how the user's project runs forever after.
-        for leftover in (override, shot_script):
-            try:
-                leftover.unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            (project / ".bgate_shot.gd.uid").unlink(missing_ok=True)
-        except OSError:
-            pass
+        _end_injection(project, ".bgate_shot.gd")
 
 
 # Structured visual evidence — DESIGN.md §9, on the shipped screenshot path.
@@ -1128,7 +1589,7 @@ def screenshot(project_dir: str, out_path: str, *, at: float = 1.0,
 # (frame, buffers, entities.screen_bounds/visible, ui.screen_bounds/value)
 # matches, so a manifest from here is readable by anything written against the
 # schema's entity/ui shape.
-_EVIDENCE_GD = """
+_EVIDENCE_GD = _INJECT_BANNER + """
 extends Node
 
 var _entities := {}
@@ -1141,6 +1602,12 @@ func _ready() -> void:
 	_include_hidden = OS.get_environment("BGATE_EV_HIDDEN") == "1"
 	var at := float(OS.get_environment("BGATE_EV_AT"))
 	get_tree().create_timer(maxf(at, 0.1)).timeout.connect(_capture)
+
+func _process(_delta: float) -> void:
+	# See _RELEASE_MOUSE_GD: a capture runs the REAL game, and an FPS controller
+	# grabs the pointer in its own _ready. _process runs after that and wins.
+	if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _capture() -> void:
 	# frame_post_draw is the only point the viewport texture is guaranteed to
@@ -1351,17 +1818,16 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
 
     Returns {ok, beauty, overlay, manifest, entities, ui, counts}.
     """
-    import json
     import time
 
     project = Path(project_dir)
     if not (project / "project.godot").exists():
         return {"ok": False, "error": f"no project.godot in {project_dir}"}
 
-    override = project / "override.cfg"
-    if override.exists():
-        return {"ok": False, "error": "override.cfg already exists in the project — "
-                                      "refusing to clobber it; remove it first"}
+    injected = _begin_injection(project, ".bgate_evidence.gd", _EVIDENCE_GD,
+                                "BGateEvidence")
+    if injected.get("error"):
+        return {"ok": False, **injected}
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -1369,14 +1835,8 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
     overlay_path = out / "overlay.png" if overlay else None
     manifest_path = out / "manifest.json"
 
-    ev_script = project / ".bgate_evidence.gd"
     started = time.monotonic()
     try:
-        ev_script.write_text(_EVIDENCE_GD, encoding="utf-8")
-        override.write_text(
-            '[autoload]\nBGateEvidence="*res://.bgate_evidence.gd"\n',
-            encoding="utf-8")
-
         cmd = [find_godot(), "--path", str(project), "--resolution", "1280x720"]
         if scene:
             cmd.append(scene)
@@ -1403,6 +1863,7 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
                     "exit_code": proc.returncode,
                     "done_marker": "BGATE_EV_DONE" in output,
                     "beauty_written": beauty_path.exists(),
+                    "recovered": injected.get("recovered") or [],
                     "output": output[-1500:], "errors": _errors(output)}
 
         try:
@@ -1429,18 +1890,13 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
             "counts": {"entities": len(manifest.get("entities", {})),
                        "ui": len(manifest.get("ui", {}))},
             "seconds": round(time.monotonic() - started, 2),
+            # Non-empty means a previous capture was killed and left its
+            # autoload wired into this project until now.
+            "recovered": injected.get("recovered") or [],
             "errors": _errors(output),
         }
     finally:
-        for leftover in (override, ev_script):
-            try:
-                leftover.unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            (project / ".bgate_evidence.gd.uid").unlink(missing_ok=True)
-        except OSError:
-            pass
+        _end_injection(project, ".bgate_evidence.gd")
 
 
 # ---------------------------------------------------------------------------
@@ -1464,23 +1920,48 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
                   dest_rel: str = "assets", scene_rel: str = "scenes",
                   script_res: str = "", physics: str = "auto",
                   shape_type: str = "trimesh", body_type: str = "static",
-                  character_body: str = "CharacterBody3D",
+                  character_body: str = "auto",
                   screenshot_dir: Optional[str] = None, at: float = 1.2,
                   min_size_m: float = 0.05, max_size_m: Optional[float] = None,
-                  nominal_size_m: float = 1.8, timeout: int = 300) -> dict:
+                  nominal_size_m: float = 1.8, with_camera: bool = False,
+                  overwrite_scene: bool = False, timeout: int = 300) -> dict:
     """Take a .glb all the way to a Godot screenshot, and report every step.
 
-    physics   "auto"  — generate colliders for every UNSKINNED mesh. A skinned
-                        character gets its capsule from the generated .tscn
-                        instead; a trimesh StaticBody3D on a character would
-                        turn it into a wall you cannot move.
-              "all"   — every mesh, skinned or not.
-              "none"  — leave the importer's defaults alone.
+    character_body  "auto" reads the body type off what the mesh IS. Skinned
+                (it has a skin, so it has a Skeleton3D and joints) →
+                CharacterBody3D. Unskinned → StaticBody3D. Pass a class name to
+                override — "RigidBody3D" for a prop that should fall and be
+                pushed. Every delivered asset used to be wrapped in
+                CharacterBody3D regardless, and a crate is not a character: a
+                CharacterBody3D only moves when code calls move_and_slide(), so
+                a prop delivered that way never simulates at all.
+
+    physics   "auto"  — the importer builds colliders only for the strategy the
+                        body needs: mesh shapes inside a StaticBody3D root,
+                        nothing at all under a CharacterBody3D or RigidBody3D
+                        root, which get the fitted capsule instead. Exactly one
+                        collision strategy per asset — a crate used to get an
+                        accurate trimesh AND an invisible capsule on a different
+                        body, both live, and `has_collider` counting `> 0` was
+                        happy with either so it never surfaced.
+              "all"   — every mesh, skinned or not. The caller has asked for the
+                        mesh shapes; the root capsule stands down.
+              "none"  — leave the importer's defaults alone (no mesh shapes), so
+                        the root capsule is the collider.
 
     max_size_m  None picks the bound from what the asset IS: 4 m for anything
                 skinned (a character over 4 m across is a unit error, not a
                 design choice) and 50 m otherwise, because a vehicle or a
                 building is legitimately large. Pass a number to be explicit.
+
+    with_camera  a first-person Camera3D on the body. Off, because an instanced
+                 character with a camera can steal the level's view — see
+                 character_scene_text.
+
+    overwrite_scene  redelivering an asset does NOT rewrite an existing
+                 <name>.tscn; it repoints that scene's model ext_resource at the
+                 new import and leaves the node tree alone. Pass True to throw
+                 the hand edits away and regenerate from scratch.
 
     Returns {ok, res_path, scene, preview, screenshot, engine_view, checks,
              steps}. `checks` is the gate: rigged/animated/textured/sized/
@@ -1491,7 +1972,11 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
 
     first = import_asset(project_dir, glb_path, dest_rel=dest_rel, timeout=timeout)
     steps.append({"step": "import", "ok": bool(first.get("ok")),
-                  "errors": first.get("import", {}).get("errors", [])})
+                  "errors": first.get("import", {}).get("errors", []),
+                  # An overwrite is not an error and must not fail the step —
+                  # re-importing an asset you just re-exported is the loop. It
+                  # does have to be VISIBLE, which it was not.
+                  "replaced": first.get("replaced")})
     if not first.get("ok"):
         return {"ok": False, "error": "the engine could not load the asset",
                 "detail": first, "steps": steps}
@@ -1501,8 +1986,11 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     res_path = first["res_path"]
     view = first["engine_view"]
 
+    # A skin is what makes an asset a character: it implies the Skeleton3D and
+    # the joints, and it is the one signal in the engine's view that separates
+    # "a person" from "a thing" without asking the caller to say so.
+    skinned_asset = any(m.get("skinned") for m in view.get("meshes", []))
     if max_size_m is None:
-        skinned_asset = any(m.get("skinned") for m in view.get("meshes", []))
         max_size_m = 4.0 if skinned_asset else 50.0
 
     def _look(path: str) -> dict:
@@ -1514,14 +2002,36 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     # asset actually earned.
     view = _look(res_path)
 
-    # --- colliders ---------------------------------------------------------
+    # --- the body, and therefore the collider -------------------------------
+    #
+    # These two decisions are ONE decision. Every asset used to be wrapped in a
+    # CharacterBody3D and given a capsule, while unskinned meshes ALSO got a
+    # trimesh StaticBody3D built inside the imported model — so a crate arrived
+    # as a character that cannot move, carrying an accurate collider and an
+    # invisible person-shaped one on a different body at the same time.
+    root_body = character_body
+    if root_body in ("", "auto"):
+        root_body = "CharacterBody3D" if skinned_asset else "StaticBody3D"
+
     physics_nodes: dict = {}
-    if physics in ("auto", "all"):
-        for mesh in view.get("meshes", []):
-            if physics == "auto" and mesh.get("skinned"):
-                continue
-            physics_nodes[mesh.get("path") or mesh.get("name")] = {
-                "shape_type": shape_type, "body_type": body_type}
+    if physics == "all":
+        generate_for = list(view.get("meshes", []))
+    elif physics == "auto" and root_body == "StaticBody3D":
+        # A skinned mesh is skipped even here: a trimesh StaticBody3D welded to
+        # a deforming character is a wall you cannot move, and it does not
+        # follow the animation anyway.
+        generate_for = [m for m in view.get("meshes", [])
+                        if not m.get("skinned")]
+    else:
+        # CharacterBody3D and RigidBody3D own their own movement, and a
+        # StaticBody3D built INSIDE either of them is a second, independent body
+        # that does not travel with it. The root's fitted capsule is the whole
+        # collider.
+        generate_for = []
+    for mesh in generate_for:
+        physics_nodes[mesh.get("path") or mesh.get("name")] = {
+            "shape_type": shape_type, "body_type": body_type}
+
     settings = {"ok": True, "skipped": "physics=none"}
     if physics_nodes:
         settings = write_import_settings(project_dir, asset_rel,
@@ -1538,8 +2048,14 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
                       "note": "physics=none, importer defaults kept"})
     else:
         steps.append({"step": "import_settings", "ok": True,
-                      "note": "every mesh is skinned; the .tscn capsule is the "
-                              "collider (physics=all to override)"})
+                      "note": f"{root_body} root: the .tscn capsule is the "
+                              "collider, so no mesh shapes were generated "
+                              "(physics=all to override)"})
+
+    # Exactly one strategy, named in the result so a caller never has to infer
+    # it from a collider count that both strategies satisfy.
+    mesh_shapes = bool(physics_nodes) and bool(settings.get("ok"))
+    collision = "generated_mesh_shapes" if mesh_shapes else "fitted_capsule"
 
     # --- the playable scene ------------------------------------------------
     stem = name or Path(glb_path).stem
@@ -1562,14 +2078,40 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     scenes_dir = project / scene_rel
     scenes_dir.mkdir(parents=True, exist_ok=True)
     scene_file = scenes_dir / f"{stem}.tscn"
-    scene_file.write_text(
-        character_scene_text(res_path, node_name=node_name, bounds_size=size,
-                             bounds_position=origin, script_res=script_res,
-                             model_uid=_import_uid(project_dir, asset_rel),
-                             body_type=character_body),
-        encoding="utf-8")
+    model_uid = _import_uid(project_dir, asset_rel)
+
+    # A delivery used to rewrite this file wholesale every single time, so every
+    # hand edit — a script attached, a hurtbox added, a transform nudged — was
+    # destroyed by the next redelivery. OBSERVED: during one session the same
+    # camera node had to be stripped out of the same scene FIVE times, because
+    # each iteration on the .glb put it straight back.
+    #
+    # Repointing the model ext_resource is chosen over "write only when absent"
+    # because a redelivery has to remain USEFUL: the whole point of iterating on
+    # a .glb is to see the new mesh in the game, and a scene that is skipped
+    # entirely keeps showing the old one. Everything else in the file — the node
+    # tree, the capsule, the script, whatever the human added — is theirs.
+    scene_action = "written"
+    if scene_file.exists() and not overwrite_scene:
+        existing = scene_file.read_text(encoding="utf-8")
+        rewired_text, rewired = _rewire_model_ext_resource(
+            existing, res_path, model_uid)
+        scene_action = "rewired" if rewired else "left_alone"
+        if rewired_text != existing:
+            scene_file.write_text(rewired_text, encoding="utf-8")
+    else:
+        scene_file.write_text(
+            character_scene_text(res_path, node_name=node_name, bounds_size=size,
+                                 bounds_position=origin, script_res=script_res,
+                                 model_uid=model_uid, with_camera=with_camera,
+                                 with_capsule=not mesh_shapes,
+                                 body_type=root_body),
+            encoding="utf-8")
     scene_res = "res://" + str(scene_file.relative_to(project)).replace("\\", "/")
 
+    # The preview is regenerated unconditionally: it is a photo studio built to
+    # frame THIS asset's measured bounds, produced alongside the screenshot and
+    # thrown away with it. It is output, not a file anyone is meant to edit.
     preview_file = scenes_dir / f"{stem}_preview.tscn"
     preview_file.write_text(
         preview_scene_text(scene_res,
@@ -1583,8 +2125,20 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
         "\\", "/")
 
     scene_import = check_project(project_dir, timeout=timeout)
-    steps.append({"step": "scenes", "ok": scene_import["ok"],
+    steps.append({"step": "scenes",
+                  # left_alone is not a failure of the import, but it IS the
+                  # answer to "why is the old mesh still in the game" — a scene
+                  # with no model ext_resource to repoint cannot be updated
+                  # without discarding whatever replaced it.
+                  "ok": scene_import["ok"] and scene_action != "left_alone",
                   "errors": scene_import.get("errors", []),
+                  "scene_action": scene_action,
+                  "note": ("the existing scene has no model ext_resource to "
+                           "repoint — it was not touched; pass "
+                           "overwrite_scene=True to regenerate it"
+                           if scene_action == "left_alone" else
+                           "existing scene kept, model ext_resource repointed"
+                           if scene_action == "rewired" else ""),
                   "scene": scene_res, "preview": preview_res})
 
     # The generated .tscn read back THROUGH THE ENGINE. A scene file that looks
@@ -1600,13 +2154,31 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     steps.append({"step": "screenshot", "ok": bool(shot.get("ok")),
                   "path": shot.get("path"), "error": shot.get("error")})
 
-    checks = _delivery_checks(scene_view if scene_view.get("ok") else view, view)
+    # The capsule is only OURS to be judged on when we wrote the scene this run
+    # and the asset is a character. A rewired scene carries whatever collider
+    # the human left in it, and reporting our computed numbers against their
+    # file would be a measurement of something that is not on disk.
+    judged_capsule = (_capsule_for_bounds(*size[:3])
+                      if skinned_asset and scene_action == "written"
+                      and not mesh_shapes else None)
+    checks = _delivery_checks(scene_view if scene_view.get("ok") else view, view,
+                              character_capsule=judged_capsule)
     return {
         "ok": all(c["ok"] for c in checks if c["required"]) and bool(shot.get("ok")),
         "res_path": res_path,
         "asset_rel": asset_rel,
+        # None, or what this delivery overwrote at that path. See import_asset.
+        "replaced": first.get("replaced"),
+        # Which body the asset became and which of the two collision strategies
+        # applies. A caller that assumed CharacterBody3D-and-a-capsule for
+        # everything — as this function used to hand it — needs both.
+        "root_body": root_body,
+        "collision": collision,
         "scene": scene_res,
         "scene_file": str(scene_file),
+        # written | rewired | left_alone — a caller that assumed it was handed a
+        # freshly generated tree needs to know it was handed the human's.
+        "scene_action": scene_action,
         "preview": preview_res,
         "screenshot": shot.get("path"),
         "import_settings": settings,
@@ -1617,15 +2189,37 @@ def deliver_asset(project_dir: str, glb_path: str, *, name: Optional[str] = None
     }
 
 
-def _delivery_checks(scene_view: dict, asset_view: dict) -> list[dict]:
+def _delivery_checks(scene_view: dict, asset_view: dict,
+                     character_capsule: Optional[tuple] = None) -> list[dict]:
     """The gate. Each row names the measurement that decided it.
 
     `required` marks the ones a shipping asset cannot be without. A prop has no
     rig and no animation and that is fine — those rows report, they do not fail.
+
+    character_capsule is (radius, height) for a capsule THIS run generated for a
+    CHARACTER. It folds into has_collider rather than adding a ninth row,
+    because callers index these rows by name and the list is a contract. Passing
+    it for a crate would be wrong: the absurdity below is defined against a
+    person's proportions, and a 1x1x1 m crate legitimately has a capsule as wide
+    as it is tall.
     """
     materials = asset_view.get("materials", {}) or {}
     missing = materials.get("without_albedo_texture", []) or []
     size = asset_view.get("size_check", {}) or {}
+
+    # A capsule wider than half the figure it wraps cannot fit through a door
+    # built for that figure. REPRODUCED: a 1.75 m character was delivered with
+    # radius=0.8158 — 1.63 m across, her own arm span — and it shipped green,
+    # because has_collider had only ever COUNTED shapes and never looked at one.
+    absurd = ""
+    if character_capsule:
+        radius, cap_height = (float(v) for v in character_capsule)
+        if radius * 2.0 > cap_height * 0.5:
+            absurd = (f"capsule is {radius * 2.0:.2f} m across on a "
+                      f"{cap_height:.2f} m figure — wider than half its own "
+                      "height, so it cannot fit through a door built for it. "
+                      "An A-pose arm span in the measured bounds is the usual "
+                      "cause.")
     return [
         {"check": "loads_in_engine", "required": True,
          "ok": bool(asset_view.get("ok")),
@@ -1645,8 +2239,12 @@ def _delivery_checks(scene_view: dict, asset_view: dict) -> list[dict]:
          "measured": f"{size.get('longest_axis_m', 0)} m longest axis",
          "detail": size.get("note", "")},
         {"check": "has_collider", "required": True,
-         "ok": scene_view.get("collider_count", 0) > 0,
-         "measured": f"{scene_view.get('collider_count', 0)} collision shapes"},
+         "ok": scene_view.get("collider_count", 0) > 0 and not absurd,
+         "measured": f"{scene_view.get('collider_count', 0)} collision shapes"
+                     + (f", capsule r={character_capsule[0]:.4f} "
+                        f"h={character_capsule[1]:.4f}"
+                        if character_capsule else ""),
+         "detail": absurd},
         {"check": "has_skeleton", "required": False,
          "ok": asset_view.get("skeleton_count", 0) > 0,
          "measured": f"{asset_view.get('skeleton_count', 0)} Skeleton3D"},

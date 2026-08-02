@@ -22,7 +22,21 @@ var _peak_y := 0.0
 ## session opens with a fabricated "land" whose numbers look real enough to mislead.
 var _air_cause := "spawn"
 
-@onready var _camera: Camera3D = $Camera3D
+## get_node_or_null, and every use below is guarded, because this script is no
+## longer only ever attached to the scaffold's Player. godot_deliver_asset
+## generates CharacterBody3D scenes with these same node names and deliberately
+## does NOT give them a Camera3D — an instanced character whose camera can become
+## the level's current one booted the game looking out of its own eye sockets.
+##
+## MEASURED on 4.7.1, camera-less body, tree ticked to ready: `$Camera3D` is
+## ALSO null there and says nothing about it, so the old spelling did not fail
+## loudly — it failed on the first touch, "Invalid call. Nonexistent function
+## 'rotate_x' in base 'Nil'", once per mouse-motion event, forever. Same run
+## with this line and the guard below: no errors, and yaw still turns the body.
+##
+## The `as` is not decoration: get_node_or_null is typed Node, and `$Camera3D`
+## was the only spelling the compiler narrowed for free.
+@onready var _camera: Camera3D = get_node_or_null("Camera3D") as Camera3D
 
 
 func _ready() -> void:
@@ -42,9 +56,12 @@ func _begin_air(cause: String) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		# Yaw is on the BODY, so a camera-less character still turns to look
+		# where it is going. Only the pitch needs a camera to live on.
 		rotate_y(-event.relative.x * mouse_sensitivity)
-		_camera.rotate_x(-event.relative.y * mouse_sensitivity)
-		_camera.rotation.x = clampf(_camera.rotation.x, -1.4, 1.4)
+		if _camera:
+			_camera.rotate_x(-event.relative.y * mouse_sensitivity)
+			_camera.rotation.x = clampf(_camera.rotation.x, -1.4, 1.4)
 	if event.is_action_pressed("ui_cancel"):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 

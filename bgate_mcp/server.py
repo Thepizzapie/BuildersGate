@@ -3076,7 +3076,7 @@ def godot_templates() -> dict:
 
 @_tool
 def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
-                   force: bool = False) -> dict:
+                   force: bool = False, replace: bool = False) -> dict:
     """Create a runnable Godot project wired for playtesting.
 
     kind: 2d (platformer slice) | 3d (first-person slice). dest defaults to
@@ -3085,11 +3085,32 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
     The template ships the BGate telemetry autoload already registered, and a
     player whose feel tunables (gravity, fall_multiplier, coyote_time) are both
     exported AND emitted on jump/land — so the first playtest already produces
-    the telemetry join. Refuses a non-empty dest unless force=True.
+    the telemetry join.
+
+    A non-empty dest is refused unless force or replace, and THOSE TWO ARE NOT
+    THE SAME THING:
+
+      force=True    fill in WHAT IS MISSING. A file that already matches is left
+                    alone; a file that differs is the user's and is SKIPPED, not
+                    overwritten. This is the one to reach for to top up a
+                    missing addon or a deleted script.
+      replace=True  put the template back over the top, and copy each victim to
+                    <name>.bak first.
+
+    force used to mean what replace means now, and it was a data-loss bug in a
+    feature's clothing: someone topping up one missing file lost their
+    project.godot, their player.gd and their export_presets.cfg in place. That
+    last one is unrecoverable in the usual case — the .gitignore this same
+    template stamps excludes export_presets.cfg, so the customised export
+    targets were not in git either.
+
+    The result lists `created`, `unchanged`, `skipped` and `replaced`, so say
+    what happened rather than letting the user find it in a diff.
     """
     try:
         target = dest or str(_Path(_root()) / "game")
-        result = _scaffold.new_project(target, name, kind=kind, force=force)
+        result = _scaffold.new_project(target, name, kind=kind, force=force,
+                                       replace=replace)
         _log("scaffold", f"scaffolded {kind} project {name!r}", ref=result["path"])
         return result
     except Exception as exc:
@@ -3119,6 +3140,13 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     imports with zero surfaces is a silent failure, and this catches it by
     checking the engine's view, not the file's presence. The end of the
     Blender→Godot round trip.
+
+    THE DESTINATION IS KEYED ON THE FILENAME ALONE, so a second `hero.glb` from
+    a different output directory lands on the first one and wins. Keeping the
+    existing .import and its uid is right — every .tscn in the project points at
+    that uid — but the mesh underneath it has changed, and `replaced` in the
+    result is where that is said. Read it before telling anyone the import was
+    clean.
 
     godot_project: the directory holding project.godot.
     """
@@ -3159,10 +3187,11 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
                         dest_rel: str = "assets", scene_rel: str = "scenes",
                         script_res: str = "", physics: str = "auto",
                         shape_type: str = "trimesh", body_type: str = "static",
-                        character_body: str = "CharacterBody3D",
+                        character_body: str = "auto",
                         at: float = 1.2, min_size_m: float = 0.05,
                         max_size_m: Optional[float] = None,
-                        nominal_size_m: float = 1.8, label: str = "",
+                        nominal_size_m: float = 1.8, with_camera: bool = False,
+                        overwrite_scene: bool = False, label: str = "",
                         timeout: int = 300) -> dict:
     """Take a finished .glb the rest of the way — into the engine, into a scene.
 
@@ -3171,9 +3200,9 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     scene under BLENDER lights. Neither asks the engine anything, so a rig that
     did not import, a texture that did not travel, a 40x scale and an asset with
     no collider were invisible by construction. THIS is where an asset stops
-    being a file and becomes a thing in the game: imported, given generated
-    colliders, instanced under a CharacterBody3D in its own .tscn, stood on a
-    lit floor, and photographed by Godot's own renderer.
+    being a file and becomes a thing in the game: imported, given ONE collision
+    strategy, instanced under the body its mesh implies in its own .tscn, stood
+    on a lit floor, and photographed by Godot's own renderer.
 
     THE SCREENSHOT COMES BACK IN THIS RESULT AS AN IMAGE, and it is the first
     time anyone — you included — sees the asset under the renderer that will
@@ -3188,10 +3217,49 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     fails real_world_size and you still get the frame, because a gate that hides
     the asset is one you cannot debug.
 
-    physics: auto (colliders on every UNSKINNED mesh — a skinned character gets
-    the .tscn's capsule instead, since a trimesh body would make it a wall) |
-    all | none. Leave max_size_m unset and the bound comes from what the asset
-    IS: 4 m skinned, 50 m otherwise.
+    THE BODY IS CHOSEN FROM WHAT THE MESH IS, and it decides the collider with
+    it. Skinned (it has a skin, so a Skeleton3D and joints) → CharacterBody3D
+    with a capsule fitted to the TORSO. Unskinned → StaticBody3D whose colliders
+    the importer builds from the real geometry, and no capsule. Pass
+    character_body="RigidBody3D" for a prop that should fall and be pushed, or
+    any class name to override; `root_body` and `collision` in the result say
+    what it became. Every asset used to be wrapped in CharacterBody3D — which
+    only moves when code calls move_and_slide(), so a crate delivered that way
+    never simulated at all — AND carried both an accurate trimesh and an
+    invisible person-shaped capsule on two different bodies at once.
+
+    physics: auto (the strategy above) | all (mesh shapes on every mesh, capsule
+    stands down) | none (importer defaults, capsule is the collider). Leave
+    max_size_m unset and the bound comes from what the asset IS: 4 m skinned,
+    50 m otherwise.
+
+    THE CAPSULE IS SIZED FROM THE TORSO, NOT THE POSE. It used to come off the
+    widest horizontal axis of the merged bounds, so an A-pose handed it the ARM
+    SPAN: a 1.75 m character shipped inside a 1.63 m wide cylinder that could
+    not fit through a human door, and passed the gate because has_collider only
+    counted shapes. has_collider now fails a capsule wider than half the figure
+    it wraps.
+
+    DELIVERING A .glb WHOSE FILENAME IS ALREADY IN assets/ OVERWRITES IT. The
+    destination is keyed on the filename alone, so two different `hero.glb` from
+    two different output directories collide and the second wins under the
+    first's uid. `replaced` in the result names what was overwritten and whether
+    the bytes actually differ.
+
+    REDELIVERING DOES NOT CLOBBER THE SCENE. If <name>.tscn already exists its
+    model ext_resource is repointed at the new import and the node tree is left
+    exactly as the human left it — scripts, extra nodes, tweaked transforms all
+    survive, and `scene_action` in the result says which happened (written /
+    rewired / left_alone). Pass overwrite_scene=True to deliberately throw those
+    edits away. The old behaviour rewrote the file every time, which during one
+    session destroyed the same hand edit five times running.
+
+    with_camera adds a first-person Camera3D to the character. OFF by default,
+    and do not turn it on for anything you intend to instance into a level:
+    Godot makes the first camera into the tree current, and an OBSERVED boot
+    came up looking out of the delivered character's eye sockets instead of the
+    player's. Turn it on only when this scene IS the player (templates/3d's
+    player.gd requires a $Camera3D child).
 
     The frame is archived to the preview gallery and REGISTERED as an artifact
     (`artifact_id`), so art_qa_verdict can be pointed at the in-engine shot
@@ -3213,7 +3281,8 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
             shape_type=shape_type, body_type=body_type,
             character_body=character_body, screenshot_dir=shot_dir, at=at,
             min_size_m=min_size_m, max_size_m=max_size_m,
-            nominal_size_m=nominal_size_m, timeout=timeout)
+            nominal_size_m=nominal_size_m, with_camera=with_camera,
+            overwrite_scene=overwrite_scene, timeout=timeout)
         checks = result.get("checks") or []
         failed = [str(check.get("check")) for check in checks
                   if check.get("required") and not check.get("ok")]

@@ -181,8 +181,10 @@ async def test_the_delivery_options_are_forwarded(wired, delivering):
                dest_rel="assets/props", scene_rel="scenes/props",
                physics="all", shape_type="box", body_type="static",
                character_body="StaticBody3D", at=2.0, max_size_m=12.0,
-               min_size_m=0.02, nominal_size_m=0.6, timeout=420)
+               min_size_m=0.02, nominal_size_m=0.6, with_camera=True,
+               overwrite_scene=True, timeout=420)
 
+    assert seen["with_camera"] is True and seen["overwrite_scene"] is True
     assert seen["name"] == "crate"
     assert seen["dest_rel"] == "assets/props"
     assert seen["scene_rel"] == "scenes/props"
@@ -204,6 +206,23 @@ async def test_the_size_bound_defaults_to_the_adapters_own_choice(wired,
                glb=str(wired / "out" / "hero.glb"))
 
     assert seen["max_size_m"] is None
+
+
+@pytest.mark.anyio
+async def test_the_tool_defaults_protect_the_players_view_and_the_humans_scene(
+        wired, delivering):
+    """Both defaults were found by booting a real game. A camera on an
+    instanced character decided the level's view (the boot frame was the inside
+    of the character's head), and a plain redelivery rewrote the .tscn, which
+    destroyed the same hand edit five times in one session. Defaulting either of
+    these the other way in the wrapper puts both back."""
+    seen = delivering()
+
+    await call("godot_deliver_asset", godot_project=str(wired / "game"),
+               glb=str(wired / "out" / "hero.glb"))
+
+    assert seen["with_camera"] is False
+    assert seen["overwrite_scene"] is False
 
 
 @pytest.mark.anyio
