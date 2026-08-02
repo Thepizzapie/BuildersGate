@@ -137,9 +137,16 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
                 if not replace:
                     skipped.append({
                         "file": name_rel,
+                        # NAMES BOTH SPELLINGS, because this string is read in
+                        # two places that cannot use each other's: a terminal
+                        # user gets it from `bgate init` and needs the flag, an
+                        # agent gets it from godot_scaffold and needs the
+                        # argument. Naming only the Python kwarg told someone
+                        # standing at a shell to pass something they cannot.
                         "reason": "differs from the template — kept your version; "
-                                  "pass replace=True to overwrite it (a .bak is "
-                                  "taken first)",
+                                  "overwrite it with `bgate init --replace` (or "
+                                  "replace=True from the API). A .bak is taken "
+                                  "first",
                     })
                     continue
                 backup = _backup(out)
