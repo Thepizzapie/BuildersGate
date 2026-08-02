@@ -9,6 +9,60 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.32] - 2026-08-01
+
+One call turns "a model that looks like X" into a rigged character in the
+engine, and `force` stops meaning "overwrite your project".
+
+### Added
+
+- **`character_generate` — the whole pipeline as one tool.** Plate, key, mesh,
+  rig, deliver. Every stage already existed and every stage was reachable, and a
+  caller still had to know: condition the plate on the template pose or the
+  skeleton will not fit, key it or the backdrop arrives as geometry, which
+  backend takes which knobs, and that a bind reports success having weighted
+  nothing. Get any of them wrong and you find out ten GPU minutes later. The
+  parameters are not defaults, they are the ones that produced a character that
+  fitted at `limbs=1.0` with no compensation, 0 bones outside the mesh, 0
+  unweighted vertices, delivered into Godot and animated:
+
+  | stage | what it does | why these values |
+  | --- | --- | --- |
+  | plate | provider `generate`, template pose as a `0.45` reference, `1024x1536` | the reference carries the STANCE — arms out, feet flat, symmetrical, head to feet. Without it the generator picks a stance and the skeleton has to be bent to match. A square canvas puts the head at ~120 px and the face is invented rather than reconstructed |
+  | key | `despill=0` | despill is right for green and wrong for grey — on a neutral backdrop it strips saturation from the whole image, and it took one plate's leather from brown to white |
+  | mesh | `resolution=1024` | what was run on a 12 GB card; TRELLIS is where VRAM gets tight |
+  | rig | `pose="t"`, `budget=45000` | an A-pose skeleton inside a T-pose body put the hand bones 14 cm outside the mesh |
+
+  Each stage **gates** the next, so a failure costs the stage that found it
+  rather than the whole chain. From the runs it was built on: an unkeyed plate
+  cost **605 s and 21% non-manifold** and was refused by the quality gate; the
+  same subject keyed, **216 s and 16%**, passes. A collapse met its triangle
+  budget with **20,799 of 39,803 faces inside out** and reported `met=True`.
+
+  `dry_run` is the default. It quotes the plate and the mesh and stops, and a
+  backend that publishes no rate reports `None` rather than `0.0` — a caller who
+  has not decided to spend should not be told a generation is free.
+
+### Fixed
+
+- **`force` meant "overwrite your project", and said nothing about it.** It was
+  documented as "scaffold into a non-empty directory" and implemented as "write
+  every template file over whatever is there". Someone reaching for it to top up
+  a missing addon lost `project.godot`, `player.gd` and `export_presets.cfg` in
+  place, with no backup and no mention of it in the result. `export_presets.cfg`
+  is the unforgiving one: the `.gitignore` this same template stamps excludes
+  it, so the customised export targets were not in git either.
+
+  `force` now **fills in what is missing**. A file that already matches what the
+  template would write is left alone; a file that differs is the user's and is
+  skipped. `--replace` is the separate, explicit "put the template back", and
+  even that copies each victim to `<name>.bak` first — never onto an existing
+  backup, because a second `--replace` run reusing the same `.bak` would destroy
+  the rescue copy the first one took. Both outcomes come back in the result, and
+  `note` is one line a caller can print verbatim: a run that deliberately left
+  the user's work alone used to report "0 files" and read as a no-op rather than
+  as a decision.
+
 ## [0.1.31] - 2026-08-01
 
 A generated mesh becomes a rigged character an engine can move, and the skeleton
@@ -974,7 +1028,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.31...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.32...HEAD
+[0.1.32]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.28...v0.1.29
