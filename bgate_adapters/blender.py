@@ -19,7 +19,7 @@ import tempfile
 import time
 from glob import glob
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from . import _blender_kit as _kit
 
@@ -2998,3 +2998,233 @@ def humanoid_template() -> dict:
             "godot_deliver_asset(project, rigged) — .tscn, verified in-engine",
         ],
     }
+
+
+def _plate_provider(name: str):
+    """The module that generates a plate. krea or the gpt-image path."""
+    if (name or "").strip().lower() == "krea":
+        from bgate_adapters import krea
+        return krea
+    from bgate_adapters import imagegen
+    return imagegen
+
+
+def _key_plate(src: str, dst: str) -> tuple[float, str]:
+    """Key a flat backdrop out of a generated plate. Returns (opacity, why).
+
+    Tolerance is SWEPT rather than fixed, because the right value depends on
+    how close the subject's darkest tones sit to the backdrop and a single
+    guess gets it wrong in both directions: too low leaves a halo the
+    reconstructor turns into geometry, too high eats the character. Measured on
+    one plate — tol 5 to 20 all landed at ~0.12 opacity, the true subject area,
+    and 30 dropped it to 0.09 by biting into her coat. So the sweep stops at the
+    plateau rather than the first value that "works".
+    """
+    from PIL import Image
+    from bgate_core import chroma
+
+    im = Image.open(src).convert("RGBA")
+    backdrop = im.getpixel((3, 3))[:3]
+    best = 0.0
+    for tol in (10, 18, 26, 34, 45):
+        chroma.key(im.copy(), backdrop, tol=tol, despill=0).save(dst)
+        opacity = chroma.opacity(dst)
+        if 0.05 <= opacity <= 0.55:
+            if best and opacity < best * 0.9:
+                break          # past the plateau: it is eating the subject now
+            best = opacity
+        elif opacity > 0.55:
+            continue           # still mostly background; open the tolerance up
+        else:
+            break
+    if not best:
+        return 0.0, ("nothing keyed cleanly — the plate's background is not "
+                     "flat, or the subject fills the frame")
+    return best, ""
+
+
+def character(prompt: str, out_dir: str | os.PathLike[str], *,
+              name: str = "character", provider: str = "", backend: str = "",
+              height: float = 1.8, budget: int = 45000, size: str = "1024x1536",
+              godot_project: str = "", root: Any = None, dry_run: bool = False,
+              timeout: int = 2400) -> dict:
+    """"A model that looks like X" — plate, mesh, rig, and into the engine.
+
+    THE ONE CALL THIS PIPELINE DID NOT HAVE. Every stage existed and every stage
+    was reachable, and a caller still had to know: condition the plate on the
+    template or the skeleton will not fit; key it or the background becomes
+    geometry; which backend takes which knobs; that a bind reports success
+    having weighted nothing. Get any of them wrong and you find out ten GPU
+    minutes later. Those are not judgement calls — they are the same five steps
+    in the same order every time, which is what a tool is for.
+
+    Each stage GATES the next, so a failure costs the stage that found it rather
+    than the whole chain. Measured, on the runs this was built from:
+
+      * an unkeyed plate: 605 s and 21% non-manifold, refused by the quality
+        gate. The same subject keyed: 216 s and 16%, passes.
+      * a plate under 1024px on the short side: detail in the result is
+        invented rather than read.
+      * a collapse that met its triangle budget and destroyed the asset —
+        20,799 of 39,803 faces inside out, reported met=True.
+      * a bind that created all 22 vertex groups and filled none of them:
+        64,878 of 64,878 vertices carrying no weight, every other check green.
+
+    dry_run quotes the plate and the mesh and stops. It is the honest default
+    for a caller who has not decided to spend — `estimated_usd` is the sum, and
+    a backend that publishes no rate reports None rather than 0.0.
+
+    Returns every artifact by path, the gate result from each stage, and
+    `stage` naming where it stopped. `ok` is True only if a RIGGED character
+    came out the far end.
+    """
+    from bgate_adapters import imageto3d
+
+    out = Path(out_dir)
+    steps: list[dict] = []
+    result: dict = {"ok": False, "stage": "template", "name": name,
+                    "steps": steps, "estimated_usd": None}
+
+    tpl = humanoid_template()
+    if not tpl["ok"]:
+        result["error"] = tpl["reason"]
+        return result
+    result["template"] = {"pose": tpl["pose_front"], "bones": len(tpl["bones"])}
+
+    picked = backend or (imageto3d.choose(root) or {}).get("backend", "")
+    mesh_quote = imageto3d.price_for(picked) if picked else None
+    # An unnamed backend is not an error here — choose() REFUSES a conditional
+    # licence on purpose, and the caller naming one after reading its terms is
+    # the design, not a workaround. Say so rather than picking for them.
+    if not picked:
+        result["stage"] = "backend"
+        result["error"] = ((imageto3d.choose(root) or {}).get("reason")
+                           or "no image-to-3D backend is usable")
+        return result
+
+    if dry_run:
+        return {**result, "ok": True, "stage": "quote", "dry_run": True,
+                "backend": picked, "estimated_usd": mesh_quote,
+                "note": "plate is billed separately by the image provider; "
+                        "mesh quote is a floor, not a rate"}
+
+    # 1. PLATE, conditioned on the template pose and keyed. Both are
+    #    load-bearing: unconditioned, the skeleton has to be bent to fit
+    #    whatever stance the generator chose; unkeyed, the backdrop arrives as
+    #    geometry no bone can reach.
+    out.mkdir(parents=True, exist_ok=True)
+    plate = out / f"{name}_plate.png"
+    raw_plate = out / f"{name}_plate_raw.png"
+
+    # GENERATE FLAT, THEN KEY. NOT chroma.generate(keyed=True), which is the
+    # 2D SPRITE path: it asks the model for a flat chroma background, audits
+    # the result, and applies a sprite form clause. Tried on this path and it
+    # failed twice — the model returned a mottled backdrop the audit correctly
+    # refused, and the sprite clause turned a character sheet into pixel art.
+    # A plate for reconstruction wants an illustration on an even background,
+    # which is a different job from a sprite that must key perfectly.
+    plate_prompt = (f"{prompt}. {tpl['pose_clause']}. Plain flat neutral grey "
+                    "background, no gradient, no vignette, no props, no text, "
+                    "no watermark.")
+    # EXACTLY THE CALL THAT PRODUCED THE WORKING CHARACTER: the pose reference
+    # as a conditioning image at 0.45, task_kind="character", 1024x1536, and
+    # the project root so the key and the spend ledger come from the project.
+    # The reference carries the STANCE — arms out, feet flat, symmetrical,
+    # framed head to feet — which is what made the skeleton fit at limbs=1.0
+    # with no compensation. Drop it and the generator invents a stance and the
+    # skeleton has to be bent to whatever it chose.
+    shot = _plate_provider(provider).generate(
+        plate_prompt, str(raw_plate), size=size, task_kind="character",
+        ref_paths=[tpl["pose_front"]], ref_strength=0.45, root=root)
+    step = {"step": "plate", "ok": bool(shot.get("ok")),
+            "usd": shot.get("estimated_usd"), "error": shot.get("error") or ""}
+    if shot.get("ok"):
+        # Keyed HERE with despill off. Despill removes the key colour's spill
+        # from the subject, which is right for green and wrong for grey: on a
+        # neutral backdrop it strips saturation from the whole image, and it
+        # took one plate's leather from brown to white before that was spotted.
+        keyed, why = _key_plate(str(raw_plate), str(plate))
+        step["ok"] = bool(keyed)
+        step["path"] = str(plate) if keyed else ""
+        step["opacity"] = keyed
+        if not keyed:
+            step["error"] = why
+    steps.append(step)
+    if not step["ok"]:
+        result["stage"] = "plate"
+        result["error"] = step.get("error") or "the plate could not be keyed"
+        return result
+    result["plate"] = str(plate)
+    result["plate_raw"] = str(raw_plate)
+
+    # 2. MESH. imageto3d re-checks the plate and refuses a bad one before it
+    #    spends, which is the whole reason the plate step comes first.
+    raw = out / f"{name}_raw.glb"
+    # resolution="1024" because that is what was run. 1536 was not tried on a
+    # 12 GB card and TRELLIS is where VRAM gets tight; a caller who wants more
+    # can name a backend and pass it themselves.
+    gen = imageto3d.generate(str(plate), str(raw), backend=picked, root=root,
+                             timeout=timeout, logical_name=f"{name}_mesh",
+                             resolution="1024")
+    steps.append({"step": "mesh", "ok": bool(gen.get("ok")),
+                  "path": str(raw) if gen.get("ok") else "",
+                  "backend": picked, "usd": gen.get("estimated_usd"),
+                  "warnings": list(gen.get("warnings") or []),
+                  "error": gen.get("error") or ""})
+    if not gen.get("ok"):
+        result["stage"] = "mesh"
+        result["error"] = gen.get("error")
+        return result
+    result["mesh"] = str(raw)
+
+    # 3. RIG. Adopt, fit the template skeleton to this mesh, bind, and prove it.
+    rigged_path = out / f"{name}_rigged.glb"
+    rigged = rig(str(raw), str(rigged_path), kind="humanoid", height=height,
+                 budget=budget, pose="t", timeout=timeout)
+    quality = (rigged.get("adopt") or {}).get("quality") or {}
+    steps.append({"step": "rig", "ok": bool(rigged.get("rigged")),
+                  "path": str(rigged_path) if rigged.get("rigged") else "",
+                  "bound_with": rigged.get("bound_with"),
+                  "unweighted": rigged.get("unweighted"),
+                  "quality_ok": quality.get("ok"),
+                  "error": rigged.get("reason") or rigged.get("error") or ""})
+    if not rigged.get("rigged"):
+        result["stage"] = "rig"
+        result["error"] = (rigged.get("reason")
+                           or "the bind weighted nothing — see steps")
+        result["rig"] = rigged
+        return result
+    result["rigged"] = str(rigged_path)
+    result["rig"] = rigged
+
+    result["estimated_usd"] = _sum_usd(steps)
+
+    # 4. INTO THE ENGINE, only if asked. A caller who wants the .glb should not
+    #    have a Godot project written into as a side effect.
+    if godot_project:
+        from bgate_adapters import godot
+        sent = godot.deliver_asset(godot_project, str(rigged_path), name=name,
+                                   timeout=min(timeout, 600))
+        failed = [c for c in (sent.get("checks") or [])
+                  if c.get("required") and not c.get("ok")]
+        steps.append({"step": "deliver", "ok": bool(sent.get("ok")) and not failed,
+                      "scene": sent.get("scene"), "failed_checks": failed})
+        result["scene"] = sent.get("scene")
+        result["delivery"] = sent
+
+    result["ok"] = True
+    result["stage"] = "done"
+    return result
+
+
+def _sum_usd(steps: list[dict]) -> Optional[float]:
+    """Total spend, or None if any stage could not be priced.
+
+    None rather than a partial sum on purpose: a number reads as the bill, and
+    one that silently omits an unpriced stage is worse than admitting the total
+    is unknown. Same rule imageto3d.price_for follows.
+    """
+    seen = [s.get("usd") for s in steps if "usd" in s]
+    if not seen or any(v is None for v in seen):
+        return None
+    return round(sum(float(v) for v in seen), 4)

@@ -1,6 +1,7 @@
 """bgate — the console entrypoint.
 
-    bgate init NAME [--kind 2d|3d] [--dir DIR] [--pitch TEXT] [--force]
+    bgate init NAME [--kind 2d|3d] [--dir DIR] [--pitch TEXT]
+                    [--force] [--replace]
                                 create a project + a runnable game, and print where
     bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json]
                                 point Builders Gate at a game you ALREADY have.
@@ -235,7 +236,7 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
 
 
 def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
-                 force: bool = False) -> int:
+                 force: bool = False, replace: bool = False) -> int:
     """Create the project store AND a runnable game, then say where it landed.
 
     The first-run gap the audit named: the only way to make a project was an MCP
@@ -260,7 +261,8 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         Path.cwd() / slugify(name)).resolve()
 
     try:
-        made = scaffold.new_project(root, name, kind=kind, force=force)
+        made = scaffold.new_project(root, name, kind=kind, force=force,
+                                    replace=replace)
     except FileExistsError as exc:
         print(f"error: {exc}")
         return 1
@@ -755,7 +757,16 @@ def main() -> int:
             return 2
         return init_project(positional[0], kind=opt("--kind", "2d"),
                             dest=opt("--dir"), pitch=opt("--pitch"),
-                            force="--force" in rest)
+                            # --replace is the only way to overwrite from the
+                            # command line. --force stopped meaning that when it
+                            # was found destroying customised files in place —
+                            # export_presets.cfg is gitignored by the template
+                            # this ships, so for anyone with custom export
+                            # targets it was unrecoverable. Deliberate
+                            # replacement is still legitimate; it just has to be
+                            # asked for, and it takes a .bak first.
+                            force="--force" in rest or "--replace" in rest,
+                            replace="--replace" in rest)
 
     if cmd == "adopt":
         rest = args[1:]

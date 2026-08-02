@@ -127,3 +127,23 @@ class TestFilesOutsideTheTemplateSurvive:
 
         assert mine.read_text(encoding="utf-8") == "extends Node\n"
         assert not (project / "scripts" / "boss_ai.gd.bak").exists()
+
+
+class TestTheAdviceIsActionable:
+    """A message telling you to pass something you cannot pass is not advice.
+
+    The skip reason named `replace=True`, the Python keyword argument. It is
+    read in two places that cannot use each other's spelling: a terminal user
+    gets it from `bgate init` and needs the flag, an agent gets it from
+    godot_scaffold and needs the argument. It names both now.
+    """
+
+    def test_the_skip_reason_names_the_cli_flag_and_the_api_argument(self, tmp_path):
+        dest = tmp_path / "game"
+        scaffold.new_project(dest, "Game", kind="2d")
+        target = dest / "scripts" / "player.gd"
+        target.write_text("# mine\n", encoding="utf-8")
+        got = scaffold.new_project(dest, "Game", kind="2d", force=True)
+        reason = got["skipped"][0]["reason"]
+        assert "--replace" in reason, reason
+        assert "replace=True" in reason, reason
