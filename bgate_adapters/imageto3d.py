@@ -215,6 +215,27 @@ def model_licence(name: str = "") -> dict:
     return {**found, "model": key}
 
 
+def effective_licence(spec: dict) -> dict:
+    """The licence a backend's OUTPUT actually carries.
+
+    A transport backend (ComfyUI, a Gradio app) has no licence of its own — the
+    model behind it does. Resolve from the declared model when the user has
+    said, and keep the row's "we cannot tell you" wording when they have not.
+
+    This is one function because it used to be two: available() resolved, and
+    generate()'s result copied the raw spec row. So the report an agent read
+    before generating named Hunyuan3D's region exclusions, and the manifest
+    recording what the mesh was MADE under said "this adapter cannot clear the
+    licence for you" — the uninformative one, written to the durable record.
+    """
+    licence = dict(spec.get("licence") or {})
+    if spec.get("licence_from_model"):
+        declared = model_licence()
+        if declared.get("model"):
+            licence = declared
+    return licence
+
+
 # ---------------------------------------------------------------------------
 # What the pipeline can take
 # ---------------------------------------------------------------------------
@@ -897,6 +918,54 @@ BACKENDS: dict[str, dict] = {
                 "images, quad topology to 200k, TAPose for rig-ready "
                 "geometry — but no rigging.",
     },
+    # DELEGATES TO krea.py RATHER THAN DESCRIBING THE HTTP, which every other
+    # hosted entry does. krea.generate_3d already exists, already knows the
+    # model table, the multipart quirks, the poll shape and the price floor —
+    # re-describing all of that here would be a second implementation to keep
+    # in step with the first.
+    #
+    # It is here because it SHIPPED UNREACHABLE. krea.generate_3d landed as a
+    # Python function that no MCP tool called, so a user whose only key is
+    # KREA_API_KEY — the key the setup docs tell them to configure, the one
+    # already in .env — could not produce a mesh from a session at all. They
+    # needed a Stability/Tripo/Meshy key or a local GPU server instead. Wiring
+    # it as a backend rather than a bespoke tool means it inherits choose(),
+    # the licence gate, the price quote and the common result shape, which a
+    # standalone tool would each have had to reimplement.
+    "krea": {
+        "kind": "hosted",
+        "label": "Krea (TRELLIS / TRELLIS.2 / Hunyuan3D / Tripo)",
+        "env": "KREA_API_KEY",
+        "delegate": "krea",
+        "base": "https://api.krea.ai",
+        "submit_path": "", "poll_path": "",
+        "response": "delegate",
+        # imageto3d's option names on the left, krea.generate_3d's on the right.
+        "fields": {"texture": "generate_texture", "seed": "seed",
+                   "resolution": "resolution", "texture_size": "texture_size",
+                   "face_count": "decimation_target"},
+        "supports": {"texture", "seed", "resolution", "texture_size",
+                     "face_count"},
+        "formats": ["glb"],
+        "rigged": False,
+        "latency_s": [90, 600],
+        "licence": {
+            "code": CONDITIONAL,
+            "summary": "Krea runs the same open-weight models you could "
+                       "self-host, so TWO sets of terms apply and they are not "
+                       "the same question: Krea's own for the service, and the "
+                       "model's for the mesh. TRELLIS.2 is MIT and its output "
+                       "is clear; the others are not uniformly so. Name the "
+                       "model deliberately and read its terms before shipping "
+                       "an asset commercially.",
+            "url": "https://krea.ai/terms",
+        },
+        "note": "Measured $0.30 on trellis-2 at DEFAULT settings — a floor, "
+                "not a rate. Nothing is known about how resolution, "
+                "texture_size or decimation_target move it, and a run at "
+                "1536/4096 was not re-measured. Models without a measured "
+                "price refuse rather than guess.",
+    },
 }
 
 # Deliberately empty. Every backend surveyed is either CONDITIONAL, or needs a
@@ -967,21 +1036,23 @@ def available(backend: str, root: Any = None, *, probe: bool = False) -> dict:
         return {"available": False, "backend": backend,
                 "reason": f"unknown backend {backend!r} — known: "
                           f"{', '.join(sorted(BACKENDS))}"}
-    # A transport backend (ComfyUI, a Gradio app) has no licence of its own —
-    # the model behind it does. Resolve from the declared model when the user
-    # has said, and keep the row's "we cannot tell you" wording when they have
-    # not.
-    licence = dict(spec["licence"])
-    if spec.get("licence_from_model"):
-        declared = model_licence()
-        if declared.get("model"):
-            licence = declared
     common = {
         "backend": backend, "kind": spec["kind"], "label": spec["label"],
-        "licence": licence,
+        "licence": effective_licence(spec),
         "rigged": spec.get("rigged") or False,
         "formats": list(spec.get("formats") or ()),
         "implemented": spec.get("implemented", True),
+        # WHICH KNOBS THIS BACKEND TAKES, because a caller had no way to find
+        # out. The option names differ per backend and the difference decides
+        # what a user can control: hunyuan-local accepts face_count, steps,
+        # octree_resolution and guidance, while trellis-cpp accepts only seed
+        # and resolution — so on trellis-cpp there is NO way to ask the
+        # generator for less geometry and post-generation decimation in
+        # blender_rig is the only density lever that exists. An agent that
+        # cannot see this passes an option that is silently dropped, or never
+        # learns the one that would have helped. Sorted so the answer is
+        # stable to diff.
+        "supports": sorted(spec.get("supports") or ()),
         "note": spec.get("note", ""),
     }
     if not common["implemented"]:
@@ -990,6 +1061,28 @@ def available(backend: str, root: Any = None, *, probe: bool = False) -> dict:
                           "not wired in this adapter — see the note"}
 
     if spec["kind"] == "local":
+        # A BACKEND THAT NEEDS A GRAPH IS NOT USABLE WITHOUT ONE. comfy takes a
+        # whole ComfyUI workflow as its unit of work and can only substitute two
+        # placeholders into it — this adapter cannot invent the graph. Without
+        # BGATE_COMFY_WORKFLOW it used to report available=True, so choose()
+        # could hand a caller a backend that fails at generation time, after the
+        # server is up and the plate is made. Say it here, where it is cheap.
+        wf_env = spec.get("workflow_env")
+        if wf_env:
+            wf = os.environ.get(wf_env, "").strip()
+            if not wf:
+                return {**common, "available": False,
+                        "reason": f"{wf_env} is not set — this backend runs "
+                                  "YOUR ComfyUI graph and cannot invent one. "
+                                  "Build an image-to-3D workflow in ComfyUI, "
+                                  "Save (API format), and point "
+                                  f"{wf_env} at that .json"}
+            if not Path(wf).is_file():
+                return {**common, "available": False,
+                        "reason": f"{wf_env} points at {wf}, which is not a "
+                                  "file — export the workflow again with Save "
+                                  "(API format), not the plain Save"}
+
         card = gpu()
         fit = fits_vram(spec.get("vram_gb"))
         out = {**common, "base": base_url(backend),
@@ -1037,6 +1130,23 @@ def _alive(backend: str, *, timeout: float = 1.5) -> dict:
                                      headers={"Accept": "*/*"})
         with urllib.request.urlopen(req, timeout=timeout):
             return {"ok": True, "reason": ""}
+    except urllib.error.HTTPError as exc:
+        # ANY HTTP STATUS PROVES A SERVER IS THERE, INCLUDING 404. urlopen
+        # raises on 4xx/5xx, so a blanket except reported "nothing answered"
+        # for a backend that was running perfectly — reported from the field
+        # against a trellis.cpp release whose build serves the submit and poll
+        # paths but not /health. available(probe=True) called it dead and
+        # choose() could never select it, while naming the backend by hand
+        # worked, which is the signature of a probe wrong about liveness rather
+        # than a server that is down.
+        #
+        # Liveness is "something is listening and speaking HTTP". Whether that
+        # something implements this particular path is a different question, and
+        # not one a reachability check should refuse a working server over.
+        return {"ok": True, "reason": "",
+                "note": f"{url} answered {exc.code} rather than a health body — "
+                        f"the server is up; this build does not implement that "
+                        f"path"}
     except Exception as exc:                                     # noqa: BLE001
         reason = getattr(exc, "reason", None) or exc
         return {"ok": False,
@@ -1139,7 +1249,7 @@ def capabilities(backend: str) -> dict:
         "vram_gb": spec.get("vram_gb"),
         "windows": spec.get("windows", ""),
         "weights": spec.get("weights", ""),
-        "licence": dict(spec["licence"]),
+        "licence": effective_licence(spec),
         "implemented": spec.get("implemented", True),
         "note": spec.get("note", ""),
     }
@@ -1194,6 +1304,13 @@ def price_for(backend: str, *, texture: bool = True, quad: bool = False,
     spec = _spec(backend)
     if spec["kind"] == "local":
         return 0.0
+    if spec.get("delegate") == "krea":
+        # The rate lives in krea.MODELS_3D, not here — one price table, so a
+        # measurement added there reaches this quote without being copied. It
+        # returns None for a model nobody has been invoiced for, which is the
+        # answer this function wants anyway.
+        from bgate_adapters import krea
+        return krea.price_for_3d()
     credits = credits_for(backend, texture=texture, quad=quad,
                           detailed_texture=detailed_texture, rig=rig,
                           animations=animations)
@@ -1263,9 +1380,22 @@ def check_input(path: str | os.PathLike[str]) -> dict:
         # Not fatal anywhere, but it is the failure that produces geometry made
         # of background. bgate_core.chroma already produces the keyed plate for
         # the sprite path, and it is the right input here for the same reason.
+        #
+        # MEASURED, same prompt and model, alpha the only difference:
+        #   opaque plate   605s, 21% non-manifold after adopt — quality REFUSED
+        #   keyed plate    216s, 16% — passes
+        # 2.8x the wall clock spent reconstructing a backdrop, and a mesh the
+        # gate then throws out. Worth saying louder than "or expect loose
+        # parts", because the cost lands ten minutes after the mistake.
+        #
+        # NOTE task_kind: chroma.needs_key("character") is False, so a character
+        # plate generated for this path arrives opaque unless keyed=True is
+        # passed. That is the common case, not an edge one.
         warnings.append("the plate has no alpha channel — background pixels "
                         "become geometry on several backends. Key it out first "
-                        "(bgate_core.chroma) or expect loose parts")
+                        "(bgate_core.chroma, keyed=True) or expect loose parts: "
+                        "measured 2.8x slower and 21% non-manifold against 16% "
+                        "for the same subject keyed")
     return {"ok": True, "path": str(p), "size": [w, h], "reason": "",
             "warnings": warnings}
 
@@ -1864,7 +1994,7 @@ def _result(backend: str, **fields) -> dict:
         # `draft=True` is not decoration: nothing downstream may treat this as
         # a finished asset.
         "draft": True, "textured": False, "rigged": False,
-        "licence": dict(spec.get("licence") or {}),
+        "licence": effective_licence(spec),
         "source_image": "", "stage": "",
         "checks": [], "warnings": [], "notes": [],
     }
@@ -1946,7 +2076,10 @@ def generate(image_path: str | os.PathLike[str],
         return out
 
     try:
-        if spec.get("response") == "binary":
+        if spec.get("delegate") == "krea":
+            written, task = _run_krea(image_path, out_path, root=root,
+                                      timeout=timeout, options=options)
+        elif spec.get("response") == "binary":
             written, task = _run_sync(backend, image_path, out_path, root=root,
                                       timeout=timeout, options=options)
         else:
@@ -1976,6 +2109,41 @@ def generate(image_path: str | os.PathLike[str],
     })
     _account(out, root, logical_name, work_item_id)
     return out
+
+
+def _run_krea(image_path, out_path, *, root, timeout: float,
+              options: dict) -> tuple[int, str]:
+    """Hand the plate to krea.generate_3d and report what it wrote.
+
+    The other hosted backends are described declaratively and driven by this
+    module's own HTTP. Krea is not, because krea.py already implements the
+    whole of it — the model table, the multipart submit, the poll shape, the
+    price floor and the refusal on an unpriced model. Two implementations of
+    one API is one too many, and the second would drift.
+
+    Imported inside the function on purpose: this module is careful to pull in
+    nothing it does not need, and a caller who never touches Krea should not
+    load it to ask which backends exist.
+    """
+    from bgate_adapters import krea
+
+    spec = _spec("krea")
+    kwargs = {}
+    for ours, theirs in (spec.get("fields") or {}).items():
+        if ours in options and options[ours] is not None:
+            kwargs[theirs] = options[ours]
+    model = options.get("model") or krea.DEFAULT_MODEL_3D
+    # confirm_unpriced is NOT forwarded from the caller. A model Krea has never
+    # been invoiced for cannot be quoted, and accepting a blind charge is a
+    # decision for whoever is paying — not a default this layer hands through.
+    got = krea.generate_3d(str(out_path), images=[str(image_path)],
+                           model=model, timeout=timeout, root=root, **kwargs)
+    if not got.get("ok"):
+        raise ImageTo3DError(got.get("error") or "krea returned no mesh")
+    written = int(got.get("bytes") or 0)
+    if not written:
+        raise ImageTo3DError("krea reported success but wrote no bytes")
+    return written, str(got.get("job_id") or "")
 
 
 def _run_job(backend: str, image_path, out_path, *, root, timeout: float,

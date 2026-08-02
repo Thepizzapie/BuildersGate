@@ -1140,6 +1140,90 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
 
 @_tool
+def blender_humanoid_template() -> dict:
+    """The shipped humanoid skeleton and the pose plate to generate against.
+
+    START A CHARACTER HERE. Every generated mesh used to invent its own
+    proportions, so the skeleton had to be bent to fit each one and no two
+    characters could share an animation. Conditioning the PLATE on this
+    reference inverts that — the art conforms to the skeleton, and a clip
+    authored for one character plays on the next.
+
+    Measured on one character, bones further than 6 cm from any mesh vertex:
+      template scaled by height only ............ 16 of 24
+      landmark fitting alone ..................... 5 of 23
+      plate conditioned on this reference alone .. 8 of 23
+      BOTH ....................................... 0 of 23, and 0 unweighted
+
+    Returns the reference image to pass as `ref_images` to image_generate, the
+    prompt clause that holds the stance, and the 23 Godot-profile bone names
+    every humanoid from this pipeline carries — so BoneMap retargeting works
+    and animations move between characters.
+
+    The five-step path:
+      1. image_generate(prompt + pose_clause, ref_images=[pose_front])
+      2. key it — an opaque plate becomes geometry, measured 2.8x slower and
+         21% non-manifold against 16% keyed
+      3. blender_generate(plate, out)          draft mesh
+      4. blender_rig(mesh, out)                adopt, fit, bind, PROVE it
+      5. godot_deliver_asset(project, rigged)  .tscn, verified in-engine
+    """
+    try:
+        return _blender.humanoid_template()
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_rig(model: str, out_path: str, kind: str = "humanoid",
+                height: float = 1.8, budget: int = 0, orient: bool = True,
+                armature_name: str = "Skeleton", timeout: int = 900) -> dict:
+    """Take a GENERATED mesh to a bound, weighted character an engine can move.
+
+    Every image-to-3D backend returns `rigged: false` — geometry and nothing
+    else. This is the missing step between that and a character: adopt the mesh
+    (weld, decimate, scale, orient, ground), fit a skeleton to its own measured
+    height, bind it, and PROVE the bind took.
+
+    THE PROOF IS `unweighted`, AND NOTHING CHEAPER WORKS. Blender's parent_set
+    returns cleanly, creates all 22 vertex groups, and can leave every one of
+    them empty. The modifier attaches. Godot loads it and shows a Skeleton3D.
+    The character animates not at all. MEASURED on a real generation: 64,878 of
+    64,878 vertices carrying no weight with every other check green.
+
+    Adopt and bind happen in ONE Blender session on purpose. Round-tripping
+    through a file between them is what produced that failure: glTF re-import
+    carries a root transform, the skeleton lands in a different space from the
+    mesh, and heat finds no vertices near any bone. Same mesh in one session:
+    3 of 19,556.
+
+    Bone heat is tried first because it deforms properly; ARMATURE_ENVELOPE is
+    the fallback and is rigid, so elbows and shoulders pinch. `bound_with` says
+    which one shipped. **`rigged` False means the asset is not animatable** —
+    it is not a warning to pass along, it is a refusal.
+
+    kind    "humanoid" reads a front from foot reach; "none" refuses to guess.
+            A subject with no feet (a prop, a bust) wants "none", and then
+            orientation is NEVER ESTABLISHED — check the turnaround yourself.
+    budget  0 leaves the density alone. A local backend with no face_count knob
+            hands back ~280k faces, and post-decimation here is the only lever
+            those users have. 8k shattered a character; 45-60k was clean.
+    """
+    try:
+        result = _blender.rig(model, out_path, kind=kind, height=height,
+                              budget=budget, orient=orient,
+                              armature_name=armature_name, timeout=timeout)
+        if result.get("ok"):
+            _log("blender",
+                 f"rigged {model} -> {result.get('bound_with')} "
+                 f"({result.get('unweighted_pct')}% unweighted)",
+                 ref=str(out_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def blender_texture(model: str, image: str, out_path: str, material: str = "",
                     all_slots: bool = False, roughness: str = "",
                     metallic: str = "", normal: str = "", emission: str = "",
@@ -1370,13 +1454,20 @@ def blender_generate(image: str, out_path: str, backend: str = "",
                             timeout=float(timeout), logical_name=label,
                             **opts)
         got.setdefault("quote", quote)
-        if got.get("ok") and root and got.get("out_path"):
+        # generate() names the written file `path`, the same key every other
+        # adapter here returns. This asked for `out_path` — the name of THIS
+        # function's argument, never a key on the result — so the guard was
+        # always false and the mesh landed on disk unregistered: invisible to
+        # the dashboard and to art QA, which is the one failure a generated
+        # draft must not have.
+        if got.get("ok") and root and got.get("path"):
             try:
                 got["artifact"] = _register_artifact(
-                    root, got["out_path"], label or _Path(out_path).stem,
+                    root, got["path"], label or _Path(out_path).stem,
                     producer="blender_generate", refs=[str(image)],
                     metadata={"backend": picked, "draft": True,
-                              "licence": quote["licence"], "plate": str(image)})
+                              "licence": got.get("licence") or quote["licence"],
+                              "plate": str(image)})
             except Exception:
                 pass                       # a mesh on disk beats a bookkeeping raise
         return got
@@ -1667,16 +1758,53 @@ def _pinned_refs(root, spec: str) -> tuple[list[str], list[str]]:
     return ([p["name"] for p in chosen], [p["path"] for p in chosen])
 
 
+def _pick_provider(asked: str = "") -> str:
+    """Which image provider to use: what was asked for, else what is CONFIGURED.
+
+    Defaulting to a constant is how this broke. `image_generate` was pinned to
+    openai, so a project holding only KREA_API_KEY — a key `.env.example` and
+    the setup docs both tell people to set — got "OPENAI_API_KEY not set" from
+    the one tool most likely to be reached first, while krea sat configured and
+    unused two functions away.
+
+    An explicit argument always wins, including when its key is missing: the
+    caller gets that provider's own error, which names the key to set, rather
+    than a silent substitution that generates against a model they did not ask
+    for and bills them for it.
+    """
+    asked = (asked or "").strip().lower()
+    if asked:
+        return asked
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("KREA_API_KEY"):
+        return "krea"
+    # Neither configured: return the historical default so the error a caller
+    # sees is the familiar "OPENAI_API_KEY not set", not a surprise about a
+    # provider they never mentioned.
+    return "openai"
+
+
 @_tool
 def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                    quality: str = "medium", transparent: bool = False,
                    ref_images: Optional[list[str]] = None,
                    use_pinned: str = "", anchors: Optional[list[str]] = None,
                    task_kind: str = "", tileable: bool = False,
-                   ref_strength: float = 0.5) -> dict:
-    """Generate PAINTED art via gpt-image — portraits, select-screen cards,
-    title splashes, textures, decals, stage paint-overs. Costs real money per
-    image (~$0.02-0.19).
+                   ref_strength: float = 0.5, provider: str = "",
+                   model: str = "") -> dict:
+    """Generate PAINTED art — portraits, select-screen cards, title splashes,
+    textures, decals, stage paint-overs. Costs real money per image
+    (~$0.02-0.19).
+
+    provider  "" picks from what is CONFIGURED — openai if OPENAI_API_KEY is
+              set, else krea if KREA_API_KEY is. Name one to force it, and you
+              get that provider's own error if its key is missing rather than a
+              silent substitution that bills you for a model you did not ask
+              for. This was pinned to openai, so a project holding only a Krea
+              key could not reach this tool at all while krea sat configured
+              and unused.
+    model     provider-specific; "" takes that provider's default.
 
     Division of labor: use blender_sprites for anything needing the SAME
     character across multiple frames (an image model can't hold a rig steady);
@@ -1739,7 +1867,15 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         # keyed=None hands the decision to task_kind (chroma.needs_key). With no
         # task_kind that answers False, which is exactly what this tool did
         # before any of these parameters existed.
-        result = _chroma.generate(prompt, str(out), provider="openai",
+        # PROVIDER IS A CHOICE NOW, not a constant. This was hardcoded to
+        # openai, so a user whose only key is KREA_API_KEY — a key the setup
+        # docs tell them to configure — could not reach this tool at all, and
+        # Krea images were only obtainable through image_sprites and
+        # image_talkhead, the two tools that happened to expose `provider`.
+        # chroma.generate has dispatched to either since it was written; the
+        # tool simply never passed the choice along.
+        result = _chroma.generate(prompt, str(out), provider=_pick_provider(provider),
+                                  model=model,
                                   task_kind=task_kind,
                                   keyed=True if transparent else None,
                                   size=size, quality=quality, transparent=False,
@@ -2985,7 +3121,7 @@ def godot_templates() -> dict:
 
 @_tool
 def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
-                   force: bool = False) -> dict:
+                   force: bool = False, replace: bool = False) -> dict:
     """Create a runnable Godot project wired for playtesting.
 
     kind: 2d (platformer slice) | 3d (first-person slice). dest defaults to
@@ -2994,11 +3130,32 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
     The template ships the BGate telemetry autoload already registered, and a
     player whose feel tunables (gravity, fall_multiplier, coyote_time) are both
     exported AND emitted on jump/land — so the first playtest already produces
-    the telemetry join. Refuses a non-empty dest unless force=True.
+    the telemetry join.
+
+    A non-empty dest is refused unless force or replace, and THOSE TWO ARE NOT
+    THE SAME THING:
+
+      force=True    fill in WHAT IS MISSING. A file that already matches is left
+                    alone; a file that differs is the user's and is SKIPPED, not
+                    overwritten. This is the one to reach for to top up a
+                    missing addon or a deleted script.
+      replace=True  put the template back over the top, and copy each victim to
+                    <name>.bak first.
+
+    force used to mean what replace means now, and it was a data-loss bug in a
+    feature's clothing: someone topping up one missing file lost their
+    project.godot, their player.gd and their export_presets.cfg in place. That
+    last one is unrecoverable in the usual case — the .gitignore this same
+    template stamps excludes export_presets.cfg, so the customised export
+    targets were not in git either.
+
+    The result lists `created`, `unchanged`, `skipped` and `replaced`, so say
+    what happened rather than letting the user find it in a diff.
     """
     try:
         target = dest or str(_Path(_root()) / "game")
-        result = _scaffold.new_project(target, name, kind=kind, force=force)
+        result = _scaffold.new_project(target, name, kind=kind, force=force,
+                                       replace=replace)
         _log("scaffold", f"scaffolded {kind} project {name!r}", ref=result["path"])
         return result
     except Exception as exc:
@@ -3028,6 +3185,13 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     imports with zero surfaces is a silent failure, and this catches it by
     checking the engine's view, not the file's presence. The end of the
     Blender→Godot round trip.
+
+    THE DESTINATION IS KEYED ON THE FILENAME ALONE, so a second `hero.glb` from
+    a different output directory lands on the first one and wins. Keeping the
+    existing .import and its uid is right — every .tscn in the project points at
+    that uid — but the mesh underneath it has changed, and `replaced` in the
+    result is where that is said. Read it before telling anyone the import was
+    clean.
 
     godot_project: the directory holding project.godot.
     """
@@ -3068,10 +3232,11 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
                         dest_rel: str = "assets", scene_rel: str = "scenes",
                         script_res: str = "", physics: str = "auto",
                         shape_type: str = "trimesh", body_type: str = "static",
-                        character_body: str = "CharacterBody3D",
+                        character_body: str = "auto",
                         at: float = 1.2, min_size_m: float = 0.05,
                         max_size_m: Optional[float] = None,
-                        nominal_size_m: float = 1.8, label: str = "",
+                        nominal_size_m: float = 1.8, with_camera: bool = False,
+                        overwrite_scene: bool = False, label: str = "",
                         timeout: int = 300) -> dict:
     """Take a finished .glb the rest of the way — into the engine, into a scene.
 
@@ -3080,9 +3245,9 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     scene under BLENDER lights. Neither asks the engine anything, so a rig that
     did not import, a texture that did not travel, a 40x scale and an asset with
     no collider were invisible by construction. THIS is where an asset stops
-    being a file and becomes a thing in the game: imported, given generated
-    colliders, instanced under a CharacterBody3D in its own .tscn, stood on a
-    lit floor, and photographed by Godot's own renderer.
+    being a file and becomes a thing in the game: imported, given ONE collision
+    strategy, instanced under the body its mesh implies in its own .tscn, stood
+    on a lit floor, and photographed by Godot's own renderer.
 
     THE SCREENSHOT COMES BACK IN THIS RESULT AS AN IMAGE, and it is the first
     time anyone — you included — sees the asset under the renderer that will
@@ -3097,10 +3262,49 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     fails real_world_size and you still get the frame, because a gate that hides
     the asset is one you cannot debug.
 
-    physics: auto (colliders on every UNSKINNED mesh — a skinned character gets
-    the .tscn's capsule instead, since a trimesh body would make it a wall) |
-    all | none. Leave max_size_m unset and the bound comes from what the asset
-    IS: 4 m skinned, 50 m otherwise.
+    THE BODY IS CHOSEN FROM WHAT THE MESH IS, and it decides the collider with
+    it. Skinned (it has a skin, so a Skeleton3D and joints) → CharacterBody3D
+    with a capsule fitted to the TORSO. Unskinned → StaticBody3D whose colliders
+    the importer builds from the real geometry, and no capsule. Pass
+    character_body="RigidBody3D" for a prop that should fall and be pushed, or
+    any class name to override; `root_body` and `collision` in the result say
+    what it became. Every asset used to be wrapped in CharacterBody3D — which
+    only moves when code calls move_and_slide(), so a crate delivered that way
+    never simulated at all — AND carried both an accurate trimesh and an
+    invisible person-shaped capsule on two different bodies at once.
+
+    physics: auto (the strategy above) | all (mesh shapes on every mesh, capsule
+    stands down) | none (importer defaults, capsule is the collider). Leave
+    max_size_m unset and the bound comes from what the asset IS: 4 m skinned,
+    50 m otherwise.
+
+    THE CAPSULE IS SIZED FROM THE TORSO, NOT THE POSE. It used to come off the
+    widest horizontal axis of the merged bounds, so an A-pose handed it the ARM
+    SPAN: a 1.75 m character shipped inside a 1.63 m wide cylinder that could
+    not fit through a human door, and passed the gate because has_collider only
+    counted shapes. has_collider now fails a capsule wider than half the figure
+    it wraps.
+
+    DELIVERING A .glb WHOSE FILENAME IS ALREADY IN assets/ OVERWRITES IT. The
+    destination is keyed on the filename alone, so two different `hero.glb` from
+    two different output directories collide and the second wins under the
+    first's uid. `replaced` in the result names what was overwritten and whether
+    the bytes actually differ.
+
+    REDELIVERING DOES NOT CLOBBER THE SCENE. If <name>.tscn already exists its
+    model ext_resource is repointed at the new import and the node tree is left
+    exactly as the human left it — scripts, extra nodes, tweaked transforms all
+    survive, and `scene_action` in the result says which happened (written /
+    rewired / left_alone). Pass overwrite_scene=True to deliberately throw those
+    edits away. The old behaviour rewrote the file every time, which during one
+    session destroyed the same hand edit five times running.
+
+    with_camera adds a first-person Camera3D to the character. OFF by default,
+    and do not turn it on for anything you intend to instance into a level:
+    Godot makes the first camera into the tree current, and an OBSERVED boot
+    came up looking out of the delivered character's eye sockets instead of the
+    player's. Turn it on only when this scene IS the player (templates/3d's
+    player.gd requires a $Camera3D child).
 
     The frame is archived to the preview gallery and REGISTERED as an artifact
     (`artifact_id`), so art_qa_verdict can be pointed at the in-engine shot
@@ -3122,7 +3326,8 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
             shape_type=shape_type, body_type=body_type,
             character_body=character_body, screenshot_dir=shot_dir, at=at,
             min_size_m=min_size_m, max_size_m=max_size_m,
-            nominal_size_m=nominal_size_m, timeout=timeout)
+            nominal_size_m=nominal_size_m, with_camera=with_camera,
+            overwrite_scene=overwrite_scene, timeout=timeout)
         checks = result.get("checks") or []
         failed = [str(check.get("check")) for check in checks
                   if check.get("required") and not check.get("ok")]

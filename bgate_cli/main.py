@@ -271,6 +271,17 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     project.init(root, name, pitch=pitch, engine="godot", dimension=kind)
 
     print(f"created {name} ({kind}) — {len(made['files'])} files")
+    # SAY WHAT WAS PROTECTED, or a careful run reads as a broken one. `force`
+    # now fills in what is missing and leaves anything the user has edited
+    # alone, so a top-up over a live project legitimately writes nothing —
+    # and "created 0 files" with no further word looks like the command
+    # failed rather than like it declined to overwrite someone's work.
+    if made.get("note"):
+        print(made["note"])
+    for entry in made.get("skipped") or []:
+        print(f"  kept your {entry['file']} — {entry['reason']}")
+    for entry in made.get("replaced") or []:
+        print(f"  replaced {entry['file']} (backup: {entry['backup']})")
     print(str(root))
     print()
     print("next:")
