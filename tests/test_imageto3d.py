@@ -744,3 +744,89 @@ class TestBackendTable:
         for key in ("submit_path", "poll_path", "health_path", "upload_path",
                     "view_path"):
             assert spec[key].startswith("/api/"), key
+
+
+class TestKreaBackend:
+    """Krea shipped unreachable, which is the failure this class pins.
+
+    `krea.generate_3d` landed as a Python function that no MCP tool called, so a
+    user whose only key is KREA_API_KEY — the key the setup docs tell them to
+    configure, the one already sitting in the project's .env — could not produce
+    a mesh from a session at all. They needed a Stability/Tripo/Meshy key or a
+    local GPU server instead. It is a BACKEND now rather than a bespoke tool, so
+    it inherits choose(), the licence gate, the price quote and the common
+    result shape instead of reimplementing each.
+    """
+
+    def test_krea_is_a_backend(self):
+        assert "krea" in imageto3d.BACKENDS
+        spec = imageto3d.BACKENDS["krea"]
+        assert spec["kind"] == "hosted"
+        assert spec["env"] == "KREA_API_KEY"
+
+    def test_it_appears_in_status_with_a_reason(self, no_gpu):
+        rows = {b["backend"]: b for b in imageto3d.status()["backends"]}
+        assert "krea" in rows, sorted(rows)
+        assert rows["krea"]["implemented"] is True
+        assert rows["krea"]["available"] is False
+        assert "KREA_API_KEY" in rows["krea"]["reason"]
+
+    def test_the_price_comes_from_kreas_own_table(self):
+        """One price table. A measurement added in krea.py reaches this quote
+        without being copied, and a model nobody has been invoiced for still
+        answers None rather than a guess."""
+        from bgate_adapters import krea
+        assert imageto3d.price_for("krea") == krea.price_for_3d()
+
+    def test_its_licence_is_conditional_so_choose_will_not_take_it(self):
+        """Krea runs open-weight models, so the service's terms and the model's
+        terms are two different questions. Neither is ours to assume."""
+        assert imageto3d.BACKENDS["krea"]["licence"]["code"] == imageto3d.CONDITIONAL
+
+    def test_a_missing_plate_is_refused_before_anything_is_spent(self, monkeypatch):
+        monkeypatch.setenv("KREA_API_KEY", "test-key")
+        got = imageto3d.generate("no/such/plate.png", "out.glb", backend="krea")
+        assert got["ok"] is False
+        assert got["stage"] == "input"
+        # the quote is attached even on refusal — a caller asking "what would
+        # this cost" must get an answer without a successful run
+        assert got["estimated_usd"] == 0.3
+
+
+class TestBackendDiscovery:
+    """What a caller can LEARN about a backend before committing to it."""
+
+    def test_supports_is_surfaced_per_backend(self, no_gpu):
+        """The knobs differ per backend and the difference decides what a user
+        can control. hunyuan-local takes face_count; trellis-cpp does not, so
+        on trellis-cpp there is no way to ask the generator for less geometry
+        and post-generation decimation is the only density lever there is. An
+        agent that cannot see this passes options that are silently dropped."""
+        rows = {b["backend"]: b for b in imageto3d.status()["backends"]}
+        assert "face_count" in rows["hunyuan-local"]["supports"]
+        assert "face_count" not in rows["trellis-cpp"]["supports"]
+        assert rows["trellis-cpp"]["supports"] == ["resolution", "seed"]
+
+    def test_comfy_without_a_workflow_is_not_available(self, has_gpu, monkeypatch):
+        """comfy runs the USER's ComfyUI graph and cannot invent one.
+
+        It used to report available=True with no workflow configured, so
+        choose() could hand back a backend that fails at generation time —
+        after the server is running and the plate has been paid for.
+        """
+        monkeypatch.delenv("BGATE_COMFY_WORKFLOW", raising=False)
+        row = imageto3d.available("comfy")
+        assert row["available"] is False
+        assert "BGATE_COMFY_WORKFLOW" in row["reason"]
+        assert "API format" in row["reason"]
+
+    def test_comfy_with_a_workflow_that_is_not_there_says_so(self, has_gpu,
+                                                             monkeypatch):
+        monkeypatch.setenv("BGATE_COMFY_WORKFLOW", "no/such/graph.json")
+        row = imageto3d.available("comfy")
+        assert row["available"] is False
+        assert "not a file" in row["reason"]
+
+    def test_a_backend_needing_no_graph_is_unaffected(self, has_gpu, monkeypatch):
+        monkeypatch.delenv("BGATE_COMFY_WORKFLOW", raising=False)
+        assert imageto3d.available("trellis-cpp")["available"] is True

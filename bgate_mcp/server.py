@@ -1758,16 +1758,53 @@ def _pinned_refs(root, spec: str) -> tuple[list[str], list[str]]:
     return ([p["name"] for p in chosen], [p["path"] for p in chosen])
 
 
+def _pick_provider(asked: str = "") -> str:
+    """Which image provider to use: what was asked for, else what is CONFIGURED.
+
+    Defaulting to a constant is how this broke. `image_generate` was pinned to
+    openai, so a project holding only KREA_API_KEY — a key `.env.example` and
+    the setup docs both tell people to set — got "OPENAI_API_KEY not set" from
+    the one tool most likely to be reached first, while krea sat configured and
+    unused two functions away.
+
+    An explicit argument always wins, including when its key is missing: the
+    caller gets that provider's own error, which names the key to set, rather
+    than a silent substitution that generates against a model they did not ask
+    for and bills them for it.
+    """
+    asked = (asked or "").strip().lower()
+    if asked:
+        return asked
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("KREA_API_KEY"):
+        return "krea"
+    # Neither configured: return the historical default so the error a caller
+    # sees is the familiar "OPENAI_API_KEY not set", not a surprise about a
+    # provider they never mentioned.
+    return "openai"
+
+
 @_tool
 def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                    quality: str = "medium", transparent: bool = False,
                    ref_images: Optional[list[str]] = None,
                    use_pinned: str = "", anchors: Optional[list[str]] = None,
                    task_kind: str = "", tileable: bool = False,
-                   ref_strength: float = 0.5) -> dict:
-    """Generate PAINTED art via gpt-image — portraits, select-screen cards,
-    title splashes, textures, decals, stage paint-overs. Costs real money per
-    image (~$0.02-0.19).
+                   ref_strength: float = 0.5, provider: str = "",
+                   model: str = "") -> dict:
+    """Generate PAINTED art — portraits, select-screen cards, title splashes,
+    textures, decals, stage paint-overs. Costs real money per image
+    (~$0.02-0.19).
+
+    provider  "" picks from what is CONFIGURED — openai if OPENAI_API_KEY is
+              set, else krea if KREA_API_KEY is. Name one to force it, and you
+              get that provider's own error if its key is missing rather than a
+              silent substitution that bills you for a model you did not ask
+              for. This was pinned to openai, so a project holding only a Krea
+              key could not reach this tool at all while krea sat configured
+              and unused.
+    model     provider-specific; "" takes that provider's default.
 
     Division of labor: use blender_sprites for anything needing the SAME
     character across multiple frames (an image model can't hold a rig steady);
@@ -1830,7 +1867,15 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         # keyed=None hands the decision to task_kind (chroma.needs_key). With no
         # task_kind that answers False, which is exactly what this tool did
         # before any of these parameters existed.
-        result = _chroma.generate(prompt, str(out), provider="openai",
+        # PROVIDER IS A CHOICE NOW, not a constant. This was hardcoded to
+        # openai, so a user whose only key is KREA_API_KEY — a key the setup
+        # docs tell them to configure — could not reach this tool at all, and
+        # Krea images were only obtainable through image_sprites and
+        # image_talkhead, the two tools that happened to expose `provider`.
+        # chroma.generate has dispatched to either since it was written; the
+        # tool simply never passed the choice along.
+        result = _chroma.generate(prompt, str(out), provider=_pick_provider(provider),
+                                  model=model,
                                   task_kind=task_kind,
                                   keyed=True if transparent else None,
                                   size=size, quality=quality, transparent=False,
