@@ -451,20 +451,130 @@ class TestImportSettingsText:
         assert 'importer="scene"' in text
         assert "gltf/naming_version=2" in text
 
-    def test_an_existing_multiline_block_is_replaced_whole(self, tmp_path):
+    def test_an_existing_multiline_block_is_merged_not_replaced(self, tmp_path):
+        """This assertion used to demand the opposite — that `PATH:Old` was
+        GONE — and that was the bug written down as a requirement.
+
+        `_subresources` is where Godot's Import dock puts everything it sets per
+        node: material extraction, animation loop mode and slices, LOD
+        generation, "skip import". write_import_settings' own docstring claimed
+        to preserve what it does not set, which was true of the flat `[params]`
+        keys and false here — the value was rendered fresh from physics_nodes,
+        so ONE godot_deliver_asset silently deleted every one of those settings
+        in a file nobody thinks to open.
+        """
         asset = tmp_path / "a.glb"
         asset.write_bytes(b"glTF")
         asset.with_suffix(".glb.import").write_text(
             "[remap]\n\n[params]\n\n_subresources={\n"
             '"nodes": {\n"PATH:Old": {\n"generate/physics": true\n}\n}\n}\n'
             "gltf/naming_version=2\n", encoding="utf-8")
-        godot.write_import_settings(str(tmp_path), "a.glb",
-                                    physics_nodes={"Mesh": {}}, purge=False)
+        got = godot.write_import_settings(str(tmp_path), "a.glb",
+                                          physics_nodes={"Mesh": {}},
+                                          purge=False)
         text = asset.with_suffix(".glb.import").read_text(encoding="utf-8")
         assert text.count("_subresources={") == 1
-        assert '"PATH:Old"' not in text
+        assert '"PATH:Old"' in text, "a node we never named was deleted"
+        assert got["preserved_nodes"] == ["PATH:Old"]
+        assert got["merge_error"] == ""
         assert '"PATH:Mesh"' in text
         assert "gltf/naming_version=2" in text
+        # WHOLE, not "as much of it as a lazy pattern matched". Counting keys
+        # cannot see the difference; counting braces can.
+        assert text.count("{") == text.count("}"), text
+
+    def test_a_nodes_own_non_collider_settings_survive_a_delivery(self, tmp_path):
+        """The narrower half of the same defect: it is not enough to keep OTHER
+        nodes. A node we do set colliders on can carry the Import dock's
+        material extraction on the same key, and rebuilding its dictionary from
+        physics_nodes threw that away too."""
+        asset = tmp_path / "a.glb"
+        asset.write_bytes(b"glTF")
+        asset.with_suffix(".glb.import").write_text(
+            "[remap]\n\n[params]\n\n_subresources={\n"
+            '"nodes": {\n"PATH:Mesh": {\n"use_external/enabled": true,\n'
+            '"use_external/path": "res://mat.tres"\n}\n}\n}\n',
+            encoding="utf-8")
+        godot.write_import_settings(
+            str(tmp_path), "a.glb",
+            physics_nodes={"Mesh": {"shape_type": "box"}}, purge=False)
+        text = asset.with_suffix(".glb.import").read_text(encoding="utf-8")
+        assert '"use_external/path": "res://mat.tres"' in text
+        assert '"generate/physics": true' in text
+        assert f'"physics/shape_type": {godot.SHAPE_TYPES["box"]}' in text
+
+    def test_an_unparseable_value_is_reported_not_swallowed(self, tmp_path):
+        """Merging means reading, and a Variant constructor we cannot read is
+        the one case that still falls back to replacing. Falling back is
+        acceptable; doing it silently is how the defect above shipped."""
+        asset = tmp_path / "a.glb"
+        asset.write_bytes(b"glTF")
+        asset.with_suffix(".glb.import").write_text(
+            "[remap]\n\n[params]\n\n_subresources={\n"
+            '"nodes": {\n"PATH:Old": {\n"offset": Vector3(0, 1, 0)\n}\n}\n}\n',
+            encoding="utf-8")
+        got = godot.write_import_settings(str(tmp_path), "a.glb",
+                                          physics_nodes={"Mesh": {}},
+                                          purge=False)
+        assert got["ok"] is True
+        assert got["merge_error"], "an unreadable value was discarded in silence"
+
+    def test_the_second_delivery_of_an_asset_leaves_a_parseable_import(
+            self, tmp_path):
+        """REPRODUCED BY EXECUTION, and the reason this test exists rather than
+        the key-count assertions above: the old pattern was lazy and stopped at
+        the first line-anchored `}`, which closes the inner "PATH:<node>" dict
+        and not the `_subresources` value.
+
+        The FIRST delivery never showed it — a fresh .import carries the empty
+        single-line form, which the other branch handles. The SECOND delivery,
+        i.e. every art iteration after the first, replaced the head of the block
+        and stranded `}\\n}` behind it: 3 opening braces, 5 closing, and a file
+        Godot's ConfigFile refuses outright. The importer settings then silently
+        stop applying, so the symptom is an asset that arrives with no collider
+        and an .import nobody thinks to open."""
+        asset = tmp_path / "a.glb"
+        asset.write_bytes(b"glTF")
+        ini = asset.with_suffix(".glb.import")
+        ini.write_text('[remap]\n\nimporter="scene"\n\n[params]\n\n'
+                       "_subresources={}\ngltf/naming_version=2\n",
+                       encoding="utf-8")
+
+        for shape in ("trimesh", "box", "capsule"):
+            godot.write_import_settings(
+                str(tmp_path), "a.glb",
+                physics_nodes={"Mesh": {"shape_type": shape}}, purge=False)
+            text = ini.read_text(encoding="utf-8")
+            assert text.count("{") == text.count("}"), (shape, text)
+            assert text.count("_subresources={") == 1, (shape, text)
+            assert "gltf/naming_version=2" in text, (shape, text)
+
+        # And the last write is the one that survives, whole.
+        final = ini.read_text(encoding="utf-8")
+        assert f'"physics/shape_type": {godot.SHAPE_TYPES["capsule"]}' in final
+
+    def test_a_block_that_never_closes_is_left_alone(self, tmp_path):
+        """A truncated .import cannot be edited safely — where the value ends is
+        precisely the thing that is unknowable. Better a duplicate key the
+        engine resolves than a guess that eats the next section."""
+        body = ('_subresources={\n"nodes": {\n"PATH:Old": {\n'
+                '"generate/physics": true\n')
+
+        text, replaced = godot._replace_subresources(body, "_subresources={}")
+
+        assert replaced is False
+        assert text == body
+
+    def test_a_brace_inside_a_quoted_node_path_does_not_end_the_block(self):
+        """Node names come from the DCC and are not sanitised anywhere in this
+        pipeline; a `}` in one must not truncate the value."""
+        body = ('_subresources={\n"nodes": {\n"PATH:Odd}Name": {\n'
+                '"generate/physics": true\n}\n}\n}\ngltf/naming_version=2\n')
+
+        text, replaced = godot._replace_subresources(body, "_subresources={}")
+
+        assert replaced is True
+        assert text == "_subresources={}\ngltf/naming_version=2\n"
 
     def test_the_cached_import_is_purged_so_a_reimport_actually_runs(
             self, tmp_path):
@@ -557,10 +667,50 @@ class TestGeneratedSceneText:
 
     def test_the_capsule_is_fitted_to_the_measured_bounds(self):
         """The template's capsule was a guess (0.4 / 1.8) that no asset was
-        ever checked against. This one comes from the engine's own numbers."""
+        ever checked against. This one comes from the engine's own numbers.
+
+        It used to take HALF THE WIDEST horizontal axis, which this test pinned
+        at 0.50 for a 1.0 x 2.4 x 0.9 box. That is wrong for anything posed:
+        measured on a delivered 1.75 m character with her arms out, the widest
+        axis was her 1.63 m arm span and the capsule came out radius 0.8158 —
+        a 1.63 m wide cylinder around a person, who then cannot fit through a
+        human-sized door and stands 0.8 m off every wall. `has_collider` only
+        counts shapes, so it shipped green.
+
+        The rule now takes the SMALLER horizontal (limbs inflate one axis far
+        more than the other, so the other still reads the torso) and then caps
+        an upright figure at a human proportion of its own height, which is the
+        backstop for a pose that inflates both. Here: min(1.0, 0.9)/2 = 0.45,
+        capped to 2.4 * 0.17 = 0.408.
+        """
         text = self._scene(bounds_size=[1.0, 2.4, 0.9])
         assert "height = 2.4000" in text
-        assert re.search(r"radius = 0\.50", text), text
+        radius = float(re.search(r"radius = ([\d.]+)", text).group(1))
+        assert radius == pytest.approx(2.4 * 0.17, abs=1e-3), text
+        assert radius < 0.9 * 0.5, "the smaller horizontal must bound it"
+
+    def test_an_arms_out_character_does_not_get_a_capsule_the_width_of_her_span(self):
+        """The measurement that started this: 1.6316 x 1.75 x 0.32 gave 0.8158.
+
+        Her arm span is the X extent. Nothing about a person's collision volume
+        should follow the pose — she is the same width in a walk cycle as in a
+        T-pose, and the capsule has to hold for both.
+        """
+        text = self._scene(bounds_size=[1.6316, 1.75, 0.32])
+        radius = float(re.search(r"radius = ([\d.]+)", text).group(1))
+        assert radius < 0.35, f"capsule still tracking the arm span: {radius}"
+        assert radius == pytest.approx(0.16, abs=0.01), text
+
+    def test_a_crate_keeps_its_own_width(self):
+        """The humanoid cap must not squeeze anything that is not a humanoid.
+
+        A 1 m cube has none of a person's proportions, and the cap is gated on
+        the asset being taller than it is wide for exactly this reason — a
+        crate given a human's radius would rattle around inside its own mesh.
+        """
+        text = self._scene(bounds_size=[1.0, 1.0, 1.0])
+        radius = float(re.search(r"radius = ([\d.]+)", text).group(1))
+        assert radius == pytest.approx(0.5, abs=0.01), text
 
     def test_a_squat_asset_does_not_produce_a_capsule_godot_rejects(self):
         """Godot refuses a capsule whose radius exceeds half its height. A
@@ -598,10 +748,14 @@ class TestGeneratedSceneText:
 class TestPreviewSceneText:
     def test_the_preview_camera_wins_over_the_characters_own(self):
         """MEASURED, and the reason the first frame off this path was a
-        full-screen blur: the character scene carries a first-person Camera3D
-        (player.gd needs $Camera3D), Godot makes the FIRST camera into the tree
-        current, and the subject is instanced before the preview camera. The
-        screenshot was taken from inside the character's head."""
+        full-screen blur: the character scene used to carry a first-person
+        Camera3D (player.gd needs $Camera3D), Godot makes the FIRST camera into
+        the tree current, and the subject is instanced before the preview
+        camera. The screenshot was taken from inside the character's head.
+
+        The character no longer ships a camera by default, and this assertion
+        stays anyway: with_camera=True, or any camera a human adds to the
+        subject, would otherwise take the frame back off us without a word."""
         text = godot.preview_scene_text("res://scenes/hero.tscn",
                                         longest_axis=1.8)
         assert '[node name="PreviewCamera" type="Camera3D" parent="."]' in text
