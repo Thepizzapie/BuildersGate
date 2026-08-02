@@ -69,6 +69,67 @@ it binds to is the same one every time.
   no fallback and raised `TypeError` mid-render on 5.x. The choice is made inside
   Blender against the enum the install offers.
 
+### Fixed — Godot
+
+Eight defects in the Godot surface, found by delivering a character into a real
+project and booting it. Every one is a tool assuming it owns something the user
+also owns, and a check counting the countable thing instead of measuring the
+real one.
+
+- **Every second delivery corrupted the asset's `.import`.** The `_subresources`
+  regex was lazy and stopped at the `}` closing the inner `"PATH:<node>": {`
+  dict rather than the outer brace. A fresh `.import` uses the single-line form,
+  so the FIRST delivery was safe and the second — every art iteration — left
+  `}
+}` stranded and the file unparseable by Godot's ConfigFile. Reproduced at
+  3 open / 5 close braces. The test passed the whole time because it counted
+  keys and never checked balance.
+- **The collision capsule tracked the pose, not the body.** Radius came from
+  half the widest horizontal axis, which on a 1.75 m character with her arms out
+  is her 1.6316 m span: **radius 0.8158**, a 1.63 m cylinder around a person who
+  cannot then fit through a human-sized door. `has_collider` only counts shapes,
+  so it shipped green. Now the smaller horizontal, capped for an upright figure
+  at a human proportion of its height — gated on taller-than-wide so a crate
+  keeps its own radius.
+- **A crate is not a character.** Everything was wrapped in `CharacterBody3D`,
+  which only moves when code calls `move_and_slide()`, so a delivered prop never
+  simulated — and got a capsule meant for a person on top of the trimesh the
+  importer had already built from its geometry. Skinned meshes get
+  `CharacterBody3D` and the capsule; unskinned get `StaticBody3D` and the
+  importer's colliders, not both.
+- **A generated scene shipped a `Camera3D` that hijacked the view.** Observed: a
+  delivered pirate instanced into a level with a player camera booted looking
+  out of her eye sockets. Opt-in now, and never `current`. `templates/3d`'s
+  `player.gd` took `$Camera3D` with no guard, so the fix alone would have
+  null-dereffed it once per mouse event — verified on Godot 4.7.1 that the old
+  spelling is silently null and fails on first touch.
+- **Redelivery no longer regenerates the character scene.** It repoints the
+  model `ext_resource` and keeps your node tree, because the point of iterating
+  on a `.glb` is to see the new mesh and a skipped scene would keep showing the
+  old one. `scene_action` reports written/rewired/left_alone, and `left_alone`
+  marks the step not-ok — silence there reads as a delivery that never wired the
+  mesh in. `overwrite_scene=True` is the escape hatch. This also stops
+  `main.glb` replacing the scaffold's `scenes/main.tscn`.
+- `_subresources` is merged rather than rebuilt, so per-node settings made in
+  Godot's Import dock survive a delivery. `import_asset` reports a same-named
+  asset it replaced instead of overwriting in silence. `screenshot()` and
+  `evidence()` no longer strand an autoload in the project when the server is
+  killed mid-run. The cache purge escapes the asset name — `hero[1].glb`
+  produced a character class that could not match its own entries, so the purge
+  silently no-opped and presented as "the tool ignored my collider settings".
+
+- **`bgate init --force` filled a project in; it should not empty one out.**
+  Reproduced: customise `scripts/player.gd`, `export_presets.cfg` and
+  `.gitignore`, re-run with `force=True`, and all three were overwritten in
+  place with nothing said. `templates/shared/.gitignore` excludes
+  `export_presets.cfg` from git, so for a user with customised export targets
+  that one was unrecoverable. **`force` now means "fill in what is missing"** —
+  identical files skipped, differing files left alone and reported. `replace=True`
+  is the new explicit overwrite and takes a `.bak` first, falling through to
+  `.bak.1` rather than destroying the previous rescue copy. CLAUDE.md states the
+  contract this restores: scaffolding over someone's existing game is the one
+  unrecoverable mistake available here.
+
 ### Changed
 
 - The unkeyed-plate warning carries its measurement. Same prompt and model,
