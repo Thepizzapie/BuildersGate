@@ -69,6 +69,46 @@ it binds to is the same one every time.
   no fallback and raised `TypeError` mid-render on 5.x. The choice is made inside
   Blender against the enum the install offers.
 
+### Added — the paths a session could not reach
+
+Field feedback: "ComfyUI support out of the box (along with the better paid
+models) would be fantastic." Three separate things were stopping that, and none
+of them was the generator.
+
+- **Krea 3D shipped unreachable.** `krea.generate_3d` landed as a Python
+  function that no MCP tool called — grep across the whole codebase found no
+  caller outside `krea.py` itself. So a user whose only key is `KREA_API_KEY`,
+  the key `.env.example` and the setup docs both tell them to set, **could not
+  produce a mesh from a session at all**; they needed a Stability/Tripo/Meshy
+  key or a local GPU server instead. It is a backend now, delegating to
+  `krea.py` rather than re-describing the HTTP, so there is one model table and
+  one price table — and it inherits `choose()`, the licence gate, the price
+  quote and the common result shape. Verified with a real generation: 15.7 MB,
+  93 s, `estimated_usd 0.30` quoted before the run. `choose()` correctly refuses
+  to select it automatically, because Krea runs the same open-weight models one
+  could self-host and the service's terms and the model's terms are two
+  different questions.
+- **Which knobs a backend takes is now discoverable.** `status()` reported
+  availability, VRAM, weights and licence but never `supports`, so an agent had
+  no way to learn that `hunyuan-local` accepts `face_count`, `steps`,
+  `octree_resolution` and `guidance` while `trellis-cpp` accepts only `seed` and
+  `resolution`. That decides what a user can control: on `trellis-cpp` there is
+  no way to ask the generator for less geometry, so post-generation decimation
+  is the only density lever that exists.
+- **ComfyUI claimed to be available with no workflow.** It runs *your* ComfyUI
+  graph and can only substitute two placeholders into it — the adapter cannot
+  invent one. Reporting `available: True` regardless meant `choose()` could hand
+  back a backend that fails at generation time, after the server is running and
+  the plate has been paid for. It refuses up front now and names
+  `BGATE_COMFY_WORKFLOW` and "Save (API format)". **No default workflow JSON
+  ships**: authoring one without the Trellis2 node pack installed would be
+  untested JSON presented as working.
+- **`image_generate` was hardcoded to OpenAI**, so the same Krea-only user could
+  not reach the most obvious tool in the product while Krea sat configured two
+  functions away. `provider=""` picks from what is configured; an explicit value
+  always wins, including when its key is missing, because a silent substitution
+  bills someone for a model they did not ask for.
+
 ### Fixed — Godot
 
 Eight defects in the Godot surface, found by delivering a character into a real
