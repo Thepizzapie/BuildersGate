@@ -87,8 +87,13 @@ class TestGitCarriesWhatShips:
     """
 
     def _untracked(self, tree: Path) -> list[str]:
+        # -uall, or an entirely-untracked DIRECTORY collapses to one entry
+        # ending in "/" — which the filter below drops, so a whole vendored
+        # tree could go missing from the wheel and still pass this test. That
+        # is the exact shape of the bug the class exists to catch.
         out = subprocess.run(
-            ["git", "status", "--porcelain", "--ignored=matching", "--", str(tree)],
+            ["git", "status", "--porcelain", "-uall", "--ignored=matching",
+             "--", str(tree)],
             cwd=REPO, capture_output=True, text=True, timeout=60)
         assert out.returncode == 0, out.stderr
         bad = []

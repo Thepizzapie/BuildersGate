@@ -27,12 +27,27 @@ window.Atlas = (() => {
   function load(force){
     if (!force && map && Date.now() - fetchedAt < TTL_MS) return Promise.resolve(map);
     if (inflight) return inflight;
-    inflight = fetch("/api/screenmap")
+    // `force` has to reach the SERVER's cache too, not just skip this one.
+    // The scan is memoised for 90s behind /api/screenmap, so a "reread" that
+    // asked for the same URL got the same stale graph handed straight back and
+    // the button looked broken — which is the whole thing it exists to rule out.
+    inflight = fetch(force ? "/api/screenmap?fresh=1" : "/api/screenmap")
       .then(r => r.json())
       .then(d => {
         inflight = null;
         if (d && !d.error){ map = d; fetchedAt = Date.now(); cacheSummary(d); }
-        else if (d && d.error){ map = d; }
+        // AN ERROR MUST NOT EVICT A GOOD MAP. Atlas.map is the shared copy the
+        // scene builder and the code editor read their screen list from, so
+        // overwriting it with an error object left `map.screens` undefined and
+        // collapsed the scene picker to its one-option fallback — the CURRENT
+        // scene and nothing else. On a project whose declared boot scene is the
+        // title, that reads exactly like "the builder is locked to the title
+        // page", and it outlives the error: those panels only re-render on user
+        // action, so the picker stays collapsed long after the scan recovers.
+        // One failed poll during a `bgate serve` restart was enough to trigger
+        // it. Keep the last good scan and let the caller show d.error instead —
+        // activate() already paints it from its own `d`, not from here.
+        else if (d && d.error && !map){ map = d; }
         return d;
       })
       .catch(e => { inflight = null; throw e; });

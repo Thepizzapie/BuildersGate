@@ -72,9 +72,15 @@
   /* What an agent produced, playable/viewable in place. A file path is not
      evidence — the thing the phase MADE is, and until this the only way to see
      it was to guess which asset it was and go find it in the library. */
-  function thumb(art, cls) {
+  /* `item` scopes the image to a run's worktree. A file an isolated agent is
+     editing does not exist at the project root yet, so a thumbnail built
+     without it 404s and paints an empty bordered box — the console says the run
+     is looking at something and then shows nothing. The peek link right next to
+     these already passed item_id; the <img> did not. */
+  function thumb(art, cls, item) {
     const rel = String((art && art.path) || "");
     if (!rel) return "";
+    const scope = item ? `&item_id=${Number(item)}` : "";
     if (IMAGE.test(rel)) {
       const frames = ((art.metadata || {}).frames) || {};
       // Only the rail plays sheets: SpriteAnim has to be mounted after render
@@ -83,8 +89,9 @@
       const count = cls.indexOf("cg-thumb") >= 0 ? Object.keys(frames).length : 0;
       return count > 1
         ? `<div class="${cls} spr-mount" data-rel="${esc(rel)}" data-count="${count}"
+             data-item="${Number(item) || 0}"
              data-fps="8" title="${esc(art.logical_name || rel)} · ${count}f"></div>`
-        : `<img class="${cls}" src="/api/preview?rel=${encodeURIComponent(rel)}"
+        : `<img class="${cls}" src="/api/preview?rel=${encodeURIComponent(rel)}${scope}"
              title="${esc(art.logical_name || rel)}" alt="">`;
     }
     if (AUDIO.test(rel)) {
@@ -916,7 +923,7 @@
              `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}"
                  target="_blank" rel="noopener"
                  data-peek="${esc(rel)}" data-peek-item="${Number(it.id)}"
-                 title="${esc(rel)} — click to expand">${thumb({ path: rel }, "cg-thumb")}</a>`
+                 title="${esc(rel)} — click to expand">${thumb({ path: rel }, "cg-thumb", it.id)}</a>`
            ).join("")}</div>`
         : "";
       // The files the run is working IN, and — because this is the task rail and

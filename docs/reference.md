@@ -53,7 +53,7 @@ Ten views over the same store:
 | Seat workspaces | One workspace per seat, tuned to its craft. Art's is the flagship: every candidate revision beside the reference it was drawn against, two frames stacked with an opacity slider, a `difference` blend and a palette delta, batch approve-reject over a selection, and a dispatch button for an independent QA reviewer that never made the image |
 | Playtests | Recorded sessions: video, transcript, telemetry, the director's triage, editable repro steps, and a bug report exported as markdown or as a zip with the frames it links |
 | Assets | Immutable revisions grouped by logical asset, with an integrity audit |
-| Atlas | Every screen wired to every asset it uses, derived live from the scenes, scripts and SpriteFrames. Click a node to file work against it |
+| Atlas | Every screen wired to every asset it uses, derived live from the scenes, scripts and SpriteFrames. Click a node to file work against it. Four modes: the map, a graph that wires an asset in, a scene builder, and a code editor — the editor lists everything a scene reaches (its resources, plus one hop through what its scripts `preload`), edits them in place, and plays the rebuilt web build in the same pane. A save is refused if the file changed on disk since the tab opened, and refused again if a seat holds a lock on it; the previous bytes land under `.bgate_out/edits/` either way |
 | World bible | A write surface, not a viewer: pillars, constraints, and one drag-ordered list of scope tiers with the cut line as a draggable row in it, plus the lore graph. Every narrative write runs `canon_check` first. A conflict is a 409 carrying its flags, and only a human may override it |
 | Timeline | The causal chain per iteration: goal, source and build snapshot, assets, playtest evidence, decisions, work, resulting build, outcome |
 | Settings | Every switch in one place, from one registry: dispatch, the approval gate, follow-up, notifications, budget, console. Each row says whether the value is the default, stored, or overridden by an environment variable — and a switch that widens a safety guard (`dispatch.allow_dirty`) asks before it is turned off and records that it was |
@@ -185,6 +185,54 @@ input hook, no file access, no overlay.
 CI. Without `BGATE_TELEMETRY` set, the autoload is completely inert. Open the
 game normally and nothing is written.
 
+## Level generation
+
+Two tools. `level_plan` lays out a level and shows it as ASCII; `level_generate`
+does the same and writes it into a scene as `TileMapLayer` nodes.
+
+```bash
+level_plan(width=48, height=32, seed=3)              # look at `ascii`, change seed
+level_generate(godot_project, scene="scenes/level.tscn",
+               tileset="tiles/dungeon.tres", seed=3, create=True)
+```
+
+The layout is BSP: cut the map in two until a piece holds one room, put a room in
+each piece, then **join the two halves of every cut on the way back up**. That
+join is the whole reason for the algorithm — it builds a spanning tree over the
+rooms, so every room is reachable from every other by construction. The result
+reports `connected`, checked with a flood fill rather than asserted.
+
+Which sprite goes in each cell is a neighbour bitmask, the same job Godot's
+terrain sets do. Godot only does it *in the editor*, and Builders Gate writes
+`tile_map_data` directly and never opens the editor, so it is redone here.
+`wall_layout` says how the sheet is arranged:
+
+| layout | mask | tiles | for |
+|---|---|---|---|
+| `blob47` | 8-bit, sides + corners | 47 | walls with proper inside corners |
+| `grid16` | 4-bit, sides only | 16 | wall one cell thick |
+| `solid` | none | 1 | floors, and sheets with no variants |
+| `none` | — | — | floor layer only |
+
+**The row-major-ascending-mask order is this tool's convention, not a standard.**
+A sheet from Tilesetter or an asset pack has its own, and a wrong order draws a
+complete, confident, wrong-looking level. Look at the first screenshot.
+
+What *is* checked before anything is written: every atlas coordinate the layout
+will emit has to be a tile the `.tres` actually defines. A cell pointing at an
+undefined tile draws nothing and reports nothing — the level goes invisible
+exactly where the shape is most complicated, which is the last place anyone
+looks. A 47-blob asked to sit on a 16-tile sheet is refused with the list.
+
+Re-running replaces the layers it wrote rather than appending, so iterating on
+`seed` leaves one `Floor` and one `Walls`, not eight. A pre-existing node of that
+name that is *not* a `TileMapLayer` is refused rather than overwritten.
+
+Wave Function Collapse is deliberately not used for structure. It produces
+plausible local adjacency and no global guarantee — no reachable exit, no room
+count — and it can fail and need restarting. The bitmask is O(cells), cannot
+fail, and is exactly reproducible from the seed.
+
 ## Publishing: the arcade
 
 One command turns every game on this machine into a static site anyone can play
@@ -300,7 +348,7 @@ bgate_cli/        the `bgate` console script: init, adopt, use, projects,
                   serve, publish, doctor, hook-install, hook-status
 bgate_core/       db, project, bible, lore, canon, scope, spend, queue,
                   workflows, artifacts, playtest, iterations, git, search
-bgate_mcp/        FastMCP server (stdio), 78 registered tools
+bgate_mcp/        FastMCP server (stdio), 98 registered tools
 bgate_adapters/   blender, godot, imagegen, sprites, recorder, transcribe
 bgate_ui/         dashboard backend + routes/ + the single-page static/ front end
 bgate_site/       `bgate publish`: the static arcade + its theme/

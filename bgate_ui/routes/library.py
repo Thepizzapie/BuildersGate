@@ -41,7 +41,8 @@ def _scan(project_root: Path, force: bool) -> dict:
     hit = _cache.get(key)
     if hit and not force and time.time() - hit[0] < CACHE_TTL_S:
         return hit[1]
-    data = library.scan(project_root, smap=screenmap.scan(project_root))
+    data = library.scan(project_root,
+                        smap=screenmap.scan_cached(project_root, force=force))
     _cache[key] = (time.time(), data)
     return data
 

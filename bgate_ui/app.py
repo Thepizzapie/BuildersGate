@@ -33,6 +33,7 @@ from bgate_core import queue as _queue
 from bgate_core.util import rows as _rows
 from bgate_ui import api as _api
 from bgate_ui import autodeploy as _autodeploy
+from bgate_ui import redact as _redact
 from bgate_ui import dispatch as _dispatch
 from bgate_ui import followup as _followup
 from bgate_ui import steerpump as _steerpump
@@ -333,6 +334,26 @@ def _root_or_none() -> Optional[Path]:
 # middleware so it wraps it: a rejected request never reaches a handler.
 _api.install_guard(app, _root)
 
+# Streamer mode, OUTERMOST — added last, so in Starlette's ordering it wraps
+# everything above it. That is load-bearing in both directions: it has to see
+# the guard's own 401 body (which quotes the path it refused) on the way out,
+# and it has to restore a substituted path on the way in before any handler
+# tries to open it. Off unless BGATE_STREAMER says otherwise, and a no-op with
+# no measurable cost when off.
+_redact.install(app, _root_or_none)
+
+
+@app.get("/api/streamer")
+def streamer_status() -> dict:
+    """Is the filter on, and what is it covering?
+
+    Exists so the dashboard can SHOW it. A redactor that is quietly off looks
+    exactly like one that is on and working, and the moment you find out is the
+    moment it is too late — so the page gets a live answer rather than the user
+    getting a promise. Reports counts, never values.
+    """
+    return _api.ok(_redact.status(_root_or_none()))
+
 
 # ---------------------------------------------------------------------------
 # Pagination, opt-in
@@ -385,12 +406,17 @@ def index() -> str:
     # stale code after an edit (this bit us with the art lightbox fix). Stamp
     # each module src with the newest seat-file mtime so the browser refetches
     # exactly when something changed, and caches otherwise.
+    # CSS TOO. This stamped only .js, so every stylesheet edit sat in the
+    # browser cache indefinitely — you fix a rule, reload, and see the old one,
+    # which reads as "the fix did nothing" and sends you looking for a second
+    # bug that is not there. Cost me an hour on an invisible dropdown.
     try:
         bust = str(int(max(p.stat().st_mtime
-                           for p in _STATIC.rglob("*.js"))))
+                           for p in (*_STATIC.rglob("*.js"),
+                                     *_STATIC.rglob("*.css")))))
     except ValueError:
         bust = str(int(time.time()))
-    html = re.sub(r'(/static/[\w/-]+\.js)', r"\1?v=" + bust, html)
+    html = re.sub(r'(/static/[\w/-]+\.(?:js|css))', r"\1?v=" + bust, html)
     return _inject_token(_inject_settings(html))
 
 
@@ -582,6 +608,24 @@ PEEK_MAX_BYTES = 400_000
 _AUDIO_SUFFIXES = {".wav", ".mp3", ".ogg", ".flac", ".m4a"}
 
 
+def _peek_base(root: Path, item_id: int) -> Path:
+    """Where a run's files live: its worktree if it has one, else the project.
+
+    Shared by /api/peek and /api/preview so the two cannot disagree — they did,
+    and the symptom was peek confidently reporting `kind: image` and then
+    handing back a URL that 404'd.
+    """
+    if not item_id:
+        return root
+    try:
+        worktree = str(_queue.get(root, int(item_id)).get("worktree") or "")
+    except LookupError:
+        worktree = ""
+    if worktree and Path(worktree).is_dir():
+        return Path(worktree).resolve()
+    return root
+
+
 @app.get("/api/peek")
 def peek(rel: str, item_id: int = 0, offset: int = 0,
          lines: int = PEEK_MAX_LINES) -> dict:
@@ -599,14 +643,7 @@ def peek(rel: str, item_id: int = 0, offset: int = 0,
     editing does not exist at the project root yet.
     """
     root = _root().resolve()
-    base = root
-    if item_id:
-        try:
-            worktree = str(_queue.get(root, int(item_id)).get("worktree") or "")
-        except LookupError:
-            worktree = ""
-        if worktree and Path(worktree).is_dir():
-            base = Path(worktree).resolve()
+    base = _peek_base(root, item_id)
 
     target = (base / rel).resolve()
     try:
@@ -627,9 +664,13 @@ def peek(rel: str, item_id: int = 0, offset: int = 0,
     suffix = target.suffix.lower()
     out.update({"bytes": stat.st_size, "mtime": stat.st_mtime,
                 "name": target.name, "suffix": suffix})
+    # Carry item_id into the URL. peek resolved the worktree to decide this file
+    # EXISTS; a url that drops that context sends the browser to look for it
+    # somewhere it was never going to be.
+    scope = f"&item_id={item_id}" if item_id else ""
     if suffix in _IMAGE_SUFFIXES or suffix in {".gif"}:
         out["kind"] = "image"
-        out["url"] = f"/api/preview?rel={quote(out['rel'])}"
+        out["url"] = f"/api/preview?rel={quote(out['rel'])}{scope}"
         return out
     if suffix in _AUDIO_SUFFIXES:
         out["kind"] = "audio"
@@ -663,12 +704,21 @@ def peek(rel: str, item_id: int = 0, offset: int = 0,
 
 
 @app.get("/api/preview")
-def preview(rel: str) -> FileResponse:
-    """Serve one image from inside the project. Root-relative paths only."""
+def preview(rel: str, item_id: int = 0) -> FileResponse:
+    """Serve one image from inside the project, or from a run's worktree.
+
+    ``item_id`` resolves the same way /api/peek does, and for the same reason:
+    a file an isolated agent is editing does not exist at the project root yet.
+    Without it, every thumbnail of a worktree file 404'd and rendered as an
+    empty bordered box — the console said the run was looking at something and
+    then showed nothing, which reads as a broken preview rather than as a file
+    that is simply somewhere else.
+    """
     root = _root().resolve()
-    target = (root / rel).resolve()
+    base = _peek_base(root, item_id)
+    target = (base / rel).resolve()
     try:
-        target.relative_to(root)
+        target.relative_to(base)
     except ValueError:
         raise _api.forbidden("path escapes the project root", rel=rel)
     if target.suffix.lower() not in _IMAGE_SUFFIXES:
@@ -773,11 +823,16 @@ def queue_add(payload: dict) -> dict:
 
 
 @app.get("/api/screenmap")
-def screenmap_view() -> dict:
+def screenmap_view(fresh: int = 0) -> dict:
     """Atlas: the auto-derived graph of every screen and every asset it uses.
-    Derived fresh per call from the .tscn/.gd/.tres sources — no manifest."""
+
+    Derived from the .tscn/.gd/.tres sources — no manifest — and cached for a
+    few seconds, because this endpoint is polled by three panels at once and
+    the derivation walks the whole project. `?fresh=1` forces a rescan; the
+    write paths invalidate it outright, so the cache is never what you are
+    looking at after your own edit."""
     from bgate_core import screenmap as _screenmap
-    return _screenmap.scan(_root())
+    return _screenmap.scan_cached(_root(), force=bool(fresh))
 
 
 # A waiter costs nothing while it waits (see queue_wait) but it still holds a

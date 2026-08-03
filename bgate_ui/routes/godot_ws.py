@@ -14,6 +14,9 @@ seat JS still calls it.
 """
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -31,6 +34,22 @@ router = APIRouter()
 
 _CODE_SUFFIXES = {".gd", ".cfg", ".godot", ".tres", ".tscn", ".import", ".json", ".cs"}
 _MAX_READ = 200_000
+
+# Everything readable is editable EXCEPT .import: the engine generates those on
+# scan and rewrites them without asking, so a hand edit is work that silently
+# disappears — which reads as "the editor did not save" rather than "that file
+# was never yours".
+_WRITABLE_SUFFIXES = _CODE_SUFFIXES - {".import"}
+
+# A source file this size is machine-generated, and the editor could not have
+# been the thing that produced it — the read path caps at _MAX_READ, so anything
+# past this arrived by another route.
+_MAX_WRITE = 1_000_000
+
+# Trees that are not the game: the engine's import cache, the tool's own
+# backups, build output. Same set screenmap and scenewire prune.
+_SKIP_TREES = {".godot", ".bgate_out", ".bgate", ".git", ".asset_work",
+               "export", "build", "__pycache__"}
 
 # A timeout under 5s cannot survive Godot's own startup, and nothing here has a
 # legitimate reason to run past 10 minutes.
@@ -108,9 +127,28 @@ def _async_202(kind: str, stage: str, timeout: int, call: Callable[[], dict],
     return JSONResponse(status_code=202, content=body)
 
 
+def _default_project(r: Path) -> Path:
+    """Where res:// points when the caller did not say.
+
+    This used to be a hardcoded ``<root>/game``, which is right for a project
+    `bgate init` scaffolded and wrong for every project `bgate adopt` took on,
+    whose project.godot sits at the root. On those, every endpoint here 404'd —
+    the workspace looked like Godot was missing rather than like the path was.
+
+    Same resolution order as bgate_core.screenmap and scenewire._godot_dir, on
+    purpose: two modules that disagree about which directory is the game are
+    two modules that hand each other paths the other cannot resolve.
+    """
+    for cand in (r, r / "game"):
+        if (cand / "project.godot").is_file():
+            return cand
+    hits = sorted(p.parent for p in r.glob("*/project.godot"))
+    return hits[0] if hits else (r / "game")
+
+
 def _project(project_dir: str | None) -> Path:
     r = root()
-    p = Path(project_dir).resolve() if project_dir else (r / "game").resolve()
+    p = Path(project_dir).resolve() if project_dir else _default_project(r).resolve()
     try:
         p.relative_to(r.resolve())
     except ValueError:
@@ -129,7 +167,12 @@ def _tree(base: Path, root_dir: Path, want: set[str], depth: int = 0) -> list[di
     except OSError:
         return out
     for e in entries:
-        if e.name.startswith(".") and e.name not in (".godot",):
+        # .godot was EXPLICITLY allowed here, which meant the file tree walked
+        # the engine's import cache — ~2000 files on a real project, none of
+        # them yours, all of them .import/.md5 noise. It is the single biggest
+        # directory in a Godot project and nothing in this workspace can open
+        # anything inside it.
+        if e.name.startswith(".") or e.name in _SKIP_TREES:
             continue
         if e.is_dir():
             kids = _tree(e, root_dir, want, depth + 1)
@@ -167,22 +210,164 @@ def godot_files(project_dir: str | None = None, kind: str = "all") -> dict:
     return {"project": str(p), "tree": _tree(p, p, want)}
 
 
-@router.get("/api/godot/file")
-def godot_file(rel: str, project_dir: str | None = None) -> dict:
-    """Read one text file (script/scene/config) for the editor pane."""
-    p = _project(project_dir)
+def _in_project(p: Path, rel: str) -> Path:
     target = (p / rel).resolve()
     try:
         target.relative_to(p)
     except ValueError:
         raise HTTPException(403, "path escapes the project")
+    return target
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _lock_holder(target: Path) -> dict | None:
+    """The seat currently holding this path, if any.
+
+    A human editing a file an agent has claimed is the exact collision the lock
+    table exists to make visible, and a dashboard that writes straight through
+    it would be the one caller in the system that ignores it. Never raises: a
+    lock lookup that fails is not a reason to refuse a save, only a reason not
+    to claim the file was free.
+    """
+    try:
+        from bgate_core import assets as _assets
+        rel = _assets.normalize_path(root(), target)
+    except Exception:
+        return None
+    try:
+        for row in _assets.list_assets(root(), locked_only=True):
+            if str(row.get("path") or "") == rel:
+                return row
+    except Exception:
+        return None
+    return None
+
+
+@router.get("/api/godot/file")
+def godot_file(rel: str, project_dir: str | None = None) -> dict:
+    """Read one text file (script/scene/config) for the editor pane."""
+    p = _project(project_dir)
+    target = _in_project(p, rel)
     if not target.is_file():
         raise HTTPException(404, rel)
     if target.suffix.lower() not in _CODE_SUFFIXES:
         raise HTTPException(415, "not a readable text resource")
     text = target.read_text(encoding="utf-8", errors="replace")
+    truncated = len(text) > _MAX_READ
+    held = _lock_holder(target)
     return {"rel": rel, "bytes": len(text.encode("utf-8")),
-            "truncated": len(text) > _MAX_READ, "text": text[:_MAX_READ]}
+            "truncated": truncated, "text": text[:_MAX_READ],
+            # The sha is of what the caller actually GOT. Hashing the full text
+            # while handing back a prefix would let a truncated read round-trip
+            # as an unmodified save and cut the file down to 200KB.
+            "sha": None if truncated else _sha(text),
+            "writable": target.suffix.lower() in _WRITABLE_SUFFIXES and not truncated,
+            "lock": {"seat": held.get("lock_seat"), "owner": held.get("lock_owner")}
+                    if held else None}
+
+
+@router.post("/api/godot/file")
+def godot_file_write(payload: dict) -> dict:
+    """Save one text file back into the game project.
+
+    The dashboard has been able to READ every script and scene since the Godot
+    workspace shipped, and could not write a byte — which is the whole reason
+    the engine had to stay open next to it. Three things guard the write, in
+    the order they can bite:
+
+      * ``base_sha`` is what the editor loaded. If the bytes on disk no longer
+        hash to it, somebody (an agent, the engine, a git checkout) changed the
+        file underneath the tab, and saving would silently discard their work.
+        409, with the current hash, so the UI can offer a reload.
+      * a held lock is refused with 423 rather than merged, because the holder
+        may be an agent mid-edit that will write its own copy over this one.
+        ``force`` is available and is a deliberate act.
+      * the previous bytes always land in .bgate_out/edits/ first. Ctrl-Z does
+        not survive a page reload, and this file is one the engine also owns.
+    """
+    rel = str(payload.get("rel") or "").strip()
+    if not rel:
+        raise HTTPException(400, "rel required")
+    text = payload.get("text")
+    if not isinstance(text, str):
+        raise HTTPException(400, "text must be a string")
+
+    p = _project(payload.get("project_dir"))
+    target = _in_project(p, rel)
+    if target.suffix.lower() not in _WRITABLE_SUFFIXES:
+        raise HTTPException(415, f"{target.suffix or 'this file'} is not editable here")
+    if not target.is_file():
+        # Creating a file is a different act with different consequences (an
+        # empty .gd attached to nothing, a .tscn the engine will not import),
+        # and nothing in this editor asks for it yet.
+        raise HTTPException(404, f"{rel} does not exist — this endpoint only edits")
+
+    # A browser hands back \r\n on a platform whose engine writes \n. Left
+    # alone, the first save from the dashboard rewrites every line of the file
+    # and buries the one-line change in a whole-file diff.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if len(text.encode("utf-8")) > _MAX_WRITE:
+        raise HTTPException(413, f"refusing to write more than {_MAX_WRITE} bytes")
+
+    current = target.read_text(encoding="utf-8", errors="replace")
+    if len(current) > _MAX_READ:
+        raise HTTPException(409, "this file is served truncated and cannot be saved whole")
+
+    base = payload.get("base_sha")
+    if base and str(base) != _sha(current):
+        raise HTTPException(409, {
+            "message": "the file changed on disk since it was opened",
+            "rel": rel, "sha": _sha(current)})
+
+    held = _lock_holder(target)
+    if held and not payload.get("force"):
+        raise HTTPException(423, {
+            "message": f"{rel} is locked by the {held.get('lock_seat')} seat",
+            "rel": rel, "seat": held.get("lock_seat"),
+            "owner": held.get("lock_owner")})
+
+    if current == text:
+        return {"written": False, "rel": rel, "sha": _sha(current),
+                "bytes": len(text.encode("utf-8")), "backup": None,
+                "unchanged": True}
+
+    r = root()
+    bdir = r / ".bgate_out" / "edits" / time.strftime("%Y%m%d-%H%M%S")
+    # From the RESOLVED target, not the caller's `rel`. An absolute or
+    # drive-qualified `rel` that still lands inside the project passes the
+    # containment check above, and joining that raw string onto bdir would put
+    # the backup somewhere else entirely — or overwrite it.
+    backup = bdir / target.relative_to(p)
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(target, backup)
+
+    tmp = target.with_name(target.name + ".bgate-tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(tmp, target)
+
+    try:
+        from bgate_core import events
+        events.emit(r, "file.edited", rel,
+                    {"bytes": len(text.encode("utf-8")),
+                     "forced": bool(held and payload.get("force"))})
+    except Exception:
+        pass
+    # The Atlas graph is derived from exactly the files this just wrote, and it
+    # is cached — without this, editing a script and switching to the map shows
+    # the map from before the edit, which reads as a failed save.
+    try:
+        from bgate_core import screenmap
+        screenmap.invalidate(r)
+    except Exception:
+        pass
+
+    return {"written": True, "rel": rel, "sha": _sha(text),
+            "bytes": len(text.encode("utf-8")),
+            "backup": str(backup.relative_to(r)).replace("\\", "/"),
+            "unchanged": False}
 
 
 @router.post("/api/godot/inspect")

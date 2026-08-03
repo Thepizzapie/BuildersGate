@@ -3,6 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![Platform: Windows primary](https://img.shields.io/badge/platform-Windows%20primary-lightgrey)](docs/setup.md#platform-support)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Dev streams on Twitch](https://img.shields.io/badge/twitch-thepizzzapie-9146FF)](https://twitch.tv/thepizzzapie)
 
 Builders Gate is an MCP server for building games with Claude Code.
 
@@ -283,6 +284,15 @@ There is a wheel smoke test in the suite, and the failure it exists to catch is 
 that shipped no JavaScript and no `templates/` produced a dashboard of 404s and a
 scaffolder that raised `FileNotFoundError`, and nothing had ever verified
 otherwise. Linux is `continue-on-error`.
+
+## Dev streams
+
+Builders Gate is built on stream at
+[twitch.tv/thepizzzapie](https://twitch.tv/thepizzzapie) — the tool being used to
+make a game with it, which is the only way most of these gates get found. The
+dashboard has a streamer mode for exactly this (Settings → Privacy): it hides
+absolute paths, your username, hostname and any API key from the dashboard, the
+logs and the CLI.
 
 ## Contributing, security, licence
 

@@ -85,6 +85,48 @@ def test_non_base64_is_refused():
 
 
 # ---------------------------------------------------------------------------
+# encode_cells — the write half
+# ---------------------------------------------------------------------------
+def test_encode_round_trips_through_decode():
+    cells = [{"x": -3, "y": 4, "source": 7, "ax": 2, "ay": -1, "alt": 0},
+             {"x": 0, "y": 0, "source": 0, "ax": 0, "ay": 0, "alt": 0}]
+    assert tilemap.decode_cells(tilemap.encode_cells(cells)) == sorted(
+        cells, key=lambda c: (c["y"], c["x"]))
+
+
+def test_encode_is_byte_identical_regardless_of_input_order():
+    """Same level, same bytes — otherwise re-running a generator on the same
+    seed produces a diff of the whole scene."""
+    a = [(0, 0, 1, 0, 0), (5, 2, 1, 0, 0), (3, 9, 1, 0, 0)]
+    assert tilemap.encode_cells(a) == tilemap.encode_cells(list(reversed(a)))
+
+
+def test_encode_takes_the_five_value_lists_layer_draw_hands_back():
+    ts = tilemap.parse_tileset(TILESET)
+    out = tilemap.layer_draw(_packed([(1, 1, 0, 0, 0, 0)]), ts)
+    assert tilemap.decode_cells(tilemap.encode_cells(out["cells"])) == [
+        {"x": 1, "y": 1, "source": 0, "ax": 0, "ay": 0, "alt": 0}]
+
+
+def test_a_coordinate_outside_int16_is_refused_not_wrapped():
+    with pytest.raises(tilemap.TileError) as exc:
+        tilemap.encode_cells([{"x": 70000, "y": 0, "source": 0}])
+    assert "int16" in str(exc.value)
+
+
+def test_two_cells_on_one_coordinate_are_refused():
+    """A layer holds one tile per coordinate; the loser would silently vanish."""
+    with pytest.raises(tilemap.TileError) as exc:
+        tilemap.encode_cells([{"x": 1, "y": 1, "source": 0},
+                              {"x": 1, "y": 1, "source": 3}])
+    assert "(1, 1)" in str(exc.value)
+
+
+def test_encoding_nothing_is_a_valid_empty_layer():
+    assert tilemap.decode_cells(tilemap.encode_cells([])) == []
+
+
+# ---------------------------------------------------------------------------
 # The TileSet
 # ---------------------------------------------------------------------------
 def test_the_tileset_resolves_sources_to_textures_and_regions():
@@ -98,6 +140,28 @@ def test_the_tileset_resolves_sources_to_textures_and_regions():
     assert ts["sources"][7]["texture"] == "res://tiles/wall.png"
     assert ts["sources"][7]["region"] == [64, 96]
     assert ts["sources"][7]["origin"] == [0, -32]
+
+
+def test_the_tiles_an_atlas_defines_are_listed():
+    """A cell pointing at a coordinate the atlas never declared draws nothing
+    and reports nothing, so a generator has to be able to ask what exists."""
+    ts = tilemap.parse_tileset(TILESET)
+    assert ts["sources"][0]["tiles"] == [(0, 0)]
+
+
+def test_per_tile_property_lines_are_not_mistaken_for_tiles():
+    text = TILESET.replace("0:0/0 = 0\n",
+                           "0:0/0 = 0\n0:0/0/physics_layer_0/polygon_0/points = "
+                           "PackedVector2Array(0, 0)\n2:1/0 = 0\n")
+    ts = tilemap.parse_tileset(text)
+    assert ts["sources"][0]["tiles"] == [(0, 0), (2, 1)]
+
+
+def test_the_tile_list_stays_out_of_the_draw_payload():
+    ts = tilemap.parse_tileset(TILESET)
+    out = tilemap.layer_draw(_packed([(0, 0, 0, 0, 0, 0)]), ts)
+    assert "tiles" not in out["sources"][0]
+    assert out["sources"][0]["texture"] == "res://tiles/floor.png"
 
 
 def test_a_source_with_no_texture_is_dropped_not_guessed():

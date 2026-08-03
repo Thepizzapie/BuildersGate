@@ -52,13 +52,33 @@ window.SceneView = (() => {
     ["se",1,1],["s",.5,1],["sw",0,1],["w",0,.5],
   ];
   const HANDLE_PX = 7;          // screen-space, so handles stay grabbable at any zoom
+  // Above this many undrawable nodes, their captions stop being labels and
+  // start being a fog. Twelve is roughly what fits on a 640×360 stage without
+  // two of them touching.
+  const BLANK_LABEL_CAP = 12;
 
   let host = null, cv = null, ctx = null;
   let scene = null, list = null, sel = null;
+  let blankCount = 0;           // recomputed once per frame in _paint()
   let view = { x: 0, y: 0, z: 1 };
   let opts = { grid: true, snap: 8, snapOn: true, showHidden: false,
-               showBodies: true, outlines: true };
+               showBodies: true, outlines: true, real: false };
   let images = new Map();       // rel -> HTMLImageElement | null
+
+  /* THE ENGINE'S OWN FRAME, under the editable overlay.
+   *
+   * Everything else in this file draws what the scene FILE declares, and on a
+   * project whose props get their texture from a script at load that is an
+   * accurate picture of nothing: 577 markers where a dressed floor should be.
+   * No amount of better .tscn parsing crosses that — only running the game
+   * does. So this asks Godot for one real frame and puts it behind the
+   * overlay, which keeps the handles, outlines and staged edits exactly where
+   * they were while the backdrop finally shows the level.
+   *
+   * NOT the default, and never automatic: it launches the actual game for a
+   * couple of seconds and needs a display. A viewport that opened a window
+   * every time you selected a scene would be unusable. */
+  let real = { scene: null, img: null, busy: false, error: null, at: 0 };
   let drag = null, hover = null, busy = false;
   // path -> { name, keys: Map(property -> {value, prev, seq}) }. Staged, never written.
   let pending = new Map();
@@ -119,6 +139,13 @@ window.SceneView = (() => {
       ".sv-tip.hot{pointer-events:auto;cursor:pointer;color:var(--warn);border-color:var(--warn)}",
       // One column so the pending bar and the placing banner stack instead of
       // sitting on top of each other — placing is exactly when both are up.
+      // `hidden` MUST WIN. Every panel below sets `display`, and a class that
+      // sets display beats the UA sheet's [hidden]{display:none} at equal
+      // specificity — so `el.hidden = true` set the attribute and changed
+      // nothing on screen. That is why the staging bar sat there announcing
+      // "0 unsaved changes across 0 nodes" with a discard button, and why an
+      // empty dashed placement strip hung underneath it forever.
+      ".sv [hidden]{display:none !important}",
       ".sv-top{position:absolute;left:9px;right:9px;top:9px;display:flex;flex-direction:column;gap:6px;pointer-events:none}",
       ".sv-top>*{pointer-events:auto}",
       // Unmissable, because the alternative is writing to a live scene by
@@ -160,6 +187,9 @@ window.SceneView = (() => {
           <button class="sv-b ${opts.outlines?"on":""}" title="Node outlines" onclick="SceneView.toggle('outlines')">⬚</button>
           <button class="sv-b ${opts.showBodies?"on":""}" title="Bodies, collision and markers" onclick="SceneView.toggle('showBodies')">⬡</button>
           <button class="sv-b ${opts.showHidden?"on":""}" title="Nodes marked invisible" onclick="SceneView.toggle('showHidden')">◌</button>
+          <button class="sv-b ${opts.real?"on":""}" id="sv-real"
+                  title="Run the game for a moment and use its real frame as the backdrop. Shows art that scripts assign at load — the props this view can only draw as markers. Opens a game window briefly."
+                  onclick="SceneView.realView()">◉ real</button>
           <span style="flex:1 1 auto;min-width:8px"></span>
           <button class="sv-b" onclick="SceneView.placeMenu()"
                   title="Place one of this project's scenes as a child of the selected node">＋ place</button>
@@ -543,6 +573,10 @@ window.SceneView = (() => {
 
   function _paint(){
     if (!host || !list) return;
+    // Once per frame, not once per node: blankNodes() filters the whole item
+    // list, and asking it inside the draw loop would make a 1700-node scene
+    // quadratic on every pan.
+    blankCount = blankNodes().length;
     const dpr = size();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const W = cv.width / dpr, H = cv.height / dpr;
@@ -562,6 +596,10 @@ window.SceneView = (() => {
     ctx.strokeStyle = BGTheme.color("--text"); ctx.lineWidth = 1;
     ctx.strokeRect(vx + .5, vy + .5, v[0] * view.z, v[1] * view.z);
     ctx.restore();
+
+    // Under the nodes, over the frame fill: the engine's frame is a BACKDROP,
+    // not a layer you can select. Everything below still hit-tests normally.
+    paintReal(vx, vy, v[0] * view.z, v[1] * view.z);
 
     ctx.imageSmoothingEnabled = false;
     const shown = list.items.filter(drawable);
@@ -701,8 +739,17 @@ window.SceneView = (() => {
     // An instance whose scene opened is not one of these: its own entry draws
     // nothing because its CHILDREN carry the picture, and labelling forty desks
     // "instance of prop.tscn" buries the canvas in captions.
+    // ...and only while there are FEW of them. The guard above assumed blank
+    // markers come in ones and twos. A dressed room is 579 prop instances whose
+    // .tscn the scene never opens, and 579 copies of the same sentence overdraw
+    // each other into a grey pulp with the level hidden somewhere underneath —
+    // the caption stops being an explanation and becomes the thing in the way.
+    // Past the cap the tip bar already says how many there are and steps
+    // through them by name, and the selected one still captions itself, so
+    // nothing is lost but the pulp.
     if (d.kind === "marker" && d.reason && opts.showBodies && view.z > 0.45
-        && !(it.instance && it.drawn)){
+        && !(it.instance && it.drawn)
+        && (blankCount <= BLANK_LABEL_CAP || it.path === sel)){
       const [mx, my] = toScreen(it.x, it.y);
       ctx.save();
       ctx.font = "10px ui-monospace,monospace";
@@ -1457,6 +1504,84 @@ window.SceneView = (() => {
     view.y = r.height / 2 - by * view.z;
     paint();
   }
+  /* ── the engine's frame ───────────────────────────────────────────────── */
+  function realBtn(){
+    const b = host && host.querySelector("#sv-real");
+    if (!b) return;
+    b.classList.toggle("on", !!opts.real);
+    b.textContent = real.busy ? "◉ running…" : "◉ real";
+    b.disabled = real.busy;
+  }
+
+  async function realView(){
+    opts.real = !opts.real;
+    realBtn(); paint();
+    // Off, or already holding this scene's frame: nothing to run.
+    if (!opts.real || real.busy || (real.img && real.scene === scene)) return;
+    await shoot();
+  }
+
+  /* After a write, the backdrop is a photograph of the scene as it was. Left
+     alone it shows the OLD art next to a file that already has the new one,
+     which reads as "the swap did not save" — the edit landing invisibly is the
+     same experience as the edit not landing. */
+  function reshoot(){
+    if (!opts.real || !real.img || real.busy) return;
+    return shoot();
+  }
+
+  async function shoot(){
+    if (!scene || real.busy) return;
+    real.busy = true; real.error = null;
+    realBtn();
+    say("running the game for one frame — a window will open briefly");
+    const r = await mutate("/api/godot/screenshot",
+                           { body: { scene }, quiet: true });
+    real.busy = false;
+    if (!r.ok || !r.data || r.data.ok === false || !r.data.rel){
+      real.img = null; real.scene = null;
+      real.error = (r.data && (r.data.error || r.data.detail)) || r.error
+                   || "the engine returned no frame";
+      // Turning the toggle back off matters: an ON button with no backdrop is
+      // indistinguishable from a backdrop that is simply black.
+      opts.real = false;
+      realBtn(); paint();
+      return say(real.error, "bad");
+    }
+    const img = await new Promise(res => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = () => res(null);
+      // Cache-bust: every shot lands on the same .bgate/godot_ws/shot.png.
+      im.src = `/api/preview?rel=${encodeURIComponent(r.data.rel)}&t=${Date.now()}`;
+    });
+    if (!img){
+      opts.real = false; real.img = null;
+      realBtn(); paint();
+      return say("the engine's frame would not load", "bad");
+    }
+    real.img = img; real.scene = scene; real.at = Date.now();
+    realBtn(); paint();
+    say("showing the engine's own frame", "ok");
+  }
+
+  /* Paint it INTO the viewport rect the frame already defines, so a node's
+     handles sit exactly where its art does. The shot comes back at a fixed
+     1280×720 whatever the project's viewport is, so it is fitted rather than
+     stretched — a backdrop that is 4px off is worse than none, because every
+     placement you make against it inherits the error. */
+  function paintReal(vx, vy, vw, vh){
+    if (!opts.real || !real.img) return;
+    const iw = real.img.naturalWidth, ih = real.img.naturalHeight;
+    if (!iw || !ih) return;
+    const k = Math.min(vw / iw, vh / ih);
+    const w = iw * k, h = ih * k;
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(real.img, vx + (vw - w) / 2, vy + (vh - h) / 2, w, h);
+    ctx.restore();
+  }
+
   function toggle(key){
     opts[key] = !opts[key];
     // Repaint the toolbar in place. Re-mounting redraws it too, but it also
@@ -1486,6 +1611,12 @@ window.SceneView = (() => {
     }))) return false;
     clearStaged();
     scene = id; sel = null;
+    // Drop the previous scene's frame outright. Keeping it would leave the old
+    // level painted behind the new scene's nodes — a backdrop that is silently
+    // the wrong room is the one failure mode this feature must not have.
+    real.img = null; real.scene = null;
+    opts.real = false;
+    realBtn();
     return reload();
   }
 
@@ -1494,6 +1625,7 @@ window.SceneView = (() => {
            apply: applyPending, discard: discardPending, hasPending,
            placeMenu, arm, cancelPlacing, removeSelected,
            toggleLayer, isolateLayer, showAllLayers, nextBlank,
+           realView, reshoot,
            get layers(){ return layers(); },
            get list(){ return list; }, get selected(){ return sel; },
            get scene(){ return scene; },
