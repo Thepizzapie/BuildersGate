@@ -76,7 +76,7 @@ REGISTRY_KEY = "settings"
 
 # Group order is the display order, in both the panel and `bgate doctor`.
 GROUPS = ("Dispatch", "Gates", "Art", "Follow-up", "Notifications",
-          "Budget", "Console")
+          "Budget", "Console", "Privacy")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
 # imported from events.py so that a settings panel still renders when the event
@@ -90,7 +90,8 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.approved",
                "item.rejected", "item.aging", "chain.filed", "chain.advanced",
                "chain.stalled", "gate.mode", "settings.guard", "style.trained",
                "budget.refused",
-               "director.question", "agent.spawned", "agent.exited")
+               "director.question", "agent.spawned", "agent.exited",
+               "file.edited")
 
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
@@ -355,6 +356,24 @@ SETTINGS: tuple[Setting, ...] = (
         help="How many phase rows the graph draws per item before it stops. A "
              "long-running agent otherwise paints a node taller than the "
              "canvas."),
+
+    # -- Privacy ------------------------------------------------------------
+    # MACHINE scope, not PROJECT. Whose home directory is on screen is a fact
+    # about the person streaming, not about the game — and someone who turns
+    # this on for one project and then opens another has not changed their mind
+    # about being on camera.
+    Setting(
+        key="privacy.streamer", group="Privacy", kind=BOOL, default=False,
+        store=("registry", "privacy.streamer"), scope=MACHINE,
+        env="BGATE_STREAMER",
+        env_note="BGATE_STREAMER in the environment wins over this switch, so a "
+                 "shell that exports it keeps the filter on no matter what the "
+                 "panel says — which is the safe direction for this one",
+        help="Hide absolute paths, your username, hostname, email and any API "
+             "key from the dashboard, the logs and the CLI. For streaming, "
+             "screen-sharing and screenshots. It is a DISPLAY filter: the .env, "
+             "the database and devtools are unchanged, and the dashboard's own "
+             "auth token is deliberately left alone because the page needs it."),
 )
 
 BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

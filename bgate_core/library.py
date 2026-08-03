@@ -245,7 +245,7 @@ def scan(root: str | os.PathLike[str], *, smap: Optional[dict] = None) -> dict:
     """Every asset family in the project, with sheets, rig state, and usage."""
     root = Path(root).resolve()
     if smap is None:
-        smap = screenmap.scan(root)
+        smap = screenmap.scan_cached(root)
     use = usage_index(smap)
     gd = _res_root(root)
 

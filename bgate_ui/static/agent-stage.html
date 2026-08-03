@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Stage</title>
+<style>
+  :root{--ground:#0b0a0a;--text:#f4f2ef;--seam:#27262e;--seam-strong:#393842;--accent:#ff6a3d;--info:#94a8ff}
+  *{box-sizing:border-box}
+  html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;font-family:"Segoe UI",Arial,sans-serif}
+  body{position:relative}
+
+  /* Lane: panes bottom out at 904, ticker starts at 970. Sprites stand ON the
+     lane's baseline, so a 96px-tall walker only reaches y=872 and grazes the
+     bottom of the panes rather than covering them. */
+  #lane{position:absolute;left:0;right:0;top:872px;height:98px}
+
+  /* TWO elements on purpose: the traverse and the per-bit motion both animate
+     `transform`, and two animations on one element do not compose — the later
+     one silently wins. Outer slides, inner performs. */
+  .actor{position:absolute;bottom:0;left:0;animation:cross 11s linear forwards}
+  .actor.dash {animation-duration:6s}
+  .actor.leave{animation:cross 9s linear forwards, fade 9s ease-in forwards}
+
+  .inner{position:relative}
+  .trip  .inner{animation:tumble 11s ease-in forwards}
+  .cheer .inner{animation:hop .62s ease-in-out infinite}
+  .shrug .inner{animation:wobble 1.5s ease-in-out infinite}
+
+  /* <i> is INLINE, so width/height are ignored and the box collapses to nothing
+     — you get the tag sliding across with no sprite. The feed and ticker get
+     away with a bare <i> because theirs are flex items and so are blockified;
+     this one is not. */
+  .av{display:block}
+
+  /* --- walk sprite: 8 frames of 128x160, drawn at 77x96 --- */
+  .av.walk8{width:77px;height:96px;background-repeat:no-repeat;
+    background-size:616px 96px;image-rendering:auto;
+    animation:walk8 .78s steps(8) infinite}
+  @keyframes walk8{from{background-position:0 0}to{background-position:-616px 0}}
+  /* dash reuses the same cycle, just faster feet */
+  .dash .av.walk8{animation-duration:.42s}
+  /* a tumbling or shrugging character shouldn't keep striding */
+  .trip .av.walk8,.shrug .av.walk8{animation-play-state:paused}
+
+  /* --- fallback: the 4-cell talkhead, until walk sheets exist --- */
+  .av.head4{width:88px;height:88px;image-rendering:pixelated;background-repeat:no-repeat;
+    background-position:0 0;background-size:400% 100%}
+  .talk .av.head4{animation:talk .5s steps(1,end) infinite}
+  .rest .av.head4{animation:blink 5.6s steps(1,end) infinite}
+  @keyframes talk{0%,100%{background-position-x:0%}25%{background-position-x:33.333%}
+                  50%{background-position-x:66.667%}75%{background-position-x:33.333%}}
+  @keyframes blink{0%,92%{background-position-x:0%}93%,97%{background-position-x:100%}98%,100%{background-position-x:0%}}
+
+  .flip .av{transform:scaleX(-1)}
+
+  .tag{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:8px;
+    display:flex;align-items:center;height:30px;padding:0 12px;white-space:nowrap;
+    background:var(--accent);color:var(--ground);font-size:16px;font-weight:900;
+    letter-spacing:.12em;text-transform:uppercase}
+  .tag.cool{background:var(--info)}
+  .tag.mute{background:var(--seam-strong);color:var(--text)}
+
+  @keyframes cross{from{transform:translateX(-180px)}to{transform:translateX(2100px)}}
+  @keyframes fade{0%,62%{opacity:1}100%{opacity:0}}
+  @keyframes hop{0%,100%{transform:translateY(0)}50%{transform:translateY(-26px)}}
+  @keyframes wobble{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
+  @keyframes tumble{0%,54%{transform:rotate(0) translateY(0)}
+                    60%{transform:rotate(-14deg)}
+                    72%,100%{transform:rotate(86deg) translateY(24px)}}
+
+  .flash{position:absolute;inset:-16px;background:var(--text);opacity:0;
+    animation:pop .5s ease-out forwards;animation-delay:2.8s}
+  @keyframes pop{0%{opacity:0}18%{opacity:.85}100%{opacity:0}}
+
+  @media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+  <div id="lane"></div>
+
+<script src="/static/agent-names.js"></script>
+<script>
+(function () {
+  var SHEETS   = "/static/img/agents/";
+  var BUST     = "?t=" + Date.now();   // sheets are swapped out of band
+  var POLL_MS  = 5000;
+  var GAP_MS   = 2600;
+  var MAX_WAIT = 3;
+
+  var lane = document.getElementById("lane");
+  var itemSeat = {}, walk = {}, head = {}, seen = {}, waiting = [], busy = false, primed = false;
+
+  function j(u) {
+    return fetch(u, {cache: "no-store"}).then(function (r) {
+      if (!r.ok) throw new Error(r.status); return r.json();
+    });
+  }
+
+  function seatOf(e) {
+    if (e.seat) return e.seat;
+    var m = /^seat:(\w+)/.exec(e.actor || "");
+    if (m) return m[1];
+    m = /^queued for (\w+):/.exec(e.summary || "");
+    if (m) return m[1];
+    m = /agent:item-(\d+)/.exec(e.actor || "");
+    if (m && itemSeat[m[1]]) return itemSeat[m[1]];
+    if (e.ref && itemSeat[e.ref]) return itemSeat[e.ref];
+    return "";
+  }
+
+  // `lock` and `note` fire constantly and are deliberately unmapped.
+  function scriptFor(e) {
+    var s = e.summary || "", k = e.kind || "", ref = e.ref || "";
+    if (k === "queue") {
+      if (/->\s*failed/.test(s))     return {bit: "trip",  face: "rest", tag: "failed #" + ref};
+      if (/->\s*cancelled/.test(s))  return {bit: "leave", face: "rest", tag: "cancelled #" + ref, tone: "mute"};
+      if (/->\s*dispatched/.test(s)) return {bit: "walk",  face: "talk", tag: "on it #" + ref, tone: "cool"};
+      if (/->\s*done/.test(s))       return {bit: "cheer", face: "talk", tag: "done #" + ref, tone: "cool"};
+      return {bit: "walk", face: "talk", tag: "queued #" + ref, tone: "cool"};
+    }
+    if (k === "signoff")       return {bit: "cheer", face: "talk", tag: "shipped #" + ref, tone: "cool"};
+    if (k === "screenshot")    return {bit: "snap",  face: "rest", tag: "screenshot", tone: "mute"};
+    if (k === "lease_expired") return {bit: "shrug", face: "rest", tag: "lease expired", tone: "mute"};
+    if (k === "followup") {
+      if (/agent\.spawned/.test(s)) return {bit: "dash",  face: "talk", tag: "spawned #" + ref, tone: "cool"};
+      if (/agent\.exited/.test(s))  return {bit: "leave", face: "rest", tag: "done #" + ref, tone: "mute"};
+    }
+    return null;
+  }
+
+  function play(seat, plan) {
+    var actor = document.createElement("div");
+    var flip = Math.random() < 0.5;
+    actor.className = "actor " + plan.bit + " " + plan.face + (flip ? " flip" : "");
+
+    var inner = document.createElement("div");
+    inner.className = "inner";
+
+    var av = document.createElement("i");
+    if (walk[seat]) {
+      av.className = "av walk8";
+      av.style.backgroundImage = "url('" + SHEETS + seat + "_walk.png" + BUST + "')";
+    } else {
+      av.className = "av head4";                     // until the walk sheets land
+      av.style.backgroundImage = "url('" + SHEETS + seat + "_talk.png" + BUST + "')";
+    }
+    inner.appendChild(av);
+
+    if (plan.bit === "snap") {
+      var f = document.createElement("i"); f.className = "flash";
+      inner.appendChild(f);
+    }
+
+    var tag = document.createElement("div");
+    tag.className = "tag" + (plan.tone ? " " + plan.tone : "");
+    tag.textContent = window.agentName(seat) + " · " + plan.tag;
+
+    actor.append(inner, tag);
+    lane.appendChild(actor);
+    busy = true;
+
+    actor.addEventListener("animationend", function (ev) {
+      if (ev.animationName !== "cross") return;      // inner bits bubble here too
+      actor.remove();
+      setTimeout(function () { busy = false; pump(); }, GAP_MS);
+    });
+  }
+
+  function pump() {
+    if (busy || !waiting.length) return;
+    var n = waiting.shift();
+    play(n.seat, n.plan);
+  }
+
+  function poll() {
+    j("/api/activity").then(function (res) {
+      // Bursts are the norm — a lock sweep expires eleven leases at once, and
+      // eleven identical bits is a stutter. One stands for the batch.
+      var fired = {};
+      (res.events || []).slice().sort(function (a, b) { return a.id - b.id; })
+        .forEach(function (e) {
+          if (seen[e.id]) return;
+          seen[e.id] = true;
+          if (!primed) return;                       // never replay history
+          var plan = scriptFor(e);
+          if (!plan) return;
+          var seat = seatOf(e);
+          if (!walk[seat] && !head[seat]) return;    // no art, no bit
+          var sig = plan.bit + ":" + seat;
+          if (fired[sig]) return;
+          fired[sig] = true;
+          waiting.push({seat: seat, plan: plan});
+          while (waiting.length > MAX_WAIT) waiting.shift();
+          pump();
+        });
+      primed = true;
+    }).catch(function () {});
+  }
+
+  function probe(map, suffix) {
+    var seats = Object.keys(window.AGENT_NAMES || {});
+    return Promise.all(seats.map(function (s) {
+      return new Promise(function (done) {
+        var i = new Image();
+        i.onload  = function () { map[s] = true;  done(); };
+        i.onerror = function () { map[s] = false; done(); };
+        i.src = SHEETS + s + suffix + BUST;
+      });
+    }));
+  }
+
+  // ?demo=1 marches every seat past once, so the stage can be verified without
+  // waiting on the pipeline to produce an event. Nothing else reads the query.
+  function demo() {
+    var bits = [
+      {bit: "walk",  face: "talk", tag: "on it #000",     tone: "cool"},
+      {bit: "dash",  face: "talk", tag: "spawned #000",   tone: "cool"},
+      {bit: "trip",  face: "rest", tag: "failed #000"},
+      {bit: "cheer", face: "talk", tag: "shipped #000",   tone: "cool"},
+      {bit: "shrug", face: "rest", tag: "lease expired",  tone: "mute"},
+      {bit: "leave", face: "rest", tag: "done #000",      tone: "mute"},
+      {bit: "snap",  face: "rest", tag: "screenshot",     tone: "mute"}
+    ];
+    Object.keys(window.AGENT_NAMES || {}).forEach(function (s, i) {
+      if (walk[s] || head[s]) waiting.push({seat: s, plan: bits[i % bits.length]});
+    });
+    pump();
+  }
+
+  j("/api/queue").then(function (q) {
+    (q.items || []).forEach(function (it) { itemSeat[String(it.id)] = it.seat; });
+  }).catch(function () {})
+    .then(function () { return Promise.all([probe(walk, "_walk.png"), probe(head, "_talk.png")]); })
+    .then(function () {
+      if (/[?&]demo=1/.test(location.search)) demo();
+      poll();
+      setInterval(poll, POLL_MS);
+      setInterval(function () {
+        j("/api/queue").then(function (q) {
+          (q.items || []).forEach(function (it) { itemSeat[String(it.id)] = it.seat; });
+        }).catch(function () {});
+      }, 60000);
+    });
+})();
+</script>
+</body>
+</html>

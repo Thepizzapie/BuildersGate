@@ -84,6 +84,8 @@ window.SceneBuild = (() => {
 
   let nc = null, scene = null, data = null, types = null;
   let sel = null, filter = new Set(), busy = false;
+  let healing = false;        // guards the render() self-heal from looping
+  let repaintPending = false; // a repaint deferred until the picker closes
   // The viewport is the primary surface — it is where things are PLACED. The
   // graph is the structural read of the same scene, one click away.
   let surface = (() => {
@@ -98,6 +100,11 @@ window.SceneBuild = (() => {
     const s = document.createElement("style");
     s.id = "scenebuild-style";
     s.textContent = [
+      // Same trap as the viewport's: .sb-view and .sb-canvas both declare
+      // `display`, which outranks the UA sheet's [hidden]{display:none}. The
+      // surface toggle sets .hidden on the one it is leaving and it stayed on
+      // screen, so viewport and graph could both be mounted at once.
+      ".sb-wrap [hidden], #atlas-scene [hidden]{display:none !important}",
       ".sb-wrap{display:flex;height:min(78vh,900px);border:1px solid var(--seam);border-radius:12px;overflow:hidden;background:var(--iron)}",
       ".sb-canvas{flex:1;position:relative;min-width:0}",
       ".sb-view{flex:1;position:relative;min-width:0;display:flex}",
@@ -180,6 +187,24 @@ window.SceneBuild = (() => {
     injectStyle();
     const host = document.getElementById("atlas-scene");
     if (!host) return;
+    /* THE SHARED SCAN HAS TO BE IN HAND BEFORE ANYTHING READS SCREENS FROM IT.
+       Atlas.map is populated by whoever loads it first — on startup that is a
+       1200ms-deferred badge() call, and the scan itself walks the whole
+       project. Open this mode inside that window and atlasMap() is still null,
+       so bestScene() has nothing to choose from and the picker falls through to
+       its one-option fallback: the current scene and nothing else. It never
+       recovers, because the map arriving fires no re-render — the panel only
+       repaints on user action, and the one control the user would reach for is
+       the picker that is now stuck. Reported as "the scene is locked to the
+       title page" on a project whose declared boot scene is the title.
+       Atlas.ensure() is memoised and single-flight, so this is one shared scan,
+       not a per-open cost. Failure is swallowed deliberately: a dead scan
+       should leave the old behaviour, not break the panel. */
+    if (window.Atlas && Atlas.ensure && !atlasMap()){
+      if (!data) host.innerHTML =
+        `<div class="empty" style="padding:40px">scanning the project…</div>`;
+      try { await Atlas.ensure(); } catch (e) {}
+    }
     if (sceneId) scene = sceneId;
     if (!scene) scene = bestScene();
     if (!scene){
@@ -200,12 +225,22 @@ window.SceneBuild = (() => {
     const map = atlasMap();
     const screens = (map && map.screens) || [];
     if (!screens.length) return null;
+    // The project's declared boot scene beats any heuristic — it is the one
+    // scene the author has already told us matters.
+    const main = map && map.main_scene;
+    if (main && screens.some(s => s.id === main)) return main;
     const weight = {};
     ((map && map.edges) || []).forEach(e => {
       weight[e.from] = (weight[e.from] || 0) + 1;
     });
+    // "Most edges" picks a QA fixture on any project that has one — those
+    // scenes exist precisely to reference everything at once. Sideline them
+    // rather than let asset count speak for importance.
+    const side = s => /^res:\/\/(tests?|qa)\//i.test(s.id)
+                   || /(_proof|_test|_sandbox|_demo)\.tscn$/i.test(s.id);
     return screens.slice().sort(
-      (a, b) => (weight[b.id] || 0) - (weight[a.id] || 0))[0].id;
+      (a, b) => (side(a) - side(b)) || (weight[b.id] || 0) - (weight[a.id] || 0)
+    )[0].id;
   }
 
   async function reload(){
@@ -283,9 +318,40 @@ window.SceneBuild = (() => {
   function render(){
     const host = document.getElementById("atlas-scene");
     if (!host || !data) return;
+    /* NEVER REPAINT UNDERNEATH AN OPEN DROPDOWN. render() replaces the whole
+       panel with innerHTML, which DESTROYS the <select> node. If that lands
+       while the user has the list open — and the dashboard polls on several
+       timers — the native popup is torn off its element and vanishes. What the
+       user sees is a picker that will not open at all, or one that snaps shut
+       the moment they scroll it. With 64 scenes the list is long enough that
+       scrolling is required, so the bug hits every single attempt to change
+       scene, and looks exactly like "clicking does nothing".
+       An open <select> holds focus, so activeElement is the test. Defer the
+       repaint to blur instead of dropping it, or the panel goes stale. */
+    const sel = host.querySelector("select");
+    if (sel && document.activeElement === sel){
+      if (!repaintPending){
+        repaintPending = true;
+        sel.addEventListener("blur", () => { repaintPending = false; render(); },
+                             { once: true });
+      }
+      return;
+    }
+    repaintPending = false;
     const map = atlasMap();
     const screens = (map && map.screens) || [];
     const roles = data.roles || {};
+    /* LAST-DITCH SELF-HEAL. Every caller is supposed to have the scan in hand
+       before it gets here, but if any path ever renders without one the picker
+       silently becomes a single dead option — the current scene, unchangeable,
+       with no error anywhere to explain it. Refetch once and repaint rather
+       than leave the user staring at a control that does nothing. */
+    if (!screens.length && !healing){
+      healing = true;
+      const done = () => { healing = false; render(); };
+      if (window.Atlas && Atlas.ensure) Atlas.ensure().then(done).catch(done);
+      else healing = false;
+    }
 
     host.innerHTML = `
       <div class="sb-bar">
@@ -721,6 +787,13 @@ window.SceneBuild = (() => {
            say(`${w.data.summary} · backup ${w.data.backup}`, "ok");
            if (done) done();
            try { if (window.Atlas) Atlas.badge(); } catch (e) {}
+           // The engine backdrop is a photo of the scene BEFORE this write. If
+           // it is up, re-take it — otherwise the swap lands in the file and
+           // the picture keeps showing the old art, which is indistinguishable
+           // from the swap having failed.
+           try {
+             if (window.SceneView && SceneView.reshoot) SceneView.reshoot();
+           } catch (e) {}
          } }]);
   }
   function tail(text, n){

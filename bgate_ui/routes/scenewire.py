@@ -256,6 +256,112 @@ def _exists(project_root: Path, res_path: str) -> bool:
         return False
 
 
+# What a script pulls in that the scene file never mentions. A scene lists its
+# ext_resources; it says nothing about the four things the attached script
+# preloads, and those are exactly the files you go looking for next.
+_PRELOAD_RE = re.compile(r'\b(?:preload|load)\s*\(\s*["\'](res://[^"\']+)["\']')
+
+_KIND_BY_SUFFIX = {
+    ".gd": "script", ".cs": "script", ".tscn": "scene", ".tres": "resource",
+    ".png": "texture", ".webp": "texture", ".jpg": "texture", ".jpeg": "texture",
+    ".svg": "texture", ".ogg": "audio", ".wav": "audio", ".mp3": "audio",
+    ".ttf": "font", ".otf": "font", ".gdshader": "shader", ".json": "data",
+}
+# The suffixes the code editor will open. Deliberately narrower than "text":
+# offering to edit a .png in a code pane is an offer to corrupt it.
+_EDITABLE = {".gd", ".cs", ".tscn", ".tres", ".gdshader", ".json", ".cfg"}
+
+
+@router.get("/api/scene/files")
+def scene_files(scene: str) -> dict:
+    """Every file this scene reaches, and the folders they live in.
+
+    The question behind "open the scene" is rarely just the .tscn — it is the
+    script on the player, the SpriteFrames that script preloads, the shared
+    constants file two of them import. Answering it meant a file tree and some
+    guessing, so this walks it instead: the scene's own ext_resources, then one
+    hop through every script it attaches, following preload/load.
+
+    ONE HOP, NOT TRANSITIVE. A full closure on a project with a shared autoload
+    returns most of the codebase and stops being a picture of THIS scene. What
+    the second hop buys is the resources a script owns that the scene never
+    names; a third would only buy the whole graph back.
+    """
+    project_root = root()
+    target = _resolve(project_root, scene)
+    if target.suffix.lower() != ".tscn":
+        raise api.bad_request("not a scene file", scene=scene)
+    text = target.read_text(encoding="utf-8", errors="replace")
+    try:
+        parsed = scenewire.parse(text)
+    except scenewire.WireError as exc:
+        raise api.bad_request(str(exc), scene=scene)
+
+    self_res = _as_res(project_root, target)
+    gd = _godot_dir(project_root)
+    found: dict[str, dict] = {}
+
+    def add(res_path: str, via: str) -> Optional[Path]:
+        res_path = str(res_path or "")
+        if not res_path.startswith("res://") or res_path in found:
+            return None
+        try:
+            file = _resolve(project_root, res_path, must_exist=False)
+        except Exception:
+            return None
+        suffix = file.suffix.lower()
+        found[res_path] = {
+            "res": res_path,
+            "rel": file.relative_to(project_root).as_posix()
+                   if file.is_relative_to(project_root) else None,
+            # What /api/godot/file wants: relative to the GODOT dir, not the bg
+            # root. The two differ by a leading "game/" on a scaffolded project
+            # and by nothing on an adopted one, which is exactly the kind of
+            # difference that works on the author's machine and nowhere else.
+            "edit_rel": file.relative_to(gd).as_posix()
+                        if file.is_relative_to(gd) else None,
+            "name": file.name,
+            "dir": str(Path(res_path[len("res://"):]).parent.as_posix()),
+            "kind": _KIND_BY_SUFFIX.get(suffix, "other"),
+            "editable": suffix in _EDITABLE,
+            "exists": file.is_file(),
+            "bytes": file.stat().st_size if file.is_file() else 0,
+            "preview": _preview_for(project_root, res_path),
+            "via": via,
+        }
+        return file
+
+    add(self_res, "self")
+    scripts: list[tuple[str, Path]] = []
+    for ext in parsed["ext"]:
+        file = add(ext["path"], "scene")
+        if file is not None and file.suffix.lower() == ".gd" and file.is_file():
+            scripts.append((ext["path"], file))
+
+    for owner, file in scripts:
+        try:
+            body = file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for hit in _PRELOAD_RE.findall(body):
+            add(hit, f"script:{owner}")
+
+    files = sorted(found.values(), key=lambda f: (f["dir"], f["name"].lower()))
+    folders: dict[str, int] = {}
+    for f in files:
+        folders[f["dir"]] = folders.get(f["dir"], 0) + 1
+    return {
+        "scene": self_res,
+        "rel": target.relative_to(project_root).as_posix(),
+        # The editor passes this straight back to /api/godot/file so both ends
+        # agree on which directory res:// means.
+        "project_dir": str(gd),
+        "files": files,
+        "folders": [{"dir": d, "count": n} for d, n in sorted(folders.items())],
+        "missing": [f["res"] for f in files if not f["exists"]],
+    }
+
+
 @router.get("/api/scene/render")
 def scene_render(scene: str) -> dict:
     """The scene as a draw list — what it looks like, in paint order.
@@ -374,6 +480,11 @@ def _mutate(payload: dict, apply_fn) -> dict:
         out["text"] = result["text"]
     else:
         out["nodes"] = scenewire.outline(result["text"])
+        # Every edge Atlas draws comes out of this file. A dry run changed
+        # nothing, so it must NOT drop the cache — that would hand a free full
+        # rescan to anyone hovering over a preview.
+        from bgate_core import screenmap as _screenmap
+        _screenmap.invalidate(project_root)
     return api.ok(out)
 
 

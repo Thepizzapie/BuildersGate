@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Ticker</title>
+<style>
+  :root{--ground:#0b0a0a;--text:#f4f2ef;--seam:#27262e;--seam-soft:#1c1b21;--seam-strong:#393842;--accent:#ff6a3d;--info:#94a8ff}
+  *{box-sizing:border-box}
+  html,body{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;color:var(--text);font-family:"Segoe UI",Arial,sans-serif}
+  body{display:flex;align-items:center;gap:16px;padding:0 4px}
+
+  .chip{flex:0 0 auto;display:flex;align-items:center;gap:10px;height:40px;padding:0 18px;
+    background:var(--accent);color:var(--ground);font-size:20px;font-weight:900;letter-spacing:.16em;text-transform:uppercase}
+  .chip .n{font-size:20px;font-weight:900;letter-spacing:0}
+
+  /* The agent currently on the ticker is one that is RUNNING, so it plays the
+     talk cycle rather than idling: rest -> half -> wide -> half. Blink (cell 4)
+     is deliberately excluded — a blink every syllable reads as a twitch. */
+  .av{flex:0 0 auto;width:56px;height:56px;image-rendering:pixelated;opacity:0;
+    background-repeat:no-repeat;background-position:0 0;background-size:400% 100%;
+    transition:opacity .28s ease;
+    animation:talk .52s steps(1,end) infinite}
+  .av.on{opacity:1}
+  @keyframes talk{
+    0%,100%{background-position-x:0%}
+    25%{background-position-x:33.333%}
+    50%{background-position-x:66.667%}
+    75%{background-position-x:33.333%}
+  }
+
+  .row{flex:1 1 auto;display:flex;align-items:baseline;gap:14px;min-width:0;opacity:1;transition:opacity .28s ease}
+  .row.out{opacity:0}
+  .seat{flex:0 0 auto;font-size:22px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;color:var(--info)}
+  .id{flex:0 0 auto;font-size:20px;font-weight:800;color:var(--seam-strong)}
+  .title{flex:1 1 auto;min-width:0;font-size:24px;font-weight:650;letter-spacing:.01em;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  body{transition:opacity .4s ease}
+  body.idle{opacity:0}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}.av{animation:none}}
+</style>
+</head>
+<body class="idle">
+  <div class="chip" id="chip">Agents <span class="n" id="count">0</span></div>
+  <i class="av" id="av" aria-hidden="true"></i>
+  <div class="row" id="row">
+    <span class="seat" id="seat"></span>
+    <span class="id" id="id"></span>
+    <span class="title" id="title"></span>
+  </div>
+
+<script src="/static/agent-names.js"></script>
+<script>
+(function () {
+  // Served from the dashboard's own origin, so these are same-origin fetches.
+  // A file:// overlay cannot do this — the API sends no CORS headers.
+  var API_AGENTS = "/api/agents";
+  var API_ITEM   = "/api/queue/";
+  var SHEETS     = "/static/img/agents/";
+  var BUST       = "?t=" + Date.now(); // sheets are swapped out of band
+  var POLL_MS    = 4000;
+  var ROTATE_MS  = 6000;
+
+  var meta = {}, live = [], cursor = 0, known = {};
+
+  var body   = document.body;
+  var row    = document.getElementById("row");
+  var av     = document.getElementById("av");
+  var elSeat = document.getElementById("seat");
+  var elId   = document.getElementById("id");
+  var elTitle = document.getElementById("title");
+  var elCount = document.getElementById("count");
+
+  function j(url) {
+    return fetch(url, {cache: "no-store"}).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+  }
+
+  function pullMeta(id) {
+    if (meta[id]) return Promise.resolve();
+    return j(API_ITEM + id).then(function (res) {
+      var d = res && res.data ? res.data : res;
+      if (d) meta[id] = {seat: d.seat || "", title: d.title || ""};
+    }).catch(function () {});
+  }
+
+  function poll() {
+    j(API_AGENTS).then(function (res) {
+      var running = (res.agents || []).filter(function (a) { return a.state === "running"; });
+      live = running.map(function (a) { return a.item_id; });
+      elCount.textContent = live.length;
+      body.classList.toggle("idle", live.length === 0);
+      return Promise.all(live.map(pullMeta));
+    }).catch(function () {
+      live = [];
+      body.classList.add("idle");
+    });
+  }
+
+  function rotate() {
+    if (!live.length) return;
+    cursor = (cursor + 1) % live.length;
+    var id = live[cursor];
+    var m  = meta[id] || {};
+    row.classList.add("out");
+    av.classList.remove("on");
+    setTimeout(function () {
+      elSeat.textContent  = window.agentName(m.seat);
+      elId.textContent    = "#" + id;
+      elTitle.textContent = m.title || "";
+      if (known[m.seat]) {
+        av.style.backgroundImage = "url('" + SHEETS + m.seat + "_talk.png" + BUST + "')";
+        av.classList.add("on");
+      }
+      row.classList.remove("out");
+    }, 280);
+  }
+
+  // A seat with no sheet renders no avatar rather than a broken-image box.
+  function probeSheets() {
+    var seats = Object.keys(window.AGENT_NAMES || {});
+    return Promise.all(seats.map(function (s) {
+      return new Promise(function (done) {
+        var img = new Image();
+        img.onload  = function () { known[s] = true;  done(); };
+        img.onerror = function () { known[s] = false; done(); };
+        img.src = SHEETS + s + "_talk.png" + BUST;
+      });
+    }));
+  }
+
+  probeSheets().then(function () {
+    poll();
+    setInterval(poll, POLL_MS);
+    setInterval(rotate, ROTATE_MS);
+  });
+})();
+</script>
+</body>
+</html>

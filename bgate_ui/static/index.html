@@ -6,6 +6,13 @@
 <title>Builders Gate</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/app.css">
+<!-- CodeMirror 5 (MIT, vendored under static/vendor/codemirror — see its
+     LICENSE). theme-bgate.css is ours: it maps the editor's tokens onto the
+     app's own colour variables so the code pane follows the light/dark switch
+     instead of being the one panel with a fixed palette. -->
+<link rel="stylesheet" href="/static/vendor/codemirror/codemirror.css">
+<link rel="stylesheet" href="/static/vendor/codemirror/dialog.css">
+<link rel="stylesheet" href="/static/vendor/codemirror/theme-bgate.css">
 <script>
 /* Stamp the saved ground before first paint. Doing this from the main script
    at the bottom of the body means a full frame of dark canvas renders first
@@ -327,6 +334,7 @@
           <button class="atlas-mode active" data-m="list" onclick="setAtlasMode('list')">list</button>
           <button class="atlas-mode" data-m="graph" onclick="setAtlasMode('graph')">graph · wire it</button>
           <button class="atlas-mode" data-m="scene" onclick="setAtlasMode('scene')">scene · build it</button>
+          <button class="atlas-mode" data-m="code" onclick="setAtlasMode('code')">code · edit it</button>
         </div>
         <div id="atlas-list-mode">
           <div class="atlas-stats" id="atlas-stats"></div>
@@ -335,6 +343,7 @@
         </div>
         <div id="atlas-graph" hidden></div>
         <div id="atlas-scene" hidden></div>
+        <div id="atlas-code" hidden></div>
       </section>
 
       <section class="deck-view" id="view-timeline">
@@ -623,19 +632,30 @@ let atlasMode = (() => {
   try { return localStorage.getItem("bgate-atlas-mode") || "list"; } catch(e){ return "list"; }
 })();
 function setAtlasMode(mode){
-  atlasMode = ["graph", "scene"].includes(mode) ? mode : "list";
+  // Leaving the code mode with unsaved buffers is the one switch that can lose
+  // work: the other three read from disk on activate, so nothing they hold is
+  // unique. Ask before the tab is hidden, not after.
+  if (atlasMode === "code" && mode !== "code" && window.AtlasCode && AtlasCode.dirty()
+      && !confirm("You have unsaved edits open in the code editor. Leave anyway?"))
+    return false;
+  if (atlasMode === "code" && mode !== "code" && window.AtlasCode
+      && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
+  atlasMode = ["graph", "scene", "code"].includes(mode) ? mode : "list";
   try{ localStorage.setItem("bgate-atlas-mode", atlasMode); }catch(e){}
   document.querySelectorAll("#atlas-modes .atlas-mode").forEach(b =>
     b.classList.toggle("active", b.dataset.m === atlasMode));
-  ["list-mode", "graph", "scene"].forEach(id => {
+  ["list-mode", "graph", "scene", "code"].forEach(id => {
     const el = document.getElementById(id === "list-mode" ? "atlas-list-mode" : "atlas-" + id);
     if (el) el.hidden = atlasMode !== (id === "list-mode" ? "list" : id);
   });
-  const mod = { graph: window.AtlasGraph, scene: window.SceneBuild }[atlasMode]
+  const mod = { graph: window.AtlasGraph, scene: window.SceneBuild,
+                code: window.AtlasCode }[atlasMode]
     || window.Atlas;
-  // The scene builder names its scenes from the Atlas scan, so make sure that
-  // scan exists before it asks — otherwise the picker opens with one entry.
-  if (atlasMode === "scene" && window.Atlas && typeof Atlas.ensure === "function"){
+  // The scene builder and the code editor both name their scenes from the
+  // Atlas scan, so make sure that scan exists before they ask — otherwise the
+  // picker opens with one entry.
+  if ((atlasMode === "scene" || atlasMode === "code")
+      && window.Atlas && typeof Atlas.ensure === "function"){
     Atlas.ensure().then(() => { if (mod) mod.activate(); }).catch(() => { if (mod) mod.activate(); });
     return true;
   }
@@ -645,6 +665,11 @@ function setAtlasMode(mode){
 
 function setWorkspace(name, trigger){
   const next = DECK_CRUMB[name] ? name : "overview";
+  // Leaving Atlas entirely has to stop the playable build too, not just
+  // switching modes within it — a hidden deck-view still runs its iframe, and
+  // the only symptom is audio from a panel you can no longer see.
+  if (next !== "atlas" && atlasMode === "code" && window.AtlasCode
+      && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
   document.querySelectorAll(".deck-view").forEach(view =>
     view.classList.toggle("active", view.id === `view-${next}`));
   document.querySelectorAll(".rail-item").forEach(item =>
@@ -1950,9 +1975,10 @@ const SpriteAnim = {
     // the container was just re-rendered — kill prior timers before remounting
     this._ivs.forEach(clearInterval); this._ivs = [];
     container.querySelectorAll(".spr-mount").forEach(el =>
-      this.mount(el, el.dataset.rel, +el.dataset.fps || 8, +el.dataset.count || 0));
+      this.mount(el, el.dataset.rel, +el.dataset.fps || 8, +el.dataset.count || 0,
+                 +el.dataset.item || 0));
   },
-  mount(el, rel, fps, count){
+  mount(el, rel, fps, count, item){
     if (!el || !rel) return;
     const img = new Image();
     img.onload = () => {
@@ -1973,7 +1999,8 @@ const SpriteAnim = {
       this._ivs.push(iv);
     };
     img.onerror = () => { el.style.opacity = ".15"; };
-    img.src = "/api/preview?rel=" + encodeURIComponent(rel);
+    img.src = "/api/preview?rel=" + encodeURIComponent(rel)
+            + (item ? "&item_id=" + item : "");
   },
 };
 window.SpriteAnim = SpriteAnim;
@@ -2297,6 +2324,10 @@ setInterval(pollQueue, 3500);
      handler at the bottom of this file (its slot is in the status bar, so no
      view would ever do it) and the panel by activateWorkspace(). -->
 <script src="/static/notify.js"></script>
+<!-- The streamer-mode chip. Loaded next to notify.js because it lands in the
+     same status bar slot and for the same reason: it must be on screen in every
+     workspace, not behind a panel. -->
+<script src="/static/streamer.js"></script>
 <script src="/static/settingsview.js"></script>
 <script src="/static/wf.js"></script>
 <script src="/static/wf_steps_asset.js"></script>
@@ -2316,6 +2347,22 @@ setInterval(pollQueue, 3500);
 <script src="/static/atlas_graph.js"></script>
 <script src="/static/sceneview.js"></script>
 <script src="/static/scenebuild.js"></script>
+<!-- The editor's engine, then its modes. simple.js must precede
+     mode-gdscript.js, which is defined with it. -->
+<script src="/static/vendor/codemirror/codemirror.js"></script>
+<script src="/static/vendor/codemirror/simple.js"></script>
+<script src="/static/vendor/codemirror/mode-gdscript.js"></script>
+<script src="/static/vendor/codemirror/mode-properties.js"></script>
+<script src="/static/vendor/codemirror/mode-javascript.js"></script>
+<script src="/static/vendor/codemirror/matchbrackets.js"></script>
+<script src="/static/vendor/codemirror/closebrackets.js"></script>
+<script src="/static/vendor/codemirror/active-line.js"></script>
+<script src="/static/vendor/codemirror/comment.js"></script>
+<script src="/static/vendor/codemirror/dialog.js"></script>
+<script src="/static/vendor/codemirror/searchcursor.js"></script>
+<script src="/static/vendor/codemirror/search.js"></script>
+<script src="/static/vendor/codemirror/jump-to-line.js"></script>
+<script src="/static/atlas_code.js"></script>
 <script src="/static/spriteedit.js"></script>
 <script src="/static/audiolab.js"></script>
 <script src="/static/beatmaker.js"></script>

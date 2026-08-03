@@ -368,7 +368,13 @@ class TestOneThemeLayer:
         """
         assert not styles(page), \
             "index.html grew a <style> block again — tokens belong in app.css"
-        assert '<link rel="stylesheet" href="/static/app.css">' in page
+        # The href now carries a ?v=<mtime> cache-buster, same as the script
+        # tags — without it a stylesheet edit sat in the browser cache and the
+        # fix appeared not to work. The property this guards is "app.css is the
+        # one stylesheet", which a version query does not weaken, so match the
+        # link rather than one exact spelling of it.
+        assert re.search(r'<link rel="stylesheet" href="/static/app\.css(\?v=\d+)?">',
+                         page), "app.css is no longer the page's stylesheet"
         # Each ground declares its palette once, and only inside app.css.
         assert len(re.findall(r"--accent:#", shell)) == len(
             re.findall(r"(?m)^\s*--accent:#", shell)), "accent declared oddly"

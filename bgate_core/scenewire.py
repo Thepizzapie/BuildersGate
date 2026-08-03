@@ -406,6 +406,94 @@ def add_node(text: str, *, name: str, node_type: str, parent: str = ".",
             "summary": f"add {ntype} '{final}' under {parent}"}
 
 
+TILE_LAYER_TYPE = "TileMapLayer"
+
+
+def _layer_block(name: str, parent: str, packed: str, rid: str,
+                 props: Optional[dict]) -> str:
+    lines = [f'[node name="{name}" type="{TILE_LAYER_TYPE}" parent="{parent}"]']
+    if packed:
+        lines.append(f'tile_map_data = PackedByteArray("{packed}")')
+    lines.append(f'tile_set = ExtResource("{rid}")')
+    for key, value in (props or {}).items():
+        lines.append(f"{_prop_key(key)} = {_prop_value(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
+                 parent: str = ".") -> dict:
+    """Write generated tile layers into a scene, REPLACING same-named ones.
+
+    Replacing is the whole point. A generator is re-run — new seed, wider
+    corridors, a different tileset — and an append-only writer turns that into
+    Ground, Ground2, Ground3 stacked on each other, all still drawing. The
+    second run of a level generator looked identical to the first because the
+    old layer was on top of the new one, and nothing about the scene said so.
+
+    So a node of the same name under the same parent is overwritten in place,
+    and one that exists but is NOT a TileMapLayer is refused rather than
+    clobbered — that name belongs to something the generator did not make.
+
+    Each layer is ``{name, cells, props?}`` where cells are the dicts
+    ``tilemap.encode_cells`` takes. Returns ``{text, layers, id, summary}``;
+    writes nothing.
+    """
+    from bgate_core import tilemap                      # local: keeps the
+    # dependency one-way — tilemap knows nothing about scenes.
+
+    if not tileset_res.startswith("res://"):
+        raise WireError(f"expected a res:// path for the tileset, got "
+                        f"{tileset_res!r}")
+    if not layers:
+        raise WireError("no layers to write")
+
+    parsed = parse(text)
+    if not parsed["nodes"]:
+        raise WireError("scene has no nodes — nothing to parent to")
+    if parent not in {node_path(n) for n in parsed["nodes"]}:
+        raise WireError(f"no node at {parent!r} in this scene")
+
+    existing = next((e for e in parsed["ext"] if e["path"] == tileset_res), None)
+    if existing:
+        rid, out = existing["id"], text
+    else:
+        rid = _fresh_id(parsed, tileset_res)
+        out = _insert_ext(
+            text, parsed,
+            f'[ext_resource type="TileSet" path="{tileset_res}" id="{rid}"]\n')
+
+    written = []
+    for layer in layers:
+        name = sanitize_node_name(layer.get("name") or "TileMapLayer")
+        packed = tilemap.encode_cells(layer.get("cells") or [])
+        block = _layer_block(name, parent, packed, rid, layer.get("props"))
+
+        parsed = parse(out)
+        full = f"{parent}/{name}" if parent != "." else name
+        target = next((n for n in parsed["nodes"] if node_path(n) == full), None)
+        if target is None:
+            out = out.rstrip("\n") + "\n\n" + block
+            action = "add"
+        elif target["type"] != TILE_LAYER_TYPE:
+            raise WireError(
+                f"{full!r} is a {target['type'] or 'node'}, not a "
+                f"{TILE_LAYER_TYPE} — refusing to overwrite it")
+        else:
+            start, end = block_span(out, parsed, target)
+            out = out[:start] + block + "\n" + out[end:]
+            action = "replace"
+        written.append({"node": full, "action": action,
+                        "cells": len(layer.get("cells") or [])})
+
+    out = _with_load_steps(out, parse(out), 0)
+    return {
+        "text": out, "id": rid, "parent": parent, "tileset": tileset_res,
+        "layers": written,
+        "summary": " · ".join(
+            f"{w['action']} {w['node']} ({w['cells']} cells)" for w in written),
+    }
+
+
 _PROP_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*)*$")
 # Godot literals this module will write. Anything else is refused rather than
 # quoted-and-hoped: a malformed property value does not fail at save, it fails

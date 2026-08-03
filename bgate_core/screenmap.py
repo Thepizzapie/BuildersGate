@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 from pathlib import Path
+from typing import Callable
 
 _EXT_RE = re.compile(
     r'\[ext_resource\s+type="(?P<type>[^"]+)"[^\]]*?path="(?P<path>res://[^"]+)"')
@@ -65,6 +68,98 @@ _SKIP_DIRS = frozenset({".godot", ".bgate_out", ".bgate", ".git", ".asset_work",
 
 def _skip(p: Path) -> bool:
     return bool(_SKIP_DIRS & set(p.parts))
+
+
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+# Every caller of scan() re-walked the whole project. /api/screenmap is POLLED,
+# and three separate surfaces call it (Atlas, the asset library, the library
+# route), so a dashboard sitting idle on one page re-derived the entire graph
+# several times a second. Every route in this app is a sync `def`, so each of
+# those scans holds a threadpool thread — which is how a 0.34s scan turned into
+# a 19s request as soon as the page was open and polling.
+# Long on purpose. The dashboard's own writes call invalidate(), so the TTL only
+# ever governs edits made OUTSIDE it — someone saving in the Godot editor. A
+# short TTL bought freshness nobody asked for and charged a full project walk
+# for it, under polling, every few seconds: the dashboard froze on a timer. The
+# `reread` button and ?fresh=1 are the answer for an external edit, because they
+# are a thing a person does deliberately when they know they changed something.
+CACHE_TTL_S = 90.0
+_cache: dict[str, tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
+_inflight: dict[str, threading.Lock] = {}
+
+
+def scan_cached(root: str | os.PathLike[str], *, ttl: float = CACHE_TTL_S,
+                force: bool = False) -> dict:
+    """scan(), memoised per root, with concurrent callers SHARING one scan.
+
+    The TTL is the small half of this. The important half is single-flight: six
+    panels polling at once used to mean six simultaneous full walks of the
+    project, each one making the others slower. Now the first one scans and the
+    other five wait on its result — the case that actually hurt.
+    """
+    key = str(Path(root).resolve())
+    if not force:
+        hit = _cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+
+    with _cache_lock:
+        lock = _inflight.setdefault(key, threading.Lock())
+
+    with lock:
+        # Re-check inside the lock: while waiting, the thread that held it has
+        # very likely just published exactly what we were about to compute.
+        hit = _cache.get(key)
+        if not force and hit is not None and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+        result = scan(key)
+        _cache[key] = (time.monotonic(), result)
+        return result
+
+
+def invalidate(root: str | os.PathLike[str] | None = None) -> None:
+    """Drop the cached graph — call this after writing a scene, script or asset.
+
+    A TTL alone would make the dashboard show a stale map for a few seconds
+    after its OWN edit, which reads as "the write did not land".
+    """
+    if root is None:
+        _cache.clear()
+        return
+    _cache.pop(str(Path(root).resolve()), None)
+
+
+def _walk(base: Path, match: Callable[[Path], bool]) -> list[Path]:
+    """rglob, but PRUNING the skipped trees instead of filtering after them.
+
+    `rglob` enumerates everything and hands back paths for _skip() to throw
+    away, so the cost of a scan was set by the biggest directory in the project
+    — which is always `.godot`, the engine's own import cache. On a real game
+    that is ~2000 files of pure overhead per walk, three walks per scan, and it
+    took /api/screenmap to 37 SECONDS. The dashboard polls this.
+
+    os.scandir and an explicit stack, because Path.iterdir stats every entry;
+    scandir's DirEntry answers is_dir() from the directory read itself.
+    """
+    out: list[Path] = []
+    stack = [base]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for e in entries:
+            if e.is_dir(follow_symlinks=False):
+                if e.name not in _SKIP_DIRS:
+                    stack.append(Path(e.path))
+            else:
+                p = Path(e.path)
+                if match(p):
+                    out.append(p)
+    return out
 
 
 def _godot_dir(root: Path) -> Path | None:
@@ -119,7 +214,7 @@ def scan(root: str | os.PathLike[str]) -> dict:
 
     # --- screens: every .tscn in the project (skip .godot cache) -------------
     screens = []
-    tscns = [p for p in gd.rglob("*.tscn") if not _skip(p)]
+    tscns = _walk(gd, lambda p: p.suffix == ".tscn")
     screen_ids = {f"res://{p.relative_to(gd).as_posix()}" for p in tscns}
     parsed_scripts: set = set()
     for tscn in sorted(tscns):
@@ -171,8 +266,8 @@ def scan(root: str | os.PathLike[str]) -> dict:
     # script preloaded them, `unit_marker.gd` alone accounting for the whole
     # enemy sprite set.
     covered = {d for d in parsed_scripts}
-    for gdfile in gd.rglob("*.gd"):
-        if _skip(gdfile) or gdfile in covered:
+    for gdfile in _walk(gd, lambda p: p.suffix == ".gd"):
+        if gdfile in covered:
             continue
         source = gdfile.read_text(encoding="utf-8", errors="replace")
         lits = set(_RES_LIT_RE.findall(source))
@@ -284,10 +379,8 @@ def scan(root: str | os.PathLike[str]) -> dict:
     orphans = []
     assets_dir = gd / "assets"
     if assets_dir.is_dir():
-        for p in assets_dir.rglob("*"):
-            if not (p.suffix.lower() in _ORPHAN_SUFFIXES and p.is_file()
-                    and not _skip(p)
-                    and not p.name.endswith(".import")
+        for p in _walk(assets_dir, lambda p: p.suffix.lower() in _ORPHAN_SUFFIXES):
+            if not (not p.name.endswith(".import")
                     and str(p) not in referenced_disk):
                 continue
             rid = f"res://{p.relative_to(gd).as_posix()}"
@@ -311,4 +404,22 @@ def scan(root: str | os.PathLike[str]) -> dict:
     missing = [nid for nid, n in nodes.items() if not n["exists"]]
     return {"godot_dir": rel(gd) or ".", "screens": screens, "nodes": nodes,
             "edges": edges, "orphans": sorted(orphans),
-            "missing": sorted(missing)}
+            "missing": sorted(missing), "main_scene": _main_scene(gd)}
+
+
+_MAIN_SCENE_RE = re.compile(r'^run/main_scene\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _main_scene(gd: Path) -> str:
+    """The scene the game actually boots into, from project.godot.
+
+    Without it every picker in the dashboard opens on whatever sorts first,
+    which on a real project is a proof asset or a QA fixture — the two kinds of
+    scene nobody opens the editor to look at.
+    """
+    try:
+        text = (gd / "project.godot").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    m = _MAIN_SCENE_RE.search(text)
+    return m.group(1) if m else ""

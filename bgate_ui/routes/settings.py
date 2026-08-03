@@ -126,6 +126,16 @@ def apply_changes(project, changes: dict) -> list[dict]:
             "env_override": result.get("env_override") or "",
         })
         _announce(project, key, previous.get(key), result)
+    # The redaction filter caches its answer for a couple of seconds because it
+    # is consulted on every single request. Drop that cache the instant the
+    # switch moves: a privacy control that takes effect "shortly" is one the
+    # user flips twice, watching the paths not change, before going live.
+    if "privacy.streamer" in clean:
+        try:
+            from bgate_ui import redact as _redact
+            _redact.invalidate()
+        except Exception:
+            pass  # the TTL expires on its own; never fail a save over a cache
     return applied
 
 

@@ -254,7 +254,20 @@
   }
 
   window.addEventListener("resize", close);
-  window.addEventListener("scroll", close, true);
+
+  /* Close when the PAGE moves under the popup — never when the popup scrolls
+     itself. This was a bare `close`, in the capture phase, so it fired for a
+     scroll on any element in the document including the popup's own list. open()
+     ends by calling scrollIntoView() on the selected row to reveal it, and on a
+     picker long enough for that to actually scroll, the resulting scroll event
+     was captured here and shut the popup in the same tick it opened. Clicking
+     did nothing, visibly — and only for long lists, because a short one never
+     needs to scroll and never fires the event. */
+  window.addEventListener("scroll", function (e) {
+    var t = e.target;
+    if (OPEN && OPEN.pop && t && t.nodeType === 1 && OPEN.pop.contains(t)) return;
+    close();
+  }, true);
 
   /* ---- keep up with a DOM that re-renders every few seconds -------------- */
 

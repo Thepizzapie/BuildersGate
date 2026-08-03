@@ -41,6 +41,8 @@ DIAMOND_RIGHT, DIAMOND_DOWN = 4, 5
 CELL_STRUCT = struct.Struct("<HHHHHH")   # x, y, source, atlas x, atlas y, alt
 CELL_BYTES = CELL_STRUCT.size            # 12
 MAX_CELLS = 200_000                      # a guard, not a real limit
+COORD_MIN, COORD_MAX = -0x8000, 0x7FFF   # what the signed read can give back
+FIELD_MAX = 0xFFFF                       # source and alt are genuinely unsigned
 
 
 class TileError(ValueError):
@@ -83,6 +85,71 @@ def decode_cells(packed: str) -> list[dict]:
     return out
 
 
+def _cell_fields(cell) -> tuple[int, int, int, int, int, int]:
+    """One cell as (x, y, source, ax, ay, alt), from a dict or a sequence.
+
+    Both shapes exist already: decode_cells hands back dicts, layer_draw hands
+    back 5-element lists. A generator that fed either one straight back in and
+    got a TypeError would be right to be annoyed.
+    """
+    if isinstance(cell, dict):
+        try:
+            return (int(cell["x"]), int(cell["y"]), int(cell["source"]),
+                    int(cell.get("ax", 0)), int(cell.get("ay", 0)),
+                    int(cell.get("alt", 0)))
+        except KeyError as exc:
+            raise TileError(f"cell is missing {exc.args[0]!r}: {cell!r}") from exc
+    seq = list(cell)
+    if len(seq) not in (5, 6):
+        raise TileError(
+            f"a cell is 5 (x, y, source, ax, ay) or 6 values, got {len(seq)}")
+    return tuple(int(v) for v in seq) + ((0,) if len(seq) == 5 else ())
+
+
+def encode_cells(cells, *, version: int = 0) -> str:
+    """Placed cells back into a ``tile_map_data`` string. Inverse of decode_cells.
+
+    Written in (y, x) order rather than the caller's. Godot stores these in a
+    hash map and does not care, but a generator that is re-run on the same seed
+    should produce a byte-identical scene — an unordered write turns "nothing
+    changed" into a diff of the entire level, every time.
+
+    Two things are refused rather than wrapped, because both are silent in the
+    engine and loud nowhere:
+
+      * A coordinate outside int16. It survives the round trip as a tile 65,000
+        cells away, which looks like the generator exploded rather than like a
+        bounds bug.
+      * Two cells on the same coordinate. A TileMapLayer is a map keyed by
+        coordinate, so the loser simply never exists and the layer is quietly
+        short a tile.
+    """
+    fields = [_cell_fields(c) for c in cells]
+    if len(fields) > MAX_CELLS:
+        raise TileError(f"{len(fields)} cells is past the {MAX_CELLS} cap")
+
+    seen: set[tuple[int, int]] = set()
+    for x, y, source, ax, ay, alt in fields:
+        for name, v in (("x", x), ("y", y), ("ax", ax), ("ay", ay)):
+            if not COORD_MIN <= v <= COORD_MAX:
+                raise TileError(
+                    f"{name}={v} is outside int16 ({COORD_MIN}..{COORD_MAX}); "
+                    "it would wrap to the far side of the map")
+        for name, v in (("source", source), ("alt", alt)):
+            if not 0 <= v <= FIELD_MAX:
+                raise TileError(f"{name}={v} is outside 0..{FIELD_MAX}")
+        if (x, y) in seen:
+            raise TileError(f"two cells on ({x}, {y}) — a layer holds one tile "
+                            "per coordinate, so one of them would vanish")
+        seen.add((x, y))
+
+    blob = struct.pack("<H", version)
+    for x, y, source, ax, ay, alt in sorted(fields, key=lambda f: (f[1], f[0])):
+        blob += CELL_STRUCT.pack(x & 0xFFFF, y & 0xFFFF, source,
+                                 ax & 0xFFFF, ay & 0xFFFF, alt)
+    return base64.b64encode(blob).decode("ascii")
+
+
 # ---------------------------------------------------------------------------
 # The TileSet
 # ---------------------------------------------------------------------------
@@ -91,6 +158,12 @@ _EXT_RE = re.compile(
 _SUB_HEAD_RE = re.compile(r'\[sub_resource type="TileSetAtlasSource" id="([^"]+)"\]')
 _VEC2I_RE = re.compile(r"Vector2i\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)")
 _SOURCE_RE = re.compile(r'^sources/(\d+)\s*=\s*SubResource\("([^"]+)"\)', re.MULTILINE)
+# The tiles an atlas actually DEFINES, written "3:1/0 = 0". A tile that is not
+# in this list cannot be placed — Godot draws nothing and reports nothing — so
+# anything generating cell coordinates needs to know which ones exist. The
+# alternative-tile and per-tile-property lines have more path segments before
+# the '=', which is what keeps them out of this match.
+_TILE_RE = re.compile(r"^(\d+):(\d+)/(\d+)\s*=", re.MULTILINE)
 
 
 def parse_tileset(text: str) -> dict:
@@ -115,6 +188,8 @@ def parse_tileset(text: str) -> dict:
                        if region else None),
             "origin": ([int(origin.group(1)), int(origin.group(2))]
                        if origin else [0, 0]),
+            "tiles": sorted({(int(x), int(y))
+                             for x, y, _alt in _TILE_RE.findall(block)}),
         }
 
     resource = text.split("[resource]", 1)[-1]
@@ -136,6 +211,7 @@ def parse_tileset(text: str) -> dict:
             "texture": atlas["texture"],
             "region": atlas["region"] or tile_size,
             "origin": atlas["origin"],
+            "tiles": atlas["tiles"],
         }
     return {
         "tile_size": tile_size,
@@ -175,7 +251,10 @@ def layer_draw(packed: str, tileset: dict) -> dict:
     """
     cells = decode_cells(packed)
     used = sorted({c["source"] for c in cells})
-    sources = {sid: tileset["sources"][sid]
+    # `tiles` stays out: the canvas draws the cells it is given and never needs
+    # the list of every tile the atlas defines. That list is for the generator.
+    sources = {sid: {k: v for k, v in tileset["sources"][sid].items()
+                     if k != "tiles"}
                for sid in used if sid in tileset["sources"]}
     return {
         "tile_size": tileset["tile_size"],

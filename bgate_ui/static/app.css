@@ -337,6 +337,14 @@
   @keyframes deckthrob{50%{opacity:.4}}
   @keyframes arrive{from{background:var(--accent-soft)} to{background:transparent}}
   @keyframes deckfade{from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none}}
+  /* Motion only, no opacity. Anything whose VISIBILITY depends on an animation
+     finishing is invisible for as long as the animation does not run — and a
+     document whose timeline is paused (a throttled or non-compositing window)
+     holds it at frame 0 forever. The select popup was doing exactly that: built
+     correctly, 64 rows, positioned on screen, opacity 0, animation "running"
+     with currentTime stuck at 0. A dropdown you cannot see is a dropdown that
+     does not work, so it no longer fades in — it only slides. */
+  @keyframes bgs-in{from{transform:translateY(4px)} to{transform:none}}
   @keyframes toastin{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
 }
 
@@ -574,7 +582,10 @@
     max-width:min(560px,92vw); overflow:hidden;
     background:var(--surface-2); border:1px solid var(--line-strong);
     border-radius:var(--r-md); box-shadow:var(--shadow-3);
-    animation:deckfade var(--dur-fast) var(--ease-out);
+    animation:bgs-in var(--dur-fast) var(--ease-out);
+    /* Explicit, and not negotiable. This element is only ever in the DOM while
+       it is open, so there is no state in which it should be transparent. */
+    opacity:1;
   }
   .bgs-filterwrap{padding:var(--s-4); border-bottom:1px solid var(--line); flex:none}
   .bgs-filter{
@@ -631,6 +642,19 @@
   .schip .l{width:7px; height:7px; border-radius:50%; background:var(--good); flex:none}
   .schip .l.warn{background:var(--warn)}
   .schip .l.bad{background:var(--bad)}
+
+  /* The streamer chip (streamer.js). LOUD WHEN ON, which is the inverse of the
+     other status lights here — off is the default and the normal state, and a
+     permanent warning on a private machine is one people stop seeing. */
+  .streamer-chip{cursor:default}
+  .streamer-chip.on{
+    border-color:var(--good); background:color-mix(in srgb, var(--good) 12%, var(--surface-2));
+  }
+  .streamer-chip.on b{color:var(--good)}
+  /* Unknown is NOT styled as ok. A poll that failed cannot confirm the filter
+     is running, and the chip must never claim protection it has not verified. */
+  .streamer-chip.unknown{border-color:var(--bad)}
+  .streamer-chip.unknown b{color:var(--bad)}
 
   .lamp{width:9px; height:9px; border-radius:50%; flex:none;
     background:var(--good); box-shadow:0 0 8px var(--good)}

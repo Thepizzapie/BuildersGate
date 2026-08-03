@@ -1,0 +1,61 @@
+/* theme-bgate.css — CodeMirror token colours drawn from the app's own tokens.
+ *
+ * NOT vendored. Every colour here is a var() the rest of the dashboard already
+ * defines, which is what makes the editor follow the light/dark switch for
+ * free — a shipped CodeMirror theme is a fixed palette and would have needed a
+ * second copy plus a toggle, and would still have been the one panel whose
+ * greys did not match the panel it sits in.
+ *
+ * The budget is deliberately small. Colouring every identifier is what turns a
+ * file into confetti; what a reader scans for is structure — declarations,
+ * strings, comments, and the two things unique to this engine: annotations
+ * (@export is why a value is in the inspector) and node paths ($Player).
+ */
+.cm-s-bgate.CodeMirror{
+  background:var(--surface-1); color:var(--text);
+  font-family:var(--mono); line-height:1.55;
+}
+.cm-s-bgate .CodeMirror-gutters{
+  background:var(--surface-1); border-right:1px solid var(--line-soft);
+}
+.cm-s-bgate .CodeMirror-linenumber{ color:var(--text-dim); }
+.cm-s-bgate .CodeMirror-cursor{ border-left:2px solid var(--accent); }
+.cm-s-bgate .CodeMirror-activeline-background{ background:var(--surface-2); }
+.cm-s-bgate .CodeMirror-selected{ background:var(--accent-soft); }
+.cm-s-bgate.CodeMirror-focused .CodeMirror-selected{ background:var(--accent-soft); }
+.cm-s-bgate .CodeMirror-matchingbracket{
+  color:var(--accent) !important; border-bottom:1px solid var(--accent);
+}
+.cm-s-bgate .CodeMirror-nonmatchingbracket{ color:var(--bad) !important; }
+
+.cm-s-bgate .cm-comment { color:var(--text-3); font-style:italic; }
+.cm-s-bgate .cm-string,
+.cm-s-bgate .cm-string-2 { color:var(--good); }
+.cm-s-bgate .cm-number,
+.cm-s-bgate .cm-atom     { color:var(--warn); }
+.cm-s-bgate .cm-keyword  { color:var(--accent); }
+.cm-s-bgate .cm-def      { color:var(--text); font-weight:600; }
+.cm-s-bgate .cm-variable { color:var(--text-2); }
+.cm-s-bgate .cm-variable-2{ color:var(--c-narrative); }   /* types, extends */
+.cm-s-bgate .cm-variable-3{ color:var(--good); font-weight:600; }  /* $NodePath */
+.cm-s-bgate .cm-builtin  { color:var(--text); }            /* call targets */
+.cm-s-bgate .cm-meta     { color:var(--c-director); }      /* @export, @onready */
+.cm-s-bgate .cm-operator { color:var(--text-3); }
+.cm-s-bgate .cm-property { color:var(--text-2); }
+.cm-s-bgate .cm-header   { color:var(--accent); font-weight:600; }  /* [node ...] */
+/* The properties mode — what colours .tscn/.tres/.cfg — tags a key as `def`
+   and its VALUE as `quote`, not `string`. Left unstyled, the right-hand side
+   of every line in a scene file renders as plain body text. */
+.cm-s-bgate .cm-quote    { color:var(--good); }
+.cm-s-bgate .cm-error    { color:var(--bad); }
+
+/* The search addon's dialog inherits none of the app's chrome on its own. */
+.cm-s-bgate .CodeMirror-dialog{
+  background:var(--surface-3); color:var(--text);
+  border-bottom:1px solid var(--line); font-family:var(--mono);
+  font-size:var(--fs-xs); padding:6px 8px;
+}
+.cm-s-bgate .CodeMirror-dialog input{
+  background:var(--surface-1); color:var(--text);
+  border:1px solid var(--line); font-family:var(--mono); padding:2px 4px;
+}

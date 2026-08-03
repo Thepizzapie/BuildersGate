@@ -28,6 +28,12 @@ window.SpriteEdit = (() => {
      markup lands inside it and drops the fixed positioning and the close
      button (there is nothing to close back to inside a tab). */
   let _host = null;
+
+  /* On screen right now — not merely constructed. getClientRects() is the check
+     rather than offsetParent, because offsetParent is null for a positioned
+     element that is perfectly visible. A detached or display:none host has no
+     rects; a real one always has at least one. */
+  const visible = el => !!el && el.isConnected && el.getClientRects().length > 0;
   "use strict";
 
   const E = s => String(s ?? "").replace(/[&<>"']/g,
@@ -407,8 +413,18 @@ window.SpriteEdit = (() => {
           <div class="se-hud" id="se-hud"></div></div>
         <div class="se-side" id="se-side"></div>
       </div>`;
-    if (_host) { back.classList.add("se-embed"); _host.innerHTML = ""; _host.appendChild(back); }
-    else document.body.appendChild(back);
+    // Embed ONLY into a host that is actually on screen. `_host` is set once by
+    // the Studio's sprite tab and never cleared, so every later `open()` from
+    // anywhere else — the scene builder's "edit pixels", the Atlas graph, the
+    // asset library — mounted the whole editor inside the Studio's hidden
+    // container. The editor loaded, painted, and bound its keys into a div with
+    // no box, so the button looked like it did nothing at all.
+    const embedHost = visible(_host) ? _host : null;
+    if (embedHost) {
+      back.classList.add("se-embed");
+      embedHost.innerHTML = "";
+      embedHost.appendChild(back);
+    } else document.body.appendChild(back);
     $ = {
       back, name: back.querySelector("#se-name"), tools: back.querySelector("#se-tools"),
       stage: back.querySelector("#se-stage"), view: back.querySelector("#se-view"),

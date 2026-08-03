@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Feed</title>
+<style>
+  :root{--ground:#0b0a0a;--text:#f4f2ef;--seam:#27262e;--seam-soft:#1c1b21;--seam-strong:#393842;--accent:#ff6a3d;--info:#94a8ff}
+  *{box-sizing:border-box}
+  html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--ground);color:var(--text);font-family:"Segoe UI",Arial,sans-serif}
+  body{display:flex;flex-direction:column;border:5px solid var(--seam-strong)}
+
+  .head{flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:14px 16px 12px;border-bottom:4px solid var(--seam);z-index:2}
+  .head h2{margin:0;font-size:24px;font-weight:900;letter-spacing:.16em;text-transform:uppercase}
+  .head .dot{margin-left:auto;width:13px;height:13px;background:var(--seam-strong)}
+  .head .dot.on{background:var(--info);animation:pulse 2.6s ease-in-out infinite}
+  .head .dot.off{background:var(--accent)}
+
+  .log{flex:1 1 auto;position:relative;overflow:hidden}
+  .track{position:absolute;left:0;right:0;top:0;padding:12px 16px 0;will-change:transform}
+  .track.rolling{animation:roll linear infinite}
+  @keyframes roll{from{transform:translateY(0)}to{transform:translateY(-50%)}}
+
+  /* margin, not flex gap — gap makes the two copies unequal and the -50% wrap
+     drifts a few pixels every loop until the seam shows */
+  .row{margin-bottom:13px;display:flex;align-items:flex-start;gap:11px}
+
+  /* 4-cell sheet, same asset class as the mascot: 400% wide, one cell per step.
+     0% = rest, 100% = blink. steps(1,end) keeps it a flipbook — without it the
+     browser tweens between cells and the face smears instead of cutting. */
+  .av{flex:0 0 auto;width:44px;height:44px;image-rendering:pixelated;
+    background-repeat:no-repeat;background-position:0 0;background-size:400% 100%;
+    animation:blinker 7.4s steps(1,end) infinite}
+  @keyframes blinker{0%,93%{background-position-x:0%}94%,97%{background-position-x:100%}98%,100%{background-position-x:0%}}
+
+  .body{flex:1 1 auto;min-width:0}
+  .who{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
+  .name{font-size:20px;font-weight:900;letter-spacing:.06em;text-transform:uppercase}
+  .name.a{color:var(--accent)}
+  .name.b{color:var(--info)}
+  .name.c{color:var(--text)}
+  .seat{font-size:14px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--seam-strong)}
+  .time{margin-left:auto;font-size:14px;font-weight:800;color:var(--seam-strong)}
+  .what{font-size:19px;font-weight:600;line-height:1.26;color:var(--text);opacity:.93;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  .log::before,.log::after{content:"";position:absolute;left:0;right:0;height:26px;z-index:1;pointer-events:none}
+  .log::before{top:0;background:linear-gradient(var(--ground),transparent)}
+  .log::after{bottom:0;background:linear-gradient(transparent,var(--ground))}
+
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  @media(prefers-reduced-motion:reduce){.track.rolling,.av{animation:none}}
+</style>
+</head>
+<body>
+  <div class="head"><h2>Agent Feed</h2><i class="dot" id="dot" aria-hidden="true"></i></div>
+  <div class="log" id="log"><div class="track" id="track"></div></div>
+
+<script src="/static/agent-names.js"></script>
+<script>
+(function () {
+  var POLL_MS   = 6000;
+  var MAX_ROWS  = 24;
+  var SPEED_PPS = 30;
+  var SHEETS    = "/static/img/agents/";
+  var BUST      = "?t=" + Date.now();  // sheets are swapped out of band
+
+  var log   = document.getElementById("log");
+  var track = document.getElementById("track");
+  var dot   = document.getElementById("dot");
+
+  var itemSeat = {};
+  var pending  = null;
+  var current  = "";
+  var known    = {};      // seat -> true once its sheet is confirmed to exist
+
+  function j(u) {
+    return fetch(u, {cache: "no-store"}).then(function (r) {
+      if (!r.ok) throw new Error(r.status); return r.json();
+    });
+  }
+
+  function seatOf(e) {
+    if (e.seat) return e.seat;
+    var m = /^seat:(\w+)/.exec(e.actor || "");
+    if (m) return m[1];
+    m = /^queued for (\w+):/.exec(e.summary || "");
+    if (m) return m[1];
+    if (e.ref && itemSeat[e.ref]) return itemSeat[e.ref];
+    return "";
+  }
+
+  function clockOf(e) {
+    var m = /(\d{2}):(\d{2}):\d{2}$/.exec(e.created_at || "");
+    return m ? m[1] + ":" + m[2] : "";
+  }
+
+  function buildRow(e, i) {
+    var seat = seatOf(e);
+    var row = document.createElement("div"); row.className = "row";
+
+    if (known[seat]) {
+      var av = document.createElement("i");
+      av.className = "av";
+      av.style.backgroundImage = "url('" + SHEETS + seat + "_talk.png" + BUST + "')";
+      // stagger the blinks so a screenful of agents doesn't blink in unison
+      av.style.animationDelay = ((i % 7) * 0.9).toFixed(2) + "s";
+      row.appendChild(av);
+    }
+
+    var body = document.createElement("div"); body.className = "body";
+    var who = document.createElement("div"); who.className = "who";
+    var n = document.createElement("span");
+    n.className = "name " + window.agentTone(seat);
+    n.textContent = window.agentName(seat);
+    var s = document.createElement("span"); s.className = "seat"; s.textContent = seat || "";
+    var t = document.createElement("span"); t.className = "time"; t.textContent = clockOf(e);
+    who.append(n, s, t);
+
+    var w = document.createElement("div"); w.className = "what";
+    w.textContent = (e.summary || "").replace(/^queued for \w+:\s*/, "");
+
+    body.append(who, w);
+    row.appendChild(body);
+    return row;
+  }
+
+  function paint(events) {
+    track.classList.remove("rolling");
+    track.style.animationDuration = "";
+    track.innerHTML = "";
+    for (var pass = 0; pass < 2; pass++) {
+      events.forEach(function (e, i) { track.appendChild(buildRow(e, i)); });
+    }
+    var copyH = track.scrollHeight / 2;
+    if (copyH > log.clientHeight) {
+      track.style.animationDuration = (copyH / SPEED_PPS).toFixed(2) + "s";
+      void track.offsetWidth;
+      track.classList.add("rolling");
+    }
+  }
+
+  track.addEventListener("animationiteration", function () {
+    if (pending) { paint(pending); pending = null; }
+  });
+
+  function poll() {
+    j("/api/activity").then(function (res) {
+      dot.className = "dot on";
+      var evts = (res.events || []).slice()
+        .sort(function (a, b) { return b.id - a.id; })
+        .slice(0, MAX_ROWS);
+      var sig = evts.map(function (e) { return e.id; }).join(",");
+      if (sig === current) return;
+      current = sig;
+      if (track.classList.contains("rolling")) pending = evts;
+      else paint(evts);
+    }).catch(function () { dot.className = "dot off"; });
+  }
+
+  // Probe each sheet once. A seat with no avatar simply renders without one
+  // rather than showing a broken-image box.
+  function probeSheets() {
+    var seats = Object.keys(window.AGENT_NAMES || {});
+    return Promise.all(seats.map(function (s) {
+      return new Promise(function (done) {
+        var img = new Image();
+        img.onload  = function () { known[s] = true;  done(); };
+        img.onerror = function () { known[s] = false; done(); };
+        img.src = SHEETS + s + "_talk.png" + BUST;
+      });
+    }));
+  }
+
+  j("/api/queue").then(function (q) {
+    (q.items || []).forEach(function (it) { itemSeat[String(it.id)] = it.seat; });
+  }).catch(function () {}).then(probeSheets).then(poll);
+
+  setInterval(poll, POLL_MS);
+  setInterval(function () {
+    j("/api/queue").then(function (q) {
+      (q.items || []).forEach(function (it) { itemSeat[String(it.id)] = it.seat; });
+    }).catch(function () {});
+  }, 60000);
+})();
+</script>
+</body>
+</html>

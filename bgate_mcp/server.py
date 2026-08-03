@@ -60,6 +60,10 @@ from bgate_adapters import recorder as _recorder
 from bgate_adapters import sprites as _sprites
 from bgate_core import activity as _activity
 from bgate_core import assets as _assets
+from bgate_core import autotile as _autotile
+from bgate_core import levelgen as _levelgen
+from bgate_core import scenewire as _scenewire
+from bgate_core import tilemap as _tilemap
 from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
 from bgate_core import seats as _seats
@@ -3428,6 +3432,232 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
             _log("asset", f"delivered {stem} into the engine"
                           + (" (gate failed)" if not result.get("ok") else ""),
                  ref=archived or shot)
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Level generation
+# ---------------------------------------------------------------------------
+_WALL_LAYOUTS = ("blob47", "grid16", "solid", "none")
+_EMPTY_SCENE = ('[gd_scene load_steps=1 format=3]\n\n'
+                '[node name="{root}" type="Node2D"]\n')
+
+
+def _terrain(layout: str, source: int, atlas_x: int, atlas_y: int,
+             columns: int, name: str):
+    """One of the built-in terrain layouts, or a refusal naming the choices."""
+    if layout == "solid":
+        return _autotile.Terrain.solid(source, (atlas_x, atlas_y), name=name)
+    if layout == "grid16":
+        return _autotile.Terrain.grid16(source, columns=columns,
+                                        origin=(atlas_x, atlas_y), name=name)
+    if layout == "blob47":
+        return _autotile.Terrain.blob47(source, columns=columns,
+                                        origin=(atlas_x, atlas_y), name=name)
+    raise ValueError(f"layout {layout!r} is not one of {_WALL_LAYOUTS}")
+
+
+def _res_pair(godot_project: str, path: str, suffix: str) -> tuple[_Path, str]:
+    """A res:// path and its file on disk, from either form."""
+    gd = _Path(godot_project).expanduser().resolve()
+    if not (gd / "project.godot").is_file():
+        raise ValueError(f"no project.godot in {gd} — that is not a Godot project")
+    rel = path[len("res://"):] if path.startswith("res://") else path
+    rel = rel.replace("\\", "/").lstrip("/")
+    if not rel.endswith(suffix):
+        raise ValueError(f"expected a {suffix} path, got {path!r}")
+    disk = (gd / rel).resolve()
+    if gd not in disk.parents:
+        raise ValueError(f"{path!r} points outside the Godot project")
+    return disk, f"res://{rel}"
+
+
+@_tool
+def level_plan(width: int = 48, height: int = 32, seed: int = 0,
+               min_leaf: int = 10, min_room: int = 4, margin: int = 1,
+               max_depth: int = 5, corridor_width: int = 1) -> dict:
+    """Lay out a room-and-corridor level and show it, WITHOUT touching a scene.
+
+    BSP: cut the map in two until a piece holds one room, put a room in each
+    piece, then join the two halves of every cut on the way back up. That join
+    is the guarantee — it builds a spanning tree over the rooms, so every room
+    is reachable from every other by construction rather than by luck. The
+    result says `connected` and it is checked with a flood fill, not asserted.
+
+    Read the `ascii` field. It is the fastest way to see that a level is one big
+    room, or two halves joined by nothing, and it costs no engine and no
+    screenshot. Iterate on `seed` here until the shape is right, THEN call
+    level_generate with the same numbers to write it.
+
+    Knobs that actually change the shape:
+      seed            same seed, same level, forever.
+      min_leaf        bigger -> fewer, larger rooms. Must be at least
+                      min_room + 2*margin or nothing fits and it says so.
+      max_depth       caps how many times the map is cut, so it caps room count.
+      corridor_width  1 reads as a dungeon, 2+ as a complex.
+      margin          gap between a room and its leaf's edge; 0 lets neighbouring
+                      rooms fuse into one L-shaped cavity.
+    """
+    try:
+        level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
+                               min_room=min_room, margin=margin,
+                               max_depth=max_depth,
+                               corridor_width=corridor_width)
+        return {"ok": True, "seed": seed, "width": width, "height": height,
+                "rooms": level["rooms"], "room_count": len(level["rooms"]),
+                "corridor_count": len(level["corridors"]),
+                "floor_cells": len(level["floor"]),
+                "wall_cells": len(level["walls"]),
+                "connected": level["connected"], "spawn": level["spawn"],
+                "exit": level["exit"], "ascii": _levelgen.ascii_map(level)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def level_generate(godot_project: str, scene: str, tileset: str,
+                   width: int = 48, height: int = 32, seed: int = 0,
+                   floor_source: int = 0, floor_atlas_x: int = 0,
+                   floor_atlas_y: int = 0,
+                   wall_source: int = 0, wall_layout: str = "blob47",
+                   wall_atlas_x: int = 0, wall_atlas_y: int = 0,
+                   wall_columns: int = 8,
+                   min_leaf: int = 10, min_room: int = 4, margin: int = 1,
+                   max_depth: int = 5, corridor_width: int = 1,
+                   parent: str = ".", floor_name: str = "Floor",
+                   wall_name: str = "Walls", create: bool = False,
+                   dry_run: bool = False) -> dict:
+    """Generate a level and write it into a scene as TileMapLayer nodes.
+
+    The whole chain: BSP layout -> neighbour-bitmask autotiling -> the packed
+    binary Godot stores tiles in -> a .tscn edit, backed up. No engine and no
+    editor involved, so it runs headless and is a normal reviewable diff.
+
+    WHICH TILE GOES WHERE is decided by a neighbour bitmask, the same job the
+    Godot editor's terrain sets do — and they only run in the editor, which is
+    why it is redone here. `wall_layout` says how the wall sheet is arranged:
+
+      blob47   8-bit mask, 47 tiles, row-major from (wall_atlas_x, wall_atlas_y),
+               `wall_columns` wide, masks ascending. Sides plus corners.
+      grid16   4-bit mask, 16 tiles, same layout rule. Sides only — right for a
+               wall one cell thick.
+      solid    one tile everywhere. No autotiling.
+      none     no wall layer at all; floor only.
+
+    THAT ORDER IS A CONVENTION, NOT A STANDARD. A sheet authored in Tilesetter
+    or bought from an asset pack has its own order, and a wrong order draws a
+    complete, confident, wrong-looking level. Check the first screenshot. If
+    `unmapped` in the result is non-empty, the sheet is missing shapes the level
+    needs and that field says which masks and how often — that is what to hand
+    an artist.
+
+    Re-running REPLACES the layers it wrote rather than adding more, so
+    iterating on `seed` leaves one Floor and one Walls, not eight.
+
+    godot_project: the directory holding project.godot.
+    scene/tileset: res:// paths, or paths relative to that directory.
+    """
+    try:
+        if wall_layout not in _WALL_LAYOUTS:
+            raise ValueError(
+                f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")
+        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+
+        if not tiles_disk.is_file():
+            raise ValueError(f"no tileset at {tiles_res} — generate or import it "
+                             "first; a level cannot pick tiles from nothing")
+        parsed_set = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        have = sorted(parsed_set["sources"])
+        wanted = {floor_source} | ({wall_source} if wall_layout != "none" else set())
+        missing = sorted(w for w in wanted if w not in parsed_set["sources"])
+        if missing:
+            raise ValueError(
+                f"{tiles_res} has no source {missing} — it has {have}. Source "
+                "ids are not indexes; a tileset numbers them however it likes.")
+
+        fresh = not scene_disk.is_file()
+        if not fresh:
+            text = scene_disk.read_text(encoding="utf-8", errors="replace")
+        elif create:
+            text = _EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
+        else:
+            raise ValueError(
+                f"no scene at {scene_res}. Pass create=true to start a new one, "
+                "or point at an existing scene to add the layers to.")
+
+        level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
+                               min_room=min_room, margin=margin,
+                               max_depth=max_depth,
+                               corridor_width=corridor_width)
+        layers = _levelgen.layers(
+            level,
+            floor=_terrain("solid", floor_source, floor_atlas_x, floor_atlas_y,
+                           1, floor_name),
+            wall=(None if wall_layout == "none" else
+                  _terrain(wall_layout, wall_source, wall_atlas_x, wall_atlas_y,
+                           wall_columns, wall_name)),
+            floor_name=floor_name, wall_name=wall_name)
+
+        # THE CHECK THAT MATTERS. The built-in layouts are complete by
+        # construction — every mask has an entry — so "unmapped" can only ever
+        # catch a hand-written table. What actually goes wrong is the layout
+        # pointing at atlas coordinates the SHEET does not define: Godot places
+        # nothing there, reports nothing, and the level is invisible in exactly
+        # the places the shape is most complicated. The .tres lists the tiles it
+        # defines, so this is knowable before anything is written.
+        absent = {}
+        for layer in layers:
+            want = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
+            gaps = sorted(
+                (ax, ay) for src, ax, ay in want
+                if (ax, ay) not in set(map(tuple,
+                                           parsed_set["sources"][src]["tiles"])))
+            if gaps:
+                absent[layer["name"]] = [list(g) for g in gaps]
+        if absent:
+            raise ValueError(
+                f"{tiles_res} does not define these atlas tiles: "
+                + "; ".join(f"{name} wants {coords}"
+                            for name, coords in absent.items())
+                + ". A cell pointing at an undefined tile draws nothing and "
+                  "says nothing — add the tiles to the atlas, move the layout "
+                  "with *_atlas_x/_atlas_y, or change wall_layout.")
+
+        wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent)
+        if dry_run:
+            written = {"written": False, "backup": None}
+        elif fresh:
+            # A brand-new scene has no previous bytes to back up, and apply()
+            # refuses a missing file on purpose — that refusal is what catches a
+            # typo'd path everywhere else.
+            scene_disk.parent.mkdir(parents=True, exist_ok=True)
+            scene_disk.write_text(wired["text"], encoding="utf-8")
+            written = {"written": True, "backup": None, "created": True}
+        else:
+            written = _scenewire.apply(scene_disk, wired["text"], root=_root())
+
+        result = {
+            "ok": True, "scene": scene_res, "tileset": tiles_res,
+            "seed": seed, "size": [width, height],
+            "rooms": len(level["rooms"]),
+            "corridors": len(level["corridors"]),
+            "connected": level["connected"],
+            "spawn": level["spawn"], "exit": level["exit"],
+            "layers": wired["layers"], "summary": wired["summary"],
+            "written": written.get("written", False),
+            "backup": written.get("backup"),
+            "created": bool(written.get("created")),
+            "dry_run": bool(dry_run),
+            "ascii": _levelgen.ascii_map(level),
+        }
+        if not dry_run:
+            _log("level", f"generated {width}x{height} level seed {seed} "
+                          f"({len(level['rooms'])} rooms) into {scene_res}",
+                 ref=scene_res)
         return result
     except Exception as exc:
         return _fail(exc)

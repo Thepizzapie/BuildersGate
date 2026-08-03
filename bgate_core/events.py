@@ -71,6 +71,7 @@ KINDS = (
     "director.question", # ask_human: the director wants a human answer
     "agent.spawned",
     "agent.exited",
+    "file.edited",       # a human saved a game source file from the dashboard
 )
 
 # Where cursors live. A workspace doc per consumer under one seat, so the set of
