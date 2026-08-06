@@ -53,7 +53,7 @@ except Exception:  # noqa: BLE001 - any import failure means "no bus", not "no p
 router = APIRouter()
 
 
-def apply_changes(project, changes: dict) -> list[dict]:
+def apply_changes(project, changes: dict, actor: str = "") -> list[dict]:
     """Validate every change, then store them; report what each one did.
 
     Shared with the ``/api/spend/budget`` alias so that one SQL row has exactly
@@ -103,8 +103,18 @@ def apply_changes(project, changes: dict) -> list[dict]:
     applied: list[dict] = []
     for key, value in clean.items():
         try:
-            result = _settings.set(project, key, value)
+            # THE CALLER'S IDENTITY TRAVELS WITH THE WRITE. api.current_actor
+            # is the only place that knows whether this request came from the
+            # human at the dashboard or from an agent's session, and
+            # settings.set is the only place that knows which switches are
+            # human-only. Neither can enforce the policy alone.
+            result = _settings.set(project, key, value, actor=actor)
         except _settings.SettingError as exc:
+            # 403 for a permission refusal, not 400: nothing was wrong with the
+            # value, and a UI that reads this as "bad input" tells the user to
+            # fix a number that was fine.
+            if "HUMAN-ONLY" in str(exc):
+                raise api.forbidden(str(exc), key=key, applied=applied)
             raise api.bad_request(str(exc), key=key, applied=applied)
         except _ws.StaleWrite as exc:
             # Another tab saved this doc first. A conflict, not a bad request: the
@@ -197,7 +207,7 @@ def settings_patch(request: Request, payload: dict) -> dict:
     # names, so a wrapper object would only add a level for a client to get wrong.
     if any(not isinstance(key, str) for key in changes):
         raise api.bad_request("send a flat {key: value} object")
-    applied = apply_changes(project, changes)
+    applied = apply_changes(project, changes, actor=api.current_actor(request))
     return api.ok(_settings.describe(project), applied=applied)
 
 

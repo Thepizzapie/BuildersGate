@@ -43,7 +43,15 @@ import os
 from bgate_core import activity, db, gates as _gates, queue as _queue, \
     settings as _settings
 
-GATED_SEATS = ("art",)
+# THE DEFAULT, NOT THE POLICY. This was the whole policy: a studio that wanted
+# QA on art alone had to edit this tuple in the harness source, which changed it
+# for every project on the machine and needed a dashboard restart to take effect,
+# because Python had already cached the module. The live value is the registry's
+# ``qa.gated_seats``; this stays as the default and as the fallback for an
+# unreadable settings doc, on the same reasoning as MAX_ROUNDS below — a gate
+# that cannot read its own configuration keeps the coverage it always had rather
+# than silently reviewing nothing.
+GATED_SEATS = ("art", "gameplay", "audio", "narrative")
 
 # Rounds of QA an item may go through before a human is asked to arbitrate.
 # 3 = the original attempt plus two fix rounds; past that the disagreement is
@@ -62,6 +70,22 @@ ESCALATION_SOURCE = "qa-gate-escalation"
 # an unbounded sweep on first run is the startup QA-bomb of the whole historical
 # queue that the old cutoff existed to prevent.
 SWEEP_WINDOW_MIN = 120
+
+
+def gated_seats(root: str | os.PathLike[str]) -> tuple:
+    """Which maker seats get an automatic reviewer, for THIS project.
+
+    Read per call, not captured at import. director and qa are never in it —
+    gating the gate is recursion, not review — and that is enforced here rather
+    than trusted to the setting, because a list is a thing a human can typo.
+    """
+    try:
+        chosen = _settings.get(root, "qa.gated_seats")
+    except Exception:
+        return GATED_SEATS
+    seats = tuple(str(s).strip() for s in (chosen or ()) if str(s).strip())
+    seats = tuple(s for s in seats if s not in ("qa", "director"))
+    return seats or ()
 
 
 def max_rounds(root: str | os.PathLike[str]) -> int:
@@ -232,12 +256,21 @@ def _scan_once(root: str, cutoff_utc: str) -> None:
     # sync when narrative was added as a 4th gated seat — the binding mismatch
     # raised on EVERY scan and the fail-safe swallowed it, so the gate silently
     # never reviewed anything.
-    marks = ", ".join("?" * len(GATED_SEATS))
+    seats = gated_seats(root)
+    if not seats:
+        return                      # every seat opted out; nothing to review
+    marks = ", ".join("?" * len(seats))
+    # gate_skip: an item a HUMAN closed by hand. The gate reviews state at
+    # close, so reviewing one of those dispatches a reviewer against a result
+    # note rather than against work an agent just did — see queue.complete.
+    # COALESCE, because a project whose database predates the column still has
+    # to be readable by a dashboard that knows about it.
     rows = conn.execute(
         f"SELECT * FROM work_item WHERE status = 'done' AND seat IN ({marks}) "
         f"AND source NOT IN ('qa-gate', '{ESCALATION_SOURCE}') "
+        "AND COALESCE(gate_skip, 0) = 0 "
         "AND updated_at >= ? ORDER BY updated_at",
-        (*GATED_SEATS, cutoff_utc)).fetchall()
+        (*seats, cutoff_utc)).fetchall()
     for row in rows:
         item = dict(row)
         ref = str(item["id"])
