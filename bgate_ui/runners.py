@@ -245,8 +245,13 @@ def preflight(runner: Runner, cwd: str, exe=_LOOK_IT_UP) -> Optional[str]:
                    "is not always on PATH)" if runner.name == "codex" else ""))
     try:
         safe_cwd = Path(cwd).resolve(strict=False)
+        safe_root = Path.cwd().resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         return f"{cwd} is not a valid working directory"
+    try:
+        safe_cwd.relative_to(safe_root)
+    except ValueError:
+        return f"{cwd} is outside the allowed project root"
     if runner.requires_git_repo and not (safe_cwd / ".git").exists():
         return (f"{cwd} is not a git repository, and {runner.name} sandboxes a "
                 "non-repo working directory to a shadow copy — every write "
