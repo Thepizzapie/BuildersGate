@@ -75,13 +75,6 @@ def _prefixes(stem: str) -> list[str]:
     return ["_".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]
 
 
-# A sub-variant this small, sitting under a family this large, is a facet of
-# that family rather than a family of its own — coffeepot_flail_dual_wield_main
-# and _off are two frames of the coffeepot flail, not a second weapon.
-_ABSORB_SMALL = 2
-_ABSORB_INTO = 3
-
-
 def group_stems(stems: Iterable[str]) -> dict[str, str]:
     """stem -> family label. Three rules, in order, each fixing a real misread.
 
@@ -97,12 +90,23 @@ def group_stems(stems: Iterable[str]) -> dict[str, str]:
        ``hero_idle`` + ``hero_walk`` stay as ``hero``: those variants ARE one
        token, which is what a family's members look like.
 
-    3. ABSORB TINY SUB-FAMILIES. Rule 1 alone splits a weapon's two dual-wield
-       frames into their own family, because those two agree on a longer prefix
-       than the other eleven. A family of <=2 whose label extends a family of
-       >=3 is a facet of it, and gets merged back. This runs LAST: run before
-       rule 2 it pulled real two-facing families into the bucket it was about
-       to shred.
+    3. ABSORB SUB-FAMILIES INTO THE FAMILY THEY EXTEND. Rule 1 splits a subject
+       whenever some of its files agree on a longer prefix than the rest —
+       a weapon's two dual-wield frames, or the loose source frames a sheet was
+       packed from. Any family whose label extends another family's label, in
+       the same directory, is a facet of that one and merges back.
+
+       THIS IS THE RULE THAT DECIDES WHETHER USAGE READS TRUE. Usage is a
+       property of the subject, not of the file: ``bolt_impact_sheet.png`` ships
+       and the four ``bolt_impact_default_N.png`` frames it was packed from do
+       not, and while those were two families the library showed one green row
+       and one grey row for one effect. Measured on a real project, 293 of 651
+       files reported dead sat in a directory beside a referenced sibling
+       sharing their prefix — 45% of the dead list was this split.
+
+       It runs LAST: run before rule 2 it pulled real two-facing families into
+       the bucket it was about to shred. Longest label first, so a three-deep
+       chain (``a_b_c`` -> ``a_b`` -> ``a``) collapses in one pass.
     """
     stems = list(stems)
     counts: dict[str, int] = {}
@@ -131,19 +135,42 @@ def group_stems(stems: Iterable[str]) -> dict[str, str]:
         for stem in stems_in:
             out[stem] = stem
 
-    # 3 — absorb tiny sub-families into the family they extend
+    # 3 — absorb sub-families into the family they extend
     members = _members()
     for label in sorted(members, key=len, reverse=True):
-        if label not in members or len(members[label]) > _ABSORB_SMALL:
+        if label not in members:
             continue
-        host = next((h for h in members
-                     if h != label and label.startswith(h + "_")
-                     and len(members[h]) >= _ABSORB_INTO), None)
+        # The LONGEST host, so a_b_c joins a_b rather than jumping to a and
+        # stranding a_b as a sibling of its own child.
+        host = max((h for h in members
+                    if h != label and label.startswith(h + "_")),
+                   key=len, default=None)
         if host:
             for stem in members[label]:
                 out[stem] = host
             members[host] += members.pop(label)
     return out
+
+
+def is_working(res: Optional[str]) -> bool:
+    """Is this a working file rather than something the game can ship?
+
+    Two things share a disk and are not the same kind of object: the engine's
+    ``res://assets/**``, which the game can load, and everything else — the art
+    seat's scratch renders, `tmp/`, test fixtures, the intermediate passes a
+    tile went through on its way to being a tile.
+
+    Measured on a real project, 453 of 834 families were the second kind. They
+    are all, correctly, referenced by nothing, so the library was 54% grey rows
+    that were never going to turn green and could not be acted on. That is not
+    a usage problem to fix, it is a different drawer.
+
+    Outside the engine project entirely (``res`` is None) or inside it but not
+    under ``assets/``: working. This is deliberately a PATH test — asking usage
+    would put every not-yet-wired asset in the same bucket as a scratch render,
+    and those two need opposite responses from a person.
+    """
+    return not (res or "").startswith("res://assets/")
 
 
 def _category(rel: str) -> str:
@@ -189,7 +216,20 @@ def usage_index(smap: dict) -> dict[str, list[str]]:
         # icon, the audio bus layout and the autoloads.
         nid for nid, node in nodes.items() if node.get("kind") == "screen"} | {
         nid for nid, node in nodes.items()
-        if node.get("kind") == "script" and nid not in reached}
+        if node.get("kind") == "script" and nid not in reached} | {
+        # A MANIFEST NOBODY REACHES IS ALSO A ROOT, for the same reason. An
+        # asset manifest's whole job is to say which art belongs to what, and
+        # the ones that matter most are precisely the ones no .gd loads — the
+        # index an art tool writes and a human reads. Without this the screen
+        # map grew the edges (ui_manifest.json -> 66 HUD files) and the library
+        # still showed every one of them dead, because nothing propagated from
+        # a node that no screen could reach.
+        #
+        # The family then reports "used by ui_manifest.json" rather than by a
+        # screen, which is the true and useful answer: it says the art is
+        # SPOKEN FOR, and it does not claim a scene draws it.
+        nid for nid, node in nodes.items()
+        if nid.endswith(".json") and nid not in reached}
 
     direct: dict[str, set[str]] = {}
     children: dict[str, list[str]] = {}
@@ -283,6 +323,7 @@ def scan(root: str | os.PathLike[str], *, smap: Optional[dict] = None) -> dict:
             fam = families.setdefault(key, {
                 "key": key, "label": label, "dir": dirrel,
                 "category": _category(rel),
+                "working": is_working(res),
                 "members": [], "used_by": [], "kinds": set(),
             })
             width, height = _dimensions(path)
@@ -352,6 +393,7 @@ def scan(root: str | os.PathLike[str], *, smap: Optional[dict] = None) -> dict:
         out.append({
             "key": fam["key"], "label": fam["label"], "dir": fam["dir"],
             "category": fam["category"],
+            "working": fam["working"],
             "kinds": sorted(fam["kinds"]),
             "members": members,
             "count": len(members),
@@ -380,9 +422,18 @@ def scan(root: str | os.PathLike[str], *, smap: Optional[dict] = None) -> dict:
         "stats": {
             "families": len(out),
             "files": sum(f["count"] for f in out),
-            "in_use": sum(1 for f in out if f["in_use"]),
-            "unused": sum(1 for f in out if not f["in_use"]),
+            # Shipping-only, because that is the number a person is asking about
+            # when they ask how much of the library is wired up. Counting
+            # scratch renders in the denominator made it permanently terrible
+            # and told nobody anything.
+            "in_use": sum(1 for f in out if f["in_use"] and not f["working"]),
+            "unused": sum(1 for f in out
+                          if not f["in_use"] and not f["working"]),
+            "working": sum(1 for f in out if f["working"]),
             "rigged": sum(1 for f in out if f["rigged"]),
-            "categories": sorted({f["category"] for f in out}),
+            "categories": sorted({f["category"] for f in out
+                                  if not f["working"]}),
+            "working_categories": sorted({f["category"] for f in out
+                                          if f["working"]}),
         },
     }

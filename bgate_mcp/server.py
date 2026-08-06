@@ -1239,7 +1239,8 @@ def blender_humanoid_template() -> dict:
 @_tool
 def blender_rig(model: str, out_path: str, kind: str = "humanoid",
                 height: float = 1.8, budget: int = 0, orient: bool = True,
-                armature_name: str = "Skeleton", timeout: int = 900) -> dict:
+                armature_name: str = "Skeleton", symmetrize: str = "auto",
+                timeout: int = 900) -> dict:
     """Take a GENERATED mesh to a bound, weighted character an engine can move.
 
     Every image-to-3D backend returns `rigged: false` — geometry and nothing
@@ -1270,16 +1271,89 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
     budget  0 leaves the density alone. A local backend with no face_count knob
             hands back ~280k faces, and post-decimation here is the only lever
             those users have. 8k shattered a character; 45-60k was clean.
+
+    symmetrize  "auto" (default) mirrors the skin weights across the body's own
+            centre plane, but ONLY when the audit says the two sides are within
+            2% of the character's height of each other. Heat fails differently
+            on each side — one clean elbow and one bound to the ribs is the
+            normal outcome — and averaging the pair fixes it without picking a
+            winner. "off" skips it. "force" runs it on an asymmetric body, which
+            is right for a cosmetic asymmetry (one pauldron, a cloak) and wrong
+            for anything else.
+
+    THE REPORT NOW CARRIES `audit` BEFORE THE BIND, and it is the part worth
+    reading first. `audit.shells` is the fragmentation count — a real user's
+    character arrived as 940 separate shells, which passes every
+    well-formedness gate and guarantees a bad bind, because heat will not cross
+    the gaps and loose islands weight to whichever bone is nearest.
+    `audit.symmetry.mean` is how far the body is from its own mirror image.
+
+    AND `rigged: true` IS STILL NOT "ANIMATABLE". Run blender_flex on the
+    output: it bends the thing and measures what bending it did.
     """
     try:
         result = _blender.rig(model, out_path, kind=kind, height=height,
                               budget=budget, orient=orient,
-                              armature_name=armature_name, timeout=timeout)
+                              armature_name=armature_name,
+                              symmetrize=symmetrize, timeout=timeout)
         if result.get("ok"):
             _log("blender",
                  f"rigged {model} -> {result.get('bound_with')} "
                  f"({result.get('unweighted_pct')}% unweighted)",
                  ref=str(out_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
+                 render: bool = True, engine: str = "BLENDER_WORKBENCH",
+                 volume_tolerance: float = 0.18, pinch_tolerance: float = 0.60,
+                 timeout: int = 600) -> dict:
+    """Bend a rigged character and report what bending it did to the body.
+
+    THE SECOND HALF OF THE RIG PROOF. `blender_rig` answers "were weights
+    written" with the unweighted count, and that is the only thing it can
+    answer. It says NOTHING about whether the elbow survives being bent, and a
+    rig with zero unweighted vertices routinely collapses a joint to a straw,
+    loses a quarter of its volume in one bend, or drives the forearm through the
+    ribs. Every number stays green while the character animates like a bag of
+    spanners. Run this before you deliver one.
+
+    Poses each joint a walk cycle moves, ONE AT A TIME so a failure is
+    diagnosable, and per pose measures:
+
+      volume_ratio      posed volume over rest volume. A good bind costs 2-6%.
+      worst_pinch       the joint that lost the most cross-section. 1.0 is
+                        rigid, 0.6 is a visible waist, under 0.4 is a straw.
+      new_self_pairs    faces that intersect in this pose and did not at rest.
+                        The increase, not the count — a generated mesh arrives
+                        with overlapping shells and the absolute number is
+                        meaningless.
+      render            a PNG of the pose. LOOK AT IT. The whole lesson of this
+                        pipeline is that green gates are not evidence.
+
+    `verdict.passed` False is a refusal, not a warning: those weights are not
+    animatable as they stand. The usual fixes, in order — raise `budget` on the
+    rig so the joint has enough loops to bend, check `audit.shells` for a
+    fragmented mesh heat could not cross, and re-run the rig with
+    symmetrize='force' when only one side failed.
+    """
+    try:
+        result = _blender.flex(model, out_dir, stem=stem, render=render,
+                               engine=engine,
+                               volume_tolerance=volume_tolerance,
+                               pinch_tolerance=pinch_tolerance,
+                               timeout=timeout)
+        verdict = result.get("verdict") or {}
+        if result.get("ok"):
+            _log("blender",
+                 f"flexed {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} issues over "
+                 f"{verdict.get('checked', 0)} poses)",
+                 ref=str(model))
         return result
     except Exception as exc:
         return _fail(exc)
@@ -1456,7 +1530,7 @@ def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
 @_tool
 def blender_generate(image: str, out_path: str, backend: str = "",
                      label: str = "", timeout: int = 900,
-                     dry_run: bool = False,
+                     dry_run: bool = False, parts: bool = False,
                      options: Optional[dict] = None) -> dict:
     """Turn ONE generated image into a draft mesh. The other way to get geometry.
 
@@ -1485,6 +1559,21 @@ def blender_generate(image: str, out_path: str, backend: str = "",
     never as permission. Some grants exclude whole territories and some
     forbid commercial use outright, which is a shipping problem rather than a
     technical one, so read `licence` before building on the mesh.
+
+    parts=True ASKS FOR A BODY IN PIECES, and for a character it is the better
+    request. A monolithic generation gives one blob — measured on a real user's
+    asset, 940 disconnected shells with no relationship to anatomy — and bone
+    heat then has to guess where the arm stops and the torso starts, which is
+    how fingers end up weighted to a hip. A part-aware graph returns a head, a
+    torso, arms and legs as SEPARATE meshes, and every step after it gets
+    easier: `out_path` is read as a DIRECTORY, the result carries `parts` and a
+    `combine` list ready for blender_combine, and a run that comes back with
+    one mesh is flagged rather than reported as a success.
+
+    It needs its own workflow (BGATE_COMFY_PARTS_WORKFLOW) whose saver writes
+    one file per part. Without it this says so instead of quietly falling back
+    to the monolith, because a silent fallback here is indistinguishable from
+    the feature working.
     """
     try:
         from bgate_adapters import imageto3d as _i3d
@@ -1499,7 +1588,15 @@ def blender_generate(image: str, out_path: str, backend: str = "",
         if not plate.get("ok"):
             return {"ok": False, "error": plate.get("reason", "unusable plate"),
                     "input": plate}
-        picked = backend or (_i3d.choose(root) or {}).get("backend", "")
+        picked = backend or ("comfy-parts" if parts else
+                             (_i3d.choose(root) or {}).get("backend", ""))
+        if parts and not _i3d.supports(picked, "parts"):
+            return {"ok": False,
+                    "error": f"backend {picked!r} does not generate parts — "
+                             "the part-aware path needs a graph exported to "
+                             "BGATE_COMFY_PARTS_WORKFLOW that saves each part "
+                             "separately",
+                    "capabilities": _i3d.capabilities(picked)}
         if not picked:
             return {"ok": False, "error": "no image-to-3D backend is configured "
                     "— see .env.example; blender_status reports what is reachable",
@@ -1512,6 +1609,31 @@ def blender_generate(image: str, out_path: str, backend: str = "",
         if dry_run:
             return {"ok": True, "dry_run": True, "quote": quote,
                     "input": plate, "next_steps": list(_i3d.NEXT_STEPS)}
+        if parts:
+            got = _i3d.generate_parts(image, out_path, backend=picked,
+                                      root=root, timeout=float(timeout),
+                                      logical_name=label, **opts)
+            got.setdefault("quote", quote)
+            # EVERY PART REGISTERED, not just the first. A part left
+            # unregistered is invisible to the dashboard and to art QA, and an
+            # unreviewed limb is exactly the one that ships wrong.
+            if got.get("ok") and root:
+                registered = []
+                for part in got.get("parts") or []:
+                    try:
+                        registered.append(_register_artifact(
+                            root, part["path"],
+                            f"{label or _Path(out_path).name}_{part['name']}",
+                            producer="blender_generate", refs=[str(image)],
+                            metadata={"backend": picked, "draft": True,
+                                      "part": part["name"],
+                                      "licence": got.get("licence")
+                                                 or quote["licence"],
+                                      "plate": str(image)}))
+                    except Exception:
+                        pass
+                got["artifacts"] = registered
+            return got
         got = _i3d.generate(image, out_path, backend=picked, root=root,
                             timeout=float(timeout), logical_name=label,
                             **opts)
@@ -1772,11 +1894,53 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
 # ---------------------------------------------------------------------------
 @_tool
 def image_status() -> dict:
-    """Is the painted-art leg (gpt-image) usable? Checks the key without exposing it."""
+    """Is the painted-art leg usable — hosted, local, or neither?
+
+    Reports BOTH legs, because "no API key" stopped meaning "no art". The
+    hosted answer checks the key without exposing it; the local answer says
+    whether a ComfyUI on this machine is reachable and configured, what model
+    was declared, and what that model's licence permits — which is the question
+    that decides whether the output can ship in a game you sell.
+    """
     try:
-        _root()  # triggers .env load
+        root = _root()  # triggers .env load
         from bgate_adapters import imagegen
-        return imagegen.available()
+
+        legs = {}
+        legs["openai"] = dict(imagegen.available())
+        # KREA IS A FIRST-CLASS PROVIDER AND THIS TOOL DID NOT KNOW IT EXISTED.
+        # It probed OPENAI_API_KEY alone and answered for the whole painted-art
+        # leg, so a project holding a working Krea key — which image_generate
+        # will happily auto-select — was told the leg was unavailable. It cost a
+        # support cycle in a real run. blender_status has always reported
+        # per-backend; this is that shape.
+        try:
+            from bgate_adapters import krea
+            legs["krea"] = dict(krea.available(root))
+        except Exception as exc:
+            legs["krea"] = {"available": False,
+                            "reason": f"{type(exc).__name__}: {exc}"}
+        try:
+            from bgate_adapters import localgen
+            legs["local"] = dict(localgen.status(probe=True))
+        except Exception as exc:
+            legs["local"] = {"available": False,
+                             "reason": f"{type(exc).__name__}: {exc}"}
+
+        usable = [name for name, leg in legs.items() if leg.get("available")]
+        return {
+            # `available` answers about the LEG, not about one adapter: any
+            # usable provider means painted art is available. A caller that only
+            # reads this key gets the honest answer now.
+            "available": bool(usable),
+            "providers": usable,
+            "auto_picks": (usable[0] if usable else ""),
+            "legs": legs,
+            "reason": "" if usable else
+                      "no image provider is configured — set OPENAI_API_KEY or "
+                      "KREA_API_KEY in the project's .env, or configure a local "
+                      "ComfyUI (see the local leg's `how`)",
+        }
     except Exception as exc:
         return _fail(exc)
 
@@ -3713,6 +3877,51 @@ def godot_inspect_resource(godot_project: str, res_path: str, timeout: int = 180
 
 
 @_tool
+def godot_retarget_check(godot_project: str, res_path: str,
+                         bone_map_res: str = "", timeout: int = 180) -> dict:
+    """Ask the ENGINE whether a rigged character is a humanoid it can retarget.
+
+    The rigs this pipeline builds carry Godot's own SkeletonProfileHumanoid bone
+    names, and the whole point of that is that any humanoid animation library
+    then plays on the character. Nothing tested that claim until this tool. A
+    .glb can export 23 perfectly-named bones in a FLAT hierarchy — blender_rig
+    reports 0 unweighted, godot_deliver_asset photographs it happily, and the
+    character can be animated by nothing except a clip authored for it alone.
+
+    Three answers, and they fail independently:
+
+      missing / extra   coverage against the profile, by exact name.
+      chain[].propagates  rotating a shoulder moves the hand. This is the one
+                        that catches a lost hierarchy, and it is invisible to
+                        every other check in the product.
+      clip.drives       a profile-authored rotation track actually turns the
+                        bone. A NodePath that resolves to nothing plays
+                        silently and moves zero.
+
+    `retargetable` is the verdict. False means the humanoid animation ecosystem
+    is unavailable to this asset — treat it the way you treat `rigged: false`.
+
+    bone_map_res: a res:// path to save the BoneMap to, or "" to skip. Written,
+    it is what the user's import settings point at to retarget real clips.
+
+    res_path must already be imported — godot_import_asset first.
+    """
+    try:
+        result = _godot.retarget_check(godot_project, res_path,
+                                       bone_map_res=bone_map_res,
+                                       timeout=timeout)
+        if result.get("ok"):
+            _log("godot",
+                 f"retarget check {res_path}: "
+                 f"{'retargetable' if result.get('retargetable') else 'NOT retargetable'} "
+                 f"({result.get('mapped')}/{result.get('profile_bones')} profile bones)",
+                 ref=res_path)
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = None,
                    overlay: bool = True, label: str = "",
                    timeout: int = 120) -> dict:
@@ -3772,6 +3981,344 @@ def evidence_check_ui(manifest_path: str, expect: dict,
     try:
         manifest = _json.loads(_Path(manifest_path).read_text(encoding="utf-8"))
         return _godot.check_ui_matches(manifest, expect, tolerance=tolerance)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Scene editing — the node-level surgery the dashboard has always had
+# ---------------------------------------------------------------------------
+# bgate_core.scenewire has parsed and edited .tscn text since the Atlas builder
+# shipped: load_steps accounting, ext_resource ids, name uniquing, block spans,
+# a dry run on every mutation and a backup on every write. All of it was
+# reachable from a browser and none of it from here, so an agent told to place a
+# prop or repoint a texture hand-edited the file as TEXT — inventing ids,
+# guessing at load_steps, and finding out at godot_check_project.
+#
+# These are the same functions the dashboard's /api/scene/* routes call, with
+# the same dry-run and backup contract, plus one thing the routes did not have
+# until today: the lock is honoured. That matters more here than there. A human
+# clicking a button is one writer; the board runs several agents at once.
+
+
+def _res_declared_type(asset_disk: _Path) -> Optional[str]:
+    """The class a .tres declares itself to be. None for anything else.
+
+    Guessing from the suffix calls every .tres a SpriteFrames — right for what
+    the sprite pipeline writes, wrong for the project's TileSet. An ext_resource
+    with the wrong type loads as null: the node draws nothing and says nothing.
+    """
+    if asset_disk.suffix.lower() != ".tres":
+        return None
+    try:
+        head = asset_disk.read_text(encoding="utf-8", errors="replace")[:400]
+    except OSError:
+        return None
+    return _scenewire.resource_type_of(head)
+
+
+def _scene_lock_conflict(scene_disk: _Path) -> Optional[dict]:
+    """The seat blocking a write to this scene, or None if we may proceed.
+
+    A seat holding its OWN lock is not blocked by it — that is what taking the
+    lock was for. Everyone else is, and `force` is the deliberate override.
+    """
+    held = _assets.lock_holder(_root(), scene_disk)
+    if not held:
+        return None
+    if held.get("lock_seat") and held.get("lock_seat") == _seat():
+        return None
+    return {"seat": held.get("lock_seat"), "owner": held.get("lock_owner")}
+
+
+def _scene_edit(godot_project: str, scene: str, mutate, *,
+                dry_run: bool = False, force: bool = False,
+                summary: str = "") -> dict:
+    """Shared shape for every scene mutation: resolve, lock, edit, back up.
+
+    ``mutate`` takes the scene text and returns scenewire's ``{text, ...}``.
+    Nothing here writes when ``dry_run`` — it returns the resulting text so the
+    caller can read the diff before committing, which is the reviewable step a
+    hand-edit never had.
+    """
+    scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+    if not scene_disk.is_file():
+        raise ValueError(f"no scene at {scene_res}")
+    if not dry_run and not force:
+        blocked = _scene_lock_conflict(scene_disk)
+        if blocked:
+            raise RuntimeError(
+                f"{scene_disk.name} is locked by the {blocked['seat']} seat. "
+                "Lock it yourself with asset_lock before editing, wait for the "
+                "holder, or pass force=True if you know the holder is gone.")
+
+    text = scene_disk.read_text(encoding="utf-8", errors="replace")
+    result = mutate(text)
+    written = _scenewire.apply(scene_disk, result["text"], root=_root(),
+                               dry_run=dry_run)
+
+    out = {k: v for k, v in result.items() if k != "text"}
+    out.update({"ok": True, "scene": scene_res, "dry_run": bool(dry_run),
+                **written})
+    if dry_run:
+        out["text"] = result["text"]
+    else:
+        # The node COUNT, not the outline. A baked plate has 1500 nodes and
+        # returning them all as a receipt would cost more context than the whole
+        # rest of the task; scene_outline is one call away when it is wanted.
+        try:
+            out["node_count"] = len(_scenewire.parse(result["text"])["nodes"])
+        except Exception:
+            pass
+        _log("scene", summary or f"edited {scene_res}", ref=scene_res)
+    return out
+
+
+@_tool
+def scene_outline(godot_project: str, scene: str, match: str = "",
+                  role: str = "", parent: str = "", properties: bool = False,
+                  limit: int = 120) -> dict:
+    """Read a scene's node tree — paths, types, roles, scripts, resources.
+
+    THE READ THAT MAKES THE EDITS SAFE. Every other tool here addresses nodes by
+    PATH ("Characters/Desk_12"), and this is where a path comes from. Guessing
+    one costs a failed call; reading one costs nothing.
+
+    FILTER BEFORE YOU LOOK. A hand-authored scene has thirty nodes and a baked
+    floor plate has fifteen hundred — dumping that whole tree would bury the
+    task in furniture. `match` is a substring of the node name or path, `role`
+    is one of the roles the builder groups by (character, prop, visual, ui,
+    collision, layer, camera, audio, controller, marker, instance), `parent`
+    returns only what hangs under that node. `total` always reports the true
+    count so a truncated answer says so.
+
+    `properties` is off by default: property maps are the bulkiest part of a
+    node and are only wanted once you know which node you mean.
+    """
+    try:
+        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+        if not scene_disk.is_file():
+            raise ValueError(f"no scene at {scene_res}")
+        text = scene_disk.read_text(encoding="utf-8", errors="replace")
+        nodes = _scenewire.outline(text)
+        total = len(nodes)
+        # Counted over the WHOLE scene, before filtering — "what is in here" is
+        # the question this answers, and it must not change shape depending on
+        # what the caller happened to search for.
+        roles: dict[str, int] = {}
+        for n in nodes:
+            roles[n["role"]] = roles.get(n["role"], 0) + 1
+
+        needle = match.strip().lower()
+        if needle:
+            nodes = [n for n in nodes if needle in n["name"].lower()
+                     or needle in n["path"].lower()]
+        if role.strip():
+            nodes = [n for n in nodes if n["role"] == role.strip()]
+        if parent.strip():
+            want = parent.strip()
+            nodes = [n for n in nodes
+                     if n["path"] == want or n["path"].startswith(want + "/")]
+        matched = len(nodes)
+        if limit and limit > 0:
+            nodes = nodes[:limit]
+        if not properties:
+            nodes = [{k: v for k, v in n.items() if k != "properties"}
+                     for n in nodes]
+
+        held = _assets.lock_holder(_root(), scene_disk)
+        return {"ok": True, "scene": scene_res, "total": total,
+                "matched": matched, "returned": len(nodes),
+                "truncated": matched > len(nodes),
+                "roles": roles, "nodes": nodes,
+                "lock": {"seat": held.get("lock_seat"),
+                         "owner": held.get("lock_owner")} if held else None}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_wire(godot_project: str, scene: str, asset: str,
+               parent: str = ".", node_name: str = "", node_type: str = "",
+               dry_run: bool = False, force: bool = False) -> dict:
+    """Put an asset into a scene as a new node, wired correctly.
+
+    The node type comes from the FILE, not from you: a .png becomes a Sprite2D,
+    a SpriteFrames .tres an AnimatedSprite2D, a .tscn an instance. `node_type`
+    overrides that when the default is wrong (a background .png that wants to be
+    a TextureRect), and is otherwise better left alone.
+
+    What this does that editing the text does not: allocates a non-colliding
+    ext_resource id, reuses the existing one if the scene already references the
+    file, bumps load_steps, and uniquifies the node name against its siblings —
+    the four things a hand-written block gets wrong, three of which the engine
+    reports as something else entirely.
+
+    A .gd is not an asset here; a script attaches to a node that already exists,
+    which is scene_attach_script.
+    """
+    try:
+        asset_disk, asset_res = _res_pair(godot_project, asset, "")
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.wire(
+                text, asset_res, node_name=node_name or None, parent=parent,
+                node_type=node_type or None,
+                res_type=_res_declared_type(asset_disk)),
+            dry_run=dry_run, force=force,
+            summary=f"wired {asset_res} into {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_unwire(godot_project: str, scene: str, node: str,
+                 recursive: bool = False, dry_run: bool = False,
+                 force: bool = False) -> dict:
+    """Remove a node from a scene, and sweep any resource left referenced by nothing.
+
+    Refuses a node that has children unless `recursive` — deleting a parent and
+    silently orphaning its subtree is not a thing anyone means. Run it dry first
+    if you are not certain what hangs off it; `scene_outline(parent=...)` says.
+    """
+    try:
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.unwire(text, node, recursive=recursive),
+            dry_run=dry_run, force=force,
+            summary=f"removed {node} from {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_node_add(godot_project: str, scene: str, name: str, node_type: str,
+                   parent: str = ".", props: Optional[dict] = None,
+                   dry_run: bool = False, force: bool = False) -> dict:
+    """Add a plain node — a Camera2D, a Timer, a CanvasLayer, a grouping Node2D.
+
+    A scene is not only the files in it. `props` sets properties in the same
+    call, in Godot's own literal syntax where the type needs it:
+    {"position": "Vector2(96, 40)", "z_index": 5, "visible": false}.
+    """
+    try:
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.add_node(
+                text, name=name, node_type=node_type, parent=parent,
+                props=props or {}),
+            dry_run=dry_run, force=force,
+            summary=f"added {node_type} {name} to {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_set_property(godot_project: str, scene: str, node: str, key: str,
+                       value=None, clear: bool = False,
+                       dry_run: bool = False, force: bool = False) -> dict:
+    """Set one property on one node — position, z_index, visible, scale, a flag.
+
+    THIS IS THE MOVE TOOL. "Put the desk two cells left" is this call with
+    key="position". Vector and colour values are Godot literals passed as
+    strings — "Vector2(320, 96)", "Color(1, 0.5, 0, 1)" — while numbers, bools
+    and strings pass through as themselves.
+
+    `clear=True` removes the property instead of setting it, which is how a node
+    goes back to the class default rather than to a hardcoded copy of it.
+
+    ON A GENERATED SCENE THIS IS THE WRONG FILE. If the .tscn header says it is
+    bake output, the generator's input is the authority and your write survives
+    exactly until the next bake. Read the top of the file before moving anything
+    in it.
+    """
+    try:
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.set_property(
+                text, node, key, None if clear else value),
+            dry_run=dry_run, force=force,
+            summary=f"set {node}.{key} in {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_swap_resource(godot_project: str, scene: str, node: str, asset: str,
+                        property: str = "", dry_run: bool = False,
+                        force: bool = False) -> dict:
+    """Point a node at a different file — try that sheet, that music, that scene.
+
+    By hand this is four steps (find the scene, add an ext_resource, retype the
+    property, delete the resource that is now unused) and the fourth is the one
+    everybody skips, which leaves the old asset looking referenced to every tool
+    that counts references — including Atlas's dead-asset rail.
+    """
+    try:
+        asset_disk, asset_res = _res_pair(godot_project, asset, "")
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.swap_resource(
+                text, node, asset_res, prop=property or None,
+                res_type=_res_declared_type(asset_disk)),
+            dry_run=dry_run, force=force,
+            summary=f"swapped {node} to {asset_res} in {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_attach_script(godot_project: str, scene: str, script: str,
+                        node: str = ".", dry_run: bool = False,
+                        force: bool = False) -> dict:
+    """Attach a .gd to a node that already exists. Defaults to the scene root."""
+    try:
+        _, script_res = _res_pair(godot_project, script, ".gd")
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.attach_script(text, script_res, node=node),
+            dry_run=dry_run, force=force,
+            summary=f"attached {script_res} to {node} in {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_rename_node(godot_project: str, scene: str, node: str, name: str,
+                      dry_run: bool = False, force: bool = False) -> dict:
+    """Rename a node and repair every path in the file that named it.
+
+    A rename is not a one-line edit: children carry their parent's path, and
+    NodePath properties elsewhere in the scene point at the old name. Doing it
+    by hand is how a scene loads with half its wiring pointing at nothing.
+    """
+    try:
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.rename_node(text, node, name),
+            dry_run=dry_run, force=force,
+            summary=f"renamed {node} to {name} in {scene}")
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def scene_reparent_node(godot_project: str, scene: str, node: str,
+                        parent: str = ".", dry_run: bool = False,
+                        force: bool = False) -> dict:
+    """Move a node and everything under it beneath a different parent.
+
+    Godot stores a node's transform LOCAL to its parent, and this moves the
+    declaration, not the maths — a node reparented under something offset will
+    land somewhere else on screen. Reparent for structure (into a YSort, onto a
+    CanvasLayer), then fix position with scene_set_property.
+    """
+    try:
+        return _scene_edit(
+            godot_project, scene,
+            lambda text: _scenewire.reparent(text, node, parent),
+            dry_run=dry_run, force=force,
+            summary=f"reparented {node} under {parent} in {scene}")
     except Exception as exc:
         return _fail(exc)
 
@@ -4696,6 +5243,12 @@ def agent_steer(item_id: int, text: str) -> dict:
         status='dispatched') first, and use queue_update or queue_reopen for
         work that is not running.
 
+      * A STEER IS CAPPED AT 2000 CHARACTERS and a longer one is refused
+        outright, not truncated. It is an interruption, not a brief: anything
+        that needs more than a couple of paragraphs is a change to the work
+        rather than a correction to it, so put it in queue_update's brief or
+        reopen the item with it.
+
     Delivery, and any failure to deliver, is recorded in the activity ledger
     against the item.
     """
@@ -4764,6 +5317,231 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
                        "dispatched work item, so there is no run to steer")
         return {**result, "answer_arrives": arrives,
                 "note": "returns immediately — do not wait for the answer"}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Cutout characters: parts on a skeleton, animated once per template
+# ---------------------------------------------------------------------------
+# FOUR TOOLS, NOT SEVEN. The public tool list is a budget an agent reads in
+# full, and the kit-generation and part-rerun verbs belong with the art
+# generation path rather than here — they are labelled as not-yet-built rather
+# than stubbed, so nobody calls one and gets a shrug.
+
+
+def _cutout_dir(root: str, name: str) -> "_Path":
+    """Where a character's document, parts and scene live.
+
+    Inside game/assets/**, which is the ART SEAT'S EXISTING WRITE LANE. A bare
+    characters/** would be out of lane for every seat and the PreToolUse hook
+    would refuse the writes — the feature would be unusable by the seat that
+    owns it.
+    """
+    return _Path(root) / "game" / "assets" / "characters" / name
+
+
+@_tool
+def cutout_templates() -> dict:
+    """The cutout rig templates, and what a kit for each has to contain.
+
+    A CUTOUT CHARACTER IS THE OTHER WAY TO ANIMATE IN 2D. The frame pipeline
+    pays per character per animation — six clips at eight frames is 48 paid
+    generations that all have to agree with each other, and a new hat means
+    regenerating every one. A cutout kit is about ten parts, the animation is
+    authored once per TEMPLATE and free forever after, and equipment is a
+    texture swap on one slot.
+
+    What it costs you: a puppet, not a painting. Parts are rigid Sprite2Ds on
+    Node2D bones — no mesh deformation, no squash, no per-frame redraw. For a
+    hero seen in close-up the frame pipeline is still the better answer.
+
+    `parts_to_generate` is the actual generation list: the far-side limbs reuse
+    the near-side drawings with a tint, which is what makes a side-view kit ten
+    images instead of sixteen.
+    """
+    try:
+        from bgate_core import cutout as _cutout
+        return {"ok": True, "templates": _cutout.templates(),
+                "layout": "game/assets/characters/<name>/",
+                "not_built_yet": [
+                    "cutout_kit_generate — generating the parts themselves "
+                    "still goes through image_generate/chroma by hand against "
+                    "a pinned reference",
+                    "cutout_part_rerun — regenerate one part in place",
+                ]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
+                    adjustments: Optional[dict] = None, notes: str = "",
+                    force: bool = False) -> dict:
+    """Build a cutout character from its parts and emit a scene that moves.
+
+    `parts` maps SLOT -> image path (absolute, or relative to the project root).
+    cutout_templates lists the slots. Anything you leave out simply does not get
+    a sprite, so a half-generated kit assembles and shows what it has.
+
+    What comes out: `<name>.cutout.json` (the rig document — the editable
+    thing), `<name>.tscn` (bones, sprites, z order, an AnimationPlayer) and
+    `<name>.anims.tres` (six clips, baked onto THIS character's rest pose).
+    Drop the .tscn into a scene and call play("walk") on it.
+
+    THE FAR SIDE IS FREE. Slots ending _far reuse the matching _near image with
+    a tint unless you pass them explicitly, so a side-view kit is ten images.
+
+    `adjustments` nudges the template per character — {"arm_near": {"rot": -8}}
+    — and those survive every clip, because the animation is baked as deltas on
+    top of them rather than as absolute poses.
+
+    It REFUSES to overwrite a .tscn that has changed since it last wrote one
+    (someone opened it in Godot, or edited it). `force=True` discards those
+    changes deliberately.
+    """
+    try:
+        from bgate_core import cutout as _cutout, cutoutwire as _wire
+        root = _root()
+    except Exception as exc:
+        return _fail(exc)
+    try:
+        home = _cutout_dir(root, name)
+        doc = _cutout.empty(name, template)
+        spec = _cutout.template(template)
+        skin = {}
+        for slot, path in (parts or {}).items():
+            target = _Path(path)
+            if not target.is_absolute():
+                target = _Path(root) / path
+            if not target.is_file():
+                return {"ok": False,
+                        "error": f"part {slot!r} points at {target}, which is "
+                                 "not on disk"}
+            skin[slot] = {"texture": str(target),
+                          "part_hash": _cutout.part_hash(target)}
+        # The far side, unless the caller filled it in themselves.
+        for far, near in (spec.get("reuse") or {}).items():
+            if far not in skin and near in skin:
+                skin[far] = {"texture": skin[near]["texture"],
+                             "part_hash": skin[near]["part_hash"],
+                             "reuse_of": near,
+                             "far_tint": spec.get("far_tint")}
+        doc["skin"] = skin
+        doc["adjustments"] = adjustments or {}
+        doc["notes"] = notes
+        doc = _cutout.normalise(doc)
+
+        sizes = {}
+        try:
+            from PIL import Image
+            for slot, entry in doc["skin"].items():
+                with Image.open(entry["texture"]) as img:
+                    sizes[slot] = img.size
+        except Exception:
+            # A missing size means a part hangs from its top-left instead of
+            # its pivot: visibly wrong, and better than a guessed offset.
+            pass
+
+        doc_path = _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
+        emitted = _wire.emit(doc, project_dir=root,
+                             scene_path=home / f"{name}.tscn",
+                             sizes=sizes, force=force)
+        if not emitted.get("ok"):
+            return {**emitted, "doc": str(doc_path)}
+        status = _cutout.status(doc, root=root)
+        _log("cutout",
+             f"assembled {name}: {emitted['sprites']} sprites, "
+             f"{len(emitted['clips'])} clips",
+             ref=emitted["scene_res"])
+        _register_artifact(f"{name}.tscn", emitted["scene"],
+                           producer="cutout_assemble",
+                           metadata={"template": template,
+                                     "slots": len(doc["slots"]),
+                                     "filled": len(doc["skin"])})
+        return {**emitted, "doc": str(doc_path), "status": status,
+                "how": [f"instance {emitted['scene_res']} in a scene",
+                        'call play("walk") on it — the rig script is on the root',
+                        "connect its anim_event signal for hit frames"]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_status(name: str) -> dict:
+    """What is wrong with a cutout character, and what is merely unfinished.
+
+    Reports rather than refuses — a half-generated kit is the normal state
+    while a character is being made. `missing` is slots with no part yet;
+    `problems` is the list that actually needs action:
+
+      missing_texture  the document points at a file that is not there.
+      stale_pivot      a pivot placed BY HAND against a drawing that has since
+                       been regenerated. The pivot is still at the same
+                       fraction of a different picture, so the hand now hangs
+                       off the middle of the forearm and nothing says why.
+      origin           the rig's feet are not on the ground line, so it hovers
+                       or sinks in every scene it is placed in.
+    """
+    try:
+        from bgate_core import cutout as _cutout
+        root = _root()
+        doc = _cutout.load(_cutout_dir(root, name) / f"{name}{_cutout.SUFFIX}")
+        return {"ok": True, **_cutout.status(doc, root=root)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = None,
+                 force: bool = False) -> dict:
+    """Put a different part in one slot and re-emit — a hat, a sword, an arm.
+
+    This is what the whole pipeline is for: swapping equipment is one texture
+    on one slot, not a re-drawn character. The scene carries a pivot table so
+    the runtime `equip()` can do the same swap at RUNTIME; this tool is for
+    changing what the character ships wearing.
+
+    `pivot` is [x, y] as a fraction of the new part's own bounding box, y
+    measured UP from the bottom. Pass it and it is recorded as AUTHORED, which
+    means cutout_status will tell you if the part is later regenerated under it
+    rather than letting the pivot quietly point somewhere else.
+    """
+    try:
+        from bgate_core import cutout as _cutout, cutoutwire as _wire
+        root = _root()
+        home = _cutout_dir(root, name)
+        doc = _cutout.load(home / f"{name}{_cutout.SUFFIX}")
+        target = _Path(texture)
+        if not target.is_absolute():
+            target = _Path(root) / texture
+        if not target.is_file():
+            return {"ok": False, "error": f"no part at {target}"}
+        entry = dict(doc["skin"].get(slot) or {})
+        entry["texture"] = str(target)
+        entry["part_hash"] = _cutout.part_hash(target)
+        if pivot:
+            entry["pivot"] = list(pivot)
+            entry["pivot_source"] = "authored"
+        doc["skin"][slot] = entry
+        doc = _cutout.normalise(doc)
+        sizes = {}
+        try:
+            from PIL import Image
+            for name_, ent in doc["skin"].items():
+                with Image.open(ent["texture"]) as img:
+                    sizes[name_] = img.size
+        except Exception:
+            pass
+        _cutout.save(home / f"{name}{_cutout.SUFFIX}", doc)
+        emitted = _wire.emit(doc, project_dir=root,
+                             scene_path=home / f"{name}.tscn",
+                             sizes=sizes, force=force)
+        if emitted.get("ok"):
+            _log("cutout", f"equipped {name}.{slot} -> {target.name}",
+                 ref=emitted["scene_res"])
+        return {**emitted, "slot": slot, "texture": str(target),
+                "pivot_source": entry.get("pivot_source", "default")}
     except Exception as exc:
         return _fail(exc)
 

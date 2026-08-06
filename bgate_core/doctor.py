@@ -48,7 +48,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # The order is the report order — cheap/local first, subprocess-spawning last.
 CHECKS = ("python", "openai_key", "ffmpeg", "ffprobe", "blender", "godot",
-          "godot_web_templates", "whisper", "imageto3d")
+          "godot_web_templates", "whisper", "imageto3d", "local_image")
 
 # What the code in this repo actually assumes, not aspirational floors.
 # blender: the default warmup engine is BLENDER_EEVEE_NEXT, which is 4.2+.
@@ -69,6 +69,10 @@ MIN_REQUIRED = {
     # machine's default interpreter carries torch 2.8.0+cpu, so a torch probe
     # would call a perfectly good RTX 3060 "no GPU" and never recover.
     "imageto3d": "",
+    # Same status as imageto3d and for the same reason: a red row here means
+    # LOCAL 2D generation is unavailable and every hosted path still works. It
+    # is the row that makes "no API key" a configuration rather than a wall.
+    "local_image": "",
 }
 
 CACHE_SECONDS = 5.0
@@ -273,6 +277,27 @@ def _probe_imageto3d() -> dict:
                 reason=row.get("reason", ""))
 
 
+def _probe_local_image() -> dict:
+    """A local ComfyUI that can paint 2D, or the reason there is none.
+
+    Imported inside the function, same rule as _probe_imageto3d: doctor runs on
+    the startup path of every CLI invocation and an adapter import belongs
+    behind the probe that needs it.
+    """
+    try:
+        from bgate_adapters import localgen
+    except Exception as exc:
+        return _missing("local_image", f"adapter unavailable: {exc}")
+    row = localgen.doctor_row()
+    ok = bool(row.get("available"))
+    # `path` is what IS there, never what is missing — an unavailable row that
+    # puts its reason in the path column reads as a found binary to every caller
+    # that only checks whether the column is empty.
+    return _row(available=ok, path=row.get("detail", "") if ok else "",
+                min_required=MIN_REQUIRED["local_image"],
+                reason="" if ok else row.get("detail", ""))
+
+
 _PROBES: dict[str, Callable[[], dict]] = {
     "python": _probe_python,
     "openai_key": _probe_openai_key,
@@ -283,6 +308,7 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "godot_web_templates": _probe_godot_web_templates,
     "whisper": _probe_whisper,
     "imageto3d": _probe_imageto3d,
+    "local_image": _probe_local_image,
 }
 
 

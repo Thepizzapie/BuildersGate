@@ -194,6 +194,34 @@ def reap_expired(root: str | os.PathLike[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Locking
 # ---------------------------------------------------------------------------
+def lock_holder(root: str | os.PathLike[str],
+                path: str | os.PathLike[str]) -> Optional[dict]:
+    """The seat currently holding ``path``, or None. NEVER RAISES.
+
+    Every writer that is not `lock()` itself needs this same question answered
+    before it touches a file — the dashboard's code editor, its scene editor,
+    and the scene tools on the MCP surface. They each used to answer it their
+    own way or not at all, and "not at all" is how an agent mid-edit and a human
+    at the keyboard end up writing the same .tscn a second apart.
+
+    Not raising is the contract, not laziness: a lock lookup that fails is a
+    reason not to CLAIM the file is free, never a reason to refuse the write.
+    Callers treat None as "nothing known" and proceed; the file's own backup is
+    the floor under both of them.
+    """
+    try:
+        rel = _norm(root, path)
+    except Exception:
+        return None
+    try:
+        for row in list_assets(root, locked_only=True):
+            if str(row.get("path") or "") == rel:
+                return row
+    except Exception:
+        return None
+    return None
+
+
 def lock(root: str | os.PathLike[str], path: str | os.PathLike[str],
          seat: str, owner: str = "", work_item_id: Optional[int] = None,
          lease_s: Optional[int] = None, *, operation: str = "",

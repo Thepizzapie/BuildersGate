@@ -45,6 +45,33 @@ def test_a_one_word_prefix_over_one_word_variants_is_a_family():
     assert set(library.group_stems(["hero_idle", "hero_walk"]).values()) == {"hero"}
 
 
+def test_the_source_frames_a_sheet_was_packed_from_join_that_sheet():
+    """The split that made usage read false. bolt_impact_sheet ships and the
+    four frames it was packed from do not, and while these were two families
+    the library showed one green row and one grey row for one effect."""
+    out = library.group_stems([
+        "bolt_impact_sheet", "bolt_impact_frames",
+        "bolt_impact_default_0", "bolt_impact_default_1",
+        "bolt_impact_default_2", "bolt_impact_default_3"])
+    assert set(out.values()) == {"bolt_impact"}
+
+
+def test_a_three_deep_chain_collapses_to_the_outermost_family():
+    out = library.group_stems([
+        "hero_idle", "hero_walk",
+        "hero_walk_ko", "hero_walk_ko_alt", "hero_walk_ko_alt_b"])
+    assert set(out.values()) == {"hero"}
+
+
+def test_absorbing_does_not_merge_families_that_only_share_a_category():
+    """prop_copier and prop_conference_table extend nothing of each other's —
+    the absorb rule is prefix containment, not a shared first token."""
+    out = library.group_stems([
+        "prop_copier_ne", "prop_copier_se",
+        "prop_conference_table_ne", "prop_conference_table_se"])
+    assert set(out.values()) == {"prop_copier", "prop_conference_table"}
+
+
 def test_a_tiny_sub_family_is_absorbed_by_the_family_it_extends():
     """The two dual-wield frames agree on a longer prefix than the other nine —
     left alone that makes a second 'weapon' out of two frames of the first."""
@@ -232,7 +259,120 @@ def test_stats_add_up(game):
     st = data["stats"]
     assert st["families"] == len(data["families"])
     assert st["files"] == sum(f["count"] for f in data["families"])
-    assert st["in_use"] + st["unused"] == st["families"]
+    assert st["in_use"] + st["unused"] + st["working"] == st["families"]
+
+
+# ---------------------------------------------------------------------------
+# Asset manifests
+# ---------------------------------------------------------------------------
+def _manifest(game, rel: str, body: str):
+    path = game / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_an_asset_manifest_is_read_even_though_nothing_loads_it(game):
+    """The gap that cost 59 HUD files. ui_manifest.json is named in a code
+    COMMENT and read by an art tool, never by the game, so nothing made it a
+    node and everything it named read as dead while the scenes drew it."""
+    hud = game / "assets" / "ui" / "hud"
+    hud.mkdir(parents=True)
+    Image.new("RGBA", (16, 16)).save(hud / "badge_ap.png")
+    _manifest(game, "assets/ui/hud/ui_manifest.json",
+              '{"badge_ap": {"engine_path": "res://assets/ui/hud/badge_ap.png"}}')
+
+    smap = screenmap.scan(game)
+    assert "res://assets/ui/hud/badge_ap.png" not in smap["orphans"]
+    data = library.scan(game, smap=smap)
+    fam = next(f for f in data["families"] if f["label"] == "badge_ap")
+    assert fam["in_use"] is True
+    assert fam["used_by"] == ["ui_manifest.json"], (
+        "attributed to the manifest, not to a screen — it says the art is "
+        "spoken for without claiming a scene draws it")
+
+
+def test_a_manifest_reached_through_a_manifest_is_still_followed(game):
+    """One pass stopped at the first arrow: a manifest that names a manifest
+    called everything past it dead."""
+    vfx = game / "assets" / "vfx"
+    vfx.mkdir(parents=True)
+    Image.new("RGBA", (16, 16)).save(vfx / "bolt_sheet.png")
+    _manifest(game, "assets/vfx/inner_manifest.json",
+              '{"sheet": "res://assets/vfx/bolt_sheet.png"}')
+    _manifest(game, "assets/vfx/vfx_manifest.json",
+              '{"next": "res://assets/vfx/inner_manifest.json"}')
+
+    smap = screenmap.scan(game)
+    assert "res://assets/vfx/bolt_sheet.png" not in smap["orphans"]
+
+
+def test_a_template_written_inside_a_manifest_resolves(game):
+    """These used to be appended to the template list AFTER the only pass that
+    read it, and resolved to nothing at all."""
+    icons = game / "assets" / "icons"
+    icons.mkdir(parents=True)
+    for name in ("fire", "ice"):
+        Image.new("RGBA", (8, 8)).save(icons / f"{name}.png")
+    _manifest(game, "assets/icons/icon_manifest.json",
+              '{"pattern": "res://assets/icons/%s.png"}')
+
+    smap = screenmap.scan(game)
+    assert "res://assets/icons/fire.png" not in smap["orphans"]
+    assert "res://assets/icons/ice.png" not in smap["orphans"]
+
+
+def test_json_outside_assets_is_not_trawled_for_references(game):
+    """Scoped on purpose: tool output and build reports are full of paths the
+    game never loads."""
+    tools = game / "tools"
+    tools.mkdir(parents=True)
+    _manifest(game, "tools/build_manifest.json",
+              '{"art": "res://assets/unused/nobody_loves_me.png"}')
+
+    smap = screenmap.scan(game)
+    assert "res://assets/unused/nobody_loves_me.png" in smap["orphans"]
+
+
+# ---------------------------------------------------------------------------
+# Working files vs shipping assets
+# ---------------------------------------------------------------------------
+def test_only_res_assets_can_ship():
+    """The engine loads res://assets/**. Everything else on disk is a working
+    file, however much it looks like art."""
+    assert not library.is_working("res://assets/props/desk.png")
+    assert library.is_working("res://tests/fixtures/probe.png")
+    assert library.is_working(None), "outside the engine project entirely"
+    assert library.is_working("res://icon.svg")
+
+
+def test_scratch_renders_are_a_separate_drawer_not_unused_assets(game):
+    """Measured on a real project: 508 of 775 families were working files. All
+    of them correctly unused, none of them actionable, and together they buried
+    the assets that were."""
+    scratch = game / "art" / "wip"
+    scratch.mkdir(parents=True)
+    Image.new("RGBA", (32, 32)).save(scratch / "hero_attempt_3.png")
+
+    data = library.scan(game)
+    wip = next(f for f in data["families"] if f["dir"] == "art/wip")
+    assert wip["working"] is True
+    assert wip["in_use"] is False
+    assert data["stats"]["working"] == 1
+    # and it is not counted against the shipping library
+    assert all(not f["working"] for f in data["families"]
+               if f["dir"].startswith("assets/"))
+
+
+def test_the_unused_count_is_about_shippable_assets_only(game):
+    before = library.scan(game)["stats"]["unused"]
+    scratch = game / "tmp"
+    scratch.mkdir()
+    for i in range(5):
+        Image.new("RGBA", (8, 8)).save(scratch / f"probe_{i}.png")
+    after = library.scan(game)["stats"]
+    assert after["unused"] == before, "scratch files are not unused assets"
+    assert after["working"] == 1
 
 
 # ---------------------------------------------------------------------------

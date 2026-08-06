@@ -33,7 +33,13 @@ from bgate_adapters import imagegen, krea
 from . import chroma
 from bgate_core import activity, artifacts as _artifacts, spend as _spend, tiers as _tiers
 
-PROVIDERS = ("krea", "openai")
+PROVIDERS = ("krea", "openai", "local")
+
+# "local" is a real provider and not a special case: it goes through the same
+# chroma door, returns the same result shape, and prices at a genuine 0.0 rather
+# than at a missing value. What it does NOT have is a model table with published
+# prices, because the model is whatever the user's own ComfyUI graph loads —
+# which is why the explicit-override branch below stops asking krea about it.
 
 # A node fans out; it does not run a farm. Eight is already more candidates than
 # a human will compare in one sitting.
@@ -107,9 +113,18 @@ def plan(config: dict, *, style_refs: int = 0) -> dict:
         if provider == "krea" and model not in krea.MODELS:
             raise GenerateRefused(
                 f"krea has no model {model!r} — known: {sorted(krea.MODELS)}")
-        unit = (krea.price_for(model, style_refs=style_refs) if provider == "krea"
-                else imagegen.price_per_image(quality))
-        note = (krea.MODELS.get(model) or {}).get("note", "") if provider == "krea" else ""
+        if provider == "krea":
+            unit = krea.price_for(model, style_refs=style_refs)
+            note = (krea.MODELS.get(model) or {}).get("note", "")
+        elif provider == "local":
+            # FREE, AND SAYING SO IS THE ANSWER. The spend gate reads a number
+            # as permission, and 0.0 is the correct number for a generation
+            # that runs on the user's own card.
+            unit = 0.0
+            note = "local ComfyUI — no spend, and the licence is the model's"
+        else:
+            unit = imagegen.price_per_image(quality)
+            note = ""
     elif task_kind:
         try:
             resolved = _tiers.resolve(task_kind, tier)
@@ -172,7 +187,7 @@ def call_provider(provider: str, model: str, prompt: str, out_path: str, *,
     Never raises: a provider failure is a node failure with a reason, and the
     reason has to survive being read by someone who is not watching a traceback.
     """
-    if provider not in ("krea", "openai"):
+    if provider not in PROVIDERS:
         return {"ok": False, "error": f"unknown provider {provider!r}",
                 "provider": provider, "model": model}
     try:

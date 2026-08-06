@@ -1900,6 +1900,309 @@ def evidence(project_dir: str, out_dir: str, *, at: float = 1.0,
 
 
 # ---------------------------------------------------------------------------
+# Retarget acceptance: does the engine agree this is a humanoid?
+# ---------------------------------------------------------------------------
+#
+# WHY THE ENGINE HAS TO BE ASKED, AND WHY THE BLENDER SIDE CANNOT ANSWER IT. The
+# rig this pipeline builds carries Godot's own SkeletonProfileHumanoid bone names
+# — Hips, Spine, LeftUpperArm — and the entire value of that choice is that a
+# BoneMap then lets any humanoid clip in the world play on the character. That
+# claim was never once tested. Blender will happily export 23 correctly-named
+# bones in a FLAT hierarchy, or with the arm chain parented to the hips, or with
+# a bone the profile does not know; blender_rig reports 0 unweighted for all of
+# them, and the character is unanimatable by anything but a clip authored for it
+# specifically, which is the opposite of the point.
+#
+# Three questions, and they fail independently:
+#
+#   COVERAGE   is every profile bone present, under the exact name? A missing
+#              UpperChest is survivable; a missing Hips is not.
+#   HIERARCHY  does rotating a shoulder move the hand? A flat skeleton passes
+#              coverage perfectly and propagates nothing, so this is the one
+#              check that catches an export that lost its parenting.
+#   BINDING    does a clip authored against the profile actually drive it? Built
+#              here procedurally rather than shipped as an asset, because a
+#              downloaded clip introduces a licence and a download to a step
+#              whose entire job is to be a fast, offline yes/no.
+#
+# And it writes the BoneMap, so the answer is not just "yes" but a resource the
+# user's project can immediately point a real animation library at.
+RETARGET_MARK = "BGATE_RETARGET:"
+
+_RETARGET_GD = '''extends SceneTree
+
+# A SceneTree SCRIPT DRIVEN ACROSS FRAMES, AND THAT IS NOT A STYLE CHOICE.
+# Skeleton3D recomputes its GLOBAL bone transforms on its own notification, not
+# inside the call that set a pose. MEASURED here on Godot 4.7: setting
+# LeftUpperArm's pose rotation and then calling force_update_all_bone_transforms
+# left LeftHand's global pose at exactly its rest origin, and the first version
+# of this probe therefore reported a correctly-parented skeleton as unparented —
+# 23 bones, every parent index right, "propagates": false. The local pose had
+# changed; the global one had not been recomputed yet. So every measurement here
+# is taken a FRAME AFTER the pose that caused it.
+
+const MARK := "__MARK__"
+
+var out := {}
+var skel: Skeleton3D = null
+var stage := 0
+var pairs := [["LeftUpperArm", "LeftHand"], ["RightUpperLeg", "RightFoot"]]
+var chain := []
+var pending := {}
+var player: AnimationPlayer = null
+var driver := "LeftUpperArm"
+var rest_q := Quaternion()
+var done := false
+
+func _find_skeleton(node) -> Skeleton3D:
+    if node is Skeleton3D:
+        return node
+    for child in node.get_children():
+        var found: Skeleton3D = _find_skeleton(child)
+        if found != null:
+            return found
+    return null
+
+func _say() -> void:
+    print(MARK + JSON.stringify(out))
+    done = true
+    quit()
+
+func _initialize() -> void:
+    var res_path := "__RES__"
+    var map_path := "__MAP__"
+    out = {"ok": false, "res": res_path}
+
+    if not ResourceLoader.exists(res_path):
+        out["error"] = "no resource at %s - import the .glb first (godot_import_asset)" % res_path
+        _say()
+        return
+    var packed = ResourceLoader.load(res_path)
+    if packed == null or not (packed is PackedScene):
+        out["error"] = "%s did not load as a PackedScene" % res_path
+        _say()
+        return
+    var root = packed.instantiate()
+    if root == null:
+        out["error"] = "could not instantiate %s" % res_path
+        _say()
+        return
+    get_root().add_child(root)
+
+    skel = _find_skeleton(root)
+    if skel == null:
+        out["error"] = "no Skeleton3D anywhere under %s - this model is not rigged as far as the engine is concerned" % res_path
+        _say()
+        return
+
+    var profile := SkeletonProfileHumanoid.new()
+    var missing := []
+    var mapped := []
+    for i in range(profile.bone_size):
+        var wanted: String = profile.get_bone_name(i)
+        if skel.find_bone(wanted) == -1:
+            missing.append(wanted)
+        else:
+            mapped.append(wanted)
+    var known := {}
+    for m in mapped:
+        known[m] = true
+    var extra := []
+    for b in range(skel.get_bone_count()):
+        var bone_name: String = skel.get_bone_name(b)
+        if not known.has(bone_name):
+            extra.append(bone_name)
+
+    out["skeleton"] = skel.name
+    out["skeleton_bones"] = skel.get_bone_count()
+    out["profile_bones"] = profile.bone_size
+    out["mapped"] = mapped.size()
+    out["missing"] = missing
+    out["extra"] = extra
+
+    # THE PROFILE IS 56 BONES AND NOTHING IN THIS PIPELINE HAS FINGERS. Judging
+    # against the full profile would fail every character this product makes for
+    # want of a LeftLittleDistal. What retargeting actually needs is the trunk
+    # and the four limbs; fingers, eyes and jaw are refinements a clip leaves
+    # alone. `missing` still lists them, because a project that DOES want finger
+    # animation needs to know they are not there.
+    var essential := ["Hips", "Spine", "Head", "LeftUpperArm", "LeftLowerArm",
+                      "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand",
+                      "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+                      "RightUpperLeg", "RightLowerLeg", "RightFoot"]
+    var essential_missing := []
+    for e in essential:
+        if skel.find_bone(e) == -1:
+            essential_missing.append(e)
+    out["essential_missing"] = essential_missing
+
+    # THE CLIP IS BUILT HERE rather than downloaded, so this step stays offline
+    # and licence-free. The NodePath is the part that fails silently: a bone
+    # track is "<node>:<bone>" resolved from root_node, and a path resolving to
+    # nothing plays happily and moves zero.
+    if skel.find_bone(driver) != -1:
+        var host = skel.get_parent()
+        if host == null:
+            host = skel
+        var anim := Animation.new()
+        anim.length = 1.0
+        var track: int = anim.add_track(Animation.TYPE_ROTATION_3D)
+        var node_part := "." if host == skel else str(skel.name)
+        anim.track_set_path(track, NodePath("%s:%s" % [node_part, driver]))
+        # Keys are ABSOLUTE bone-local rotations, which is also what a real
+        # humanoid clip stores. Keying the rest rotation at t=0 and rest*60 at
+        # t=1 makes the measured delta mean 60 degrees rather than "60 degrees
+        # away from whatever the rest happened to be".
+        var driver_rest: Quaternion = skel.get_bone_rest(skel.find_bone(driver)).basis.get_rotation_quaternion()
+        anim.rotation_track_insert_key(track, 0.0, driver_rest)
+        anim.rotation_track_insert_key(track, 1.0, driver_rest * Quaternion(Vector3(1, 0, 0), deg_to_rad(60.0)))
+        var lib := AnimationLibrary.new()
+        lib.add_animation("probe", anim)
+        player = AnimationPlayer.new()
+        host.add_child(player)
+        player.add_animation_library("", lib)
+        player.root_node = player.get_path_to(host)
+
+    if map_path != "":
+        var bmap := BoneMap.new()
+        bmap.profile = profile
+        for mapped_name in mapped:
+            bmap.set_skeleton_bone_name(mapped_name, mapped_name)
+        var err := ResourceSaver.save(bmap, map_path)
+        out["bone_map"] = {"path": map_path, "error": int(err),
+                           "written": err == OK, "entries": mapped.size()}
+
+func _process(_delta: float) -> bool:
+    if done or skel == null:
+        return true
+
+    # Two frames per pair: one to pose, one to read what the pose did.
+    @warning_ignore("integer_division")
+    var pair_index := stage / 2
+    if pair_index < pairs.size():
+        var pair = pairs[pair_index]
+        if stage % 2 == 0:
+            var record := {"driver": pair[0], "tip": pair[1]}
+            var parent_i: int = skel.find_bone(pair[0])
+            var tip_i: int = skel.find_bone(pair[1])
+            if parent_i == -1 or tip_i == -1:
+                record["skipped"] = "bone absent"
+                chain.append(record)
+                stage += 2
+                return false
+            skel.reset_bone_poses()
+            record["before"] = skel.get_bone_global_pose(tip_i).origin
+            # COMPOSED ONTO THE REST ROTATION, NOT SUBSTITUTED FOR IT. A bone
+            # pose in Godot is the bone's FULL local transform, so setting it to
+            # a bare 45 degrees about X throws the rest orientation away and the
+            # limb swings by whatever the difference happens to be. MEASURED on
+            # a 1.8 m figure: the right foot travelled 1.53 m for a "45 degree"
+            # hip, because the leg's rest rotation is a 180 degree flip and the
+            # net turn was 135. The boolean survived that; the number in the
+            # report did not, and a number nobody can sanity-check is worse than
+            # no number.
+            var rest_rot: Quaternion = skel.get_bone_rest(parent_i).basis.get_rotation_quaternion()
+            skel.set_bone_pose_rotation(parent_i, rest_rot * Quaternion(Vector3(1, 0, 0), deg_to_rad(45.0)))
+            pending = record
+            stage += 1
+            return false
+        var tip_j: int = skel.find_bone(pending["tip"])
+        var after: Vector3 = skel.get_bone_global_pose(tip_j).origin
+        var moved: float = (pending["before"] as Vector3).distance_to(after)
+        pending["moved_m"] = snapped(moved, 0.0001)
+        # 1 cm. A hand on a 1.8 m figure swings ~0.2 m for a 45 degree shoulder;
+        # under a centimetre means the rotation did not propagate at all.
+        pending["propagates"] = moved > 0.01
+        pending.erase("before")
+        chain.append(pending)
+        pending = {}
+        skel.reset_bone_poses()
+        stage += 1
+        return false
+
+    var clip_stage := stage - pairs.size() * 2
+    if clip_stage == 0:
+        out["chain"] = chain
+        if player == null:
+            out["clip"] = {"clip_bone": driver, "skipped": "no %s to drive" % driver,
+                           "drives": false}
+            stage += 2
+            return false
+        skel.reset_bone_poses()
+        rest_q = skel.get_bone_pose_rotation(skel.find_bone(driver))
+        player.play("probe")
+        player.seek(1.0, true)
+        stage += 1
+        return false
+    if clip_stage == 1:
+        var posed_q: Quaternion = skel.get_bone_pose_rotation(skel.find_bone(driver))
+        var delta_deg: float = rad_to_deg(rest_q.angle_to(posed_q))
+        # The clip asks for 60 degrees. Half of it is a generous floor that still
+        # separates "the track drove the bone" from "the track resolved to
+        # nothing", which is what a wrong NodePath looks like: silent, zero.
+        out["clip"] = {"clip_bone": driver, "rotated_deg": snapped(delta_deg, 0.01),
+                       "drives": delta_deg > 30.0}
+        stage += 1
+        return false
+
+    var chain_ok := true
+    for c in chain:
+        if c.has("propagates") and not c["propagates"]:
+            chain_ok = false
+    out["chain_ok"] = chain_ok
+    out["retargetable"] = ((out["essential_missing"] as Array).is_empty()
+                           and chain_ok
+                           and (out["clip"] as Dictionary).get("drives", false))
+    out["ok"] = true
+    _say()
+    return true
+'''.replace("__MARK__", RETARGET_MARK)
+
+
+def retarget_check(project_dir: str, res_path: str, *,
+                   bone_map_res: str = "", timeout: int = 180) -> dict:
+    """Ask Godot whether this rigged model is a humanoid it can retarget onto.
+
+    `res_path` is a res:// path to an already-imported model (godot_import_asset
+    puts it there). `bone_map_res` is where to save the BoneMap; "" skips it.
+
+    Returns the engine's own answers: bone coverage against
+    SkeletonProfileHumanoid, whether rotating a shoulder moves the hand, whether
+    a profile-authored clip drives the skeleton, and `retargetable` — the single
+    verdict that matters, because a False there means every humanoid animation
+    library in existence is unavailable to this character.
+    """
+    project = Path(project_dir)
+    if not (project / "project.godot").exists():
+        return {"ok": False, "error": f"no project.godot in {project_dir}"}
+    if not str(res_path).startswith("res://"):
+        return {"ok": False, "error": f"res_path must be a res:// path, got {res_path!r}"}
+    if bone_map_res and not str(bone_map_res).startswith("res://"):
+        return {"ok": False,
+                "error": f"bone_map_res must be a res:// path, got {bone_map_res!r}"}
+
+    script = (_RETARGET_GD.replace("__RES__", str(res_path))
+              .replace("__MAP__", str(bone_map_res)))
+    run = run_script(script, project_dir=str(project), timeout=timeout)
+    report = {}
+    for line in ((run.get("stdout") or "") + "\n" + (run.get("stderr") or "")).splitlines():
+        if line.startswith(RETARGET_MARK):
+            try:
+                report = json.loads(line[len(RETARGET_MARK):])
+            except ValueError:
+                report = {}
+            break
+    if not report:
+        return {"ok": False,
+                "error": run.get("error") or "no report from Godot",
+                "exit_code": run.get("exit_code"),
+                "output": ((run.get("stdout") or "")[-1200:]),
+                "errors": run.get("errors") or []}
+    report["seconds"] = run.get("seconds")
+    return report
+
+
+# ---------------------------------------------------------------------------
 # The missing last mile: .glb -> imported -> collided -> instanced -> photographed
 # ---------------------------------------------------------------------------
 #

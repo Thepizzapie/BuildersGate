@@ -417,7 +417,7 @@ def index() -> str:
     except ValueError:
         bust = str(int(time.time()))
     html = re.sub(r'(/static/[\w/-]+\.(?:js|css))', r"\1?v=" + bust, html)
-    return _inject_token(_inject_settings(html))
+    return _inject_identity(_inject_token(_inject_settings(html)))
 
 
 def _inject_settings(html: str) -> str:
@@ -447,6 +447,46 @@ def _inject_settings(html: str) -> str:
     if "</head>" in html:
         return html.replace("</head>", shim + "</head>", 1)
     return shim + html
+
+
+def _inject_identity(html: str) -> str:
+    """Put WHICH PROJECT into the browser tab, not just into the page body.
+
+    Three dashboards on one machine look identical, and one of them taking
+    another's port after it stopped is a tab that is still open, still styled
+    correctly, and now writing to a different game. Observed: settings changed
+    in a tab that had silently become another project's. The tab title is the
+    one piece of chrome a person reads without looking for it.
+    """
+    root = _root_or_none()
+    if root is None:
+        return html
+    name = Path(root).name
+    shim = ("<script>document.title=%s+' · builders gate';"
+            "window.BGATE_PROJECT=%s;window.BGATE_ROOT=%s;</script>"
+            % (json.dumps(name), json.dumps(name), json.dumps(str(root))))
+    if "</head>" in html:
+        return html.replace("</head>", shim + "</head>", 1)
+    return shim + html
+
+
+@app.get("/api/health")
+def health() -> dict:
+    """Which project this dashboard is serving. Unauthenticated on purpose.
+
+    It exists so a SECOND dashboard can ask, before it binds, whether the port
+    it wants is already answering for a different root — see serve(). That check
+    is worthless if it needs a token, because the process asking has no way to
+    hold another project's token, and the collision it prevents is the one that
+    causes writes to land on the wrong game.
+
+    Nothing sensitive: the root path and whether a board is up. No token, no
+    settings, no work.
+    """
+    root = _root_or_none()
+    return {"ok": True, "service": "builders-gate",
+            "root": str(root) if root else "",
+            "project": Path(root).name if root else ""}
 
 
 def _inject_token(html: str) -> str:
@@ -1705,6 +1745,35 @@ def play_files(file_path: str = "") -> FileResponse:
     return FileResponse(target)
 
 
+def _serving_elsewhere(port: int, root) -> str:
+    """The root another dashboard is already serving on this port, or "".
+
+    Short timeout and every failure means "nothing there": the probe exists to
+    catch a specific confusing collision, and it must never be the reason the
+    dashboard will not start. A non-Builders-Gate service on the port answers
+    nothing we recognise and is left to uvicorn's own bind error.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health",
+                                     headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=0.4) as resp:
+            body = _json.loads(resp.read().decode("utf-8", "replace") or "{}")
+    except Exception:
+        return ""
+    theirs = str((body or {}).get("root") or "").strip()
+    if not theirs:
+        return ""
+    try:
+        same = root is not None and Path(theirs).resolve() == Path(root).resolve()
+    except Exception:
+        same = str(theirs) == str(root)
+    return "" if same else theirs
+
+
 def serve(port: int = 7788) -> None:
     """Run the dashboard, and SAY WHERE IT IS.
 
@@ -1717,6 +1786,32 @@ def serve(port: int = 7788) -> None:
 
     url = f"http://127.0.0.1:{port}"
     root = _root_or_none()
+
+    # IS SOMEBODY ELSE ALREADY SERVING THIS PORT, FOR A DIFFERENT GAME?
+    #
+    # OBSERVED, AND IT CAUSED WRONG-PROJECT WRITES. Three sessions on one
+    # machine each started a dashboard; two of them hardcoded a different
+    # BGATE_ROOT in a scratch runner. When the first server stopped, another
+    # took 7788. The browser tab stayed open and looked IDENTICAL — same layout,
+    # same port, same styling — and settings changes made in it were landing on
+    # a different game. It was caught only by noticing that max_concurrent read
+    # 11 when a human had set it to 4.
+    #
+    # Refusing to bind is not possible from here (uvicorn owns the socket), but
+    # asking first is, and it costs a 400 ms probe on startup.
+    other = _serving_elsewhere(port, root)
+    if other:
+        print(f"builders gate · REFUSING to start on {url}")
+        print(f"  another dashboard is already serving that port, for a "
+              f"DIFFERENT project:")
+        print(f"    it is serving : {other}")
+        print(f"    you asked for : {root or '(no project here)'}")
+        print("  Two dashboards on one port means a browser tab that looks "
+              "right and writes to the wrong game.")
+        print(f"  Stop that one, or start this on another port: "
+              f"bgate serve --port {port + 1}")
+        raise SystemExit(2)
+
     print(f"builders gate · dashboard on {url}")
     if root is None:
         print("  no project here yet — open the URL and create one, "

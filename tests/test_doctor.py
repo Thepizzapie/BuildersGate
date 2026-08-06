@@ -59,6 +59,13 @@ def everything_present(monkeypatch):
                         lambda: {"available": True, "path": "nvidia-smi",
                                  "version": "NVIDIA GeForce RTX 3060 (12.0 GB)",
                                  "min_required": "", "reason": ""})
+    # The local 2D leg, stubbed for the same reason: it probes a loopback
+    # ComfyUI, and whether one is running is a property of the developer's
+    # machine rather than of the code under test.
+    monkeypatch.setattr("bgate_adapters.localgen.doctor_row",
+                        lambda: {"name": "local_image", "available": True,
+                                 "detail": "ComfyUI at http://127.0.0.1:8188, "
+                                           "model sdxl", "optional": True})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
 
@@ -81,6 +88,10 @@ def nothing_present(monkeypatch):
                         lambda: {"available": False, "path": "", "version": "",
                                  "min_required": "",
                                  "reason": "nvidia-smi not found"})
+    monkeypatch.setattr("bgate_adapters.localgen.doctor_row",
+                        lambda: {"name": "local_image", "available": False,
+                                 "detail": "BGATE_COMFY_T2I_WORKFLOW is not set",
+                                 "optional": True})
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
 
