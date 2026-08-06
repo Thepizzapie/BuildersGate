@@ -406,7 +406,7 @@ def successors(root: str | os.PathLike[str], item_id: int) -> list[dict]:
 
 
 def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
-             failed: bool = False) -> dict:
+             failed: bool = False, skip_gate: Optional[bool] = None) -> dict:
     """An agent reporting the end of its own run — THROUGH the approval gate.
 
     Every completion path funnels here (the MCP queue_complete tool, the
@@ -425,12 +425,36 @@ def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
     """
     from . import gates as _gates
 
+    # WHO CLOSED IT, AND WHETHER A REVIEWER IS OWED. The QA gate reviews state
+    # at close, so a HAND-CLOSE — which is what a killed-but-successful run
+    # leaves a human doing — files a reviewer against a result note describing
+    # work that may already have been superseded. Measured: an agent was
+    # dispatched, and paid for, to verify block-modelled vehicles that had been
+    # replaced by image-to-3D generation days earlier.
+    #
+    # The default is not "always skip a human's close": a human closing an
+    # agent's finished work is exactly the case worth reviewing. It is
+    # "skip when a human closes work the agent did not report itself", which is
+    # what `skip_gate=None` resolves to below — the caller may still say either
+    # way explicitly.
+    closer = activity.current_actor()
+    by_machine = activity.is_machine(closer)
+    if skip_gate is None:
+        skip_gate = not by_machine and not failed
     if failed:
         item = set_status(root, item_id, "failed", result=result)
     elif _gates.holds_for_human(root):
         item = set_status(root, item_id, "review", result=result)
     else:
         item = set_status(root, item_id, "done", result=result)
+    try:
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE work_item SET closed_by = ?, gate_skip = ? WHERE id = ?",
+                (closer[:120], 1 if skip_gate else 0, item_id))
+        item = get(root, item_id)
+    except Exception:
+        pass            # bookkeeping must never lose a completion
     kind = _COMPLETION_KINDS.get(item["status"])
     if kind:
         _emit(root, kind, ref=str(item_id), payload=_item_event_payload(item))
@@ -519,8 +543,26 @@ def reopen(root: str | os.PathLike[str], item_id: int, reason: str) -> dict:
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("reason is required — say exactly what to fix")
-    stamp = ("\n\n--- REOPENED (attempt %d) ---\n" % (item["attempts"] + 2)) + reason
-    update(root, item_id, brief=(item["brief"] or "") + stamp[:3000])
+    # WHAT IS ALREADY ON DISK RIDES INTO THE NEXT ROUND. A reopen used to hand
+    # the agent nothing but the reason, so a run that was stopped by a ceiling
+    # or stranded by a dashboard restart was repeated from scratch — paying
+    # twice for files that were already sitting there correct. The harness
+    # observed every one of those writes; not passing them on was the waste.
+    already = ""
+    try:
+        from . import writelog
+        observed = writelog.summary(root, f"item-{item_id}")
+        if observed:
+            already = ("\n\nALREADY ON DISK from the previous attempt — the "
+                       "harness observed these writes itself, so this is not a "
+                       "claim by the agent that made them. READ THEM BEFORE "
+                       "WRITING ANYTHING: continue from what is there, and "
+                       "regenerate only what is actually wrong.\n" + observed)
+    except Exception:
+        already = ""
+    stamp = (("\n\n--- REOPENED (attempt %d) ---\n" % (item["attempts"] + 2))
+             + reason + already)
+    update(root, item_id, brief=(item["brief"] or "") + stamp[:6000])
     with db.tx(root) as conn:
         conn.execute("UPDATE work_item SET attempts = attempts + 1 WHERE id = ?",
                      (item_id,))

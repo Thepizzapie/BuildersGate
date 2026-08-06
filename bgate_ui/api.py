@@ -45,6 +45,7 @@ CODES = {
     413: "too_large",
     415: "unsupported_media",
     422: "unprocessable",
+    423: "locked",
     429: "rate_limited",
     500: "internal",
     503: "unavailable",
@@ -84,6 +85,12 @@ def conflict(msg: str, **detail: Any) -> ApiError:
 
 def forbidden(msg: str, **detail: Any) -> ApiError:
     return ApiError(403, msg, detail=detail or None)
+
+
+def locked(msg: str, **detail: Any) -> ApiError:
+    """423 — a seat holds this path. Distinct from 403 on purpose: the caller is
+    allowed to do this, just not right now, and the UI offers `force` for it."""
+    return ApiError(423, msg, detail=detail or None)
 
 
 def unavailable(msg: str, **detail: Any) -> ApiError:

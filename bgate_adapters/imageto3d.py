@@ -464,6 +464,13 @@ BACKENDS: dict[str, dict] = {
         "auth": "none",
         "image_mode": "workflow",
         "task_key": "prompt_id",
+        # THE PROTOCOL, NAMED. ComfyUI has no status field: /history is empty
+        # until the run is done and populated afterwards, so "the key appeared"
+        # IS the completion signal. This used to be a `backend == "comfy"`
+        # branch in poll(), which meant the second ComfyUI row polled a status
+        # field that does not exist, read it as "still running", and sat there
+        # until the timeout on a job that had finished in seconds.
+        "poll_style": "history",
         "usd": 0.0,
         # Whatever the graph does. The adapter cannot know, and pretending
         # otherwise would put a false capability list in front of an agent.
@@ -495,6 +502,71 @@ BACKENDS: dict[str, dict] = {
         },
         "note": "Needs a running ComfyUI with a 3D node pack and an API-format "
                 "workflow exported to BGATE_COMFY_WORKFLOW.",
+    },
+    # PART-AWARE GENERATION, and it is the single biggest lever on rig quality
+    # in this whole pipeline — which is why it gets its own row rather than a
+    # flag on the one above.
+    #
+    # A monolithic generated character is ONE watertight-ish blob, or (measured
+    # on a real user's asset) 940 fragmented shells with no relationship to
+    # anatomy. Bone heat then has to guess where the arm stops and the torso
+    # starts, and the loose islands weight to whichever bone is nearest — which
+    # is how a character ends up with fingers bound to the hip. A part-aware
+    # model (PartCrafter, OmniPart, FullPart and the rest of that 2025-26 line)
+    # emits SEMANTICALLY SEPARATE meshes from the same single image: a head, a
+    # torso, two arms, two legs. Every downstream step in this module gets
+    # easier at once — landmarks are measured per part instead of inferred from
+    # a vertex cloud, weighting can be per part, and blender_combine already
+    # takes exactly that shape as its input.
+    #
+    # SAME SERVER, SAME TRANSPORT, DIFFERENT GRAPH. This is not a second
+    # integration: it is the ComfyUI row with a different workflow env and a
+    # collector that keeps every mesh instead of the first. Splitting it out
+    # means `supports` can answer "parts" honestly, and a user who has one graph
+    # and not the other gets a straight answer about which.
+    "comfy-parts": {
+        "kind": "local",
+        "label": "ComfyUI (local, part-aware image-to-3D)",
+        "env": "",
+        "base": "http://127.0.0.1:8188",
+        "base_env": "BGATE_COMFY_URL",
+        "workflow_env": "BGATE_COMFY_PARTS_WORKFLOW",
+        "submit_path": "/api/prompt",
+        "poll_path": "/api/history/{task}",
+        "health_path": "/api/system_stats",
+        "upload_path": "/api/upload/image",
+        "view_path": "/api/view",
+        "upload_field": "image",
+        "auth": "none",
+        "image_mode": "workflow",
+        "task_key": "prompt_id",
+        "poll_style": "history",
+        "usd": 0.0,
+        "supports": {"seed", "parts"},
+        "formats": ("glb",),
+        "rigged": False,
+        "vram_gb": None,
+        "weights": "whatever the graph loads — PartCrafter is ~2.5 GB on top "
+                   "of its base, and the part-aware models are generally "
+                   "SMALLER than the monolithic ones because they generate "
+                   "each part at lower resolution",
+        "windows": "same story as the row above: a node pack shipping prebuilt "
+                   "wheels is the only realistic zero-compile route",
+        "latency_s": None,
+        "licence_from_model": True,
+        "licence": {
+            "code": CONDITIONAL,
+            "summary": "the graph decides which model runs and therefore which "
+                       "licence applies. PartCrafter and OmniPart are research "
+                       "releases — READ THE MODEL CARD before shipping a "
+                       "character made from one. Declare it with " + MODEL_ENV
+                       + " and this row will state the terms.",
+            "url": "https://github.com/wgsxm/PartCrafter",
+        },
+        "note": "Needs a running ComfyUI and a part-aware workflow exported to "
+                "BGATE_COMFY_PARTS_WORKFLOW whose saver writes ONE FILE PER "
+                "PART. A graph that merges the parts before saving works, and "
+                "produces exactly the monolith this row exists to avoid.",
     },
     # A prebuilt Windows EXECUTABLE. No Python, no CUDA toolkit, no compilation
     # of anything — the release zip carries trellis-server.exe and the CUDA
@@ -1747,26 +1819,27 @@ COMFY_IMAGE_TOKEN = "__BGATE_IMAGE__"
 COMFY_SEED_TOKEN = "__BGATE_SEED__"
 
 
-def comfy_workflow_path() -> str:
-    return (os.environ.get(BACKENDS["comfy"]["workflow_env"]) or "").strip()
+def comfy_workflow_path(backend: str = "comfy") -> str:
+    env = (BACKENDS.get(backend) or {}).get("workflow_env") or ""
+    return (os.environ.get(env) or "").strip() if env else ""
 
 
 def build_comfy_prompt(image_name: str, *, seed: Optional[int] = None,
-                       workflow_path: str = "") -> dict:
+                       workflow_path: str = "", backend: str = "comfy") -> dict:
     """The /prompt body: the user's graph with the plate and seed substituted.
 
     Raises with the whole setup instruction rather than a KeyError, because the
     thing that is missing is a file the user has to export from an application,
     and "no such file" would send them looking in the wrong place.
     """
-    path = workflow_path or comfy_workflow_path()
+    path = workflow_path or comfy_workflow_path(backend)
     if not path:
         raise ImageTo3DError(
             "no ComfyUI workflow configured — export one from ComfyUI with "
             "'Save (API format)', put "
             f"{COMFY_IMAGE_TOKEN!r} where the LoadImage node names its file "
             f"and optionally {COMFY_SEED_TOKEN!r} where the seed goes, then "
-            f"point {BACKENDS['comfy']['workflow_env']} at it")
+            f"point {(BACKENDS.get(backend) or {}).get('workflow_env', '')} at it")
     p = Path(path)
     if not p.is_file():
         raise ImageTo3DError(f"the configured ComfyUI workflow does not exist: {p}")
@@ -1865,7 +1938,7 @@ def submit(backend: str, image_path: str | os.PathLike[str], *,
     if mode == "workflow":
         put = upload(backend, image_path, root=root, timeout=timeout)
         body = build_comfy_prompt(put["name"] or Path(image_path).name,
-                                  seed=options.get("seed"))
+                                  seed=options.get("seed"), backend=backend)
         got = _request(backend, spec["submit_path"], key, payload=body,
                        method="POST", timeout=timeout)
         task = str(_dig(got, spec["task_key"]) or "")
@@ -1918,10 +1991,9 @@ def poll(backend: str, task: str, *, root: Any = None, timeout: float = 900.0,
     last: dict = {}
     while time.monotonic() < deadline:
         last = _request(backend, path.format(task=task), key, timeout=60.0)
-        if backend == "comfy":
-            # ComfyUI has no status field: /history is EMPTY until the run is
-            # done and populated afterwards. Treating a missing key as "not
-            # finished" is the whole protocol.
+        if spec.get("poll_style") == "history":
+            # /history is EMPTY until the run is done and populated afterwards.
+            # Treating a missing key as "not finished" is the whole protocol.
             if last.get(task):
                 return last
         else:
@@ -2111,6 +2183,116 @@ def generate(image_path: str | os.PathLike[str],
     return out
 
 
+def generate_parts(image_path: str | os.PathLike[str],
+                   out_dir: str | os.PathLike[str], *,
+                   backend: str = "comfy-parts", root: Any = None,
+                   timeout: float = 900.0, stem: str = "part",
+                   logical_name: str = "", work_item_id: Optional[int] = None,
+                   **options) -> dict:
+    """Plate in, SEVERAL draft meshes out — one per semantic part.
+
+    THE SAME DRAFT CONTRACT AS generate(), MULTIPLIED. Nothing here is an asset:
+    each part is unconditioned geometry with unknown orientation and scale, and
+    the notes say so. What it buys is the thing a monolith cannot give you — an
+    arm that is an arm, as a separate mesh — which is what makes weighting,
+    landmark measurement and per-part re-generation possible at all.
+
+    The result carries `combine` ready to hand to blender_combine: names in the
+    order the graph saved them, every path absolute. Names come from the graph's
+    own filenames when they are meaningful, because a part-aware workflow that
+    bothers to call its output "left_arm" knows more than this module does.
+
+    A ONE-PART RESULT IS A WARNING, NOT A SUCCESS. A graph that merges before
+    saving produces exactly the monolith this path exists to avoid, and it
+    reports as a clean run of one file. Say so.
+    """
+    started = time.monotonic()
+    try:
+        spec = _spec(backend)
+    except ImageTo3DError as exc:
+        return _result(backend, stage="backend", error=str(exc))
+    if not supports(backend, "parts"):
+        return _result(backend, stage="backend",
+                       error=f"{spec['label']} does not generate parts — "
+                             f"use generate() for a single mesh, or a backend "
+                             f"whose capabilities include 'parts'")
+
+    out = _result(backend, source_image=str(image_path),
+                  estimated_usd=price_for(backend), format="glb")
+    verdict = check_input(image_path)
+    out["warnings"] += list(verdict["warnings"])
+    if not verdict["ok"]:
+        out["stage"] = "input"
+        out["error"] = verdict["reason"]
+        out["seconds"] = round(time.monotonic() - started, 2)
+        return out
+
+    directory = Path(out_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        job = submit(backend, image_path, root=root,
+                     timeout=min(180.0, timeout), **options)
+        task = job["task"]
+        left = max(30.0, timeout - (time.monotonic() - started))
+        done = poll(backend, task, root=root, timeout=left)
+        files = _comfy_outputs(done, task)
+        if not files:
+            raise ImageTo3DError(
+                "the part-aware run finished but reported no .glb or .gltf. "
+                "Either the graph has no node that SAVES the meshes, or it uses "
+                "one whose output ComfyUI does not record — use core ComfyUI's "
+                "SaveGLB, which does, and save EACH PART rather than a merge.")
+        written = []
+        for index, entry in enumerate(files, start=1):
+            source = Path(entry["filename"])
+            # The graph's own name when it carries meaning, our index when it
+            # does not. "ComfyUI_00017_.glb" is not a part name.
+            label = re.sub(r"[^A-Za-z0-9_]+", "_", source.stem).strip("_")
+            if not label or re.fullmatch(r"(?i)comfyui[_0-9]*", label):
+                label = f"{stem}{index:02d}"
+            dest = directory / f"{label}{source.suffix or '.glb'}"
+            query = urllib.parse.urlencode({"filename": entry["filename"],
+                                            "subfolder": entry["subfolder"],
+                                            "type": entry["type"]})
+            view = spec.get("view_path", "/api/view")
+            size = download(f"{base_url(backend)}{view}?{query}", dest,
+                            timeout=300.0)
+            written.append({"name": label, "path": str(dest.resolve()),
+                            "bytes": size, "source": entry["filename"]})
+    except ImageTo3DError as exc:
+        out["stage"] = "generate"
+        out["error"] = str(exc)
+        out["seconds"] = round(time.monotonic() - started, 2)
+        return out
+
+    out.update({
+        "ok": True, "task": task, "parts": written, "count": len(written),
+        "out_dir": str(directory), "bytes": sum(p["bytes"] for p in written),
+        "seconds": round(time.monotonic() - started, 2),
+        "textured": bool(options.get("texture", True)),
+        "rigged": False, "stage": "draft",
+        "combine": [{"name": p["name"], "path": p["path"]} for p in written],
+        "notes": list(NEXT_STEPS),
+    })
+    if len(written) < 2:
+        out["warnings"].append(
+            "this graph produced ONE mesh. A part-aware workflow that merges "
+            "before saving gives you a monolith with extra steps — save each "
+            "part separately, or use the plain comfy backend and stop paying "
+            "for a capability you are not getting.")
+    out["checks"].append({
+        "check": "parts_are_drafts",
+        "detail": "each part is unconditioned geometry — unknown orientation, "
+                  "unknown scale, no armature. Assembly does not confer any of "
+                  "those; blender_combine puts them in one file and the "
+                  "conditioning still has to happen.",
+        "fix": "condition, then blender_combine(parts=result['combine']), then "
+               "blender_rig, then blender_flex",
+    })
+    _account(out, root, logical_name, work_item_id)
+    return out
+
+
 def _run_krea(image_path, out_path, *, root, timeout: float,
               options: dict) -> tuple[int, str]:
     """Hand the plate to krea.generate_3d and report what it wrote.
@@ -2157,7 +2339,7 @@ def _run_job(backend: str, image_path, out_path, *, root, timeout: float,
     left = max(30.0, timeout - (time.monotonic() - started))
     done = poll(backend, task, root=root, timeout=left)
 
-    if backend == "comfy":
+    if spec.get("poll_style") == "history":
         files = _comfy_outputs(done, task)
         if not files:
             # NAME THE LIKELY CAUSE, because the generic version of this

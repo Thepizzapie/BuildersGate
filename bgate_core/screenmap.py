@@ -318,24 +318,36 @@ def scan(root: str | os.PathLike[str]) -> dict:
     # file the pattern can name. Resolving against what exists means this can
     # only mark real files, never invent one, and the edge is tagged 'template'
     # so a reader can tell a resolved pattern from a written literal.
-    for owner, template in templates:
-        tail = template[len("res://"):]
-        if ".." in tail:
-            continue
-        pattern = re.compile(
-            "^" + re.sub(r"%[sdfvx]", "[^/]+", re.escape(tail)
-                         .replace(r"\%", "%")) + "$")
-        parent = gd / Path(tail).parent
-        if not parent.is_dir():
-            continue
-        for p in sorted(parent.iterdir()):
-            if not p.is_file() or p.name.endswith(".import"):
+    def resolve_templates() -> None:
+        """Drain `templates`, adding an edge per file each pattern can name.
+
+        DRAINS rather than iterates, because the data pass below appends more:
+        a manifest reached through one template routinely names another. This
+        used to be a straight `for` over the list, which meant every template
+        found inside a JSON was appended after the only pass that reads them and
+        resolved to nothing at all.
+        """
+        while templates:
+            owner, template = templates.pop()
+            tail = template[len("res://"):]
+            if ".." in tail:
                 continue
-            candidate = p.relative_to(gd).as_posix()
-            if not pattern.match(candidate):
+            pattern = re.compile(
+                "^" + re.sub(r"%[sdfvx]", "[^/]+", re.escape(tail)
+                             .replace(r"\%", "%")) + "$")
+            parent = gd / Path(tail).parent
+            if not parent.is_dir():
                 continue
-            nid = add_node(f"res://{candidate}", _kind_for("", candidate))
-            add_edge(owner, nid, "template")
+            for p in sorted(parent.iterdir()):
+                if not p.is_file() or p.name.endswith(".import"):
+                    continue
+                candidate = p.relative_to(gd).as_posix()
+                if not pattern.match(candidate):
+                    continue
+                nid = add_node(f"res://{candidate}", _kind_for("", candidate))
+                add_edge(owner, nid, "template")
+
+    resolve_templates()
 
     # --- data files: a manifest the game loads is part of the graph ----------
     # THE OTHER HALF OF DATA-DRIVEN LOADING. Template paths were already
@@ -346,27 +358,56 @@ def scan(root: str | os.PathLike[str]) -> dict:
     # vfx_manifest.gd -> vfx_manifest.json -> *_frames.tres -> *_sheet.png, and
     # the walk gave up at the arrow nothing parsed.
     #
-    # Scoped to data files that are ALREADY NODES, i.e. something in the project
-    # references them. Scanning every .json under the project would drag in tool
-    # output and build manifests that the game never opens — a title manifest an
-    # art run wrote but nothing has wired yet SHOULD read as unused.
+    # Data files that are already nodes, PLUS every manifest under assets/.
+    #
+    # The already-a-node rule alone was too tight, and the cost was measured: a
+    # project's ui_manifest.json is named in a code COMMENT and loaded by an art
+    # tool rather than by the game, so nothing made it a node, so the 59 HUD
+    # files it names read as dead while the scenes drew them. Same for
+    # derived_manifest.json. An asset manifest is a reference whoever wrote it
+    # meant as one, and it is the one file in the tree whose entire job is to
+    # say which art belongs to what.
+    #
+    # Still scoped — <godot>/assets/**, named *manifest*.json — so that tool
+    # output, build reports and the wider project's JSON stay out. The old
+    # comment's worry stands and is narrower than it read: a manifest an art run
+    # wrote and nobody wired now marks its own output as referenced. That is the
+    # deliberate trade. It is visible as a manifest with no inbound edge, which
+    # is a better thing to look at than a wall of false orphans.
     #
     # Runs after the template pass on purpose: a manifest is most often reached
     # BY a template ("res://data/items/%s/%s.json"), so scanning earlier would
     # find it is not a node yet and follow none of its references.
-    for nid, node in list(nodes.items()):
-        if not node.get("exists") or Path(nid).suffix.lower() not in _DATA_SUFFIXES:
-            continue
-        disk = res_to_disk(nid)
-        try:
-            source = disk.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        templates += [(nid, t) for t in set(_RES_TMPL_RE.findall(source))]
-        for lit in set(_RES_LIT_RE.findall(source)):
-            if lit == nid:
+    assets_root = gd / "assets"
+    if assets_root.is_dir():
+        for p in _walk(assets_root,
+                       lambda p: p.suffix.lower() == ".json"
+                       and "manifest" in p.stem.lower()):
+            add_node(f"res://{p.relative_to(gd).as_posix()}", "other")
+
+    # Fixpoint, because a manifest names manifests: vfx_manifest.json ->
+    # *_frames.tres, derived_manifest.json -> a per-family json. One pass
+    # stopped at the first arrow and called everything past it dead.
+    read_data: set[str] = set()
+    for _round in range(6):
+        pending = [nid for nid, node in nodes.items()
+                   if nid not in read_data and node.get("exists")
+                   and Path(nid).suffix.lower() in _DATA_SUFFIXES]
+        if not pending:
+            break
+        for nid in pending:
+            read_data.add(nid)
+            try:
+                source = res_to_disk(nid).read_text(encoding="utf-8",
+                                                    errors="replace")
+            except OSError:
                 continue
-            add_edge(nid, add_node(lit, _kind_for("", lit)), "data")
+            templates += [(nid, t) for t in set(_RES_TMPL_RE.findall(source))]
+            for lit in set(_RES_LIT_RE.findall(source)):
+                if lit == nid:
+                    continue
+                add_edge(nid, add_node(lit, _kind_for("", lit)), "data")
+        resolve_templates()
 
     # --- orphans: assets on disk that nothing references ---------------------
     # "Derived variant" carve-out: paths built at runtime by string concat

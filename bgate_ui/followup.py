@@ -167,6 +167,11 @@ def load_settings(root: str | os.PathLike[str]) -> dict:
         "auto_reopen_failures": bool(_get("followup.auto_reopen_failures", False)),
         "max_rounds": int(_get("qa.max_rounds", _qa_gate.MAX_ROUNDS)
                           or _qa_gate.MAX_ROUNDS),
+        # Per project, not per machine. Falls back to the module default rather
+        # than to an empty list: an unreadable settings doc must not silently
+        # mean "review nothing".
+        "gated_seats": tuple(_get("qa.gated_seats", _qa_gate.GATED_SEATS)
+                             or _qa_gate.GATED_SEATS),
         "notify_kinds": list(_get("notify.kinds", ()) or ()),
         "in_app": bool(_get("notify.in_app", True)),
         "webhook": str(_get("notify.webhook", "") or ""),
@@ -577,10 +582,12 @@ def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
         return []
     seat = str(item.get("seat") or "")
     source = str(item.get("source") or "")
-    if seat not in _qa_gate.GATED_SEATS:
+    if seat not in (settings.get("gated_seats") or _qa_gate.GATED_SEATS):
         return []
     if source in ("qa-gate", _qa_gate.ESCALATION_SOURCE):
         return []          # never gate the gate
+    if int(item.get("gate_skip") or 0):
+        return []          # a human closed this by hand; see queue.complete
     item_id = int(item["id"])
     qa = (board.get("qa") or {}).get(item_id) or {}
     cap = int(settings.get("max_rounds") or _qa_gate.MAX_ROUNDS)

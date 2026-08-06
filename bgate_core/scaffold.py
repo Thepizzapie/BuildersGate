@@ -166,11 +166,38 @@ def new_project(dest: str | os.PathLike[str], name: str, kind: str = "2d",
             else:
                 replaced.append({"file": name_rel, "backup": str(backup)})
 
+    # THE ROOT ABOVE THE GODOT PROJECT GETS ONE TOO, AND IT IS THE ONE THAT
+    # MATTERS. This template stamps a well-written .gitignore into the Godot
+    # project directory, including the line about `.bgate/` holding the
+    # dashboard's auth token — and `.bgate/` does not live in the Godot project.
+    # It lives in the Builders Gate root ABOVE it, which was stamped with
+    # nothing.
+    #
+    # REPRODUCED: `git init` at that root, `git add -A`, and .bgate/game.db and
+    # its WAL landed in the first commit along with the token. `bgate init` and
+    # `bgate adopt` both stamp the root correctly; the hole was specific to
+    # scaffolding, which is the documented path for a NEW game.
+    #
+    # Merged into whatever is there, never replacing it, and best-effort: a
+    # scaffold that succeeded must not be reported as failed because an ignore
+    # file could not be merged.
+    root_ignore = None
+    try:
+        from . import adopt as _adopt, db as _db
+
+        bgate_root = _db.resolve_root(target) or (
+            target.parent if (target.parent / ".bgate").is_dir() else None)
+        if bgate_root and Path(bgate_root).resolve() != target.resolve():
+            root_ignore = _adopt.stamp_gitignore(bgate_root)
+    except Exception as exc:
+        root_ignore = {"action": "failed", "error": f"{type(exc).__name__}: {exc}"}
+
     result = {
         "ok": True,
         "path": str(target),
         "kind": kind,
         "name": name,
+        "root_gitignore": root_ignore,
         "slug": slugify(name),
         # files stays "what we wrote", the shape every caller already reads.
         "files": sorted(written),

@@ -73,6 +73,18 @@ def _as_res(project_root: Path, target: Path) -> str:
             "reference it", path=str(target))
 
 
+def _lock(project_root: Path, scene_file: Path) -> Optional[dict]:
+    """``{seat, owner}`` if a seat holds this scene, else None.
+
+    Reported on every read so the builder can say so BEFORE twenty drags are
+    staged against a file the write is going to refuse.
+    """
+    from bgate_core import assets as _assets
+    held = _assets.lock_holder(project_root, scene_file)
+    return {"seat": held.get("lock_seat"), "owner": held.get("lock_owner")} \
+        if held else None
+
+
 def _res_type(asset_file: Path) -> Optional[str]:
     """The class a .tres declares itself to be. None for anything else.
 
@@ -115,6 +127,7 @@ def scene_tree(scene: str) -> dict:
         "scene": _as_res(project_root, target),
         "rel": target.relative_to(project_root).as_posix(),
         "root": parsed["root"],
+        "lock": _lock(project_root, target),
         "nodes": _tree(text),
         "resources": [{"id": e["id"], "type": e["type"], "path": e["path"]}
                       for e in parsed["ext"]],
@@ -240,6 +253,7 @@ def scene_outline(scene: str) -> dict:
         "scene": _as_res(project_root, target),
         "rel": target.relative_to(project_root).as_posix(),
         "root": parsed["root"],
+        "lock": _lock(project_root, target),
         "nodes": nodes,
         "roles": roles,
         "resources": [{"id": e["id"], "type": e["type"], "path": e["path"],
@@ -413,6 +427,10 @@ def scene_render(scene: str) -> dict:
         raise api.bad_request(str(exc), scene=scene)
     out["scene"] = _as_res(project_root, target)
     out["rel"] = target.relative_to(project_root).as_posix()
+    # The builder drags against THIS response, so the lock has to arrive with
+    # it. Learning the file is claimed at `apply`, after twenty staged edits, is
+    # learning it too late to matter.
+    out["lock"] = _lock(project_root, target)
     return out
 
 
@@ -458,13 +476,28 @@ def _mutate(payload: dict, apply_fn) -> dict:
     """Shared shape for every scene edit: dry run, then write with a backup.
 
     Every mutation goes through here so none of them can quietly skip the
-    backup or the dry-run contract — that consistency is worth more than the
-    handful of lines it saves.
+    backup, the LOCK, or the dry-run contract — that consistency is worth more
+    than the handful of lines it saves.
+
+    THE LOCK CHECK IS NOT OPTIONAL POLISH. Every other writer in the system asks
+    (the code editor at godot_ws.godot_file_write, every agent through
+    asset_lock); these endpoints did not, which was survivable only while a
+    human clicking buttons was the sole caller. They are on the MCP surface now,
+    so two agents and a person can reach the same .tscn, and a backup per write
+    is recovery, not prevention. A dry run is exempt: it reads and returns text,
+    and refusing to LOOK at a locked file helps nobody.
     """
     project_root = root()
     scene_file = _resolve(project_root, str(payload.get("scene") or ""))
     if scene_file.suffix.lower() != ".tscn":
         raise api.bad_request("scene must be a .tscn", scene=payload.get("scene"))
+    if not payload.get("dry_run") and not payload.get("force"):
+        held = _lock(project_root, scene_file)
+        if held:
+            raise api.locked(
+                f"{scene_file.name} is locked by the {held['seat']} seat — it "
+                "may be mid-edit and about to write its own copy over this one",
+                scene=payload.get("scene"), **held)
     text = scene_file.read_text(encoding="utf-8", errors="replace")
     try:
         result = apply_fn(text, project_root)

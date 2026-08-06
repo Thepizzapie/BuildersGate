@@ -562,7 +562,7 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     evidence) and ``alpha`` (the audit). ``ok=False`` with an ``error`` when the
     provider failed OR when the audit rejected the cut.
     """
-    from bgate_adapters import imagegen, krea
+    from bgate_adapters import imagegen, krea, localgen
     from bgate_core import artdirection
 
     provider = str(provider or "").strip().lower()
@@ -665,9 +665,39 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                                            work_item_id=work_item_id,
                                            task_kind=task_kind,
                                            tileable=tileable)
+        elif provider in ("local", "comfy", "localgen"):
+            # LOCAL WALKS THROUGH THE SAME DOOR, and that is the whole design.
+            # A sprite made on the user's own GPU has to be the same kind of
+            # file as a Krea one — same keyable backdrop, same audited cut, same
+            # art direction — or "local generation" becomes a second-class path
+            # whose output nothing downstream can trust. The only difference
+            # allowed here is which adapter paints the pixels.
+            #
+            # Referenced work goes through the EDIT graph for the same reason it
+            # does on gpt-image: conditioning on a pinned reference is an
+            # image-to-image operation, and a text-only graph has nowhere to put
+            # the anchor.
+            if ref_paths:
+                result = localgen.edit(prompt, [str(p) for p in ref_paths],
+                                       str(out_path), size=size, quality=quality,
+                                       seed=seed, transparent=transparent,
+                                       timeout=timeout, root=root,
+                                       logical_name=logical_name,
+                                       work_item_id=work_item_id,
+                                       task_kind=task_kind, tileable=tileable)
+            else:
+                result = localgen.generate(prompt, str(out_path), size=size,
+                                           quality=quality, seed=seed,
+                                           transparent=transparent,
+                                           timeout=timeout, root=root,
+                                           logical_name=logical_name,
+                                           work_item_id=work_item_id,
+                                           task_kind=task_kind,
+                                           tileable=tileable)
         else:
             return {"ok": False, "provider": provider, "model": model,
-                    "error": f"unknown provider {provider!r} — 'krea' or 'openai'"}
+                    "error": f"unknown provider {provider!r} — "
+                             "'krea', 'openai' or 'local'"}
     except Exception as exc:  # adapters raise on bad shapes; a caller must not
         return {"ok": False, "provider": provider, "model": model,
                 "error": f"{type(exc).__name__}: {exc}"}

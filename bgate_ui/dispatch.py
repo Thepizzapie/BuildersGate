@@ -35,6 +35,7 @@ from bgate_core import queue as _queue
 from bgate_core import scope as _scope
 from bgate_core import settings as _settings
 from bgate_core import spend as _spend
+from bgate_ui import runners as _runners
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
@@ -141,11 +142,55 @@ def _flag(root, key: str, env_name: str) -> bool:
 
 
 def find_claude() -> Optional[str]:
-    exe = shutil.which("claude")
-    if exe:
-        return exe
-    fallback = Path.home() / ".local" / "bin" / ("claude.exe" if sys.platform == "win32" else "claude")
-    return str(fallback) if fallback.exists() else None
+    """Kept as the module's own name because callers and tests import it from
+    here; the lookup itself moved to runners.py, where the second CLI lives."""
+    return _runners.find_claude()
+
+
+def _executable(runner: "_runners.Runner") -> Optional[str]:
+    """Where this runner's CLI is.
+
+    The claude lookup deliberately still goes through THIS module's
+    ``find_claude``. It has been dispatch's public seam since there was one
+    runner — the lifecycle tests stand a fake CLI up by patching it, and so does
+    anything else that ever needed to. Moving the resolution wholesale into the
+    table would have silently stopped honouring that, which is a worse trade
+    than one branch with a reason on it.
+    """
+    return find_claude() if runner.name == "claude" else runner.find()
+
+
+def _runner_for(root: str, seat: str) -> "_runners.Runner":
+    """Which CLI this seat's agent runs on.
+
+    ONLY THE ART SEAT IS ROUTABLE, and that is a deliberate ceiling rather than
+    an unfinished generalisation. The alternative runner is here because it
+    generates images; no other seat gains anything from it, and every seat that
+    moves onto it loses live steering and the cost ceiling. A single global
+    switch would put the whole board one wrong click away from that.
+    """
+    if (seat or "").strip().lower() != "art":
+        return _runners.get(_runners.DEFAULT_RUNNER)
+    try:
+        return _runners.get(str(_settings.get(root, "art.runner")))
+    except Exception:
+        return _runners.get(_runners.DEFAULT_RUNNER)
+
+
+def _native_images(root: str, runner: "_runners.Runner") -> bool:
+    """Does this run generate its own pixels, or call image_generate?
+
+    Falls back to the bgate pipeline whenever the runner has no image tool of
+    its own, so the setting can never ask for a capability the process does not
+    have — a switch reading `native` next to an agent that cannot generate is
+    the kind of lie that costs an afternoon.
+    """
+    if runner.name != "codex":
+        return False
+    try:
+        return str(_settings.get(root, "art.image_backend")) == "native"
+    except Exception:
+        return False
 
 
 # Seat-specific house rules injected UNCONDITIONALLY into the dispatch prompt —
@@ -329,10 +374,51 @@ def _verify_rule(root: str) -> str:
     return "; ".join(parts) + "."
 
 
-def _prompt_for(root: str, item: dict) -> str:
+def _image_policy(root: str, item: dict, native: bool) -> str:
+    """What the art seat is told about where pixels come from.
+
+    ONLY THE GENERATION CALL MOVES. Everything the art seat does around a
+    generation — reading the pinned refs, holding the lock, checking the alpha
+    and the consistency, registering the artifact, delivering into the engine —
+    is the same work on either backend, and an agent that reads "generate
+    natively" as "skip the pipeline" produces an unregistered PNG that no
+    review, no ledger and no consistency gate has ever seen. So the native
+    branch spends most of its words on what has NOT changed.
+
+    The bgate branch says nothing at all: image_generate is already the only
+    image tool in the process (runners.py disables the CLI's own), the seat
+    brief already covers it, and a paragraph restating the default would just
+    be prompt weight on every art dispatch.
+    """
+    if not native or (item.get("seat") or "").strip().lower() != "art":
+        return ""
+    return (
+        "IMAGE BACKEND FOR THIS RUN: NATIVE.\n"
+        "Generate the pixels with your own image tool rather than "
+        "image_generate. That is the ONLY step that changes, and the rest is "
+        "not optional because you made the file yourself:\n"
+        "- Read the pinned references FIRST (ref_list) and condition on them. "
+        "Nothing else is enforcing the project's look on a native generation.\n"
+        "- asset_lock the target path before you write it, asset_release after.\n"
+        "- consistency_check every frame you intend to keep, and clear the "
+        "alpha flags. A native generation is not exempt from the halo.\n"
+        "- Register what you kept so it exists to the ledger and to review: "
+        "asset_track, then the artifact record with producer set to the CLI "
+        "that made it and the prompt you actually used.\n"
+        "- Deliver into the engine and verify there (godot_import_asset), "
+        "because the engine's view is still the truth.\n"
+        "BGATE_IMAGE_MODEL DOES NOT REACH YOUR OWN TOOL. If this project bans a "
+        "model, honour it yourself — nothing downstream will catch it for you.\n"
+        "If your tool cannot do what the task needs, fall back to "
+        "image_generate rather than shipping something worse."
+    )
+
+
+def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
     from bgate_core.seats import SEAT_IDENTITY
 
     seat_rule = seat_rules(root, item["seat"])
+    policy = _image_policy(root, item, native_images)
     return (
         SEAT_IDENTITY + "\n\n"
         f"You are the {item['seat'].upper()} seat of the Builders Gate game project "
@@ -341,6 +427,7 @@ def _prompt_for(root: str, item: dict) -> str:
         f"WORK ITEM #{item['id']} ({item['source']}): {item['title']}\n"
         f"{item['brief']}\n\n"
         + (seat_rule + "\n\n" if seat_rule else "")
+        + (policy + "\n\n" if policy else "")
         + "Protocol, in order:\n"
         "1. seat_brief for your role — mission, lanes, bible, pinned refs, notes.\n"
         f"2. Read .bgate/progress/item-{item['id']}.jsonl if it exists (a "
@@ -410,9 +497,6 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     cost fits the budget. Then the git boundary is captured — without a
     base_commit nothing downstream can show or undo what the agent did.
     """
-    claude = find_claude()
-    if not claude:
-        return {"ok": False, "error": "claude CLI not found on PATH"}
     try:
         item = _queue.get(root, item_id)
     except LookupError:
@@ -509,6 +593,18 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         branch, worktree = made["branch"], made["worktree"]
         cwd = worktree
 
+    # WHICH CLI, and can it start HERE. Both checks belong after cwd is final:
+    # a worktree moves it, and codex's git-repo precondition is about the
+    # directory the agent will actually run in. Refusing now costs a message;
+    # refusing later costs a process that reports success and writes into a
+    # sandbox shadow.
+    runner = _runner_for(root, item.get("seat") or "")
+    exe = _executable(runner)
+    blocked = _runners.preflight(runner, cwd, exe=exe)
+    if blocked:
+        return _refuse("runner_unavailable", blocked, runner=runner.name)
+    native_images = _native_images(root, runner)
+
     log_dir = Path(root) / ".bgate" / "agents"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"item-{item_id}.log"
@@ -526,21 +622,11 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # Director directive: gpt-image-2 is banned — force 1 for every gen.
         "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL", "gpt-image-1"),
     }
-    # stream-json OUTPUT makes claude emit one NDJSON event per step AS IT WORKS
-    # (tool calls, messages) instead of buffering to the end -- that feeds the
-    # live activity view. stream-json INPUT keeps stdin open as a channel: the
-    # initial prompt is the first user message, and steer() can inject more
-    # user turns WHILE the agent runs. --replay-user-messages echoes injected
-    # steers back into the output log so they show in the activity feed. The
-    # process waits on stdin, so it only exits when we close the pipe (done in
-    # status() once the agent self-reports via queue_complete).
-    args = [claude, "-p", "--permission-mode", permission_mode,
-            "--input-format", "stream-json", "--output-format", "stream-json",
-            "--verbose", "--replay-user-messages",
-            "--allowedTools", "mcp__builders-gate", "Read", "Edit", "Write",
-            "Glob", "Grep", "Bash"]
-    if model:
-        args += ["--model", model]
+    # The flags each CLI needs to stream its work live are that CLI's business —
+    # see runners.py, which also records what each one CANNOT do (steering, cost)
+    # so the rest of this module stops assuming both.
+    args = runner.build_args(exe, permission_mode=permission_mode,
+                             model=model, cwd=cwd, native_images=native_images)
 
     log_handle = open(log_path, "ab")
     # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
@@ -557,16 +643,35 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     proc = subprocess.Popen(args, cwd=cwd, env=env,
                             stdin=subprocess.PIPE, stdout=log_handle,
                             stderr=log_handle, creationflags=_NO_WINDOW)
-    # Deliver the task as the first streamed user message, then leave stdin open.
+    # Deliver the task. A streaming runner takes it as the first user message
+    # and keeps the pipe open as a steer channel; `codex exec` reads stdin ONCE
+    # and acts on what it got, so the pipe has to be closed or the run never
+    # starts — the difference between "waiting for more input" and "hung" is
+    # invisible from out here, which is why prompt_via is declared rather than
+    # inferred.
+    prompt = _prompt_for(root, item, native_images=native_images)
     try:
-        proc.stdin.write(_user_msg(_prompt_for(root, item)).encode("utf-8"))
-        proc.stdin.flush()
+        if runner.prompt_via == "stream":
+            proc.stdin.write(_user_msg(prompt).encode("utf-8"))
+            proc.stdin.flush()
+        else:
+            proc.stdin.write(prompt.encode("utf-8"))
+            proc.stdin.flush()
+            proc.stdin.close()
     except OSError as exc:
         proc.kill()
         return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
     with _lock:
         _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
-                          "stdin": proc.stdin, "steers": [], "stdin_closed": False,
+                          "stdin": proc.stdin, "steers": [],
+                          "stdin_closed": runner.prompt_via != "stream",
+                          # Carried on the run, not looked up later: the setting
+                          # can be changed while this agent is mid-flight, and
+                          # what it is running under is a fact about the run.
+                          "runner": runner.name,
+                          "cost_tracked": runner.cost_tracked,
+                          "steerable": runner.steerable,
+                          "native_images": native_images,
                           "log_scan_pos": run_start_pos,
                           "run_start_pos": run_start_pos,
                           "cost_scan_pos": run_start_pos,
@@ -597,10 +702,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                    "attempts": int(item.get("attempts") or 0),
                    "pid": proc.pid, "actor": actor,
                    "max_cost_usd": ceiling_usd, "max_runtime_s": ceiling_s,
+                   "runner": runner.name, "cost_tracked": runner.cost_tracked,
+                   "native_images": native_images,
                    "worktree": worktree})
     return {"ok": True, "item_id": item_id, "pid": proc.pid, "log": str(log_path),
             "base_commit": base_commit, "branch": branch, "worktree": worktree,
-            "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd}
+            "max_runtime_s": ceiling_s, "max_cost_usd": ceiling_usd,
+            "runner": runner.name, "cost_tracked": runner.cost_tracked,
+            "native_images": native_images}
 
 
 def _observed_cost(entry: dict) -> float:
@@ -671,12 +780,67 @@ def _terminal_error(root: str, item_id: int) -> str:
             + " — it was not going to do anything else, so it was reaped")
 
 
-def _trip(root: str, item_id: int, entry: dict, reason: str) -> None:
-    """A budget the agent blew through: kill the tree and say why on the item."""
+# Where the WRAP-UP steer goes out, as a fraction of the cost ceiling. A hard
+# kill at the ceiling is the last resort and it destroys the run's own account of
+# what it did; a message at 80% gives the agent a turn or two to save, report and
+# call queue_complete with a partial result, which is the difference between a
+# recoverable stop and an autopsy.
+WRAP_AT = 0.8
+
+WRAP_TEXT = (
+    "BUDGET STOP. You have spent ${spent:.2f} of a ${limit:.2f} ceiling on this "
+    "item. Start NOTHING new — no new generations, no new files, no further "
+    "exploration. Finish or abandon the edit in front of you, then call "
+    "queue_complete IMMEDIATELY with a partial result that says plainly: what is "
+    "done and verified, what is half-done and where, and what is untouched. A "
+    "partial result you report yourself is worth far more than the kill that is "
+    "coming at ${limit:.2f}, which reports nothing.")
+
+
+def _send(entry: dict, text: str) -> bool:
+    """Push a user turn into a live agent, from inside the watchdog.
+
+    dispatch.steer() is the public path and takes the registry lock; the
+    watchdog is already inside its own critical section, so this is the same
+    write without the re-entry.
+    """
+    if not entry.get("steerable", True) or entry.get("stdin_closed"):
+        return False
+    try:
+        entry["stdin"].write(_user_msg(text).encode("utf-8"))
+        entry["stdin"].flush()
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def _trip(root: str, item_id: int, entry: dict, reason: str,
+          recoverable: bool = True) -> None:
+    """A ceiling the agent blew through: stop the tree and BANK what it wrote.
+
+    THE KILL USED TO THROW THE WORK AWAY. MEASURED: an item was killed at $7.17
+    against a $5 ceiling having already written every file it was asked for —
+    player.tscn, player_controller.gd and two more, all on disk and all correct.
+    The money was spent, the deliverables existed, and the item went to `failed`
+    with its result replaced by the kill reason. A human had to go and look at
+    the filesystem to find out that the run had actually succeeded.
+
+    So the result now leads with the fact that this was a STOP rather than a
+    fault, and `set_status` appends the harness's own observed-writes record
+    underneath it — the list a human, or the reopened agent, needs in order to
+    pick the work up rather than repeat it.
+    """
     _kill_tree(entry["proc"].pid)
     entry["stop_reason"] = reason
+    note = reason
+    if recoverable:
+        note = (reason + "\n\nSTOPPED, NOT FAILED. The ceiling ended this run; "
+                "it is not a report that the work is wrong. Anything listed "
+                "below EXISTS ON DISK and was written by this run. Read it "
+                "before reopening: the next agent should continue from these "
+                "files, not regenerate them.")
     try:
-        _queue.set_status(root, item_id, "failed", result=reason)
+        _queue.set_status(root, item_id, "failed", result=note)
     except LookupError:
         pass
     _reap(root, item_id, entry, entry["proc"].poll())
@@ -744,13 +908,50 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                   f"killed: no output of any kind for {silent // 60} minutes — "
                   "the session was hung, not working")
             return
+        # THE COST CEILING ONLY EXISTS WHERE COST IS REPORTED. A runner that
+        # emits tokens and no price makes _observed_cost read 0.00 forever, so
+        # this branch would sit there looking like a live guard while spending
+        # nothing it can see. Skipping it explicitly is the honest shape: the
+        # run is marked cost_tracked=False at spawn and shown that way, and the
+        # runtime and stall limits above — which do not depend on price — are
+        # what actually bound it.
         limit_usd = float(entry.get("max_cost_usd") or 0)
-        if limit_usd:
+        if limit_usd and entry.get("cost_tracked", True):
             spent = _observed_cost(entry)
+            # THE CEILING ASKS BEFORE IT KILLS. Seven of nine items in one
+            # overnight run breached their ceiling, the worst at 3.3x, and every
+            # breach ended as a kill that discarded the run's own account of
+            # itself. A kill is a terrible instrument for a limit: it lands
+            # mid-turn, after the money is spent, and it cannot bank anything.
+            # One message at 80% costs a turn and routinely saves the item.
+            if (not entry.get("wrap_sent")
+                    and spent >= limit_usd * WRAP_AT
+                    and spent <= limit_usd):
+                entry["wrap_sent"] = True
+                if _send(entry, WRAP_TEXT.format(spent=spent, limit=limit_usd)):
+                    entry["steers"].append(
+                        {"text": f"budget wrap-up at ${spent:.2f}",
+                         "sent_at": time.time(), "consumed_at": None})
+                    try:
+                        # NOT `_activity` — that name is this module's parsed
+                        # per-run log cache, and a dict has no .log(). The
+                        # try/except would have swallowed the AttributeError
+                        # forever and the wrap-up would have gone unrecorded.
+                        from bgate_core import activity as _act
+
+                        _act.log(root, "dispatch",
+                                 f"item {item_id}: wrap-up sent at "
+                                 f"${spent:.2f} of ${limit_usd:.2f}",
+                                 ref=str(item_id))
+                    except Exception:
+                        pass
             if spent > limit_usd:
                 _trip(root, item_id, entry,
-                      f"killed: spent ${spent:.2f} against a "
-                      f"${limit_usd:.2f} ceiling")
+                      f"stopped: spent ${spent:.2f} against a "
+                      f"${limit_usd:.2f} ceiling"
+                      + (" (the wrap-up message went out at "
+                         f"${limit_usd * WRAP_AT:.2f} and was not acted on)"
+                         if entry.get("wrap_sent") else ""))
                 return
         # Renew what this run holds. It lives here rather than in status()
         # because a lease must not depend on somebody having the dashboard open.
@@ -1288,6 +1489,16 @@ def steer(root: str, item_id: int, text: str) -> dict:
         entry = _live.get(item_id)
         if not entry or entry["proc"].poll() is not None:
             return {"ok": False, "error": "no live agent for this item"}
+        # NOT STEERABLE is a different fact from CHANNEL CLOSING, and saying the
+        # wrong one sends the operator to wait for a message that can never
+        # arrive. `codex exec` consumes stdin once, at launch; there is no live
+        # channel to have closed.
+        if not entry.get("steerable", True):
+            return {"ok": False, "item_id": item_id, "runner": entry.get("runner"),
+                    "error": f"the {entry.get('runner') or 'this'} runner takes "
+                             "its prompt once at launch and has no live steer "
+                             "channel — stop the item and re-dispatch it with "
+                             "the correction in the brief"}
         if entry.get("stdin_closed"):
             return {"ok": False, "error": "agent is finishing; steer channel closed"}
         try:
@@ -1398,6 +1609,14 @@ def status(root: str) -> list[dict]:
                     "steers": len(steers),
                     "steers_pending": len(steers) - len(consumed),
                     "steer_latency_s": latencies,
+                    # WHAT THIS RUN'S GUARDS ACTUALLY ARE. A cost ceiling that
+                    # cannot bite and a steer box that goes nowhere must be
+                    # visible as facts about the run, not discovered by trying
+                    # them — that is the whole price of allowing a second runner.
+                    "runner": entry.get("runner", "claude"),
+                    "cost_tracked": bool(entry.get("cost_tracked", True)),
+                    "steerable": bool(entry.get("steerable", True)),
+                    "native_images": bool(entry.get("native_images")),
                     "last_output_s": _last_output_age_s(root, entry)})
     with _lock:
         finished = [dict(row) for key, row in _done.items() if key[0] == project]
@@ -1496,6 +1715,97 @@ def _absorb(state: dict, raw: bytes) -> None:
                           "text": str(ev.get("result", ""))[:20000],
                           "cost": ev.get("total_cost_usd"),
                           "turns": ev.get("num_turns")}
+    elif etype and etype.startswith(("thread.", "turn.", "item.")):
+        _absorb_codex(state, etype, ev)
+
+
+# ---------------------------------------------------------------------------
+# The other vocabulary
+# ---------------------------------------------------------------------------
+# `codex exec --json` speaks a different, smaller event language than claude's
+# stream-json. The two do not collide — dotted names against bare ones — so one
+# reader handles a log of either kind without being told which runner wrote it,
+# which matters because the log is per ITEM and a re-dispatch may switch runners
+# under an existing file.
+#
+# The mapping is deliberately lossy in one direction: codex reports a shell
+# command and its whole aggregated output, where claude reports a tool name and
+# a structured result. Both land as the same {kind: tool} / {kind: result} steps
+# the feed already renders, because the person reading the panel wants to know
+# what the agent DID, not which vendor's noun it used.
+_CODEX_QUIET_ITEMS = {"reasoning", "todo_list"}
+
+
+def _absorb_codex(state: dict, etype: str, ev: dict) -> None:
+    if etype == "thread.started":
+        # Same job as bgate_run_start: a resumed or re-dispatched thread must
+        # not show the previous run's steps as current.
+        state["steps"].clear()
+        state["step_count"] = 0
+        state["final"] = None
+        return
+    if etype == "turn.completed":
+        # NO PRICE HERE, ON PURPOSE — see runners.Runner.cost_tracked. Tokens
+        # are recorded so the run is not a black box, but nothing downstream may
+        # read them as dollars.
+        usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else {}
+        state["usage"] = {
+            "input_tokens": usage.get("input_tokens"),
+            "cached_input_tokens": usage.get("cached_input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "reasoning_output_tokens": usage.get("reasoning_output_tokens"),
+        }
+        return
+    if etype != "item.completed":
+        # item.started is the same item arriving twice; taking only the
+        # completion keeps one step per action instead of a doubled feed.
+        return
+
+    item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+    kind = str(item.get("type") or "")
+    if kind in _CODEX_QUIET_ITEMS:
+        return
+    if kind == "agent_message":
+        text = str(item.get("text") or "").strip()
+        if text:
+            _add_step(state, {"kind": "say", "text": text[:1000]})
+            # The LAST message of the run is the deliverable, and codex has no
+            # separate result event to carry it. Overwritten each time, so
+            # whatever it said last stands.
+            state["final"] = {"subtype": "success", "text": text[:20000],
+                              "cost": None, "turns": None}
+        return
+    if kind == "command_execution":
+        command = str(item.get("command") or "")
+        _add_step(state, {"kind": "tool", "name": "Bash",
+                          "hint": command[:120]})
+        output = str(item.get("aggregated_output") or "").strip()
+        code = item.get("exit_code")
+        if output or code:
+            _add_step(state, {"kind": "result",
+                              "text": (f"exit {code}\n" if code else "")
+                                      + output[:600],
+                              "truncated": len(output) > 600})
+        return
+    if kind in ("mcp_tool_call", "tool_call"):
+        name = str(item.get("tool") or item.get("name") or "?")
+        args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+        hint = (args.get("path") or args.get("prompt") or args.get("name")
+                or args.get("seat") or args.get("title") or "")
+        _add_step(state, {"kind": "tool",
+                          "name": name.replace(f"mcp__{_runners.MCP_SERVER_NAME}__", ""),
+                          "hint": str(hint)[:120]})
+        return
+    if kind in ("file_change", "patch_apply"):
+        changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+        paths = ", ".join(str((c or {}).get("path") or "") for c in changes[:4])
+        _add_step(state, {"kind": "tool", "name": "Edit",
+                          "hint": (paths or str(item.get("path") or ""))[:120]})
+        return
+    # An item type this version has never seen still belongs in the feed —
+    # silence would make a new codex capability look like an agent doing nothing.
+    label = str(item.get("text") or item.get("command") or kind)
+    _add_step(state, {"kind": "tool", "name": kind or "item", "hint": label[:120]})
 
 
 def _is_running(item_id: int) -> bool:

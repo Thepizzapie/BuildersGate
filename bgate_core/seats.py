@@ -151,7 +151,19 @@ DEFAULT_SEATS: dict[str, dict] = {
                    "Every settled decision names its acceptance test and what it "
                    "deliberately leaves dark. A deferral nobody labelled gets "
                    "'fixed' as a bug.",
-        "write_globs": ["design/**"],
+        # docs/** BELONGS TO SOMEBODY NOW. It belonged to nobody, and the
+        # default table having no owner for documentation was a trap: a project
+        # whose bible told every 3D seat to append to docs/3d-pipeline-report.md
+        # produced a run where every seat correctly refused the write, filed a
+        # LEFTOVERS block, and the deliverable never got written — one agent
+        # reported it as "its 6th recurrence and the 2nd file it has blocked"
+        # before a human noticed.
+        #
+        # The director rather than everyone, because a shared report that any
+        # seat may append to is a merge conflict with a schedule. A project that
+        # genuinely wants a maker seat writing docs widens that seat with
+        # seat_configure, which is one call and is recorded.
+        "write_globs": ["design/**", "docs/**"],
     },
     "narrative": {
         "title": "Narrative",
