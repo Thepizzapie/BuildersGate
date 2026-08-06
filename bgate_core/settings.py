@@ -146,6 +146,24 @@ class Setting:
     # thing to discover afterwards. The UI confirms these; the audit records
     # them either way.
     guard: bool = False
+    # A MACHINE MAY NOT CHANGE THIS ONE AT ALL. Not a widened guard — a
+    # constraint the harness advertises as ENFORCED, which is worth nothing if
+    # the thing being constrained can switch it off.
+    #
+    # MEASURED over one overnight run: gate.mode was found reverted from "agent"
+    # to "none" on four separate occasions with no human action, budget.enforced
+    # was found off, and dispatch.max_concurrent went from the 4 a human set to
+    # 9 and then 11. Three items reached done with no reviewer ever spawned,
+    # including a rigged character whose bind weights nobody checked — the exact
+    # failure class the gate exists to catch. `seat_configure` already refuses a
+    # machine the write lanes, on the reasoning that "a lane change that comes
+    # from a machine is not a lane system, it is a suggestion"; an agent turning
+    # off its own reviewer is the same act, and these switches were the half of
+    # that policy nobody had written down.
+    #
+    # DECLARED HERE, not enforced per route, because the hole was precisely that
+    # one write path did not know it was a policy boundary.
+    human_only: bool = False
 
     def env_vars(self) -> list[str]:
         """Every var that can take this setting away from the stored value."""
@@ -175,7 +193,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="dispatch.allow_dirty", group="Dispatch", kind=BOOL, default=False,
         store=("registry", "dispatch.allow_dirty"), scope=MACHINE,
-        env="BGATE_ALLOW_DIRTY", guard=True,
+        env="BGATE_ALLOW_DIRTY", guard=True, human_only=True,
         help="Let an agent be dispatched on top of uncommitted changes. Off, "
              "because the resulting diff cannot tell the agent's edits from "
              "yours — which is what makes a revert safe."),
@@ -191,8 +209,11 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         key="dispatch.max_concurrent", group="Dispatch", kind=INT, default=4,
         minimum=1, maximum=32, store=("budget", "max_concurrent"),
+        human_only=True,
         help="How many agents may run at once. The dispatcher refuses past "
-             "this, which is what stops a fan-out from eating the machine."),
+             "this, which is what stops a fan-out from eating the machine. "
+             "Machine-writable would make it self-service: observed going from "
+             "the 4 a human set to 9 and then 11 inside one run."),
 
     # -- Gates --------------------------------------------------------------
     Setting(
@@ -204,14 +225,27 @@ SETTINGS: tuple[Setting, ...] = (
         env_coerce=("BGATE_QA_GATE", lambda raw: "none" if _falsey(raw) else None),
         env_note="BGATE_QA_GATE=0 forces no gate — the legacy kill switch, which "
                  "keeps meaning exactly what it always meant",
+        human_only=True,
         help="Who signs off before an agent's work counts as done: nobody, the "
-             "QA seat, or you."),
+             "QA seat, or you. An agent cannot change this: switching off your "
+             "own reviewer is the same act as granting yourself the repo."),
     Setting(
         key="qa.max_rounds", group="Gates", kind=INT, default=3,
         minimum=1, maximum=10, store=("registry", "qa.max_rounds"),
+        human_only=True,
         help="Rounds of automatic QA an item may go through before a human is "
              "asked to arbitrate. Past that the disagreement is about taste, "
              "and another agent will not settle it — it is a money pump."),
+    Setting(
+        key="qa.gated_seats", group="Gates", kind=LIST,
+        default=("art", "gameplay", "audio", "narrative"),
+        choices=("art", "gameplay", "audio", "narrative", "tech"),
+        store=("registry", "qa.gated_seats"), human_only=True,
+        help="Which maker seats get an automatic QA reviewer when their work "
+             "is completed. Was a hardcoded tuple in the gate, so a studio that "
+             "wanted QA on art alone had to edit harness source — which changed "
+             "it for every project on the machine and needed a restart. "
+             "director and qa are never gated: that is recursion, not review."),
     Setting(
         key="signoff.hours", group="Gates", kind=INT, default=8,
         minimum=1, maximum=168, store=("registry", "signoff.hours"),
@@ -342,25 +376,29 @@ SETTINGS: tuple[Setting, ...] = (
     # -- Budget (the spend_budget row; described here, not copied) ----------
     Setting(
         key="budget.enforced", group="Budget", kind=BOOL, default=True,
-        store=("budget", "enforced"),
+        store=("budget", "enforced"), human_only=True,
         help="Refuse a dispatch that would breach a ceiling. Off turns every "
              "number below into a report rather than a limit."),
     Setting(
         key="budget.per_item_usd", group="Budget", kind=FLOAT, default=5.0,
         minimum=0.0, maximum=10000.0, store=("budget", "per_item_usd"),
+        human_only=True,
         help="Ceiling for one agent run, in USD. Also the figure the "
              "dispatcher projects against the daily budget before spawning."),
     Setting(
         key="budget.per_day_usd", group="Budget", kind=FLOAT, default=25.0,
         minimum=0.0, maximum=100000.0, store=("budget", "per_day_usd"),
+        human_only=True,
         help="Ceiling for today, in USD. 0 means no daily ceiling."),
     Setting(
         key="budget.per_project_usd", group="Budget", kind=FLOAT, default=250.0,
         minimum=0.0, maximum=1000000.0, store=("budget", "per_project_usd"),
+        human_only=True,
         help="Lifetime ceiling for this project, in USD. 0 means none."),
     Setting(
         key="budget.max_runtime_s", group="Budget", kind=INT, default=1800,
         minimum=30, maximum=86400, store=("budget", "max_runtime_s"),
+        human_only=True,
         help="Wall clock an agent gets before it is killed. The backstop for a "
              "run that is spending without progressing."),
 
@@ -717,7 +755,8 @@ def _actor() -> str:
         return ""
 
 
-def set(root: str | os.PathLike[str], key: str, value: Any) -> dict:
+def set(root: str | os.PathLike[str], key: str, value: Any, *,
+        actor: str = "") -> dict:
     """Validate and store one setting, then report what is now effective.
 
     An env override does NOT refuse the write — the stored value is what takes
@@ -729,6 +768,21 @@ def set(root: str | os.PathLike[str], key: str, value: Any) -> dict:
     Returns ``{ok, key, stored, value, source, env_override}``.
     """
     s = setting(key)
+    if s.human_only:
+        # FAIL CLOSED, AND BEFORE VALIDATION. The refusal is about who is
+        # asking, not about the value, so a machine must not be able to learn
+        # anything from the shape of the error either.
+        from . import activity as _activity
+
+        who = actor or _activity.current_actor()
+        if _activity.is_machine(who):
+            raise SettingError(
+                f"{key} is HUMAN-ONLY and this call is a machine's "
+                f"({who}). " + (s.help.split(".")[0].strip() or key)
+                + " is a constraint on agents; an agent that can change it is "
+                  "not constrained. Ask the human at the dashboard, or file it "
+                  "with ask_human. Every setting carrying human_only in "
+                  "bgate_core.settings refuses the same way.")
     clean = coerce(key, value)
     was, _src_before, _var_before = _resolve(root, s)
     _write(root, s, list(clean) if isinstance(clean, list) else clean)
@@ -786,6 +840,7 @@ def _field(root, s: Setting) -> dict:
         "kind": s.kind,
         "choices": list(s.choices),
         "value": value,
+        "human_only": s.human_only,
         "default": list(s.default) if s.kind == LIST else s.default,
         "stored": stored_raw if stored_present else None,
         "source": src,

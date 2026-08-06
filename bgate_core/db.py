@@ -793,6 +793,21 @@ _MIGRATIONS: list = [
     -- every MCP server down before anything else runs.
     CREATE INDEX idx_event_kind_id ON event(kind, id);
     """,
+    # 0017 — who closed an item, so the QA gate stops reviewing hand-closes.
+    #
+    # The gate reviews STATE AT CLOSE. When a human closes an item by hand —
+    # which is what a killed-but-successful run leaves you doing — the gate
+    # files a reviewer against whatever the result note says. MEASURED: an
+    # agent was dispatched, and paid for, to verify procedurally block-modelled
+    # vehicles that had already been superseded by a switch to image-to-3D.
+    # Nobody intended to ship the thing under review.
+    #
+    # A column rather than a marker in `result`, because `result` is prose a
+    # human reads and a sentinel in it is a parser waiting to be written.
+    """
+    ALTER TABLE work_item ADD COLUMN closed_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE work_item ADD COLUMN gate_skip INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -874,6 +889,17 @@ def _apply_sql_step(conn: sqlite3.Connection, sql: str, version: int) -> None:
     than fatal: replaying a step whose objects exist becomes a no-op that
     finishes by recording the version that was missing.
     """
+    # ADD COLUMN HAS NO `IF NOT EXISTS`, so the healing below cannot reach it:
+    # replaying one raises "duplicate column name", which is not the "already
+    # exists" this used to look for, and the whole repair path fell through to a
+    # raise. Every ALTER-based migration was therefore replay-UNSAFE while the
+    # CREATE-based ones were safe — a difference nothing declared and nothing
+    # tested until a migration that only added columns was written.
+    #
+    # Filtering by the live schema rather than by matching an error string,
+    # because the check is exact and it also keeps the statement out of the
+    # transaction entirely instead of relying on rollback.
+    sql = _skip_existing_columns(conn, sql)
     script = f"BEGIN;\n{sql}\nPRAGMA user_version = {version};\nCOMMIT;"
     try:
         conn.executescript(script)
@@ -895,6 +921,36 @@ def _apply_sql_step(conn: sqlite3.Connection, sql: str, version: int) -> None:
         f"BEGIN;\n{healed}\nPRAGMA user_version = {version};\nCOMMIT;")
     print(f"bgate: migration {version} was already applied but unrecorded — "
           f"user_version repaired", file=sys.stderr)
+
+
+_ADD_COLUMN = re.compile(
+    r"^\s*ALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+ADD\s+(?:COLUMN\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*)\b", re.I)
+
+
+def _skip_existing_columns(conn: sqlite3.Connection, sql: str) -> str:
+    """Drop ADD COLUMN statements whose column is already on the table.
+
+    The ADD COLUMN equivalent of the `IF NOT EXISTS` rewrite below — SQLite has
+    no such clause for it, so the idempotence has to be established by looking.
+    Anything that is not an ADD COLUMN passes through untouched.
+    """
+    out = []
+    for statement in sql.split(";"):
+        match = _ADD_COLUMN.match(statement)
+        if not match:
+            out.append(statement)
+            continue
+        table, column = match.group(1), match.group(2)
+        try:
+            existing = {str(r[1]) for r in
+                        conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        except sqlite3.Error:
+            out.append(statement)          # unknown table: let it raise properly
+            continue
+        if column not in existing:
+            out.append(statement)
+    return ";".join(out)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

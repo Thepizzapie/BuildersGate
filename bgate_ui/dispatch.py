@@ -780,12 +780,67 @@ def _terminal_error(root: str, item_id: int) -> str:
             + " — it was not going to do anything else, so it was reaped")
 
 
-def _trip(root: str, item_id: int, entry: dict, reason: str) -> None:
-    """A budget the agent blew through: kill the tree and say why on the item."""
+# Where the WRAP-UP steer goes out, as a fraction of the cost ceiling. A hard
+# kill at the ceiling is the last resort and it destroys the run's own account of
+# what it did; a message at 80% gives the agent a turn or two to save, report and
+# call queue_complete with a partial result, which is the difference between a
+# recoverable stop and an autopsy.
+WRAP_AT = 0.8
+
+WRAP_TEXT = (
+    "BUDGET STOP. You have spent ${spent:.2f} of a ${limit:.2f} ceiling on this "
+    "item. Start NOTHING new — no new generations, no new files, no further "
+    "exploration. Finish or abandon the edit in front of you, then call "
+    "queue_complete IMMEDIATELY with a partial result that says plainly: what is "
+    "done and verified, what is half-done and where, and what is untouched. A "
+    "partial result you report yourself is worth far more than the kill that is "
+    "coming at ${limit:.2f}, which reports nothing.")
+
+
+def _send(entry: dict, text: str) -> bool:
+    """Push a user turn into a live agent, from inside the watchdog.
+
+    dispatch.steer() is the public path and takes the registry lock; the
+    watchdog is already inside its own critical section, so this is the same
+    write without the re-entry.
+    """
+    if not entry.get("steerable", True) or entry.get("stdin_closed"):
+        return False
+    try:
+        entry["stdin"].write(_user_msg(text).encode("utf-8"))
+        entry["stdin"].flush()
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def _trip(root: str, item_id: int, entry: dict, reason: str,
+          recoverable: bool = True) -> None:
+    """A ceiling the agent blew through: stop the tree and BANK what it wrote.
+
+    THE KILL USED TO THROW THE WORK AWAY. MEASURED: an item was killed at $7.17
+    against a $5 ceiling having already written every file it was asked for —
+    player.tscn, player_controller.gd and two more, all on disk and all correct.
+    The money was spent, the deliverables existed, and the item went to `failed`
+    with its result replaced by the kill reason. A human had to go and look at
+    the filesystem to find out that the run had actually succeeded.
+
+    So the result now leads with the fact that this was a STOP rather than a
+    fault, and `set_status` appends the harness's own observed-writes record
+    underneath it — the list a human, or the reopened agent, needs in order to
+    pick the work up rather than repeat it.
+    """
     _kill_tree(entry["proc"].pid)
     entry["stop_reason"] = reason
+    note = reason
+    if recoverable:
+        note = (reason + "\n\nSTOPPED, NOT FAILED. The ceiling ended this run; "
+                "it is not a report that the work is wrong. Anything listed "
+                "below EXISTS ON DISK and was written by this run. Read it "
+                "before reopening: the next agent should continue from these "
+                "files, not regenerate them.")
     try:
-        _queue.set_status(root, item_id, "failed", result=reason)
+        _queue.set_status(root, item_id, "failed", result=note)
     except LookupError:
         pass
     _reap(root, item_id, entry, entry["proc"].poll())
@@ -863,10 +918,40 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         limit_usd = float(entry.get("max_cost_usd") or 0)
         if limit_usd and entry.get("cost_tracked", True):
             spent = _observed_cost(entry)
+            # THE CEILING ASKS BEFORE IT KILLS. Seven of nine items in one
+            # overnight run breached their ceiling, the worst at 3.3x, and every
+            # breach ended as a kill that discarded the run's own account of
+            # itself. A kill is a terrible instrument for a limit: it lands
+            # mid-turn, after the money is spent, and it cannot bank anything.
+            # One message at 80% costs a turn and routinely saves the item.
+            if (not entry.get("wrap_sent")
+                    and spent >= limit_usd * WRAP_AT
+                    and spent <= limit_usd):
+                entry["wrap_sent"] = True
+                if _send(entry, WRAP_TEXT.format(spent=spent, limit=limit_usd)):
+                    entry["steers"].append(
+                        {"text": f"budget wrap-up at ${spent:.2f}",
+                         "sent_at": time.time(), "consumed_at": None})
+                    try:
+                        # NOT `_activity` — that name is this module's parsed
+                        # per-run log cache, and a dict has no .log(). The
+                        # try/except would have swallowed the AttributeError
+                        # forever and the wrap-up would have gone unrecorded.
+                        from bgate_core import activity as _act
+
+                        _act.log(root, "dispatch",
+                                 f"item {item_id}: wrap-up sent at "
+                                 f"${spent:.2f} of ${limit_usd:.2f}",
+                                 ref=str(item_id))
+                    except Exception:
+                        pass
             if spent > limit_usd:
                 _trip(root, item_id, entry,
-                      f"killed: spent ${spent:.2f} against a "
-                      f"${limit_usd:.2f} ceiling")
+                      f"stopped: spent ${spent:.2f} against a "
+                      f"${limit_usd:.2f} ceiling"
+                      + (" (the wrap-up message went out at "
+                         f"${limit_usd * WRAP_AT:.2f} and was not acted on)"
+                         if entry.get("wrap_sent") else ""))
                 return
         # Renew what this run holds. It lives here rather than in status()
         # because a lease must not depend on somebody having the dashboard open.

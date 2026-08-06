@@ -1903,20 +1903,44 @@ def image_status() -> dict:
     that decides whether the output can ship in a game you sell.
     """
     try:
-        _root()  # triggers .env load
+        root = _root()  # triggers .env load
         from bgate_adapters import imagegen
-        out = dict(imagegen.available())
+
+        legs = {}
+        legs["openai"] = dict(imagegen.available())
+        # KREA IS A FIRST-CLASS PROVIDER AND THIS TOOL DID NOT KNOW IT EXISTED.
+        # It probed OPENAI_API_KEY alone and answered for the whole painted-art
+        # leg, so a project holding a working Krea key — which image_generate
+        # will happily auto-select — was told the leg was unavailable. It cost a
+        # support cycle in a real run. blender_status has always reported
+        # per-backend; this is that shape.
+        try:
+            from bgate_adapters import krea
+            legs["krea"] = dict(krea.available(root))
+        except Exception as exc:
+            legs["krea"] = {"available": False,
+                            "reason": f"{type(exc).__name__}: {exc}"}
         try:
             from bgate_adapters import localgen
-            out["local"] = localgen.status(probe=True)
-        except Exception as exc:      # the local leg must never break the row
-            out["local"] = {"available": False,
-                            "reason": f"{type(exc).__name__}: {exc}"}
-        out["providers"] = ["openai" if out.get("available") else None,
-                            "krea", "local" if out["local"].get("available")
-                            else None]
-        out["providers"] = [p for p in out["providers"] if p]
-        return out
+            legs["local"] = dict(localgen.status(probe=True))
+        except Exception as exc:
+            legs["local"] = {"available": False,
+                             "reason": f"{type(exc).__name__}: {exc}"}
+
+        usable = [name for name, leg in legs.items() if leg.get("available")]
+        return {
+            # `available` answers about the LEG, not about one adapter: any
+            # usable provider means painted art is available. A caller that only
+            # reads this key gets the honest answer now.
+            "available": bool(usable),
+            "providers": usable,
+            "auto_picks": (usable[0] if usable else ""),
+            "legs": legs,
+            "reason": "" if usable else
+                      "no image provider is configured — set OPENAI_API_KEY or "
+                      "KREA_API_KEY in the project's .env, or configure a local "
+                      "ComfyUI (see the local leg's `how`)",
+        }
     except Exception as exc:
         return _fail(exc)
 
@@ -5218,6 +5242,12 @@ def agent_steer(item_id: int, text: str) -> dict:
       * an item with no live agent gets no delivery — check queue_list(
         status='dispatched') first, and use queue_update or queue_reopen for
         work that is not running.
+
+      * A STEER IS CAPPED AT 2000 CHARACTERS and a longer one is refused
+        outright, not truncated. It is an interruption, not a brief: anything
+        that needs more than a couple of paragraphs is a change to the work
+        rather than a correction to it, so put it in queue_update's brief or
+        reopen the item with it.
 
     Delivery, and any failure to deliver, is recorded in the activity ledger
     against the item.

@@ -200,7 +200,8 @@ def spend_budget(request: Request, payload: dict) -> dict:
         changes[key] = value
     if not changes:
         return api.ok(_spend.budget(root()), applied=[], ignored=ignored)
-    applied = _settings_routes.apply_changes(root(), changes)
+    applied = _settings_routes.apply_changes(
+        root(), changes, actor=api.current_actor(request))
     by_key = {row["key"]: row for row in applied}
     for column, key in columns.items():
         if key in by_key:

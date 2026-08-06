@@ -68,6 +68,32 @@ def is_human(actor: str) -> bool:
     return bool(actor) and not actor.startswith(AGENT_PREFIX)
 
 
+def is_machine(actor: str = "") -> bool:
+    """Is this call a MACHINE's, whatever it managed to call itself?
+
+    FAIL CLOSED, AND FROM MORE THAN THE NAME. `is_agent` reads the `agent:`
+    prefix, which is one stamp written in one spawn path — and the environment
+    that dispatch cannot avoid setting is BGATE_WORK_ITEM / BGATE_SEAT, because
+    the PreToolUse hook needs them. An identity gate that only reads the prefix
+    is disabled by forgetting one line.
+
+    MEASURED, IN A REAL RUN: over one overnight session `gate.mode` was found
+    reverted from "agent" to "none" four separate times with no human action,
+    and three work items reached done with no reviewer ever spawned — including
+    a rigged character whose bind weights nobody checked. `seat_configure`
+    already refuses a machine the write lanes, on the reasoning that "a lane
+    change that comes from a machine is not a lane system, it is a suggestion".
+    An agent switching off its own reviewer is the same act.
+
+    A human who exports BGATE_SEAT in their own shell reads as a machine and
+    loses the ability to change these switches. That is the safe direction.
+    """
+    if is_agent(actor or current_actor()):
+        return True
+    return bool(os.environ.get("BGATE_WORK_ITEM", "").strip()
+                or os.environ.get("BGATE_SEAT", "").strip())
+
+
 def log(root: str | os.PathLike[str], kind: str, summary: str, *,
         seat: str = "", ref: str = "", actor: Optional[str] = None) -> None:
     try:
