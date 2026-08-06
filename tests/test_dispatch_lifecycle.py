@@ -177,10 +177,19 @@ class TestDispatchContract:
         assert "already" in again["error"] or "not queued" in again["error"]
 
     def test_dispatch_refuses_when_no_cli_is_installed(self, root, monkeypatch):
+        """The refusal now NAMES the runner, because there is more than one.
+
+        It also moved: which CLI to look for depends on the seat, so the check
+        cannot happen before the item is read. The two things that matter are
+        unchanged — no process, and the item is still queued for a later try.
+        """
         monkeypatch.setattr(dispatch, "find_claude", lambda: None)
         item = queue.add(root, "art", "no cli here")
         res = dispatch.dispatch(root, item["id"])
-        assert res == {"ok": False, "error": "claude CLI not found on PATH"}
+        assert res["ok"] is False
+        assert res["error"] == "claude CLI not found on PATH"
+        assert res["code"] == "runner_unavailable"
+        assert res["detail"] == {"runner": "claude"}
         assert queue.get(root, item["id"])["status"] == "queued"
 
 

@@ -640,6 +640,10 @@ function setAtlasMode(mode){
     return false;
   if (atlasMode === "code" && mode !== "code" && window.AtlasCode
       && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
+  // The scene builder runs a playable build too now, and a hidden iframe is
+  // still a running game with an audio context.
+  if (atlasMode === "scene" && mode !== "scene" && window.SceneBuild
+      && typeof SceneBuild.deactivate === "function") SceneBuild.deactivate();
   atlasMode = ["graph", "scene", "code"].includes(mode) ? mode : "list";
   try{ localStorage.setItem("bgate-atlas-mode", atlasMode); }catch(e){}
   document.querySelectorAll("#atlas-modes .atlas-mode").forEach(b =>
@@ -670,6 +674,8 @@ function setWorkspace(name, trigger){
   // the only symptom is audio from a panel you can no longer see.
   if (next !== "atlas" && atlasMode === "code" && window.AtlasCode
       && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
+  if (next !== "atlas" && atlasMode === "scene" && window.SceneBuild
+      && typeof SceneBuild.deactivate === "function") SceneBuild.deactivate();
   document.querySelectorAll(".deck-view").forEach(view =>
     view.classList.toggle("active", view.id === `view-${next}`));
   document.querySelectorAll(".rail-item").forEach(item =>

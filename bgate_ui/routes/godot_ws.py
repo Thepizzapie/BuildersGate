@@ -228,22 +228,13 @@ def _lock_holder(target: Path) -> dict | None:
 
     A human editing a file an agent has claimed is the exact collision the lock
     table exists to make visible, and a dashboard that writes straight through
-    it would be the one caller in the system that ignores it. Never raises: a
-    lock lookup that fails is not a reason to refuse a save, only a reason not
-    to claim the file was free.
+    it would be the one caller in the system that ignores it. The lookup itself
+    lives in the core now — the scene editor and the MCP scene tools ask the
+    same question, and three copies of it is three chances for one to drift into
+    answering "free" when it is not.
     """
-    try:
-        from bgate_core import assets as _assets
-        rel = _assets.normalize_path(root(), target)
-    except Exception:
-        return None
-    try:
-        for row in _assets.list_assets(root(), locked_only=True):
-            if str(row.get("path") or "") == rel:
-                return row
-    except Exception:
-        return None
-    return None
+    from bgate_core import assets as _assets
+    return _assets.lock_holder(root(), target)
 
 
 @router.get("/api/godot/file")

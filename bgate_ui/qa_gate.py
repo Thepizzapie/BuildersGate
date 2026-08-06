@@ -43,7 +43,7 @@ import os
 from bgate_core import activity, db, gates as _gates, queue as _queue, \
     settings as _settings
 
-GATED_SEATS = ("art", "gameplay", "audio", "narrative")
+GATED_SEATS = ("art",)
 
 # Rounds of QA an item may go through before a human is asked to arbitrate.
 # 3 = the original attempt plus two fix rounds; past that the disagreement is

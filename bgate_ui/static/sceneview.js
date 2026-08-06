@@ -64,6 +64,8 @@ window.SceneView = (() => {
   let opts = { grid: true, snap: 8, snapOn: true, showHidden: false,
                showBodies: true, outlines: true, real: false };
   let images = new Map();       // rel -> HTMLImageElement | null
+  let play = null;              // last /api/play/status
+  let held = null;              // the seat holding this scene, if any
 
   /* THE ENGINE'S OWN FRAME, under the editable overlay.
    *
@@ -165,6 +167,17 @@ window.SceneView = (() => {
       ".sv-pick button:hover{background:var(--plate)}",
       ".sv-pick button span{margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--ash2)}",
       ".sv-pick .no{font-size:11px;color:var(--ash);padding:4px 7px;line-height:1.5}",
+      // The stage and the running build, side by side. `.sv-body` exists only
+      // so the two can be a ROW inside a column — the stage used to be the
+      // column's only growing child.
+      ".sv-body{flex:1;display:flex;min-height:0}",
+      ".sv-play{width:0;flex:none;border-left:1px solid var(--seam);display:flex;flex-direction:column;background:var(--iron);overflow:hidden;transition:width .12s}",
+      ".sv-play.open{width:min(46%,460px)}",
+      ".sv-play iframe{flex:1;border:0;width:100%;background:#000}",
+      ".sv-ph{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--seam);font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--ash2)}",
+      ".sv-ph .sv-b{text-transform:none;letter-spacing:0}",
+      ".sv-stale{color:var(--warn)}",
+      ".sv-lock{display:flex;align-items:center;gap:9px;background:var(--iron);border:1px solid var(--bad);border-radius:8px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;color:var(--bad)}",
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -200,13 +213,17 @@ window.SceneView = (() => {
           <button class="sv-b" id="sv-undo" onclick="SceneView.undo()" title="Take back the last staged change — nothing has been written yet">↶</button>
           <button class="sv-b" onclick="SceneView.snapshot()"
                   title="Save this view as a PNG under .bgate_out/scene_shots">⤓ png</button>
+          <button class="sv-b" id="sv-play-t" onclick="SceneView.togglePlay()"
+                  title="Play the exported web build beside the scene. Applying a change rebuilds it.">▶ play</button>
         </div>
         <div class="sv-layers" id="sv-layers" hidden></div>
+        <div class="sv-body">
         <div class="sv-stage" id="sv-stage">
           <canvas id="sv-canvas"></canvas>
           <div class="sv-hud" id="sv-hud"></div>
           <div class="sv-tip" id="sv-tip" onclick="SceneView.nextBlank()">drag to move · handles scale · ring rotates · shift = free</div>
           <div class="sv-top">
+            <div class="sv-lock" id="sv-lock" hidden></div>
             <div class="sv-pending" id="sv-pending" hidden>
               <span class="dot"></span>
               <span id="sv-pending-n"></span>
@@ -217,6 +234,18 @@ window.SceneView = (() => {
             <div class="sv-place" id="sv-place" hidden></div>
           </div>
           <div class="sv-pick" id="sv-pick" hidden></div>
+        </div>
+        <div class="sv-play" id="sv-play">
+          <div class="sv-ph">
+            <span id="sv-build">build</span>
+            <span style="flex:1"></span>
+            <button class="sv-b" id="sv-rebuild" onclick="SceneView.rebuild()"
+                    title="Export the web build from the current source and reload it">⟳ rebuild</button>
+            <button class="sv-b" onclick="SceneView.togglePlay()" title="Close">✕</button>
+          </div>
+          <iframe id="sv-frame" src="about:blank" title="playable build"
+                  allow="autoplay; gamepad; fullscreen"></iframe>
+        </div>
         </div>
       </div>`;
     cv = host.querySelector("#sv-canvas");
@@ -235,6 +264,7 @@ window.SceneView = (() => {
       ok: "leave", danger: true,
     }))) return false;
     clearStaged();
+    blankFrame();
     host = null; cv = null; sel = null; list = null;
     return true;
   }
@@ -249,11 +279,18 @@ window.SceneView = (() => {
   async function reload(){
     if (!scene) return;
     clearStaged();
+    // The PREVIOUS scene's lock, cleared before the fetch rather than after —
+    // a render that fails returns early, and a stale banner naming a seat that
+    // holds a file nobody is looking at any more is worse than no banner.
+    held = null;
+    paintLock();
     paintPending();
     paintPlacing();
     const d = await readJSON(`/api/scene/render?scene=${encodeURIComponent(scene)}`, null);
     if (!d || d.__error){ say((d && d.__error) || "could not render that scene"); return; }
     list = d;
+    held = d.lock || null;
+    paintLock();
     const rels = new Set();
     d.items.forEach(i => {
       const dr = i.draw || {};
@@ -1311,6 +1348,9 @@ window.SceneView = (() => {
     if (dels.length) lines.push(`DELETE ${dels.map(
       o => o.name + (o.kids ? ` (+${o.kids} child node(s))` : "")).join(", ")}`);
     lines.push("The current file is kept under .bgate_out/scene_backups.");
+    if (playOpen()) lines.push("The web build will be re-exported and reloaded.");
+    if (held) lines.push(`NOTE: the ${held.seat} seat holds this file — the `
+                         + "write will be refused while it does.");
     const go = await askConfirm({
       title: `Write ${n} change${n === 1 ? "" : "s"} to ${String(scene).split("/").pop()}?`,
       body: lines, ok: "write to the file", danger: true,
@@ -1358,8 +1398,19 @@ window.SceneView = (() => {
     paintPending();
     paintPlacing();
     await reload();
-    if (failed.length) say(`${failed.length} change(s) failed — ${failed[0]}`);
-    else say(`${n} change${n === 1 ? "" : "s"} written`, "ok");
+    if (failed.length){
+      say(`${failed.length} change(s) failed — ${failed[0]}`);
+      return;                    // do not export a file the write did not land in
+    }
+    say(`${n} change${n === 1 ? "" : "s"} written`, "ok");
+
+    // THE LOOP. The file is what changed; the build is what you play. Rebuild
+    // only when the panel is open — a minute of Godot for someone who is not
+    // looking at the game is a minute of the tool being unusable — but always
+    // refresh the chip, so a closed panel still says `stale` rather than
+    // quietly carrying the previous answer forward.
+    if (playOpen()) await rebuild();
+    else await refreshBuild();
   }
 
   /* Re-read the file. Whatever was staged never existed. */
@@ -1603,6 +1654,120 @@ window.SceneView = (() => {
     const r = await mutate("/api/scene/snapshot", { body: { scene, png } });
     if (r.ok) say(`saved ${r.data.rel}`, "ok");
   }
+
+  /* ── the playable build, beside the scene ──────────────────────────────────
+   *
+   * The viewport draws what the FILE says. That is the right picture to drag
+   * against and it is not proof of anything: a scene can look correct and play
+   * wrong, and until now the only way to find that out was to leave, open the
+   * play tab, and remember to rebuild first. Almost nobody remembered, so what
+   * got checked was yesterday's build — which is worse than not checking,
+   * because it comes back green.
+   *
+   * So the loop closes here. Applying an edit writes the file, exports the
+   * build, and reloads the frame, in that order, without leaving the panel.
+   *
+   * THE FRAME IS BLANKED ON EVERY EXIT PATH. A running WASM build left in a
+   * hidden panel keeps a game loop and an audio context alive behind whatever
+   * you switch to; closing the panel and leaving the panel are two different
+   * exits and both have to do it. Switching SCENES deliberately does not — the
+   * build is the whole game, not the file being looked at, and killing the
+   * running game because someone opened a different scene beside it would be a
+   * bug wearing a tidiness argument. */
+  function playPanel(){ return document.getElementById("sv-play"); }
+  function playOpen(){ const p = playPanel(); return !!p && p.classList.contains("open"); }
+
+  function blankFrame(){
+    const f = document.getElementById("sv-frame");
+    if (f) f.src = "about:blank";
+  }
+
+  /* Hidden, not torn down. The panel is only being navigated AWAY from — the
+     staged edits are still the operator's and must survive coming back — but
+     the build behind it must stop, because a hidden iframe is still a running
+     game with an audio context. Deliberately not unmount(): that asks about
+     losing staged work, and hiding a tab is not a reason to ask. */
+  function suspend(){ blankFrame(); }
+
+  function reloadFrame(){
+    const f = document.getElementById("sv-frame");
+    if (!f) return;
+    // /play answers with JSON when nothing has been exported, and an iframe
+    // renders that as a wall of error text where the game goes. The header
+    // already says the build is missing; do not say it twice and worse.
+    if (play && play.built === false){ f.src = "about:blank"; return; }
+    // Cache-bust: the wasm and the pck keep their filenames across exports, so
+    // a plain reload replays the build that was just replaced.
+    f.src = `/play/index.html?t=${Date.now()}`;
+  }
+
+  async function refreshBuild(){
+    play = await readJSON("/api/play/status", null);
+    const el = document.getElementById("sv-build");
+    if (!el) return;
+    if (!play || play.__error){ el.textContent = "build · unknown"; return; }
+    if (!play.built){
+      el.innerHTML = `build · <span class="sv-stale">${E(play.reason || "none")}</span>`;
+      el.title = "";
+      return;
+    }
+    el.innerHTML = play.stale ? `build · <span class="sv-stale">stale</span>`
+                              : "build · current";
+    // WHICH file made it stale. "stale" on its own invites the assumption that
+    // the check is just pessimistic, and that assumption is how someone plays
+    // the old build anyway.
+    el.title = play.stale ? (play.reason || "the source is newer than the build")
+                          : "the build matches the source";
+  }
+
+  async function rebuild(){
+    say("exporting the web build — Godot takes a minute on a cold project…");
+    const r = await mutate("/api/play/rebuild", { body: {}, quiet: true,
+                                                  button: "sv-rebuild" });
+    const d = r.data || {};
+    if (!r.ok || d.ok === false){
+      say(d.error || d.detail || r.error || "the export failed");
+      await refreshBuild();
+      return false;
+    }
+    await refreshBuild();
+    reloadFrame();
+    say("build refreshed", "ok");
+    return true;
+  }
+
+  async function togglePlay(){
+    const p = playPanel();
+    if (!p) return;
+    const on = p.classList.toggle("open");
+    const t = document.getElementById("sv-play-t");
+    if (t) t.classList.toggle("on", on);
+    if (!on){ blankFrame(); return; }
+    await refreshBuild();
+    // An open panel showing a stale build is the exact trap this feature
+    // exists to close, so offer the rebuild rather than quietly serving it.
+    if (play && play.built && play.stale
+        && await askConfirm({
+             title: "The build is older than the source.",
+             body: [play.reason || "Something in the game project changed since "
+                    + "the last export.", "Playing it now shows the old game."],
+             ok: "rebuild first" })){
+      await rebuild();
+    } else {
+      reloadFrame();
+    }
+  }
+
+  /* The lock, on the scene the builder is pointed at. The write refuses a held
+     file (423), and finding that out at `apply` is finding it out after the
+     work. Read-only until then: a locked scene can still be looked at. */
+  function paintLock(){
+    const el = document.getElementById("sv-lock");
+    if (!el) return;
+    el.hidden = !held;
+    if (held) el.textContent =
+      `locked by the ${held.seat} seat — edits here will be refused until it releases`;
+  }
   async function setScene(id){
     if (hasPending() && !(await askConfirm({
       title: `${pendingCount()} change(s) have not been written. Switch scene and lose them?`,
@@ -1624,6 +1789,7 @@ window.SceneView = (() => {
            select, raise, undo: undoLast, setScene,
            apply: applyPending, discard: discardPending, hasPending,
            placeMenu, arm, cancelPlacing, removeSelected,
+           togglePlay, rebuild, suspend,
            toggleLayer, isolateLayer, showAllLayers, nextBlank,
            realView, reshoot,
            get layers(){ return layers(); },

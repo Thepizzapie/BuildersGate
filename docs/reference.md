@@ -153,6 +153,109 @@ here and expensive to debug in-engine:
 
 This leg is not covered by CI. See the README status section.
 
+## Proving a character can actually be animated
+
+`blender_rig` answers one question — were weights written — with the unweighted
+vertex count. That is the right proof that *something* was bound, and it says
+nothing about whether the result is usable. Two tools finish the sentence.
+
+```text
+blender_rig(mesh, out.glb)        # adopt, fit, bind, and audit BEFORE binding
+   → audit.shells        connected components. A real generation arrived as
+                         940; heat will not cross the gaps and loose islands
+                         weight to whatever bone is nearest.
+   → audit.symmetry.mean how far the body is from its own mirror image, as a
+                         fraction of its height. Also the gate on the next line.
+   → symmetrised         skin weights averaged across the body's centre plane,
+                         but only when the audit says the two sides match.
+                         Heat fails differently on each side — one clean elbow
+                         and one bound to the ribs is the normal outcome.
+
+blender_flex(rigged.glb, out_dir)  # bend it and measure what bending did
+   → volume_ratio     posed over rest. A good bind costs 2-6% on a 115° elbow.
+   → worst_pinch      the joint that lost the most cross-section. 1.0 is rigid,
+                      0.6 is a visible waist, under 0.4 is a straw.
+   → new_self_pairs   faces that intersect in this pose and did not at rest.
+                      The increase, not the count — a generated mesh arrives
+                      with overlapping shells and the absolute number is noise.
+   → render           a PNG per pose. Look at them.
+```
+
+`blender_flex` refuses to pass an **inert** rig: a mesh with no armature
+modifier, no vertex groups, or no vertex that moves. That is not hypothetical —
+the first run of this gate passed a model where nothing was bound at all, with
+six green poses and zero issues, because nothing that cannot move can pinch.
+
+Then ask the engine whether the rig is a humanoid it can retarget onto:
+
+```text
+godot_retarget_check(project, "res://assets/hero.glb",
+                     bone_map_res="res://hero_bonemap.tres")
+   → missing / extra   coverage against SkeletonProfileHumanoid, by exact name
+   → chain[].propagates  rotating a shoulder moves the hand
+   → clip.drives       a profile-authored rotation track turns the bone
+   → retargetable      the verdict
+```
+
+The chain check is the one nothing else in the product can catch. A `.glb` can
+carry 23 correctly-named bones in a **flat** hierarchy: `blender_rig` reports 0
+unweighted, `godot_deliver_asset` photographs it happily, and the character can
+be animated by nothing except a clip authored for it alone — which is the
+opposite of why the bone names are Godot's own.
+
+## Cutout characters: parts on a skeleton
+
+The other way to animate in 2D. The frame pipeline pays per character per
+animation; a cutout character pays once per *template*.
+
+```text
+cutout_templates()                          # slots, bones, clips, parts list
+cutout_assemble(name="hero", parts={...})   # document + .tscn + .anims.tres
+cutout_status(name="hero")                  # missing parts, stale pivots, origin
+cutout_equip(name="hero", slot="hat", texture=…)
+```
+
+What you get is a Godot scene whose bones are Node2Ds, whose parts are
+Sprite2Ds, and which ships with idle, walk, run, attack_melee, hurt and death
+already baked onto *that character's* rest pose. Equipment is a texture swap on
+one slot, at author time or at runtime.
+
+What it costs: a puppet, not a painting — rigid parts, no mesh deformation, no
+squash. For a hero seen in close-up the frame pipeline is still better.
+
+Two contracts worth knowing before you author one:
+
+- **Feet contact (0, 0), +y up.** The document is in doc space and the emitter
+  is the single place the flip into Godot's +y-down happens.
+- **Clips are deltas from the template rest pose**, baked to absolute values at
+  emit time. That is what makes a per-character adjustment survive frame one of
+  every clip instead of being erased by it.
+
+## Local generation, no API key
+
+Both the 2D and 3D paths can run entirely on the user's own GPU, through one
+ComfyUI on loopback. Nothing here imports torch, ships a model, or downloads
+one; the workflow graph is the user's own export and the licence is the
+declared model's.
+
+```text
+image_status()                 # both legs: hosted key, and the local server
+bgate doctor                   # local_image row, optional like ffmpeg
+chroma / image_generate        provider="local"
+blender_generate(..., parts=True)   # part-aware image-to-3D
+```
+
+`parts=True` is the better request for a character. A monolithic generation
+gives one blob and bone heat has to guess where the arm stops; a part-aware
+graph returns head, torso, arms and legs as separate meshes, and the result
+carries a `combine` list ready for `blender_combine`. A run that comes back with
+one mesh is flagged rather than reported as a success — a graph that merges
+before saving is the monolith with extra steps.
+
+Environment: `BGATE_COMFY_URL`, `BGATE_COMFY_T2I_WORKFLOW`,
+`BGATE_COMFY_EDIT_WORKFLOW`, `BGATE_COMFY_PARTS_WORKFLOW`,
+`BGATE_LOCAL_IMAGE_MODEL`.
+
 ## Templates
 
 ```bash
@@ -232,6 +335,52 @@ Wave Function Collapse is deliberately not used for structure. It produces
 plausible local adjacency and no global guarantee — no reachable exit, no room
 count — and it can fail and need restarting. The bitmask is O(cells), cannot
 fail, and is exactly reproducible from the seed.
+
+## Scene editing
+
+The level generator writes terrain. Everything else in a scene — a prop, a
+camera, a script, a texture swap — is node-level surgery on the `.tscn`, and
+`bgate_core.scenewire` does it as text with no engine involved: `load_steps`
+accounting, `ext_resource` ids, name uniquing, a dry run on every mutation and a
+timestamped backup on every write.
+
+| tool | does |
+|---|---|
+| `scene_outline` | read the tree — paths, types, roles, scripts, resources |
+| `scene_wire` | put an asset in as a new node, typed from the file |
+| `scene_unwire` | remove a node, and sweep resources left referenced by nothing |
+| `scene_node_add` | add a plain node — Camera2D, Timer, CanvasLayer |
+| `scene_set_property` | set or clear one property. This is the move tool |
+| `scene_swap_resource` | point a node at a different file |
+| `scene_attach_script` | attach a `.gd` to a node that exists |
+| `scene_rename_node` | rename, and repair every path that named it |
+| `scene_reparent_node` | move a node and its subtree under a different parent |
+
+```bash
+scene_outline(godot_project, scene="scenes/floor.tscn", match="desk")
+scene_set_property(godot_project, scene="scenes/floor.tscn",
+                   node="Props/Desk_12", key="position", value="Vector2(320, 96)")
+```
+
+**Read before you address.** Every mutation names a node by path, and
+`scene_outline` is where a path comes from. It filters (`match`, `role`,
+`parent`) and truncates loudly, because a baked floor plate is fifteen hundred
+nodes and dumping that whole tree buries the task in furniture.
+
+**Every write checks the lock.** A scene held by another seat is refused, from
+an agent and from the dashboard alike — the holder may be mid-edit and about to
+write its own copy over yours, and a backup is recovery, not prevention. A seat
+is never blocked by its own lock. `force=True` is the deliberate override, and
+`dry_run=True` is never blocked at all: refusing to *look* at a locked file
+helps nobody.
+
+**A generated scene is the wrong file to edit.** If a `.tscn` is bake output —
+its header will say so — the generator's input is the authority and an edit here
+survives exactly until the next bake, while the runtime keeps reading the
+source. Read the top of the file before moving anything in it.
+
+The dashboard reaches the same functions through `/api/scene/*`, which is what
+Atlas → *scene · build it* drags against.
 
 ## Publishing: the arcade
 

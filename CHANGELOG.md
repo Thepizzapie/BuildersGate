@@ -9,6 +9,52 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+
+- **Nine scene tools on the MCP surface.** `scene_outline`, `scene_wire`,
+  `scene_unwire`, `scene_node_add`, `scene_set_property`, `scene_swap_resource`,
+  `scene_attach_script`, `scene_rename_node`, `scene_reparent_node`.
+  `bgate_core.scenewire` has parsed and edited `.tscn` text since the Atlas
+  builder shipped, and all of it was reachable from a browser and none of it
+  from an agent — so an agent told to place a prop hand-edited the file as text,
+  inventing `ext_resource` ids, guessing at `load_steps`, and finding out at
+  `godot_check_project`. Same functions the dashboard calls, same dry-run and
+  backup contract.
+
+- **The scene builder plays the build it just wrote.** Atlas → *scene · build
+  it* gained the play panel the code editor already had, and `apply` now
+  exports and reloads it. The viewport draws what the FILE says, which is the
+  right picture to drag against and is not proof of anything; checking used to
+  mean leaving the panel, opening the play tab, and remembering to rebuild
+  first. Almost nobody remembered, so what got checked was yesterday's build —
+  worse than not checking, because it comes back green.
+
+- **`assets.lock_holder()`** — one implementation of "who holds this path",
+  which never raises. Three callers were answering it three ways or not at all.
+
+### Fixed
+
+- **The build staleness check could not see the file you were editing.**
+  `webbuild._newest_source_mtime` scanned `scripts/`, `scenes/` and `assets/`,
+  and that allowlist quietly decided what a build was allowed to depend on. A
+  project keeping its levels in `data/*.json` had every level edit invisible:
+  change the level, `/api/play/status` reports **current**, you play the old
+  game and conclude the tool ignored you — verbatim the morning `webbuild.py`
+  was written to prevent, reintroduced by the scan instead of the rebuild. It
+  is a denylist now (`.godot`, `export`, `.git`, caches), so a directory nobody
+  has imagined yet counts as source rather than being ignored. `status()` also
+  names the file that made the build stale, so "stale" is answerable rather
+  than asserted.
+
+- **`/api/scene/*` wrote straight through a held lock.** Every other writer in
+  the system asks — the code editor, every agent through `asset_lock` — and the
+  scene endpoints did not, which was survivable only while a human clicking
+  buttons was the sole caller. They are on the MCP surface now, so two agents
+  and a person can reach the same `.tscn`. Writes are refused with `423`,
+  `force` overrides, a dry run is exempt, and `/api/scene/tree`, `/outline` and
+  `/render` report the lock so the builder says so before twenty drags are
+  staged against a file the write is going to refuse.
+
 ## [0.1.33] - 2026-08-02
 
 ### Added

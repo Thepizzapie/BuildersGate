@@ -806,7 +806,18 @@ window.SceneBuild = (() => {
   function toggleRole(r){ filter.has(r) ? filter.delete(r) : filter.add(r); render(); }
   function refresh(){ activate(scene, true); }
 
+  /* Called when this MODE is navigated away from — not when it is torn down.
+     The viewport keeps everything it has staged; what stops is the playable
+     build inside it, which would otherwise keep running, and playing audio,
+     behind whatever the operator switched to. Same contract as
+     AtlasCode.deactivate, for the same reason. */
+  function deactivate(){
+    if (window.SceneView && typeof SceneView.suspend === "function")
+      SceneView.suspend();
+  }
+
   return { activate, render, refresh, setScene, setSurface, toggleRole, select, rename,
+           deactivate,
            setProp, clearProp, addNode, remove, swapMenu, swapTo, editPixels,
            editAudio, act, closeModal,
            get data(){ return data; }, get scene(){ return scene; } };
