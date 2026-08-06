@@ -2735,6 +2735,156 @@ def fit_bones(arm, mesh):
     return {"moved": moved, "landmarks": {k: v for k, v in L.items()
                                           if not isinstance(v, dict)}}
 
+def shells(mesh):
+    """Connected components, largest first.
+
+    THE NUMBER A GENERATOR WILL NOT TELL YOU. A real user's character came back
+    as 940 separate shells; it renders, it has a volume, every well-formedness
+    gate passes it, and bone heat then refuses to cross the gaps so the loose
+    shells weight to whichever bone happens to be nearest — the fingers to the
+    hip, the hair to the shoulder. Counting them before the bind is the cheapest
+    warning available, and `decimation_target` / `budget` are the knobs on it.
+    """
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(mesh.data)
+    bm.verts.ensure_lookup_table()
+    seen, sizes = set(), []
+    for start in bm.verts:
+        if start.index in seen:
+            continue
+        seen.add(start.index)
+        stack, size = [start], 0
+        while stack:
+            cur = stack.pop()
+            size += 1
+            for e in cur.link_edges:
+                other = e.other_vert(cur)
+                if other.index not in seen:
+                    seen.add(other.index)
+                    stack.append(other)
+        sizes.append(size)
+    total = len(bm.verts)
+    bm.free()
+    sizes.sort(reverse=True)
+    return {"count": len(sizes), "verts": total,
+            "largest": sizes[0] if sizes else 0,
+            "largest_pct": round(100.0 * (sizes[0] if sizes else 0) /
+                                 max(total, 1), 2),
+            "sizes": sizes[:8]}
+
+
+def symmetry(mesh, samples=2000):
+    """How far this body is from being its own mirror image, as a fraction of
+    its height.
+
+    MEASURED, NOT ASSUMED, and it decides whether mirroring weights is allowed.
+    An image-to-3D character is symmetric in the way a drawing is: close, never
+    exact, and occasionally not at all (a cloak over one shoulder, a single
+    pauldron). Mirroring weights across a body that is not symmetric pairs a
+    vertex with the wrong partner and produces a worse bind than the one it
+    replaced, so this number is the gate on that operation rather than a
+    decoration on the report.
+    """
+    from mathutils.bvhtree import BVHTree
+    mw = mesh.matrix_world
+    verts = [mw @ v.co for v in mesh.data.vertices]
+    if not verts:
+        return {"ok": False, "reason": "no vertices"}
+    zs = [v.z for v in verts]
+    height = max(max(zs) - min(zs), 1e-6)
+    # The plane is the body's OWN centre, not x=0. A character exported beside
+    # its neighbours sits off-origin, and measuring against the world plane
+    # would report a perfectly symmetric figure as wildly asymmetric.
+    plane = sum(v.x for v in verts) / len(verts)
+    tree = BVHTree.FromPolygons(
+        [tuple(v) for v in verts],
+        [tuple(p.vertices) for p in mesh.data.polygons], all_triangles=False)
+    step = max(1, len(verts) // max(1, samples))
+    taken, worst, total = 0, 0.0, 0.0
+    for i in range(0, len(verts), step):
+        v = verts[i]
+        hit = tree.find_nearest(Vector((2.0 * plane - v.x, v.y, v.z)))
+        if hit is None or hit[0] is None:
+            continue
+        d = (hit[0] - Vector((2.0 * plane - v.x, v.y, v.z))).length
+        taken += 1
+        total += d
+        worst = max(worst, d)
+    if not taken:
+        return {"ok": False, "reason": "no nearest-surface hits"}
+    return {"ok": True, "samples": taken, "plane_x": round(plane, 5),
+            "mean": round(total / taken / height, 5),
+            "worst": round(worst / height, 5), "height": round(height, 4)}
+
+
+def mirror_weights(mesh, bone_names, plane_x, tol):
+    """Make the skin weights symmetric by AVERAGING the two sides, not copying
+    one over the other.
+
+    Copying picks a winner, and on a generated character neither side is
+    reliably the good one — heat fails differently on each. Averaging a vertex
+    with its mirrored partner's Left/Right-swapped weights fixes the common
+    failure, which is one elbow bound cleanly and the other bound to the ribs,
+    without a coin flip. Vertices with no partner within `tol` are LEFT ALONE
+    and counted, because that is exactly the cloak-over-one-shoulder case.
+    """
+    from mathutils.kdtree import KDTree
+    data = mesh.data
+    n = len(data.vertices)
+    if not n:
+        return {"ok": False, "reason": "no vertices"}
+    tree = KDTree(n)
+    for v in data.vertices:
+        tree.insert(v.co, v.index)
+    tree.balance()
+
+    groups = {g.index: g.name for g in mesh.vertex_groups}
+    by_name = {g.name: g for g in mesh.vertex_groups}
+    weights = [{groups[g.group]: g.weight for g in v.groups
+                if g.group in groups} for v in data.vertices]
+
+    def flip(name):
+        if name.startswith("Left"):
+            return "Right" + name[4:]
+        if name.startswith("Right"):
+            return "Left" + name[5:]
+        return name
+
+    paired, orphan = 0, 0
+    merged = [None] * n
+    for v in data.vertices:
+        target = Vector((2.0 * plane_x - v.co.x, v.co.y, v.co.z))
+        co, index, dist = tree.find(target)
+        if index is None or dist > tol:
+            orphan += 1
+            continue
+        paired += 1
+        mine = weights[v.index]
+        theirs = {flip(k): w for k, w in weights[index].items()}
+        names = set(mine) | set(theirs)
+        combined = {k: (mine.get(k, 0.0) + theirs.get(k, 0.0)) / 2.0
+                    for k in names}
+        combined = {k: w for k, w in combined.items()
+                    if w > 1e-4 and k in bone_names}
+        total = sum(combined.values())
+        if total > 1e-6:
+            merged[v.index] = {k: w / total for k, w in combined.items()}
+
+    for index, table in enumerate(merged):
+        if table is None:
+            continue
+        for name in list(weights[index]):
+            if name not in table and name in by_name:
+                by_name[name].remove([index])
+        for name, w in table.items():
+            group = by_name.get(name) or mesh.vertex_groups.new(name=name)
+            by_name[name] = group
+            group.add([index], w, "REPLACE")
+    return {"ok": True, "paired": paired, "unpaired": orphan,
+            "tolerance": round(tol, 5)}
+
+
 PAY = json.loads(r"""__PAYLOAD__""")
 
 for o in list(bpy.context.scene.objects):
@@ -2749,6 +2899,13 @@ else:
     out["adopt"] = bg_adopt(mesh, kind=PAY["kind"], height=PAY["height"],
                             budget=PAY["budget"], orient=PAY["orient"])
     bpy.context.view_layer.update()
+
+    # THE AUDIT RUNS BEFORE THE BIND, because both numbers in it predict how the
+    # bind will go and neither can be recovered from afterwards. A high shell
+    # count says heat is about to weight loose islands to whatever bone is
+    # nearest; the symmetry number says whether the mirroring step below is
+    # allowed to touch this character at all.
+    out["audit"] = {"shells": shells(mesh), "symmetry": symmetry(mesh)}
 
     # HEIGHT ALONE IS NOT A FIT. bg_human's base stands in a wide A-pose and a
     # generated character rarely matches it. MEASURED on a pirate whose arms
@@ -2875,6 +3032,54 @@ else:
         if attempts[0]["unweighted"] > max(8, attempts[0]["verts"] * PAY["tolerance"]) \
                 and len(attempts) > 1:
             out["heat_failed"] = attempts[0]
+
+        # SYMMETRISE, AND ONLY WHEN THE BODY EARNS IT. "auto" is the default and
+        # it reads the audit rather than the caller's optimism: a mean mirrored
+        # distance above `sym_limit` of the character's height means the two
+        # sides are genuinely different and pairing their vertices would move
+        # weights onto the wrong anatomy. "force" is for a caller who knows the
+        # asymmetry is cosmetic; "off" is off.
+        want = PAY.get("symmetrize", "auto")
+        sym = (out.get("audit") or {}).get("symmetry") or {}
+        limit = PAY.get("sym_limit", 0.02)
+        if want == "off" or not out.get("rigged"):
+            out["symmetrised"] = {"ran": False,
+                                  "reason": "disabled" if want == "off" else
+                                            "nothing bound to mirror"}
+        elif not sym.get("ok"):
+            out["symmetrised"] = {"ran": False,
+                                  "reason": "symmetry unmeasurable: %s"
+                                            % sym.get("reason", "?")}
+        elif want != "force" and sym.get("mean", 1.0) > limit:
+            out["symmetrised"] = {
+                "ran": False, "mean": sym.get("mean"), "limit": limit,
+                "reason": ("this body is %.1f%% of its height away from its own "
+                           "mirror image, over the %.1f%% limit — mirroring "
+                           "would pair vertices with the wrong anatomy. Pass "
+                           "symmetrize='force' if the asymmetry is cosmetic"
+                           % (sym.get("mean", 0) * 100.0, limit * 100.0))}
+        else:
+            report = mirror_weights(
+                mesh, bone_names=set(b.name for b in arm.data.bones
+                                     if b.use_deform),
+                plane_x=sym.get("plane_x", 0.0),
+                tol=sym.get("height", 1.8) * PAY.get("sym_pair_tol", 0.01))
+            bpy.context.view_layer.update()
+            after = sum(1 for v in mesh.data.vertices if not v.groups)
+            report["unweighted_after"] = after
+            report["ran"] = bool(report.get("ok"))
+            # A MIRROR THAT UNBOUND VERTICES IS A REGRESSION, and it is caught
+            # here rather than in-engine. The count can only go up if the
+            # averaging dropped every group on a vertex, which means the pairing
+            # was wrong.
+            if after > out["unweighted"]:
+                report["regressed"] = True
+                out["rigged"] = bool(after <= max(
+                    8, len(mesh.data.vertices) * PAY["tolerance"]))
+            out["unweighted"] = after
+            out["unweighted_pct"] = round(
+                100.0 * after / max(len(mesh.data.vertices), 1), 3)
+            out["symmetrised"] = report
     print("__MARK__" + json.dumps(out, default=str))
 '''.replace("__MARK__", _RIG_MARK)
 
@@ -2882,7 +3087,8 @@ else:
 def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
         kind: str = "humanoid", height: float = 1.8, budget: int = 0,
         orient: bool = True, armature_name: str = "Skeleton", pose: str = "a",
-        tolerance: float = 0.01, timeout: int = 900) -> dict:
+        tolerance: float = 0.01, symmetrize: str = "auto",
+        sym_limit: float = 0.02, timeout: int = 900) -> dict:
     """Take a generated mesh to a bound, weighted, exported character.
 
     A generator hands back geometry and nothing else — `rigged: false` on every
@@ -2914,7 +3120,10 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
                # from the stance it already favours means `limbs` compensates
                # less and two characters end up closer to each other.
                "pose": pose if pose in ("a", "t") else "a",
-               "tolerance": float(tolerance)}
+               "tolerance": float(tolerance),
+               "symmetrize": (symmetrize if symmetrize in
+                              ("auto", "off", "force") else "auto"),
+               "sym_limit": float(sym_limit)}
     script = _RIG_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
     result = run_script(script, export_glb=str(out_path), timeout=timeout,
                         record=False)
@@ -2925,6 +3134,447 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
     report["out_path"] = str(out_path)
     report["seconds"] = result.get("seconds")
     return report
+
+
+# ---------------------------------------------------------------------------
+# The deformation gate
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS, AND IT IS THE SAME DISEASE THE MESH GATES HAD. rig() proves a
+# bind with the unweighted-vertex count, and that is the right proof that
+# SOMETHING was written — but zero unweighted vertices is equally true of a rig
+# whose elbow collapses to a straw the moment it bends, whose shoulder tears the
+# torso open, and whose knee pushes the calf through the thigh. Every number in
+# the rig report stays green while the character animates like a bag of spanners,
+# because nothing in this module ever POSED the thing it certified.
+#
+# So: pose it, and measure what moving it did to the body.
+#
+#   volume       posed / rest. A skin that loses a fifth of its volume in one
+#                bend is pinching somewhere, and this catches it without
+#                knowing where.
+#   pinch        per bone, the mean distance of its own vertices from its own
+#                axis, posed against rest. This is the candy-wrapper detector:
+#                a bad weight fan collapses the cross-section at the joint while
+#                the limb's length and the vertex count stay exactly the same.
+#   intersection faces passing through each other. ABSOLUTE COUNTS ARE
+#                MEANINGLESS on a generated mesh — it arrives with overlapping
+#                shells and the BVH epsilon reports some touching neighbours as
+#                hits. The gate reads the INCREASE a pose causes, which cancels
+#                that baseline exactly.
+#
+# And it renders every pose, because a number is not a picture and the whole
+# lesson of the 3D path here is that green gates are not evidence anything looks
+# right. The renders are the artefact a human or the art-QA seat actually judges.
+_FLEX_MARK = "BGATE_FLEX:"
+
+# WHAT TO BEND, and the sign is a STRESS TEST rather than anatomy. Blender poses
+# in bone-local space where +Y runs along the bone, so "X"/"Z" bend and "Y"
+# twists; a knee driven the wrong way hyperextends, which is a HARSHER test of
+# the same weights, not a wrong one. Chosen to hit every joint a walk cycle
+# moves, one bone at a time — a single-joint pose is diagnosable, a full pose
+# only tells you something somewhere is wrong.
+FLEX_POSES = (
+    ("shoulder_raise", "LeftUpperArm",  "X",   80.0),
+    ("elbow_bend",     "LeftLowerArm",  "X",  115.0),
+    ("hip_flex",       "RightUpperLeg", "X",   75.0),
+    ("knee_bend",      "RightLowerLeg", "X", -110.0),
+    ("spine_twist",    "Spine",         "Y",   40.0),
+    ("head_turn",      "Head",          "Z",   55.0),
+)
+
+_FLEX_SCRIPT = '''
+import bpy, json, math, os
+import bmesh
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def set_engine(scene, name):
+    """The kit's engine setter, inlined — this script runs with kit=False."""
+    for candidate in (name, "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"):
+        try:
+            scene.render.engine = candidate
+            return candidate
+        except TypeError:
+            continue
+    return scene.render.engine
+
+
+def eval_bm(obj, dg):
+    """A bmesh of the object AS IT DEFORMS: modifiers applied, in world space.
+
+    The armature modifier is the entire point, so the evaluated mesh is the only
+    honest thing to measure. Reading obj.data would report the rest shape in
+    every pose and the gate would pass everything.
+    """
+    ev = obj.evaluated_get(dg)
+    me = ev.to_mesh()
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.transform(ev.matrix_world)
+    bm.verts.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    ev.to_mesh_clear()
+    return bm
+
+
+def volume_of(bm):
+    try:
+        return abs(bm.calc_volume(signed=True))
+    except Exception:
+        return 0.0
+
+
+def self_pairs(bm):
+    """Distinct pairs of faces that pass through each other."""
+    try:
+        tree = BVHTree.FromBMesh(bm, epsilon=1e-5)
+        return len({(a, b) if a < b else (b, a)
+                    for a, b in tree.overlap(tree) if a != b})
+    except Exception:
+        return -1
+
+
+def dominant(mesh, bones):
+    """vertex index -> the bone that owns it, by largest weight.
+
+    Computed ONCE against the rest mesh and reused for every pose, so a pose
+    cannot change which bone a vertex is attributed to and the ratios below
+    compare the same set of vertices to itself.
+    """
+    names = {g.index: g.name for g in mesh.vertex_groups}
+    owned = {}
+    for v in mesh.data.vertices:
+        best, weight = "", 0.0
+        for g in v.groups:
+            name = names.get(g.group, "")
+            if name in bones and g.weight > weight:
+                best, weight = name, g.weight
+        if best:
+            owned.setdefault(best, []).append(v.index)
+    return owned
+
+
+def segments(arm):
+    """Every deform bone's posed head and tail, in world space."""
+    mw = arm.matrix_world
+    return {pb.name: (mw @ pb.head, mw @ pb.tail) for pb in arm.pose.bones}
+
+
+def radii(bm, owned, segs):
+    """Mean perpendicular distance of a bone's own vertices from its own axis.
+
+    Measured against the POSED axis, which is what makes it a pinch detector
+    rather than a displacement detector: a limb that swings 90 degrees and keeps
+    its shape reports the same radius it had at rest.
+    """
+    out = {}
+    for name, verts in owned.items():
+        seg = segs.get(name)
+        if not seg or not verts:
+            continue
+        head, tail = seg
+        axis = tail - head
+        length = axis.length
+        if length < 1e-6:
+            continue
+        axis = axis / length
+        total = 0.0
+        for i in verts:
+            d = bm.verts[i].co - head
+            total += (d - axis * d.dot(axis)).length
+        out[name] = total / len(verts)
+    return out
+
+
+def rest_pose(arm):
+    for pb in arm.pose.bones:
+        pb.rotation_mode = "XYZ"
+        pb.rotation_euler = (0.0, 0.0, 0.0)
+        pb.location = (0.0, 0.0, 0.0)
+        pb.scale = (1.0, 1.0, 1.0)
+
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=P["model"])
+
+arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "model": P["model"], "armatures": len(arms),
+       "meshes": len(meshes)}
+
+if not arms or not meshes:
+    out["ok"] = False
+    out["error"] = ("no %s in %s — the deformation gate needs a RIGGED model, "
+                    "which is what blender_rig produces"
+                    % ("armature" if not arms else "mesh", P["model"]))
+    print("__MARK__" + json.dumps(out))
+else:
+    arm = arms[0]
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    dg = bpy.context.evaluated_depsgraph_get()
+    bones = {b.name for b in arm.data.bones if b.use_deform}
+    out["deform_bones"] = len(bones)
+
+    rest_pose(arm)
+    bpy.context.view_layer.update()
+    dg.update()
+    bm = eval_bm(mesh, dg)
+
+    # A GENERATIVE MODIFIER BREAKS THE INDEX CORRESPONDENCE, and silently. Every
+    # ratio below pairs evaluated vertex i with rest vertex i; a subsurf or a
+    # mirror in the stack renumbers them and the pinch table becomes noise that
+    # reads like a verdict. Say so and drop that half of the report instead.
+    aligned = len(bm.verts) == len(mesh.data.vertices)
+    owned = dominant(mesh, bones) if aligned else {}
+    rest_co = [v.co.copy() for v in bm.verts]
+    rest = {"volume": volume_of(bm), "verts": len(bm.verts),
+            "faces": len(bm.faces), "self_pairs": self_pairs(bm),
+            "vertex_aligned": aligned,
+            # IS THIS MESH EVEN DRIVEN BY THE ARMATURE? Caught the hard way: the
+            # first real run of this gate reported "passed", six green poses and
+            # zero issues, on a model whose mesh carried no armature modifier at
+            # all. Nothing moved, so nothing could pinch, and a gate that passes
+            # an inert object is worse than no gate. Everything below is
+            # measured against this.
+            "armature_modifier": any(m.type == "ARMATURE" and m.object is arm
+                                     for m in mesh.modifiers),
+            "vertex_groups": len(mesh.vertex_groups)}
+    if not aligned:
+        rest["note"] = ("a generative modifier changes the vertex count, so "
+                        "per-bone pinch cannot be measured — volume and "
+                        "intersection still can")
+    rest_radii = radii(bm, owned, segments(arm))
+    rest["owned_bones"] = len(owned)
+    bm.free()
+    out["rest"] = rest
+
+    # --- the render rig: one camera that fits the REST silhouette, and it does
+    # not move between poses. A camera refitted per pose hides exactly what this
+    # is looking for, because a collapsed limb reframes as a smaller subject.
+    if P["render"]:
+        corners = [mesh.matrix_world @ Vector(c) for c in mesh.bound_box]
+        centre = sum(corners, Vector()) / 8.0
+        reach = max((c - centre).length for c in corners) or 1.0
+        cam_data = bpy.data.cameras.new("FlexCam")
+        cam_data.sensor_fit = "HORIZONTAL"
+        cam_data.angle = math.radians(45.0)
+        cam = bpy.data.objects.new("FlexCam", cam_data)
+        bpy.context.scene.collection.objects.link(cam)
+        cam.rotation_euler = (math.radians(90), 0, 0)
+        # 2.6x reach, not a fitted distance: a raised arm and a folded knee both
+        # leave the rest bounding box, and a frame that crops the pose crops the
+        # evidence.
+        cam.location = (centre.x, centre.y - reach * 2.6, centre.z)
+        bpy.context.scene.camera = cam
+        scene = bpy.context.scene
+        set_engine(scene, P["engine"])
+        scene.render.resolution_x, scene.render.resolution_y = P["size"]
+        scene.render.image_settings.file_format = "PNG"
+        scene.render.film_transparent = False
+        try:
+            shading = scene.display.shading
+            shading.light = "STUDIO"
+            shading.color_type = "SINGLE"
+            shading.show_shadows = True
+            shading.show_cavity = True
+        except Exception:
+            pass
+
+    poses = []
+    for label, bone, axis, degrees in P["poses"]:
+        pb = arm.pose.bones.get(bone)
+        record = {"label": label, "bone": bone, "axis": axis,
+                  "degrees": degrees}
+        if pb is None:
+            record["skipped"] = "no bone %r on this armature" % bone
+            poses.append(record)
+            continue
+        rest_pose(arm)
+        pb.rotation_mode = "XYZ"
+        angle = math.radians(degrees)
+        pb.rotation_euler = {"X": (angle, 0, 0), "Y": (0, angle, 0),
+                             "Z": (0, 0, angle)}[axis]
+        bpy.context.view_layer.update()
+        dg.update()
+        posed = eval_bm(mesh, dg)
+        record["volume_ratio"] = (round(volume_of(posed) / rest["volume"], 4)
+                                  if rest["volume"] > 1e-9 else None)
+        # DID ANYTHING MOVE. The cheapest possible fact and the one that decides
+        # whether every other number in this record means anything.
+        moved = 0.0
+        if len(posed.verts) == len(rest_co):
+            for i, co in enumerate(rest_co):
+                d = (posed.verts[i].co - co).length
+                if d > moved:
+                    moved = d
+        record["max_displacement"] = round(moved, 5)
+        pairs = self_pairs(posed)
+        record["self_pairs"] = pairs
+        record["new_self_pairs"] = (pairs - rest["self_pairs"]
+                                    if pairs >= 0 and rest["self_pairs"] >= 0
+                                    else None)
+        if aligned:
+            now = radii(posed, owned, segments(arm))
+            table = {}
+            for name, value in now.items():
+                base = rest_radii.get(name) or 0.0
+                if base > 1e-6:
+                    table[name] = round(value / base, 4)
+            if table:
+                worst = min(table.items(), key=lambda kv: kv[1])
+                record["worst_pinch"] = {"bone": worst[0], "ratio": worst[1]}
+            # ONLY THE BONES THAT MOVED. THE FULL TABLE DOES NOT FIT DOWN THE
+            # PIPE. run_script keeps the last 4000 characters of stdout, a
+            # 23-bone table per pose is ~1.1 KB, and six poses of it pushed the
+            # front of the marked JSON line off the top — so the report parsed
+            # as absent and flex() reported "no report from Blender" on a run
+            # that had worked perfectly. Twenty entries reading 1.0 were never
+            # the useful part anyway.
+            record["pinch"] = dict(sorted(
+                ((k, v) for k, v in table.items() if abs(v - 1.0) > 0.005),
+                key=lambda kv: kv[1])[:6])
+        posed.free()
+
+        if P["render"]:
+            path = os.path.join(P["out_dir"], "%s_%s.png" % (P["stem"], label))
+            bpy.context.scene.render.filepath = path
+            bpy.ops.render.render(write_still=True)
+            record["render"] = path
+        poses.append(record)
+
+    rest_pose(arm)
+    out["poses"] = poses
+    print("__MARK__" + json.dumps(out, default=str))
+'''.replace("__MARK__", _FLEX_MARK)
+
+
+def flex(model: str | os.PathLike[str], out_dir: str | os.PathLike[str] = "", *,
+         stem: str = "flex", poses: Optional[list] = None, render: bool = True,
+         size: tuple[int, int] = (512, 512), engine: str = DEFAULT_ENGINE,
+         volume_tolerance: float = 0.18, pinch_tolerance: float = 0.60,
+         intersect_tolerance: float = 0.004, timeout: int = 600) -> dict:
+    """Bend a rigged character and report what bending it did to the body.
+
+    THE COMPANION PROOF TO `rig`, AND THE ONE THAT ANSWERS A DIFFERENT QUESTION.
+    `rigged: true` means weights exist. This means the weights are usable: the
+    volume holds, the joints do not collapse, and the limbs do not pass through
+    the torso. A rig can pass the first and fail every part of the second, and
+    until this existed nothing in the pipeline would have noticed.
+
+    Returns {ok, rest, poses:[...], verdict:{passed, issues}}. `passed` False is
+    a REFUSAL to call the character animatable, the same way `rigged` False is.
+    The renders are on each pose record; look at them.
+
+    volume_tolerance     how much volume a single-joint bend may lose (0.18 =
+                         18%). Measured on a good bind: a 115-degree elbow costs
+                         2-6%; a collapsed fan costs 25% and up.
+    pinch_tolerance      the smallest acceptable posed/rest cross-section at a
+                         joint. 1.0 is rigid perfection, 0.6 is a visible waist
+                         on the elbow, below 0.4 is a straw.
+    intersect_tolerance  new intersecting face pairs, as a fraction of face
+                         count, before a pose counts as self-penetrating.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    out = Path(out_dir or (src.parent / "flex"))
+    if render:
+        out.mkdir(parents=True, exist_ok=True)
+    chosen = [list(p) for p in (poses or FLEX_POSES)]
+    payload = {"model": str(src).replace("\\", "/"), "poses": chosen,
+               "render": bool(render), "engine": engine,
+               "size": [int(size[0]), int(size[1])], "stem": stem,
+               "out_dir": str(out).replace("\\", "/")}
+    script = _FLEX_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False,
+                        engine=engine, out_dir=str(out))
+    report = _marked(result, _FLEX_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    if report.get("ok"):
+        report["verdict"] = flex_verdict(
+            report, volume_tolerance=volume_tolerance,
+            pinch_tolerance=pinch_tolerance,
+            intersect_tolerance=intersect_tolerance)
+    return report
+
+
+def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
+                 pinch_tolerance: float = 0.60,
+                 intersect_tolerance: float = 0.004) -> dict:
+    """The judgement, kept OUT of the Blender script on purpose.
+
+    Thresholds are a policy and a caller may reasonably disagree with them; the
+    measurement is a fact and it is expensive. Separating them means a project
+    can re-judge a stored report without re-rendering a character.
+    """
+    rest = report.get("rest") or {}
+    faces = int(rest.get("faces") or 0)
+    budget = max(8, int(faces * intersect_tolerance))
+    issues: list[dict] = []
+    poses = report.get("poses") or []
+
+    # INERTNESS IS CHECKED FIRST AND IT DOMINATES. A mesh that no bone drives
+    # cannot lose volume, cannot pinch and cannot self-intersect, so every other
+    # threshold here reports perfection on it. The first real run of this gate
+    # passed exactly such a model — six green poses, zero issues, an armature
+    # sitting inside a mesh that was never bound to it.
+    displaced = [p.get("max_displacement") for p in poses
+                 if p.get("max_displacement") is not None]
+    if rest and not rest.get("armature_modifier"):
+        issues.append({"pose": "*", "kind": "inert",
+                       "note": "the mesh carries no armature modifier bound to "
+                               "this skeleton — nothing here deforms, and every "
+                               "other measurement in this report is vacuous"})
+    elif rest and not rest.get("vertex_groups"):
+        issues.append({"pose": "*", "kind": "inert",
+                       "note": "the mesh has no vertex groups — the modifier is "
+                               "attached but there are no weights for it to use"})
+    elif displaced and max(displaced) < 1e-4:
+        issues.append({"pose": "*", "kind": "inert",
+                       "value": max(displaced),
+                       "note": "no pose moved a single vertex more than 0.1 mm "
+                               "— the bind is decorative"})
+
+    for pose in poses:
+        label = pose.get("label", "?")
+        if pose.get("skipped"):
+            issues.append({"pose": label, "kind": "skipped",
+                           "note": pose["skipped"]})
+            continue
+        ratio = pose.get("volume_ratio")
+        if ratio is not None and ratio < 1.0 - volume_tolerance:
+            issues.append({"pose": label, "kind": "volume",
+                           "value": ratio,
+                           "note": f"body lost {(1 - ratio) * 100:.1f}% of its "
+                                   "volume in one bend — a weight fan is "
+                                   "collapsing the joint"})
+        worst = pose.get("worst_pinch") or {}
+        if worst and worst.get("ratio", 1.0) < pinch_tolerance:
+            issues.append({"pose": label, "kind": "pinch",
+                           "bone": worst.get("bone"), "value": worst.get("ratio"),
+                           "note": f"{worst.get('bone')} keeps only "
+                                   f"{worst.get('ratio', 0) * 100:.0f}% of its "
+                                   "cross-section — candy-wrapper twist"})
+        new_pairs = pose.get("new_self_pairs")
+        if new_pairs is not None and new_pairs > budget:
+            issues.append({"pose": label, "kind": "intersection",
+                           "value": new_pairs,
+                           "note": f"{new_pairs} face pairs that did not "
+                                   "intersect at rest do in this pose — the "
+                                   "limb is passing through the body"})
+    return {"passed": not issues, "issues": issues,
+            "checked": len(report.get("poses") or []),
+            "intersect_budget": budget,
+            "thresholds": {"volume": volume_tolerance,
+                           "pinch": pinch_tolerance,
+                           "intersect": intersect_tolerance}}
 
 
 # ---------------------------------------------------------------------------

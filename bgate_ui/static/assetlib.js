@@ -40,7 +40,8 @@ window.AssetLib = (() => {
   ];
 
   let data = null, loading = false;
-  let view = { cat:"", search:"", status:"", sort:"name", dense:false };
+  let view = { cat:"", search:"", status:"", sort:"name", dense:false,
+               working:false };
   let openKey = null;
 
   /* ── styles ───────────────────────────────────────────────────────────── */
@@ -142,6 +143,13 @@ window.AssetLib = (() => {
 
   function families(){
     let out = (data.families || []).slice();
+    // WORKING FILES ARE A DIFFERENT DRAWER, not a filter of this one. The art
+    // seat's scratch renders, tmp/ and test fixtures live outside
+    // res://assets/**, so the engine cannot load any of them — they are all,
+    // correctly, "unused", and on a real project they were 508 of 775 families.
+    // Two thirds of the page was grey rows that could never turn green and that
+    // nobody could act on, which is what buried the assets that matter.
+    if (!view.working) out = out.filter(f => !f.working);
     if (view.cat) out = out.filter(f => f.category === view.cat);
     if (view.search){
       const q = view.search;
@@ -169,8 +177,13 @@ window.AssetLib = (() => {
     if (!host || !data) return;
     const st = data.stats || {};
     const shown = families();
+    // Counted over the drawer you are IN. A rail that promises 289 under "art"
+    // and then shows nothing, because art is all working files, is worse than
+    // no count at all.
     const catCount = {};
     (data.families || []).forEach(f => {
+      if (!view.working && f.working) return;
+      if (view.working && !f.working) return;
       catCount[f.category] = (catCount[f.category] || 0) + 1; });
 
     const chip = (on, cls, onclick, inner, title) =>
@@ -194,7 +207,9 @@ window.AssetLib = (() => {
                "Carries a rig sidecar — labelled slots the gear pipeline can read.")}
         ${chip(view.status === "unrigged", "", "AssetLib.setStatus('unrigged')",
                `no rig`, "Image families with no rig sidecar — the gear pipeline has to guess.")}
-        <span class="al-sum">${shown.length} of ${st.families || 0} families ·
+        <span class="al-sum">${shown.length} of ${
+          view.working ? (st.working || 0)
+                       : (st.in_use || 0) + (st.unused || 0)} families ·
           ${st.files || 0} files${data.truncated ? " · scan truncated" : ""}</span>
       </div>
       <div class="al-rail">
@@ -206,8 +221,16 @@ window.AssetLib = (() => {
         ${SORTS.map(s => chip(view.sort === s.id, "",
           `AssetLib.setSort('${s.id}')`, E(s.label))).join("")}
         ${chip(view.dense, "", "AssetLib.toggleDense()", "compact")}
+        ${st.working ? chip(view.working, "", "AssetLib.toggleWorking()",
+          `working files <b>${st.working}</b>`,
+          "Files outside res://assets/** — the art seat's scratch renders, tmp/, "
+          + "test fixtures. The engine cannot load any of them, so they are all "
+          + "'unused' and none of that is a defect.") : ""}
         ${chip(false, "", "AssetLib.refresh()", "rescan")}
       </div>
+      ${view.working ? `<div class="al-note">Working files — outside
+        <code>res://assets/</code>, so the game cannot load them. Nothing here
+        being "unused" is a problem.</div>` : ""}
       ${data.map_error ? `<div class="al-note" style="color:var(--warn)">
         Usage is unknown: ${E(data.map_error)}</div>` : ""}
       <div id="al-body"></div>`;
@@ -430,8 +453,12 @@ window.AssetLib = (() => {
   function setStatus(s){ view.status = view.status === s ? "" : s; render(); }
   function setSort(s){ view.sort = s; render(); }
   function toggleDense(){ view.dense = !view.dense; render(); }
+  /* Category comes back with it: the two drawers have almost no categories in
+     common, so keeping `art` selected on the way back to shipping assets lands
+     on an empty grid that reads as a broken page. */
+  function toggleWorking(){ view.working = !view.working; view.cat = ""; render(); }
 
   return { activate, refresh, render, open, close, edit, editAudio, wire, task, review,
-           setSearch, setCat, setStatus, setSort, toggleDense,
+           setSearch, setCat, setStatus, setSort, toggleDense, toggleWorking,
            get data(){ return data; } };
 })();

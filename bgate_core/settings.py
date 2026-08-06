@@ -245,6 +245,30 @@ SETTINGS: tuple[Setting, ...] = (
         help="How hard the trained style pulls, 0-1. Krea recommends 0.8-0.9; "
              "1.0 is where a style stops being a style and becomes a stamp. A "
              "style's own record can override this per style."),
+    Setting(
+        key="art.runner", group="Art", kind=ENUM, default="claude",
+        choices=("claude", "codex"),
+        store=("registry", "art.runner"), scope=MACHINE,
+        env="BGATE_ART_RUNNER",
+        help="Which CLI the art seat's agents run on. `codex` is here for one "
+             "reason: it generates images itself, which is what art.image_"
+             "backend switches between. It cannot be steered mid-run and it "
+             "reports tokens rather than dollars, so the per-run cost ceiling "
+             "does not apply to it — those runs are marked cost-not-tracked "
+             "wherever they are shown. Every other seat stays on claude."),
+    Setting(
+        key="art.image_backend", group="Art", kind=ENUM, default="bgate",
+        choices=("bgate", "native"),
+        store=("registry", "art.image_backend"),
+        env="BGATE_IMAGE_BACKEND",
+        help="Who makes the PIXELS, and nothing else. `bgate` is image_generate "
+             "and the pipeline behind it: pinned references, the trained style, "
+             "consistency_check, the artifact ledger, BGATE_IMAGE_MODEL. "
+             "`native` lets a runner that has its own image tool use it — "
+             "faster, and outside all of that. Either way the agent still "
+             "reads refs, holds locks, checks consistency and registers what it "
+             "made; only the generation call changes. On a runner with no image "
+             "tool of its own this falls back to `bgate` rather than failing."),
 
     # -- Follow-up ----------------------------------------------------------
     Setting(
