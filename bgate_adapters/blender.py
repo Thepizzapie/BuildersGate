@@ -3818,6 +3818,119 @@ def humanoid_template() -> dict:
     }
 
 
+_TDEV_MARK = "BGATE_TDEV:"
+
+_TDEV_SCRIPT = '''
+import bpy, json
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def joints(path):
+    """Every bone's HEAD position, in that file's own body-height fraction.
+
+    Height-normalised, not world-space: a candidate rigged at a different
+    height than the reference template is not itself a deviation, and
+    comparing raw metres would report one on every character.
+    """
+    for o in list(bpy.context.scene.objects):
+        bpy.data.objects.remove(o, do_unlink=True)
+    bpy.ops.import_scene.gltf(filepath=path)
+    arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    if not arms:
+        return None, 0.0
+    arm = arms[0]
+    height = 1.0
+    if meshes:
+        mesh = max(meshes, key=lambda o: len(o.data.polygons))
+        height = max(mesh.dimensions[2], 1e-6)
+    out = {}
+    for b in arm.data.bones:
+        head = arm.matrix_world @ b.head_local
+        out[b.name] = [head.x / height, head.y / height, head.z / height]
+    return out, height
+
+
+ref_joints, ref_height = joints(P["reference"])
+cand_joints, cand_height = joints(P["candidate"])
+out = {"ok": bool(ref_joints and cand_joints),
+       "reference_height": ref_height, "candidate_height": cand_height,
+       "reference_joints": ref_joints or {}, "candidate_joints": cand_joints or {}}
+if not out["ok"]:
+    out["error"] = "reference or candidate has no armature"
+print("__MARK__" + json.dumps(out))
+'''.replace("__MARK__", _TDEV_MARK)
+
+
+def template_deviation(model: str | os.PathLike[str], *,
+                       reference: Optional[str | os.PathLike[str]] = None,
+                       timeout: int = 300) -> dict:
+    """How far a rigged character's joints sit from the shipped template's.
+
+    Every generated humanoid is meant to share ONE skeleton's proportions —
+    that is the entire point of conditioning the plate on HUMANOID_SKELETON
+    (see humanoid_template) rather than inventing a rig per character. This
+    is the check that claim actually holds: bone HEAD positions, matched by
+    NAME (both rigs use the same 23-name schema, so there is no
+    correspondence problem to solve — the harder Chamfer-distance matching
+    the rigging literature needs for unlabeled skeletons does not apply
+    here), compared in body-height-normalised space so two characters of
+    different heights are not penalised for that alone.
+
+    NOT a weight comparison. RigNet-style weight-L1 needs the reference and
+    the candidate to share mesh topology — vertex 4000 on one is vertex 4000
+    on the other — which is never true here: the template skeleton and a
+    generated character are different meshes entirely. Only joint position
+    is comparable across them.
+
+    Returns {ok, reference_height, candidate_height, reference_joints,
+    candidate_joints}. Judge with template_deviation_verdict.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    ref = Path(reference) if reference else HUMANOID_SKELETON
+    if not ref.is_file():
+        return {"ok": False, "error": f"no reference skeleton at {ref}"}
+    payload = {"model": str(src), "reference": str(ref).replace("\\", "/"),
+               "candidate": str(src).replace("\\", "/")}
+    script = _TDEV_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False)
+    report = _marked(result, _TDEV_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> dict:
+    """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+
+    max_deviation is a fraction of body height. 0.08 mirrors the 6 cm-on-a-1.8m
+    -figure incident already documented against humanoid_template — roughly
+    the same tolerance band, reused rather than re-derived.
+    """
+    ref = report.get("reference_joints") or {}
+    cand = report.get("candidate_joints") or {}
+    shared = sorted(set(ref) & set(cand))
+    issues: list[dict] = []
+    deviations = {}
+    for name in shared:
+        rx, ry, rz = ref[name]
+        cx, cy, cz = cand[name]
+        dist = ((rx - cx) ** 2 + (ry - cy) ** 2 + (rz - cz) ** 2) ** 0.5
+        deviations[name] = round(dist, 4)
+        if dist > max_deviation:
+            issues.append({"bone": name, "kind": "displaced", "value": round(dist, 4),
+                           "note": f"{name} sits {dist:.3f} body-heights from "
+                                   "where the template puts it — a fit that "
+                                   "landed it off the character's own anatomy"})
+    return {"passed": not issues, "issues": issues, "checked": len(shared),
+            "deviations": deviations, "threshold": max_deviation}
+
+
 def _plate_provider(name: str):
     """The module that generates a plate. krea or the gpt-image path."""
     if (name or "").strip().lower() == "krea":
