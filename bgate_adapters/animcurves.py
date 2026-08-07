@@ -371,3 +371,179 @@ def foot_skate_verdict(result: dict, *, max_skating_frames: int = 0) -> dict:
                                f"{result.get('worst_slide')} units — the "
                                "classic mocap-cleanup footskate signature"})
     return {"passed": not issues, "issues": issues}
+
+
+# ---------------------------------------------------------------------------
+# Anticipation / follow-through, via Laplacian-of-Gaussian correlation
+#
+# EXPERIMENTAL — no prior art as a detector. Wang, Xu & Cohen's "The Cartoon
+# Animation Filter" (SIGGRAPH 2006) shows the FORWARD direction: convolving a
+# motion curve against an inverted Laplacian-of-Gaussian and adding the
+# result back CREATES anticipation, overshoot and follow-through. That is a
+# real, cited result. Running the correlation in the other direction — to
+# DETECT whether those effects are already present in a curve — has no
+# published precedent that this project's research turned up; this is that
+# attempt, not an adopted technique. Treat a FAIL as "worth a look", not a
+# confirmed defect, until it has been checked against known-good clips from
+# this project's own pipeline.
+#
+# WHAT IT ACTUALLY MEASURES. A raw piecewise-linear transition (value ramps
+# at a constant rate between two held poses) is mathematically a straight
+# line's second derivative: zero everywhere except at the two corners, where
+# it is a sharp spike. Shaping the transition — easing it, giving it a
+# wind-up, letting it overshoot and settle — spreads that curvature out over
+# real time instead of concentrating it at an instant. The LoG response's
+# peak width (FWHM) at each transition is exactly that: how wide the
+# curvature event is, as a fraction of the clip. A narrow spike is at
+# minimum the ABSENCE of shaping — necessary for calling anticipation or
+# follow-through present, but not sufficient (a curve can be spread-out from
+# simple easing alone, with no true wind-up). This does not claim to tell
+# the two apart.
+# ---------------------------------------------------------------------------
+
+def _resample_uniform(times: list[float], values: list[float],
+                      n: int | None = None) -> tuple[list[float], list[float]]:
+    """Linear-resample a scalar track onto a uniform time grid.
+
+    LoG convolution below needs a fixed dt to be a real convolution rather
+    than an ad-hoc weighted sum; exported baked animation is uniform in
+    practice (fixed frame rate), but a caller should not have to know that.
+    """
+    n = n or len(times)
+    if len(times) < 2 or n < 2:
+        return list(times), list(values)
+    t0, t1 = times[0], times[-1]
+    if t1 - t0 <= 1e-9:
+        return list(times), list(values)
+    grid = [t0 + i * (t1 - t0) / (n - 1) for i in range(n)]
+    out, j = [], 0
+    for t in grid:
+        while j < len(times) - 2 and times[j + 1] < t:
+            j += 1
+        t_lo, t_hi = times[j], times[j + 1]
+        v_lo, v_hi = values[j], values[j + 1]
+        frac = (t - t_lo) / (t_hi - t_lo) if t_hi > t_lo else 0.0
+        out.append(v_lo + frac * (v_hi - v_lo))
+    return grid, out
+
+
+def _log_kernel(sigma: float, dt: float) -> list[float]:
+    """Discrete 1D Laplacian-of-Gaussian, zero-mean, over +/- 3 sigma.
+
+    LoG(t) = (t^2 - sigma^2) / sigma^4 * exp(-t^2 / (2 sigma^2)) — the second
+    derivative of a Gaussian, up to a constant factor. A true LoG integrates
+    to zero; the discretisation only approximates that, so the mean is
+    subtracted explicitly rather than trusted to cancel on its own.
+    """
+    radius = max(2, int(round(3 * sigma / max(dt, 1e-9))))
+    kernel = []
+    for i in range(-radius, radius + 1):
+        t = i * dt
+        kernel.append((t * t - sigma * sigma) / (sigma ** 4)
+                      * math.exp(-(t * t) / (2 * sigma * sigma)))
+    mean = sum(kernel) / len(kernel)
+    return [k - mean for k in kernel]
+
+
+def log_response(times: list[float], values: list[float], *,
+                 sigma_samples: float = 1.5) -> dict:
+    """Convolve a scalar track against a LoG kernel scaled to SAMPLE spacing.
+
+    `sigma` is given in units of the track's own sample interval, not a
+    fraction of total clip duration — a first calibration pass against
+    synthetic data (a raw linear ramp inside a longer clip vs. the same
+    ramp eased) found that scaling the kernel to total duration let a short
+    ramp inside a long clip and a long ramp inside a short clip register as
+    whichever the clip's OTHER content happened to be, regardless of how
+    the ramp itself was authored. Scaling to sample spacing instead makes
+    this a genuinely local, frame-scale measure — a raw corner produces a
+    response only a few samples wide no matter how long the surrounding
+    clip is. Edge samples clamp the kernel index (replicate padding) rather
+    than zero-pad, which would read as a fake sharp transition at both
+    endpoints of every clip.
+    """
+    grid, uniform = _resample_uniform(times, values)
+    n = len(grid)
+    if n < 5:
+        return {"times": grid, "response": [0.0] * n, "sigma": 0.0}
+    dt = (grid[-1] - grid[0]) / (n - 1) if n > 1 else 0.0
+    sigma = max(sigma_samples * dt, 1e-6)
+    kernel = _log_kernel(sigma, dt)
+    radius = len(kernel) // 2
+    response = []
+    for i in range(n):
+        acc = 0.0
+        for k, w in enumerate(kernel):
+            j = min(max(i + (k - radius), 0), n - 1)
+            acc += w * uniform[j]
+        response.append(acc)
+    return {"times": grid, "response": response, "sigma": sigma}
+
+
+def _peaks(signal: list[float], *, min_prominence_frac: float = 0.15) -> list[int]:
+    """Local maxima of |signal|, above min_prominence_frac of its own peak."""
+    absig = [abs(x) for x in signal]
+    peak = max(absig) if absig else 0.0
+    if peak <= 1e-12:
+        return []
+    floor = min_prominence_frac * peak
+    return [i for i in range(1, len(absig) - 1)
+            if absig[i] >= absig[i - 1] and absig[i] >= absig[i + 1]
+            and absig[i] >= floor]
+
+
+def _fwhm_samples(signal: list[float], center: int) -> int:
+    """Full-width-at-half-maximum of the peak at `center`, in SAMPLES."""
+    absig = [abs(x) for x in signal]
+    level = absig[center] / 2.0
+    lo = center
+    while lo > 0 and absig[lo] >= level:
+        lo -= 1
+    hi = center
+    while hi < len(absig) - 1 and absig[hi] >= level:
+        hi += 1
+    return hi - lo
+
+
+def anticipation_verdict(times: list[float], values: list[float], *,
+                         sigma_samples: float = 1.5,
+                         min_prominence_frac: float = 0.15,
+                         min_width_samples: float = 6.0) -> dict:
+    """EXPERIMENTAL — see the module-level note above this section.
+
+    Flags a transition whose curvature is a narrow spike (raw interpolated
+    corner, FWHM under `min_width_samples`) rather than spread across
+    several samples. `values` should be ONE scalar component of a channel
+    (a single translation axis, or a single Euler/quaternion component) —
+    this operates on a 1D signal, not a vector.
+
+    A REAL RESOLUTION FLOOR, not just a threshold to tune: calibration
+    against synthetic curves found clear separation for transitions that
+    span many samples (a 1-second ramp at 20 samples/sec: 4 samples FWHM
+    raw vs. 8 eased) but much weaker separation for transitions that
+    complete in only a handful of frames (a 0.2-second ramp at 40
+    samples/sec: 4 vs. 5) — there is not enough data in a few frames for
+    ANY method to tell "instant" from "eased-but-fast" apart with
+    confidence. This is most trustworthy on the slower, holdier
+    transitions classical anticipation actually applies to (a wind-up
+    before a strike), least trustworthy on quick twitches.
+    """
+    lr = log_response(times, values, sigma_samples=sigma_samples)
+    resp, grid = lr["response"], lr["times"]
+    n = len(resp)
+    if n < 8:
+        return {"passed": True, "issues": [], "events": 0, "sigma": lr["sigma"]}
+    peaks = _peaks(resp, min_prominence_frac=min_prominence_frac)
+    issues = []
+    for p in peaks:
+        width_samples = _fwhm_samples(resp, p)
+        if width_samples < min_width_samples:
+            issues.append({"time": round(grid[p], 4),
+                           "width_samples": width_samples,
+                           "kind": "unshaped_transition",
+                           "note": "curvature at this moment is a narrow "
+                                   "spike, flat on either side — reads as a "
+                                   "raw interpolated corner rather than a "
+                                   "wind-up or a settle"})
+    return {"passed": not issues, "issues": issues, "events": len(peaks),
+            "sigma": lr["sigma"]}

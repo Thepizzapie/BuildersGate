@@ -162,3 +162,54 @@ def test_foot_skate_catches_a_sliding_plant():
     verdict = ac.foot_skate_verdict(result)
     assert result["skating_frames"] > 0
     assert verdict["passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Anticipation / follow-through via LoG correlation — EXPERIMENTAL
+# ---------------------------------------------------------------------------
+
+def _hold_ramp_hold(times, ease, ramp_start=1.0, ramp_end=2.0):
+    values = []
+    for t in times:
+        if t < ramp_start:
+            values.append(0.0)
+        elif t < ramp_end:
+            x = (t - ramp_start) / (ramp_end - ramp_start)
+            values.append(3 * x * x - 2 * x * x * x if ease else x)
+        else:
+            values.append(1.0)
+    return values
+
+
+def test_anticipation_verdict_flags_a_raw_linear_corner():
+    times = [i * 0.05 for i in range(60)]  # 3s clip, 1s ramp
+    values = _hold_ramp_hold(times, ease=False)
+    verdict = ac.anticipation_verdict(times, values)
+    assert verdict["passed"] is False
+    assert verdict["events"] == 2
+    assert all(i["kind"] == "unshaped_transition" for i in verdict["issues"])
+
+
+def test_anticipation_verdict_passes_an_eased_transition():
+    times = [i * 0.05 for i in range(60)]
+    values = _hold_ramp_hold(times, ease=True)
+    verdict = ac.anticipation_verdict(times, values)
+    assert verdict["passed"] is True
+
+
+def test_anticipation_verdict_ignores_a_flat_signal():
+    times = [i * 0.05 for i in range(60)]
+    values = [1.0] * 60
+    verdict = ac.anticipation_verdict(times, values)
+    assert verdict["passed"] is True
+    assert verdict["events"] == 0
+
+
+def test_log_response_is_zero_mean_on_a_constant_signal():
+    """A LoG kernel integrates to (approximately) zero, so convolving it
+    against a constant should leave a response near zero everywhere — the
+    kernel construction's own zero-mean correction is what this checks."""
+    times = [i * 0.05 for i in range(40)]
+    values = [5.0] * 40
+    result = ac.log_response(times, values)
+    assert max(abs(r) for r in result["response"]) < 1e-6
