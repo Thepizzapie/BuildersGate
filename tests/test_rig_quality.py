@@ -141,6 +141,77 @@ def test_template_deviation_only_compares_shared_bones():
 
 
 # ---------------------------------------------------------------------------
+# Silhouette across the pose sweep — EXPERIMENTAL
+# ---------------------------------------------------------------------------
+
+def test_hull_area_of_a_unit_square():
+    assert blender._hull_area([(0, 0), (1, 0), (1, 1), (0, 1)]) == 1.0
+
+
+def test_hull_area_ignores_an_interior_point():
+    pts = [(0, 0), (1, 0), (1, 1), (0, 1), (0.5, 0.5)]
+    assert blender._hull_area(pts) == 1.0
+
+
+def test_hull_area_of_a_triangle():
+    assert blender._hull_area([(0, 0), (2, 0), (0, 2)]) == 2.0
+
+
+def test_hull_area_is_zero_on_collinear_points():
+    assert blender._hull_area([(0, 0), (1, 0), (2, 0)]) == 0.0
+
+
+def test_hull_area_is_zero_on_fewer_than_three_points():
+    assert blender._hull_area([]) == 0.0
+    assert blender._hull_area([(1, 1)]) == 0.0
+    assert blender._hull_area([(0, 0), (1, 1)]) == 0.0
+
+
+def test_silhouette_verdict_passes_an_ordinary_pose_change():
+    report = {"poses": [{"label": "arm_raise", "area_ratio": 1.4},
+                        {"label": "elbow_bend", "area_ratio": 0.85}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 2
+
+
+def test_silhouette_verdict_catches_a_collapse():
+    report = {"poses": [{"label": "knee_bend", "area_ratio": 0.05}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["kind"] == "collapsed"
+
+
+def test_silhouette_verdict_catches_an_explosion():
+    report = {"poses": [{"label": "spine_twist", "area_ratio": 12.0}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["kind"] == "exploded"
+
+
+def test_silhouette_verdict_skips_unmeasured_poses():
+    report = {"poses": [{"label": "head_turn", "skipped": "no bone"},
+                        {"label": "knee_bend", "area_ratio": None}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 0
+
+
+@needs_blender
+def test_silhouette_measures_a_real_bind(bound_glb):
+    out, _ = bound_glb
+    got = blender.silhouette(str(out), timeout=900)
+    assert got["ok"] is True, got.get("error")
+    assert got["rest_area"] > 0
+    assert got["rest_points"] >= 3
+    verdict = blender.silhouette_verdict(got)
+    # bg_human's own walk-cycle poses on its own body should not collapse or
+    # explode the projected silhouette from flex's fixed camera.
+    assert verdict["checked"] >= 4
+    assert verdict["passed"] is True, verdict["issues"]
+
+
+# ---------------------------------------------------------------------------
 # Coverage: are the essential humanoid bones present, under the exact name
 # ---------------------------------------------------------------------------
 
