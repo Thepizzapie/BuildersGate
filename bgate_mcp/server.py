@@ -1290,6 +1290,14 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
 
     AND `rigged: true` IS STILL NOT "ANIMATABLE". Run blender_flex on the
     output: it bends the thing and measures what bending it did.
+
+    `coverage` (kind="humanoid" only) is a fast pre-check for the 15 bone
+    names godot_retarget_check calls essential — Hips, the spine/head chain,
+    both arms, both legs, under the EXACT name a BoneMap-free retarget
+    matches by. It cannot see hierarchy or binding, only naming, so a pass
+    here is not a substitute for retarget_check against the real engine —
+    it just means a naming problem shows up now instead of after the Godot
+    round-trip.
     """
     try:
         result = _blender.rig(model, out_path, kind=kind, height=height,
@@ -1297,9 +1305,14 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
                               armature_name=armature_name,
                               symmetrize=symmetrize, timeout=timeout)
         if result.get("ok"):
+            coverage = result.get("coverage") or {}
+            note = ""
+            if coverage:
+                note = (" [coverage OK]" if coverage.get("passed")
+                        else f" [coverage MISSING {coverage.get('missing')}]")
             _log("blender",
                  f"rigged {model} -> {result.get('bound_with')} "
-                 f"({result.get('unweighted_pct')}% unweighted)",
+                 f"({result.get('unweighted_pct')}% unweighted){note}",
                  ref=str(out_path))
         return result
     except Exception as exc:
