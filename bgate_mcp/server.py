@@ -1360,6 +1360,44 @@ def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
 
 
 @_tool
+def blender_weights(model: str, threshold: float = 0.02,
+                    min_largest_fraction: float = 0.9,
+                    min_bleed_vertices: int = 3, timeout: int = 300) -> dict:
+    """Per deform bone, does its weight paint cover one patch of the mesh or two.
+
+    A THIRD RIG PROOF, ALONGSIDE `blender_rig` AND `blender_flex`. Neither of
+    those catches this: `rig()`'s `unweighted` count only sees vertices with
+    NO weight, and `flex()` only sees a joint after it bends. Bleed is
+    neither — a hand painted mostly to Hand but partly to Spine, because a
+    brush stroke crossed empty space in the viewport rather than the mesh
+    surface, has full weight coverage and may not even move wrong at any of
+    flex's six test poses if the bleed region is small. It still reads as a
+    seam-tearing glitch the moment the spine and the hand pose differently.
+
+    Reports each deform bone's weighted vertices as connected components on
+    the mesh surface (edge adjacency, not proximity — a seam does not count
+    as touching). One component is healthy. `verdict.passed` False names
+    which bones split and how many vertices sit off their own patch.
+    """
+    try:
+        report = _blender.weight_islands(model, threshold=threshold, timeout=timeout)
+        if report.get("ok"):
+            verdict = _blender.weight_islands_verdict(
+                report, min_largest_fraction=min_largest_fraction,
+                min_bleed_vertices=min_bleed_vertices)
+            report["verdict"] = verdict
+            _log("blender",
+                 f"weight-islands {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} bleeding bones over "
+                 f"{verdict.get('checked', 0)} checked)",
+                 ref=str(model))
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def blender_texture(model: str, image: str, out_path: str, material: str = "",
                     all_slots: bool = False, roughness: str = "",
                     metallic: str = "", normal: str = "", emission: str = "",

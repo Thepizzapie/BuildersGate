@@ -3577,6 +3577,140 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
                            "intersect": intersect_tolerance}}
 
 
+_WEIGHTS_MARK = "BGATE_WEIGHTS:"
+
+_WEIGHTS_SCRIPT = '''
+import bpy, json
+import bmesh
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def islands(bm, indices):
+    """Connected components of a vertex-index subset, via mesh EDGE adjacency.
+
+    Edges, not spatial proximity: two vertices can sit a millimetre apart
+    across a seam and share no edge, which is exactly the case a weight
+    painted right up to a seam should NOT be flagged for.
+    """
+    remaining = set(indices)
+    out = []
+    while remaining:
+        start = next(iter(remaining))
+        seen = {start}
+        remaining.discard(start)
+        stack = [start]
+        while stack:
+            i = stack.pop()
+            for e in bm.verts[i].link_edges:
+                j = e.other_vert(bm.verts[i]).index
+                if j in remaining:
+                    remaining.discard(j)
+                    seen.add(j)
+                    stack.append(j)
+        out.append(seen)
+    return out
+
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=P["model"])
+
+arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "model": P["model"]}
+
+if not arms or not meshes:
+    out["ok"] = False
+    out["error"] = "no armature/mesh pair in %s" % P["model"]
+    print("__MARK__" + json.dumps(out))
+else:
+    arm = arms[0]
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    bones = {b.name for b in arm.data.bones if b.use_deform}
+    bm = bmesh.new()
+    bm.from_mesh(mesh.data)
+    bm.verts.ensure_lookup_table()
+
+    groups = {g.index: g.name for g in mesh.vertex_groups}
+    threshold = P["threshold"]
+    by_bone = {}
+    for v in mesh.data.vertices:
+        for g in v.groups:
+            name = groups.get(g.group, "")
+            if name in bones and g.weight >= threshold:
+                by_bone.setdefault(name, []).append(v.index)
+
+    report = {}
+    for name, indices in by_bone.items():
+        comps = islands(bm, indices)
+        sizes = sorted((len(c) for c in comps), reverse=True)
+        report[name] = {"vertex_count": len(indices), "islands": len(comps),
+                        "sizes": sizes[:8],
+                        "largest_fraction": round(sizes[0] / len(indices), 4)
+                                            if indices else 1.0}
+    bm.free()
+    out["bones"] = report
+    out["deform_bones"] = len(bones)
+    print("__MARK__" + json.dumps(out))
+'''.replace("__MARK__", _WEIGHTS_MARK)
+
+
+def weight_islands(model: str | os.PathLike[str], *, threshold: float = 0.02,
+                   timeout: int = 300) -> dict:
+    """Per deform bone, how many disconnected regions its weight paint covers.
+
+    A bone that legitimately drives one contiguous patch of the mesh reports
+    one island. More than one means paint landed on a second, unconnected
+    patch too — a hand weighted partly to Spine because a brush stroke
+    crossed empty space in the viewport rather than the mesh surface.
+
+    Returns {ok, bones: {name: {vertex_count, islands, sizes, largest_fraction}}}.
+    Measurement only — judge the result with weight_islands_verdict.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    payload = {"model": str(src).replace("\\", "/"), "threshold": float(threshold)}
+    script = _WEIGHTS_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False)
+    report = _marked(result, _WEIGHTS_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+def weight_islands_verdict(report: dict, *, min_largest_fraction: float = 0.9,
+                           min_bleed_vertices: int = 3) -> dict:
+    """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+
+    min_bleed_vertices filters noise: a single stray vertex one brush stroke
+    missed is a cleanup nit, not the failure this exists to catch.
+    """
+    issues: list[dict] = []
+    for name, info in (report.get("bones") or {}).items():
+        sizes = info.get("sizes") or []
+        if len(sizes) < 2:
+            continue
+        bleed = sum(sizes[1:])
+        if (info.get("largest_fraction", 1.0) < min_largest_fraction
+                and bleed >= min_bleed_vertices):
+            issues.append({"bone": name, "kind": "bleed",
+                           "islands": info.get("islands"),
+                           "bleed_vertices": bleed,
+                           "largest_fraction": info.get("largest_fraction"),
+                           "note": f"{name}'s weight paint splits into "
+                                   f"{info.get('islands')} disconnected regions "
+                                   f"on the mesh surface — {bleed} vertices sit "
+                                   "off the bone's own patch"})
+    return {"passed": not issues, "issues": issues,
+            "checked": len(report.get("bones") or {}),
+            "thresholds": {"min_largest_fraction": min_largest_fraction,
+                           "min_bleed_vertices": min_bleed_vertices}}
+
+
 # ---------------------------------------------------------------------------
 # The shipped humanoid template
 # ---------------------------------------------------------------------------
