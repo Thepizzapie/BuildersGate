@@ -109,6 +109,30 @@ def test_verdict_catches_weights_that_move_nothing():
 
 
 # ---------------------------------------------------------------------------
+# Coverage: are the essential humanoid bones present, under the exact name
+# ---------------------------------------------------------------------------
+
+def test_coverage_passes_a_full_skeleton():
+    verdict = blender.humanoid_coverage_verdict(list(blender.HUMANOID_BONES))
+    assert verdict["passed"] is True
+    assert verdict["missing"] == []
+
+
+def test_coverage_names_a_missing_essential_bone():
+    names = [b for b in blender.HUMANOID_BONES if b != "Hips"]
+    verdict = blender.humanoid_coverage_verdict(names)
+    assert verdict["passed"] is False
+    assert verdict["missing"] == ["Hips"]
+
+
+def test_coverage_is_exact_name_not_fuzzy():
+    """A BoneMap-free retarget matches by string, so a near-miss still misses."""
+    names = [b if b != "LeftHand" else "LeftHand_1" for b in blender.HUMANOID_BONES]
+    verdict = blender.humanoid_coverage_verdict(names)
+    assert "LeftHand" in verdict["missing"]
+
+
+# ---------------------------------------------------------------------------
 # Weight-island bleed: does a bone's paint cover one patch or two
 # ---------------------------------------------------------------------------
 
@@ -185,6 +209,15 @@ def test_flex_renders_one_frame_per_pose(bound_glb, tmp_path):
     from pathlib import Path
     for shot in shots:
         assert Path(shot).stat().st_size > 500, shot
+
+
+@needs_blender
+def test_rig_reports_bone_coverage(bound_glb):
+    _, report = bound_glb
+    assert report.get("bone_names")
+    coverage = report.get("coverage") or {}
+    assert coverage.get("checked") == 15
+    assert coverage.get("passed") is True, coverage.get("missing")
 
 
 @needs_blender

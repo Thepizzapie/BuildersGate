@@ -2984,6 +2984,7 @@ else:
     else:
         arm.name = PAY["armature_name"]
         out["bones"] = len(arm.data.bones)
+        out["bone_names"] = [b.name for b in arm.data.bones]
         if bpy.context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         attempts = []
@@ -3133,6 +3134,8 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
                 "traceback": (result.get("traceback") or "")[-800:]}
     report["out_path"] = str(out_path)
     report["seconds"] = result.get("seconds")
+    if report.get("ok") and kind == "humanoid":
+        report["coverage"] = humanoid_coverage_verdict(report.get("bone_names"))
     return report
 
 
@@ -3743,6 +3746,37 @@ HUMANOID_BONES = (
     "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes",
     "RightUpperLeg", "RightLowerLeg", "RightFoot", "RightToes",
 )
+
+# THE SAME 15 NAMES godot.py's retarget_check calls `essential` (see
+# godot.py's _RETARGET_GD, "what retargeting actually needs is the trunk and
+# the four limbs"). Kept in sync by hand, not by import — one lives in
+# embedded GDScript, the other in Python — so a change to either needs its
+# twin updated too. This subset is checked HERE, in Blender, right after
+# rig(), purely as a fast pre-check: a misnamed or missing essential bone is
+# then visible before the Godot round-trip retarget_check requires, not
+# instead of it. Coverage is the only question Blender can answer for
+# itself — HIERARCHY (does rotating a shoulder move the hand) and BINDING
+# (does a clip drive it) need Skeleton3D's own transform propagation and
+# cannot be faked here, which is why retarget_check remains the authority on
+# those two.
+ESSENTIAL_HUMANOID_BONES = (
+    "Hips", "Spine", "Head", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand", "LeftUpperLeg",
+    "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot",
+)
+
+
+def humanoid_coverage_verdict(bone_names, essential=ESSENTIAL_HUMANOID_BONES) -> dict:
+    """Are the bones a humanoid clip needs present, under the exact name.
+
+    Exact-name, not fuzzy: a BoneMap-free retarget only works because the
+    profile matches by string, so "LeftUpperArm_1" or "Left_Upper_Arm" is a
+    miss even though a human reads it as the same bone.
+    """
+    present = set(bone_names or [])
+    missing = [b for b in essential if b not in present]
+    return {"passed": not missing, "missing": missing,
+            "checked": len(essential), "found": len(essential) - len(missing)}
 
 # What a plate has to say to come back in the template's stance. Handed to the
 # caller rather than hidden, because the art seat writes the rest of the prompt.
