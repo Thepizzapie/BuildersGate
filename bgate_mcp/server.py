@@ -1454,6 +1454,48 @@ def blender_template_deviation(model: str, reference: str = "",
 
 
 @_tool
+def blender_silhouette(model: str, min_ratio: float = 0.15,
+                       max_ratio: float = 4.0, timeout: int = 600) -> dict:
+    """The character's projected 2D outline across flex's own pose sweep.
+
+    EXPERIMENTAL — no production rig-QA tool anywhere this project's
+    research found automates a pose-sweep silhouette check; studios render
+    the sweep and a human watches it. This is a real attempt at that, not
+    an adopted technique.
+
+    A DIFFERENT QUESTION FROM blender_flex. Volume and pinch are 3D
+    measures against the mesh itself and cannot see a failure that only
+    shows up from a CAMERA's point of view — a limb that folds directly
+    behind the torso and vanishes from the silhouette while its 3D volume
+    stays intact, or a shoulder that balloons on screen without losing any
+    measured volume. This projects the SAME pose sweep through the SAME
+    fixed, rest-fitted camera flex() uses (never refit per pose) and
+    measures the projected convex-hull area.
+
+    'Preserved' means SANITY BOUNDS, not 'unchanged' — a pose is EXPECTED
+    to change how a character reads on screen. `verdict.passed` False means
+    the silhouette nearly vanished (min_ratio) or ballooned far past what a
+    single joint's rotation should produce (max_ratio), not that anything
+    changed at all.
+    """
+    try:
+        report = _blender.silhouette(model, timeout=timeout)
+        if report.get("ok"):
+            verdict = _blender.silhouette_verdict(
+                report, min_ratio=min_ratio, max_ratio=max_ratio)
+            report["verdict"] = verdict
+            _log("blender",
+                 f"silhouette {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} issues over "
+                 f"{verdict.get('checked', 0)} poses)",
+                 ref=str(model))
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                      ground_axis: int = 1, max_cruising_fraction: float = 0.6,
                      min_sparc: float = -8.0, max_skating_frames: int = 0,

@@ -3931,6 +3931,263 @@ def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> 
             "deviations": deviations, "threshold": max_deviation}
 
 
+# ---------------------------------------------------------------------------
+# Silhouette across the flex pose sweep — EXPERIMENTAL
+# ---------------------------------------------------------------------------
+# WHY THIS IS A DIFFERENT QUESTION FROM flex(). Volume and pinch are 3D
+# measures against the mesh itself; neither can see a failure that only shows
+# up from a CAMERA'S point of view — a limb that folds directly behind the
+# torso and vanishes from the silhouette while its 3D volume stays intact, or
+# a shoulder that balloons outward on screen without losing any measured
+# volume. This projects the SAME pose sweep flex() already runs through the
+# SAME fixed, rest-fitted camera (never refit per pose — a refit-per-pose
+# camera would reframe a collapsed limb back to looking normal-sized, which
+# is precisely the failure flex()'s own docstring already warns about for its
+# own camera) and measures the projected 2D convex-hull area.
+#
+# EXPERIMENTAL, and said so on purpose: no production rig-QA tool automates a
+# pose-sweep silhouette check anywhere this project's research found — studios
+# render sweeps and a human watches them. "Preserved" here means SANITY
+# BOUNDS, not "unchanged": a pose is EXPECTED to change how a character reads
+# on screen, so the verdict only flags collapse (the character nearly
+# vanished from this camera) or explosion (geometry blew out far past what a
+# joint rotation should produce), not any change at all.
+#
+# _hull_area is a real, standalone, unit-tested function rather than logic
+# only inside the embedded bpy script, because this project cannot execute
+# bpy code in every environment it develops in — the algorithm is validated
+# here in plain Python (squares, triangles, degenerate/collinear inputs) and
+# then copied verbatim into the script string below, so a bug in the geometry
+# math would already have shown up in a test that runs anywhere.
+def _hull_area(points: list[tuple[float, float]]) -> float:
+    """2D convex hull area via the shoelace formula on Andrew's monotone chain.
+
+    Degenerate inputs (fewer than 3 distinct points, or all collinear) report
+    0.0 rather than raising — a limb that foreshortens to a line from this
+    camera IS the pathology this exists to catch, not an error case to hide.
+    """
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return 0.0
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper[:-1]
+    if len(hull) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(hull)):
+        x1, y1 = hull[i]
+        x2, y2 = hull[(i + 1) % len(hull)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
+
+
+_SILHOUETTE_MARK = "BGATE_SIL:"
+
+# The hull_area()/cross() pair below is _hull_area ABOVE, copied verbatim —
+# see the section note for why this is a deliberate duplication rather than a
+# shared import (run_script's headless scripts are self-contained source
+# text, not importable modules).
+_SILHOUETTE_SCRIPT = '''
+import bpy, json, math
+from mathutils import Vector
+from bpy_extras.object_utils import world_to_camera_view
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def hull_area(points):
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return 0.0
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper[:-1]
+    if len(hull) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(hull)):
+        x1, y1 = hull[i]
+        x2, y2 = hull[(i + 1) % len(hull)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
+
+
+def projected(mesh_obj, dg, cam, scene):
+    ev = mesh_obj.evaluated_get(dg)
+    me = ev.to_mesh()
+    mw = ev.matrix_world
+    pts = []
+    for v in me.vertices:
+        ndc = world_to_camera_view(scene, cam, mw @ v.co)
+        if ndc.z > 0:  # only what is actually in front of the camera
+            pts.append((ndc.x, ndc.y))
+    ev.to_mesh_clear()
+    return pts
+
+
+def rest_pose(arm):
+    for pb in arm.pose.bones:
+        pb.rotation_mode = "XYZ"
+        pb.rotation_euler = (0.0, 0.0, 0.0)
+        pb.location = (0.0, 0.0, 0.0)
+        pb.scale = (1.0, 1.0, 1.0)
+
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=P["model"])
+
+arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "model": P["model"]}
+
+if not arms or not meshes:
+    out["ok"] = False
+    out["error"] = "no armature/mesh pair in %s" % P["model"]
+    print("__MARK__" + json.dumps(out))
+else:
+    arm = arms[0]
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    dg = bpy.context.evaluated_depsgraph_get()
+    scene = bpy.context.scene
+
+    # SAME camera fit flex() uses: fixed once off the REST silhouette, never
+    # refit per pose.
+    corners = [mesh.matrix_world @ Vector(c) for c in mesh.bound_box]
+    centre = sum(corners, Vector()) / 8.0
+    reach = max((c - centre).length for c in corners) or 1.0
+    cam_data = bpy.data.cameras.new("SilCam")
+    cam_data.sensor_fit = "HORIZONTAL"
+    cam_data.angle = math.radians(45.0)
+    cam = bpy.data.objects.new("SilCam", cam_data)
+    scene.collection.objects.link(cam)
+    cam.rotation_euler = (math.radians(90), 0, 0)
+    cam.location = (centre.x, centre.y - reach * 2.6, centre.z)
+    scene.camera = cam
+    bpy.context.view_layer.update()
+    dg.update()
+
+    rest_pose(arm)
+    bpy.context.view_layer.update()
+    dg.update()
+    rest_pts = projected(mesh, dg, cam, scene)
+    rest_area = hull_area(rest_pts)
+    out["rest_area"] = rest_area
+    out["rest_points"] = len(rest_pts)
+
+    poses = []
+    for label, bone, axis, degrees in P["poses"]:
+        pb = arm.pose.bones.get(bone)
+        record = {"label": label, "bone": bone}
+        if pb is None:
+            record["skipped"] = "no bone %r on this armature" % bone
+            poses.append(record)
+            continue
+        rest_pose(arm)
+        pb.rotation_mode = "XYZ"
+        angle = math.radians(degrees)
+        pb.rotation_euler = {"X": (angle, 0, 0), "Y": (0, angle, 0),
+                             "Z": (0, 0, angle)}[axis]
+        bpy.context.view_layer.update()
+        dg.update()
+        pts = projected(mesh, dg, cam, scene)
+        area = hull_area(pts)
+        record["area"] = area
+        record["points"] = len(pts)
+        record["area_ratio"] = (round(area / rest_area, 4)
+                                if rest_area > 1e-9 else None)
+        poses.append(record)
+
+    rest_pose(arm)
+    out["poses"] = poses
+    print("__MARK__" + json.dumps(out, default=str))
+'''.replace("__MARK__", _SILHOUETTE_MARK)
+
+
+def silhouette(model: str | os.PathLike[str], *, poses: Optional[list] = None,
+               timeout: int = 600) -> dict:
+    """The character's projected 2D outline, from flex's own fixed camera, at
+    rest and after each pose in the walk-cycle sweep. See the section note
+    above this function for what this catches that flex() cannot, and why it
+    is marked experimental.
+
+    Returns {ok, rest_area, rest_points, poses:[{label, area, points,
+    area_ratio}]}. Judge with silhouette_verdict — this call only measures.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    chosen = [list(p) for p in (poses or FLEX_POSES)]
+    payload = {"model": str(src).replace("\\", "/"), "poses": chosen}
+    script = _SILHOUETTE_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False)
+    report = _marked(result, _SILHOUETTE_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
+                       max_ratio: float = 4.0) -> dict:
+    """SANITY BOUNDS ONLY — see silhouette()'s section note for why
+    'preserved' does not mean 'unchanged'. A ratio this far from 1.0 in
+    either direction is not an ordinary pose change; it is the character
+    nearly vanishing from this camera or geometry ballooning past anything a
+    single joint's rotation should produce.
+    """
+    issues: list[dict] = []
+    checked = 0
+    for pose in report.get("poses") or []:
+        if pose.get("skipped"):
+            continue
+        ratio = pose.get("area_ratio")
+        if ratio is None:
+            continue
+        checked += 1
+        label = pose.get("label", "?")
+        if ratio < min_ratio:
+            issues.append({"pose": label, "kind": "collapsed", "value": ratio,
+                           "note": f"projected silhouette shrank to "
+                                   f"{ratio * 100:.0f}% of rest — the "
+                                   "character nearly vanished from this "
+                                   "camera in this pose"})
+        elif ratio > max_ratio:
+            issues.append({"pose": label, "kind": "exploded", "value": ratio,
+                           "note": f"projected silhouette grew to "
+                                   f"{ratio * 100:.0f}% of rest — geometry "
+                                   "is blowing out far past what this "
+                                   "joint's rotation should produce"})
+    return {"passed": not issues, "issues": issues, "checked": checked,
+            "thresholds": {"min_ratio": min_ratio, "max_ratio": max_ratio}}
+
+
 def _plate_provider(name: str):
     """The module that generates a plate. krea or the gpt-image path."""
     if (name or "").strip().lower() == "krea":
