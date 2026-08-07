@@ -54,6 +54,7 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
@@ -1447,6 +1448,86 @@ def blender_template_deviation(model: str, reference: str = "",
                  f"{verdict.get('checked', 0)} checked)",
                  ref=str(model))
         return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
+                     ground_axis: int = 1, max_cruising_fraction: float = 0.6,
+                     min_sparc: float = -8.0, max_skating_frames: int = 0) -> dict:
+    """Measure an exported animation clip's curves — no Blender/Godot needed.
+
+    Reads a GLB's animation channels directly (glTF is a public format, so
+    this is a plain file parse, not another headless spawn) and reports, per
+    channel:
+
+      arc_deviation      (translation only) how far the path bows from the
+                         straight line between its endpoints. DESCRIPTIVE,
+                         not pass/fail — an arc is right for a swinging limb
+                         and wrong for a jab's extension, and this cannot
+                         tell which the clip is doing.
+      velocity_profile   what fraction of the clip's DURATION is spent near
+                         its own peak speed. High means the motion travels
+                         at near-constant speed rather than easing in/out —
+                         the curve-math signature of raw linear-interpolated
+                         keyframes.
+      sparc              spectral arc length of the speed profile — a
+                         smoothness/jitter measure from the mocap-cleanup
+                         literature. Its threshold is a starting point
+                         borrowed from gait research, not yet validated on
+                         this project's own stylized clips — treat FAILs as
+                         worth a look, not as certain defects.
+
+    `foot_bones` (channel node names, exact match) additionally get
+    foot_skate: frames where the bone sits near its lowest point in the clip
+    but still moves horizontally — a planted foot sliding.
+
+    None of this measures appeal or exaggeration — nothing computational
+    does. A clean pass here means "no obvious curve-math defect", not
+    "looks good"; it is a floor, not a ceiling.
+    """
+    try:
+        data = _animcurves.extract_animations(model)
+        if not data.get("ok"):
+            return data
+        feet = set(foot_bones or [])
+        clips = []
+        for anim in data["animations"]:
+            channels = []
+            for ch in anim["channels"]:
+                times, values = ch["times"], ch["values"]
+                entry = {"node": ch["node"], "path": ch["path"],
+                         "interpolation": ch["interpolation"], "samples": len(times)}
+                if len(times) >= 2:
+                    profile = _animcurves.velocity_profile(times, values)
+                    entry["velocity"] = {
+                        "peak_speed": profile["peak_speed"],
+                        "cruising_fraction": profile["cruising_fraction"],
+                        "verdict": _animcurves.velocity_profile_verdict(
+                            profile, max_cruising_fraction=max_cruising_fraction)}
+                    sp = _animcurves.sparc(times, values)
+                    entry["sparc"] = {**sp, "verdict": _animcurves.sparc_verdict(
+                        sp, min_sparc=min_sparc)}
+                    if ch["path"] == "translation":
+                        entry["arc"] = _animcurves.arc_deviation(times, values)
+                        if ch["node"] in feet:
+                            skate = _animcurves.foot_skate(
+                                times, values, ground_axis=ground_axis)
+                            entry["foot_skate"] = {
+                                **skate, "verdict": _animcurves.foot_skate_verdict(
+                                    skate, max_skating_frames=max_skating_frames)}
+                channels.append(entry)
+            failed = [c["node"] for c in channels
+                     if not c.get("velocity", {}).get("verdict", {}).get("passed", True)
+                     or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
+                     or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)]
+            clips.append({"name": anim["name"], "channels": channels,
+                         "passed": not failed, "flagged_bones": failed})
+        _log("blender", f"animation-curves {model} -> "
+             f"{sum(1 for c in clips if c['passed'])}/{len(clips)} clips clean",
+             ref=str(model))
+        return {"ok": True, "clips": clips}
     except Exception as exc:
         return _fail(exc)
 
