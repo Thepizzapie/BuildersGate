@@ -1411,6 +1411,47 @@ def blender_weights(model: str, threshold: float = 0.02,
 
 
 @_tool
+def blender_template_deviation(model: str, reference: str = "",
+                               max_deviation: float = 0.08,
+                               timeout: int = 300) -> dict:
+    """How far a rigged character's joints sit from the shipped humanoid template.
+
+    A FOURTH RIG PROOF. `blender_rig`, `blender_flex`, and `blender_weights`
+    all ask questions about ONE character in isolation — is it bound, does it
+    survive bending, is the paint contiguous. None of them can tell you the
+    fit itself landed a bone somewhere anatomically wrong, because a bone
+    can be fully weighted, pinch-free, and bleed-free while still sitting in
+    the wrong place on the body if height/limb fitting mis-solved.
+
+    Compares bone HEAD positions against HUMANOID_SKELETON (or a supplied
+    `reference`), matched by name and normalised by body height so two
+    characters of different heights aren't penalised for that alone. This is
+    a POSITION check only — it does not compare skin weights, because the
+    reference skeleton and a generated character never share mesh topology,
+    so there is nothing to diff vertex-for-vertex.
+
+    `verdict.passed` False names which bones sit furthest from the template's
+    own proportions, in units of body height.
+    """
+    try:
+        report = _blender.template_deviation(
+            model, reference=(reference or None), timeout=timeout)
+        if report.get("ok"):
+            verdict = _blender.template_deviation_verdict(
+                report, max_deviation=max_deviation)
+            report["verdict"] = verdict
+            _log("blender",
+                 f"template-deviation {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} displaced bones over "
+                 f"{verdict.get('checked', 0)} checked)",
+                 ref=str(model))
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def blender_texture(model: str, image: str, out_path: str, material: str = "",
                     all_slots: bool = False, roughness: str = "",
                     metallic: str = "", normal: str = "", emission: str = "",

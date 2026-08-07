@@ -109,6 +109,38 @@ def test_verdict_catches_weights_that_move_nothing():
 
 
 # ---------------------------------------------------------------------------
+# Template deviation: do a rig's joints sit where the shipped skeleton puts them
+# ---------------------------------------------------------------------------
+
+def test_template_deviation_passes_an_identical_skeleton():
+    joints = {"Hips": [0.0, 0.0, 0.5], "Head": [0.0, 0.0, 0.95]}
+    report = {"reference_joints": joints, "candidate_joints": dict(joints)}
+    verdict = blender.template_deviation_verdict(report)
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 2
+
+
+def test_template_deviation_names_a_displaced_bone():
+    ref = {"Hips": [0.0, 0.0, 0.5], "LeftHand": [0.6, 0.0, 0.8]}
+    # LeftHand fourteen centimetres out on a 1.8 m figure — the real incident
+    # humanoid_template's own docstring cites, expressed as a height fraction.
+    cand = {"Hips": [0.0, 0.0, 0.5], "LeftHand": [0.68, 0.0, 0.8]}
+    verdict = blender.template_deviation_verdict({"reference_joints": ref,
+                                                   "candidate_joints": cand})
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["bone"] == "LeftHand"
+
+
+def test_template_deviation_only_compares_shared_bones():
+    ref = {"Hips": [0.0, 0.0, 0.5], "Tail": [0.0, -0.2, 0.3]}
+    cand = {"Hips": [0.0, 0.0, 0.5]}
+    verdict = blender.template_deviation_verdict({"reference_joints": ref,
+                                                   "candidate_joints": cand})
+    assert verdict["checked"] == 1
+    assert verdict["passed"] is True
+
+
+# ---------------------------------------------------------------------------
 # Coverage: are the essential humanoid bones present, under the exact name
 # ---------------------------------------------------------------------------
 
@@ -209,6 +241,19 @@ def test_flex_renders_one_frame_per_pose(bound_glb, tmp_path):
     from pathlib import Path
     for shot in shots:
         assert Path(shot).stat().st_size > 500, shot
+
+
+@needs_blender
+def test_template_deviation_of_a_real_bind(bound_glb):
+    out, _ = bound_glb
+    got = blender.template_deviation(str(out), timeout=900)
+    assert got["ok"] is True, got.get("error")
+    assert got["candidate_joints"]
+    verdict = blender.template_deviation_verdict(got)
+    # bg_human IS the template, adopted and rebound — its own joints should
+    # sit close to where the shipped skeleton puts them.
+    assert verdict["checked"] >= 10
+    assert verdict["passed"] is True, verdict["issues"]
 
 
 @needs_blender
