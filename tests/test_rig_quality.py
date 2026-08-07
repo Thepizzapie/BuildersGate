@@ -109,6 +109,35 @@ def test_verdict_catches_weights_that_move_nothing():
 
 
 # ---------------------------------------------------------------------------
+# Weight-island bleed: does a bone's paint cover one patch or two
+# ---------------------------------------------------------------------------
+
+def test_weight_islands_verdict_passes_one_contiguous_patch():
+    report = {"bones": {"Hand.L": {"vertex_count": 240, "islands": 1,
+                                   "sizes": [240], "largest_fraction": 1.0}}}
+    assert blender.weight_islands_verdict(report)["passed"] is True
+
+
+def test_weight_islands_verdict_catches_a_bleeding_bone():
+    report = {"bones": {"Hand.L": {"vertex_count": 240, "islands": 2,
+                                   "sizes": [232, 8], "largest_fraction": 0.967},
+                        "Spine": {"vertex_count": 900, "islands": 1,
+                                  "sizes": [900], "largest_fraction": 1.0}}}
+    verdict = blender.weight_islands_verdict(report, min_largest_fraction=0.99)
+    assert verdict["passed"] is False
+    assert [i["bone"] for i in verdict["issues"]] == ["Hand.L"]
+    assert verdict["issues"][0]["bleed_vertices"] == 8
+
+
+def test_weight_islands_verdict_ignores_a_single_stray_vertex():
+    """One vertex a brush missed is a cleanup nit, not a failure this gate names."""
+    report = {"bones": {"Hand.L": {"vertex_count": 240, "islands": 2,
+                                   "sizes": [239, 1], "largest_fraction": 0.996}}}
+    verdict = blender.weight_islands_verdict(report)
+    assert verdict["passed"] is True
+
+
+# ---------------------------------------------------------------------------
 # The gate, against real geometry
 # ---------------------------------------------------------------------------
 
@@ -156,6 +185,18 @@ def test_flex_renders_one_frame_per_pose(bound_glb, tmp_path):
     from pathlib import Path
     for shot in shots:
         assert Path(shot).stat().st_size > 500, shot
+
+
+@needs_blender
+def test_weight_islands_measures_a_real_bind(bound_glb):
+    out, _ = bound_glb
+    got = blender.weight_islands(str(out), timeout=900)
+    assert got["ok"] is True, got.get("error")
+    assert got["deform_bones"] >= 10
+    assert len(got["bones"]) >= 10
+    # A clean bind from a fresh bind() call should read as fully contiguous.
+    verdict = blender.weight_islands_verdict(got)
+    assert verdict["passed"] is True, verdict["issues"]
 
 
 # ---------------------------------------------------------------------------
