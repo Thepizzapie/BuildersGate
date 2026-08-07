@@ -65,6 +65,7 @@ from bgate_core import autotile as _autotile
 from bgate_core import levelgen as _levelgen
 from bgate_core import scenewire as _scenewire
 from bgate_core import tilemap as _tilemap
+from bgate_core import art_tournament as _art_tournament
 from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
 from bgate_core import seats as _seats
@@ -4818,6 +4819,62 @@ def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
                    if awaiting else {})}
     except LookupError as exc:
         return _fail(exc)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def art_tournament_verdict(match_id: int, winner_artifact_id: int,
+                           reasons: str = "") -> dict:
+    """Record an INDEPENDENT reviewer's pick in ONE pairwise art match.
+
+    art_qa_verdict asks "is this on-model" against a reference. This asks a
+    different question a reviewer only sees when dispatched against a
+    tournament brief: given two candidates shown in a RANDOMISED order (see
+    the match's own shown_first, already fixed when the match was opened —
+    the randomisation happened before you were asked, not something you
+    control here), which one is better.
+
+    PICK A WINNER — do not skip a match because it feels close. The
+    VLM-as-judge research behind this tool is consistent that comparative
+    judgement ("which is better") is far more reliable than an absolute
+    score, but only if every match actually resolves; an abstained match
+    just removes one data point from a rating that already has few of them.
+
+    winner_artifact_id must be one of the two candidates IN THIS match — an
+    id from a different match or a different logical_name is refused, not
+    silently recorded.
+
+    Returns {ok, match_id, logical_name, winner_id}. The rating itself is
+    NOT computed here — see art_tournament_standings, which derives it fresh
+    from every decided match so a corrected verdict can never leave a stale
+    number behind.
+    """
+    try:
+        root = _root()
+        match = _art_tournament.record_verdict(
+            root, int(match_id), winner_artifact_id=int(winner_artifact_id),
+            reasons=reasons)
+        return {"ok": True, "match_id": match["id"],
+                "logical_name": match["logical_name"],
+                "winner_id": match["winner_id"]}
+    except (LookupError, ValueError) as exc:
+        return _fail(exc)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def art_tournament_standings(logical_name: str) -> dict:
+    """Elo standings for a target, derived fresh from its decided matches.
+
+    Returns {logical_name, standings: [{artifact_id, rating, matches, wins}]
+    ranked highest first, decided_matches, pending_matches}. An artifact
+    with no matches yet does not appear — it has no rating to report.
+    """
+    try:
+        root = _root()
+        return {"ok": True, **_art_tournament.standings(root, logical_name)}
     except Exception as exc:
         return _fail(exc)
 
