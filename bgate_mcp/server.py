@@ -1456,7 +1456,9 @@ def blender_template_deviation(model: str, reference: str = "",
 @_tool
 def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                      ground_axis: int = 1, max_cruising_fraction: float = 0.6,
-                     min_sparc: float = -8.0, max_skating_frames: int = 0) -> dict:
+                     min_sparc: float = -8.0, max_skating_frames: int = 0,
+                     check_anticipation: bool = True,
+                     min_anticipation_width: float = 6.0) -> dict:
     """Measure an exported animation clip's curves — no Blender/Godot needed.
 
     Reads a GLB's animation channels directly (glTF is a public format, so
@@ -1479,6 +1481,18 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                          borrowed from gait research, not yet validated on
                          this project's own stylized clips — treat FAILs as
                          worth a look, not as certain defects.
+      anticipation       EXPERIMENTAL, per axis. Laplacian-of-Gaussian
+                         correlation looking for curvature spread across a
+                         transition (shaped, eased, wound-up) vs. a narrow
+                         spike (a raw interpolated corner). No prior art
+                         exists for this as a detector — the cited research
+                         (Wang/Xu/Cohen SIGGRAPH 2006) shows the FORWARD
+                         direction, that this filter CREATES anticipation;
+                         using it to detect whether anticipation is already
+                         present is this project's own experiment. Also has
+                         a real resolution floor: quick transitions sampled
+                         at only a few frames are unreliable to call either
+                         way. Set check_anticipation=False to skip it.
 
     `foot_bones` (channel node names, exact match) additionally get
     foot_skate: frames where the bone sits near its lowest point in the clip
@@ -1510,6 +1524,21 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                     sp = _animcurves.sparc(times, values)
                     entry["sparc"] = {**sp, "verdict": _animcurves.sparc_verdict(
                         sp, min_sparc=min_sparc)}
+                    if check_anticipation:
+                        axis_values = (list(zip(*values)) if values
+                                      and isinstance(values[0], (tuple, list))
+                                      else [values])
+                        issues = []
+                        events = 0
+                        for axis in axis_values:
+                            av = _animcurves.anticipation_verdict(
+                                times, list(axis),
+                                min_width_samples=min_anticipation_width)
+                            issues.extend(av["issues"])
+                            events += av["events"]
+                        entry["anticipation"] = {
+                            "verdict": {"passed": not issues, "issues": issues},
+                            "events": events}
                     if ch["path"] == "translation":
                         entry["arc"] = _animcurves.arc_deviation(times, values)
                         if ch["node"] in feet:
@@ -1522,7 +1551,8 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
             failed = [c["node"] for c in channels
                      if not c.get("velocity", {}).get("verdict", {}).get("passed", True)
                      or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
-                     or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)]
+                     or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)
+                     or not c.get("anticipation", {}).get("verdict", {}).get("passed", True)]
             clips.append({"name": anim["name"], "channels": channels,
                          "passed": not failed, "flagged_bones": failed})
         _log("blender", f"animation-curves {model} -> "
