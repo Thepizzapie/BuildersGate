@@ -70,6 +70,15 @@ def make_tileable(path: str, out_path: Optional[str] = None) -> dict:
     what gets a genuinely seamless map when the model can manage one; this is
     the floor underneath it. Returns ``{ok, path, method, note}`` and never
     raises — a texture that failed to tile is still a texture.
+
+    THE SAVE FORMAT IS NAMED EXPLICITLY, and that is a bug fix, not a tidy-up.
+    ``Image.save`` dispatches on the destination's SUFFIX, so a file written
+    without one — which is what a caller passing ``filename="litter_albedo"``
+    gets — raised ``ValueError: unknown file extension:`` on every call. The
+    failure was real and completely invisible: four texture generations came back
+    reporting a tileable map, and the terrain seamed visibly at 2.4m tiling
+    across a full-screen floor. Nothing downstream re-checks, so the first
+    evidence was the render.
     """
     src = Path(path)
     dst = Path(out_path or path)
@@ -81,6 +90,11 @@ def make_tileable(path: str, out_path: Optional[str] = None) -> dict:
                         "so its edges are only as seamless as the model made them"}
     try:
         with Image.open(src) as im:
+            # The SOURCE knows what it is even when the destination path does
+            # not: Pillow read it, so `im.format` is the real container. Falling
+            # back to PNG rather than raising is right for the one case that
+            # reaches here — a generated plate whose name lost its extension.
+            fmt = im.format or "PNG"
             im = im.convert("RGBA" if "A" in im.getbands() else "RGB")
             w, h = im.size
             flip_h = im.transpose(Image.FLIP_LEFT_RIGHT)
@@ -89,7 +103,11 @@ def make_tileable(path: str, out_path: Optional[str] = None) -> dict:
             canvas.paste(flip_h, (w, 0))
             canvas.paste(im.transpose(Image.FLIP_TOP_BOTTOM), (0, h))
             canvas.paste(flip_h.transpose(Image.FLIP_TOP_BOTTOM), (w, h))
-            canvas.resize((w, h), Image.LANCZOS).save(dst)
+            tiled = canvas.resize((w, h), Image.LANCZOS)
+            if tiled.mode == "RGBA" and fmt in ("JPEG", "JPG"):
+                # A JPEG cannot hold the alpha the convert above may have kept.
+                tiled = tiled.convert("RGB")
+            tiled.save(dst, format=fmt)
     except Exception as exc:                                   # noqa: BLE001
         return {"ok": False, "path": str(src), "method": "",
                 "note": f"could not mirror-tile ({type(exc).__name__}: {exc}) — "

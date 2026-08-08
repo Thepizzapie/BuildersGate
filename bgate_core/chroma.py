@@ -332,6 +332,35 @@ def key(img, chroma: Sequence[int], tol: int = 125, despill: int = 185):
     keyed = ev("convert((d2 < near) * 255, 'L')", d2=d2, near=near)
     fringe = ev("convert(min(d2 >= near, d2 < band) * 255, 'L')",
                 d2=d2, near=near, band=band)
+    # SECOND PASS ON PINKNESS, for the backdrop the sphere cannot reach.
+    #
+    # A distance key assumes the model painted the colour it was asked for. Krea
+    # does not: it paints a desaturated version of it, far enough away to miss
+    # the sphere and close enough that a human looking at the frame calls it
+    # magenta. The result was an opaque pink slab that passed the audit on the
+    # strength of its border, which HAD keyed.
+    #
+    # Union rather than replacement — the sphere is exact where it applies, and
+    # this only ever ADDS the off-axis pixels the sphere left behind. Gated on
+    # the chroma actually being a pink, so a cyan or chartreuse key is untouched.
+    if pinkness((cr, cg, cb)) >= PINK_CHROMA_MIN:
+        # int(), not the raw float: ImageMath binds a scalar by building a
+        # one-colour image out of it, and Image.new refuses a float — it raises
+        # "color must be int or single-element tuple", which names neither
+        # ImageMath nor the argument and would land in finish()'s except as an
+        # unexplained "chroma key failed".
+        # Doubled to keep it division-free — see is_pinker_than, which is the
+        # same predicate and must agree with this one pixel for pixel.
+        floor = int(pinkness((cr, cg, cb)) * PINK_KEY_FRACTION)
+        pinkish = ev("convert((((r+b) - 2*g) > twice) * 255, 'L')",
+                     r=r, g=g, b=b, twice=2 * floor)
+        keyed = ev("convert(max(keyed, pinkish), 'L')",
+                   keyed=keyed, pinkish=pinkish)
+        # Anything newly keyed must not also be treated as fringe, or the
+        # despill below paints grey into pixels that are about to become
+        # transparent — which is dirty alpha, the thing the audit fails on.
+        fringe = ev("convert(min(fringe, 255 - keyed), 'L')",
+                    fringe=fringe, keyed=keyed)
     # int() before convert() so the halving floors exactly like the // it
     # replaces — an F->L convert would be free to land a pixel one step off.
     grey = ev("convert(int((r+g+b)/3), 'L')", r=r, g=g, b=b)
@@ -358,9 +387,74 @@ SOFT_ALPHA_MAX = 0.35      # feathered/mushy cut instead of a crisp one
 DIRTY_ALPHA_MAX = 0.15     # colour still sitting under alpha 0
 HOLLOW_REVIEW = 0.05       # enclosed transparency — maybe a curled arm
 HOLLOW_FAIL = 0.12         # ...or the key ate the art from the inside
+# The key colour SURVIVING inside the frame. Every threshold above measures the
+# cut; this one measures what the cut missed, which is the failure they all
+# walked past — see the `residual_chroma` paragraph in audit().
+RESIDUAL_CHROMA_MAX = 0.04
 
 
-def audit(path: str | os.PathLike[str]) -> dict:
+# PINKNESS, and why a colour distance is not enough.
+#
+# `key` compares squared RGB distance to the chroma, which is a SPHERE around
+# one point. Krea ignores the pure-magenta backdrop contract and paints a DUSTY
+# pink — measured at ~#c0559f, which is 143 away from (255,0,255) and therefore
+# outside the default tol=125 sphere. Widening the sphere is not the fix: at 143
+# it starts swallowing skin, brick and autumn leaf.
+#
+# The backdrop is not an arbitrary colour, though. It is the chroma DESATURATED
+# toward grey, so it keeps the one property that made magenta a good key in the
+# first place — red and blue high, green low — while losing the distance. That
+# property is a scalar:
+#
+#     pinkness = (R + B) / 2 - G
+#
+# Measured on real frames from the run this came out of:
+#
+#     pure magenta   (255,  0,255) -> 255      the contract
+#     krea's dusty   (192, 85,159) ->  90      what actually arrived
+#     pink petal     (240,150,180) ->  60      must SURVIVE
+#     buff plume     (220,200,160) -> -10      must survive
+#     brown twig     (110, 80, 50) ->   0      must survive
+#     green leaf     ( 60,120, 50) -> -65      must survive
+#
+# so a threshold anywhere in 65..85 separates the backdrop from every subject
+# colour that caused trouble. 0.33 of the chroma's own pinkness puts it at 84 for
+# magenta, which is the widest setting that still spares the petal.
+PINK_KEY_FRACTION = 0.33
+# Below this the chroma is not a pink at all (cyan, chartreuse, orange), the
+# scalar means nothing, and the pass does not run.
+PINK_CHROMA_MIN = 150
+
+
+def pinkness(rgb: Sequence[int]) -> float:
+    """``(R+B)/2 - G`` — how much a colour is magenta rather than anything else.
+
+    Positive for magenta/pink, ~0 for neutrals and browns, negative for greens.
+    Named because it is used in two places that must agree: the second keying
+    pass and the audit that checks whether it worked.
+    """
+    r, g, b = (float(c) for c in rgb[:3])
+    return (r + b) / 2.0 - g
+
+
+def is_pinker_than(rgb: Sequence[int], floor: int) -> bool:
+    """``pinkness(rgb) > floor``, in EXACT INTEGER ARITHMETIC.
+
+    Doubled on both sides — ``(R+B) - 2G > 2*floor`` — so there is no division
+    and therefore no rounding to disagree about. That matters because the same
+    predicate is evaluated three ways: here per pixel, as a Pillow band
+    expression inside :func:`key`, and per pixel again in the audit. ImageMath
+    runs its arithmetic on int32 bands where ``/`` FLOORS, so a pixel whose true
+    pinkness is 84.5 tested as 84 in the band version and 84.5 here — the two
+    paths disagreed on exactly the colours sitting on the threshold, which is
+    the worst possible place for them to differ and cost a real test failure.
+    """
+    r, g, b = (int(c) for c in rgb[:3])
+    return (r + b) - 2 * g > 2 * int(floor)
+
+
+def audit(path: str | os.PathLike[str],
+          chroma: Optional[Sequence[int]] = None) -> dict:
     """Measure whether an image is actually a clean cut-out. Flags, not taste.
 
     Was born inside consistency_check as a review tripwire for gpt-image's
@@ -370,8 +464,28 @@ def audit(path: str | os.PathLike[str]) -> dict:
     needs it as a GATE at generation time, not as a comment during review: a
     frame with dirty alpha that reaches ``sprites`` is already too late.
 
+    ``residual_chroma`` IS THE ONE THAT WAS MISSING, and the gap it left is the
+    reason to read this paragraph before adding another threshold. Every other
+    measurement here inspects the CUT — the border, the soft edge, the pixels
+    under zero alpha, the enclosed holes. Not one of them inspects what the cut
+    left behind. So when Krea painted a dusty pink backdrop the sphere key could
+    not reach, the frame border keyed (it was closest to the contract colour),
+    the interior did not, and every threshold above read clean over an opaque
+    pink slab. ``clean: true``, shipped.
+
+    The shape of that bug is worth naming because it recurs: the check validated
+    a PROXY for the artifact (the border) instead of the artifact. Pass
+    ``chroma`` and this one asks the direct question — is the key colour still
+    sitting in the frame, opaque, after keying? — using :func:`pinkness` rather
+    than a distance, because the surviving backdrop is the chroma desaturated
+    and a distance is exactly what it escaped.
+
+    Without ``chroma`` the measurement is skipped and reported as ``None``, not
+    as zero: "not checked" and "checked and clean" must not look the same.
+
     Returns {border_opaque, white_fringe, soft_alpha, dirty_alpha, hollow,
-    flags, review, clean}. `flags` are hard failures; `review` is advisory.
+    residual_chroma, flags, review, clean}. `flags` are hard failures; `review`
+    is advisory.
     """
     from PIL import Image
 
@@ -381,6 +495,11 @@ def audit(path: str | os.PathLike[str]) -> dict:
     px = im.load()
     border = border_op = soft = opaque = softc = whal = 0
     dirty = transp = 0
+    # Only meaningful for a pink key; see PINK_CHROMA_MIN.
+    pink_floor = (pinkness(chroma) * PINK_KEY_FRACTION
+                  if chroma is not None and pinkness(chroma) >= PINK_CHROMA_MIN
+                  else None)
+    residual = 0
     for y in range(H):
         for x in range(W):
             r, g, b, a = px[x, y]
@@ -390,6 +509,8 @@ def audit(path: str | os.PathLike[str]) -> dict:
                     border_op += 1
             if a >= 224:
                 opaque += 1
+                if pink_floor is not None and is_pinker_than((r, g, b), pink_floor):
+                    residual += 1
             if 24 < a < 224:
                 soft += 1
             if 24 < a < 240:
@@ -401,6 +522,11 @@ def audit(path: str | os.PathLike[str]) -> dict:
                 if r > 16 or g > 16 or b > 16:
                     dirty += 1
     border_opaque = border_op / max(1, border)
+    # Over the WHOLE FRAME, not over the opaque pixels. A slab that barely keyed
+    # is nearly all opaque, so dividing by the opaque count would put a
+    # completely failed cut and a perfect one on the same denominator and read
+    # the disaster as a modest percentage.
+    residual_chroma = (residual / max(1, W * H)) if pink_floor is not None else None
     soft_ratio = soft / max(1, opaque + soft)
     white_fringe = whal / max(1, softc)
     dirty_alpha = dirty / max(1, transp)
@@ -445,6 +571,14 @@ def audit(path: str | os.PathLike[str]) -> dict:
     if dirty_alpha > DIRTY_ALPHA_MAX:
         flags.append(f"dirty alpha: {dirty_alpha:.0%} of transparent pixels "
                      "carry nonzero RGB — clean RGB:=0 where alpha==0")
+    if residual_chroma is not None and residual_chroma > RESIDUAL_CHROMA_MAX:
+        flags.append(
+            f"unkeyed backdrop: {residual_chroma:.0%} of the frame is still "
+            "opaque key colour. The model painted a DESATURATED version of the "
+            "chroma (measured ~#c0559f against a pure-magenta contract), which "
+            "is too far off for a distance key and near enough that the border "
+            "keyed and the middle did not. This is a slab, not a sprite — "
+            "regenerate; do not ship it.")
     # Enclosed transparency is ambiguous in general (a curled arm makes a real
     # hole) so consistency_check only ever flagged it for a human. In the KEYED
     # path it stops being ambiguous past a point: a large enclosed hole means
@@ -464,6 +598,10 @@ def audit(path: str | os.PathLike[str]) -> dict:
             "soft_alpha": round(soft_ratio, 3),
             "dirty_alpha": round(dirty_alpha, 3),
             "hollow": round(hollow, 3),
+            # None, not 0.0, when no chroma was passed — "not checked" and
+            # "checked and clean" reading the same is how this got shipped.
+            "residual_chroma": (round(residual_chroma, 3)
+                                if residual_chroma is not None else None),
             "flags": flags, "review": review, "clean": not flags}
 
 
@@ -487,7 +625,10 @@ def finish(path: str | os.PathLike[str], chroma: Sequence[int], *,
         return {"ok": False, "chroma": name, "alpha": {},
                 "error": f"chroma key failed on {path}: {type(exc).__name__}: {exc}"}
     try:
-        flags = audit(path)
+        # The chroma is passed so the audit can ask whether the key colour is
+        # still in the frame. Without it the audit can only inspect the cut, and
+        # the cut looks fine on an image that was never cut. See audit().
+        flags = audit(path, chroma=tuple(int(c) for c in chroma))
     except Exception as exc:
         # An audit that cannot run must not silently pass the frame — the whole
         # point of this contract is that nothing ships unverified.

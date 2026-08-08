@@ -362,18 +362,34 @@ def test_a_run_tag_is_unique_across_a_burst():
 # The per-pixel loop that was moved onto Pillow primitives
 # ---------------------------------------------------------------------------
 def _reference_chroma_key(img, chroma, tol=125, despill=185):
-    """The original per-pixel implementation, kept here as the oracle: the
-    rewrite is only allowed to be faster, not different."""
+    """The per-pixel implementation, kept here as the oracle: the vectorised
+    version is allowed to be faster, not different.
+
+    TWO PASSES NOW, and the second one is a deliberate behaviour change rather
+    than drift — see bgate_core.chroma.pinkness. Krea paints a DESATURATED
+    magenta (~#c0559f, 143 from the contract colour and so outside tol) instead
+    of the flat chroma it is asked for, so a distance key left the interior of
+    every frame opaque while the border keyed. The union pass catches the
+    backdrop by pinkness; this oracle reimplements that rule per-pixel rather
+    than importing it, so the two can still disagree.
+    """
+    from bgate_core.chroma import (PINK_CHROMA_MIN, PINK_KEY_FRACTION,
+                                   is_pinker_than, pinkness)
+
     px = img.load()
     W, H = img.size
     cr, cg, cb = chroma
+    pink_floor = (int(pinkness(chroma) * PINK_KEY_FRACTION)
+                  if pinkness(chroma) >= PINK_CHROMA_MIN else None)
     for y in range(H):
         for x in range(W):
             r, g, b, a = px[x, y]
             if a == 0:
                 continue
             d = ((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2) ** 0.5
-            if d < tol:
+            pinkish = (pink_floor is not None
+                       and is_pinker_than((r, g, b), pink_floor))
+            if d < tol or pinkish:
                 px[x, y] = (0, 0, 0, 0)
             elif d < despill:
                 m = (r + g + b) // 3
@@ -381,29 +397,59 @@ def _reference_chroma_key(img, chroma, tol=125, despill=185):
     return img
 
 
-def test_the_chroma_key_matches_the_per_pixel_original():
-    import random
-
+def _key_case(chroma, seed=7):
     from PIL import Image
 
-    chroma = (255, 0, 255)
-    random.seed(7)
+    import random
+
+    random.seed(seed)
     pixels = [(random.randrange(256), random.randrange(256),
                random.randrange(256), 255) for _ in range(64 * 64)]
     # Guarantee all three branches are exercised, not just the random middle.
-    pixels[:64] = [chroma + (255,)] * 64                       # keyed
+    pixels[:64] = [tuple(chroma) + (255,)] * 64                # keyed
     pixels[64:128] = [(200, 40, 200, 255)] * 64                # despill fringe
     source = Image.new("RGBA", (64, 64))
     source.putdata(pixels)
+    return source
 
+
+def _assert_matches_reference(chroma):
+    source = _key_case(chroma)
     expected = _reference_chroma_key(source.copy(), chroma)
     got = server._chroma_key(source.copy(), chroma)
-
     for i, (want, have) in enumerate(zip(expected.getdata(), got.getdata())):
         assert want[3] == have[3], f"alpha differs at {i}"
         # Band math floors where the loop floored; allow one step of slack on
         # the despilled channels rather than pinning float32 rounding.
         assert all(abs(a - b) <= 1 for a, b in zip(want[:3], have[:3])), i
+
+
+def test_the_chroma_key_matches_the_per_pixel_original():
+    _assert_matches_reference((255, 0, 255))
+
+
+def test_a_non_pink_chroma_is_pure_distance_keying():
+    """THE ORIGINAL INVARIANT, unchanged and still guarded. The pinkness pass is
+    gated on the chroma being a pink, so a cyan key must behave exactly as it did
+    before that pass existed — same pixels, same despill, no widening."""
+    _assert_matches_reference((0, 255, 255))
+
+
+def test_the_pink_pass_only_ever_adds():
+    """It is a UNION with the distance key, never a replacement. Anything the
+    distance rule cut must still be cut — a 'fix' that traded one set of missed
+    pixels for another would satisfy the oracle above and still be wrong."""
+    chroma = (255, 0, 255)
+    source = _key_case(chroma)
+    distance_only = _reference_chroma_key(source.copy(), (0, 255, 255))
+    both = server._chroma_key(source.copy(), chroma)
+    # Every pixel the CHROMA's own distance rule keyed, keyed by hand here so the
+    # comparison does not lean on the implementation being tested.
+    for i, px in enumerate(source.getdata()):
+        d = sum((c - k) ** 2 for c, k in zip(px[:3], chroma)) ** 0.5
+        if d < 125:
+            assert both.getdata()[i][3] == 0, i
+    assert distance_only is not None      # the copy above was not mutated in place
 
 
 def test_keyed_pixels_carry_no_colour_underneath():

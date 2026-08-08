@@ -1920,10 +1920,14 @@ def stop(item_id: int, actor: str = "") -> dict:
     # Written here, not at reap time: the reap only writes while the item is
     # still 'dispatched', so recording the stop now is what keeps the crash
     # story from being told over it.
+    #
+    # queue.stop rather than set_status: the prose is for the human reading the
+    # card, and it stamps `stopped_by` so anything that is not a human can tell
+    # this apart from a crash without parsing the sentence. See migration 0019.
     if root:
         try:
             if _queue.get(root, item_id)["status"] == "dispatched":
-                _queue.set_status(root, item_id, "failed", result=reason)
+                _queue.stop(root, item_id, by=actor, reason=reason)
         except LookupError:
             pass
     return {"ok": True, "item_id": item_id, "pid": pid, "actor": actor,

@@ -156,6 +156,42 @@ def get(root: str | os.PathLike[str]) -> dict:
     return dict(row)
 
 
+def set_dimension(root: str | os.PathLike[str], dimension: str) -> dict:
+    """Correct the project's 2d/3d record after the game changed shape.
+
+    A PROJECT CHANGES DIMENSION AND THE RECORD DID NOT FOLLOW. ``init`` writes it
+    and ``adopt`` detects it, and after that there was no way to change it: a 2D
+    prototype that grew a 3D scene kept reporting ``dimension: "2d"`` in
+    project_status forever, with no tool on any surface that could fix it. It
+    reads as cosmetic and is not — the field steers scaffolding templates and the
+    wording of seat briefs, so a wrong value quietly aims the whole board at the
+    wrong kind of game.
+
+    Re-running ``init`` would have done it, and that is exactly why this exists
+    instead: init also rewrites name, pitch and engine from its own defaults, so
+    the available workaround was to overwrite four fields to correct one. The
+    2d+3d value is there for the common real case — a 3D game with a 2D HUD, or a
+    prototype mid-port — and is not a compromise between the other two.
+    """
+    if dimension not in DIMENSIONS:
+        raise ValueError(f"dimension must be one of {DIMENSIONS}, "
+                         f"got {dimension!r}")
+    was = get(root).get("dimension") or ""
+    with db.tx(root) as conn:
+        conn.execute("UPDATE project SET dimension = ?, "
+                     "updated_at = datetime('now') WHERE id = 1", (dimension,))
+    if was != dimension:
+        try:
+            from . import activity
+
+            activity.log(root, "project",
+                         f"dimension {was or '(unset)'} -> {dimension}",
+                         seat="director")
+        except Exception:
+            pass            # an unlogged correction is still a correction
+    return get(root)
+
+
 def game_dir(root: str | os.PathLike[str]) -> Optional[Path]:
     """Where this project's Godot project.godot actually lives, or None.
 

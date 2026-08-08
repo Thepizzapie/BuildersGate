@@ -86,8 +86,10 @@ GROUPS = ("Dispatch", "Gates", "Art", "Follow-up", "Notifications",
 # has no checkbox, so it can never be added to notify.kinds and the coerce()
 # below REFUSES it — which is how chain.filed was emitted by queue.add_chain and
 # unselectable in the panel at the same time.
-EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.approved",
-               "item.rejected", "item.aging", "chain.filed", "chain.advanced",
+EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
+               "item.approved", "item.rejected", "item.aging",
+               "artifact.candidate", "artifact.reviewed",
+               "chain.filed", "chain.advanced",
                "chain.stalled", "gate.mode", "settings.guard", "style.trained",
                "budget.refused",
                "director.question", "agent.spawned", "agent.exited",

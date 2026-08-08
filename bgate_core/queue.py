@@ -227,6 +227,14 @@ def _notify(root: str | os.PathLike[str], item: dict) -> None:
     here, so an orchestrator (or the UI) can tail/long-poll one file instead of
     sleep-polling the queue. Never raises — losing a ping must not break the
     status change itself.
+
+    ``kind`` says WHICH CLASS OF EVENT a line is, and it is here because this
+    file is no longer only work items: ``artifacts._notify_line`` puts pending
+    human decisions on the same stream (they had no signal at all, so a batch of
+    candidates waiting on a human produced silence indistinguishable from an
+    agent still working). Purely additive — every line this function writes is a
+    work-item transition and still carries the same five fields, so a consumer
+    reading ``status`` sees exactly what it saw before.
     """
     try:
         import json as _json
@@ -235,6 +243,7 @@ def _notify(root: str | os.PathLike[str], item: dict) -> None:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "kind": "item.status",
                 "item_id": item["id"], "status": item["status"],
                 "seat": item["seat"], "title": item["title"][:120],
             }) + "\n")
@@ -519,6 +528,64 @@ def reject(root: str | os.PathLike[str], item_id: int, reason: str,
           payload={**_item_event_payload(sent_back), "by": actor[:120],
                    "reason": reason[:400]})
     return sent_back
+
+
+def stop(root: str | os.PathLike[str], item_id: int, by: str = "",
+         reason: str = "") -> dict:
+    """A HUMAN ended this run. Bank it as failed, and say so in a column.
+
+    ``status`` stays 'failed' and that is deliberate — the item did not finish,
+    it is worth reopening, and 'failed' is what reopen(), the QA gate query, the
+    chain interlock and the console's lanes all key on. Inventing a sixth status
+    would change behaviour in every one of those by omission.
+
+    What was missing is the CAUSE, which is a different question from the status
+    and now has its own field. Before this the only evidence was English in the
+    result note, so ``status: failed`` covered both "the agent crashed" and "a
+    person pressed stop" with no way to tell them apart except by reading. Three
+    items across three seats flipped to failed in the same second during a STOP
+    ALL and read as three separate bugs; a same-second multi-seat failure is the
+    signature of a systemic event, and nothing could see it.
+
+    Two things worth remembering about a stopped run, because both surprised
+    somebody: a stop often lands AFTER the valuable work, so check what survived
+    before assuming loss — and ``stopped_at`` is kept separate from
+    ``updated_at`` so a stopped item that is later reopened and re-run still says
+    it was stopped once, three rounds ago, rather than claiming it just now.
+    """
+    actor = (by or activity.current_actor() or "the dashboard")[:120]
+    said = (reason or "").strip() or (
+        f"stopped by {actor} — this run was ended by hand, "
+        "it did not die on its own")
+    item = set_status(root, item_id, "failed", result=said)
+    try:
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE work_item SET stopped_by = ?, "
+                "stopped_at = datetime('now') WHERE id = ?", (actor, item_id))
+        item = get(root, item_id)
+    except Exception:
+        pass            # bookkeeping must never lose the stop itself
+    # ON THE HEARTBEAT AS A STOP, not just as another 'failed'. set_status above
+    # already appended its line, but it ran before the column was stamped and it
+    # says exactly what a crash says. A watcher tailing the stream during a STOP
+    # ALL would otherwise see a burst of identical failures and have to open the
+    # database to learn a person caused them.
+    _notify(root, {**item, "status": "stopped"})
+    _emit(root, "item.stopped", ref=str(item_id),
+          payload={**_item_event_payload(item), "by": actor})
+    return item
+
+
+def was_stopped(item: dict) -> bool:
+    """Did a human end this run, as opposed to it dying?
+
+    A helper rather than an inline truth test because callers kept reaching for
+    the prose. ``stopped_by`` is absent on a project that has not migrated and
+    empty on every crash, so this is the one place that has to be careful about
+    the difference between "no" and "cannot tell".
+    """
+    return bool((item or {}).get("stopped_by"))
 
 
 def awaiting_review(root: str | os.PathLike[str]) -> list[dict]:

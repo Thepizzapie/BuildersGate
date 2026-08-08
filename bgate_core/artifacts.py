@@ -84,6 +84,23 @@ def register(root: str | os.PathLike[str], logical_name: str,
             root, iteration_id, "asset_revision", "artifact", str(artifact_id),
             f"Created {name} r{revision}", {"path": rel, "producer": producer})
 
+    # THE DECISION IS NOW PENDING, AND THE HEARTBEAT HAS TO SAY SO.
+    #
+    # notify.jsonl carried work-item status transitions and nothing else, so a
+    # batch of candidates waiting on a human produced ZERO lines while the
+    # dashboard drew an approval card for each one. Measured: five species
+    # candidates generated inside two minutes, not one line on the stream. A
+    # human decision nobody can see is the same failure as a dead agent — silence
+    # that is indistinguishable from an agent still working — arriving through a
+    # different door, and it is worse here because the thing on the other side of
+    # the silence is a person who does not know they are being waited on.
+    #
+    # Emitted BEFORE the auto-approve below so the ordering on the stream is the
+    # ordering of what happened: the candidate existed, then something cleared
+    # it. A consumer that sees only the pair learns the gate was off; one that
+    # sees the first line alone knows a human is owed an answer.
+    _announce_candidate(root, artifact_id, name, revision, rel, work_item_id)
+
     # AUTO-APPROVE AT REGISTRATION, when the project has asked for it.
     #
     # Gating `review()` alone was not enough and the reason is worth stating: an
@@ -108,6 +125,66 @@ def register(root: str | os.PathLike[str], logical_name: str,
                          f"auto-approve failed for {name} r{revision}: "
                          f"{type(exc).__name__}: {exc}", ref=str(artifact_id))
     return get(root, artifact_id)
+
+
+def _notify_line(root: str | os.PathLike[str], line: dict) -> None:
+    """Append one JSON line to ``.bgate/notify.jsonl``. Never raises.
+
+    THE SAME FILE queue._notify writes, deliberately, and in the same shape:
+    ``{ts, item_id, status, seat, title}`` plus a ``kind``. An orchestrator
+    already tails this one file — telling it to also tail a second one, with a
+    second schema, to learn about the other half of the gates is how a heartbeat
+    stops being a heartbeat.
+
+    ``kind`` is additive: every line queue writes is a work-item transition and
+    now says so, and a consumer that only reads ``status`` sees exactly what it
+    saw before. Losing a ping must never cost the registration that caused it.
+    """
+    try:
+        import json as _json
+        from datetime import datetime, timezone
+
+        path = os.path.join(str(root), ".bgate", "notify.jsonl")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                **line,
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def _announce_candidate(root, artifact_id: int, name: str, revision: int,
+                        rel: str, work_item_id: Optional[int]) -> None:
+    """Put a pending human decision on the heartbeat and on the event bus.
+
+    Two surfaces because they answer different questions and neither substitutes
+    for the other: the jsonl is what a shell can tail with no database and no
+    MCP, and the bus is what the notifier, the bell and the webhook read through
+    a cursor that survives a restart. Both guarded — an art run must not fail
+    because a notification could not be filed.
+    """
+    _notify_line(root, {
+        "kind": "artifact.candidate",
+        "item_id": int(work_item_id) if work_item_id else None,
+        # 'candidate' is a real status in STATUSES, not a word invented here, so
+        # a consumer switching on `status` reads something true.
+        "status": "candidate",
+        "seat": "art",
+        "title": f"{name} r{revision} awaiting approval"[:120],
+        "artifact_id": int(artifact_id),
+        "path": rel,
+    })
+    try:
+        from . import events as _events
+
+        _events.emit(root, "artifact.candidate", ref=str(artifact_id), payload={
+            "artifact_id": int(artifact_id), "logical_name": name,
+            "revision": revision, "path": rel,
+            "work_item_id": int(work_item_id) if work_item_id else None,
+        })
+    except Exception:
+        pass
 
 
 def get(root: str | os.PathLike[str], artifact_id: int) -> dict:
@@ -186,16 +263,46 @@ def _promote(root: str | os.PathLike[str], artifact: dict) -> dict:
 def _auto_approve(root: str | os.PathLike[str]) -> bool:
     """Is this project letting agents promote their own artifacts?
 
-    Reads ``art.auto_approve`` (default False). Imported inside the function
-    because ``settings`` is a higher layer than this module and a top-level
-    import would make the dependency circular.
+    TWO WAYS TO SAY YES, and the second one is why this docstring is long.
 
-    FAILS CLOSED. A registry that cannot be read is not permission — it is an
-    unknown, and the safe reading of an unknown here is "a human still decides".
+    ``art.auto_approve`` (default False) is the narrow switch: art specifically,
+    left alone by everything else. The APPROVAL GATE (``gate.mode``) is the broad
+    one, and ``none`` is a project-wide instruction — "an agent's own word closes
+    its item, nobody is checking" — that this path used to ignore completely.
+
+    The consequence was reported from the field and it is worse than a stray
+    card. With the gate at ``none`` every generated candidate still landed as a
+    'candidate', so the dashboard drew an APPROVAL card reading *only a human can
+    approve a candidate* for work the human had explicitly stopped asking about.
+    Suppressing the card alone would have been the wrong fix twice over: the
+    revision would sit un-promoted with the live path still holding the previous
+    image, and the one surface that said so would be the one that had just been
+    hidden. A gate that is off has to be off at the DECISION, not at the drawing
+    of it.
+
+    Deliberately not extended to ``agent``. That mode means a machine verifies
+    the claim, and the art path's machine verdict (:func:`qa_verdict`) is defined
+    to leave the revision a candidate — an agent approving art is exactly the
+    drift the art-QA router exists to stop, and a second agent doing it is the
+    same failure with an extra hop.
+
+    Imported inside the function because ``settings`` and ``gates`` are higher
+    layers than this module and a top-level import would make the dependency
+    circular.
+
+    FAILS CLOSED, both ways. A registry that cannot be read is not permission —
+    it is an unknown, and the safe reading of an unknown here is "a human still
+    decides".
     """
     try:
         from . import settings as _settings
-        return bool(_settings.get(root, "art.auto_approve"))
+        if bool(_settings.get(root, "art.auto_approve")):
+            return True
+    except Exception:
+        return False
+    try:
+        from . import gates as _gates
+        return _gates.mode(root) == _gates.NONE
     except Exception:
         return False
 
@@ -264,7 +371,43 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
             root, int(iteration_id), "asset_decision", "artifact", str(artifact_id),
             f"{artifact['logical_name']} r{artifact['revision']} -> {status}{tail}",
             {"status": status, "reason": note.strip(), "integration": promotion})
+    # THE DECISION CLOSING IS AS MUCH NEWS AS THE DECISION OPENING. Without this
+    # a consumer that saw the candidate line has no way to learn it was answered,
+    # so its pending list only ever grows and it goes on telling the human they
+    # owe a decision they already made.
+    _announce_review(root, artifact, status, who, promotion)
     return get(root, artifact_id)
+
+
+def _announce_review(root, artifact: dict, status: str, who: str,
+                     promotion: Optional[dict]) -> None:
+    """The pending decision is settled. Same two surfaces as the candidate."""
+    _notify_line(root, {
+        "kind": "artifact.reviewed",
+        "item_id": artifact.get("work_item_id"),
+        "status": status,
+        "seat": "art",
+        "title": f"{artifact['logical_name']} r{artifact['revision']} "
+                 f"-> {status}"[:120],
+        "artifact_id": int(artifact["id"]),
+        "by": (who or "")[:120],
+    })
+    try:
+        from . import events as _events
+
+        _events.emit(root, "artifact.reviewed", ref=str(artifact["id"]), payload={
+            "artifact_id": int(artifact["id"]),
+            "logical_name": artifact["logical_name"],
+            "revision": artifact["revision"], "status": status,
+            "by": (who or "")[:120],
+            # Whether the BUILD actually loads these bytes now. 'approved' with a
+            # failed promotion is the case where the badge and the disk disagree,
+            # and a subscriber acting on the badge alone would be acting on the
+            # wrong image.
+            "live": bool(promotion and promotion.get("ok")) if promotion else None,
+        })
+    except Exception:
+        pass
 
 
 def qa_verdict(root: str | os.PathLike[str], artifact_id: int, *, passed: bool,

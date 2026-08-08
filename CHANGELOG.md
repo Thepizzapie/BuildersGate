@@ -32,7 +32,152 @@ repository at first publication. There is no earlier release history to record.
 - **`assets.lock_holder()`** — one implementation of "who holds this path",
   which never raises. Three callers were answering it three ways or not at all.
 
+- **`pending_decisions`** — everything waiting on a human, in one call: the work
+  items parked by the builder's gate (the hard block — the chain behind each does
+  not advance), the artifact revisions nobody has dispositioned, and the open
+  `ask_human` questions, alongside the active gate mode. There was no way to ask
+  this. `asset_status` lists candidates but exposes no approval *state*,
+  `art_tournament_standings` reports Elo from matches already decided, and human
+  approval was dashboard-only — so a director could not see, surface or triage a
+  queue of decisions blocking its own board. It cannot approve anything and is
+  not meant to: the agent that made a candidate is exactly who must not clear it.
+  A candidate a QA agent already passed is reported distinctly from a raw one,
+  because the human is then confirming a check rather than performing the first.
+
+- **The heartbeat carries pending decisions.** `.bgate/notify.jsonl` now takes
+  `artifact.candidate` and `artifact.reviewed` lines beside the work-item ones,
+  and the event bus takes matching kinds. It carried only work-item transitions,
+  so five species candidates generated inside two minutes produced **zero lines**
+  while the dashboard drew an approval card for each — a blocking gate with no
+  signal, which looks exactly like an agent quietly working. Purely additive:
+  every line still carries `{ts, item_id, status, seat, title}`, now with a
+  `kind`, so a consumer reading `status` sees what it always saw.
+
+- **`queue_add(depends_on=...)`** — order for an item filed onto a board that
+  already has the work it waits on. Priority is a preference among things that
+  are ALL ready; it does not stop auto-deploy from starting both agents in the
+  same tick, so the one that needed the other's output writes against a file
+  that does not exist and reports done. Order could previously only be expressed
+  by `queue_add_chain`, which files a whole group at once — and chains are
+  strictly linear and cannot be appended to, so a dependent FOLLOW-UP had no
+  correct form at all. A dependency on an item that does not exist is refused,
+  not dropped: an item silently waiting on nothing dispatches immediately.
+
+- **`project_set_dimension`** — correct the 2d/3d record after the game changes
+  shape. `init` wrote it and `adopt` detected it; nothing could change it, so a
+  2D prototype that grew a 3D scene reported `dimension: "2d"` forever. Not
+  cosmetic — the field steers scaffolding templates and the wording of seat
+  briefs. The only workaround was re-running `project_init`, which overwrites
+  name, pitch and engine to correct one field.
+
+- **The seat brief carries the traps, gated by seat and dimension.** Two agents
+  independently hit the `.tscn` Transform3D transpose in one night; once the list
+  was pasted into briefs by hand, nobody did — and the hand-pasting only happened
+  because somebody remembered. Every row is a bug that has already cost a run AND
+  emits no error a search would find (transpose, winding-vs-normals,
+  parse-error-looks-like-a-hang, `preload` not `class_name`, deferred `_ready`,
+  sequential imports, sRGB-vs-linear, self-reported success, screenshot focus).
+  A 2D project is not billed for the 3D rows. The brief also now states that the
+  MCP tools are DEFERRED and need `ToolSearch` first — universal, non-obvious,
+  and an agent that has not been told concludes the tools do not exist.
+
+- **A long correction can reach a running agent.** `agent_steer` past 2000
+  characters writes the full text to the project's steer box and hands the agent
+  the opening paragraph plus that path, instead of refusing outright. The cap is
+  right and truncation is still never on the table — half a sentence with no way
+  to know it was cut is worse than either — but the refusal left no route for a
+  long correction short of killing the run and paying for it twice.
+
+- **A stopped run says it was stopped** (`work_item.stopped_by` / `stopped_at`,
+  migration 0019, and `queue.stop`). Deliberately NOT a sixth status: `failed` is
+  keyed on in ~85 places — `reopen`'s guard, the QA gate query, the chain
+  interlock, the console's lanes — and a new status changes behaviour in every one
+  that filters by name, silently and by omission. A stopped item stays failed
+  because it did not finish and it IS worth reopening; what was missing was the
+  CAUSE, which is a different question and now has its own column and an
+  `item.stopped` event.
+
 ### Fixed
+
+- **The approval gate's `none` setting was not honoured, for approvals OR
+  sign-offs, across every seat.** With the selector reading `NONE` — labelled *an
+  agent's own word closes its item* — the console went on drawing SIGN-OFF cards
+  over every finished item and APPROVAL cards over every generated candidate,
+  each saying only a human could decide. Observed across art and director both,
+  which is what ruled out "the art path forgot to check" and named it one defect
+  at the gate layer: `routes/console.py::_gates` never read `gates.mode` at all.
+
+  Setting a gate to `none` is a sentence — *do not stop to ask me* — and asking
+  anyway has two silent failure modes: work stalls behind a card nobody knew to
+  click, or the human learns to rubber-stamp, which spends the gate's credibility
+  on the runs where it IS on. It is now off at the DECISION and not merely at the
+  drawing: `artifacts.register` auto-approves under `none`, because suppressing
+  the card while leaving the revision a candidate would leave the live path
+  holding the previous image with the one surface that said so now hidden.
+  Untouched for `agent`, where an agent's verdict still leaves a candidate
+  pending — an agent approving art is the drift the art-QA router exists to stop.
+
+- **The builder's gate drew no card for the items it actually blocks.** The
+  inverse of the above, found while fixing it. `queue.complete` parks a completion
+  in `review` under that mode and the sign-off query asked for `done`, so the one
+  mode that genuinely mandates a human decision was the one whose stopped chains
+  were invisible. Parked items are now listed, marked `parked`, never aged out of
+  the window (a stopped chain is not a claim worth a glance), and `accept` routes
+  to `queue.approve` — acking one into a workspace doc would have cleared the card
+  and left the chain stopped forever.
+
+- **`image_generate(tileable=True)` silently did nothing.** `Image.save`
+  dispatches on the destination's suffix, so an output named `litter_albedo`
+  rather than `litter_albedo.png` raised `ValueError: unknown file extension:`
+  inside a swallowing `try` — the mirror pass never ran and the caller got a
+  texture back reporting success. The evidence arrived days later as a visible
+  seam at 2.4m tiling across a full-screen terrain floor. The format is now taken
+  from the source image, and the metadata records the MEASURED outcome
+  (`tileable`) beside the request (`tileable_requested`), with a `warning` on the
+  result when they disagree. A flag computed from the request is not evidence.
+
+- **The alpha keyer reported `clean: true` over an opaque pink slab.** Krea
+  ignores the pure-magenta backdrop contract and paints a DESATURATED magenta —
+  measured ~`#c0559f`, which is 143 from `(255,0,255)` and so outside the tol=125
+  sphere. The frame border keyed (closest to the contract colour) and the
+  interior did not. Every one of the audit's five measurements inspects THE CUT —
+  border, soft edge, RGB under zero alpha, enclosed holes — and not one inspects
+  what the cut left behind, so a solid rectangle passed all five.
+
+  Two fixes, because either alone leaves the hole. `key` gains a second pass on
+  PINKNESS — `(R+B)/2 - G`, a scalar the desaturated backdrop keeps and a green
+  leaf, brown twig or buff plume does not — unioned with the distance key and
+  gated on the chroma actually being a pink. And `audit(path, chroma=...)` now
+  measures `residual_chroma`: is the key colour still sitting opaque in the
+  frame. Reported as `None` rather than `0.0` when no chroma is passed, because
+  "not checked" and "checked and clean" reading the same is how this shipped.
+
+- **glTF `alphaMode: MASK` is flagged at import.** Godot 4.7 imports it as
+  `DEPTH_PRE_PASS`, not `ALPHA_SCISSOR`, so surfaces meant to be opaque cutouts
+  land in the sorted transparent pass. Nothing errors and one tree looks
+  identical; a forest is a framerate cliff with no error to grep for. Reported
+  rather than corrected — whether a MASK surface wants scissor (foliage) or the
+  transparent pass (genuinely translucent) is not knowable from the file. The
+  glTF JSON chunk is read directly, so warning costs no new dependency.
+
+- **`godot_screenshot` says its window has no foreground focus**, on every
+  result rather than only when something looks wrong. The capture window never
+  takes the foreground on Windows, so `Input.mouse_mode` stays VISIBLE and
+  anything gated on `MOUSE_MODE_CAPTURED` collapses in the shot while working
+  for a human. A previous pass "fixed" that by re-asserting capture every frame
+  with a comment blaming the game, masking the real finding for a whole pass —
+  when a fix has to run every frame forever, it is a symptom, not a cure.
+
+- **`blender_status` conflated "configured" with "running", and hosted with
+  local.** `usable: ["hunyuan-local", "krea", "trellis-cpp"]` gave no hint that
+  two of those need a server the user has to start and one is a hosted API
+  needing only its key — and the summary probes nothing, on purpose, because a
+  status call that blocks on a TCP timeout is one nobody makes. An agent tried
+  the two local backends, got connection refused from both, reported image-to-3D
+  unavailable, and the whole path was written off for a session; Krea was hosted,
+  its key was set, and it had already produced every texture in that build. The
+  `local`/`hosted` split the adapter always computed is now surfaced, alongside
+  `checked` and a note naming a reachable hosted backend by name.
 
 - **Nothing could be dispatched at all.** A CodeQL autofix landed a containment
   check in `runners.preflight` requiring the working directory to sit under

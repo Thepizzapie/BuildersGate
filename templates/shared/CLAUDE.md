@@ -15,9 +15,11 @@ itself.
 **Never used this before? Read to "The loop", do that, ignore the rest until
 you need it.**
 
-Start every fresh session with `project_status`, then `queue_list`. If those
-two tools are missing from your tool list, the MCP server is not connected —
-tell the user to run `bgate serve` / check their `.mcp.json`, and stop.
+Start with `project_status` and `queue_list`; if those are missing from your tool
+list the MCP server is not connected — say so and stop. Then INVENTORY, one call
+each: `bgate_doctor`, `image_status`, `blender_status`, `pending_decisions`,
+`seat_notes`, `handoff_read`, `ref_list`. `available: true` is a capability to
+USE, not a gate you passed. Re-read `queue_list` after each `queue_complete`.
 
 ## The vocabulary, in one line each
 

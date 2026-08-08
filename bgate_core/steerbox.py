@@ -74,6 +74,66 @@ def post(root: str | os.PathLike[str], item_id: int, text: str, *,
     return payload
 
 
+# How much of a long correction goes in the steer itself. The rest is cited.
+# Sized so the pointer sentence and the excerpt together stay well inside
+# MAX_TEXT with room for a long project path.
+EXCERPT = 900
+
+
+def notes_dir(root: str | os.PathLike[str]) -> Path:
+    return box(root) / "notes"
+
+
+def post_long(root: str | os.PathLike[str], item_id: int, text: str, *,
+              by: str = "", note: str = "") -> dict:
+    """Steer a running agent with a correction too long to be a steer.
+
+    THE CAP IS RIGHT AND THE DEAD END WAS NOT. Refusing a 2000+ character steer
+    outright — rather than truncating it, which would hand an agent half a
+    sentence and no way to know — is the correct call and it stays. But it left
+    no route at all for a genuinely long correction to reach a RUNNING agent:
+    the only options were to kill the run and re-pay for it, or to let it carry
+    on doing the wrong thing.
+
+    So the long text becomes a FILE and the steer becomes a citation. This is the
+    same discipline ``ask_human`` already asks of its callers — cite, do not
+    paste — applied to the channel that could not.
+
+    What the agent receives stays an interruption: a head excerpt so it can tell
+    immediately whether to stop what it is doing, and the path to read for the
+    rest. What it does NOT do is change the brief. A correction that should
+    outlive the run belongs in ``queue.update``; this one dies with the process
+    it was aimed at, which is the honest lifetime for "no, not like that".
+
+    Returns the posted steer plus ``note_path`` (absolute) and ``excerpted``.
+    """
+    text = str(text or "").strip()
+    if not text:
+        raise ValueError("a steer needs something to say")
+    if len(text) <= MAX_TEXT:
+        return {**post(root, item_id, text, by=by, note=note),
+                "note_path": "", "excerpted": False}
+
+    directory = notes_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = directory / f"item-{int(item_id)}-{stamp}-{uuid.uuid4().hex[:6]}.md"
+    header = (f"# Steer for item #{int(item_id)}\n\n"
+              f"From: {by or 'unknown'}  \nAt: {stamp} UTC\n\n"
+              "This is the full text of a mid-run correction. The agent was "
+              "given the first paragraph and this path.\n\n---\n\n")
+    path.write_text(header + text, encoding="utf-8")
+
+    head = text[:EXCERPT].rstrip()
+    posted = post(root, item_id, (
+        f"MID-RUN CORRECTION — too long for one steer, so the full text is at "
+        f"{path}. READ THAT FILE before your next step; what follows is only "
+        f"its opening so you can judge whether to stop now.\n\n{head}\n\n"
+        f"[...{len(text) - len(head)} more characters in {path.name}]"
+    ), by=by, note=note)
+    return {**posted, "note_path": str(path), "excerpted": True}
+
+
 def pending(root: str | os.PathLike[str],
             item_id: int | None = None) -> list[dict]:
     """Undelivered messages, oldest first. Reads only — nothing is consumed."""

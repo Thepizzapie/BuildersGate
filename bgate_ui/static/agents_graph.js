@@ -670,8 +670,13 @@
       }
       if (n.type === "gate") {
         const g = n.gate || {};
+        // A parked item is not a claim worth a glance, it is a stopped chain.
+        // Both used to read "your call", which made the one that is actually
+        // holding work up indistinguishable from the ten that are not.
         const what = g.kind === "art" ? "a human decides — approve or reject"
-          : g.kind === "signoff" ? "the agent says this is done — your call"
+          : g.kind === "signoff" ? (g.parked
+              ? "held in review — the chain behind it waits on you"
+              : "the agent says this is done — your call")
           : g.kind === "escalation" ? "QA loop broken — you arbitrate"
           : "verifying the claim before it counts";
         return `<div class="cg-meta"><span>${esc(g.seat || "")}</span>
@@ -856,14 +861,19 @@
       if (n.type === "gate") {
         const g = n.gate || {};
         if (g.kind === "signoff") {
-          return head("Sign-off", g.title)
+          return head(g.parked ? "Sign-off · held" : "Sign-off", g.title)
             + `<div class="cg-kv"><span>seat</span><span style="color:${seatColor(g.seat)}">${esc(g.seat)}</span></div>`
             + `<div class="cg-kv"><span>item</span><span>#${g.item_id}</span></div>`
             + `<div class="cg-sec">what it says it did</div>`
             + `<div class="cg-answer">${esc(g.result || "(no result note)")}</div>`
-            + `<div class="cg-note">'Done' is the agent's claim. Accept it and the
-                 gate clears; send it back and the reason is appended to the brief
-                 for whoever picks it up next.</div>`
+            + (g.parked
+              ? `<div class="cg-note">This item is PARKED IN REVIEW under the
+                   builder's gate — it is not closed, and anything chained behind
+                   it will not start until you accept. Send it back and the reason
+                   is appended to the brief for the next round.</div>`
+              : `<div class="cg-note">'Done' is the agent's claim. Accept it and the
+                   gate clears; send it back and the reason is appended to the brief
+                   for whoever picks it up next.</div>`)
             + `<div class="cg-acts">
                  <button class="qbtn small" data-act="accept" data-id="${g.item_id}">accept</button>
                  <button class="qbtn small ghost" data-act="sendback" data-id="${g.item_id}">send back</button>

@@ -859,6 +859,100 @@ def workflow_for(role: str, dimension: str, base: str) -> str:
     return f"{base}\n\n{note}" if base else note
 
 
+# ---------------------------------------------------------------------------
+# Traps: the failures that cost a run each, handed over before they cost another
+# ---------------------------------------------------------------------------
+#
+# MEASURED: two agents independently hit the .tscn Transform3D transpose in one
+# night. Once the list below started going out with the brief, nobody did. That
+# is the entire argument for this block — these are not tips, they are bugs that
+# have already been paid for, and every one of them is SILENT: no error, no
+# stack, no visual tell until something much later looks wrong for another
+# reason. An agent cannot search for a failure that never announces itself.
+#
+# The bar for adding a row: it cost at least one real run, and it produces no
+# error message a search would find. Anything an agent will discover in ten
+# seconds by reading a traceback does not belong here — a brief is a budget, and
+# a list nobody finishes is a list nobody reads.
+#
+# `dims` gates a row to project dimensions ("" means all), so a 2D project is not
+# billed for the Transform3D paragraph.
+TRAPS: tuple[dict, ...] = (
+    {"dims": ("3d", "2d+3d"), "seats": (), "text":
+     "`.tscn` Transform3D is ROW-major: the twelve floats fill the basis ROWS, "
+     "while the x/y/z axis vectors are its COLUMNS. Authoring the axes directly "
+     "gives you the TRANSPOSE, which for a rotation is its INVERSE — still a "
+     "valid rotation, pointing somewhere else. Nothing errors. After hand-"
+     "authoring any rotation, print `-basis.z` at runtime (or a dot product "
+     "against the intended target) and check it. dot == 1.000 is proof; 'it "
+     "looks about right' is not."},
+    {"dims": ("3d", "2d+3d"), "seats": (), "text":
+     "Winding drives CULLING; normals drive LIGHTING. Backwards winding does not "
+     "look like a missing mesh — it looks like objects floating over the sky's "
+     "ground colour. Supplying ARRAY_NORMAL does not save you. If geometry is "
+     "invisible from the side you expect, suspect winding before materials."},
+    {"dims": (), "seats": (), "text":
+     "A PARSE ERROR IN A godot_run SCRIPT LOOKS EXACTLY LIKE A HANG. If load() "
+     "fails it returns null, the next call errors, quit() is never reached, and "
+     "the harness kills the run at the timeout with NO stdout at all. Always: "
+     "`if X == null: print('LOAD FAILED'); quit(); return`, and bisect with "
+     "early quit()s. Confirm the engine starts at all with a trivial "
+     "print+quit before suspecting your own logic."},
+    {"dims": (), "seats": (), "text":
+     "Reference other scripts by PATH, not by class_name. A cross-script "
+     "`class_name` lookup hangs a headless run for 45s+ with no output when the "
+     "editor's global class cache has not been rebuilt — which is the state "
+     "every godot_run is in. Use `const X := preload(\"res://...\")`."},
+    {"dims": (), "seats": (), "text":
+     "`_ready()` is DEFERRED when you add_child during `_init()`. Measured on "
+     "one scene: 0 nodes immediately after add_child, 850 after a single "
+     "`await process_frame`. A headless test that instantiates a scene and reads "
+     "state set in _ready() must await a frame first — otherwise a correct game "
+     "is reported broken by a test with a timing bug."},
+    {"dims": ("3d", "2d+3d"), "seats": (), "text":
+     "IMPORT ASSETS SEQUENTIALLY. Parallel godot_import_asset calls collide on "
+     "the shared `.godot/` cache and die with a Windows PermissionError that "
+     "reads like a locked file. And a src_path already inside the project makes "
+     "the tool copy a file onto itself, which Windows also refuses — generate to "
+     "a staging dir and import FROM there."},
+    {"dims": ("3d", "2d+3d"), "seats": ("art", "tech"), "text":
+     "sRGB vs LINEAR: a hex picked off a reference image is sRGB, Blender's "
+     "Principled base colour is LINEAR. Assigning the hex directly ships "
+     "everything ~1.3x too bright, the .glb validates clean, and every check "
+     "that does not render IN THE ENGINE passes. Convert exactly once — twice is "
+     "as wrong as never, and both look plausible."},
+    {"dims": (), "seats": (), "text":
+     "A TOOL REPORTING ITS OWN SUCCESS IS NOT EVIDENCE. Verify the artifact: "
+     "measure the seam, look at the alpha, render it in the engine. Two shipped "
+     "defects came from a flag computed from the REQUEST or from a proxy (a "
+     "frame border) rather than from the file that was produced."},
+    {"dims": (), "seats": (), "text":
+     "godot_screenshot's window never takes true foreground focus on Windows, so "
+     "Input.mouse_mode stays VISIBLE and anything gated on MOUSE_MODE_CAPTURED "
+     "collapses in the shot. That is the harness, not your game. Never add "
+     "per-frame re-capture to make a screenshot look right — when a fix has to "
+     "run every frame forever, it is a symptom, not a cure."},
+)
+
+
+def traps_for(role: str, dimension: str) -> list[str]:
+    """The trap list this seat is actually exposed to, in fixed order."""
+    return [t["text"] for t in TRAPS
+            if (not t["dims"] or dimension in t["dims"])
+            and (not t["seats"] or role in t["seats"])]
+
+
+# Universal, and non-obvious enough that an agent which has not been told
+# concludes the tools do not exist and works around their absence.
+TOOLING_RULE = (
+    "THE builders-gate MCP TOOLS ARE DEFERRED in a fresh session: they are "
+    "listed by name but their schemas are not loaded, so calling one directly "
+    "fails. Load what you need first — ToolSearch(\"select:queue_get,seat_brief\") "
+    "— and pass project_dir explicitly on every call rather than relying on the "
+    "working directory."
+)
+
+
 def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict:
     """Everything a seat needs to start, BOUNDED.
 
@@ -959,7 +1053,12 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
         "truncated": truncated,
+        # Bugs that have already been paid for, gated to this seat and this
+        # project's dimension. See TRAPS for why they are in the brief and not
+        # in a document somebody is expected to have read.
+        "traps": traps_for(role, dimension),
         "rules": [
+            TOOLING_RULE,
             "Write only inside your lanes; can_write is the oracle, not a suggestion.",
             "Lock binaries before editing (asset_lock), release when done.",
             "Narrative writes go through canon_check before they land.",

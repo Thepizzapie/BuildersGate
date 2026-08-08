@@ -58,9 +58,12 @@ KINDS = (
     "item.done",         # an agent finished and nothing is holding the work
     "item.review",       # finished, parked for a human under the builder's gate
     "item.failed",       # the agent (or the watchdog) says it could not finish
+    "item.stopped",      # a HUMAN ended the run — banked as failed, not a crash
     "item.approved",     # the human released a held item
     "item.rejected",     # the human sent it back with a reason
     "item.aging",        # heartbeat: nobody has looked at a 'review' item
+    "artifact.candidate",# a generated candidate is waiting on a human decision
+    "artifact.reviewed", # that decision was made — approved, rejected, integrated
     "chain.filed",       # a dependent group was queued as one ordered chain
     "chain.advanced",    # a link landed and the next one became ready
     "chain.stalled",     # heartbeat: the head of a chain has not moved
