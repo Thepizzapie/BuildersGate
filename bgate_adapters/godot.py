@@ -661,6 +661,90 @@ def import_asset(project_dir: str, src_path: str, dest_rel: str = "assets",
         "replaced": replaced,
         "import": {"ok": imported["ok"], "errors": imported.get("errors", [])},
         "engine_view": inspected,
+        # None on anything that is not glTF, or when the file cannot be read.
+        # See alpha_mode_report — a silent transparency downgrade that only shows
+        # up as a framerate cliff on a forest.
+        "alpha_mode": alpha_mode_report(dest),
+    }
+
+
+# The value Godot 4.7 does NOT give you, and the one it gives you instead.
+GLTF_MASK = "MASK"
+GODOT_MASK_ACTUAL = "DEPTH_PRE_PASS"
+GODOT_MASK_EXPECTED = "ALPHA_SCISSOR"
+
+
+def gltf_json(path: str | os.PathLike[str]) -> Optional[dict]:
+    """The glTF JSON for a ``.gltf`` or ``.glb``, or None if it is neither.
+
+    A ``.glb`` is a 12-byte header followed by length-prefixed chunks, the first
+    of which is the same JSON a ``.gltf`` holds in the clear. Reading it needs no
+    glTF library and no Blender — which matters, because this runs on an import
+    path that must not grow a dependency to emit a warning.
+
+    Never raises: a truncated or exotic file gives None, and a missing warning is
+    a much smaller problem than an import that fails because of the warner.
+    """
+    p = Path(path)
+    try:
+        if p.suffix.lower() == ".gltf":
+            return json.loads(p.read_text(encoding="utf-8"))
+        if p.suffix.lower() != ".glb":
+            return None
+        raw = p.read_bytes()
+        if len(raw) < 20 or raw[:4] != b"glTF":
+            return None
+        length = int.from_bytes(raw[12:16], "little")
+        if raw[16:20] != b"JSON":
+            return None
+        return json.loads(raw[20:20 + length].decode("utf-8"))
+    except Exception:
+        return None
+
+
+def alpha_mode_report(path: str | os.PathLike[str]) -> Optional[dict]:
+    """Which materials use ``alphaMode: MASK``, and what Godot will do with them.
+
+    GODOT 4.7 IMPORTS glTF ``MASK`` AS ``DEPTH_PRE_PASS``, NOT ``ALPHA_SCISSOR``.
+    Nothing errors, nothing is logged, and the mesh looks right in a screenshot.
+    What changes is which render pass it lands in: scissor is an OPAQUE-pass
+    cutout resolved per fragment, while depth-pre-pass puts the surface into the
+    SORTED TRANSPARENT pass. On a tree that is hundreds of alpha quads, every one
+    of them is then depth-sorted per frame and cannot early-z against its
+    neighbours — a framerate cliff on a forest, with no error to search for and
+    no visual tell to notice.
+
+    Reported rather than corrected. The fix is a per-material override in the
+    sibling ``.import`` file, and choosing it needs to know whether the surface
+    is foliage (wants scissor) or genuinely translucent (wants the transparent
+    pass) — which this cannot know from the file. Naming it at import time is the
+    difference between a five-minute change and an afternoon profiling a forest.
+
+    None for a non-glTF file or one that cannot be parsed; a dict with an empty
+    ``materials`` list when the file is glTF and uses no MASK at all, because
+    "checked, nothing to say" and "not checked" must not read the same.
+    """
+    doc = gltf_json(path)
+    if doc is None:
+        return None
+    masked = [str(m.get("name") or f"material {i}")
+              for i, m in enumerate(doc.get("materials") or [])
+              if str(m.get("alphaMode") or "").upper() == GLTF_MASK]
+    if not masked:
+        return {"masked_materials": [], "warning": ""}
+    return {
+        "masked_materials": masked,
+        "warning": (
+            f"{len(masked)} material(s) use glTF alphaMode:{GLTF_MASK} "
+            f"({', '.join(masked[:6])}"
+            + (f", +{len(masked) - 6} more" if len(masked) > 6 else "")
+            + f"). Godot 4.7 imports that as {GODOT_MASK_ACTUAL}, NOT "
+            f"{GODOT_MASK_EXPECTED} — so these surfaces render in the sorted "
+            "TRANSPARENT pass instead of as opaque cutouts. Silent, and it costs "
+            "real frames once there are hundreds of alpha quads on screen. If "
+            "these are foliage or any hard-edged cutout, override the material's "
+            f"transparency to {GODOT_MASK_EXPECTED} in the sibling .import "
+            "rather than leaving the default."),
     }
 
 

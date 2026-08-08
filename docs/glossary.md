@@ -112,7 +112,26 @@ server process while the reaper runs in the dashboard's, so the log is
 multi-writer across processes and an appended file cannot hand out a monotonic
 sequence without a lock. `since()` reports `gap: true` when a cursor points below
 the oldest surviving row — "you missed forty events" and "nothing happened" must
-never look the same. `.bgate/notify.jsonl` is still written, unchanged.
+never look the same.
+
+`.bgate/notify.jsonl` is still written, and it is still the shell-readable view:
+one appended JSON line per transition, tailable with no database and no MCP. It
+now carries two classes rather than one, because it used to carry only work-item
+transitions and a batch of art candidates waiting on a human therefore produced
+**zero lines** while the dashboard drew an approval card for each. A blocking
+gate with no signal looks exactly like an agent quietly working.
+
+| `kind`                | what happened                                     |
+|-----------------------|---------------------------------------------------|
+| `item.status`         | a work item changed status (the original line)     |
+| `artifact.candidate`  | a generated revision is waiting on a human         |
+| `artifact.reviewed`   | that decision was made                             |
+
+`kind` is additive: every line still carries `{ts, item_id, status, seat, title}`,
+so a consumer reading `status` sees exactly what it saw before. What the stream
+still cannot tell you is whether a decision is *stale* — for the current pending
+list, call the `pending_decisions` MCP tool, which answers with the parked chains,
+the undecided candidates and the open questions in one call.
 
 ### The follow-up router
 

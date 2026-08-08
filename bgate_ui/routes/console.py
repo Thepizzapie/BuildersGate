@@ -347,7 +347,41 @@ def _gates(root_dir, conn, active: set[int]) -> list[dict]:
     with a used art library grows a permanent wall of approval nodes hanging off
     work that finished weeks ago — which is a review backlog, not a gate, and
     the review queue in Assets is where it belongs.
+
+    THE MODE SELECTOR REACHES THIS LIST. It did not, and that is the bug this
+    paragraph exists for: a project with the gate set to ``none`` kept drawing
+    SIGN-OFF cards over every finished item and APPROVAL cards over every
+    generated candidate, each one telling the human that only they could decide.
+    Reported from the field across seats — art and director both — after the
+    human had explicitly switched the asking off. Setting a gate to ``none`` is
+    a sentence: *do not stop to ask me*. Asking anyway either stalls work behind
+    a card nobody knew to click or trains the human to rubber-stamp, which
+    destroys the gate for the runs where it IS on. So the mode is read here, once
+    per poll, and it decides which human-facing cards exist at all.
+
+    What each mode draws, stated so the next reader does not have to infer it:
+
+        none      QA-gate items only — those are real work items somebody filed,
+                  and hiding a queued agent is a different lie. No sign-off, no
+                  candidate approvals (``artifacts._auto_approve`` clears those
+                  at registration under this mode, so nothing is left stuck).
+        agent     the above plus candidate approvals: an agent records a verdict
+                  with ``art_qa_verdict`` and the revision STAYS a candidate, so
+                  a human is still the only one who can promote it.
+        builders  everything, including sign-off — and sign-off covers items
+                  parked in ``review`` as well as recently-finished ones. Under
+                  this mode ``queue.complete`` parks a finished item in 'review'
+                  rather than 'done', and this list queried 'done' only, so the
+                  one gate the mode actually mandates had no card on the graph.
     """
+    from bgate_core import gates as _gatemode
+
+    try:
+        mode = _gatemode.mode(root_dir)
+    except Exception:
+        # An unreadable mode must not blank the board. DEFAULT is 'agent', the
+        # behaviour that shipped before the setting existed.
+        mode = _gatemode.DEFAULT
     out: list[dict] = []
     for row in conn.execute(
             "SELECT id, seat, title, status, source, source_ref, created_at "
@@ -369,46 +403,69 @@ def _gates(root_dir, conn, active: set[int]) -> list[dict]:
     # only a claim. The gate appears the moment the item lands and disappears
     # the moment it is acted on, which is what makes it a gate rather than a
     # backlog — see POST /api/console/signoff.
-    acked = set((_ws.get(root_dir, SEAT, SIGNOFF_KEY, {}).get("acked") or {}))
-    cutoff = (datetime.now(timezone.utc)
-              - timedelta(hours=_signoff_hours(root_dir))
-              ).strftime("%Y-%m-%d %H:%M:%S")
-    for row in conn.execute(
-            "SELECT id, seat, title, result, source, updated_at FROM work_item "
-            "WHERE status = 'done' AND source NOT IN ('chat', 'qa-gate') "
-            "AND updated_at >= ? ORDER BY updated_at DESC, id DESC LIMIT 14",
-            (cutoff,)):
-        if str(row["id"]) in acked:
-            continue
-        out.append({
-            "kind": "signoff",
-            "id": f"gate_done_{row['id']}",
-            "item_id": int(row["id"]),
-            "over_item_id": int(row["id"]),
-            "title": row["title"],
-            "seat": row["seat"],
-            "status": "done",
-            "result": (row["result"] or "")[:400],
-            "blocking": True,
-            "created_at": row["updated_at"],
-        })
+    #
+    # BUILDER'S GATE ONLY. Under 'agent' the QA seat is the reviewer and a second
+    # human ask buys nothing the QA verdict has not already bought; under 'none'
+    # the human has said not to ask at all.
+    if mode == _gatemode.BUILDERS:
+        acked = set((_ws.get(root_dir, SEAT, SIGNOFF_KEY, {}).get("acked") or {}))
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(hours=_signoff_hours(root_dir))
+                  ).strftime("%Y-%m-%d %H:%M:%S")
+        # 'review' has no time window and never gets one: it is not a claim
+        # somebody may want to glance at, it is a chain stopped dead waiting for
+        # this exact decision. Ageing it out of the list would hide the block and
+        # leave the work behind it queued forever with nothing on screen saying
+        # why. 'done' keeps the window — see SIGNOFF_HOURS.
+        for row in conn.execute(
+                "SELECT id, seat, title, result, status, source, updated_at "
+                "FROM work_item "
+                "WHERE source NOT IN ('chat', 'qa-gate') "
+                "AND (status = 'review' OR (status = 'done' AND updated_at >= ?)) "
+                "ORDER BY CASE status WHEN 'review' THEN 0 ELSE 1 END, "
+                "updated_at DESC, id DESC LIMIT 14",
+                (cutoff,)):
+            if str(row["id"]) in acked:
+                continue
+            parked = row["status"] == "review"
+            out.append({
+                "kind": "signoff",
+                "id": f"gate_done_{row['id']}",
+                "item_id": int(row["id"]),
+                "over_item_id": int(row["id"]),
+                "title": row["title"],
+                "seat": row["seat"],
+                "status": row["status"],
+                # The one field that separates "glance at this" from "this is
+                # stopped": a parked item releases its chain only on approve.
+                "parked": parked,
+                "result": (row["result"] or "")[:400],
+                "blocking": True,
+                "created_at": row["updated_at"],
+                "gate_mode": mode,
+            })
 
-    for art in _artifacts.list_revisions(root_dir, status="candidate")[:60]:
-        item_id = art.get("work_item_id")
-        if not item_id or int(item_id) not in active:
-            continue
-        out.append({
-            "kind": "art",
-            "id": f"gate_art_{art['id']}",
-            "artifact_id": int(art["id"]),
-            "item_id": int(item_id) if item_id else None,
-            "over_item_id": int(item_id) if item_id else None,
-            "title": art.get("logical_name") or f"candidate {art['id']}",
-            "seat": "art",
-            "status": "candidate",
-            "blocking": True,
-            "path": art.get("path") or "",
-        })
+    # A candidate is human-only to promote, so under 'none' there is nobody left
+    # to ask — artifacts.register auto-approves at registration under that mode
+    # rather than leaving a wall of candidates behind a suppressed card.
+    if mode != _gatemode.NONE:
+        for art in _artifacts.list_revisions(root_dir, status="candidate")[:60]:
+            item_id = art.get("work_item_id")
+            if not item_id or int(item_id) not in active:
+                continue
+            out.append({
+                "kind": "art",
+                "id": f"gate_art_{art['id']}",
+                "artifact_id": int(art["id"]),
+                "item_id": int(item_id) if item_id else None,
+                "over_item_id": int(item_id) if item_id else None,
+                "title": art.get("logical_name") or f"candidate {art['id']}",
+                "seat": "art",
+                "status": "candidate",
+                "blocking": True,
+                "path": art.get("path") or "",
+                "gate_mode": mode,
+            })
     return out
 
 
@@ -749,6 +806,16 @@ def console_signoff(payload: dict) -> dict:
     'the agent finished'; without a second, separate record there is no way to
     express 'and a human has looked at it', which is the entire difference
     between a claim and an approval.
+
+    TWO DIFFERENT ITEMS ARRIVE HERE AND ONLY ONE OF THEM IS A CLAIM. Under the
+    builder's gate a completion parks in 'review' and the chain behind it does
+    not advance — the decision is not a glance, it is the thing releasing the
+    work. Acking that in the workspace doc would clear the CARD and leave the
+    CHAIN stopped, with the one surface that said so now hidden: the same
+    off-at-the-drawing-not-at-the-decision mistake the gate selector made. So a
+    parked item routes to ``queue.approve``/``queue.reject``, which move the
+    status, stamp who signed and emit; only a genuinely finished item takes the
+    acknowledgement path.
     """
     try:
         item_id = int(payload.get("item_id"))
@@ -764,11 +831,22 @@ def console_signoff(payload: dict) -> dict:
     except LookupError:
         raise _api.not_found(f"no work item {item_id}")
 
+    parked = item["status"] == "review"
+
     if verdict == "reopen":
         if not reason:
             raise _api.bad_request(
                 "say what is wrong — a reopen with no reason spends another "
                 "agent on the same guess")
+        if parked:
+            # queue.reject parks it as failed and reuses reopen, so a rejected
+            # item is indistinguishable from a QA-failed one downstream: one fix
+            # path, one round counter, one place the next agent looks.
+            _queue.reject(r, item_id, reason)
+            _activity.log(r, "signoff", f"rejected #{item_id}: {reason[:120]}",
+                          seat=item["seat"], ref=str(item_id))
+            return {"ok": True, "item_id": item_id, "verdict": verdict,
+                    "status": "queued", "released": False}
         if item["status"] not in ("done", "failed"):
             raise _api.bad_request(
                 f"item {item_id} is {item['status']} — only a finished item "
@@ -782,6 +860,17 @@ def console_signoff(payload: dict) -> dict:
         return {"ok": True, "item_id": item_id, "verdict": verdict,
                 "status": "queued"}
 
+    if parked:
+        # 'review' -> 'done', which is what frees the chain. approve() records
+        # WHO signed, because an approval nobody signed is not an approval, and
+        # emits item.approved rather than a second item.done — the completion was
+        # already announced when it parked.
+        _queue.approve(r, item_id, note=reason)
+        _activity.log(r, "signoff", f"approved #{item_id}: {item['title'][:80]}",
+                      seat=item["seat"], ref=str(item_id))
+        return {"ok": True, "item_id": item_id, "verdict": verdict,
+                "status": "done", "released": True}
+
     def _ack(doc: dict) -> dict:
         acked = dict(doc.get("acked") or {})
         acked[str(item_id)] = {"verdict": "accept", "by": _activity.current_actor(),
@@ -792,7 +881,8 @@ def console_signoff(payload: dict) -> dict:
     _ws_update(r, SIGNOFF_KEY, _ack)
     _activity.log(r, "signoff", f"accepted #{item_id}: {item['title'][:80]}",
                   seat=item["seat"], ref=str(item_id))
-    return {"ok": True, "item_id": item_id, "verdict": verdict, "status": "done"}
+    return {"ok": True, "item_id": item_id, "verdict": verdict, "status": "done",
+            "released": False}
 
 
 @router.post("/api/console/answer")

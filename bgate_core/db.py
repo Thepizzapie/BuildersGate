@@ -847,6 +847,32 @@ _MIGRATIONS: list = [
     CREATE INDEX idx_art_match_logical ON art_match(logical_name, id DESC);
     CREATE INDEX idx_art_match_tournament ON art_match(tournament_ref);
     """,
+
+    # 0019 — a stop is not a crash, and prose is not a field.
+    #
+    # A human ending a run banks the item as `status='failed'` with the only
+    # evidence in the result note: "stopped by Adrian — this run was ended by
+    # hand, it did not die on its own". Honest, and unreadable to anything that
+    # is not a person. Measured: three items across three seats flipped to
+    # 'failed' in the same second and read as three separate bugs until someone
+    # opened the notes; the same-second multi-seat signature is what a systemic
+    # event looks like, and no tool could see it.
+    #
+    # NOT A SIXTH STATUS, deliberately. 'failed' is load-bearing in ~85 places —
+    # reopen()'s guard, the QA gate's query, the chain interlock, the console's
+    # lanes — and a new status is a silent behaviour change in every one of them
+    # that filters by name. What was actually missing is the CAUSE of the
+    # failure, which is a different question from the status and belongs in its
+    # own column. A stopped item stays failed: it did not finish, it IS worth
+    # reopening, and every recovery path keeps working untouched.
+    #
+    # stopped_at is separate from updated_at because a stopped item that is later
+    # reopened and re-run keeps its history; the pair is what tells "this run was
+    # killed" from "this item was killed once, three rounds ago".
+    """
+    ALTER TABLE work_item ADD COLUMN stopped_by TEXT NOT NULL DEFAULT '';
+    ALTER TABLE work_item ADD COLUMN stopped_at TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

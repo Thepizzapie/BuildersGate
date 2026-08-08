@@ -325,6 +325,40 @@ working.
 The ceilings live in the project's budget (`/api/spend`); the two environment
 variables are escape hatches for a machine that needs different numbers.
 
+## Inventory before you plan
+
+The stamped `CLAUDE.md` names the calls; this is why they are worth the tokens.
+
+Measured across a week of real builds, the single most expensive habit was not
+running them. Each is one call and each returns a *list* rather than a verdict:
+
+| call | what it enumerates |
+|---|---|
+| `project_status`, `queue_list`, `bible_read`, `seat_list` | the board and the design |
+| `bgate_doctor` | the toolchain — **an inventory, not a pass/fail gate** |
+| `image_status`, `blender_status` | providers, models and backends the doctor only summarises |
+| `pending_decisions` | what is already blocked on a human |
+| `seat_notes`, `handoff_read` | what earlier sessions and sibling agents know |
+| `ref_list` | what is already pinned, before generating anything |
+
+Three failures this prevents, all of them from the same session:
+
+- **A green row is a capability, not a tick.** `imageto3d: {available: true}`
+  was read as "that check passed" and the backend went unused for a week. If you
+  decline a capability, say so as a decision.
+- **`usable` means configured, not running, and not local-only.** A local
+  backend is listed usable with no server up; a hosted one needs only its key. An
+  agent tried the two local image-to-3D backends, got connection refused, and
+  reported the path unavailable — the hosted one worked and had already produced
+  every texture in that build. Check `hosted` before reporting anything down.
+- **A subagent's "X was not available" deserves the same scepticism as its "X
+  worked."** Check which variants it actually tried before repeating that upward.
+
+The board is live while you read it: closing a chain link releases the next one
+to auto-deploy even when the session-start banner said nothing was queued, so
+re-read `queue_list` after every `queue_complete`, and treat a file you did not
+write as evidence of a concurrent writer rather than a curiosity.
+
 ## Two things that will bite you
 
 **Approval is human-only, on purpose.** An agent records a verdict; it does not

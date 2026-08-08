@@ -697,6 +697,31 @@ def project_status() -> dict:
         return _fail(exc)
 
 
+@_tool
+def project_set_dimension(dimension: str) -> dict:
+    """Correct the project's 2d | 3d | 2d+3d record after the game changed shape.
+
+    ``init`` writes this and ``adopt`` detects it; nothing could change it
+    afterwards. A 2D prototype that grew a 3D scene went on reporting
+    ``dimension: "2d"`` in project_status indefinitely, and the only workaround
+    was re-running ``project_init``, which rewrites name, pitch and engine from
+    its own defaults — overwriting four fields to correct one.
+
+    Not cosmetic: the field steers scaffolding templates and the wording of seat
+    briefs, so a stale value aims the board at the wrong kind of game. Use
+    ``2d+3d`` for the real mixed case (a 3D game with a 2D HUD, a prototype
+    mid-port) rather than picking whichever is closer.
+    """
+    try:
+        was = _project.get(_root()).get("dimension") or ""
+        after = _project.set_dimension(_root(), dimension)
+        _log("project", f"dimension {was or '(unset)'} -> {dimension}")
+        return {"project": after, "was": was, "now": after.get("dimension"),
+                "changed": was != after.get("dimension")}
+    except Exception as exc:
+        return _fail(exc)
+
+
 # ---------------------------------------------------------------------------
 # Design bible
 # ---------------------------------------------------------------------------
@@ -908,14 +933,48 @@ def _imageto3d_summary() -> dict:
     blocked = {b["backend"]: b.get("reason", "")
                for b in full.get("backends") or []
                if not b.get("available") and b.get("implemented")}
+    # SPLIT HOSTED FROM LOCAL, BECAUSE `usable` MEANS CONFIGURED, NOT RUNNING.
+    #
+    # This flattened status() to one list and dropped the local/hosted split the
+    # adapter had already computed. ["hunyuan-local", "krea", "trellis-cpp"] gave
+    # no hint that two of those need a server the user has to start and one is a
+    # hosted API that needs only its key — and probe=False, which is the default
+    # here for the good reason that a status call must not block on a TCP
+    # timeout, means a local row says "usable" while nothing is listening.
+    #
+    # THE COST, MEASURED: an agent tried the two local backends, got connection
+    # refused from both, and reported image-to-3D unavailable. That was relayed
+    # upward as fact and the whole image-to-3D path was written off for a
+    # session. Krea was hosted, its key was set, and it had already produced
+    # every texture in the same build. One ambiguous list did that.
+    local = list(full.get("local") or [])
+    hosted = list(full.get("hosted") or [])
+    clear = list(full.get("unconditional_licence") or [])
+    hint = ""
+    if local and not hosted:
+        hint = ("every usable backend here is LOCAL, which means CONFIGURED, not "
+                "running — probe one before concluding anything, and do not "
+                "report image-to-3D unavailable on a refused connection alone.")
+    elif hosted:
+        hint = (f"hosted backends ({', '.join(hosted)}) need no local server — "
+                "they are reachable now. If a local one refuses a connection, "
+                "try a hosted one before reporting the path unavailable.")
     return {"available": bool(usable), "usable": usable,
+            # Kept alongside `usable` rather than replacing it: existing callers
+            # read that key, and a status field that silently changes shape is
+            # its own version of this bug.
+            "local": local, "hosted": hosted,
+            "unconditional_licence": clear,
             "gpu": gpu.get("name", ""), "vram_gb": gpu.get("vram_gb"),
             "blocked": blocked,
+            "checked": "configuration only — a local backend listed usable may "
+                       "still have no server running",
             "note": ("nothing configured — see .env.example; a generated mesh "
                      "is a DRAFT and still has to be cleaned, scaled, oriented "
                      "and rigged before it is an asset")
             if not usable else
-            "a generated mesh is a DRAFT: clean, scale, orient and rig it"}
+            ("a generated mesh is a DRAFT: clean, scale, orient and rig it. "
+             + hint).strip()}
 
 
 @_tool
@@ -2417,6 +2476,21 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                                   logical_name=_Path(filename).stem,
                                   work_item_id=_work_item_id())
         result["refs_used"] = named
+        # WHAT HAPPENED, NOT WHAT WAS ASKED FOR. `tileable` above is the request;
+        # chroma puts the mirror pass's own {ok, method, note} at result["tileable"]
+        # and it can be a failure. Recording the boolean meant a map that never
+        # tiled was filed as a tileable map, and the seam turned up in a render
+        # days later with the metadata still claiming otherwise. A flag computed
+        # from the request is not evidence about the artifact.
+        tiled = result.get("tileable")
+        tiled_ok = bool(tiled.get("ok")) if isinstance(tiled, dict) else bool(tiled)
+        if tileable and not tiled_ok:
+            # Surfaced on the result, not buried in metadata: the caller is
+            # standing right here and can regenerate or heal the seam now.
+            result["warning"] = (
+                "tileable was requested and DID NOT happen: "
+                + (tiled.get("note") if isinstance(tiled, dict) else "no tile pass ran")
+                + " — this map will seam where it repeats")
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
             if archived:
@@ -2426,7 +2500,10 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                 model=result.get("model", ""), prompt=prompt, refs=named,
                 metadata={"size": size, "quality": quality,
                           "transparent": transparent,
-                          "task_kind": task_kind, "tileable": tileable,
+                          "task_kind": task_kind,
+                          "tileable_requested": tileable,
+                          "tileable": tiled_ok,
+                          "tileable_detail": tiled if isinstance(tiled, dict) else None,
                           "resolved_refs": resolved,
                           "pinned_refs": pinned_names,
                           "anchors": anchor_paths,
@@ -3725,11 +3802,27 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     result is where that is said. Read it before telling anyone the import was
     clean.
 
+    `alpha_mode` carries the OTHER silent one: Godot 4.7 imports glTF
+    `alphaMode: MASK` as DEPTH_PRE_PASS rather than ALPHA_SCISSOR, which moves
+    every one of those surfaces into the sorted transparent pass. Nothing errors
+    and a screenshot looks correct; it costs frames once a scene has hundreds of
+    alpha quads on it. Read the warning before shipping foliage.
+
+    IMPORT SEQUENTIALLY. Two headless imports at once fight over the shared
+    `.godot/` cache and one of them dies with a Windows PermissionError that
+    reads like a locked file rather than like the race it is. Batching them in
+    parallel to save wall-clock buys an error instead. And a `src_path` already
+    inside the project makes this copy a file onto itself, which Windows also
+    refuses — generate to a staging directory and import FROM there.
+
     godot_project: the directory holding project.godot.
     """
     try:
         result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
                                      timeout=timeout)
+        warning = (result.get("alpha_mode") or {}).get("warning")
+        if warning:
+            _log("asset", f"alphaMode:MASK in {src_path} — {warning[:160]}")
         # Register the landed asset so asset_verify covers it from birth. Only
         # possible when the game project lives inside the bgate root.
         if result.get("ok") and result.get("copied_to"):
@@ -4143,6 +4236,32 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
     (rendering needs a display) and closes itself after the capture. The shot
     is archived to the preview gallery — check it before and after visual work.
 
+    THE WINDOW NEVER GAINS TRUE FOREGROUND FOCUS ON WINDOWS, AND THAT IS THIS
+    TOOL'S ARTIFACT, NOT YOUR GAME'S. Read this before "fixing" anything it
+    seems to reveal about input.
+
+    The capture window is spawned by a background process, so Windows does not
+    hand it the foreground. The mouse is therefore never captured:
+    `Input.mouse_mode` stays VISIBLE no matter what `_ready` asked for, and any
+    code gated on MOUSE_MODE_CAPTURED — a viewfinder, a first-person look
+    controller, a pointer-lock HUD — collapses in the shot while working
+    perfectly for a human running the same build.
+
+    Measured cost of not knowing: a previous pass "fixed" this by re-asserting
+    mouse capture EVERY FRAME from the shot rig, with a comment blaming the
+    game. That masked the real finding for a whole pass. **When a fix has to run
+    every frame forever, it is a symptom, not a cure.**
+
+    So: do not conclude anything about input capture from a screenshot, and do
+    not add per-frame re-capture to make one look right. To check input for
+    real, run the game with `godot_run` and assert on state, or have a human
+    play it. `focus` in the result says this out loud on every call.
+
+    Two more things this tool cannot give you. It returns NO STDOUT, so a
+    windowed run's diagnostics must be written to `user://` and read back. And
+    `res://.bgate_shot.gd` is the harness's own helper — it can error during
+    unrelated headless runs; work around it, do not delete it.
+
     godot_project: the directory holding project.godot.
     """
     try:
@@ -4162,6 +4281,22 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
             _log("screenshot", f"captured the running game at t={at}s"
                                + (f" ({label})" if label else ""),
                  ref=archived or result["path"])
+        # ON EVERY RESULT, not only when something looks wrong. The failure this
+        # prevents is a correct-looking screenshot being read as evidence about
+        # input — by which point the misreading has already been acted on. A
+        # caveat that only appears once you suspect a problem arrives after the
+        # bug report has been written.
+        result["focus"] = {
+            "foreground": False,
+            "mouse_capture": "unavailable",
+            "note": ("this window never takes true foreground focus on Windows, "
+                     "so Input.mouse_mode stays VISIBLE and anything gated on "
+                     "MOUSE_MODE_CAPTURED will not appear in this shot. That is "
+                     "the harness, not the game — do not fix the game for it, "
+                     "and do not re-assert capture per frame to make the shot "
+                     "look right. Check input with godot_run and an assertion, "
+                     "or with a human at the keyboard."),
+        }
         return result
     except Exception as exc:
         return _fail(exc)
@@ -5083,6 +5218,100 @@ def asset_status(kind: Optional[str] = None, locked_only: bool = False) -> dict:
 
 
 @_tool
+def pending_decisions(limit: int = 40) -> dict:
+    """EVERYTHING WAITING ON A HUMAN, in one call. The gate's read path.
+
+    There was no way to ask this. ``asset_status`` lists candidates but exposes
+    no approval STATE, ``art_tournament_standings`` reports Elo from matches
+    already decided, and human approval was dashboard-only — so a director could
+    not see, surface or triage a queue of decisions blocking their own board.
+    Measured: five candidates generated in two minutes with an approval card each,
+    and nothing an agent could call would say so.
+
+    WHY THAT IS DANGEROUS AND NOT MERELY INCOMPLETE. A pending decision is a
+    blocking gate. Work stalls behind it and the heartbeat shows nothing, which
+    looks exactly like an agent quietly working — the same "silence is not
+    success" failure as a dead agent, arriving through a different door.
+
+    Three classes, because the floor has three:
+
+      review      work items parked by the builder's gate. THE HARD BLOCK: the
+                  chain behind each one does not advance until a human approves.
+      candidates  generated artifact revisions nobody has dispositioned. An
+                  agent may record a verdict (art_qa_verdict) but may not
+                  promote — that is the human's call, by design.
+      questions   open ask_human questions, oldest first.
+
+    ``gate`` names the mode that decides whether any of this is being asked for
+    at all. Under 'none' the board is not supposed to be stopping for a human;
+    a non-empty list under that mode is worth reporting rather than clicking
+    through.
+
+    WHAT THIS DOES NOT DO: approve anything. It cannot — the agent that made a
+    candidate is exactly who must not clear it. Hand the list to the human with
+    what each decision is blocking, and keep working on what it does not block.
+    """
+    try:
+        from bgate_core import gates as _gatemode
+        from bgate_core import queue as _q
+        from bgate_core import steerbox as _steerbox
+
+        root = _root()
+        cap = max(1, min(int(limit or 40), 200))
+
+        parked = [{"item_id": int(r["id"]), "seat": r["seat"],
+                   "title": r["title"], "since": r["updated_at"],
+                   "result": (r["result"] or "")[:240]}
+                  for r in _q.awaiting_review(root)[:cap]]
+
+        candidates = []
+        for art in _artifacts.list_revisions(root, status="candidate",
+                                             limit=cap):
+            qa = (art.get("metadata") or {}).get("qa_review") or {}
+            candidates.append({
+                "artifact_id": int(art["id"]),
+                "logical_name": art.get("logical_name") or "",
+                "revision": art.get("revision"),
+                "path": art.get("path") or "",
+                "work_item_id": art.get("work_item_id"),
+                "producer": art.get("producer") or "",
+                # WHETHER A MACHINE HAS ALREADY LOOKED. A candidate with a
+                # passing qa_review is a different ask than a raw one — the human
+                # is confirming a check, not performing the first one.
+                "machine_verdict": qa.get("verdict") or "",
+                "machine_note": (qa.get("reasons") or "")[:200],
+            })
+
+        try:
+            questions = _steerbox.open_questions(root)[:cap]
+        except Exception:
+            questions = []
+
+        state = _gatemode.state(root)
+        total = len(parked) + len(candidates) + len(questions)
+        return {
+            "gate": {"mode": state["mode"], "source": state.get("source", ""),
+                     "env_override": state.get("env_override", "")},
+            "blocked_chains": parked,
+            "candidates": candidates,
+            "questions": questions,
+            "total": total,
+            "note": (
+                "nothing is waiting on a human" if not total else
+                f"{len(parked)} chain(s) stopped, {len(candidates)} candidate(s) "
+                f"and {len(questions)} question(s) waiting. Only a human clears "
+                "these — surface the list, say what each blocks, and carry on "
+                "with the work that is not behind one."
+                + (" NOTE: the approval gate is 'none' for this project, so "
+                   "nothing here should be stopping for a human — report that "
+                   "rather than working around it."
+                   if state["mode"] == _gatemode.NONE else "")),
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def asset_verify() -> dict:
     """Audit every tracked asset against disk — catches silent clobbers.
 
@@ -5468,12 +5697,58 @@ def queue_get(item_id: int) -> dict:
 
 
 @_tool
-def queue_add(seat: str, title: str, brief: str = "", priority: int = 0) -> dict:
-    """Queue work for a seat. Use when your work uncovers work that isn't yours."""
+def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
+              depends_on: Optional[int] = None) -> dict:
+    """Queue work for a seat. Use when your work uncovers work that isn't yours.
+
+    ``depends_on`` is an EXISTING item id this work must not start before. Pass
+    it whenever the new item reads or edits something another queued item is
+    about to produce.
+
+    PRIORITY IS NOT ORDER, and this parameter exists because that gap had no
+    workaround. Priority is a preference among things that are ALL ready — it
+    does not stop auto-deploy from starting both agents in the same tick, so the
+    one that needed the other's output writes against a file that does not exist,
+    reports done, and the damage surfaces two items later wearing someone else's
+    face. Only a dependency stops that.
+
+    Before this, order could only be expressed by ``queue_add_chain``, which
+    files a whole ordered group at once. Chains are strictly linear and cannot be
+    appended to, so filing a dependent FOLLOW-UP once a chain already existed had
+    no correct form at all — which is how a fidelity pass nearly got dispatched
+    into a running build. Use the chain when you are filing the group; use this
+    when the group is already on the board.
+
+    A dependency on an item that does not exist is refused rather than dropped:
+    an item silently waiting on nothing is indistinguishable from one that is
+    ready, and it would dispatch immediately — the exact failure being prevented.
+    """
     try:
         from bgate_core import queue as _q
-        return _q.add(_root(), seat, title, brief=brief, priority=priority,
-                      source=f"seat:{_seat() or 'unknown'}")
+        item = _q.add(_root(), seat, title, brief=brief, priority=priority,
+                      source=f"seat:{_seat() or 'unknown'}",
+                      depends_on=depends_on)
+        if depends_on is None:
+            return item
+        # SAY WHAT THE BOARD WILL DO WITH IT. A caller that files a dependency
+        # and sees an ordinary queued row has no way to tell the wait took, and
+        # the difference only becomes visible when the item does (or does not)
+        # start.
+        try:
+            blocker = _q.get(_root(), int(depends_on))
+            waiting = blocker["status"] != "done"
+        except Exception:
+            blocker, waiting = {}, True
+        return {**item, "waits_for": {
+            "item": int(depends_on),
+            "title": str(blocker.get("title") or "")[:120],
+            "status": blocker.get("status") or "",
+            "note": (f"#{item['id']} will not dispatch until #{depends_on} is "
+                     "done" + (" — approved, if this project runs an approval "
+                               "gate" if waiting else "")
+                     if waiting else
+                     f"#{depends_on} is already done, so #{item['id']} is "
+                     "ready now")}}
     except Exception as exc:
         return _fail(exc)
 
@@ -5496,6 +5771,11 @@ def queue_add_chain(links: list, chain_id: str = "") -> dict:
     link N-1 to reach 'done' — approved, if this project runs an approval gate.
     Chains are strictly linear; model a fan-out as separate chains that share a
     first link, or as one link whose brief covers both halves.
+
+    A CHAIN CANNOT BE APPENDED TO. To hang one dependent item off work that is
+    already on the board — a follow-up you did not know about when you filed the
+    chain — use ``queue_add(..., depends_on=<item id>)`` instead of filing a
+    second chain that races the first.
 
     WRITE EACH BRIEF AS IF ITS PREDECESSOR ALREADY LANDED, because it will have.
     Name what it produced (the file, the function, the scene) rather than saying
@@ -5613,11 +5893,18 @@ def agent_steer(item_id: int, text: str) -> dict:
         status='dispatched') first, and use queue_update or queue_reopen for
         work that is not running.
 
-      * A STEER IS CAPPED AT 2000 CHARACTERS and a longer one is refused
-        outright, not truncated. It is an interruption, not a brief: anything
-        that needs more than a couple of paragraphs is a change to the work
-        rather than a correction to it, so put it in queue_update's brief or
-        reopen the item with it.
+      * A STEER IS CAPPED AT 2000 CHARACTERS. It is an interruption, not a
+        brief. Past the cap the text is written to a file in the project's steer
+        box and the agent is handed the opening paragraph plus that path — so a
+        long correction reaches a RUNNING agent instead of forcing you to kill
+        the run and pay for it twice, which is what the cap used to mean in
+        practice. Truncation is still never on the table: half a sentence with
+        no way to know it was cut is worse than either.
+
+        A correction that should OUTLIVE the run is still not this tool. This
+        one dies with the process it was aimed at, which is the honest lifetime
+        for "no, not like that"; a change to the work itself goes in
+        queue_update's brief or a queue_reopen.
 
     Delivery, and any failure to deliver, is recorded in the activity ledger
     against the item.
@@ -5632,11 +5919,17 @@ def agent_steer(item_id: int, text: str) -> dict:
                     "error": f"item {item_id} is {item['status']!r}, not running "
                              "— there is no agent to steer",
                     "status": item["status"]}
-        posted = _steerbox.post(root, int(item_id), text,
-                                by=f"seat:{_seat() or 'director'}")
-        return {"ok": True, "item_id": int(item_id), "steer_id": posted["id"],
-                "delivery": "queued for the dashboard to hand over; the agent "
-                            "reads it when its current step ends"}
+        posted = _steerbox.post_long(root, int(item_id), text,
+                                     by=f"seat:{_seat() or 'director'}")
+        out = {"ok": True, "item_id": int(item_id), "steer_id": posted["id"],
+               "delivery": "queued for the dashboard to hand over; the agent "
+                           "reads it when its current step ends"}
+        if posted.get("excerpted"):
+            out["note_path"] = posted["note_path"]
+            out["delivery"] += (f" — over {_steerbox.MAX_TEXT} characters, so it "
+                                "was handed over as an excerpt plus the path to "
+                                "the full text")
+        return out
     except Exception as exc:
         return _fail(exc)
 
