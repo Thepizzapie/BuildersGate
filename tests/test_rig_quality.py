@@ -109,6 +109,162 @@ def test_verdict_catches_weights_that_move_nothing():
 
 
 # ---------------------------------------------------------------------------
+# Template deviation: do a rig's joints sit where the shipped skeleton puts them
+# ---------------------------------------------------------------------------
+
+def test_template_deviation_passes_an_identical_skeleton():
+    joints = {"Hips": [0.0, 0.0, 0.5], "Head": [0.0, 0.0, 0.95]}
+    report = {"reference_joints": joints, "candidate_joints": dict(joints)}
+    verdict = blender.template_deviation_verdict(report)
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 2
+
+
+def test_template_deviation_names_a_displaced_bone():
+    ref = {"Hips": [0.0, 0.0, 0.5], "LeftHand": [0.6, 0.0, 0.8]}
+    # LeftHand fourteen centimetres out on a 1.8 m figure — the real incident
+    # humanoid_template's own docstring cites, expressed as a height fraction.
+    cand = {"Hips": [0.0, 0.0, 0.5], "LeftHand": [0.68, 0.0, 0.8]}
+    verdict = blender.template_deviation_verdict({"reference_joints": ref,
+                                                   "candidate_joints": cand})
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["bone"] == "LeftHand"
+
+
+def test_template_deviation_only_compares_shared_bones():
+    ref = {"Hips": [0.0, 0.0, 0.5], "Tail": [0.0, -0.2, 0.3]}
+    cand = {"Hips": [0.0, 0.0, 0.5]}
+    verdict = blender.template_deviation_verdict({"reference_joints": ref,
+                                                   "candidate_joints": cand})
+    assert verdict["checked"] == 1
+    assert verdict["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Silhouette across the pose sweep — EXPERIMENTAL
+# ---------------------------------------------------------------------------
+
+def test_hull_area_of_a_unit_square():
+    assert blender._hull_area([(0, 0), (1, 0), (1, 1), (0, 1)]) == 1.0
+
+
+def test_hull_area_ignores_an_interior_point():
+    pts = [(0, 0), (1, 0), (1, 1), (0, 1), (0.5, 0.5)]
+    assert blender._hull_area(pts) == 1.0
+
+
+def test_hull_area_of_a_triangle():
+    assert blender._hull_area([(0, 0), (2, 0), (0, 2)]) == 2.0
+
+
+def test_hull_area_is_zero_on_collinear_points():
+    assert blender._hull_area([(0, 0), (1, 0), (2, 0)]) == 0.0
+
+
+def test_hull_area_is_zero_on_fewer_than_three_points():
+    assert blender._hull_area([]) == 0.0
+    assert blender._hull_area([(1, 1)]) == 0.0
+    assert blender._hull_area([(0, 0), (1, 1)]) == 0.0
+
+
+def test_silhouette_verdict_passes_an_ordinary_pose_change():
+    report = {"poses": [{"label": "arm_raise", "area_ratio": 1.4},
+                        {"label": "elbow_bend", "area_ratio": 0.85}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 2
+
+
+def test_silhouette_verdict_catches_a_collapse():
+    report = {"poses": [{"label": "knee_bend", "area_ratio": 0.05}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["kind"] == "collapsed"
+
+
+def test_silhouette_verdict_catches_an_explosion():
+    report = {"poses": [{"label": "spine_twist", "area_ratio": 12.0}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is False
+    assert verdict["issues"][0]["kind"] == "exploded"
+
+
+def test_silhouette_verdict_skips_unmeasured_poses():
+    report = {"poses": [{"label": "head_turn", "skipped": "no bone"},
+                        {"label": "knee_bend", "area_ratio": None}]}
+    verdict = blender.silhouette_verdict(report)
+    assert verdict["passed"] is True
+    assert verdict["checked"] == 0
+
+
+@needs_blender
+def test_silhouette_measures_a_real_bind(bound_glb):
+    out, _ = bound_glb
+    got = blender.silhouette(str(out), timeout=900)
+    assert got["ok"] is True, got.get("error")
+    assert got["rest_area"] > 0
+    assert got["rest_points"] >= 3
+    verdict = blender.silhouette_verdict(got)
+    # bg_human's own walk-cycle poses on its own body should not collapse or
+    # explode the projected silhouette from flex's fixed camera.
+    assert verdict["checked"] >= 4
+    assert verdict["passed"] is True, verdict["issues"]
+
+
+# ---------------------------------------------------------------------------
+# Coverage: are the essential humanoid bones present, under the exact name
+# ---------------------------------------------------------------------------
+
+def test_coverage_passes_a_full_skeleton():
+    verdict = blender.humanoid_coverage_verdict(list(blender.HUMANOID_BONES))
+    assert verdict["passed"] is True
+    assert verdict["missing"] == []
+
+
+def test_coverage_names_a_missing_essential_bone():
+    names = [b for b in blender.HUMANOID_BONES if b != "Hips"]
+    verdict = blender.humanoid_coverage_verdict(names)
+    assert verdict["passed"] is False
+    assert verdict["missing"] == ["Hips"]
+
+
+def test_coverage_is_exact_name_not_fuzzy():
+    """A BoneMap-free retarget matches by string, so a near-miss still misses."""
+    names = [b if b != "LeftHand" else "LeftHand_1" for b in blender.HUMANOID_BONES]
+    verdict = blender.humanoid_coverage_verdict(names)
+    assert "LeftHand" in verdict["missing"]
+
+
+# ---------------------------------------------------------------------------
+# Weight-island bleed: does a bone's paint cover one patch or two
+# ---------------------------------------------------------------------------
+
+def test_weight_islands_verdict_passes_one_contiguous_patch():
+    report = {"bones": {"Hand.L": {"vertex_count": 240, "islands": 1,
+                                   "sizes": [240], "largest_fraction": 1.0}}}
+    assert blender.weight_islands_verdict(report)["passed"] is True
+
+
+def test_weight_islands_verdict_catches_a_bleeding_bone():
+    report = {"bones": {"Hand.L": {"vertex_count": 240, "islands": 2,
+                                   "sizes": [232, 8], "largest_fraction": 0.967},
+                        "Spine": {"vertex_count": 900, "islands": 1,
+                                  "sizes": [900], "largest_fraction": 1.0}}}
+    verdict = blender.weight_islands_verdict(report, min_largest_fraction=0.99)
+    assert verdict["passed"] is False
+    assert [i["bone"] for i in verdict["issues"]] == ["Hand.L"]
+    assert verdict["issues"][0]["bleed_vertices"] == 8
+
+
+def test_weight_islands_verdict_ignores_a_single_stray_vertex():
+    """One vertex a brush missed is a cleanup nit, not a failure this gate names."""
+    report = {"bones": {"Hand.L": {"vertex_count": 240, "islands": 2,
+                                   "sizes": [239, 1], "largest_fraction": 0.996}}}
+    verdict = blender.weight_islands_verdict(report)
+    assert verdict["passed"] is True
+
+
+# ---------------------------------------------------------------------------
 # The gate, against real geometry
 # ---------------------------------------------------------------------------
 
@@ -156,6 +312,40 @@ def test_flex_renders_one_frame_per_pose(bound_glb, tmp_path):
     from pathlib import Path
     for shot in shots:
         assert Path(shot).stat().st_size > 500, shot
+
+
+@needs_blender
+def test_template_deviation_of_a_real_bind(bound_glb):
+    out, _ = bound_glb
+    got = blender.template_deviation(str(out), timeout=900)
+    assert got["ok"] is True, got.get("error")
+    assert got["candidate_joints"]
+    verdict = blender.template_deviation_verdict(got)
+    # bg_human IS the template, adopted and rebound — its own joints should
+    # sit close to where the shipped skeleton puts them.
+    assert verdict["checked"] >= 10
+    assert verdict["passed"] is True, verdict["issues"]
+
+
+@needs_blender
+def test_rig_reports_bone_coverage(bound_glb):
+    _, report = bound_glb
+    assert report.get("bone_names")
+    coverage = report.get("coverage") or {}
+    assert coverage.get("checked") == 15
+    assert coverage.get("passed") is True, coverage.get("missing")
+
+
+@needs_blender
+def test_weight_islands_measures_a_real_bind(bound_glb):
+    out, _ = bound_glb
+    got = blender.weight_islands(str(out), timeout=900)
+    assert got["ok"] is True, got.get("error")
+    assert got["deform_bones"] >= 10
+    assert len(got["bones"]) >= 10
+    # A clean bind from a fresh bind() call should read as fully contiguous.
+    verdict = blender.weight_islands_verdict(got)
+    assert verdict["passed"] is True, verdict["issues"]
 
 
 # ---------------------------------------------------------------------------
