@@ -1395,7 +1395,6 @@ def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
 
 @_tool
 def blender_weights(model: str, threshold: float = 0.02,
-                    min_largest_fraction: float = 0.9,
                     min_bleed_vertices: int = 3, timeout: int = 300) -> dict:
     """Per deform bone, does its weight paint cover one patch of the mesh or two.
 
@@ -1409,16 +1408,26 @@ def blender_weights(model: str, threshold: float = 0.02,
     seam-tearing glitch the moment the spine and the hand pose differently.
 
     Reports each deform bone's weighted vertices as connected components on
-    the mesh surface (edge adjacency, not proximity — a seam does not count
-    as touching). One component is healthy. `verdict.passed` False names
-    which bones split and how many vertices sit off their own patch.
+    the mesh surface, and flags a bone whose paint makes MORE components than
+    the number of separate mesh pieces it touches — a split inside one
+    connected piece of surface, which only a stray stroke explains. Spanning
+    several pieces is not itself a fault: this pipeline assembles bodies from
+    joined primitives, so a hip bone legitimately covers three of them.
+
+    `threshold` is the minimum weight at which a vertex counts as belonging to
+    a bone (0.02). `min_bleed_vertices` (3) is a noise floor — a single stray
+    vertex is a cleanup nit, not the seam-tearing failure this exists to catch.
+
+    `verdict.passed` False names which bones split and how many vertices sit
+    off their own patch. It is also False when nothing could be measured — a
+    bind with no weights above `threshold` reports `checked: 0` and refuses,
+    rather than passing an empty result as a clean one.
     """
     try:
         report = _blender.weight_islands(model, threshold=threshold, timeout=timeout)
         if report.get("ok"):
             verdict = _blender.weight_islands_verdict(
-                report, min_largest_fraction=min_largest_fraction,
-                min_bleed_vertices=min_bleed_vertices)
+                report, min_bleed_vertices=min_bleed_vertices)
             report["verdict"] = verdict
             _log("blender",
                  f"weight-islands {model} -> "
@@ -1444,15 +1453,27 @@ def blender_template_deviation(model: str, reference: str = "",
     can be fully weighted, pinch-free, and bleed-free while still sitting in
     the wrong place on the body if height/limb fitting mis-solved.
 
-    Compares bone HEAD positions against HUMANOID_SKELETON (or a supplied
-    `reference`), matched by name and normalised by body height so two
-    characters of different heights aren't penalised for that alone. This is
-    a POSITION check only — it does not compare skin weights, because the
-    reference skeleton and a generated character never share mesh topology,
-    so there is nothing to diff vertex-for-vertex.
+    Compares bone LENGTHS against HUMANOID_SKELETON (or a supplied
+    `reference`), matched by name and each expressed as a fraction of its own
+    file's body height, so two characters of different heights aren't
+    penalised for that alone. Lengths rather than joint positions because the
+    two skeletons are never posed alike — this pipeline rigs in an A-pose and
+    the template is a T-pose, and a positional check reports that difference
+    as a fault on every correctly-rigged character. Bone length does not move
+    when a joint rotates. Parent links are compared too, so a rig that kept
+    the 23 names but rewired the chain is caught.
 
-    `verdict.passed` False names which bones sit furthest from the template's
-    own proportions, in units of body height.
+    NOT a weight comparison — the reference skeleton and a generated character
+    never share mesh topology, so there is nothing to diff vertex-for-vertex.
+
+    `max_deviation` (0.08 body-heights) is a GROSS-ERROR line — a limb
+    collapsed to nothing or stretched across the body — not a proportional-
+    fidelity one. Fitting is meant to adapt the template to each body.
+
+    `verdict.passed` False names which bones are mis-proportioned or
+    misparented. It is also False when nothing could be compared: a candidate
+    whose bones are named on another scheme entirely reports `checked: 0` and
+    refuses, rather than passing an empty intersection as agreement.
     """
     try:
         report = _blender.template_deviation(
@@ -1496,6 +1517,12 @@ def blender_silhouette(model: str, min_ratio: float = 0.15,
     the silhouette nearly vanished (min_ratio) or ballooned far past what a
     single joint's rotation should produce (max_ratio), not that anything
     changed at all.
+
+    It is ALSO False on a sweep that proves nothing: every pose skipped for
+    want of the bones it rotates, or every pose projecting the identical
+    outline as rest. The second is the important one — an unbound mesh does
+    exactly that, and bounds that only fire far from 1.0 would otherwise call
+    a ratio of exactly 1.0 across the whole sweep a perfect result.
     """
     try:
         report = _blender.silhouette(model, timeout=timeout)
@@ -1614,8 +1641,22 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                      or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
                      or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)
                      or not c.get("anticipation", {}).get("verdict", {}).get("passed", True)]
+            measured = [c for c in channels if "velocity" in c]
             clips.append({"name": anim["name"], "channels": channels,
-                         "passed": not failed, "flagged_bones": failed})
+                         "measured_channels": len(measured),
+                         "passed": bool(measured) and not failed,
+                         "flagged_bones": failed})
+        # A FILE WITH NO CLIPS IS NOT A FILE WITH CLEAN CLIPS. `failed` never
+        # evaluates on an empty channel list, so every aggregate here reported
+        # a pass for a model carrying no animation at all — which is exactly
+        # what blender_rig hands back, and exactly the file an agent reaches
+        # for this tool with.
+        if not clips:
+            return {"ok": False, "clips": [],
+                    "error": f"{model} contains no animations — nothing was "
+                             "measured. A rigged-but-unanimated export (what "
+                             "blender_rig produces) has no curves to judge; "
+                             "animate or bake a clip into it first."}
         _log("blender", f"animation-curves {model} -> "
              f"{sum(1 for c in clips if c['passed'])}/{len(clips)} clips clean",
              ref=str(model))
@@ -4921,10 +4962,11 @@ def art_tournament_verdict(match_id: int, winner_artifact_id: int,
 
     art_qa_verdict asks "is this on-model" against a reference. This asks a
     different question a reviewer only sees when dispatched against a
-    tournament brief: given two candidates shown in a RANDOMISED order (see
-    the match's own shown_first, already fixed when the match was opened —
-    the randomisation happened before you were asked, not something you
-    control here), which one is better.
+    tournament brief: given two candidates shown in a RANDOMISED order —
+    fixed when the match was opened, before you were asked, and not something
+    you control or need to look up — which one is better. The brief you were
+    dispatched with lists each match's two images in that settled order and is
+    the only place match ids come from.
 
     PICK A WINNER — do not skip a match because it feels close. The
     VLM-as-judge research behind this tool is consistent that comparative
@@ -4934,7 +4976,9 @@ def art_tournament_verdict(match_id: int, winner_artifact_id: int,
 
     winner_artifact_id must be one of the two candidates IN THIS match — an
     id from a different match or a different logical_name is refused, not
-    silently recorded.
+    silently recorded. So is a second verdict on a match already decided:
+    re-sending after a dropped response used to overwrite the first pick in
+    silence, so a retry is now an error rather than a rewrite.
 
     Returns {ok, match_id, logical_name, winner_id}. The rating itself is
     NOT computed here — see art_tournament_standings, which derives it fresh
@@ -4949,15 +4993,19 @@ def art_tournament_verdict(match_id: int, winner_artifact_id: int,
         return {"ok": True, "match_id": match["id"],
                 "logical_name": match["logical_name"],
                 "winner_id": match["winner_id"]}
-    except (LookupError, ValueError) as exc:
-        return _fail(exc)
     except Exception as exc:
         return _fail(exc)
 
 
 @_tool
-def art_tournament_standings(logical_name: str) -> dict:
+def art_tournament_standings(logical_name: str, tournament_ref: str = "") -> dict:
     """Elo standings for a target, derived fresh from its decided matches.
+
+    `tournament_ref` scopes the result to ONE tournament. Left empty, every
+    match ever recorded for `logical_name` is pooled — which is the right
+    answer for a target run once, and misleading for one re-tournamented after
+    new candidates landed, since the two runs' verdicts then rate each other's
+    candidates. Pass the ref the tournament was opened with to separate them.
 
     Returns {logical_name, standings: [{artifact_id, rating, matches, wins}]
     ranked highest first, decided_matches, pending_matches}. An artifact
@@ -4965,7 +5013,8 @@ def art_tournament_standings(logical_name: str) -> dict:
     """
     try:
         root = _root()
-        return {"ok": True, **_art_tournament.standings(root, logical_name)}
+        return {"ok": True, **_art_tournament.standings(
+            root, logical_name, tournament_ref=(tournament_ref or None))}
     except Exception as exc:
         return _fail(exc)
 

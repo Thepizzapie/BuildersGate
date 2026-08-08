@@ -34,8 +34,17 @@ MAX_CANDIDATES = 8
 
 
 def _gather_candidates(r, logical_name: str) -> list[dict]:
+    """Every candidate, NOT the first MAX_CANDIDATES of them.
+
+    Asking the query for MAX_CANDIDATES rows made the caller's "too many
+    candidates" check unreachable — `len(candidates) > MAX_CANDIDATES` can
+    never be true of a list the database already truncated. Twelve candidates
+    silently became a round-robin over an arbitrary eight of them, reported as
+    a complete tournament. Fetch past the cap so the refusal can see it.
+    """
     return _artifacts.list_revisions(
-        r, logical_name=logical_name, status="candidate", limit=MAX_CANDIDATES)
+        r, logical_name=logical_name, status="candidate",
+        limit=MAX_CANDIDATES + 1)
 
 
 def _reviewer_brief(logical_name: str, matches: list[dict],
@@ -93,14 +102,40 @@ def start_tournament(payload: Optional[dict] = None) -> dict:
 
     candidates = _gather_candidates(r, logical_name)
     if len(candidates) < 2:
+        # NAME THE REAL CAUSE. A project with art.auto_approve on never leaves
+        # a revision at status "candidate" — register() promotes it on the spot
+        # — so this endpoint 404s on every target, and "found 0 candidates"
+        # sends the reader looking for missing renders that are all present and
+        # approved.
+        why = ""
+        if _artifacts._auto_approve(r):
+            why = (" — art.auto_approve is ON for this project, so generated "
+                   "revisions are approved at registration and never sit as "
+                   "candidates. A tournament ranks candidates; turn the "
+                   "setting off for targets you want reviewed this way.")
         raise HTTPException(
             404, f"need at least 2 candidates to run a tournament for "
-                 f"{logical_name!r}, found {len(candidates)}")
+                 f"{logical_name!r}, found {len(candidates)}{why}")
     if len(candidates) > MAX_CANDIDATES:
         raise HTTPException(
             400, f"{len(candidates)} candidates exceeds the "
                  f"{MAX_CANDIDATES}-candidate round-robin cap for one "
                  "tournament — approve or reject some first")
+
+    # ONE OPEN TOURNAMENT AT A TIME PER TARGET. Nothing deduplicated these, so
+    # a second POST — a retry after a timeout, a double-click — opened the whole
+    # round-robin again over the same pairs. standings() pools every match for a
+    # logical_name, so the duplicate did not sit harmlessly beside the first: it
+    # weighted the same comparison twice in the Elo.
+    open_already = [m for m in _art_tournament.list_matches(
+        r, logical_name=logical_name, tournament_ref=tournament_ref, limit=None)
+        if m.get("winner_id") is None]
+    if open_already:
+        raise HTTPException(
+            409, f"{len(open_already)} match(es) for {logical_name!r} are still "
+                 "open — judge or discard those before opening another "
+                 "tournament over the same candidates, or pass a distinct "
+                 "tournament_ref")
 
     candidates_by_id = {c["id"]: c for c in candidates}
     matches = []
@@ -118,6 +153,9 @@ def start_tournament(payload: Optional[dict] = None) -> dict:
             brief=_reviewer_brief(logical_name, matches, candidates_by_id),
             source="art-tournament", source_ref=logical_name)
     except (ValueError, LookupError) as exc:
+        # The matches are already committed at this point. Roll them back rather
+        # than orphaning a round-robin that no path could reach or clear.
+        _art_tournament.discard_matches(r, [m["id"] for m in matches])
         raise HTTPException(400, str(exc))
 
     dispatched = _dispatch.dispatch(str(r), item["id"])
