@@ -54,6 +54,7 @@ import anyio
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
+from bgate_adapters import animcurves as _animcurves
 from bgate_adapters import blender as _blender
 from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
@@ -64,6 +65,7 @@ from bgate_core import autotile as _autotile
 from bgate_core import levelgen as _levelgen
 from bgate_core import scenewire as _scenewire
 from bgate_core import tilemap as _tilemap
+from bgate_core import art_tournament as _art_tournament
 from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
 from bgate_core import seats as _seats
@@ -878,8 +880,27 @@ def _imageto3d_summary() -> dict:
         from bgate_adapters import imageto3d as _i3d
     except Exception:
         return {"available": False, "reason": "adapter unavailable"}
+    # PASS THE ROOT, OR HOSTED BACKENDS LIE ABOUT THEIR KEYS.
+    #
+    # imageto3d.api_key() only loads the project's .env when it is given a root
+    # (`if root:`), so status() with no root reads a bare os.environ. On a
+    # machine whose keys live in the project .env — which is where the setup
+    # docs put them — every hosted backend then reports "<KEY> not set".
+    #
+    # Measured: a project with a working KREA_API_KEY had image_status report the
+    # krea leg AVAILABLE while blender_status reported krea BLOCKED for want of
+    # the same key, in the same session. image_status was right by accident — it
+    # calls _root() first, which loads the .env as a side effect. The 2D and 3D
+    # legs disagreeing about one key sent a user hunting for a key they already
+    # had, and hid a paid image-to-3D backend they were entitled to use.
     try:
-        full = _i3d.status()
+        root = _root()
+    except Exception:
+        # No project resolvable — a legitimate answer, not an error. Fall back to
+        # the bare environment, which is what this did for every call before.
+        root = None
+    try:
+        full = _i3d.status(root)
     except Exception as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
     gpu = full.get("gpu") or {}
@@ -1290,6 +1311,14 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
 
     AND `rigged: true` IS STILL NOT "ANIMATABLE". Run blender_flex on the
     output: it bends the thing and measures what bending it did.
+
+    `coverage` (kind="humanoid" only) is a fast pre-check for the 15 bone
+    names godot_retarget_check calls essential — Hips, the spine/head chain,
+    both arms, both legs, under the EXACT name a BoneMap-free retarget
+    matches by. It cannot see hierarchy or binding, only naming, so a pass
+    here is not a substitute for retarget_check against the real engine —
+    it just means a naming problem shows up now instead of after the Godot
+    round-trip.
     """
     try:
         result = _blender.rig(model, out_path, kind=kind, height=height,
@@ -1297,9 +1326,14 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
                               armature_name=armature_name,
                               symmetrize=symmetrize, timeout=timeout)
         if result.get("ok"):
+            coverage = result.get("coverage") or {}
+            note = ""
+            if coverage:
+                note = (" [coverage OK]" if coverage.get("passed")
+                        else f" [coverage MISSING {coverage.get('missing')}]")
             _log("blender",
                  f"rigged {model} -> {result.get('bound_with')} "
-                 f"({result.get('unweighted_pct')}% unweighted)",
+                 f"({result.get('unweighted_pct')}% unweighted){note}",
                  ref=str(out_path))
         return result
     except Exception as exc:
@@ -1355,6 +1389,237 @@ def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
                  f"{verdict.get('checked', 0)} poses)",
                  ref=str(model))
         return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_weights(model: str, threshold: float = 0.02,
+                    min_largest_fraction: float = 0.9,
+                    min_bleed_vertices: int = 3, timeout: int = 300) -> dict:
+    """Per deform bone, does its weight paint cover one patch of the mesh or two.
+
+    A THIRD RIG PROOF, ALONGSIDE `blender_rig` AND `blender_flex`. Neither of
+    those catches this: `rig()`'s `unweighted` count only sees vertices with
+    NO weight, and `flex()` only sees a joint after it bends. Bleed is
+    neither — a hand painted mostly to Hand but partly to Spine, because a
+    brush stroke crossed empty space in the viewport rather than the mesh
+    surface, has full weight coverage and may not even move wrong at any of
+    flex's six test poses if the bleed region is small. It still reads as a
+    seam-tearing glitch the moment the spine and the hand pose differently.
+
+    Reports each deform bone's weighted vertices as connected components on
+    the mesh surface (edge adjacency, not proximity — a seam does not count
+    as touching). One component is healthy. `verdict.passed` False names
+    which bones split and how many vertices sit off their own patch.
+    """
+    try:
+        report = _blender.weight_islands(model, threshold=threshold, timeout=timeout)
+        if report.get("ok"):
+            verdict = _blender.weight_islands_verdict(
+                report, min_largest_fraction=min_largest_fraction,
+                min_bleed_vertices=min_bleed_vertices)
+            report["verdict"] = verdict
+            _log("blender",
+                 f"weight-islands {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} bleeding bones over "
+                 f"{verdict.get('checked', 0)} checked)",
+                 ref=str(model))
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_template_deviation(model: str, reference: str = "",
+                               max_deviation: float = 0.08,
+                               timeout: int = 300) -> dict:
+    """How far a rigged character's joints sit from the shipped humanoid template.
+
+    A FOURTH RIG PROOF. `blender_rig`, `blender_flex`, and `blender_weights`
+    all ask questions about ONE character in isolation — is it bound, does it
+    survive bending, is the paint contiguous. None of them can tell you the
+    fit itself landed a bone somewhere anatomically wrong, because a bone
+    can be fully weighted, pinch-free, and bleed-free while still sitting in
+    the wrong place on the body if height/limb fitting mis-solved.
+
+    Compares bone HEAD positions against HUMANOID_SKELETON (or a supplied
+    `reference`), matched by name and normalised by body height so two
+    characters of different heights aren't penalised for that alone. This is
+    a POSITION check only — it does not compare skin weights, because the
+    reference skeleton and a generated character never share mesh topology,
+    so there is nothing to diff vertex-for-vertex.
+
+    `verdict.passed` False names which bones sit furthest from the template's
+    own proportions, in units of body height.
+    """
+    try:
+        report = _blender.template_deviation(
+            model, reference=(reference or None), timeout=timeout)
+        if report.get("ok"):
+            verdict = _blender.template_deviation_verdict(
+                report, max_deviation=max_deviation)
+            report["verdict"] = verdict
+            _log("blender",
+                 f"template-deviation {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} displaced bones over "
+                 f"{verdict.get('checked', 0)} checked)",
+                 ref=str(model))
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def blender_silhouette(model: str, min_ratio: float = 0.15,
+                       max_ratio: float = 4.0, timeout: int = 600) -> dict:
+    """The character's projected 2D outline across flex's own pose sweep.
+
+    EXPERIMENTAL — no production rig-QA tool anywhere this project's
+    research found automates a pose-sweep silhouette check; studios render
+    the sweep and a human watches it. This is a real attempt at that, not
+    an adopted technique.
+
+    A DIFFERENT QUESTION FROM blender_flex. Volume and pinch are 3D
+    measures against the mesh itself and cannot see a failure that only
+    shows up from a CAMERA's point of view — a limb that folds directly
+    behind the torso and vanishes from the silhouette while its 3D volume
+    stays intact, or a shoulder that balloons on screen without losing any
+    measured volume. This projects the SAME pose sweep through the SAME
+    fixed, rest-fitted camera flex() uses (never refit per pose) and
+    measures the projected convex-hull area.
+
+    'Preserved' means SANITY BOUNDS, not 'unchanged' — a pose is EXPECTED
+    to change how a character reads on screen. `verdict.passed` False means
+    the silhouette nearly vanished (min_ratio) or ballooned far past what a
+    single joint's rotation should produce (max_ratio), not that anything
+    changed at all.
+    """
+    try:
+        report = _blender.silhouette(model, timeout=timeout)
+        if report.get("ok"):
+            verdict = _blender.silhouette_verdict(
+                report, min_ratio=min_ratio, max_ratio=max_ratio)
+            report["verdict"] = verdict
+            _log("blender",
+                 f"silhouette {model} -> "
+                 f"{'passed' if verdict.get('passed') else 'FAILED'} "
+                 f"({len(verdict.get('issues') or [])} issues over "
+                 f"{verdict.get('checked', 0)} poses)",
+                 ref=str(model))
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
+                     ground_axis: int = 1, max_cruising_fraction: float = 0.6,
+                     min_sparc: float = -8.0, max_skating_frames: int = 0,
+                     check_anticipation: bool = True,
+                     min_anticipation_width: float = 6.0) -> dict:
+    """Measure an exported animation clip's curves — no Blender/Godot needed.
+
+    Reads a GLB's animation channels directly (glTF is a public format, so
+    this is a plain file parse, not another headless spawn) and reports, per
+    channel:
+
+      arc_deviation      (translation only) how far the path bows from the
+                         straight line between its endpoints. DESCRIPTIVE,
+                         not pass/fail — an arc is right for a swinging limb
+                         and wrong for a jab's extension, and this cannot
+                         tell which the clip is doing.
+      velocity_profile   what fraction of the clip's DURATION is spent near
+                         its own peak speed. High means the motion travels
+                         at near-constant speed rather than easing in/out —
+                         the curve-math signature of raw linear-interpolated
+                         keyframes.
+      sparc              spectral arc length of the speed profile — a
+                         smoothness/jitter measure from the mocap-cleanup
+                         literature. Its threshold is a starting point
+                         borrowed from gait research, not yet validated on
+                         this project's own stylized clips — treat FAILs as
+                         worth a look, not as certain defects.
+      anticipation       EXPERIMENTAL, per axis. Laplacian-of-Gaussian
+                         correlation looking for curvature spread across a
+                         transition (shaped, eased, wound-up) vs. a narrow
+                         spike (a raw interpolated corner). No prior art
+                         exists for this as a detector — the cited research
+                         (Wang/Xu/Cohen SIGGRAPH 2006) shows the FORWARD
+                         direction, that this filter CREATES anticipation;
+                         using it to detect whether anticipation is already
+                         present is this project's own experiment. Also has
+                         a real resolution floor: quick transitions sampled
+                         at only a few frames are unreliable to call either
+                         way. Set check_anticipation=False to skip it.
+
+    `foot_bones` (channel node names, exact match) additionally get
+    foot_skate: frames where the bone sits near its lowest point in the clip
+    but still moves horizontally — a planted foot sliding.
+
+    None of this measures appeal or exaggeration — nothing computational
+    does. A clean pass here means "no obvious curve-math defect", not
+    "looks good"; it is a floor, not a ceiling.
+    """
+    try:
+        data = _animcurves.extract_animations(model)
+        if not data.get("ok"):
+            return data
+        feet = set(foot_bones or [])
+        clips = []
+        for anim in data["animations"]:
+            channels = []
+            for ch in anim["channels"]:
+                times, values = ch["times"], ch["values"]
+                entry = {"node": ch["node"], "path": ch["path"],
+                         "interpolation": ch["interpolation"], "samples": len(times)}
+                if len(times) >= 2:
+                    profile = _animcurves.velocity_profile(times, values)
+                    entry["velocity"] = {
+                        "peak_speed": profile["peak_speed"],
+                        "cruising_fraction": profile["cruising_fraction"],
+                        "verdict": _animcurves.velocity_profile_verdict(
+                            profile, max_cruising_fraction=max_cruising_fraction)}
+                    sp = _animcurves.sparc(times, values)
+                    entry["sparc"] = {**sp, "verdict": _animcurves.sparc_verdict(
+                        sp, min_sparc=min_sparc)}
+                    if check_anticipation:
+                        axis_values = (list(zip(*values)) if values
+                                      and isinstance(values[0], (tuple, list))
+                                      else [values])
+                        issues = []
+                        events = 0
+                        for axis in axis_values:
+                            av = _animcurves.anticipation_verdict(
+                                times, list(axis),
+                                min_width_samples=min_anticipation_width)
+                            issues.extend(av["issues"])
+                            events += av["events"]
+                        entry["anticipation"] = {
+                            "verdict": {"passed": not issues, "issues": issues},
+                            "events": events}
+                    if ch["path"] == "translation":
+                        entry["arc"] = _animcurves.arc_deviation(times, values)
+                        if ch["node"] in feet:
+                            skate = _animcurves.foot_skate(
+                                times, values, ground_axis=ground_axis)
+                            entry["foot_skate"] = {
+                                **skate, "verdict": _animcurves.foot_skate_verdict(
+                                    skate, max_skating_frames=max_skating_frames)}
+                channels.append(entry)
+            failed = [c["node"] for c in channels
+                     if not c.get("velocity", {}).get("verdict", {}).get("passed", True)
+                     or not c.get("sparc", {}).get("verdict", {}).get("passed", True)
+                     or not c.get("foot_skate", {}).get("verdict", {}).get("passed", True)
+                     or not c.get("anticipation", {}).get("verdict", {}).get("passed", True)]
+            clips.append({"name": anim["name"], "channels": channels,
+                         "passed": not failed, "flagged_bones": failed})
+        _log("blender", f"animation-curves {model} -> "
+             f"{sum(1 for c in clips if c['passed'])}/{len(clips)} clips clean",
+             ref=str(model))
+        return {"ok": True, "clips": clips}
     except Exception as exc:
         return _fail(exc)
 
@@ -4645,6 +4910,62 @@ def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
                    if awaiting else {})}
     except LookupError as exc:
         return _fail(exc)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def art_tournament_verdict(match_id: int, winner_artifact_id: int,
+                           reasons: str = "") -> dict:
+    """Record an INDEPENDENT reviewer's pick in ONE pairwise art match.
+
+    art_qa_verdict asks "is this on-model" against a reference. This asks a
+    different question a reviewer only sees when dispatched against a
+    tournament brief: given two candidates shown in a RANDOMISED order (see
+    the match's own shown_first, already fixed when the match was opened —
+    the randomisation happened before you were asked, not something you
+    control here), which one is better.
+
+    PICK A WINNER — do not skip a match because it feels close. The
+    VLM-as-judge research behind this tool is consistent that comparative
+    judgement ("which is better") is far more reliable than an absolute
+    score, but only if every match actually resolves; an abstained match
+    just removes one data point from a rating that already has few of them.
+
+    winner_artifact_id must be one of the two candidates IN THIS match — an
+    id from a different match or a different logical_name is refused, not
+    silently recorded.
+
+    Returns {ok, match_id, logical_name, winner_id}. The rating itself is
+    NOT computed here — see art_tournament_standings, which derives it fresh
+    from every decided match so a corrected verdict can never leave a stale
+    number behind.
+    """
+    try:
+        root = _root()
+        match = _art_tournament.record_verdict(
+            root, int(match_id), winner_artifact_id=int(winner_artifact_id),
+            reasons=reasons)
+        return {"ok": True, "match_id": match["id"],
+                "logical_name": match["logical_name"],
+                "winner_id": match["winner_id"]}
+    except (LookupError, ValueError) as exc:
+        return _fail(exc)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def art_tournament_standings(logical_name: str) -> dict:
+    """Elo standings for a target, derived fresh from its decided matches.
+
+    Returns {logical_name, standings: [{artifact_id, rating, matches, wins}]
+    ranked highest first, decided_matches, pending_matches}. An artifact
+    with no matches yet does not appear — it has no rating to report.
+    """
+    try:
+        root = _root()
+        return {"ok": True, **_art_tournament.standings(root, logical_name)}
     except Exception as exc:
         return _fail(exc)
 
