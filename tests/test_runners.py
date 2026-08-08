@@ -13,6 +13,7 @@ is the whole reason it is done this way.
 """
 from __future__ import annotations
 
+from pathlib import Path
 
 from bgate_core import queue, settings
 from bgate_ui import dispatch, runners
@@ -47,6 +48,20 @@ def test_preflight_refuses_a_non_repo_because_the_sandbox_would_shadow_it(tmp_pa
 
     (tmp_path / ".git").mkdir()
     assert runners.preflight(codex, str(tmp_path), exe="codex.cmd") is None
+
+
+def test_preflight_allows_a_project_outside_the_servers_own_directory(tmp_path):
+    """The normal case, and it was refused for two merges.
+
+    A CodeQL autofix made preflight require cwd to sit under `Path.cwd()`.
+    Nothing about a board serving a project satisfies that: `bgate serve` runs
+    from the checkout, the project lives wherever the user keeps games, and the
+    refusal ("outside the allowed project root") reads like policy rather than
+    like the bug it was. Every dispatch died at the preflight."""
+    (tmp_path / ".git").mkdir()
+    assert Path(tmp_path).resolve() != Path.cwd().resolve()
+    assert runners.preflight(runners.get("codex"), str(tmp_path),
+                             exe="codex.cmd") is None
 
 
 def test_preflight_believes_a_caller_that_found_nothing(tmp_path):

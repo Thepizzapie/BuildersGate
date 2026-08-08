@@ -245,13 +245,18 @@ def preflight(runner: Runner, cwd: str, exe=_LOOK_IT_UP) -> Optional[str]:
                    "is not always on PATH)" if runner.name == "codex" else ""))
     try:
         safe_cwd = Path(cwd).resolve(strict=False)
-        safe_root = Path.cwd().resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         return f"{cwd} is not a valid working directory"
-    try:
-        safe_cwd.relative_to(safe_root)
-    except ValueError:
-        return f"{cwd} is outside the allowed project root"
+    # NO CONTAINMENT CHECK AGAINST Path.cwd(). One was added here by a CodeQL
+    # autofix and it refused every real dispatch: `cwd` is the GAME PROJECT
+    # root (or its .bgate/work worktree), and the dashboard's own process
+    # directory is wherever `bgate serve` was launched — the checkout, another
+    # project, or C:\Windows\System32 if it started from a service. Those are
+    # unrelated by design; the board serves projects it does not live inside.
+    # The alert it silenced is about untrusted input reaching a path
+    # expression, and the answer to that here is provenance, not containment:
+    # this value comes from the registry and from make_worktree, never from a
+    # request body.
     if runner.requires_git_repo and not (safe_cwd / ".git").exists():
         return (f"{cwd} is not a git repository, and {runner.name} sandboxes a "
                 "non-repo working directory to a shadow copy — every write "

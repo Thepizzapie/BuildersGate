@@ -8,6 +8,10 @@ tell you whether one is.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +21,12 @@ from bgate_core import streamer
 @pytest.fixture
 def filt():
     """A redactor for a fixed, fake machine — never the test runner's own.
+
+    `marta` is fiction and has to stay fiction. This fixture was written with
+    the author's real account name, home directory and hostname in it, which
+    put all three into a public repository and printed them in a public CI log
+    every time one of these tests went red. A redaction suite is the last file
+    that should be doxing anyone. TestTheSuiteIsNotTheLeak below is the guard.
 
     scan_env=False on purpose: reading the real environment would make the
     suite pass or fail depending on whose keys are set, and a security test
@@ -245,3 +255,60 @@ class TestTheIndicator:
         monkeypatch.delenv(streamer.ENV_VAR, raising=False)
         payload = {"root": r"C:\Users\marta\x"}
         assert streamer.scrub(payload) == payload
+
+
+class TestTheSuiteIsNotTheLeak:
+    """The repository must not contain the machine it was written on.
+
+    The redactor keeps a home directory off the SCREEN. Nothing kept it out of
+    the SOURCE, and a test fixture spelled with a real account name is worse
+    than a rendered one: it is public permanently, it is in the clone, and a
+    red CI run prints it in full to a log anyone can read.
+
+    Runs against the developer's own machine because that is where the leak is
+    committed. On CI it is skipped rather than adapted — the hosted Windows
+    runner IS `C:\\Users\\runneradmin`, and two files document that on purpose.
+    """
+
+    @staticmethod
+    def _tracked_hits(needle: str, *, whole_word: bool = False) -> list[str]:
+        git = shutil.which("git")
+        if not git:
+            pytest.skip("no git on PATH")
+        # -w for a bare name, so an account called `mark` does not indict every
+        # line containing "markdown"; a path needs no such help.
+        found = subprocess.run(
+            [git, "grep", "-l", "-I", "-i", "-F"] + (["-w"] if whole_word else [])
+            + [needle, "--", "."],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True, text=True, timeout=60)
+        # 0 = matches, 1 = none, anything else is a broken invocation and must
+        # not read as a pass.
+        if found.returncode not in (0, 1):
+            pytest.skip(f"git grep unavailable: {found.stderr.strip()}")
+        return [line for line in found.stdout.splitlines() if line.strip()]
+
+    @pytest.fixture(autouse=True)
+    def _not_on_ci(self):
+        if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+            pytest.skip("the runner's own identity is documented deliberately")
+
+    def test_no_tracked_file_contains_this_home_directory(self):
+        home = streamer._home()
+        if not home:
+            pytest.skip("no home directory to look for")
+        for spelling in {home, home.replace("\\", "/"),
+                         home.replace("\\", "\\\\")}:
+            hits = self._tracked_hits(spelling)
+            assert not hits, (
+                f"{spelling} is committed in: {', '.join(hits)} — use a "
+                "fictional path, this repo is public")
+
+    def test_no_tracked_file_contains_this_account_name(self):
+        user = streamer._username()
+        if len(user) < streamer._MIN_BARE_LEN or user.lower() in streamer._UNSAFE_BARE:
+            pytest.skip(f"{user!r} is too generic to attribute to anyone")
+        hits = self._tracked_hits(user, whole_word=True)
+        assert not hits, (
+            f"the account name {user!r} is committed in: {', '.join(hits)} — "
+            "use a fictional one, this repo is public")

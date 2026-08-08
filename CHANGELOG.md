@@ -34,6 +34,38 @@ repository at first publication. There is no earlier release history to record.
 
 ### Fixed
 
+- **Nothing could be dispatched at all.** A CodeQL autofix landed a containment
+  check in `runners.preflight` requiring the working directory to sit under
+  `Path.cwd()` — the dashboard's own process directory. A board serves projects
+  it does not live inside: `bgate serve` runs from the checkout, the game lives
+  wherever the user keeps games, and git-isolated runs move cwd again to
+  `.bgate/work/item-N`. Every dispatch refused with *"outside the allowed
+  project root"*, which reads like policy rather than like the bug it was. The
+  path is still normalised and an unusable directory is still refused; the
+  containment rule is gone, and a test now asserts a project outside the
+  server's directory dispatches, because nineteen existing tests already said
+  so and the merge went in red anyway.
+
+- **The redaction suite was doxing its author.** `tests/test_streamer.py` was
+  written with a real account name, home directory, hostname and game-project
+  path as its fixture, so a public repository carried all four and every red CI
+  run printed them in full to a public log. Fictional now, along with the
+  worked examples in `streamer.py`'s comments, the approver names in the queue
+  tests and the absolute path in `docs/lessons-from-a-shipped-game.md`. Two new
+  tests grep the tracked tree for *this machine's* home and account name, so
+  the next one is caught where it is introduced — skipped on CI, where the
+  runner's own identity is documented on purpose.
+
+- **The redactor did nothing on a foreign path spelling.** `Redactor.__init__`
+  canonicalised home and project roots with `Path.resolve()`, which is a
+  question asked of the running filesystem rather than a string operation: on
+  Linux, `Path(r"C:\Users\x").resolve()` is the process's cwd with a directory
+  literally named `C:\Users\x` on the end. Home then matched nothing, paths
+  fell through to the foreign-home rule half-substituted, the project
+  placeholder never appeared, `restore()` could not put anything back — and
+  `status()` reported the filter healthy throughout. Foreign absolute paths are
+  now kept verbatim, which is as canonical as this machine can make them.
+
 - **The build staleness check could not see the file you were editing.**
   `webbuild._newest_source_mtime` scanned `scripts/`, `scenes/` and `assets/`,
   and that allowlist quietly decided what a build was allowed to depend on. A

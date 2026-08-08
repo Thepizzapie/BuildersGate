@@ -9,9 +9,9 @@ each row cites the line in the game repo that earned it.
 
 ## The source project, factually
 
-`C:\Users\marta\Desktop\dungeon` — *Corporate Quest: Dungeon of
-Deliverables*, an isometric turn-based tactics RPG on Godot 4.7, built over
-roughly three weeks almost entirely by agent seats driving this pipeline.
+*Corporate Quest: Dungeon of Deliverables*, an isometric turn-based tactics RPG
+on Godot 4.7, built over roughly three weeks almost entirely by agent seats
+driving this pipeline.
 
 | | |
 | --- | --- |

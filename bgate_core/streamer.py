@@ -266,13 +266,13 @@ class Redactor:
     def __init__(self, *, home: Optional[str] = None, user: Optional[str] = None,
                  host: Optional[str] = None, roots: Iterable[str] = (),
                  secrets: Iterable[str] = (), scan_env: bool = True) -> None:
-        self.home = str(Path(home).resolve()) if home else _home()
+        self.home = _canon(home) if home else _home()
         self.user = user if user is not None else _username()
         self.host = host if host is not None else _hostname()
         # Longest first so a nested root wins over its parent — otherwise
         # C:\games\rpg under C:\games becomes <project>\rpg and the deeper
         # project never gets its own placeholder.
-        self.roots = sorted({str(Path(r).resolve()) for r in roots if r},
+        self.roots = sorted({_canon(r) for r in roots if r},
                             key=len, reverse=True)
         self.secrets = list(secrets)
         if scan_env:
@@ -452,6 +452,37 @@ def _bare(word: str) -> re.Pattern[str]:
                       rf"(?![A-Za-z0-9_\-])", re.IGNORECASE)
 
 
+# Absolute in the OTHER platform's spelling. `Path.resolve()` is not a string
+# operation, it is a question asked of the running filesystem: on Linux,
+# Path(r"C:\Users\x").resolve() is not a Windows path, it is the process's cwd
+# with a single directory literally named `C:\Users\x` glued to the end. A home
+# canonicalised that way matches nothing, so every path falls through to the
+# foreign-home rule and comes out half-substituted — C:\Users\<user>\... , with
+# the project placeholder never appearing and restore() unable to put anything
+# back. The filter reports itself healthy the whole time.
+_WINDOWS_ABS = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+_POSIX_ABS = re.compile(r"^/")
+
+
+def _canon(path: str) -> str:
+    """Absolute and normalised, unless normalising it would be a lie.
+
+    A foreign absolute path is already as canonical as this machine can make
+    it — it is text about somewhere else — so it is kept exactly as given.
+    """
+    if not path:
+        return path
+    windows_host = os.name == "nt"
+    foreign = (bool(_WINDOWS_ABS.match(path)) and not windows_host) or (
+        bool(_POSIX_ABS.match(path)) and windows_host)
+    if foreign:
+        return path
+    try:
+        return str(Path(path).resolve())
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
 def _home() -> str:
     try:
         return str(Path.home().resolve())
@@ -520,7 +551,7 @@ def active(roots: Iterable[str] = (), *, force: Optional[bool] = None
     if not on:
         _ACTIVE = None
         return None
-    wanted = sorted({str(Path(r).resolve()) for r in roots if r})
+    wanted = sorted({_canon(r) for r in roots if r})
     if _ACTIVE is None or _ACTIVE.roots != sorted(wanted, key=len, reverse=True):
         _ACTIVE = Redactor(roots=wanted)
     return _ACTIVE
