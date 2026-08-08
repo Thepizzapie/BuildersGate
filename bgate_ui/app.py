@@ -1802,8 +1802,8 @@ def serve(port: int = 7788) -> None:
     other = _serving_elsewhere(port, root)
     if other:
         print(f"builders gate · REFUSING to start on {url}")
-        print(f"  another dashboard is already serving that port, for a "
-              f"DIFFERENT project:")
+        print("  another dashboard is already serving that port, for a "
+              "DIFFERENT project:")
         print(f"    it is serving : {other}")
         print(f"    you asked for : {root or '(no project here)'}")
         print("  Two dashboards on one port means a browser tab that looks "

@@ -46,7 +46,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from . import cutout
 from .cutout import CutoutError
@@ -391,7 +391,6 @@ def scene_text(doc: dict, *, project_dir: str | os.PathLike[str],
 
 def _hierarchy_order(doc: dict) -> list[dict]:
     """Bones with every parent before its children."""
-    by_name = {b["name"]: b for b in doc["bones"]}
     out, placed = [], set()
     remaining = list(doc["bones"])
     while remaining:

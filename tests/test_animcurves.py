@@ -197,12 +197,20 @@ def test_anticipation_verdict_passes_an_eased_transition():
     assert verdict["passed"] is True
 
 
-def test_anticipation_verdict_ignores_a_flat_signal():
+def test_anticipation_verdict_refuses_a_flat_signal():
+    """A constant track has no transition, so it cannot have a well-shaped one.
+
+    This asserted `passed is True` when it was written, which is the whole
+    fail-open in miniature: the loop that appends issues never runs on a signal
+    with no peaks, and `not issues` reads that as a clean bill of health. A
+    dead channel and a beautifully eased one returned the identical verdict.
+    """
     times = [i * 0.05 for i in range(60)]
     values = [1.0] * 60
     verdict = ac.anticipation_verdict(times, values)
-    assert verdict["passed"] is True
+    assert verdict["passed"] is False
     assert verdict["events"] == 0
+    assert verdict["issues"][0]["kind"] == "unmeasured"
 
 
 def test_log_response_is_zero_mean_on_a_constant_signal():
@@ -213,3 +221,69 @@ def test_log_response_is_zero_mean_on_a_constant_signal():
     values = [5.0] * 40
     result = ac.log_response(times, values)
     assert max(abs(r) for r in result["response"]) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Fail-open guards
+#
+# Every verdict in this module is a loop that appends an issue per fault and
+# returns `passed = not issues`, so any input the loop cannot run over — a dead
+# channel, a NaN, a clip too short to transform — used to come back green. The
+# four metrics scored a 60-sample motionless track as clean, eased, jitter-free
+# and skate-free at once. These pin the refusals.
+# ---------------------------------------------------------------------------
+
+def _still(n=60, dt=0.05):
+    """A bone that does not move: n identical samples."""
+    return [i * dt for i in range(n)], [(1.0, 2.0, 3.0)] * n
+
+
+def test_zero_motion_is_unmeasured_not_smooth():
+    times, values = _still()
+    for measure, verdict in (
+            (ac.velocity_profile(times, values),
+             ac.velocity_profile_verdict),
+            (ac.sparc(times, values), ac.sparc_verdict),
+            (ac.foot_skate(times, values), ac.foot_skate_verdict)):
+        assert measure["measured"] is False, measure
+        assert verdict(measure)["passed"] is False
+
+
+def test_nan_does_not_pass_every_threshold():
+    """Every gate here is a `>` or `<`, and NaN compares False against both."""
+    times = [i * 0.05 for i in range(20)]
+    values = [(float("nan"), 0.0, 0.0)] * 20
+    assert ac.velocity_profile(times, values)["measured"] is False
+    assert ac.sparc(times, values)["measured"] is False
+    assert ac.foot_skate(times, values)["measured"] is False
+    assert ac.anticipation_verdict(times, [float("nan")] * 20)["passed"] is False
+
+
+def test_a_clip_too_short_to_transform_is_not_the_smoothest_possible():
+    """sparc 0.0 is its best score, and it was what a sub-0.1s clip of pure
+    noise received — the arc loop never ran, so nothing was integrated."""
+    times = [i * 0.01 for i in range(5)]
+    values = [(v, 0.0, 0.0) for v in (0.0, 9.0, -7.0, 8.0, -9.0)]
+    result = ac.sparc(times, values)
+    assert result["measured"] is False
+    assert ac.sparc_verdict(result)["passed"] is False
+
+
+def test_a_foot_that_never_plants_is_not_a_foot_that_never_slides():
+    """Zero contact frames yields zero skating frames — the same output a
+    perfectly planted foot gives. A wrong ground_axis looks exactly like this."""
+    times = [i * 0.05 for i in range(30)]
+    rising = [(float(i), float(i) * 2.0, 0.0) for i in range(30)]
+    result = ac.foot_skate(times, rising)
+    assert result["measured"] is False
+    assert ac.foot_skate_verdict(result)["passed"] is False
+
+
+def test_a_real_clip_is_still_measured():
+    """The guards must not swallow the ordinary case."""
+    times = [i * 0.05 for i in range(60)]
+    values = [(math.sin(t), 0.0, 0.0) for t in times]
+    profile = ac.velocity_profile(times, values)
+    assert profile.get("measured", True) is True
+    assert profile["peak_speed"] > 0
+    assert ac.sparc(times, values).get("measured", True) is True

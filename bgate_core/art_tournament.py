@@ -68,6 +68,16 @@ def record_verdict(root: str | os.PathLike[str], match_id: int, *,
         raise ValueError(
             f"winner {winner} is not one of this match's candidates "
             f"({match['candidate_a_id']}, {match['candidate_b_id']})")
+    # A DECIDED MATCH IS DECIDED. The reviewer brief walks an agent through 28
+    # of these in a row, so a retry after a dropped response was overwriting a
+    # recorded pick in silence — two activity lines both claiming a win, and a
+    # ranking that changed under a caller who thought it was re-sending.
+    if match.get("winner_id") is not None:
+        raise ValueError(
+            f"match {match_id} was already decided for candidate "
+            f"{match['winner_id']} at {match.get('decided_at')} — re-deciding "
+            "it would rewrite a recorded judgement. Open a new tournament if "
+            "the comparison needs to be run again.")
     who = actor if actor is not None else activity.current_actor()
     with db.tx(root) as conn:
         conn.execute(
@@ -84,20 +94,51 @@ def record_verdict(root: str | os.PathLike[str], match_id: int, *,
 def list_matches(root: str | os.PathLike[str], *,
                  logical_name: Optional[str] = None,
                  tournament_ref: Optional[str] = None,
-                 decided_only: bool = False, limit: int = 500) -> list[dict]:
+                 decided_only: bool = False,
+                 limit: Optional[int] = 500) -> list[dict]:
+    """Matches for a target, oldest first. `limit=None` for all of them.
+
+    `tournament_ref=""` is a REAL filter, not an absent one — record_match
+    stores "" as its own default, so a caller asking for the unnamed
+    tournament's matches must not silently get every tournament's. Pass None
+    to mean "any". `logical_name` keeps the older falsy-means-any behaviour
+    because "" is not a name anything is stored under.
+    """
     clauses, params = [], []
     if logical_name:
         clauses.append("logical_name = ?")
         params.append(logical_name)
-    if tournament_ref:
+    if tournament_ref is not None:
         clauses.append("tournament_ref = ?")
         params.append(tournament_ref)
     if decided_only:
         clauses.append("winner_id IS NOT NULL")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    if limit is None:
+        return rows(db.connect(root).execute(
+            f"SELECT * FROM art_match {where} ORDER BY id ASC", params))
     params.append(int(limit))
     return rows(db.connect(root).execute(
         f"SELECT * FROM art_match {where} ORDER BY id ASC LIMIT ?", params))
+
+
+def discard_matches(root: str | os.PathLike[str], match_ids: list[int]) -> int:
+    """Delete UNDECIDED matches by id. Returns how many went.
+
+    Exists so a tournament that failed to dispatch can be rolled back instead
+    of leaving its whole round-robin sitting open forever, which nothing else
+    could then clear and which a retry would duplicate rather than replace.
+    Decided matches are left alone — a recorded judgement is not scratch.
+    """
+    ids = [int(i) for i in match_ids]
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    with db.tx(root) as conn:
+        cur = conn.execute(
+            f"DELETE FROM art_match WHERE winner_id IS NULL AND id IN ({marks})",
+            ids)
+        return cur.rowcount
 
 
 def elo_ratings(matches: list[dict], *, k: float = DEFAULT_K,
@@ -137,9 +178,16 @@ def elo_ratings(matches: list[dict], *, k: float = DEFAULT_K,
 
 def standings(root: str | os.PathLike[str], logical_name: str, *,
              tournament_ref: Optional[str] = None) -> dict:
-    """Every candidate that has played a match for this target, ranked."""
+    """Every candidate that has played a match for this target, ranked.
+
+    RATED OVER EVERY MATCH, NOT THE FIRST 500. list_matches defaults to a 500
+    row cap ordered oldest-first, and taking that default here meant a target
+    past 500 comparisons was ranked on its OLDEST verdicts while every newer
+    one — the reviewer's most recent judgement — was dropped without a word.
+    Elo is path-dependent by nature; silently truncating its input is not.
+    """
     matches = list_matches(root, logical_name=logical_name,
-                           tournament_ref=tournament_ref)
+                           tournament_ref=tournament_ref, limit=None)
     decided = [m for m in matches if m.get("winner_id") is not None]
     ratings = elo_ratings(decided)
     ranked = sorted(
