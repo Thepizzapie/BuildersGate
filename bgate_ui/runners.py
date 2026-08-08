@@ -54,7 +54,7 @@ import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 # The MCP server every seat needs whichever CLI it runs on. An art agent that
 # cannot call ref_list, asset_lock, consistency_check or artifact register is

@@ -30,7 +30,7 @@ import json
 import math
 import struct
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 _COMPONENT_FORMATS = {
     5120: ("b", 1), 5121: ("B", 1), 5122: ("h", 2),
