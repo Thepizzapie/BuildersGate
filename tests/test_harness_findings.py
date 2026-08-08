@@ -5,7 +5,6 @@ project, not a thing that could happen. The comments name what it cost.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest

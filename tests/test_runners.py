@@ -13,7 +13,6 @@ is the whole reason it is done this way.
 """
 from __future__ import annotations
 
-import pytest
 
 from bgate_core import queue, settings
 from bgate_ui import dispatch, runners

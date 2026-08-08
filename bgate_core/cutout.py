@@ -49,7 +49,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 SUFFIX = ".cutout.json"
 VERSION = 1
