@@ -178,3 +178,110 @@ def test_verdicts_close_matches_and_standings_update(client, root):
         "/api/art-tournament/standings", params={"logical_name": "hero"}).json()
     assert standings["decided_matches"] == 1
     assert standings["standings"][0]["artifact_id"] == a["id"]
+
+
+# ---------------------------------------------------------------------------
+# Silent-loss guards
+#
+# Every one of these was a path where the tournament reported success while
+# quietly discarding or duplicating a reviewer's judgement.
+# ---------------------------------------------------------------------------
+
+def test_record_verdict_refuses_to_overwrite_a_decided_match(root):
+    """The brief walks an agent through 28 of these in a row, so a retry after
+    a dropped response was rewriting a recorded pick in silence — two activity
+    lines both claiming a win, and a ranking that moved under a caller who
+    thought they were re-sending the same thing."""
+    a, b = _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    match = art_tournament.record_match(
+        root, logical_name="hero", candidate_a_id=a["id"],
+        candidate_b_id=b["id"], shown_first="a")
+    art_tournament.record_verdict(root, match["id"], winner_artifact_id=a["id"])
+    with pytest.raises(ValueError, match="already decided"):
+        art_tournament.record_verdict(root, match["id"],
+                                      winner_artifact_id=b["id"])
+    assert art_tournament.get_match(root, match["id"])["winner_id"] == a["id"]
+
+
+def test_standings_rates_every_match_not_the_oldest_five_hundred(root):
+    """list_matches caps at 500 rows ordered oldest-first, and standings took
+    that default — so past 500 comparisons a target was ranked on its OLDEST
+    verdicts while every newer one was dropped without a word."""
+    a, b = _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    for _ in range(505):
+        match = art_tournament.record_match(
+            root, logical_name="hero", candidate_a_id=a["id"],
+            candidate_b_id=b["id"], shown_first="a")
+        art_tournament.record_verdict(root, match["id"],
+                                      winner_artifact_id=a["id"])
+    assert art_tournament.standings(root, "hero")["decided_matches"] == 505
+
+
+def test_list_matches_treats_an_empty_tournament_ref_as_a_filter(root):
+    """record_match stores "" as its own default, so it is a real value a
+    caller can ask for — `if tournament_ref:` silently widened that request
+    to every tournament ever run for the name."""
+    a, b = _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    art_tournament.record_match(root, logical_name="hero",
+                                candidate_a_id=a["id"], candidate_b_id=b["id"],
+                                shown_first="a", tournament_ref="")
+    art_tournament.record_match(root, logical_name="hero",
+                                candidate_a_id=a["id"], candidate_b_id=b["id"],
+                                shown_first="a", tournament_ref="round-2")
+    assert len(art_tournament.list_matches(root, logical_name="hero")) == 2
+    assert len(art_tournament.list_matches(
+        root, logical_name="hero", tournament_ref="")) == 1
+    assert len(art_tournament.list_matches(
+        root, logical_name="hero", tournament_ref="round-2")) == 1
+
+
+def test_discard_matches_leaves_decided_ones_alone(root):
+    a, b = _candidate(root, "a", b"one"), _candidate(root, "b", b"two")
+    open_match = art_tournament.record_match(
+        root, logical_name="hero", candidate_a_id=a["id"],
+        candidate_b_id=b["id"], shown_first="a")
+    closed = art_tournament.record_match(
+        root, logical_name="hero", candidate_a_id=a["id"],
+        candidate_b_id=b["id"], shown_first="a")
+    art_tournament.record_verdict(root, closed["id"], winner_artifact_id=a["id"])
+    assert art_tournament.discard_matches(
+        root, [open_match["id"], closed["id"]]) == 1
+    assert art_tournament.get_match(root, closed["id"])["winner_id"] == a["id"]
+
+
+def test_start_refuses_more_candidates_than_the_round_robin_cap(client, root):
+    """The cap check was unreachable: the query already truncated to 8, so
+    `len(candidates) > 8` could never be true and twelve candidates silently
+    became a round-robin over an arbitrary eight of them."""
+    for i in range(12):
+        _candidate(root, f"c{i}", b"x" * (i + 1))
+    got = client.post("/api/art-tournament/start", json={"logical_name": "hero"})
+    assert got.status_code == 400
+    assert "cap" in got.text
+    assert art_tournament.list_matches(root, logical_name="hero") == []
+
+
+def test_start_refuses_a_second_open_tournament_for_the_same_target(client, root):
+    """standings() pools every match for a logical_name, so a duplicate
+    round-robin did not sit harmlessly beside the first — it weighted the
+    same comparison twice in the Elo."""
+    _candidate(root, "a", b"one")
+    _candidate(root, "b", b"two")
+    first = client.post("/api/art-tournament/start", json={"logical_name": "hero"})
+    assert first.status_code == 200
+    again = client.post("/api/art-tournament/start", json={"logical_name": "hero"})
+    assert again.status_code == 409
+    assert art_tournament.standings(root, "hero")["pending_matches"] == 1
+
+
+def test_start_explains_the_auto_approve_interaction(client, root):
+    """With art.auto_approve on, register() promotes on the spot and nothing
+    ever reaches status "candidate" — so this endpoint 404s on every target,
+    and a bare "found 0 candidates" points at the wrong thing entirely."""
+    from bgate_core import settings
+    settings.set(root, "art.auto_approve", True)
+    _candidate(root, "a", b"one")
+    _candidate(root, "b", b"two")
+    got = client.post("/api/art-tournament/start", json={"logical_name": "hero"})
+    assert got.status_code == 404
+    assert "auto_approve" in got.text

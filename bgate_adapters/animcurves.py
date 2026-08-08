@@ -30,7 +30,7 @@ import json
 import math
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 _COMPONENT_FORMATS = {
     5120: ("b", 1), 5121: ("B", 1), 5122: ("h", 2),
@@ -159,6 +159,38 @@ def _speed(times: list[float], values: list) -> list[float]:
 # Arcs: does a translation path bow, or cut a straight line
 # ---------------------------------------------------------------------------
 
+def _finite(values) -> bool:
+    """Is every number in this sample list a real number.
+
+    NaN POISONS EVERY GATE IN THIS MODULE AND POISONS IT GREEN. Each verdict
+    below is a `>` or `<` against a threshold, and every comparison against NaN
+    is False, so a single non-finite value in an export turns the whole module
+    into an unconditional pass. Checked up front and reported as unmeasured
+    instead, because an unreadable curve is an unknown and an unknown is not a
+    pass — the same call artifacts.register makes when it cannot read a
+    project's settings.
+    """
+    for v in values:
+        for x in (v if isinstance(v, (tuple, list)) else (v,)):
+            if not math.isfinite(x):
+                return False
+    return True
+
+
+def _unmeasured(reason: str, **extra) -> dict:
+    """A measurement that could not be taken, marked so its verdict refuses."""
+    return {"measured": False, "reason": reason, **extra}
+
+
+def _refuse(result: dict, **extra) -> Optional[dict]:
+    """The verdict for an unmeasured result, or None if there is one to judge."""
+    if result.get("measured", True):
+        return None
+    return {"passed": False, "issues": [{"kind": "unmeasured",
+                                         "note": result.get("reason", "not measured")}],
+            **extra}
+
+
 def arc_deviation(times: list[float], positions: list) -> dict:
     """How far a VEC3 path bows from the straight chord between its endpoints,
     as a fraction of the chord's own length.
@@ -215,16 +247,31 @@ def velocity_profile(times: list[float], values: list, *,
     near-zero second derivative at a segment boundary is exactly what a
     dominant near-peak-speed duration also measures, from the other end.
     """
+    if not _finite(values) or not _finite(times):
+        return _unmeasured("this track carries NaN or infinity — every "
+                           "threshold below would compare False against it "
+                           "and report a pass",
+                           peak_speed=0.0, cruising_fraction=0.0)
     speed = _speed(times, values)
     n = len(speed)
     if n < 2 or len(times) < 2:
-        return {"speed": [round(s, 5) for s in speed], "peak_speed": 0.0,
-                "cruising_fraction": 0.0}
-    peak = max(speed) or 1e-9
+        return _unmeasured(f"{len(times)} samples — too few for a speed profile",
+                           peak_speed=0.0, cruising_fraction=0.0)
     duration = times[-1] - times[0]
     if duration <= 1e-9:
-        return {"speed": [round(s, 5) for s in speed], "peak_speed": round(peak, 5),
-                "cruising_fraction": 0.0}
+        return _unmeasured("every sample carries the same timestamp — this "
+                           "track has no duration to spend anywhere",
+                           peak_speed=0.0, cruising_fraction=0.0)
+    peak = max(speed)
+    # ZERO MOTION IS NOT SMOOTH MOTION. `peak or 1e-9` made the near-peak
+    # threshold 8.5e-10, which no speed of exactly 0.0 clears, so a track of 60
+    # identical samples reported cruising_fraction 0.0 and sailed through the
+    # gate. A bone that never moves is not an eased bone.
+    if peak <= 1e-9:
+        return _unmeasured("nothing on this track moves — a dead channel has "
+                           "no easing to judge, and 0.0 here is absence, not "
+                           "a clean result",
+                           peak_speed=0.0, cruising_fraction=0.0)
     threshold = near_peak_ratio * peak
     near_peak_time = 0.0
     for i in range(n - 1):
@@ -235,6 +282,9 @@ def velocity_profile(times: list[float], values: list, *,
 
 
 def velocity_profile_verdict(profile: dict, *, max_cruising_fraction: float = 0.6) -> dict:
+    refusal = _refuse(profile, threshold=max_cruising_fraction)
+    if refusal:
+        return refusal
     frac = profile.get("cruising_fraction", 0.0)
     issues = []
     if frac > max_cruising_fraction:
@@ -285,16 +335,25 @@ def sparc(times: list[float], values: list, *, freq_cutoff: float = 10.0,
     `freq_cutoff`, which is SPARC's own adaptive-cutoff definition rather
     than a fixed window.
     """
+    if not _finite(values) or not _finite(times):
+        return _unmeasured("this track carries NaN or infinity — no spectrum "
+                           "can be taken of it", sparc=0.0, samples=0)
     speed = _speed(times, values)
     n = len(speed)
     if n < 4 or not times:
-        return {"sparc": 0.0, "samples": n}
+        return _unmeasured(f"{n} samples — too few for a spectrum",
+                           sparc=0.0, samples=n)
     duration = max(times) - min(times)
     if duration <= 1e-9:
-        return {"sparc": 0.0, "samples": n}
+        return _unmeasured("every sample carries the same timestamp — there is "
+                           "no time axis to transform", sparc=0.0, samples=n)
     fs = (n - 1) / duration
     mag = _dft_magnitude(speed)
-    peak = max(mag) or 1e-9
+    peak = max(mag)
+    if peak <= 1e-12:
+        return _unmeasured("nothing on this track moves — a flat speed profile "
+                           "has no spectral arc, and 0.0 is the smoothest "
+                           "value this returns", sparc=0.0, samples=n)
     norm = [m / peak for m in mag]
     freqs = [k * fs / n for k in range(len(mag))]
     cutoff_idx = 0
@@ -304,6 +363,15 @@ def sparc(times: list[float], values: list, *, freq_cutoff: float = 10.0,
         cutoff_idx = i
         if m < amplitude_threshold:
             break
+    # A CUTOFF OF 0 MEANS THE ARC LOOP NEVER RAN, hence sparc 0.0 — the
+    # smoothest value this can return, handed to short clips whose first bin
+    # spacing (1/duration) already exceeds freq_cutoff. Five samples of pure
+    # white noise over 0.09s scored a clean 0.0 this way.
+    if cutoff_idx < 1:
+        return _unmeasured(f"this track's frequency resolution ({fs / n:.1f} Hz "
+                           f"per bin over {duration:.3f}s) is coarser than the "
+                           f"{freq_cutoff} Hz band being measured — too short "
+                           "to judge for jitter", sparc=0.0, samples=n)
     arc = 0.0
     for i in range(cutoff_idx):
         df = freqs[i + 1] - freqs[i]
@@ -319,6 +387,9 @@ def sparc_verdict(result: dict, *, min_sparc: float = -8.0) -> dict:
     checked against known-good output, the same caveat the research behind
     this module raised for every judge in this space.
     """
+    refusal = _refuse(result, threshold=min_sparc)
+    if refusal:
+        return refusal
     value = result.get("sparc", 0.0)
     issues = []
     if value < min_sparc:
@@ -345,8 +416,23 @@ def foot_skate(times: list[float], positions: list, *, ground_axis: int = 1,
     never actually plants (a jump, a kick) as having no contact frames at
     all, which is the conservative failure direction.
     """
+    if not _finite(positions):
+        return _unmeasured("this track carries NaN or infinity — no contact "
+                           "can be classified from it",
+                           contact_frames=0, skating_frames=0, worst_slide=0.0)
     if len(positions) < 3:
-        return {"contact_frames": 0, "skating_frames": 0, "worst_slide": 0.0}
+        return _unmeasured(f"{len(positions)} samples — too few to see a foot "
+                           "hold still and slide",
+                           contact_frames=0, skating_frames=0, worst_slide=0.0)
+    # A DEAD CHANNEL IS PLANTED AND NOT SLIDING, and so is a perfect footfall.
+    # Without this a bone of 60 identical samples reports 60 contact frames and
+    # 0 skating frames — the single cleanest result this function can produce.
+    if all(p == positions[0] for p in positions):
+        return _unmeasured("nothing on this track moves — a bone that holds "
+                           "one position is not a foot that plants well, it is "
+                           "a foot that was never animated",
+                           contact_frames=len(positions), skating_frames=0,
+                           worst_slide=0.0)
     heights = [p[ground_axis] for p in positions]
     floor = min(heights)
     contact = [h - floor <= contact_band for h in heights]
@@ -358,11 +444,26 @@ def foot_skate(times: list[float], positions: list, *, ground_axis: int = 1,
             if d > skate_tolerance:
                 skating += 1
                 worst = max(worst, d)
+    # NEVER PLANTING IS NOT NEVER SKATING. The docstring calls a foot that
+    # never touches down "the conservative failure direction", but conservative
+    # here meant reporting a pass: zero contact frames yields zero skating
+    # frames, which is the same output as a perfectly planted foot. Say which
+    # one it is.
+    if sum(contact) < 2:
+        return _unmeasured("this bone never rests near its own lowest point — "
+                           "nothing here plants, so there is no planted foot "
+                           "to catch sliding. Wrong ground_axis on a Z-up "
+                           "export looks exactly like this.",
+                           contact_frames=sum(contact), skating_frames=0,
+                           worst_slide=0.0)
     return {"contact_frames": sum(contact), "skating_frames": skating,
             "worst_slide": round(worst, 4)}
 
 
 def foot_skate_verdict(result: dict, *, max_skating_frames: int = 0) -> dict:
+    refusal = _refuse(result)
+    if refusal:
+        return refusal
     issues = []
     if result.get("skating_frames", 0) > max_skating_frames:
         issues.append({"kind": "foot_skate", "value": result["skating_frames"],
@@ -528,11 +629,25 @@ def anticipation_verdict(times: list[float], values: list[float], *,
     transitions classical anticipation actually applies to (a wind-up
     before a strike), least trustworthy on quick twitches.
     """
+    if not _finite(values) or not _finite(times):
+        return {"passed": False, "events": 0, "sigma": 0.0,
+                "issues": [{"kind": "unmeasured",
+                            "note": "this track carries NaN or infinity — no "
+                                    "curvature can be read from it"}]}
     lr = log_response(times, values, sigma_samples=sigma_samples)
     resp, grid = lr["response"], lr["times"]
     n = len(resp)
     if n < 8:
-        return {"passed": True, "issues": [], "events": 0, "sigma": lr["sigma"]}
+        return {"passed": False, "events": 0, "sigma": lr["sigma"],
+                "issues": [{"kind": "unmeasured",
+                            "note": f"{n} samples after resampling — too few "
+                                    "to tell a shaped transition from a corner"}]}
+    if max(abs(x) for x in resp) < 1e-12:
+        return {"passed": False, "events": 0, "sigma": lr["sigma"],
+                "issues": [{"kind": "unmeasured",
+                            "note": "this track has no curvature anywhere — it "
+                                    "holds a constant value, and there is no "
+                                    "transition here to have been shaped"}]}
     peaks = _peaks(resp, min_prominence_frac=min_prominence_frac)
     issues = []
     for p in peaks:

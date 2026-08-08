@@ -3580,6 +3580,30 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
                            "intersect": intersect_tolerance}}
 
 
+def _unmeasured(report: dict, measured, empty_note: str) -> list[dict]:
+    """The guard every verdict in this file needs before it judges anything.
+
+    AN UNKNOWN IS NOT A PASS. Each of these verdicts is a loop over a
+    collection that appends an issue per fault and returns `passed=not issues`,
+    which means an empty collection — a failed run, a model with no armature, a
+    bind with no weights, a sweep where every pose was skipped — sails through
+    as a clean bill of health. flex_verdict shipped exactly this bug and had an
+    inertness clause added after a real run passed a mesh that was never bound
+    to the skeleton sitting inside it; these three then reintroduced it, and a
+    green `passed` with `checked: 0` is the least useful thing a gate can say.
+
+    Returns the issues to refuse with, or [] when there is something to judge.
+    """
+    if not report.get("ok", False):
+        return [{"kind": "unmeasured",
+                 "note": "the measurement itself did not run — "
+                         + (str(report.get("error") or "no report") )
+                         + "; nothing was checked, so nothing can pass"}]
+    if not measured:
+        return [{"kind": "unmeasured", "note": empty_note}]
+    return []
+
+
 _WEIGHTS_MARK = "BGATE_WEIGHTS:"
 
 _WEIGHTS_SCRIPT = '''
@@ -3589,24 +3613,52 @@ import bmesh
 P = json.loads(r"""__PAYLOAD__""")
 
 
-def islands(bm, indices):
-    """Connected components of a vertex-index subset, via mesh EDGE adjacency.
+def adjacency(bm):
+    """Vertex adjacency over mesh edges, with EXACTLY coincident vertices fused.
 
-    Edges, not spatial proximity: two vertices can sit a millimetre apart
-    across a seam and share no edge, which is exactly the case a weight
-    painted right up to a seam should NOT be flagged for.
+    Mesh edges alone are the intuitive graph, and on a file that has been
+    through glTF they are the wrong one. The exporter SPLITS a vertex wherever
+    normals or UVs differ across it, so a single point on the surface comes
+    back as two to six vertices at an identical position with no edge joining
+    them. Measured on this project's own bind fixture: 940 authored vertices
+    exported and re-imported as 1559, and every bone's weight set duly fell
+    apart along those seams — RightUpperLeg read 14 islands where the welded
+    graph shows 2. Uncorrected, this flags every bone of every clean automatic
+    bind, which is worse than not checking at all: a gate that is always red
+    teaches the agent to ignore it.
+
+    Fusing only EXACT position matches is the point, and it keeps the promise
+    the edge-only version was written to keep: two vertices a millimetre apart
+    across a genuine seam still share no edge and still count separately. An
+    exporter split is not a millimetre apart — it is one coordinate written
+    twice, bit for bit, because both copies came from the same source vertex.
     """
+    at = {}
+    for v in bm.verts:
+        at.setdefault(tuple(v.co), []).append(v.index)
+    adj = {v.index: set() for v in bm.verts}
+    for e in bm.edges:
+        a, b = e.verts[0].index, e.verts[1].index
+        adj[a].add(b)
+        adj[b].add(a)
+    for same_point in at.values():
+        if len(same_point) > 1:
+            for i in same_point:
+                adj[i].update(j for j in same_point if j != i)
+    return adj
+
+
+def components(adj, indices):
+    """Connected components of a vertex-index subset over `adj`."""
     remaining = set(indices)
     out = []
     while remaining:
-        start = next(iter(remaining))
+        start = remaining.pop()
         seen = {start}
-        remaining.discard(start)
         stack = [start]
         while stack:
             i = stack.pop()
-            for e in bm.verts[i].link_edges:
-                j = e.other_vert(bm.verts[i]).index
+            for j in adj.get(i, ()):
                 if j in remaining:
                     remaining.discard(j)
                     seen.add(j)
@@ -3644,17 +3696,39 @@ else:
             if name in bones and g.weight >= threshold:
                 by_bone.setdefault(name, []).append(v.index)
 
+    # THE MESH'S OWN SHELLS ARE THE BASELINE, NOT ONE.
+    #
+    # "One bone drives one contiguous patch" is only true of a mesh that is
+    # itself one piece. This pipeline assembles characters from joined
+    # primitives, so a body is routinely 9 disconnected shells and a hip bone
+    # legitimately spans three of them; shells() elsewhere in this file records
+    # a real user character at 940. Counting islands against a hardcoded 1 makes
+    # every such bone a false positive. Counting them against the number of
+    # shells the bone actually touches asks the question that was meant: does
+    # the paint split WITHIN a piece of mesh, where nothing but a stray brush
+    # stroke could have put it.
+    adj = adjacency(bm)
+    shell_of = {}
+    for si, shell in enumerate(components(adj, [v.index for v in bm.verts])):
+        for i in shell:
+            shell_of[i] = si
+
     report = {}
     for name, indices in by_bone.items():
-        comps = islands(bm, indices)
-        sizes = sorted((len(c) for c in comps), reverse=True)
-        report[name] = {"vertex_count": len(indices), "islands": len(comps),
+        sizes = sorted((len(c) for c in components(adj, indices)), reverse=True)
+        touched = len({shell_of.get(i, -1) for i in indices})
+        report[name] = {"vertex_count": len(indices), "islands": len(sizes),
+                        "shells": touched,
                         "sizes": sizes[:8],
-                        "largest_fraction": round(sizes[0] / len(indices), 4)
-                                            if indices else 1.0}
+                        # Summed here, off the FULL list, because `sizes` above
+                        # is truncated for the stdout budget and summing the
+                        # truncated copy under-reports every bone past 8 islands.
+                        "bleed_vertices": sum(sizes[touched:]),
+                        "largest_fraction": round(sizes[0] / len(indices), 4)}
     bm.free()
     out["bones"] = report
     out["deform_bones"] = len(bones)
+    out["mesh_shells"] = len(set(shell_of.values()))
     print("__MARK__" + json.dumps(out))
 '''.replace("__MARK__", _WEIGHTS_MARK)
 
@@ -3685,33 +3759,42 @@ def weight_islands(model: str | os.PathLike[str], *, threshold: float = 0.02,
     return report
 
 
-def weight_islands_verdict(report: dict, *, min_largest_fraction: float = 0.9,
-                           min_bleed_vertices: int = 3) -> dict:
+def weight_islands_verdict(report: dict, *, min_bleed_vertices: int = 3) -> dict:
     """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+
+    A bone is flagged when its weights form MORE islands than the number of
+    mesh shells it touches — paint that split inside a single connected piece
+    of surface, which nothing but a stray stroke explains. Spanning several
+    shells is not itself a fault; see the script's own note.
 
     min_bleed_vertices filters noise: a single stray vertex one brush stroke
     missed is a cleanup nit, not the failure this exists to catch.
     """
-    issues: list[dict] = []
+    issues = _unmeasured(report, report.get("bones"),
+                         "no deform bone carried a single weight above the "
+                         "threshold — nothing here was measured, and a pass "
+                         "would mean 'clean' when it means 'empty'")
+    if issues:
+        return {"passed": False, "issues": issues, "checked": 0,
+                "thresholds": {"min_bleed_vertices": min_bleed_vertices}}
     for name, info in (report.get("bones") or {}).items():
-        sizes = info.get("sizes") or []
-        if len(sizes) < 2:
-            continue
-        bleed = sum(sizes[1:])
-        if (info.get("largest_fraction", 1.0) < min_largest_fraction
-                and bleed >= min_bleed_vertices):
+        islands = int(info.get("islands") or 0)
+        shells = int(info.get("shells") or 1)
+        bleed = int(info.get("bleed_vertices") or 0)
+        if islands > shells and bleed >= min_bleed_vertices:
             issues.append({"bone": name, "kind": "bleed",
-                           "islands": info.get("islands"),
+                           "islands": islands, "shells": shells,
                            "bleed_vertices": bleed,
                            "largest_fraction": info.get("largest_fraction"),
                            "note": f"{name}'s weight paint splits into "
-                                   f"{info.get('islands')} disconnected regions "
-                                   f"on the mesh surface — {bleed} vertices sit "
-                                   "off the bone's own patch"})
+                                   f"{islands} regions across {shells} piece"
+                                   f"{'s' if shells != 1 else ''} of mesh — "
+                                   f"{bleed} vertices sit off the bone's own "
+                                   "patch on a surface it could not have "
+                                   "reached by following the geometry"})
     return {"passed": not issues, "issues": issues,
             "checked": len(report.get("bones") or {}),
-            "thresholds": {"min_largest_fraction": min_largest_fraction,
-                           "min_bleed_vertices": min_bleed_vertices}}
+            "thresholds": {"min_bleed_vertices": min_bleed_vertices}}
 
 
 # ---------------------------------------------------------------------------
@@ -3826,12 +3909,26 @@ import bpy, json
 P = json.loads(r"""__PAYLOAD__""")
 
 
-def joints(path):
-    """Every bone's HEAD position, in that file's own body-height fraction.
+def proportions(path):
+    """Every bone's LENGTH as a fraction of body height, plus its parent.
 
-    Height-normalised, not world-space: a candidate rigged at a different
-    height than the reference template is not itself a deviation, and
-    comparing raw metres would report one on every character.
+    LENGTHS, NOT HEAD POSITIONS, AND THE DIFFERENCE IS THE ENTIRE CHECK.
+
+    A head position is stance-dependent, and the two sides of this comparison
+    are never in the same stance: rig() defaults to pose="a" (BG_A_POSE_DROP,
+    0.42 rad) while the shipped HUMANOID_SKELETON is a T-pose. The first run
+    of this check reported both hands 0.154 body-heights out against a 0.08
+    threshold, perfectly mirrored left to right, with every non-arm bone at
+    exactly 0.0 — it was measuring the arm swing, not a fit fault, and it
+    failed every correctly-rigged character in the pipeline.
+
+    Bone length is invariant under both stance and translation: rotating a
+    joint does not change the length of the bone below it, and neither does
+    moving the whole rig off the origin (which the positional version also
+    counted, on every bone at once). That makes it the thing this docstring
+    always claimed to compare — PROPORTIONS — measurable without requiring the
+    reference and the candidate to be posed alike. `parent` rides along so a
+    rig that kept the 23 names but rewired the chain is still caught.
     """
     for o in list(bpy.context.scene.objects):
         bpy.data.objects.remove(o, do_unlink=True)
@@ -3839,26 +3936,39 @@ def joints(path):
     arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     if not arms:
-        return None, 0.0
+        return None, 0.0, "no armature in %s" % path
+    if not meshes:
+        # NOT a fallback to height 1.0. That silently left one side of the
+        # comparison in metres while the other was height-normalised, so every
+        # bone read as wildly displaced and the report still said ok.
+        return None, 0.0, ("no mesh in %s — body height is what every length "
+                           "here is a fraction of, and without one the two "
+                           "sides of this comparison are in different units"
+                           % path)
     arm = arms[0]
-    height = 1.0
-    if meshes:
-        mesh = max(meshes, key=lambda o: len(o.data.polygons))
-        height = max(mesh.dimensions[2], 1e-6)
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    height = max(mesh.dimensions[2], 1e-6)
     out = {}
     for b in arm.data.bones:
         head = arm.matrix_world @ b.head_local
-        out[b.name] = [head.x / height, head.y / height, head.z / height]
-    return out, height
+        tail = arm.matrix_world @ b.tail_local
+        out[b.name] = [round((tail - head).length / height, 5),
+                       b.parent.name if b.parent else ""]
+    return out, height, ""
 
 
-ref_joints, ref_height = joints(P["reference"])
-cand_joints, cand_height = joints(P["candidate"])
-out = {"ok": bool(ref_joints and cand_joints),
+# KEEP THIS REPORT SMALL. run_script hands back only the LAST 4000 characters
+# of stdout and _marked needs the mark still at the start of its line, so an
+# oversized report is indistinguishable from a crashed run. The two full joint
+# tables this used to print came to 3580 characters on a 23-bone rig — three
+# more bones and a working run would have reported "no report from Blender".
+ref, ref_height, ref_error = proportions(P["reference"])
+cand, cand_height, cand_error = proportions(P["candidate"])
+out = {"ok": bool(ref and cand),
        "reference_height": ref_height, "candidate_height": cand_height,
-       "reference_joints": ref_joints or {}, "candidate_joints": cand_joints or {}}
+       "reference_bones": ref or {}, "candidate_bones": cand or {}}
 if not out["ok"]:
-    out["error"] = "reference or candidate has no armature"
+    out["error"] = ref_error or cand_error or "reference or candidate has no armature"
 print("__MARK__" + json.dumps(out))
 '''.replace("__MARK__", _TDEV_MARK)
 
@@ -3866,26 +3976,32 @@ print("__MARK__" + json.dumps(out))
 def template_deviation(model: str | os.PathLike[str], *,
                        reference: Optional[str | os.PathLike[str]] = None,
                        timeout: int = 300) -> dict:
-    """How far a rigged character's joints sit from the shipped template's.
+    """How far a rigged character's proportions sit from the shipped template's.
 
     Every generated humanoid is meant to share ONE skeleton's proportions —
     that is the entire point of conditioning the plate on HUMANOID_SKELETON
     (see humanoid_template) rather than inventing a rig per character. This
-    is the check that claim actually holds: bone HEAD positions, matched by
-    NAME (both rigs use the same 23-name schema, so there is no
-    correspondence problem to solve — the harder Chamfer-distance matching
-    the rigging literature needs for unlabeled skeletons does not apply
-    here), compared in body-height-normalised space so two characters of
-    different heights are not penalised for that alone.
+    is the check that claim actually holds: bone LENGTHS, matched by NAME
+    (both rigs use the same 23-name schema, so there is no correspondence
+    problem to solve — the harder Chamfer-distance matching the rigging
+    literature needs for unlabeled skeletons does not apply here), each as a
+    fraction of its own file's body height so two characters of different
+    heights are not penalised for that alone.
+
+    LENGTHS RATHER THAN JOINT POSITIONS because the two skeletons are never
+    posed alike — see the script's own note. Positions reported the A-pose
+    this pipeline rigs in as a fault against the T-pose template, which
+    failed every correctly-rigged character it was shown.
 
     NOT a weight comparison. RigNet-style weight-L1 needs the reference and
     the candidate to share mesh topology — vertex 4000 on one is vertex 4000
     on the other — which is never true here: the template skeleton and a
-    generated character are different meshes entirely. Only joint position
-    is comparable across them.
+    generated character are different meshes entirely. Only the skeleton is
+    comparable across them.
 
-    Returns {ok, reference_height, candidate_height, reference_joints,
-    candidate_joints}. Judge with template_deviation_verdict.
+    Returns {ok, reference_height, candidate_height, reference_bones,
+    candidate_bones}, each bone mapping to [length_fraction, parent_name].
+    Judge with template_deviation_verdict.
     """
     src = Path(model)
     if not src.is_file():
@@ -3893,7 +4009,11 @@ def template_deviation(model: str | os.PathLike[str], *,
     ref = Path(reference) if reference else HUMANOID_SKELETON
     if not ref.is_file():
         return {"ok": False, "error": f"no reference skeleton at {ref}"}
-    payload = {"model": str(src), "reference": str(ref).replace("\\", "/"),
+    # No "model" key: the script reads only reference/candidate, and the dead
+    # third copy was also the one path that skipped the separator normalisation
+    # the other two get — a backslash in a Windows path is an escape once it is
+    # inside the script's JSON payload.
+    payload = {"reference": str(ref).replace("\\", "/"),
                "candidate": str(src).replace("\\", "/")}
     script = _TDEV_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
     result = run_script(script, timeout=timeout, kit=False, record=False)
@@ -3908,25 +4028,49 @@ def template_deviation(model: str | os.PathLike[str], *,
 def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> dict:
     """The judgement, kept OUT of the Blender script — same split as flex_verdict.
 
-    max_deviation is a fraction of body height. 0.08 mirrors the 6 cm-on-a-1.8m
-    -figure incident already documented against humanoid_template — roughly
-    the same tolerance band, reused rather than re-derived.
+    max_deviation is how far ONE bone's length may differ from the template's,
+    as a fraction of body height. 0.08 carries over the tolerance band of the
+    6 cm-on-a-1.8m-figure incident documented against humanoid_template, but
+    note it is applied to a different quantity than it was when this compared
+    joint positions — it is a gross-error line (a limb collapsed to nothing, or
+    stretched across the body), not a proportional-fidelity one, and it has not
+    been validated against a corpus of known-good characters. Fitting is MEANT
+    to adapt the template to each body; only a length that no fit would produce
+    should trip this.
     """
-    ref = report.get("reference_joints") or {}
-    cand = report.get("candidate_joints") or {}
+    ref = report.get("reference_bones") or {}
+    cand = report.get("candidate_bones") or {}
     shared = sorted(set(ref) & set(cand))
-    issues: list[dict] = []
+    issues = _unmeasured(report, shared,
+                         "the two skeletons share no bone name — a candidate "
+                         "on a different naming scheme (mixamorig:Hips and "
+                         "friends) is not one this can compare, and zero bones "
+                         "checked is not zero bones wrong")
+    if issues:
+        return {"passed": False, "issues": issues, "checked": 0,
+                "deviations": {}, "threshold": max_deviation}
     deviations = {}
     for name in shared:
-        rx, ry, rz = ref[name]
-        cx, cy, cz = cand[name]
-        dist = ((rx - cx) ** 2 + (ry - cy) ** 2 + (rz - cz) ** 2) ** 0.5
-        deviations[name] = round(dist, 4)
-        if dist > max_deviation:
-            issues.append({"bone": name, "kind": "displaced", "value": round(dist, 4),
-                           "note": f"{name} sits {dist:.3f} body-heights from "
-                                   "where the template puts it — a fit that "
-                                   "landed it off the character's own anatomy"})
+        ref_len, ref_parent = ref[name][0], ref[name][1]
+        cand_len, cand_parent = cand[name][0], cand[name][1]
+        diff = abs(ref_len - cand_len)
+        deviations[name] = round(diff, 4)
+        if diff > max_deviation:
+            issues.append({"bone": name, "kind": "proportion",
+                           "value": round(diff, 4),
+                           "reference": ref_len, "candidate": cand_len,
+                           "note": f"{name} is {cand_len:.3f} body-heights long "
+                                   f"where the template makes it {ref_len:.3f} "
+                                   "— a fit that mis-solved this limb rather "
+                                   "than scaling it to the character"})
+        if ref_parent != cand_parent:
+            issues.append({"bone": name, "kind": "hierarchy",
+                           "reference": ref_parent, "candidate": cand_parent,
+                           "note": f"{name} hangs off "
+                                   f"{cand_parent or '(root)'} here and off "
+                                   f"{ref_parent or '(root)'} in the template "
+                                   "— same names, different chain, so nothing "
+                                   "retargeted onto this rig will land right"})
     return {"passed": not issues, "issues": issues, "checked": len(shared),
             "deviations": deviations, "threshold": max_deviation}
 
@@ -4162,14 +4306,34 @@ def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
     nearly vanishing from this camera or geometry ballooning past anything a
     single joint's rotation should produce.
     """
-    issues: list[dict] = []
+    measured = [p for p in (report.get("poses") or [])
+                if not p.get("skipped") and p.get("area_ratio") is not None]
+    issues = _unmeasured(report, measured,
+                         "every pose in the sweep was skipped — the bones it "
+                         "rotates are not on this armature, so no silhouette "
+                         "was ever compared against rest")
+    if issues:
+        return {"passed": False, "issues": issues, "checked": 0,
+                "thresholds": {"min_ratio": min_ratio, "max_ratio": max_ratio}}
+
+    # INERTNESS, THE SAME CLAUSE flex_verdict NEEDED. A mesh no bone drives
+    # projects to the identical outline in every pose, so each ratio comes back
+    # at exactly 1.0 and the sanity bounds — which only fire far from 1.0 —
+    # report a perfect sweep. Measured on this file's own unbound.glb fixture:
+    # six poses, area_ratio 1.0 to the digit, passed.
+    if all(abs(p["area_ratio"] - 1.0) < 1e-6 for p in measured):
+        return {"passed": False, "checked": len(measured),
+                "issues": [{"pose": "*", "kind": "inert",
+                            "value": 1.0,
+                            "note": "every pose projects the identical outline "
+                                    "as rest — nothing in this sweep moved, so "
+                                    "the mesh is not bound to the skeleton "
+                                    "posing it and every ratio here is vacuous"}],
+                "thresholds": {"min_ratio": min_ratio, "max_ratio": max_ratio}}
+
     checked = 0
-    for pose in report.get("poses") or []:
-        if pose.get("skipped"):
-            continue
-        ratio = pose.get("area_ratio")
-        if ratio is None:
-            continue
+    for pose in measured:
+        ratio = pose["area_ratio"]
         checked += 1
         label = pose.get("label", "?")
         if ratio < min_ratio:
