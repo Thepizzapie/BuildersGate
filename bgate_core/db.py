@@ -808,6 +808,45 @@ _MIGRATIONS: list = [
     ALTER TABLE work_item ADD COLUMN closed_by TEXT NOT NULL DEFAULT '';
     ALTER TABLE work_item ADD COLUMN gate_skip INTEGER NOT NULL DEFAULT 0;
     """,
+    # 0018 — pairwise art-tournament matches.
+    #
+    # art_qa_verdict answers "is this candidate on-model against its
+    # reference" — a drift check, not a quality judgement, and the project's
+    # own research (docs/visual-taste-research.md) found the VLM-as-judge
+    # literature unusually consistent on one point: judges asked for a
+    # pairwise "which is better" agree with human raters far better than
+    # judges asked for an absolute 1-10 score, which they get wrong even
+    # when the ranking they'd imply is right. So this does not add a score
+    # column to artifact_revision — it adds a MATCH log, one row per
+    # head-to-head decision, and a rating is derived from the log rather
+    # than stored, the same split flex_verdict uses for rig thresholds:
+    # the match outcome is a fact, Elo over it is a policy a caller can
+    # recompute without re-judging anything.
+    #
+    # shown_first is recorded, not just randomised at dispatch time, because
+    # position bias is a documented failure mode of this exact judging
+    # pattern (MT-Bench, MLLM-as-Judge) — keeping which side a reviewer saw
+    # first is what would let a later audit check whether THIS project's
+    # reviewer sessions carry that bias too, rather than assuming the
+    # literature's finding and never checking it against real verdicts.
+    """
+    CREATE TABLE art_match (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        logical_name    TEXT NOT NULL,
+        candidate_a_id  INTEGER NOT NULL,
+        candidate_b_id  INTEGER NOT NULL,
+        shown_first     TEXT NOT NULL DEFAULT 'a'
+                            CHECK (shown_first IN ('a','b')),
+        winner_id       INTEGER,
+        reasons         TEXT NOT NULL DEFAULT '',
+        reviewer        TEXT NOT NULL DEFAULT '',
+        tournament_ref  TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        decided_at      TEXT
+    );
+    CREATE INDEX idx_art_match_logical ON art_match(logical_name, id DESC);
+    CREATE INDEX idx_art_match_tournament ON art_match(tournament_ref);
+    """,
 ]
 
 

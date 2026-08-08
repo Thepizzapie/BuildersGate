@@ -303,6 +303,20 @@ SETTINGS: tuple[Setting, ...] = (
              "reads refs, holds locks, checks consistency and registers what it "
              "made; only the generation call changes. On a runner with no image "
              "tool of its own this falls back to `bgate` rather than failing."),
+    Setting(
+        key="art.auto_approve", group="Art", kind=BOOL, default=False,
+        store=("registry", "art.auto_approve"),
+        env="BGATE_ART_AUTO_APPROVE",
+        help="Let an agent promote its own generated artifact to canon, instead "
+             "of every candidate waiting on a human approve/reject. OFF by "
+             "default, and the default is the considered position: approval is "
+             "the one decision in this pipeline a model may not make, and the "
+             "art-QA router exists precisely so the art seat cannot approve its "
+             "own drift. Turn it on when the review queue is the bottleneck and "
+             "you accept that unreviewed generations reach the build — a "
+             "turnaround at four angles per asset registers four candidates, "
+             "and that volume is usually the real complaint. Rejection stays "
+             "available to agents either way; this only unblocks approval."),
 
     # -- Follow-up ----------------------------------------------------------
     Setting(

@@ -2984,6 +2984,7 @@ else:
     else:
         arm.name = PAY["armature_name"]
         out["bones"] = len(arm.data.bones)
+        out["bone_names"] = [b.name for b in arm.data.bones]
         if bpy.context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         attempts = []
@@ -3133,6 +3134,8 @@ def rig(model: str | os.PathLike[str], out_path: str | os.PathLike[str], *,
                 "traceback": (result.get("traceback") or "")[-800:]}
     report["out_path"] = str(out_path)
     report["seconds"] = result.get("seconds")
+    if report.get("ok") and kind == "humanoid":
+        report["coverage"] = humanoid_coverage_verdict(report.get("bone_names"))
     return report
 
 
@@ -3577,6 +3580,140 @@ def flex_verdict(report: dict, *, volume_tolerance: float = 0.18,
                            "intersect": intersect_tolerance}}
 
 
+_WEIGHTS_MARK = "BGATE_WEIGHTS:"
+
+_WEIGHTS_SCRIPT = '''
+import bpy, json
+import bmesh
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def islands(bm, indices):
+    """Connected components of a vertex-index subset, via mesh EDGE adjacency.
+
+    Edges, not spatial proximity: two vertices can sit a millimetre apart
+    across a seam and share no edge, which is exactly the case a weight
+    painted right up to a seam should NOT be flagged for.
+    """
+    remaining = set(indices)
+    out = []
+    while remaining:
+        start = next(iter(remaining))
+        seen = {start}
+        remaining.discard(start)
+        stack = [start]
+        while stack:
+            i = stack.pop()
+            for e in bm.verts[i].link_edges:
+                j = e.other_vert(bm.verts[i]).index
+                if j in remaining:
+                    remaining.discard(j)
+                    seen.add(j)
+                    stack.append(j)
+        out.append(seen)
+    return out
+
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=P["model"])
+
+arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "model": P["model"]}
+
+if not arms or not meshes:
+    out["ok"] = False
+    out["error"] = "no armature/mesh pair in %s" % P["model"]
+    print("__MARK__" + json.dumps(out))
+else:
+    arm = arms[0]
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    bones = {b.name for b in arm.data.bones if b.use_deform}
+    bm = bmesh.new()
+    bm.from_mesh(mesh.data)
+    bm.verts.ensure_lookup_table()
+
+    groups = {g.index: g.name for g in mesh.vertex_groups}
+    threshold = P["threshold"]
+    by_bone = {}
+    for v in mesh.data.vertices:
+        for g in v.groups:
+            name = groups.get(g.group, "")
+            if name in bones and g.weight >= threshold:
+                by_bone.setdefault(name, []).append(v.index)
+
+    report = {}
+    for name, indices in by_bone.items():
+        comps = islands(bm, indices)
+        sizes = sorted((len(c) for c in comps), reverse=True)
+        report[name] = {"vertex_count": len(indices), "islands": len(comps),
+                        "sizes": sizes[:8],
+                        "largest_fraction": round(sizes[0] / len(indices), 4)
+                                            if indices else 1.0}
+    bm.free()
+    out["bones"] = report
+    out["deform_bones"] = len(bones)
+    print("__MARK__" + json.dumps(out))
+'''.replace("__MARK__", _WEIGHTS_MARK)
+
+
+def weight_islands(model: str | os.PathLike[str], *, threshold: float = 0.02,
+                   timeout: int = 300) -> dict:
+    """Per deform bone, how many disconnected regions its weight paint covers.
+
+    A bone that legitimately drives one contiguous patch of the mesh reports
+    one island. More than one means paint landed on a second, unconnected
+    patch too — a hand weighted partly to Spine because a brush stroke
+    crossed empty space in the viewport rather than the mesh surface.
+
+    Returns {ok, bones: {name: {vertex_count, islands, sizes, largest_fraction}}}.
+    Measurement only — judge the result with weight_islands_verdict.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    payload = {"model": str(src).replace("\\", "/"), "threshold": float(threshold)}
+    script = _WEIGHTS_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False)
+    report = _marked(result, _WEIGHTS_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+def weight_islands_verdict(report: dict, *, min_largest_fraction: float = 0.9,
+                           min_bleed_vertices: int = 3) -> dict:
+    """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+
+    min_bleed_vertices filters noise: a single stray vertex one brush stroke
+    missed is a cleanup nit, not the failure this exists to catch.
+    """
+    issues: list[dict] = []
+    for name, info in (report.get("bones") or {}).items():
+        sizes = info.get("sizes") or []
+        if len(sizes) < 2:
+            continue
+        bleed = sum(sizes[1:])
+        if (info.get("largest_fraction", 1.0) < min_largest_fraction
+                and bleed >= min_bleed_vertices):
+            issues.append({"bone": name, "kind": "bleed",
+                           "islands": info.get("islands"),
+                           "bleed_vertices": bleed,
+                           "largest_fraction": info.get("largest_fraction"),
+                           "note": f"{name}'s weight paint splits into "
+                                   f"{info.get('islands')} disconnected regions "
+                                   f"on the mesh surface — {bleed} vertices sit "
+                                   "off the bone's own patch"})
+    return {"passed": not issues, "issues": issues,
+            "checked": len(report.get("bones") or {}),
+            "thresholds": {"min_largest_fraction": min_largest_fraction,
+                           "min_bleed_vertices": min_bleed_vertices}}
+
+
 # ---------------------------------------------------------------------------
 # The shipped humanoid template
 # ---------------------------------------------------------------------------
@@ -3609,6 +3746,37 @@ HUMANOID_BONES = (
     "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "LeftToes",
     "RightUpperLeg", "RightLowerLeg", "RightFoot", "RightToes",
 )
+
+# THE SAME 15 NAMES godot.py's retarget_check calls `essential` (see
+# godot.py's _RETARGET_GD, "what retargeting actually needs is the trunk and
+# the four limbs"). Kept in sync by hand, not by import — one lives in
+# embedded GDScript, the other in Python — so a change to either needs its
+# twin updated too. This subset is checked HERE, in Blender, right after
+# rig(), purely as a fast pre-check: a misnamed or missing essential bone is
+# then visible before the Godot round-trip retarget_check requires, not
+# instead of it. Coverage is the only question Blender can answer for
+# itself — HIERARCHY (does rotating a shoulder move the hand) and BINDING
+# (does a clip drive it) need Skeleton3D's own transform propagation and
+# cannot be faked here, which is why retarget_check remains the authority on
+# those two.
+ESSENTIAL_HUMANOID_BONES = (
+    "Hips", "Spine", "Head", "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand", "LeftUpperLeg",
+    "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot",
+)
+
+
+def humanoid_coverage_verdict(bone_names, essential=ESSENTIAL_HUMANOID_BONES) -> dict:
+    """Are the bones a humanoid clip needs present, under the exact name.
+
+    Exact-name, not fuzzy: a BoneMap-free retarget only works because the
+    profile matches by string, so "LeftUpperArm_1" or "Left_Upper_Arm" is a
+    miss even though a human reads it as the same bone.
+    """
+    present = set(bone_names or [])
+    missing = [b for b in essential if b not in present]
+    return {"passed": not missing, "missing": missing,
+            "checked": len(essential), "found": len(essential) - len(missing)}
 
 # What a plate has to say to come back in the template's stance. Handed to the
 # caller rather than hidden, because the art seat writes the rest of the prompt.
@@ -3648,6 +3816,376 @@ def humanoid_template() -> dict:
             "godot_deliver_asset(project, rigged) — .tscn, verified in-engine",
         ],
     }
+
+
+_TDEV_MARK = "BGATE_TDEV:"
+
+_TDEV_SCRIPT = '''
+import bpy, json
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def joints(path):
+    """Every bone's HEAD position, in that file's own body-height fraction.
+
+    Height-normalised, not world-space: a candidate rigged at a different
+    height than the reference template is not itself a deviation, and
+    comparing raw metres would report one on every character.
+    """
+    for o in list(bpy.context.scene.objects):
+        bpy.data.objects.remove(o, do_unlink=True)
+    bpy.ops.import_scene.gltf(filepath=path)
+    arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    if not arms:
+        return None, 0.0
+    arm = arms[0]
+    height = 1.0
+    if meshes:
+        mesh = max(meshes, key=lambda o: len(o.data.polygons))
+        height = max(mesh.dimensions[2], 1e-6)
+    out = {}
+    for b in arm.data.bones:
+        head = arm.matrix_world @ b.head_local
+        out[b.name] = [head.x / height, head.y / height, head.z / height]
+    return out, height
+
+
+ref_joints, ref_height = joints(P["reference"])
+cand_joints, cand_height = joints(P["candidate"])
+out = {"ok": bool(ref_joints and cand_joints),
+       "reference_height": ref_height, "candidate_height": cand_height,
+       "reference_joints": ref_joints or {}, "candidate_joints": cand_joints or {}}
+if not out["ok"]:
+    out["error"] = "reference or candidate has no armature"
+print("__MARK__" + json.dumps(out))
+'''.replace("__MARK__", _TDEV_MARK)
+
+
+def template_deviation(model: str | os.PathLike[str], *,
+                       reference: Optional[str | os.PathLike[str]] = None,
+                       timeout: int = 300) -> dict:
+    """How far a rigged character's joints sit from the shipped template's.
+
+    Every generated humanoid is meant to share ONE skeleton's proportions —
+    that is the entire point of conditioning the plate on HUMANOID_SKELETON
+    (see humanoid_template) rather than inventing a rig per character. This
+    is the check that claim actually holds: bone HEAD positions, matched by
+    NAME (both rigs use the same 23-name schema, so there is no
+    correspondence problem to solve — the harder Chamfer-distance matching
+    the rigging literature needs for unlabeled skeletons does not apply
+    here), compared in body-height-normalised space so two characters of
+    different heights are not penalised for that alone.
+
+    NOT a weight comparison. RigNet-style weight-L1 needs the reference and
+    the candidate to share mesh topology — vertex 4000 on one is vertex 4000
+    on the other — which is never true here: the template skeleton and a
+    generated character are different meshes entirely. Only joint position
+    is comparable across them.
+
+    Returns {ok, reference_height, candidate_height, reference_joints,
+    candidate_joints}. Judge with template_deviation_verdict.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    ref = Path(reference) if reference else HUMANOID_SKELETON
+    if not ref.is_file():
+        return {"ok": False, "error": f"no reference skeleton at {ref}"}
+    payload = {"model": str(src), "reference": str(ref).replace("\\", "/"),
+               "candidate": str(src).replace("\\", "/")}
+    script = _TDEV_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False)
+    report = _marked(result, _TDEV_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+def template_deviation_verdict(report: dict, *, max_deviation: float = 0.08) -> dict:
+    """The judgement, kept OUT of the Blender script — same split as flex_verdict.
+
+    max_deviation is a fraction of body height. 0.08 mirrors the 6 cm-on-a-1.8m
+    -figure incident already documented against humanoid_template — roughly
+    the same tolerance band, reused rather than re-derived.
+    """
+    ref = report.get("reference_joints") or {}
+    cand = report.get("candidate_joints") or {}
+    shared = sorted(set(ref) & set(cand))
+    issues: list[dict] = []
+    deviations = {}
+    for name in shared:
+        rx, ry, rz = ref[name]
+        cx, cy, cz = cand[name]
+        dist = ((rx - cx) ** 2 + (ry - cy) ** 2 + (rz - cz) ** 2) ** 0.5
+        deviations[name] = round(dist, 4)
+        if dist > max_deviation:
+            issues.append({"bone": name, "kind": "displaced", "value": round(dist, 4),
+                           "note": f"{name} sits {dist:.3f} body-heights from "
+                                   "where the template puts it — a fit that "
+                                   "landed it off the character's own anatomy"})
+    return {"passed": not issues, "issues": issues, "checked": len(shared),
+            "deviations": deviations, "threshold": max_deviation}
+
+
+# ---------------------------------------------------------------------------
+# Silhouette across the flex pose sweep — EXPERIMENTAL
+# ---------------------------------------------------------------------------
+# WHY THIS IS A DIFFERENT QUESTION FROM flex(). Volume and pinch are 3D
+# measures against the mesh itself; neither can see a failure that only shows
+# up from a CAMERA'S point of view — a limb that folds directly behind the
+# torso and vanishes from the silhouette while its 3D volume stays intact, or
+# a shoulder that balloons outward on screen without losing any measured
+# volume. This projects the SAME pose sweep flex() already runs through the
+# SAME fixed, rest-fitted camera (never refit per pose — a refit-per-pose
+# camera would reframe a collapsed limb back to looking normal-sized, which
+# is precisely the failure flex()'s own docstring already warns about for its
+# own camera) and measures the projected 2D convex-hull area.
+#
+# EXPERIMENTAL, and said so on purpose: no production rig-QA tool automates a
+# pose-sweep silhouette check anywhere this project's research found — studios
+# render sweeps and a human watches them. "Preserved" here means SANITY
+# BOUNDS, not "unchanged": a pose is EXPECTED to change how a character reads
+# on screen, so the verdict only flags collapse (the character nearly
+# vanished from this camera) or explosion (geometry blew out far past what a
+# joint rotation should produce), not any change at all.
+#
+# _hull_area is a real, standalone, unit-tested function rather than logic
+# only inside the embedded bpy script, because this project cannot execute
+# bpy code in every environment it develops in — the algorithm is validated
+# here in plain Python (squares, triangles, degenerate/collinear inputs) and
+# then copied verbatim into the script string below, so a bug in the geometry
+# math would already have shown up in a test that runs anywhere.
+def _hull_area(points: list[tuple[float, float]]) -> float:
+    """2D convex hull area via the shoelace formula on Andrew's monotone chain.
+
+    Degenerate inputs (fewer than 3 distinct points, or all collinear) report
+    0.0 rather than raising — a limb that foreshortens to a line from this
+    camera IS the pathology this exists to catch, not an error case to hide.
+    """
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return 0.0
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper[:-1]
+    if len(hull) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(hull)):
+        x1, y1 = hull[i]
+        x2, y2 = hull[(i + 1) % len(hull)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
+
+
+_SILHOUETTE_MARK = "BGATE_SIL:"
+
+# The hull_area()/cross() pair below is _hull_area ABOVE, copied verbatim —
+# see the section note for why this is a deliberate duplication rather than a
+# shared import (run_script's headless scripts are self-contained source
+# text, not importable modules).
+_SILHOUETTE_SCRIPT = '''
+import bpy, json, math
+from mathutils import Vector
+from bpy_extras.object_utils import world_to_camera_view
+
+P = json.loads(r"""__PAYLOAD__""")
+
+
+def hull_area(points):
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return 0.0
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    hull = lower[:-1] + upper[:-1]
+    if len(hull) < 3:
+        return 0.0
+    area = 0.0
+    for i in range(len(hull)):
+        x1, y1 = hull[i]
+        x2, y2 = hull[(i + 1) % len(hull)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
+
+
+def projected(mesh_obj, dg, cam, scene):
+    ev = mesh_obj.evaluated_get(dg)
+    me = ev.to_mesh()
+    mw = ev.matrix_world
+    pts = []
+    for v in me.vertices:
+        ndc = world_to_camera_view(scene, cam, mw @ v.co)
+        if ndc.z > 0:  # only what is actually in front of the camera
+            pts.append((ndc.x, ndc.y))
+    ev.to_mesh_clear()
+    return pts
+
+
+def rest_pose(arm):
+    for pb in arm.pose.bones:
+        pb.rotation_mode = "XYZ"
+        pb.rotation_euler = (0.0, 0.0, 0.0)
+        pb.location = (0.0, 0.0, 0.0)
+        pb.scale = (1.0, 1.0, 1.0)
+
+
+for o in list(bpy.context.scene.objects):
+    bpy.data.objects.remove(o, do_unlink=True)
+bpy.ops.import_scene.gltf(filepath=P["model"])
+
+arms = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"]
+meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+out = {"ok": True, "model": P["model"]}
+
+if not arms or not meshes:
+    out["ok"] = False
+    out["error"] = "no armature/mesh pair in %s" % P["model"]
+    print("__MARK__" + json.dumps(out))
+else:
+    arm = arms[0]
+    mesh = max(meshes, key=lambda o: len(o.data.polygons))
+    dg = bpy.context.evaluated_depsgraph_get()
+    scene = bpy.context.scene
+
+    # SAME camera fit flex() uses: fixed once off the REST silhouette, never
+    # refit per pose.
+    corners = [mesh.matrix_world @ Vector(c) for c in mesh.bound_box]
+    centre = sum(corners, Vector()) / 8.0
+    reach = max((c - centre).length for c in corners) or 1.0
+    cam_data = bpy.data.cameras.new("SilCam")
+    cam_data.sensor_fit = "HORIZONTAL"
+    cam_data.angle = math.radians(45.0)
+    cam = bpy.data.objects.new("SilCam", cam_data)
+    scene.collection.objects.link(cam)
+    cam.rotation_euler = (math.radians(90), 0, 0)
+    cam.location = (centre.x, centre.y - reach * 2.6, centre.z)
+    scene.camera = cam
+    bpy.context.view_layer.update()
+    dg.update()
+
+    rest_pose(arm)
+    bpy.context.view_layer.update()
+    dg.update()
+    rest_pts = projected(mesh, dg, cam, scene)
+    rest_area = hull_area(rest_pts)
+    out["rest_area"] = rest_area
+    out["rest_points"] = len(rest_pts)
+
+    poses = []
+    for label, bone, axis, degrees in P["poses"]:
+        pb = arm.pose.bones.get(bone)
+        record = {"label": label, "bone": bone}
+        if pb is None:
+            record["skipped"] = "no bone %r on this armature" % bone
+            poses.append(record)
+            continue
+        rest_pose(arm)
+        pb.rotation_mode = "XYZ"
+        angle = math.radians(degrees)
+        pb.rotation_euler = {"X": (angle, 0, 0), "Y": (0, angle, 0),
+                             "Z": (0, 0, angle)}[axis]
+        bpy.context.view_layer.update()
+        dg.update()
+        pts = projected(mesh, dg, cam, scene)
+        area = hull_area(pts)
+        record["area"] = area
+        record["points"] = len(pts)
+        record["area_ratio"] = (round(area / rest_area, 4)
+                                if rest_area > 1e-9 else None)
+        poses.append(record)
+
+    rest_pose(arm)
+    out["poses"] = poses
+    print("__MARK__" + json.dumps(out, default=str))
+'''.replace("__MARK__", _SILHOUETTE_MARK)
+
+
+def silhouette(model: str | os.PathLike[str], *, poses: Optional[list] = None,
+               timeout: int = 600) -> dict:
+    """The character's projected 2D outline, from flex's own fixed camera, at
+    rest and after each pose in the walk-cycle sweep. See the section note
+    above this function for what this catches that flex() cannot, and why it
+    is marked experimental.
+
+    Returns {ok, rest_area, rest_points, poses:[{label, area, points,
+    area_ratio}]}. Judge with silhouette_verdict — this call only measures.
+    """
+    src = Path(model)
+    if not src.is_file():
+        return {"ok": False, "error": f"no model at {src}"}
+    chosen = [list(p) for p in (poses or FLEX_POSES)]
+    payload = {"model": str(src).replace("\\", "/"), "poses": chosen}
+    script = _SILHOUETTE_SCRIPT.replace("__PAYLOAD__", json.dumps(payload))
+    result = run_script(script, timeout=timeout, kit=False, record=False)
+    report = _marked(result, _SILHOUETTE_MARK)
+    if not report:
+        return {"ok": False, "error": result.get("error") or "no report from Blender",
+                "traceback": (result.get("traceback") or "")[-800:]}
+    report["seconds"] = result.get("seconds")
+    return report
+
+
+def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
+                       max_ratio: float = 4.0) -> dict:
+    """SANITY BOUNDS ONLY — see silhouette()'s section note for why
+    'preserved' does not mean 'unchanged'. A ratio this far from 1.0 in
+    either direction is not an ordinary pose change; it is the character
+    nearly vanishing from this camera or geometry ballooning past anything a
+    single joint's rotation should produce.
+    """
+    issues: list[dict] = []
+    checked = 0
+    for pose in report.get("poses") or []:
+        if pose.get("skipped"):
+            continue
+        ratio = pose.get("area_ratio")
+        if ratio is None:
+            continue
+        checked += 1
+        label = pose.get("label", "?")
+        if ratio < min_ratio:
+            issues.append({"pose": label, "kind": "collapsed", "value": ratio,
+                           "note": f"projected silhouette shrank to "
+                                   f"{ratio * 100:.0f}% of rest — the "
+                                   "character nearly vanished from this "
+                                   "camera in this pose"})
+        elif ratio > max_ratio:
+            issues.append({"pose": label, "kind": "exploded", "value": ratio,
+                           "note": f"projected silhouette grew to "
+                                   f"{ratio * 100:.0f}% of rest — geometry "
+                                   "is blowing out far past what this "
+                                   "joint's rotation should produce"})
+    return {"passed": not issues, "issues": issues, "checked": checked,
+            "thresholds": {"min_ratio": min_ratio, "max_ratio": max_ratio}}
 
 
 def _plate_provider(name: str):
