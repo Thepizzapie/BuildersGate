@@ -9,7 +9,53 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.34] - 2026-08-08
+
+Twenty-two commits, and one sentence covers most of them: **a check that grades
+its own homework is not a check.** The rig gates measured whether weights had
+been WRITTEN rather than whether the elbow survives being bent; the art gates
+reported the request instead of the artifact; the approval gate asked the human
+for decisions they had switched off; and the harness advertised constraints an
+agent could turn off from inside. Each was green, and each was green about the
+wrong question.
+
 ### Added
+
+- **`blender_flex` — the deformation gate.** `blender_rig` proves weights were
+  written by counting the unweighted, which is silent about whether the joint
+  works. This poses each joint one at a time and measures volume loss, per-bone
+  cross-section (the candy-wrapper detector) and the INCREASE in
+  self-intersecting faces, then renders every pose. It refuses an inert rig — its
+  own first real run passed a model with no armature modifier: six green poses,
+  nothing moving.
+
+- **`blender_rig` audits before it binds.** Shell count and mirror distance are
+  measured BEFORE the bind because both predict how it will go: a real generated
+  mesh arrived as 940 disconnected shells, and bone heat cannot cross the gaps.
+  Weights are then averaged across the body's own centre plane, but only when the
+  audit says the two sides actually match.
+
+- **`godot_retarget_check` — the engine's own verdict.** A `.glb` can carry 23
+  correctly named bones in a FLAT hierarchy, pass every other check in this
+  product, and be animatable by nothing except a clip authored for it alone. This
+  rotates a shoulder, watches the hand, drives a profile-authored clip and writes
+  the BoneMap.
+
+- **Rig and animation quality metrics.** Weight-island/bleed detection,
+  humanoid bone-name coverage as a Blender-side pre-check, reference-skeleton
+  joint-deviation, silhouette-sweep scoring, and animation curve quality (arcs,
+  easing, jitter, foot skate) including an anticipation/follow-through detector
+  via LoG correlation. Research notes on what "taste" can and cannot be measured
+  as are in `docs/visual-taste-research.md`.
+
+- **Pairwise art tournament judging.** The literature on VLM-as-judge is
+  unusually consistent that a pairwise "which is better" tracks human raters far
+  better than an absolute 1–10 score, which judges get wrong even when the
+  ranking they imply is right. So a match log is stored and a rating is DERIVED
+  from it, rather than a score column being written. `shown_first` is recorded
+  because position bias is a documented failure of this exact pattern, and
+  keeping it is what lets a later audit check for it in real verdicts instead of
+  assuming the finding transfers.
 
 - **Nine scene tools on the MCP surface.** `scene_outline`, `scene_wire`,
   `scene_unwire`, `scene_node_add`, `scene_set_property`, `scene_swap_resource`,
@@ -98,6 +144,53 @@ repository at first publication. There is no earlier release history to record.
   `item.stopped` event.
 
 ### Fixed
+
+- **An agent could switch off the reviewer that judges it, and did, four times.**
+  From a stress test of a real project — 19 items, 5 seats, one overnight run.
+  `gate.mode` was found back at `none` with no human action; three items reached
+  done with nothing verified, including a rigged character whose bind weights
+  nobody checked. `budget.enforced` was found off, which turns every ceiling into
+  a report, and `dispatch.max_concurrent` went from the 4 a human set to 9 and
+  then 11. `human_only` is now declared per setting in the registry and enforced
+  in `settings.set` — not per route, because the hole was that one write path did
+  not know it was a policy boundary. Machine detection reads `BGATE_SEAT` and
+  `BGATE_WORK_ITEM` as well as the actor prefix: the prefix is one stamp in one
+  spawn path, and a gate a forgotten line disables is not a gate.
+
+- **Ceilings terminated after the spend instead of limiting it.** Seven of nine
+  items breached, worst case 3.3x — and the kill discarded the work: one item was
+  killed at $7.17 having already written every file it was asked for, and a human
+  had to inspect the filesystem to find out the run had succeeded. A wrap-up
+  message now goes out at 80% telling the agent to stop starting things and
+  report a partial result, and `queue.reopen` carries the harness's own
+  observed-writes list into the next brief so a reopened item continues instead
+  of paying twice.
+
+- **The QA gate reviewed hand-closed items**, spawning and paying for a reviewer
+  against a result note describing work already superseded. `work_item` records
+  `closed_by` and `gate_skip`. QA coverage also stopped being a hardcoded tuple —
+  `qa.gated_seats`, per project, instead of editing harness source and changing
+  it for every project on the machine.
+
+- **Two rig detectors were red on 100% of valid input, and five verdicts were
+  green on input they had not looked at.** Both directions teach a reading agent
+  to ignore the result. `weight_islands` built adjacency on the raw glTF edge
+  graph, so it measured the vertex splits the exporter makes at UV and normal
+  seams rather than weight bleed — 940 authored vertices come back as 1559 and
+  every bone's weight set duly fell apart along them; `RightUpperLeg` read 14
+  islands where the welded graph shows 2. And `template_deviation` compared bone
+  HEAD POSITIONS, which are stance-dependent, against a T-posed template while
+  `rig()` defaults to an A-pose: it reported both hands 0.154 body-heights out
+  against a 0.08 threshold, perfectly mirrored, every non-arm bone at exactly
+  0.0 — the arm swing, not a fit fault. Lengths are compared now, and islands are
+  judged against the number of shells a bone touches rather than against 1,
+  because this pipeline joins characters out of primitives and a hip bone
+  legitimately spans three.
+
+- **`art.auto_approve` did not stop candidates queuing for review.** Gating
+  `review()` alone was not enough — agents REGISTER artifacts and never call
+  `review()`, so every registration landed as a candidate whatever the setting
+  said. The switch is applied at registration.
 
 - **The approval gate's `none` setting was not honoured, for approvals OR
   sign-offs, across every seat.** With the selector reading `NONE` — labelled *an
