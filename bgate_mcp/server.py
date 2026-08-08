@@ -878,8 +878,27 @@ def _imageto3d_summary() -> dict:
         from bgate_adapters import imageto3d as _i3d
     except Exception:
         return {"available": False, "reason": "adapter unavailable"}
+    # PASS THE ROOT, OR HOSTED BACKENDS LIE ABOUT THEIR KEYS.
+    #
+    # imageto3d.api_key() only loads the project's .env when it is given a root
+    # (`if root:`), so status() with no root reads a bare os.environ. On a
+    # machine whose keys live in the project .env — which is where the setup
+    # docs put them — every hosted backend then reports "<KEY> not set".
+    #
+    # Measured: a project with a working KREA_API_KEY had image_status report the
+    # krea leg AVAILABLE while blender_status reported krea BLOCKED for want of
+    # the same key, in the same session. image_status was right by accident — it
+    # calls _root() first, which loads the .env as a side effect. The 2D and 3D
+    # legs disagreeing about one key sent a user hunting for a key they already
+    # had, and hid a paid image-to-3D backend they were entitled to use.
     try:
-        full = _i3d.status()
+        root = _root()
+    except Exception:
+        # No project resolvable — a legitimate answer, not an error. Fall back to
+        # the bare environment, which is what this did for every call before.
+        root = None
+    try:
+        full = _i3d.status(root)
     except Exception as exc:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
     gpu = full.get("gpu") or {}

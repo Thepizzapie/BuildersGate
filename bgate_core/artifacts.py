@@ -83,6 +83,30 @@ def register(root: str | os.PathLike[str], logical_name: str,
         iterations.add_event(
             root, iteration_id, "asset_revision", "artifact", str(artifact_id),
             f"Created {name} r{revision}", {"path": rel, "producer": producer})
+
+    # AUTO-APPROVE AT REGISTRATION, when the project has asked for it.
+    #
+    # Gating `review()` alone was not enough and the reason is worth stating: an
+    # agent never CALLS review() — it registers, and a registration lands as a
+    # candidate. So a project with art.auto_approve on still queued an approval
+    # card for every render, which is the exact complaint the switch exists to
+    # answer. The wall was removed and nothing walked through it.
+    #
+    # Approving here rather than leaving it to a later sweep keeps the promise the
+    # setting makes: no card, and the live file IS this revision (review() calls
+    # _promote, which reinstalls the archived render over the stable path).
+    if _auto_approve(root):
+        try:
+            return review(root, artifact_id, "approved",
+                          note="auto-approved: art.auto_approve is on for this "
+                               "project, so no human gate was applied",
+                          actor="setting:art.auto_approve")
+        except Exception as exc:
+            # A failed auto-approval must not lose the registration — the
+            # revision row already exists and is the thing that matters.
+            activity.log(root, "artifact",
+                         f"auto-approve failed for {name} r{revision}: "
+                         f"{type(exc).__name__}: {exc}", ref=str(artifact_id))
     return get(root, artifact_id)
 
 
@@ -159,6 +183,23 @@ def _promote(root: str | os.PathLike[str], artifact: dict) -> dict:
             "from": str(archive), "detail": "installed at the live path"}
 
 
+def _auto_approve(root: str | os.PathLike[str]) -> bool:
+    """Is this project letting agents promote their own artifacts?
+
+    Reads ``art.auto_approve`` (default False). Imported inside the function
+    because ``settings`` is a higher layer than this module and a top-level
+    import would make the dependency circular.
+
+    FAILS CLOSED. A registry that cannot be read is not permission — it is an
+    unknown, and the safe reading of an unknown here is "a human still decides".
+    """
+    try:
+        from . import settings as _settings
+        return bool(_settings.get(root, "art.auto_approve"))
+    except Exception:
+        return False
+
+
 def review(root: str | os.PathLike[str], artifact_id: int, status: str,
            note: str = "", *, actor: Optional[str] = None) -> dict:
     """Approve/reject/integrate a candidate and preserve the decision as case law.
@@ -172,7 +213,8 @@ def review(root: str | os.PathLike[str], artifact_id: int, status: str,
     if status not in STATUSES[1:]:
         raise ValueError(f"review status must be one of {STATUSES[1:]}")
     who = actor if actor is not None else activity.current_actor()
-    if status in HUMAN_ONLY_STATUSES and not activity.is_human(who):
+    if (status in HUMAN_ONLY_STATUSES and not activity.is_human(who)
+            and not _auto_approve(root)):
         raise PermissionError(
             f"{who or 'an unidentified caller'} is an agent and may not set "
             f"status {status!r} — promoting a candidate to the build is a "
