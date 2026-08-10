@@ -123,7 +123,7 @@
         <div class="st-insp" id="st-insp"><div class="st-insp-empty">Select a task or agent.</div></div></div>`;
       const [q, ag] = await Promise.all([get("/api/queue"), get("/api/agents")]);
       const live = new Set((ag.agents || []).filter(a => a.state === "running").map(a => a.item_id));
-      const seatColors = { director: "var(--c-director)", narrative: "var(--c-narrative)", gameplay: "var(--c-gameplay)", tech: "var(--c-tech)", art: "var(--c-art)", audio: "var(--c-audio)", qa: "var(--c-qa)" };
+      const seatColors = { director: "var(--c-director)", narrative: "var(--c-narrative)", gameplay: "var(--c-gameplay)", tech: "var(--c-tech)", art: "var(--c-art)", audio: "var(--c-audio)", cinematic: "var(--c-cinematic)", qa: "var(--c-qa)" };
       const items = (q.items || []).filter(i => i.status !== "done").slice(0, 10);
       const seats = [...new Set(items.map(i => i.seat))];
       const nodes = [], edges = [];

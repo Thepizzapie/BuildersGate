@@ -52,6 +52,10 @@
     tech:      `<path d="M8.5 7.5 L4 12 L8.5 16.5"/><path d="M15.5 7.5 L20 12 L15.5 16.5"/><path class="e" d="M13.5 5 L10.5 19"/>`,
     art:       `<rect x="3.5" y="3.5" width="17" height="17" rx="1.5"/><path class="e" d="M3.5 16 L9 10.5 L14 15.5 L17.5 12 L20.5 15"/>`,
     audio:     `<path d="M4 10 V14 M8 7 V17 M20 10 V14"/><path class="e" d="M12 4 V20 M16 8 V16"/>`,
+    /* A clapperboard: the body, the hinged slate, and the play triangle as the
+       emphasis stroke. Reads at 16px, which the film-strip alternative (two
+       rails of tiny perforations) does not. */
+    cinematic: `<path d="M3.5 9.5 h17 v10 a1 1 0 0 1 -1 1 h-15 a1 1 0 0 1 -1 -1 z"/><path d="M3.5 9.5 L5 4.5 L20.5 6 L19 9.5 z M9 5 L7.5 9.5 M14 5.5 L12.5 9.5"/><path class="e" d="M10.5 12.5 L15 15 L10.5 17.5 z"/>`,
     qa:        `<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 L20.5 20.5"/><path class="e" d="M7.5 10.5 L9.75 12.75 L13.5 8"/>`,
 
     /* ---- workflow steps ---- */

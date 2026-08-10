@@ -47,12 +47,22 @@ us their rate (BGATE_KIE_USD_PER_CREDIT) gets exact ledger rows rather than
 estimates. Without it the result carries the credit count and says plainly that
 no dollar figure was recorded.
 
-LOCAL FILES CANNOT BE SENT. Every reference field kie documents is a URI, and
-the reference says nothing about base64 data URIs — unlike Krea, whose docs state
-outright that a data URI is accepted, which is why krea.data_uri exists. Every
-pinned anchor in this tool is a file on disk, so anchored generation through kie
-is NOT available, and this module refuses a local path with that sentence rather
-than encoding one on a guess and discovering at the 422 that it was wrong.
+LOCAL FILES ARE SENT BY UPLOADING THEM FIRST — A THIRD API FAMILY. Every
+reference field on a generation endpoint is a URI and none of them takes inline
+bytes, so a pinned anchor on disk cannot go straight into a request; this module
+used to stop there and say anchored generation through kie was unavailable. That
+was a true statement about /api/v1/jobs and a false one about kie, which serves a
+file-upload API from a DIFFERENT HOST (kieai.redpandaai.co) under the same Bearer
+token. :func:`upload_file` posts base64 to it and gets back an https URL the
+generation endpoints accept, and :func:`generate_video` now does that
+automatically for any local path handed to a frame or reference field.
+
+The uploaded copy DIES IN THREE DAYS (UPLOAD_TTL_DAYS), which is shorter than
+Suno's fourteen and short enough that no minted URL may ever be cached or stored
+as if it were an asset — every one is stamped with the day it stops working.
+Krea remains the better anchor for a STILL, where a data URI travels inline with
+no upload, no expiry and no copy left on someone else's disk; the upload path
+exists because video has no such alternative anywhere in this product.
 
 Everything is stdlib. No SDK, no new dependency.
 """
@@ -81,6 +91,43 @@ CREDIT_PATH = "/api/v1/chat/credit"
 # The Suno surface, which is a different API that happens to share the key.
 SUNO_CREATE = "/api/v1/generate"
 SUNO_RECORD = "/api/v1/generate/record-info"
+
+# THE UPLOAD SURFACE, AND IT IS ON A DIFFERENT HOST. Not api.kie.ai — kie serves
+# its file endpoints from kieai.redpandaai.co, which is why this is a full URL
+# and not a path appended to API_BASE like everything else here. It takes the
+# same Bearer token.
+#
+# WHAT THIS CHANGES, AND IT IS THE WHOLE REASON CINEMATICS ARE POSSIBLE. Every
+# reference field on a kie model is documented as a URI, and every pinned anchor
+# in this product is a file on disk, so this module's own docstring said flatly
+# that anchored generation through kie is not available. That was true of the
+# GENERATION endpoints and it was never true of kie as a whole: there is an
+# upload API, it takes base64, and it hands back an https URL the generation
+# endpoints accept. The limitation was one missing call, not a missing
+# capability.
+#
+# It matters far more for video than it ever did for images, because there is a
+# Krea to fall back to for an anchored still and there is nothing to fall back to
+# for an anchored SHOT. A cutscene whose character cannot be conditioned on the
+# approved character is a cutscene starring somebody else.
+UPLOAD_BASE64 = "https://kieai.redpandaai.co/api/file-base64-upload"
+
+# Three days, from kie's own file-upload reference. Shorter than Suno's fourteen
+# and short enough to matter: a first-frame URL minted for a shot is dead by the
+# time anyone re-runs that shot next week, so nothing may cache one. Callers get
+# an `expires_at` and re-upload rather than reuse.
+UPLOAD_TTL_DAYS = 3
+
+# Where uploads are filed in the account's own space. One directory for this
+# product so a user looking at kie's dashboard can tell what put them there.
+UPLOAD_DIR = "images/builders-gate"
+
+# What may be uploaded as a conditioning frame. Deliberately not "any file kie
+# would take": these are the types every model here documents for its image
+# fields, and a .bmp that uploads fine and 422s at generation costs a round trip
+# to discover.
+UPLOAD_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".webp": "image/webp"}
 
 ENV = "KIE_API_KEY"
 KEY_URL = "https://kie.ai/api-key"
@@ -604,26 +651,121 @@ def credit_balance(root: Any = None, *, timeout: float = 15.0) -> Optional[float
 
 
 # ---------------------------------------------------------------------------
+# Uploading — how a local anchor becomes something a model can be given
+# ---------------------------------------------------------------------------
+
+def upload_file(path: str | os.PathLike[str], *, root: Any = None,
+                name: str = "", timeout: float = 120.0) -> dict:
+    """Put one local image in kie's file store and return the URL it minted.
+
+    Returns ``{url, expires_at, bytes, name, mime}``. The URL is what goes into
+    ``first_frame_url`` / ``reference_image_urls`` on a generation call.
+
+    THIS IS THE ONE CALL THAT MAKES AN ANCHORED SHOT POSSIBLE, so it is worth
+    being exact about what it does and does not buy. It does NOT make kie
+    equivalent to Krea for anchored still work: Krea takes a data URI inline, in
+    the same request, with no second round trip and no expiry. This is a separate
+    POST whose product dies in three days. For a still image that is strictly
+    worse and image_generate should keep preferring Krea. For a SHOT it is the
+    only path there is, because no other provider wired here generates video at
+    all.
+
+    THE FILE IS UPLOADED TO A THIRD PARTY. That is not a footnote — it is the
+    operation. Every frame handed to this leaves the machine and sits on kie's
+    storage for three days, so callers pass conditioning frames the user has
+    already chosen to generate through kie's own models, never arbitrary paths,
+    and never anything from outside the project.
+    """
+    source = Path(path)
+    suffix = source.suffix.lower()
+    if suffix not in UPLOAD_MIME:
+        raise KieError(
+            f"cannot upload {source.name} — {suffix or 'no extension'} is not "
+            f"one of {sorted(UPLOAD_MIME)}. A type kie accepts here but no model "
+            "accepts downstream would fail at generation instead, after the "
+            "upload had already succeeded.")
+    if not source.is_file():
+        raise KieError(f"nothing on disk at {source}")
+
+    key = api_key(root)
+    if not key:
+        raise KieError(available(root)["reason"])
+
+    import base64
+
+    payload = {
+        # NO `data:` PREFIX. The reference names this field base64Data and
+        # documents it as the encoded bytes; a data URI would be encoded a
+        # second time by the server's decoder and land as a corrupt image that
+        # still uploads with a 200.
+        "base64Data": base64.b64encode(source.read_bytes()).decode("ascii"),
+        "uploadPath": UPLOAD_DIR,
+        "fileName": (name.strip() or source.name),
+    }
+    got = _request(UPLOAD_BASE64, key, payload=payload, method="POST",
+                   timeout=timeout)
+    url = str(got.get("downloadUrl") or got.get("fileUrl") or "").strip()
+    if not url:
+        raise KieError(
+            "kie accepted the upload and returned no downloadUrl — got "
+            f"{sorted(got)[:8]}. Nothing can be conditioned on this frame.")
+    return {
+        "url": url,
+        "bytes": int(got.get("fileSize") or source.stat().st_size),
+        "name": str(got.get("fileName") or payload["fileName"]),
+        "mime": str(got.get("mimeType") or UPLOAD_MIME[suffix]),
+        # STAMPED, NOT ASSUMED. A caller that stores this URL anywhere has to be
+        # able to tell that it is dead without calling it.
+        "expires_at": _expiry(UPLOAD_TTL_DAYS),
+        "ttl_days": UPLOAD_TTL_DAYS,
+        "source": str(source),
+    }
+
+
+def _expiry(days: int) -> str:
+    """The day a minted URL stops working, as an ISO date."""
+    import datetime as _dt
+
+    return (_dt.datetime.now(_dt.timezone.utc)
+            + _dt.timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def upload_all(paths: list, *, root: Any = None,
+               timeout: float = 120.0) -> list[dict]:
+    """Upload several frames, in order, stopping at the first failure.
+
+    Stopping rather than gathering what worked: these are the conditioning
+    frames of ONE shot, and a shot generated against three of its four anchors
+    is not a partial success — it is a full-price generation of the wrong thing.
+    """
+    return [upload_file(one, root=root, timeout=timeout) for one in paths]
+
+
+# ---------------------------------------------------------------------------
 # Building a market-jobs request
 # ---------------------------------------------------------------------------
 
 def _reject_local(value: Any, field: str) -> None:
     """Refuse a path where kie documents a URI.
 
-    Not pedantry — the alternative is encoding a data URI on a guess. Krea's
-    reference says outright that a base64 data URI is accepted in a reference
-    field; kie's says "Image URL" and nothing more, and a guess here costs a
-    round trip, a 422, and the belief that anchored generation works.
+    Still a refusal, and still at this layer, because ``build_input`` runs before
+    any money moves and must not perform network calls of its own — an upload
+    hidden inside validation would mean a shape check that costs a round trip and
+    leaks a file. What changed is the ADVICE: there is a route now
+    (:func:`upload_file`), so the message names it instead of telling the caller
+    the capability does not exist. It said "anchored generation from local pinned
+    refs is a Krea capability, not a kie one", which was a true statement about
+    the generation endpoints and a false one about kie.
     """
     for one in (value if isinstance(value, (list, tuple)) else [value]):
         text = str(one)
         if text.startswith(("http://", "https://")):
             continue
         raise KieError(
-            f"{field} must be a public https URL — kie's reference documents "
-            "these as URIs and says nothing about base64 data URIs, so "
-            f"{text[:60]!r} cannot be sent. Anchored generation from local "
-            "pinned refs is a Krea capability, not a kie one.")
+            f"{field} must be a URL — kie's generation endpoints document these "
+            f"as URIs and take no inline bytes, so {text[:60]!r} cannot be sent "
+            "as it stands. Upload it first: kie.upload_file(path) returns a URL "
+            f"valid for {UPLOAD_TTL_DAYS} days that this field accepts.")
 
 
 def build_input(model: str, **fields: Any) -> dict:
@@ -983,6 +1125,26 @@ def aspect_for(size: str, allowed) -> str:
 # Video — new ground for this codebase
 # ---------------------------------------------------------------------------
 
+def _as_url(value: str, root: Any, uploads: list) -> str:
+    """A frame argument as something kie will accept, uploading it if it is local.
+
+    Appends what it uploaded to ``uploads`` so the caller can record what the
+    shot was conditioned on and when those copies expire.
+
+    Empty in, empty out — an absent anchor is not an error, it is a text-to-video
+    shot. A value that is already a URL is passed through untouched and never
+    re-uploaded: callers legitimately reuse one minted URL across the shots of a
+    sequence, and paying a round trip per shot to mint duplicates of the same
+    frame would be pure waste.
+    """
+    text = str(value or "").strip()
+    if not text or text.startswith(("http://", "https://")):
+        return text
+    record = upload_file(text, root=root)
+    uploads.append(record)
+    return record["url"]
+
+
 def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
                    model: str = DEFAULT_VIDEO_MODEL, duration: Optional[int] = None,
                    resolution: str = "", aspect_ratio: str = "",
@@ -999,9 +1161,19 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
     10-15 minutes on the assumption of a callback. There is no callback surface
     in this product yet, so the loop has to outlast the job.
 
-    NOTHING DOWNSTREAM CONSUMES A VIDEO YET. There is no importer, no gate and
-    no manifest kind for one — this returns a file on disk and says so. Treat it
-    as a reference clip a human watches, not as an asset the pipeline can carry.
+    LOCAL PATHS ARE UPLOADED, NOT REFUSED. Any of the three frame/reference
+    arguments may be a file on disk; each one is put through :func:`upload_file`
+    first and replaced with the URL kie minted. That upload happens BEFORE the
+    generation and its failure aborts the call, because a shot generated without
+    the anchor it was supposed to hold is a full-price clip of the wrong
+    character — the expensive failure, not the cheap one. What was uploaded comes
+    back in ``uploads`` so the caller can record what the shot was conditioned on.
+
+    NOTHING DOWNSTREAM CONSUMES A RAW .mp4. bgate_core.cinematic is what turns one
+    of these into an asset the game can load — it registers the clip as a
+    candidate revision and TRANSCODES a kept one to Ogg Theora, which is the only
+    format Godot plays. This function returns a file on disk; treat it as a shot
+    awaiting a decision, not as something to copy into the engine project.
     """
     started = time.monotonic()
     spec = MODELS.get(model)
@@ -1011,6 +1183,19 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
         return {**base, "error": f"{model!r} is not a kie video model — "
                                  f"known: {sorted(VIDEO_MODELS)}",
                 "seconds": 0.0}
+
+    # Anchors first. Nothing is submitted until every frame this shot is meant
+    # to be conditioned on has a URL kie will accept.
+    uploads: list[dict] = []
+    try:
+        first_frame_url = _as_url(first_frame_url, root, uploads)
+        last_frame_url = _as_url(last_frame_url, root, uploads)
+        reference_image_urls = [_as_url(one, root, uploads)
+                                for one in (reference_image_urls or [])]
+    except KieError as exc:
+        return {**base, "error": f"conditioning frame could not be uploaded: "
+                                 f"{exc}", "uploads": uploads,
+                "seconds": round(time.monotonic() - started, 2)}
 
     fields: dict[str, Any] = dict(extra)
     fields["prompt"] = prompt
@@ -1040,16 +1225,18 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
                            f"record's resultJson was {str(rec.get('resultJson'))[:300]}")
         written = download(urls[0], out_path, accept="video/*", timeout=600.0)
     except KieError as exc:
-        return {**base, "error": str(exc), "task_id": task_id,
+        return {**base, "error": str(exc), "task_id": task_id, "uploads": uploads,
                 "recover": (f"poll {JOBS_RECORD}?taskId={task_id} — the job may "
                             "be finished and already charged") if task_id else "",
                 "seconds": round(time.monotonic() - started, 2)}
 
     result = {**_finish(rec, model=model, kind="video"), "ok": True,
               "path": str(out_path), "bytes": written, "url": urls[0],
+              "uploads": uploads,
               "seconds": round(time.monotonic() - started, 2),
-              "consumes": "nothing downstream imports video yet — this is a "
-                          "reference clip for a human, not a pipeline asset"}
+              "consumes": "a raw .mp4 that Godot cannot play — bgate_core."
+                          "cinematic registers it as a candidate shot and "
+                          "transcodes a kept one to Ogg Theora"}
     return _account(result, root, kind="video", logical_name=logical_name,
                     work_item_id=work_item_id,
                     detail=f"kie video ({model})")

@@ -1206,6 +1206,81 @@ _MIGRATIONS: list = [
     ALTER TABLE playtest_segment ADD COLUMN author TEXT NOT NULL DEFAULT '';
     ALTER TABLE playtest_item ADD COLUMN author TEXT NOT NULL DEFAULT '';
     """,
+    # 0027 — THE SHOT LIST, because a cutscene is a SEQUENCE and every video
+    # model on the market generates one shot at a time.
+    #
+    # WHY THIS IS A TABLE AND MUSIC NEEDED NONE. A Suno request returns the whole
+    # deliverable: one prompt, one track, and the logical name plus the artifact
+    # metadata carry everything there is to know. A cutscene is not like that.
+    # Every model wired here caps a generation at 15 seconds (kie MODELS,
+    # seedance-2: duration 4..15), so a 90-second scene is EIGHT separate paid
+    # generations that have to be kept in order, and the ORDER is not derivable
+    # from anything on disk — .bgate_out/cinematic/foo_shot3.mp4 sorts before
+    # _shot10 lexically and after it in the cut.
+    #
+    # It is also the state that survives death worst without a home. An agent
+    # that has generated five of eight shots and is killed has spent real money;
+    # the plan for the remaining three lived in its context and nowhere else, and
+    # a successor reading the artifact rows can see WHAT was made and not WHAT
+    # WAS NEXT. That is exactly the kill-tax the WORK MANIFEST rule exists to
+    # stop, and a jsonl checkpoint is the wrong shape for it because the shot
+    # list is edited (a shot is re-generated, re-ordered, cut) rather than
+    # appended to.
+    #
+    # THE PROMPT IS SPLIT INTO action/camera/dialogue RATHER THAN STORED WHOLE.
+    # Not decoration: these are the three things a shot list has always carried,
+    # they are edited independently — re-framing a shot changes the camera and
+    # nothing else — and a re-generation that has to re-derive "the camera part"
+    # out of a paragraph by string surgery is how a re-frame silently rewrites
+    # the action. cinematic.prompt_for() is the one place they are joined.
+    #
+    # frames ARE PATHS, NOT URLS. A conditioning frame is a still this project
+    # generated and a human approved; it lives in the repo, it is versioned, and
+    # it is uploaded to the provider at generation time for a URL that dies in
+    # three days (kie.UPLOAD_TTL_DAYS). Storing the minted URL here instead would
+    # persist a dead link as if it were the anchor.
+    """
+    CREATE TABLE cine_sequence (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL UNIQUE,
+        logline      TEXT NOT NULL DEFAULT '',
+        style        TEXT NOT NULL DEFAULT '',
+        aspect_ratio TEXT NOT NULL DEFAULT '16:9',
+        resolution   TEXT NOT NULL DEFAULT '720p',
+        status       TEXT NOT NULL DEFAULT 'planned'
+                         CHECK (status IN ('planned','generating','assembled',
+                                           'abandoned')),
+        assembled_artifact_id INTEGER
+                         REFERENCES artifact_revision(id) ON DELETE SET NULL,
+        work_item_id INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE cine_shot (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        sequence_id  INTEGER NOT NULL
+                         REFERENCES cine_sequence(id) ON DELETE CASCADE,
+        idx          INTEGER NOT NULL,
+        slug         TEXT NOT NULL DEFAULT '',
+        action       TEXT NOT NULL,
+        camera       TEXT NOT NULL DEFAULT '',
+        dialogue     TEXT NOT NULL DEFAULT '',
+        duration     INTEGER NOT NULL DEFAULT 5,
+        first_frame  TEXT NOT NULL DEFAULT '',
+        last_frame   TEXT NOT NULL DEFAULT '',
+        refs_json    TEXT NOT NULL DEFAULT '[]',
+        artifact_id  INTEGER REFERENCES artifact_revision(id) ON DELETE SET NULL,
+        task_id      TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL DEFAULT 'planned'
+                         CHECK (status IN ('planned','generating','generated',
+                                           'kept','failed','cut')),
+        note         TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (sequence_id, idx)
+    );
+    CREATE INDEX idx_cine_shot_seq ON cine_shot(sequence_id, idx);
+    """,
 ]
 
 

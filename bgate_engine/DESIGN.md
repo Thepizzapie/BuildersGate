@@ -615,8 +615,8 @@ Read per file, not in aggregate — the split is not even:
 
 | Schema | Verdict |
 |---|---|
-| `authored_intent.schema.json` | **Agnostic.** Requirement id, named acceptance ranges, priority, owner, `verified_by`. Nothing genre-bound. Its `owner` enum hard-codes Builders Gate's seven seats — a coupling to *this product*, not to the fighter. Examples are boxer; the shape is not. |
-| `transaction.schema.json` | **Agnostic.** Base revision, ops, validation, evidence links, field-level conflict. The one leak is cosmetic: `id` is pinned to `^tx_[a-z]+_[0-9]+$`, and `seat` again enumerates the seven seats. |
+| `authored_intent.schema.json` | **Agnostic.** Requirement id, named acceptance ranges, priority, owner, `verified_by`. Nothing genre-bound. Its `owner` enum hard-codes Builders Gate's eight seats — a coupling to *this product*, not to the fighter. Examples are boxer; the shape is not. |
+| `transaction.schema.json` | **Agnostic.** Base revision, ops, validation, evidence links, field-level conflict. The one leak is cosmetic: `id` is pinned to `^tx_[a-z]+_[0-9]+$`, and `seat` again enumerates the eight seats. |
 | `query_response.schema.json` | **Agnostic.** An entity/component/asset/system/test relationship map. Would apply unchanged to any ECS-shaped world. |
 | `protocol.commands.json` | **Agnostic** command surface (discover / query / mutate / simulate / prove) with per-command capability and side effects. `critical_demo_trace` is boxer-specific on purpose — it is a demo script, not a contract. |
 | `evidence_manifest.schema.json` | **Mostly agnostic.** Per-tick frame + buffers + screen bounds + UI values. The buffer list is a closed enum, and `entities`/`ui` are screen-space only — fine for 2D, thin for a 3D title that wants world-space or per-instance evidence. |

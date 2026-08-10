@@ -30,4 +30,7 @@ New here, or never run an MCP server before? Read these three, in order.
 
 | Document | What it is |
 |---|---|
+| [cinematic-research.md](cinematic-research.md) | The video-model landscape, the Godot format wall that silently swallows a finished cutscene, the anchoring limitation that turned out not to be real, and why cutscenes are an eighth seat rather than a wider art seat. |
+| [visual-taste-research.md](visual-taste-research.md) | Whether an agent can judge whether art, a rig or an animation is any good — what is computable, what is judge-territory, what is unsolved. |
+| [lessons-from-a-shipped-game.md](lessons-from-a-shipped-game.md) | What a real shipped game cost to make, and the rules that came out of it. |
 | [history/](history) | Archived agent-to-owner handoff notes. Historical only, see each file's header. |

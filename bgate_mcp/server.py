@@ -7033,15 +7033,20 @@ def kie_video_generate(prompt: str, filename: str, duration: Optional[int] = Non
       resolution    480p | 720p | 1080p | 4k (default 720p)
       aspect_ratio  1:1 | 4:3 | 3:4 | 16:9 | 9:16 | 21:9 | adaptive
 
-    first_frame_url must be a PUBLIC URL — kie's reference documents every image
-    field as a URI and says nothing about base64, so a local plate cannot be
-    sent and is refused rather than guessed at.
+    first_frame_url may be a public URL OR a local path — a local one is
+    uploaded to kie's file store first and the minted URL (which dies in 3 days)
+    is used for the generation.
 
     Runs in MINUTES, not seconds; the default timeout is half an hour.
     filename lands under .bgate_out/video/.
 
-    NOTHING DOWNSTREAM IMPORTS A CLIP YET. No importer, no gate, no manifest
-    kind — this is a reference a human watches, not a pipeline asset.
+    THIS IS THE RAW DOOR, AND IT IS PROBABLY NOT THE ONE YOU WANT. It buys one
+    unmanaged .mp4 — no shot list, no provenance row, no budget row against a
+    sequence, and Godot CANNOT PLAY AN .mp4 at all, so nothing here reaches a
+    game. Use it for a one-off reference clip a human watches. For anything the
+    project ships, cinematic_plan / cinematic_generate_shot / cinematic_keep run
+    the same clip through the candidate -> human decision -> transcoded asset
+    path, which is what makes it playable.
     """
     try:
         root = _Path(_root())
@@ -7065,6 +7070,235 @@ def kie_video_generate(prompt: str, filename: str, duration: Optional[int] = Non
             _log("video", f"generated a {result.get('model')} clip {out.name}",
                  ref=result["path"])
         return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Cinematics — the pipeline half of video
+# ---------------------------------------------------------------------------
+# WHY THESE EXIST ALONGSIDE kie_video_generate, and it is the same split the
+# music tools settled: the adapter buys a file, the core module makes it an
+# asset. Video needs the split more than music did, because a copied .mp4 is not
+# merely unmanaged — it is UNPLAYABLE. Godot's VideoStreamPlayer supports Ogg
+# Theora and nothing else in core, so a keep that copies delivers a black
+# rectangle and a green badge. cinematic_keep transcodes.
+#
+# AND BECAUSE ONE GENERATION IS NOT ONE DELIVERABLE. Every video model here caps
+# at 15 seconds, so a cutscene is N paid generations that have to be planned,
+# ordered, judged and joined — cinematic_plan is the only free step in the whole
+# pipeline and is where a sequence should be argued about.
+@_tool
+def cinematic_options() -> dict:
+    """What a cutscene generation may ask for, and whether this machine can
+    deliver one. Costs nothing.
+
+    Reports two independent availabilities and they fail differently: the
+    PROVIDER (a kie key) is what buys a shot, and the ENCODER (ffmpeg built with
+    libtheora) is what makes a bought shot playable. A machine with a key and no
+    libtheora can generate a whole sequence, pay for all of it, and deliver none
+    of it — so this is worth reading before the first shot, and
+    cinematic_generate_shot checks it before spending anyway.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return {"ok": True, **_cine.options(_root())}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
+                   aspect_ratio: str = "16:9", resolution: str = "720p") -> dict:
+    """Write a cutscene's shot list. SPENDS NOTHING — do this first, always.
+
+    `shots` is a list of objects, in cut order. Each takes:
+      action       REQUIRED. What happens in this shot.
+      camera       framing/movement ("slow push in on", "low angle wide")
+      dialogue     a spoken line, quoted into the prompt as speech
+      duration     4-15 seconds, default 5. Write 5-10; past that expect drift.
+      first_frame  a repo-relative path to an APPROVED still to open on
+      last_frame   a still to land on. For a deliberate match cut ONLY.
+      refs         repo-relative paths to reference stills for identity
+
+    ANCHOR EVERY SHOT. A text-only sequence invents the cast fresh each
+    generation and no two shots agree on a face. Generate the keyframes through
+    the art path first (image_generate conditioned on the pinned character), get
+    them approved, then name them here. This returns a warning when no shot is
+    anchored, and it is the most expensive warning in the product to ignore.
+
+    NEVER point last_frame/first_frame at the previous shot's output. That is
+    the art seat's rule 2 (chains decay) with a worse decay constant — a video
+    model's final frame is the most drifted image it produced AND a lossy
+    intermediate. Every shot anchors on the same approved stills.
+
+    Re-running this to edit the list PRESERVES shots whose action text did not
+    change, along with the clips already paid for; only changed shots reset.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.plan(_root(), name, list(shots or []), logline=logline,
+                          style=style, aspect_ratio=aspect_ratio,
+                          resolution=resolution, work_item_id=_work_item_id())
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_sequences(name: str = "") -> dict:
+    """The shot lists in this project, or one sequence with every shot's state.
+
+    The first thing to call when picking up a half-generated cutscene: it says
+    which shots were bought, which were kept, and which are still planned, so a
+    successor never re-buys a shot that already exists.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        root = _root()
+        if name:
+            return {"ok": True, "sequence": _cine.sequence(root, name)}
+        return {"ok": True, "sequences": _cine.sequences(root)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_generate_shot(name: str, idx: int, model: str = "",
+                            generate_audio: bool = False,
+                            timeout: float = 1800.0) -> dict:
+    """Buy ONE shot of a planned sequence. Costs real credits. Runs in minutes.
+
+    ONE SHOT PER CALL, DELIBERATELY. There is no generate-the-whole-sequence
+    tool: the thing a human has to do between shots is LOOK at the clip, and a
+    loop is built to skip exactly that. Generate, watch, keep or re-generate,
+    then move to the next index.
+
+    generate_audio is FALSE by default and that is a considered default, not an
+    oversight. Model audio is baked into the clip and cannot be separated
+    afterwards, so it fights the score, cannot be ducked under dialogue and
+    cannot be localised. The picture is this seat's; the sound is the audio
+    seat's, laid over the top where it stays editable.
+
+    Local conditioning frames are uploaded to the provider automatically. Both
+    the budget and the encoder are checked BEFORE anything is charged.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        result = _cine.generate_shot(_root(), name, int(idx), model=model,
+                                     generate_audio=bool(generate_audio),
+                                     timeout=float(timeout),
+                                     work_item_id=_work_item_id())
+        if result.get("ok"):
+            _log("video", f"generated {name} shot {idx}",
+                 ref=str(result.get("artifact_id") or ""))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_assemble(name: str, quality: int = 6) -> dict:
+    """Join a sequence's kept shots, in order, into ONE .ogv the game can load.
+
+    Refuses while any shot that is not marked 'cut' is unkept — assembling
+    around a missing beat ships a story that does not make sense rather than an
+    error. It also refuses a set of shots that are not all the same size,
+    because ffmpeg joins those into a broken file and reports SUCCESS.
+
+    The result is registered as a candidate like any other. WATCH THE WHOLE CUT
+    before keeping it: shots were judged alone, and a cut is judged as a cut —
+    the light jumping, a character swapping hands, the camera crossing the line
+    are all invisible shot by shot.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.assemble(_root(), name, quality=int(quality))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_candidates(logical_name: str = "", limit: int = 100) -> dict:
+    """Generated shots and cuts awaiting a decision, plus what has been kept.
+
+    Every row carries its artifact_id (what cinematic_keep / cinematic_discard
+    take) and `installed`, which is true only when the file in the engine
+    project was transcoded from THIS revision — so a superseded take cannot
+    claim to be the clip the game loads.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        root, cap = _root(), max(1, min(int(limit), 500))
+        return {"ok": True,
+                "candidates": _cine.candidates(root, logical_name=logical_name,
+                                               limit=cap),
+                "kept": _cine.kept(root, limit=cap)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6) -> dict:
+    """TRANSCODE a clip into the engine project and approve the revision.
+
+    Not a copy — a conversion, and that is the whole reason this tool is not
+    music_keep with a different noun. Godot plays Ogg Theora and only Ogg
+    Theora; the .mp4 every model returns is not merely unsupported but produces
+    NO IMPORT ERROR, so copying one in leaves a scene that runs perfectly with a
+    blank rectangle where the cutscene was. This writes .ogv with the engine
+    documentation's own settings (-q:v 6, keyframe interval 64).
+
+    quality is 1-10, 6 is the documented baseline; drop to 5 for 1440p+ sources.
+    The transcode happens BEFORE the approval, so a failed conversion can never
+    leave a row saying approved over a game with no file.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.keep(_root(), int(artifact_id), note=note,
+                          quality=int(quality))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_install(artifact_id: int, quality: int = 6) -> dict:
+    """Transcode an ALREADY-APPROVED clip into the engine project. Repair verb.
+
+    The same door music_install is, for the same measured reason: on a project
+    whose approval gate is off, artifacts.register approves each revision as it
+    is filed, so there is no candidate, no keep, and no installed file. Use it
+    when cinematic_candidates shows a kept clip with `installed: false`, or when
+    an approved cutscene's .ogv was deleted out of the engine project.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.install(_root(), int(artifact_id), quality=int(quality))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_discard(artifact_id: int, note: str = "") -> dict:
+    """Reject a shot or a cut, and put its shot back to planned so it can be
+    re-generated. Refusing to ship something is an agent's call, so unlike
+    cinematic_keep this needs no human.
+
+    The file is left under .bgate_out — gitignored, outside the engine project.
+    Say what was wrong with it: 'discarded' teaches the re-roll nothing, and at
+    video prices the re-roll is the expensive part.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.discard(_root(), int(artifact_id), note=note)
     except Exception as exc:
         return _fail(exc)
 

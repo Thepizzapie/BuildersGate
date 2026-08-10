@@ -63,7 +63,7 @@ dispatch before anything is filed.
 
 ## Seat workspaces
 
-Each of the seven seats gets a workspace tuned to its craft. The director's is
+Each of the eight seats gets a workspace tuned to its craft. The director's is
 a queue board and a live agent board.
 
 ![Director seat](screenshots/seat-workspaces.png)

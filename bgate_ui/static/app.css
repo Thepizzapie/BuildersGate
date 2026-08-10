@@ -93,7 +93,8 @@
     --info:#94a8ff;  --info-line:#3f4a80; --info-soft:rgba(148,168,255,.12);
 
     --c-director:#e8c05a; --c-narrative:#b98cf0; --c-gameplay:#ff6a4a;
-    --c-tech:#5aa8ff; --c-art:#ff85bd; --c-audio:#43d6a5; --c-qa:#a3e055;
+    --c-tech:#5aa8ff; --c-art:#ff85bd; --c-audio:#43d6a5; --c-cinematic:#ffb347;
+    --c-qa:#a3e055;
 
     --shadow-1:0 1px 2px rgba(0,0,0,.4);
     --shadow-2:0 4px 16px rgba(0,0,0,.45);
@@ -148,7 +149,8 @@
     --info:#3b4ec2; --info-line:#a6aee0; --info-soft:rgba(59,78,194,.10);
 
     --c-director:#866000; --c-narrative:#6d3fb5; --c-gameplay:#b83a1e;
-    --c-tech:#1e5fb8; --c-art:#b03370; --c-audio:#0e7457; --c-qa:#45720f;
+    --c-tech:#1e5fb8; --c-art:#b03370; --c-audio:#0e7457; --c-cinematic:#a35c00;
+    --c-qa:#45720f;
 
     /* Shadows on parchment are contact shadows, not glows — the dark ground's
        depths read as smudges on paper. */
@@ -307,7 +309,8 @@
        two purples split by lightness rather than by saturation and `bad` is
        a clean red instead of the rose it briefly was. */
     --c-director:#facb0e; --c-narrative:#8f9bff; --c-gameplay:#ff7d7d;
-    --c-tech:#78bae6; --c-art:#cf9bff; --c-audio:#4ee0b8; --c-qa:#b2ea62;
+    --c-tech:#78bae6; --c-art:#cf9bff; --c-audio:#4ee0b8; --c-cinematic:#ffc46b;
+    --c-qa:#b2ea62;
 
     /* A drop shadow cast onto #000 is invisible — there is nothing left to
        darken. The outer blur is kept only for the floaters that sit over
@@ -419,7 +422,8 @@
       --info:#3b4ec2; --info-line:#a6aee0; --info-soft:rgba(59,78,194,.10);
 
       --c-director:#866000; --c-narrative:#6d3fb5; --c-gameplay:#b83a1e;
-      --c-tech:#1e5fb8; --c-art:#b03370; --c-audio:#0e7457; --c-qa:#45720f;
+      --c-tech:#1e5fb8; --c-art:#b03370; --c-audio:#0e7457; --c-cinematic:#a35c00;
+    --c-qa:#45720f;
 
       --shadow-1:0 1px 2px rgba(40,34,24,.07);
       --shadow-2:0 3px 10px rgba(40,34,24,.09);

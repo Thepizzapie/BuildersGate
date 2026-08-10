@@ -26,7 +26,7 @@ architecture, and **§16** before doing anything with it.
 
 | File | What it types | Holds for a second game? |
 |---|---|---|
-| `authored_intent.schema.json` | Design requirements — acceptance ranges, priority, owner. | Yes. Its `owner` enum is tied to Builders Gate's seven seats, not to the fighter. |
+| `authored_intent.schema.json` | Design requirements — acceptance ranges, priority, owner. | Yes. Its `owner` enum is tied to Builders Gate's eight seats, not to the fighter. |
 | `transaction.schema.json` | Isolated change sets; field-level conflict detection instead of file locks. | Yes. Cosmetic leaks only (`id` pattern, `seat` enum). |
 | `query_response.schema.json` | Semantic `world.query` results — the entity dependency map. | Yes. |
 | `protocol.commands.json` | The discoverable command surface + capabilities. | Yes. `critical_demo_trace` is a boxer demo script by design. |

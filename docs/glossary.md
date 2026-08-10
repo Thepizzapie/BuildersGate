@@ -21,8 +21,10 @@ using an off-the-shelf one.
 ### Seat
 
 A fixed job title an agent **adopts** for a session: director, narrative,
-gameplay, tech, art, audio, qa. Seven, always the same seven; there is no
-registering a new one per task. A seat is not a process, it is an identity: a
+gameplay, tech, art, audio, cinematic, qa. Eight, and the roster is fixed —
+there is no registering a new one per task. (It was seven until `cinematic`
+was added for generated cutscenes, which needed its own binaries, its own
+failure modes and a lane nobody else writes in. That is the bar for a ninth.) A seat is not a process, it is an identity: a
 session declares `BGATE_SEAT=art` and inherits art's mission, its writable
 paths, and its brief. Defined in `bgate_core/seats.py`.
 

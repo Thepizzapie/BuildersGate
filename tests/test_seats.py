@@ -13,10 +13,13 @@ from bgate_core import db
 
 
 class TestRoles:
-    def test_seven_default_seats(self, root):
+    def test_every_default_seat_is_active(self, root):
         got = seats.roles_for(root)
         assert set(got) == set(seats.ROLES)
-        assert len(got) == 7
+        # Counted against the table rather than a literal. The literal was 7 and
+        # went stale the day an eighth seat landed, which is the failure mode a
+        # test named for a number always has.
+        assert len(got) == len(seats.DEFAULT_SEATS)
 
     def test_disable_a_seat(self, root):
         seats.configure(root, "audio", enabled=False)

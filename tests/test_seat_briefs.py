@@ -125,6 +125,7 @@ NOT_TOOLS = {
     "artifact_id", "decal_on", "dry_run", "max_cost_usd", "ref_image",
     "ref_images", "ref_strength", "task_kind", "tileable", "unweighted_verts",
     "use_pinned", "source_ref", "work_item_id",
+    "first_frame", "last_frame",
     # not ours
     "add_child", "one_of",
 }

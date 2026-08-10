@@ -138,11 +138,15 @@ class TestRequestConstruction:
 
     def test_a_local_path_in_a_url_field_is_refused_with_the_reason(self):
         # The failure this prevents: encoding a data URI on a guess, paying for
-        # the 422, and believing anchored generation works.
+        # the 422, and believing anchored generation works. build_input still
+        # refuses, because validation must not perform network calls — but the
+        # refusal now names the ROUTE (upload_file) instead of saying anchored
+        # generation through kie does not exist, which stopped being true when
+        # the file-upload API was wired.
         with pytest.raises(kie.KieError) as exc:
             kie.build_input("qwen-edit", prompt="x", image_url="C:/art/hero.png")
-        assert "public https URL" in str(exc.value)
-        assert "Krea" in str(exc.value)
+        assert "must be a URL" in str(exc.value)
+        assert "upload_file" in str(exc.value)
 
     def test_a_hosted_url_passes(self):
         got = kie.build_input("qwen-edit", prompt="x",
@@ -498,3 +502,100 @@ class TestWiring:
 
         for name in ("kie_status", "kie_music_generate", "kie_video_generate"):
             assert hasattr(server, name), f"{name} is not an MCP tool"
+
+
+class TestTheUploadSurface:
+    """The call that turned "anchored generation through kie is unavailable"
+    from a fact into a missing four lines.
+
+    It matters far more for video than for images: an anchored still has Krea to
+    fall back on, and an anchored SHOT has nothing — no other provider wired here
+    generates a frame of video at all.
+    """
+
+    def _fake(self, seen):
+        def _request(path, key, *, payload=None, params=None,
+                     method="GET", timeout=60.0):
+            seen.update(path=path, payload=payload, method=method)
+            return {"fileName": "hero.png", "fileSize": 7,
+                    "mimeType": "image/png",
+                    "downloadUrl": "https://kie.test/f/hero.png"}
+        return _request
+
+    def _png(self, tmp_path):
+        p = tmp_path / "hero.png"
+        p.write_bytes(b"\x89PNG123")
+        return p
+
+    def test_it_posts_raw_base64_to_the_file_host(self, tmp_path, monkeypatch):
+        """NOT api.kie.ai, and NOT a data URI. A `data:` prefix would be decoded
+        a second time by the server and land as a corrupt image that still
+        uploads with a 200."""
+        import base64
+
+        seen = {}
+        monkeypatch.setattr(kie, "_request", self._fake(seen))
+        monkeypatch.setattr(kie, "api_key", lambda root=None: "k")
+
+        got = kie.upload_file(self._png(tmp_path))
+        assert seen["path"] == kie.UPLOAD_BASE64
+        assert seen["method"] == "POST"
+        assert not seen["payload"]["base64Data"].startswith("data:")
+        assert base64.b64decode(seen["payload"]["base64Data"]) == b"\x89PNG123"
+        assert got["url"] == "https://kie.test/f/hero.png"
+
+    def test_the_minted_url_is_stamped_with_the_day_it_dies(self, tmp_path,
+                                                            monkeypatch):
+        """Three days, not fourteen. Nothing may cache one of these, so a caller
+        that stores it has to be able to tell it is dead without calling it."""
+        monkeypatch.setattr(kie, "_request", self._fake({}))
+        monkeypatch.setattr(kie, "api_key", lambda root=None: "k")
+
+        got = kie.upload_file(self._png(tmp_path))
+        assert got["ttl_days"] == kie.UPLOAD_TTL_DAYS == 3
+        assert len(got["expires_at"]) == 10   # ISO date
+
+    def test_a_type_no_model_accepts_is_refused_before_the_upload(self,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+        """A file kie's uploader takes but no generation model accepts would
+        fail at generation instead, after the upload had already succeeded."""
+        monkeypatch.setattr(kie, "api_key", lambda root=None: "k")
+        bad = tmp_path / "hero.bmp"
+        bad.write_bytes(b"BM")
+        with pytest.raises(kie.KieError, match="not one of"):
+            kie.upload_file(bad)
+
+    def test_an_upload_with_no_url_back_is_not_reported_as_success(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(kie, "_request",
+                            lambda *a, **k: {"fileName": "hero.png"})
+        monkeypatch.setattr(kie, "api_key", lambda root=None: "k")
+        with pytest.raises(kie.KieError, match="no downloadUrl"):
+            kie.upload_file(self._png(tmp_path))
+
+    def test_a_local_frame_is_uploaded_and_a_url_is_passed_through(
+            self, tmp_path, monkeypatch):
+        """The whole point: a pinned anchor on disk reaches a video model. An
+        already-hosted URL is NOT re-uploaded — callers reuse one frame across
+        the shots of a sequence, and minting duplicates would be pure waste."""
+        monkeypatch.setattr(kie, "_request", self._fake({}))
+        monkeypatch.setattr(kie, "api_key", lambda root=None: "k")
+
+        uploads = []
+        assert kie._as_url(str(self._png(tmp_path)), None,
+                           uploads) == "https://kie.test/f/hero.png"
+        assert kie._as_url("https://x.test/a.png", None,
+                           uploads) == "https://x.test/a.png"
+        assert kie._as_url("", None, uploads) == ""
+        assert len(uploads) == 1
+
+    def test_build_input_still_refuses_a_local_path(self, tmp_path):
+        """Validation must not perform network calls — an upload hidden inside a
+        shape check is a validation that costs a round trip and leaks a file. So
+        build_input refuses and names the route; generate_video is what resolves
+        anchors before submitting."""
+        with pytest.raises(kie.KieError) as exc:
+            kie.build_input("seedance-2", prompt="a long enough prompt",
+                            first_frame_url="C:/art/hero.png")
+        assert "upload_file" in str(exc.value)

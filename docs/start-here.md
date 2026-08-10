@@ -58,9 +58,11 @@ the approved references, and who currently holds which files, in one call.
 Six words that mean something specific here. The [glossary](glossary.md) has
 the rest.
 
-**Seat.** A fixed job title an agent adopts for a session. There are seven and
-there will always be seven: director, narrative, gameplay, tech, art, audio, qa.
-A seat is not a process you start. It is an identity. A session sets
+**Seat.** A fixed job title an agent adopts for a session. There are eight:
+director, narrative, gameplay, tech, art, audio, cinematic, qa. The roster is
+FIXED, which is the part that matters — the number has moved once, deliberately,
+and there is still no registering a seat per task. A seat is not a process you
+start. It is an identity. A session sets
 `BGATE_SEAT=art` and inherits art's mission and its writable paths. You do not
 create agents. You hand out seats.
 

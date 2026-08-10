@@ -41,6 +41,19 @@ _SUFFIX_KINDS = {
     ".png": "texture", ".jpg": "texture", ".jpeg": "texture", ".webp": "texture",
     ".svg": "vector", ".wav": "audio", ".ogg": "audio", ".mp3": "audio",
     ".tscn": "scene", ".tres": "resource", ".gd": "script",
+    # VIDEO, AND .ogv IS NOT .ogg. Ogg is a container: the same extension family
+    # carries Vorbis audio and Theora video, and the engine treats them as
+    # completely different resources — .ogg imports as an AudioStream, .ogv as a
+    # VideoStream. Mapping .ogv to "audio" by family resemblance would file every
+    # shipped cutscene as a sound effect in the registry, in the audio seat's
+    # listings, and in every kind-filtered query downstream.
+    #
+    # .mp4 is here even though Godot cannot play one (see bgate_core.cinematic):
+    # it is what every video model returns, so it is what a candidate revision is
+    # before a human keeps it. A generated clip awaiting a decision is a real
+    # tracked asset with a real hash; "unknown" would have hidden the whole
+    # candidate pool from asset_verify.
+    ".mp4": "video", ".ogv": "video", ".webm": "video", ".mov": "video",
 }
 
 _CHUNK = 1 << 20  # 1 MiB

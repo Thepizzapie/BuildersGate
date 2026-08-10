@@ -61,7 +61,8 @@ SEAT_RULES: list[tuple[str, str]] = [
     ("qa", r"\b(?:bugs?|broken|glitch(?:es|y)?|repro|softlock|stuck)\b"),
 ]
 
-SEATS = ("director", "narrative", "gameplay", "tech", "art", "audio", "qa", "unassigned")
+SEATS = ("director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa",
+         "unassigned")
 KINDS = ("like", "fix", "add", "change", "question", "note")
 
 # Segments that carry no signal — filler, plus the canned phrases whisper

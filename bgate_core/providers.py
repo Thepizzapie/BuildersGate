@@ -32,9 +32,12 @@ from bgate_core import envfile
 
 # What a provider can produce. The dashboard groups cards by these, and the
 # vocabulary is fixed here so two providers cannot describe the same capability
-# with two different words. `video` has no provider yet and is listed anyway —
-# it is the capability the user named when asking for this surface, and an empty
-# column is a truthful answer where a missing column is a silent one.
+# with two different words. `video` was listed here with no provider behind it —
+# an empty column being a truthful answer where a missing column is a silent one
+# — and kie fills it now, through bgate_core.cinematic. Note that a video key is
+# only half of what a cutscene needs: the other half is an ffmpeg built with
+# libtheora, because Godot plays Ogg Theora and nothing else, and no credential
+# table can report on that. cinematic.ffmpeg_status() is where that is asked.
 CAPABILITIES: dict[str, str] = {
     "image_2d": "2D images",
     "model_3d": "3D models",

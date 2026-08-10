@@ -30,7 +30,7 @@
 (function () {
   "use strict";
 
-  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"];
+  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa"];
   const WS_PATH = "/api/workspace/director/console-graph";
 
   // x is the left edge of a node; the canvas pans, so this is only the FIRST

@@ -11,7 +11,8 @@ window.AGENT_NAMES = {
   art:       "Iris",
   qa:        "Marlow",
   tech:      "Kepler",
-  audio:     "Sable"
+  audio:     "Sable",
+  cinematic: "Reel"
 };
 
 window.agentName = function (seat) {

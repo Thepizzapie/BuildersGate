@@ -50,7 +50,7 @@
       const s = Math.max(0, Number(t) || 0);
       return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
     },
-    seats: ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"],
+    seats: ["director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa"],
     // Real geometry, one grid, one stroke weight — see icons.js. These used to
     // be seven unrelated Unicode glyphs (◆ ¶ ⌖ ⚙ ▲ ♪ ✓) resolved by whatever
     // symbol font the OS had, so no two sat on the same baseline.
