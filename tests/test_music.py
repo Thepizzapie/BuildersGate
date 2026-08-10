@@ -62,12 +62,24 @@ class FakeKie:
         raise AssertionError(f"the test hit an unstubbed kie path: {path}")
 
     def download(self, url, out_path, *, timeout=300.0, accept="*/*"):
+        """EVERY TAKE GETS DIFFERENT BYTES, and that is not cosmetic.
+
+        This wrote the same 2051 bytes for every download, so the two takes of a
+        batch were byte-identical and hashed the same. `installed` is measured
+        by comparing the installed file's hash against the one the record
+        claims, which is the whole mechanism for noticing that take 2 has
+        overwritten take 1 — and with identical hashes there is nothing to
+        notice, so both takes correctly read as installed and the overwrite test
+        could never have passed. Two real takes of one prompt are never the same
+        audio.
+        """
         from pathlib import Path
 
         self.downloads.append(str(url))
         out = Path(out_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"ID3" + b"\0" * 2048)
+        seed = f"{url}|{len(self.downloads)}".encode()
+        out.write_bytes(b"ID3" + seed + b"\0" * 2048)
         return out.stat().st_size
 
 
@@ -572,10 +584,32 @@ class TestProgressIsReported:
                        on_progress=lambda f, w, s: seen.append(s))
         assert seen == ["PENDING", "SUCCESS"]
 
+    def test_cancelling_before_the_submit_costs_nothing(self, root, fake):
+        """The first callback fires BEFORE anything is asked of Suno.
+
+        Cancelling there used to escape uncaught, because that one announcement
+        sat outside generate_music's try. It now returns like any other cancel,
+        and it correctly reports nothing to recover: no task id, no charge.
+        """
+        def stop_immediately(_f, _w, _s):
+            raise kie.MusicCancelled("the human pressed cancel")
+
+        got = kie.generate_music("hum", str(root / "out"), root=root,
+                                 on_progress=stop_immediately)
+        assert got["ok"] is False and got["cancelled"] is True
+        assert got["task_id"] == "" and got["recoverable"] is False
+
     def test_raising_from_the_callback_cancels_and_keeps_the_task_id(self, root,
                                                                      fake):
+        # Cancel AFTER the submit, which is the case where money is at stake:
+        # the first stage is the pre-submit announcement and nothing is charged
+        # for it, so letting it through is what makes this test about recovery.
+        seen = []
+
         def stop(_f, _w, _s):
-            raise kie.MusicCancelled("the human pressed cancel")
+            seen.append(1)
+            if len(seen) > 1:
+                raise kie.MusicCancelled("the human pressed cancel")
 
         got = kie.generate_music("hum", str(root / "out"), root=root,
                                  on_progress=stop)

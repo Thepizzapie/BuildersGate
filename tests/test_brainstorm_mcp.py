@@ -274,7 +274,18 @@ class TestATurnCannotDispatch:
         assert not [a for a in argv if _runners.MCP_SERVER_NAME in str(a)]
         assert ("--tools", "") in pairs
         assert ("--setting-sources", "") in pairs
-        assert ("--permission-mode", "plan") in pairs
+        # NOT ("--permission-mode", "plan"). That flag was removed on
+        # measurement, not preference: it refused the pad tools too, so a
+        # session holding exactly mcp__pads__pad_read answered that plan mode
+        # blocked the read-only call it had just been asked to make. Shipping a
+        # two-tool server that can never be called is worse than either
+        # alternative. runners.py carries the observed transcript.
+        #
+        # The promise rests on the capability surface being EMPTY and the MCP
+        # config being exhaustive, both asserted above and neither changed by
+        # this flag.
+        assert ("--permission-mode", "acceptEdits") in pairs
+        assert "--disable-slash-commands" in argv
 
     def test_no_brainstorm_tool_can_see_the_queue(self):
         """Structural, because in THIS module it cannot be accidental.

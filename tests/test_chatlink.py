@@ -99,7 +99,21 @@ class TestSanitise:
         assert "`" not in clean
 
     def test_length_is_capped_and_flagged(self):
-        clean, flags = chatlink.sanitise("a" * (chatlink.MAX_CHARS + 500))
+        """NOT one repeated character: the run-collapser eats that first.
+
+        This asked for `"a" * (MAX_CHARS + 500)` and then asserted the cap
+        fired. It never could. `_RUN` collapses any run past three, so a
+        780-character wall of 'a' reaches the cap as the three-character string
+        "aaa" and is correctly left alone. The test was checking that a
+        degenerate payload is truncated, which is not what truncation is for.
+
+        Real long messages are made of different characters, so the payload is
+        too.
+        """
+        long_but_varied = " ".join(
+            f"word{i}" for i in range(chatlink.MAX_CHARS // 3))
+        assert len(long_but_varied) > chatlink.MAX_CHARS
+        clean, flags = chatlink.sanitise(long_but_varied)
         assert "truncated" in flags
         assert len(clean) <= chatlink.MAX_CHARS + 1  # +1 for the ellipsis
 

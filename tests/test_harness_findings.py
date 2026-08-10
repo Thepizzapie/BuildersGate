@@ -267,7 +267,14 @@ def test_image_status_reports_every_leg(root, monkeypatch):
 
     monkeypatch.setenv("BGATE_ROOT", str(root))
     got = asyncio.run(server.image_status())
-    assert set(got["legs"]) == {"openai", "krea", "local"}
+    # Derived from the provider registry, not written out again here: this
+    # named three legs and kie made it four. A hand-kept copy of a registry is
+    # a second registry that goes stale on the next provider.
+    from bgate_core import providers as _providers
+
+    # The rented providers come from the registry; "local" is the leg that is
+    # not a provider at all (a runtime on this machine), so it is named.
+    assert set(got["legs"]) == {p.id for p in _providers.art_providers()} | {"local"}
     # `available` answers about the LEG, not about one adapter.
     assert got["available"] == bool(got["providers"])
 

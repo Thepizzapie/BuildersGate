@@ -75,8 +75,10 @@ REGISTRY_SEAT = "director"
 REGISTRY_KEY = "settings"
 
 # Group order is the display order, in both the panel and `bgate doctor`.
+# "Community" arrived with the streamer chat settings and was never added here,
+# so every one of those entries declared a group the registry did not admit.
 GROUPS = ("Dispatch", "Gates", "Art", "Follow-up", "Notifications",
-          "Budget", "Console", "Privacy")
+          "Budget", "Console", "Privacy", "Community")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
 # imported from events.py so that a settings panel still renders when the event

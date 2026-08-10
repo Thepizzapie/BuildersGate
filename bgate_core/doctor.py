@@ -62,6 +62,21 @@ CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
           "ffprobe", "blender", "godot", "godot_web_templates", "whisper",
           "imageto3d", "local_image")
 
+# Rows that SUMMARISE A REGISTRY rather than probe one binary on PATH.
+#
+# Every other row answers "is this executable here, and what version": one
+# lookup, one path, and a test can make it present or absent by controlling
+# PATH. These two ask a registry how many of N things are wired, so there is no
+# single binary to stub and no single path to report. A test that treats them
+# like the others either fails on a machine that happens to have a coding-agent
+# CLI installed, or asserts a path that was never going to exist.
+#
+# Named here rather than in the tests so the list cannot drift from CHECKS: the
+# absent-binaries test already learned that lesson once, when adding the
+# imageto3d row broke a hand-written count that passed on the two machines it
+# was written on.
+SUMMARY_CHECKS = ("local_runtimes", "agent_cli")
+
 # What the code in this repo actually assumes, not aspirational floors.
 # blender: the default warmup engine is BLENDER_EEVEE_NEXT, which is 4.2+.
 # godot: the templates and the telemetry autoload are Godot 4 only.

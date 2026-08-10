@@ -1393,9 +1393,17 @@ def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
     # generation, it only makes the run unpriced.
     before = credit_balance(root)
     on_progress = options.pop("on_progress", None)
-    if on_progress:
-        on_progress(*SUNO_STAGE_SUBMIT, "")
     try:
+        # INSIDE the try. This announcement sat above it, so a callback that
+        # raised here — which is exactly what pressing cancel does — escaped
+        # uncaught instead of returning the cancelled result every other stage
+        # produces. Cancelling in the first second was the one moment the
+        # feature crashed, and it is the likeliest moment for someone to change
+        # their mind. Nothing has been submitted yet at this point, so the
+        # result carries no task id and is correctly NOT recoverable: there is
+        # nothing to recover and nothing was charged.
+        if on_progress:
+            on_progress(*SUNO_STAGE_SUBMIT, "")
         job = submit_music(prompt, root=root, **options)
         task_id = job["task_id"]
         base["model"] = job["model"]

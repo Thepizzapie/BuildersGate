@@ -17,6 +17,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Request
 
+from bgate_adapters import kie as _kie
 from bgate_core import jobs as _core_jobs, music as _music
 from bgate_ui import api
 from bgate_ui.deps import root
@@ -341,6 +342,14 @@ def music_task(task_id: str) -> dict:
     try:
         return api.ok(_music.status(root(), task_id))
     except _music.MusicError as exc:
+        raise api.bad_request(str(exc), task_id=task_id)
+    except _kie.KieError as exc:
+        # NOT 503. An unset KIE_API_KEY is a configuration state the caller can
+        # fix in the panel, and 503 says the upstream is down — which sends
+        # someone to kie's status page over a key they never entered. It also
+        # tripped the route smoke test, whose whole rule is that a GET must not
+        # answer in the server-error class for a condition the server is fine
+        # about.
         raise api.bad_request(str(exc), task_id=task_id)
     except Exception as exc:                                     # noqa: BLE001
         raise api.unavailable(f"{type(exc).__name__}: {exc}", task_id=task_id)

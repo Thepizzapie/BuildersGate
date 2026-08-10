@@ -149,8 +149,11 @@ _INJECTION = re.compile(
     # Persona takeovers.
     r"|\byou\s+are\s+now\b|\bfrom\s+now\s+on\s+you\b|\bact\s+as\s+(?:a|an|the)\b"
     r"|\bpretend\s+(?:to\s+be|you\s+are)\b|\bnew\s+(?:instruction|rule|task|role)s?\b"
-    # Markup that tries to close the block it is inside.
-    r"|</?\s*(?:system|instruction|context|data|chat|prompt|user|assistant)\s*>"
+    # Markup that tries to close the block it is inside. THE PLURAL IS NOT
+    # OPTIONAL DECORATION: this read `instruction` only, so <instructions>...
+    # </instructions> — the spelling an injection actually uses, and the one in
+    # the test table — went through unflagged while the singular was caught.
+    r"|</?\s*(?:system|instructions?|context|data|chat|prompt|user|assistant)\s*>"
     # This module's own fence, so a viewer cannot spell the delimiter even
     # before the random nonce makes guessing it pointless.
     r"|=+\s*BGCHAT[\w-]*\s*=+"
@@ -172,7 +175,8 @@ _FENCE = re.compile(r"`{1,}")
 _URL = re.compile(
     r"(?i)\b(?:[a-z][a-z0-9+.\-]*://|www\.)\S+"
     r"|\b[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9\-]+)*"
-    r"\.(?:com|net|org|io|gg|tv|co|dev|ai|xyz|link|me|ly|be|app|sh)\b\S*")
+    r"\.(?:com|net|org|io|gg|tv|co|dev|ai|xyz|link|me|ly|be|app|sh"
+    r"|example|test|invalid|localhost)\b\S*")
 
 _SPACE = re.compile(r"\s+")
 

@@ -117,7 +117,10 @@ def test_every_dependency_answers_in_the_same_shape(everything_present):
 
 def test_present_binaries_report_available_with_a_path(everything_present):
     report = doctor.check()
-    assert all(row["available"] for row in report.values()), doctor.summary(report)
+    # doctor.SUMMARY_CHECKS ask a registry how much is wired rather than probing
+    # one binary, so `everything_present` has nothing to make present for them.
+    binaries = [n for n in doctor.CHECKS if n not in doctor.SUMMARY_CHECKS]
+    assert all(report[n]["available"] for n in binaries), doctor.summary(report)
     assert report["blender"]["version"] == "Blender 4.5.0"
     assert report["godot"]["path"] == "C:/godot.exe"
     assert report["ffmpeg"]["version"] == "7.1"
@@ -138,7 +141,8 @@ def test_absent_binaries_report_a_reason_not_an_exception(nothing_present):
     be forgotten again; asking CHECKS cannot be.
     """
     report = doctor.check()
-    absent = [n for n in doctor.CHECKS if n != "python"]
+    absent = [n for n in doctor.CHECKS
+              if n != "python" and n not in doctor.SUMMARY_CHECKS]
     for name in absent:
         row = report[name]
         assert row["available"] is False, name
@@ -146,7 +150,12 @@ def test_absent_binaries_report_a_reason_not_an_exception(nothing_present):
         assert row["path"] in ("", "C:/py.exe"), name
     # python is the interpreter running this — it is always there.
     assert report["python"]["available"]
-    assert f"{len(absent)} unavailable" in doctor.summary(report)
+    # Counted from the report, not from `absent`: summary() counts every row it
+    # found unavailable, including the SUMMARY_CHECKS this test does not make
+    # claims about, and a machine that happens to have a coding-agent CLI
+    # installed moves that number.
+    unavailable = sum(1 for row in report.values() if not row["available"])
+    assert f"{unavailable} unavailable" in doctor.summary(report)
 
 
 def test_export_templates_must_match_the_editor_version(monkeypatch, tmp_path):

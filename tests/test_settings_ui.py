@@ -109,7 +109,11 @@ class TestRendersFromTheDescription:
 
 class TestCredentialsStaySeparate:
     def test_the_panel_never_reads_the_providers_endpoint(self):
-        assert "/api/providers" not in source(), (
+        """code(), not source(): the comment saying it never reads that
+        endpoint is not the module reading that endpoint. This asserted against
+        raw text and so failed the moment the module explained itself, which is
+        the exact failure code() exists to prevent."""
+        assert "/api/providers" not in code(), (
             "settingsview.js must not fetch credentials; providerkeys.js owns "
             "that endpoint, and this module owns none of the values")
 
@@ -122,8 +126,13 @@ class TestCredentialsStaySeparate:
         assert "api_key" not in body.lower()
 
     def test_the_host_is_moved_not_rebuilt(self):
+        """The id may be reached through the FOREIGN table rather than spelled
+        into a getElementById call. What matters is that the element is FOUND
+        and re-parented, not the shape of the lookup: there are three of these
+        hosts now and they share one code path."""
         body = code()
-        assert 'getElementById("pv-host")' in body, "the host is found by id"
+        assert "pv-host" in body, "the host is named"
+        assert "getElementById(" in body, "the host is found by id"
         assert "appendChild" in body, "the existing element is re-parented"
         assert 'id="pv-host"' not in body, (
             "settingsview.js is building a second #pv-host — providerkeys.js "

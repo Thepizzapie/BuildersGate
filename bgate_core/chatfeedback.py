@@ -484,8 +484,15 @@ def _key(text: str) -> str:
     return " ".join(str(text or "").lower().split())
 
 
-def group(got: list[dict], limit: int = chatlink.DIGEST_ITEMS) -> list[dict]:
+def group(got: list[dict], limit: Optional[int] = None) -> list[dict]:
     """Captured items -> the lines that go in the digest, deduplicated.
+
+    ``limit`` RESOLVES AT CALL TIME, and the default cannot be written as
+    ``limit=chatlink.DIGEST_ITEMS``. A default expression is evaluated once,
+    when this module is imported, so that spelling froze the ceiling at
+    whatever the constant happened to be then and no later change to
+    ``chatlink.DIGEST_ITEMS`` could move it. The symptom was a digest that
+    ignored the cap entirely.
 
     DEDUPLICATION IS THE FEATURE, NOT A SIZE OPTIMISATION. Forty people typing
     "the jump feels floaty" is one observation with forty-fold agreement, and
@@ -523,6 +530,8 @@ def group(got: list[dict], limit: int = chatlink.DIGEST_ITEMS) -> list[dict]:
         line["voices"] = len(line.pop("authors"))
     lines.sort(key=lambda ln: (0 if ln["marked"] else 1, -ln["voices"],
                                0 if ln["kind"] != "note" else 1, ln["at"]))
+    if limit is None:
+        limit = chatlink.DIGEST_ITEMS
     return lines[:max(1, int(limit))]
 
 

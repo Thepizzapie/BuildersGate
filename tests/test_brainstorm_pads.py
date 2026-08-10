@@ -70,16 +70,33 @@ class TestTheSurfaceIsTwoTools:
         assert len(padserver.TOOL_NAMES) == 2
 
     def test_the_module_reaches_nothing_else(self):
-        """No queue, no repo, no generators, no subprocess — by import, not by
-        intention. The big MCP server is ~150 tools including queue_add,
-        blender_run and real-money generators; the answer to "the partner needs
-        to see the pads" was a small server rather than a filtered big one."""
+        """No queue, no repo, no generators, no subprocess — BY IMPORT, which
+        is what this now checks.
+
+        It used to grep the whole source for the banned words, so the module
+        describing what it deliberately cannot do ("Nothing here queues work,
+        dispatches anyone or writes a project file") counted as doing it. The
+        docstring already said "by import, not by intention"; the assertion did
+        not. Walking the AST asserts the property that matters and leaves the
+        module free to explain itself.
+        """
+        import ast
         import inspect
 
-        source = inspect.getsource(padserver)
+        tree = ast.parse(inspect.getsource(padserver))
+        reached: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                reached.update(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                reached.add(base)
+                reached.update(f"{base}.{a.name}" for a in node.names)
+
+        joined = " ".join(reached).lower()
         for banned in ("queue", "subprocess", "blender", "image_generate",
                        "godot", "shutil", "requests"):
-            assert banned not in source.lower(), banned
+            assert banned not in joined, f"{banned} is reachable: {sorted(reached)}"
 
     def test_the_config_registers_this_server_and_only_this_server(self, pad):
         cfg = padserver.config(str(pad["root"]), pad["id"])

@@ -359,9 +359,13 @@ class TestSuno:
             {"id": "e231", "audioUrl": "https://example.test/x.mp3",
              "title": "Peaceful Piano", "duration": 198.44}]}}
         got = kie.music_tracks(rec)
+        # model_name and tags are normalised too, and absent in this record, so
+        # they come back empty rather than missing: a caller that reads
+        # track["tags"] should not have to know which fields Suno happened to
+        # send for one take.
         assert got == [{"id": "e231", "audio_url": "https://example.test/x.mp3",
                         "title": "Peaceful Piano", "duration": 198.44,
-                        "image_url": ""}]
+                        "model_name": "", "tags": "", "image_url": ""}]
 
     def test_a_record_with_no_tracks_is_empty_not_a_crash(self):
         assert kie.music_tracks({}) == []
