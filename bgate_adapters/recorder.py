@@ -158,16 +158,24 @@ def list_windows(filter_text: str = "") -> list[dict]:
     """Visible top-level windows, for targeting gdigrab at the game."""
     if sys.platform != "win32":
         return []
+    # ENCODING, PINNED AT BOTH ENDS. PowerShell 5.1 writes its output in the
+    # console OEM codepage, and subprocess(text=True) decodes with the ANSI
+    # codepage. Any window title containing a non-ASCII character therefore
+    # arrived mangled: "downsizing · builders gate - Google Chrome" (U+00B7)
+    # came back as "downsizing ú builders gate - Google Chrome", gdigrab could
+    # not match it, and the failure surfaced as "that window probably doesn't
+    # exist" — pointing at the game instead of at the decode.
     script = (
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
         "Get-Process | Where-Object { $_.MainWindowTitle } | "
         "Select-Object Id,ProcessName,MainWindowTitle | ConvertTo-Json -Compress"
     )
     proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                          capture_output=True, text=True, timeout=30,
+                          capture_output=True, timeout=30,
                           stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     import json
     try:
-        data = json.loads(proc.stdout or "[]")
+        data = json.loads(proc.stdout.decode("utf-8", "replace") or "[]")
     except json.JSONDecodeError:
         return []
     if isinstance(data, dict):
@@ -247,6 +255,132 @@ def resolve_window(window_title: Optional[str] = None, *,
 
 
 # ---------------------------------------------------------------------------
+# Where the window is — because gdigrab must NOT be pointed at it directly
+# ---------------------------------------------------------------------------
+# `gdigrab -i title=X` asks GDI for that window's device context. A Godot game
+# does not draw into one: it renders through Vulkan/D3D and presents a swapchain
+# the compositor owns, so GDI hands back the window's cleared background and
+# nothing else. gdigrab then draws the mouse cursor on top itself — which is
+# exactly the symptom, a black recording with a live cursor moving over it.
+# Measured on this machine against the Godot editor: every pixel of a title=
+# grab came back RGB(36,36,36), while a desktop grab of the same screen came
+# back with a full 0-255 range.
+#
+# The composited desktop DOES have the game in it, because DWM has already
+# flattened every GPU surface into it. So the capture is a desktop grab CROPPED
+# to the window's rectangle, which keeps the reason the title targeting existed
+# in the first place — an accidental desktop recording is somebody's inbox in a
+# bug report — while capturing frames that are actually there.
+#
+# The alternative is ddagrab (Desktop Duplication API), which also works here
+# and is cheaper on the GPU, but it needs a d3d11 hwdownload in the filter chain
+# and fails outright over RDP and on some drivers. A cropped gdigrab has neither
+# failure mode and needs nothing that is not already required.
+
+_SM_XVIRTUALSCREEN, _SM_YVIRTUALSCREEN = 76, 77
+_SM_CXVIRTUALSCREEN, _SM_CYVIRTUALSCREEN = 78, 79
+_DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+def window_rect(title: str) -> Optional[dict]:
+    """Where the window is, in ABSOLUTE virtual-screen coordinates, or None.
+
+    Absolute, NOT relative to the virtual desktop's origin: when ``-video_size``
+    is given, gdigrab assigns ``clip_rect.left = offset_x`` outright rather than
+    adding it to that origin. Subtracting the origin first put the crop a full
+    monitor-width to the right on a machine whose second screen sits to the left
+    of the primary, and ffmpeg refused the input rather than recording the wrong
+    thing — "Capture area extends outside window area".
+
+    The rectangle comes from DWM's extended frame bounds rather than
+    ``GetWindowRect``, which since Windows 10 includes an invisible ~8px resize
+    border on every side. Measured on the Godot editor here: GetWindowRect says
+    (-8,-8)-(1928,1040) for a window whose visible bounds are (0,0)-(1920,1032),
+    and those eight pixels of overhang are themselves outside the desktop and
+    enough to make ffmpeg refuse.
+
+    Clamped to the virtual desktop as a backstop, because a window can be
+    dragged half off-screen and a crop that leaves the canvas is a hard failure
+    at open time, not a cosmetic one.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found = ctypes.c_void_p()
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _each(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if not length:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        if buf.value == title:
+            found.value = hwnd
+            return False           # stop enumerating
+        return True
+
+    user32.EnumWindows(_each, 0)
+    if not found.value:
+        return None
+    hwnd = wintypes.HWND(found.value)
+
+    rect = wintypes.RECT()
+    try:
+        ok = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+            hwnd, _DWMWA_EXTENDED_FRAME_BOUNDS,
+            ctypes.byref(rect), ctypes.sizeof(rect)) == 0
+    except Exception:               # no dwmapi: compositing off, or wine
+        ok = False
+    if not ok and not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+
+    left, top = rect.left, rect.top
+    right, bottom = rect.right, rect.bottom
+    vx, vy = (user32.GetSystemMetrics(_SM_XVIRTUALSCREEN),
+              user32.GetSystemMetrics(_SM_YVIRTUALSCREEN))
+    vr = vx + user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN)
+    vb = vy + user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN)
+    left, top = max(left, vx), max(top, vy)
+    right, bottom = min(right, vr), min(bottom, vb)
+
+    # Even dimensions here, not just in the scale filter: an odd-width crop is
+    # rejected when the input is opened, which is before any filter runs.
+    width = (right - left) // 2 * 2
+    height = (bottom - top) // 2 * 2
+    if width <= 0 or height <= 0:   # minimised, or dragged fully off-screen
+        return None
+    return {"x": left, "y": top, "width": width, "height": height}
+
+
+def _video_input(window_title: Optional[str], fps: int) -> tuple[list[str], str]:
+    """The ffmpeg input args for the video stream, plus what they will capture.
+
+    Always a desktop grab. When the window can be located it is cropped to that
+    rectangle; when it cannot, the crop is dropped rather than the recording —
+    a whole-desktop capture is embarrassing, a black one is useless.
+    """
+    args = ["-f", "gdigrab", "-framerate", str(fps), "-draw_mouse", "1"]
+    if not window_title:
+        return [*args, "-i", "desktop"], "the whole desktop"
+    rect = window_rect(window_title)
+    if not rect:
+        return ([*args, "-i", "desktop"],
+                f"the whole desktop — {window_title!r} could not be located, so "
+                "the crop was dropped rather than the recording")
+    args += ["-offset_x", str(rect["x"]), "-offset_y", str(rect["y"]),
+             "-video_size", f"{rect['width']}x{rect['height']}"]
+    return ([*args, "-i", "desktop"],
+            f"{window_title!r} at {rect['width']}x{rect['height']}, cropped out "
+            "of the composited desktop")
+
+
+# ---------------------------------------------------------------------------
 # Recording
 # ---------------------------------------------------------------------------
 @dataclass
@@ -260,6 +394,10 @@ class Recording:
     audio_started_at: float = 0.0
     window_title: Optional[str] = None
     window_note: str = ""
+    # What the video stream is ACTUALLY pointed at, which is not always what
+    # window_note resolved — a window that cannot be located falls back to an
+    # uncropped desktop, and that has to be visible rather than inferred.
+    capture_note: str = ""
     mic_name: str = ""
     _proc: Optional[subprocess.Popen] = None
     _stream: object = None
@@ -313,10 +451,13 @@ def start(out_dir: str | Path, *, window_title: Optional[str] = None,
     rec.mic_name = probe.get("name", "")
 
     # --- video ---------------------------------------------------------
-    target = f"title={window_title}" if window_title else "desktop"
+    # A CROPPED DESKTOP GRAB, never `title=`. See window_rect above for why
+    # pointing gdigrab at a Godot window records a black rectangle.
+    video_in, capture_note = _video_input(window_title, fps)
+    rec.capture_note = capture_note
     cmd = [
         ffmpeg, "-y", "-loglevel", "warning",
-        "-f", "gdigrab", "-framerate", str(fps), "-i", target,
+        *video_in,
         # yuv420p + even dims: anything else won't play in half the world's players
         "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -333,8 +474,8 @@ def start(out_dir: str | Path, *, window_title: Optional[str] = None,
     if rec._proc.poll() is not None:
         err = (rec._proc.stderr.read() or b"").decode("utf-8", "replace")
         raise RecorderError(
-            f"ffmpeg died immediately (exit {rec._proc.returncode}). "
-            f"Window title {window_title!r} probably doesn't exist. {err[-400:]}"
+            f"ffmpeg died immediately (exit {rec._proc.returncode}) capturing "
+            f"{capture_note}. {err[-400:]}"
         )
 
     # --- audio ---------------------------------------------------------
