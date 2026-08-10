@@ -140,10 +140,37 @@ def touched(root: str | os.PathLike[str], base: str) -> dict:
             "untracked": untracked}
 
 
-def _binary_size_delta(root: Path, base: str, path: str) -> dict:
+def _blob_sizes(root: Path, base: str) -> dict[str, int]:
+    """Every blob size at ``base``, in one call.
+
+    Same lesson as _split_by_file: `cat-file -s` per binary was another process
+    per file, and an art item's scope is mostly binaries. `ls-tree -r -l` gives
+    the whole tree's sizes in one spawn. Returns {} on failure, which leaves the
+    per-file path below as the fallback.
+    """
+    ok, out, _ = _run(root, ["ls-tree", "-r", "-l", base], timeout=60)
+    if not ok:
+        return {}
+    sizes: dict[str, int] = {}
+    for line in out.splitlines():
+        # "<mode> <type> <sha> <size>\t<path>"
+        meta, tab, path = line.partition("\t")
+        if not tab:
+            continue
+        parts = meta.split()
+        if len(parts) >= 4 and parts[3].isdigit():
+            sizes[_unquote(path)] = int(parts[3])
+    return sizes
+
+
+def _binary_size_delta(root: Path, base: str, path: str,
+                       sizes: Optional[dict[str, int]] = None) -> dict:
     """Name + byte delta for a binary, because dumping the bytes helps nobody."""
-    ok, out, _ = _run(root, ["cat-file", "-s", f"{base}:{path}"], timeout=10)
-    before = int(out.strip()) if ok and out.strip().isdigit() else 0
+    if sizes is not None and path in sizes:
+        before = sizes[path]
+    else:
+        ok, out, _ = _run(root, ["cat-file", "-s", f"{base}:{path}"], timeout=10)
+        before = int(out.strip()) if ok and out.strip().isdigit() else 0
     try:
         after = (root / path).stat().st_size
     except OSError:
@@ -174,6 +201,53 @@ def _new_file_diff(root: Path, path: str) -> dict:
             "added": len(lines), "removed": 0}
 
 
+def _split_by_file(text: str) -> dict[str, str]:
+    """One `git diff` output carved into its per-file sections.
+
+    THE ALTERNATIVE WAS A SUBPROCESS PER FILE, AND IT DID NOT SCALE. `diff()`
+    used to run `git diff <base> -- <path>` once per changed path. On an item
+    whose base commit is shared with forty other runs the scope is the whole
+    working tree — 1835 files on the project this was found in — and at roughly
+    50ms per process spawn on Windows that is a minute and a half of subprocess
+    overhead for work git does in ONE second. The endpoint simply never
+    answered: /api/queue/334/diff returned nothing after 90 seconds.
+
+    Git already writes the per-file sections in one stream, each opening with
+    `diff --git a/<path> b/<path>`, so the split is free. Paths with spaces or
+    non-ASCII come back quoted, which is what `_unquote` handles.
+    """
+    out: dict[str, str] = {}
+    if not text:
+        return out
+    for chunk in text.split("\ndiff --git ")[0:]:
+        chunk = chunk.lstrip()
+        if chunk.startswith("diff --git "):
+            chunk = chunk[len("diff --git "):]
+        if not chunk:
+            continue
+        header, _, _rest = chunk.partition("\n")
+        # `a/<path> b/<path>`; take the b-side, which is the name after any
+        # rename, and is what the caller keyed the scope list by.
+        marker = header.rfind(" b/")
+        if marker == -1:
+            continue
+        path = _unquote(header[marker + 3:].strip())
+        out[path] = "diff --git " + chunk
+    return out
+
+
+def _unquote(path: str) -> str:
+    """Git quotes paths with spaces or non-ASCII; the scope list does not."""
+    path = path.strip()
+    if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
+        try:
+            return path[1:-1].encode("latin-1", "backslashreplace") \
+                             .decode("unicode_escape")
+        except Exception:
+            return path[1:-1]
+    return path
+
+
 def diff(root: str | os.PathLike[str], base: str,
          paths: Optional[Iterable[str]] = None) -> dict:
     """Per-file unified diffs since ``base`` — the surface the reviewer reads."""
@@ -195,6 +269,17 @@ def diff(root: str | os.PathLike[str], base: str,
             if len(parts) >= 3:
                 stats[parts[2].strip().strip('"')] = (parts[0], parts[1])
 
+    # ONE call for every tracked file's text, split locally. See _split_by_file:
+    # the per-path loop this replaced spawned a process per file and timed the
+    # endpoint out entirely on a large shared base. Scoped to `wanted` when the
+    # caller asked for specific paths, so a single-file request stays cheap.
+    bulk_args = ["diff", base, "--"] + (sorted(wanted) if wanted else [])
+    ok_bulk, bulk_text, bulk_err = _run(root, bulk_args, timeout=60)
+    sections = _split_by_file(bulk_text) if ok_bulk else {}
+    # Binary sizes in one call too — an art item's scope is mostly binaries, and
+    # a cat-file per file is the same mistake in a different place.
+    blob_sizes = _blob_sizes(root, base)
+
     files = []
     for path in scope["paths"]:
         if wanted is not None and path not in wanted:
@@ -208,19 +293,24 @@ def diff(root: str | os.PathLike[str], base: str,
         entry = {"path": path,
                  "status": "deleted" if not (root / path).exists() else "modified"}
         if added == "-" or removed == "-":
-            entry.update(_binary_size_delta(root, base, path))
+            entry.update(_binary_size_delta(root, base, path, blob_sizes))
             files.append(entry)
             continue
-        ok, text, err = _run(root, ["diff", base, "--", path], timeout=30)
+        text = sections.get(path, "")
         entry.update({
             "binary": False,
             "added": int(added) if added.isdigit() else 0,
             "removed": int(removed) if removed.isdigit() else 0,
-            "diff": text[:MAX_DIFF_CHARS] if ok else "",
-            "truncated": ok and len(text) > MAX_DIFF_CHARS,
+            "diff": text[:MAX_DIFF_CHARS],
+            "truncated": len(text) > MAX_DIFF_CHARS,
         })
-        if not ok:
-            entry["error"] = err
+        # A path git listed as changed but whose section we could not find is a
+        # parsing miss, not an empty diff — say so rather than showing "no
+        # changes" for a file that has them.
+        if not ok_bulk:
+            entry["error"] = bulk_err
+        elif not text:
+            entry["error"] = "no diff section returned for this path"
         files.append(entry)
     return {"available": True, "reason": "", "base": base, "files": files,
             "count": len(files)}
