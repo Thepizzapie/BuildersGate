@@ -54,12 +54,10 @@ window.SceneBuild = (() => {
   };
   const roleOf = r => ROLE[r] || ROLE.node;
 
-  /* The project scan, from whoever loaded it. Atlas owns the shared copy and
-     paints the nav badge from it on startup; AtlasGraph only has one once its
-     mode has been opened. Reading AtlasGraph first made the scene picker empty
-     for anyone who came straight here. */
-  const atlasMap = () => (window.Atlas && Atlas.map)
-    || (window.AtlasGraph && AtlasGraph.map) || null;
+  /* The project scan. Atlas owns the one shared copy — it is a whole-project
+     walk of every .tscn/.gd/.tres, so it is loaded once and read from here.
+     `Atlas.ensure()` is what fills it; this accessor only reads. */
+  const atlasMap = () => (window.Atlas && Atlas.map) || null;
 
   /* Role labels are plural because they name buckets ("characters"), but a
      count of one reads as broken text: "1 nodes". */
@@ -82,8 +80,26 @@ window.SceneBuild = (() => {
 
   const COL_W = 300, ROW_H = 190, PAD_X = 40, PAD_Y = 40;
 
+  const I = (name, size) =>
+    window.BGIcon ? BGIcon(name, { size: size || 16 }) : "";
+
   let nc = null, scene = null, data = null, types = null;
   let sel = null, filter = new Set(), busy = false;
+  /* SELECTION LIVES HERE, for both surfaces.
+     `sel` is the primary — the one the inspector shows and a range anchors
+     from — and `selection` is everything picked, primary included. Keeping the
+     set here rather than in the viewport is not arbitrary: a shift-click means
+     "everything between these two IN THE TREE", and the tree's order is this
+     module's to know. */
+  let selection = new Set(), anchor = null, pickOrder = null;
+  /* The tree. `open` is which paths are expanded, `rows` is what is on screen
+     in display order (the order a range means), and `els` is path -> row so a
+     selection change can touch the handful of rows that changed instead of
+     rebuilding 317 of them. */
+  let treeOpen = new Set(), treeQ = "", treeRows = [], treeEls = new Map();
+  let treeLit = new Set();      // what paintTreeSel() last marked
+  let byPath = new Map(), kidsOf = new Map();
+  let clipboard = null;         // { clones: [...] } from clonePlans()
   let healing = false;        // guards the render() self-heal from looping
   let repaintPending = false; // a repaint deferred until the picker closes
   // The viewport is the primary surface — it is where things are PLACED. The
@@ -113,7 +129,11 @@ window.SceneBuild = (() => {
       ".sb-surf button{font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;padding:5px 11px;border:1px solid var(--seam);border-radius:999px;background:none;color:var(--ash);cursor:pointer}",
       ".sb-surf button:hover{border-color:var(--ember);color:var(--bone)}",
       ".sb-surf button.on{background:var(--plate);border-color:var(--ember);color:var(--bone)}",
-      ".sb-side{width:308px;flex:none;border-left:1px solid var(--seam);background:var(--iron);overflow-y:auto;padding:13px}",
+      ".sb-side{width:var(--sb-side-w,308px);flex:none;border-left:1px solid var(--seam);background:var(--iron);overflow-y:auto;padding:13px}",
+      // A flex item, not an absolute overlay: this boundary is a real seam
+      // between two panes that both want the width, so it takes its 7px from
+      // the layout the way a border would.
+      ".sb-split{flex:none;width:7px;margin-right:-7px;z-index:4}",
       ".sb-bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:10px}",
       ".sb-in{background:var(--void);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;padding:5px 9px}",
       ".sb-in:focus{outline:none;border-color:var(--ember)}",
@@ -144,7 +164,7 @@ window.SceneBuild = (() => {
       // node bodies
       ".sb-nb{font-family:var(--mono);font-size:10px;color:var(--ash);line-height:1.5}",
       ".sb-nb .ty{color:var(--ash2);font-size:9px;letter-spacing:.08em;text-transform:uppercase}",
-      ".sb-nb .sc{color:var(--c-narrative);word-break:break-all;font-size:9px}",
+      ".sb-nb .sc{display:flex;gap:4px;align-items:center;color:var(--c-narrative);word-break:break-all;font-size:9px}",
       ".sb-nb .res{display:flex;gap:6px;align-items:center;margin-top:6px;padding:4px;border:1px solid var(--seam);border-radius:6px;background:var(--void)}",
       ".sb-nb .res img{width:44px;height:34px;object-fit:contain;image-rendering:pixelated;background:var(--bg);border-radius:4px;flex:none}",
       ".sb-nb .res .k{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px}",
@@ -156,7 +176,7 @@ window.SceneBuild = (() => {
       ".sb-nb .acts button:hover{border-color:var(--ember)}",
       ".sb-prop{display:flex;gap:6px;align-items:center;font-family:var(--mono);font-size:9.5px;color:var(--ash2);padding:3px 0;border-bottom:1px solid var(--seam)}",
       ".sb-prop b{color:var(--bone);font-weight:400}",
-      ".sb-prop .x{margin-left:auto;cursor:pointer}",
+      ".sb-prop .x{margin-left:auto;display:inline-flex;align-items:center;background:none;border:0;padding:0;color:inherit;cursor:pointer}",
       ".sb-prop .x:hover{color:var(--bad)}",
       ".sb-pal{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}",
       ".sb-palh{font-family:var(--mono);font-size:8.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--ash2);margin:8px 0 4px}",
@@ -178,6 +198,54 @@ window.SceneBuild = (() => {
       ".sb-pick:hover{background:var(--plate)}",
       ".sb-pick img{width:40px;height:32px;object-fit:contain;image-rendering:pixelated;background:var(--bg);border-radius:4px;border:1px solid var(--seam);flex:none}",
       ".sb-pick .m{margin-left:auto;color:var(--ash2);font-size:9px}",
+
+      /* ── the scene tree ────────────────────────────────────────────────────
+         Godot's primary navigation, and the thing this panel most obviously
+         did not have: eleven flat layer chips standing in for a 317-node
+         hierarchy. A chip cannot tell you that Desk_14 is under Props which is
+         under the root, and "which of these forty is the one I mean" is the
+         question you have open the entire time you are dressing a room. */
+      ".sb-tree{width:var(--sb-tree-w,246px);flex:none;border-right:1px solid var(--line);background:var(--surface-1);display:flex;flex-direction:column;min-height:0}",
+      ".sb-tsplit{flex:none;width:7px;margin-left:-7px;z-index:4}",
+      ".sb-thd{display:flex;align-items:center;gap:5px;padding:6px 8px;border-bottom:1px solid var(--line);flex:none}",
+      ".sb-thd input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);font:inherit;font-size:11px;padding:4px 7px}",
+      ".sb-thd input:focus{outline:none;border-color:var(--accent)}",
+      ".sb-tb{display:inline-flex;align-items:center;justify-content:center;padding:4px;background:none;border:1px solid var(--line);border-radius:6px;color:var(--text-2);cursor:pointer}",
+      ".sb-tb:hover{border-color:var(--accent);color:var(--text)}",
+      ".sb-tcount{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-3);padding:4px 8px;border-bottom:1px solid var(--line-soft);flex:none}",
+      ".sb-tlist{flex:1;min-height:0;overflow:auto;padding:3px 0;scrollbar-width:thin}",
+      // One row, one grid: twisty, dot, name, type, eye. Indent rides on --d so
+      // depth costs no extra element and no per-row stylesheet.
+      ".sb-tr{display:flex;align-items:center;gap:5px;padding:2px 6px 2px calc(4px + var(--d,0) * 13px);font-size:11.5px;color:var(--text-2);cursor:default;white-space:nowrap;border-left:2px solid transparent}",
+      ".sb-tr:hover{background:var(--surface-2)}",
+      ".sb-tr.on{background:var(--accent-soft);color:var(--text)}",
+      ".sb-tr.pri{border-left-color:var(--accent);background:var(--accent-soft);color:var(--text)}",
+      ".sb-tr.off .nm{opacity:.45;text-decoration:line-through}",
+      ".sb-tr .nm{overflow:hidden;text-overflow:ellipsis;min-width:0}",
+      ".sb-tr .ty{font-family:var(--mono);font-size:8.5px;color:var(--text-3);margin-left:auto;padding-left:6px;flex:none}",
+      ".sb-tr .dot{width:7px;height:7px;border-radius:2px;flex:none}",
+      ".sb-tr .hi{color:var(--accent);font-weight:var(--fw-semi)}",
+      ".sb-tr .eye{display:inline-flex;align-items:center;background:none;border:0;padding:0 2px;color:var(--text-3);cursor:pointer;flex:none;opacity:.35}",
+      ".sb-tr:hover .eye,.sb-tr.off .eye{opacity:1}",
+      ".sb-tr .eye:hover{color:var(--accent)}",
+      ".sb-tr .eye .bgi .e{stroke:currentColor}",
+      // The twisty is drawn, not typed. A unicode triangle resolves out of whatever symbol
+      // font the OS falls back to — the exact drift icons.js exists to end —
+      // and a triangle this small is three borders.
+      ".sb-tw{width:12px;height:12px;flex:none;background:none;border:0;padding:0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}",
+      ".sb-tw:disabled{cursor:default}",
+      ".sb-tw::before{content:'';width:0;height:0;border-left:4.5px solid var(--text-3);border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;transition:transform .1s}",
+      ".sb-tw:disabled::before{border-left-color:transparent}",
+      ".sb-tw.open::before{transform:rotate(90deg)}",
+      ".sb-tw:hover::before{border-left-color:var(--accent)}",
+      ".sb-tnone{font-size:11px;color:var(--text-3);padding:10px 9px;line-height:1.5}",
+      // The batch inspector. A selection of twenty has no `position` field to
+      // show, and pretending otherwise is how one node gets edited instead.
+      ".sb-many{border:1px solid var(--accent-line);border-radius:8px;padding:8px 10px;margin-bottom:10px;background:var(--surface-1)}",
+      ".sb-many .hd{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:5px}",
+      ".sb-many ul{margin:6px 0 0;padding-left:16px;font-size:11px;color:var(--text-2);line-height:1.6}",
+      ".sb-keys{font-family:var(--mono);font-size:9.5px;color:var(--text-3);line-height:1.7}",
+      ".sb-keys b{color:var(--text-2);font-weight:400}",
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -254,7 +322,259 @@ window.SceneBuild = (() => {
       return false;
     }
     data = d;
+    indexTree();
     return true;
+  }
+
+  /* ── the scene tree ───────────────────────────────────────────────────────
+   * The outline arrives as a flat list with parent links, which is the right
+   * shape to send and the wrong shape to walk. Index it once per load: 317
+   * nodes rebuilt on every keystroke of the filter would make typing feel like
+   * the panel is thinking.
+   */
+  function indexTree(){
+    byPath = new Map(); kidsOf = new Map();
+    const nodes = (data && data.nodes) || [];
+    nodes.forEach(n => { byPath.set(n.path, n); kidsOf.set(n.path, []); });
+    nodes.forEach(n => {
+      if (n.parent === null || n.parent === undefined) return;
+      const bucket = kidsOf.get(n.parent === "." ? "." : n.parent);
+      if (bucket) bucket.push(n);
+    });
+    /* HOW MUCH TO OPEN ON ARRIVAL, and why it is not a fixed depth.
+       Root-only shows the layers and nothing about them. Root-plus-layers is
+       right on a hand-built scene and catastrophic on a dressed one: this
+       project's floor has eleven layers and five hundred props under them, so
+       "open the layers" is five hundred rows of identical desks before you
+       have asked anything. So open the layers only while the whole scene still
+       fits in a glance, and otherwise leave the operator the eleven rows that
+       actually describe it. */
+    if (!treeOpen.size){
+      treeOpen.add(".");
+      if (nodes.length <= 60)
+        (kidsOf.get(".") || []).forEach(n => treeOpen.add(n.path));
+    }
+    // A path that no longer exists must not keep a branch pinned open.
+    [...treeOpen].forEach(p => { if (!byPath.has(p)) treeOpen.delete(p); });
+    [...selection].forEach(p => { if (!byPath.has(p)) selection.delete(p); });
+    if (sel && !byPath.has(sel)) sel = null;
+  }
+
+  const depthOf = p => p === "." ? 0 : p.split("/").length;
+
+  /* Highlight the match inside the name. Both sides are escaped before the
+     search, so the indices line up on the escaped string and nothing that came
+     out of the file can reach innerHTML unescaped. */
+  function hl(text, q){
+    const t = E(text);
+    if (!q) return t;
+    const needle = E(q);
+    const at = t.toLowerCase().indexOf(needle.toLowerCase());
+    if (at < 0) return t;
+    return t.slice(0, at) + `<b class="hi">` + t.slice(at, at + needle.length)
+         + `</b>` + t.slice(at + needle.length);
+  }
+
+  /* Is this node visible IN THE GAME — the real `visible` property, staged
+     edits included. The layer strip's eyes are a view filter and a different
+     thing entirely; this one changes the scene. */
+  function nodeVisible(path){
+    const drawn = window.SceneView && SceneView.list;
+    if (drawn){
+      const it = drawn.items.find(i => i.path === path);
+      if (it) return it.visible !== false;
+    }
+    const n = byPath.get(path);
+    return !n || (n.properties || {}).visible !== "false";
+  }
+
+  function treeRow(n, depth, kidCount, open, q){
+    const info = roleOf(n.role);
+    const on = selection.has(n.path);
+    const vis = nodeVisible(n.path);
+    const label = n.path === "." ? (data.root || "root") : n.name;
+    return `<div class="sb-tr${on ? " on" : ""}${n.path === sel ? " pri" : ""}${
+      vis ? "" : " off"}" data-path="${E(n.path)}" style="--d:${depth}"
+      role="treeitem" aria-level="${depth + 1}" aria-selected="${on}"${
+      kidCount ? ` aria-expanded="${open}"` : ""}>
+      <button class="sb-tw${open ? " open" : ""}" data-tw="${E(n.path)}"${
+        kidCount ? "" : " disabled"} tabindex="-1"
+        aria-label="${open ? "Collapse" : "Expand"} ${E(label)}"
+        title="${kidCount ? `${kidCount} child node(s)` : "no children"}"></button>
+      <i class="dot" style="background:${info.c}" title="${E(info.label)}"></i>
+      <span class="nm" title="${E(n.path)}">${hl(label, q)}</span>
+      <span class="ty">${E(n.type === "(instance)" ? "instance" : (n.type || ""))}</span>
+      <button class="eye" data-eye="${E(n.path)}" tabindex="-1"
+        title="${vis ? "Hide" : "Show"} ${E(label)} in the game — staged, like every other edit"
+        aria-label="${vis ? "Hide" : "Show"} ${E(label)}">${
+        I(vis ? "visible" : "hidden", 12)}</button>
+    </div>`;
+  }
+
+  function treeHTML(){
+    if (!data) return "";
+    const q = treeQ.trim().toLowerCase();
+    /* A filter REVEALS, it does not extract. Showing only the matches throws
+       away where they are, which on a scene with nine nodes called `Body` is
+       the only thing that tells them apart — so the ancestors of every hit
+       come too, and everything on the path is forced open. */
+    let keep = null;
+    if (q){
+      keep = new Set();
+      (data.nodes || []).forEach(n => {
+        const hay = `${n.name} ${n.type || ""}`.toLowerCase();
+        if (!hay.includes(q)) return;
+        keep.add(n.path);
+        let p = n.parent;
+        while (p !== null && p !== undefined && !keep.has(p)){
+          keep.add(p);
+          const up = byPath.get(p);
+          p = up ? up.parent : null;
+        }
+      });
+    }
+    treeRows = [];
+    const out = [];
+    const walk = (n, depth) => {
+      if (keep && !keep.has(n.path)) return;
+      const kids = (kidsOf.get(n.path) || [])
+        .filter(k => !keep || keep.has(k.path));
+      const open = keep ? true : treeOpen.has(n.path);
+      treeRows.push(n.path);
+      out.push(treeRow(n, depth, kids.length, open, q));
+      if (open) kids.forEach(k => walk(k, depth + 1));
+    };
+    const root = byPath.get(".");
+    if (root) walk(root, 0);
+    if (!out.length) return `<div class="sb-tnone">nothing matches “${E(treeQ)}”.</div>`;
+    return out.join("");
+  }
+
+  function renderTree(){
+    const listEl = document.getElementById("sb-tlist");
+    if (!listEl) return;
+    const top = listEl.scrollTop;
+    listEl.innerHTML = treeHTML();
+    treeEls = new Map();
+    listEl.querySelectorAll(".sb-tr").forEach(el =>
+      treeEls.set(el.dataset.path, el));
+    treeLit = new Set();
+    paintTreeSel();
+    listEl.scrollTop = top;
+    const count = document.getElementById("sb-tcount");
+    if (count) count.textContent = treeQ.trim()
+      ? `${treeRows.length} shown of ${(data.nodes || []).length}`
+      : `${(data.nodes || []).length} nodes · ${treeRows.length} open`;
+  }
+
+  /* SELECTION DOES NOT REBUILD THE TREE. 317 rows of innerHTML per click is
+     how a tree panel becomes the slowest thing in the editor; only the rows
+     that changed state are touched. */
+  function paintTreeSel(){
+    const now = new Set([...selection].filter(p => treeEls.has(p)));
+    treeLit.forEach(p => {
+      if (now.has(p)) return;
+      const el = treeEls.get(p);
+      if (el){ el.classList.remove("on"); el.setAttribute("aria-selected", "false"); }
+    });
+    now.forEach(p => {
+      const el = treeEls.get(p);
+      if (el){ el.classList.add("on"); el.setAttribute("aria-selected", "true"); }
+    });
+    treeLit = now;
+    treeEls.forEach((el, p) => el.classList.toggle("pri", p === sel));
+  }
+
+  function paintTreeVis(path){
+    const el = treeEls.get(path);
+    if (!el) return;
+    const vis = nodeVisible(path);
+    el.classList.toggle("off", !vis);
+    const b = el.querySelector(".eye");
+    if (!b) return;
+    const label = el.querySelector(".nm");
+    const name = label ? label.textContent : path;
+    b.innerHTML = I(vis ? "visible" : "hidden", 12);
+    b.title = `${vis ? "Hide" : "Show"} ${name} in the game — staged, like `
+            + "every other edit";
+    b.setAttribute("aria-label", `${vis ? "Hide" : "Show"} ${name}`);
+  }
+
+  /* Bring a node into view, opening whatever is hiding it. Called when the
+     selection arrives from the viewport, which is the case the tree exists to
+     answer: "I clicked that thing — where does it live?" */
+  function revealTree(path){
+    if (!path || !byPath.has(path)) return;
+    let grew = false;
+    let p = byPath.get(path).parent;
+    while (p !== null && p !== undefined){
+      if (!treeOpen.has(p)){ treeOpen.add(p); grew = true; }
+      const up = byPath.get(p);
+      p = up ? up.parent : null;
+    }
+    if (grew) renderTree();
+    const el = treeEls.get(path);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }
+
+  function treeToggle(path){
+    treeOpen.has(path) ? treeOpen.delete(path) : treeOpen.add(path);
+    renderTree();
+  }
+  function treeExpandAll(){
+    (data.nodes || []).forEach(n => {
+      if ((kidsOf.get(n.path) || []).length) treeOpen.add(n.path);
+    });
+    renderTree();
+  }
+  function treeCollapseAll(){
+    treeOpen = new Set(["."]);
+    renderTree();
+  }
+  function treeFilter(v){
+    treeQ = String(v || "");
+    renderTree();
+  }
+  function treeFocus(){
+    const el = document.getElementById("sb-tq");
+    if (el){ el.focus(); el.select(); }
+  }
+
+  /* One listener for the whole tree, not one per row. 317 inline handlers is
+     317 closures rebuilt on every expand. */
+  function bindTree(root){
+    const listEl = root.querySelector("#sb-tlist");
+    if (!listEl || listEl.dataset.bound) return;
+    listEl.dataset.bound = "1";
+    listEl.addEventListener("click", ev => {
+      const tw = ev.target.closest("[data-tw]");
+      if (tw){ ev.stopPropagation(); treeToggle(tw.dataset.tw); return; }
+      const eye = ev.target.closest("[data-eye]");
+      if (eye){ ev.stopPropagation(); toggleVisible(eye.dataset.eye); return; }
+      const row = ev.target.closest(".sb-tr");
+      if (!row) return;
+      pick(row.dataset.path, ev.shiftKey ? "range"
+        : (ev.ctrlKey || ev.metaKey) ? "toggle" : "set");
+    });
+    listEl.addEventListener("dblclick", ev => {
+      const row = ev.target.closest(".sb-tr");
+      if (row) treeToggle(row.dataset.path);
+    });
+  }
+
+  /* The eye writes the node's real `visible`. In the viewport it stages with
+     everything else; on the graph surface — where nothing is staged — it goes
+     through the same diff-then-write every other structural edit does. */
+  function toggleVisible(path){
+    const want = !nodeVisible(path);
+    if (surface === "viewport" && window.SceneView && SceneView.list){
+      SceneView.stageVisible(path, want);
+      paintTreeVis(path);
+      return;
+    }
+    step("/api/scene/node/property",
+         { node: path, key: "visible", value: want ? "true" : "false" },
+         `${want ? "show" : "hide"} ${path}`);
   }
 
   /* ── layout ───────────────────────────────────────────────────────────── */
@@ -297,7 +617,7 @@ window.SceneBuild = (() => {
     const res = (n.resources || []).filter(r => r.property !== "script");
     return `<div class="sb-nb">
       <div class="ty">${E(n.type || "node")}${n.instance ? " · instance" : ""}</div>
-      ${n.script ? `<div class="sc">⌁ ${E(n.script.split("/").pop())}</div>` : ""}
+      ${n.script ? `<div class="sc">${I("tech", 11)}<span>${E(n.script.split("/").pop())}</span></div>` : ""}
       ${res.map(r => `
         <div class="res${r.exists ? "" : " missing"}">
           ${r.preview ? `<img loading="lazy" src="/api/preview?rel=${encodeURIComponent(r.preview)}" alt="">` : ""}
@@ -360,7 +680,7 @@ window.SceneBuild = (() => {
           <button class="${surface==='graph'?'on':''}" onclick="SceneBuild.setSurface('graph')">graph</button>
         </div>
         <select class="sb-in" onchange="SceneBuild.setScene(this.value)">
-          ${screens.map(s => `<option value="${E(s.id)}"${s.id===scene?" selected":""}>⊞ ${E(s.label)}</option>`).join("")
+          ${screens.map(s => `<option value="${E(s.id)}"${s.id===scene?" selected":""}>${E(s.label)}</option>`).join("")
             || `<option>${E(scene)}</option>`}
         </select>
         ${Object.keys(roles).sort().map(r => {
@@ -374,16 +694,62 @@ window.SceneBuild = (() => {
         <button class="sb-b" onclick="SceneBuild.refresh()">reread</button>
       </div>
       <div class="sb-wrap">
+        <!-- The hierarchy, on the left, where the thing you navigate with
+             lives. Filter reveals in place; the eye writes the node's real
+             visible property and stages like everything else. -->
+        <div class="sb-tree" id="sb-tree" role="tree" aria-label="Scene tree">
+          <div class="sb-thd">
+            <input id="sb-tq" type="search" value="${E(treeQ)}"
+                   placeholder="filter nodes — Ctrl+F"
+                   aria-label="Filter the scene tree"
+                   oninput="SceneBuild.treeFilter(this.value)">
+            <button class="sb-tb" onclick="SceneBuild.treeCollapseAll()"
+                    title="Collapse back to the layers" aria-label="Collapse the tree"
+                    >${I("collapse_all", 14)}</button>
+          </div>
+          <div class="sb-tcount" id="sb-tcount"></div>
+          <div class="sb-tlist" id="sb-tlist"></div>
+        </div>
+        <div class="split sb-tsplit" data-split="sb-tree" data-split-var="--sb-tree-w"
+             data-split-on=".sb-wrap" data-split-pane="#sb-tree" data-split-edge="start"
+             data-split-min="170" data-split-max="46%"
+             aria-label="Resize the scene tree — arrow keys adjust, Home resets"></div>
         <div class="sb-view" id="sb-view" ${surface==='viewport'?'':'hidden'}></div>
         <div class="sb-canvas" id="sb-canvas" ${surface==='graph'?'':'hidden'}></div>
+        <!-- The inspector's edge. 308px was chosen for the property rows, but
+             this panel also holds node names and resource paths, which are as
+             long as the project makes them. Dragging is the only way to read
+             one without truncation. -->
+        <div class="split sb-split" data-split="sb-side" data-split-var="--sb-side-w"
+             data-split-on=".sb-wrap" data-split-pane="#sb-side" data-split-edge="end"
+             data-split-min="220" data-split-max="60%"
+             aria-label="Resize the inspector — arrow keys adjust, Home resets"></div>
         <div class="sb-side" id="sb-side"></div>
       </div>`;
+
+    // The handle was just rebuilt with the rest of the panel, so it needs
+    // binding again. init() is idempotent per element — re-running it over a
+    // scope that still holds live handles is free.
+    if (window.Split) Split.init(host);
+    bindTree(host);
+    renderTree();
+    installKeys();
 
     if (surface === "graph"){
       const { nodes, edges } = build();
       nc = new NodeCanvas(document.getElementById("sb-canvas"), {
-        nodes, edges, renderBody, accent: "var(--ember)",
-        onSelect: node => select(node ? node.id : null),
+        nodes, edges, renderBody, accent: "var(--accent)",
+        // The canvas runs its own ctrl/shift multi-select and marquee, so read
+        // the set it settled on rather than the one node it names — otherwise a
+        // box-select on the graph reduces to whichever node happened to be last.
+        onSelect: node => {
+          if (selecting) return;
+          const ids = nc ? nc.selected() : (node ? [node.id] : []);
+          selection = new Set(ids);
+          sel = node ? node.id : (ids[ids.length - 1] || null);
+          anchor = sel;
+          syncSelection(false);
+        },
         onConnect: onConnect,
         onReject: why => say(why),
       });
@@ -429,21 +795,84 @@ window.SceneBuild = (() => {
       () => { reload().then(render); });
   }
 
-  /* ── inspector ────────────────────────────────────────────────────────── */
-  function select(path){
-    if (selecting) return;          // SceneView calls back into here
+  /* ── selection ────────────────────────────────────────────────────────────
+   * ONE authority for both surfaces and the tree. Every click anywhere lands
+   * here with what the modifier meant, this resolves it, and then it pushes the
+   * answer out. Nobody echoes anybody: the viewport's setter and the tree's
+   * painter are both state-only.
+   */
+  /* `order` lets a surface say what "between these two" means ON IT. The layer
+     strip is eleven chips in file order; ranging across it through the TREE's
+     order would sweep in the 232 props sitting between Characters and Lights,
+     which is right in the tree and nonsense in a row of eleven. */
+  function pick(path, mode, order){
+    if (!data) return;
+    mode = mode || "set";
+    pickOrder = order || null;
+    if (!path){
+      selection.clear(); sel = null; anchor = null;
+    } else if (!byPath.has(path)){
+      // A path the outline does not know (something inside an instance the
+      // viewport opened). Show it, but do not pretend it is a tree row.
+      selection.clear(); selection.add(path); sel = path; anchor = null;
+    } else if (mode === "toggle"){
+      if (selection.has(path) && selection.size > 1){
+        selection.delete(path);
+        if (sel === path) sel = [...selection][selection.size - 1] || null;
+      } else {
+        selection.add(path); sel = path;
+      }
+      anchor = sel;
+    } else if (mode === "range" && anchor && anchor !== path){
+      const order = rangeOrder(anchor, path);
+      const a = order.indexOf(anchor), b = order.indexOf(path);
+      selection.clear();
+      if (a < 0 || b < 0){ selection.add(path); anchor = path; }
+      else for (let i = Math.min(a, b); i <= Math.max(a, b); i++)
+        selection.add(order[i]);
+      sel = path;
+    } else {
+      selection.clear(); selection.add(path); sel = path; anchor = path;
+    }
+    syncSelection(path && mode !== "range");
+  }
+
+  /* What "between these two" means. The rows on screen, when both ends are on
+     screen — that is what the operator drew a line through. When one end is
+     inside a collapsed branch, the file's own order is the only honest answer;
+     tree order does not exist for a row that is not being shown. */
+  function rangeOrder(a, b){
+    if (pickOrder && pickOrder.indexOf(a) >= 0 && pickOrder.indexOf(b) >= 0)
+      return pickOrder;
+    if (treeRows.indexOf(a) >= 0 && treeRows.indexOf(b) >= 0) return treeRows;
+    return (data.nodes || []).map(n => n.path);
+  }
+
+  function syncSelection(reveal){
+    if (selecting) return;
     selecting = true;
     try {
-      sel = path;
-      if (nc && path) try { nc.select(path); } catch (e) {}
-      if (surface === "viewport" && window.SceneView
-          && SceneView.selected !== undefined
-          && (!SceneView.selected || SceneView.selected.path !== path)){
-        try { SceneView.select(path); } catch (e) {}
+      if (window.SceneView && typeof SceneView.setSelection === "function")
+        try {
+          SceneView.setSelection([...selection], sel);
+          // The layer strip shows selection too, so it has to hear about it.
+          if (SceneView.repaintLayers) SceneView.repaintLayers();
+        } catch (e) {}
+      if (nc){
+        try {
+          if (selection.size) nc.selectMany([...selection], false);
+          else nc.select(null);
+        } catch (e) {}
       }
+      paintTreeSel();
+      if (reveal && sel) revealTree(sel);
       side();
     } finally { selecting = false; }
   }
+
+  /* The old single-select entry point. Node cards and external callers still
+     use it, and one click meaning "just this one" is exactly `set`. */
+  function select(path){ pick(path, "set"); }
 
   /* WHAT THE FILE ACTUALLY HOLDS, when the answer is "nothing you can edit".
    *
@@ -498,9 +927,69 @@ window.SceneBuild = (() => {
           + `from code somewhere else in the project.` };
   }
 
+  /* WHAT A SELECTION OF TWENTY CAN AND CANNOT BE TOLD TO DO.
+   *
+   * The single-node inspector is six property fields and a name box, and none
+   * of those mean anything across a mixed selection — a `position` field over
+   * twenty nodes either edits one of them or twenty to the same number, and
+   * both are wrong. So the batch panel offers only what genuinely applies to
+   * all of them at once, and says which of the batch is in the way of the rest
+   * instead of quietly acting on the remainder. */
+  function many(){
+    const nodes = [...selection].map(p => byPath.get(p)).filter(Boolean);
+    const kinds = {};
+    nodes.forEach(n => {
+      const k = n.type === "(instance)" ? "instance" : (n.type || "node");
+      kinds[k] = (kinds[k] || 0) + 1;
+    });
+    const rootIn = nodes.some(n => n.path === ".");
+    const viewport = surface === "viewport";
+    return `<div class="sb-many">
+        <div class="hd">${nodes.length} nodes selected</div>
+        <div class="sb-note" style="margin:0">${Object.entries(kinds)
+          .sort((a, b) => b[1] - a[1]).slice(0, 6)
+          .map(([k, c]) => `${c} × <b>${E(k)}</b>`).join(" · ")}</div>
+        ${rootIn ? `<div class="sb-note sb-warn" style="margin:6px 0 0">The root
+          is in this selection. Delete and duplicate refuse a selection that
+          holds it rather than doing the rest.</div>` : ""}
+      </div>
+      <div class="sb-h">the whole selection</div>
+      ${viewport ? `
+        <button class="sb-b wide" onclick="SceneBuild.setSelectionVisible(false)">hide all ${nodes.length}</button>
+        <button class="sb-b wide" onclick="SceneBuild.setSelectionVisible(true)">show all ${nodes.length}</button>
+        <button class="sb-b wide" onclick="SceneView.duplicateSelected()">duplicate all ${nodes.length}</button>
+        <button class="sb-b wide" onclick="SceneBuild.copySelection()">copy all ${nodes.length}</button>
+        <button class="sb-b bad wide" onclick="SceneView.removeSelected()">delete all ${nodes.length}</button>
+        <div class="sb-note">Every one of these stages — nothing reaches the
+          file until <b>apply</b>, which asks once and keeps a backup. Hiding
+          here sets the node's real <b>visible</b>; the eyes on the layer strip
+          are a view filter and change nothing.</div>`
+      : `<div class="sb-note">Batch edits run on the <b>viewport</b> surface,
+          where they can be staged and previewed. Switch to it to duplicate,
+          delete or nudge this selection.</div>`}
+      <div class="sb-h">one at a time</div>
+      <div class="sb-note">Properties, name, script and resources are per-node.
+        Click a single node to edit them.</div>
+      ${shortcutHelp()}`;
+  }
+
+  function shortcutHelp(){
+    return `<details class="sb-drawer"><summary>keyboard</summary>
+      <div class="sb-keys">
+        <b>Del</b> delete · <b>Ctrl+D</b> duplicate<br>
+        <b>Ctrl+C / Ctrl+V</b> copy, paste under the selection<br>
+        <b>Ctrl+Z / Ctrl+Shift+Z</b> undo, redo<br>
+        <b>F</b> frame the selection · <b>Esc</b> deselect<br>
+        <b>Arrows</b> nudge 1px · <b>Shift+Arrows</b> one snap step<br>
+        <b>Ctrl+F</b> jump to the tree filter<br>
+        <b>Shift-click</b> a range · <b>Ctrl-click</b> add or remove one
+      </div></details>`;
+  }
+
   function side(){
     const el = document.getElementById("sb-side");
     if (!el) return;
+    if (selection.size > 1) return el.innerHTML = many();
     const n = sel && data.nodes.find(x => x.path === sel);
     if (!n) return el.innerHTML = overview();
 
@@ -518,7 +1007,7 @@ window.SceneBuild = (() => {
       </div>`).join("")
       + (others.length ? `<div class="sb-h">also set</div>${others.map(([k, v]) => `
         <div class="sb-prop"><b>${E(k)}</b> ${E(v.length > 34 ? v.slice(0, 33) + "…" : v)}
-          <span class="x" title="clear" onclick="SceneBuild.clearProp('${E(k)}')">✕</span></div>`).join("")}` : "");
+          <button class="x" title="clear ${E(k)}" aria-label="Clear ${E(k)}" onclick="SceneBuild.clearProp('${E(k)}')">${I("delete", 12)}</button></div>`).join("")}` : "");
 
     el.innerHTML = `
       <div class="sb-h">${E(info.label.replace(/s$/, ""))}</div>
@@ -635,10 +1124,13 @@ window.SceneBuild = (() => {
         point at a file that is not on disk: ${missing.slice(0, 4).map(m =>
         E(m.path.split("/").pop())).join(", ")}</div>` : ""}
       <div class="sb-h">building</div>
-      <div class="sb-note">Click a node to inspect it. Drag a node's
-        <b>children</b> port onto another node's <b>parent</b> port to reparent
-        it. Every edit shows the resulting <b>.tscn</b> before it writes, and the
-        previous file is kept under <b>.bgate_out/scene_backups</b>.</div>
+      <div class="sb-note">Click a node in the tree or the picture to inspect
+        it — <b>shift-click</b> a range, <b>ctrl-click</b> to add one. Drag a
+        node's <b>children</b> port onto another node's <b>parent</b> port to
+        reparent it. Every edit shows the resulting <b>.tscn</b> before it
+        writes, and the previous file is kept under
+        <b>.bgate_out/scene_backups</b>.</div>
+      ${shortcutHelp()}
       <details class="sb-drawer"><summary>add a node to the root</summary>
         ${(types.groups || []).map(g => `
           <div class="sb-palh">${E(g.label)}</div>
@@ -652,7 +1144,11 @@ window.SceneBuild = (() => {
     return () => reload().then(() => {
       render();
       if (window.SceneView && surface === "viewport") SceneView.reload();
-      if (sel) select(sel);
+      // The file changed under the selection: drop whatever no longer exists
+      // and push what survived back out, rather than collapsing a batch to one.
+      [...selection].forEach(p => { if (!byPath.has(p)) selection.delete(p); });
+      if (sel && !byPath.has(sel)) sel = [...selection][selection.size - 1] || null;
+      syncSelection(false);
     });
   }
 
@@ -740,6 +1236,49 @@ window.SceneBuild = (() => {
          `${nodePath}.${property || "resource"} → ${assetId.split("/").pop()}`);
   }
 
+  /* Wiring an asset into a scene, from outside this mode.
+   *
+   * This lived on the Atlas GRAPH, which is gone. The Asset Library's "wire"
+   * action is the caller: it has an asset and no scene, so the scene has to be
+   * chosen first — which is the one thing the rest of this module never does,
+   * because everything else here operates on the scene already open.
+   *
+   * The target scene is therefore passed explicitly rather than going through
+   * `step()`, which stamps the module's current `scene` onto every body. Wiring
+   * into a scene you are not looking at is the normal case here, and switching
+   * the editor to it first would preview the write against the wrong file. */
+  async function wireMenu(assetId){
+    const d = await readJSON(
+      `/api/scene/wirable?asset=${encodeURIComponent(assetId)}`, null);
+    if (!d || d.__error){ say((d && d.__error) || "could not list scenes"); return; }
+    const map = atlasMap();
+    const label = (map && map.nodes[assetId] && map.nodes[assetId].label) || assetId;
+    modal(`wire ${label} into…`,
+      (d.scenes || []).map(s => `
+        <div class="sb-pick"${s.has_asset ? ' style="opacity:.5;cursor:default"'
+          : ` onclick="SceneBuild.wireTo('${E(assetId)}','${E(s.scene)}')"`}>
+          <span>${E(s.label)}</span>
+          <span class="m">${s.nodes} nodes${s.has_asset ? " · already wired" : ""}</span>
+        </div>`).join("")
+        || `<div class="sb-note">no scenes found</div>`,
+      [{ label: "cancel", fn: closeModal }]);
+  }
+
+  async function wireTo(assetId, sceneId){
+    closeModal();
+    const dry = await mutate("/api/scene/wire", {
+      body: { scene: sceneId, asset: assetId, dry_run: true }, quiet: true });
+    if (!dry.ok){ say(dry.error); return; }
+    const map = atlasMap();
+    const name = id => (map && map.nodes[id] && map.nodes[id].label) || id;
+    confirmDiff(`wire ${name(assetId)} into ${name(sceneId)}`, dry.data,
+      () => mutate("/api/scene/wire", { body: { scene: sceneId, asset: assetId } }),
+      // Land the operator on what they just changed. Already looking at it —
+      // reload in place; otherwise switch, because a confirmed write into a
+      // scene the editor does not show is indistinguishable from nothing.
+      () => { if (sceneId === scene) refresh(); else setScene(sceneId); });
+  }
+
   function editPixels(rel){
     if (window.SpriteEdit) SpriteEdit.open(rel);
     else say("the sprite editor did not load");
@@ -786,7 +1325,6 @@ window.SceneBuild = (() => {
            if (!w.ok) return;
            say(`${w.data.summary} · backup ${w.data.backup}`, "ok");
            if (done) done();
-           try { if (window.Atlas) Atlas.badge(); } catch (e) {}
            // The engine backdrop is a photo of the scene BEFORE this write. If
            // it is up, re-take it — otherwise the swap lands in the file and
            // the picture keeps showing the old art, which is indistinguishable
@@ -801,8 +1339,261 @@ window.SceneBuild = (() => {
     return t.length > n ? "…\n" + t.slice(-n) : t;
   }
 
+  /* ── duplicate / copy / paste ─────────────────────────────────────────────
+   * The plan for re-creating a node and its subtree. Built here because the
+   * outline — types, parent links, properties, scripts, resources — is what
+   * this module holds; run by SceneView, because that is where a not-yet-
+   * written thing gets a ghost, a drag and a place in the one confirmation.
+   *
+   * THE WRITER'S VALUE WHITELIST IS MIRRORED, NOT GUESSED AT. `_prop_value` in
+   * bgate_core/scenewire.py accepts a deliberately narrow set — a property
+   * writer that emits anything is a property writer that corrupts a .tscn —
+   * and a duplicate that silently drops a `polygon` is a duplicate that is
+   * wrong in a way you find out about in the game. So the same set is tested
+   * here and everything outside it is NAMED before the write.
+   * Keep in step with tests/test_spriteedit_api.py, which pins the two
+   * together.
+   */
+  const WRITABLE_VALUE = new RegExp(
+    "^(true|false|-?\\d+(\\.\\d+)?|\"[^\"\\\\\\n]*\"|&\"[^\"\\\\\\n]*\"|"
+    + "(Vector2|Vector2i|Vector3|Color|Rect2)\\([-\\d\\s.,]*\\)|"
+    + "(Ext|Sub)Resource\\(\"[^\"\\\\\\n]+\"\\)|NodePath\\(\"[^\"\\\\\\n]*\"\\))$");
+
+  /* A duplicate is one write per node plus one per resource. Past this it stops
+     being an edit and becomes a batch job against a live file, with no progress
+     and no way to stop it halfway. Refuse and say the number. */
+  const CLONE_MAX = 60;
+
+  function clonePlans(paths){
+    if (!data) return { error: "the scene has not loaded" };
+    const picked = (paths || []).map(p => byPath.get(p)).filter(Boolean);
+    if (!picked.length) return { error: "select a node first" };
+    if (picked.some(n => n.path === "."))
+      return { error: "the root node cannot be duplicated — duplicate what is "
+                      + "under it, or copy the scene file" };
+    // A node whose ancestor is also selected comes along inside it. Cloning
+    // both would put a second copy inside the first.
+    const roots = picked.filter(n =>
+      !picked.some(o => o !== n && n.path.startsWith(o.path + "/")));
+    const clones = [];
+    const broken = [];
+    let total = 0;
+    for (const n of roots){
+      const plan = [], dropped = [];
+      const walk = (node, rel, parentRel) => {
+        const inst = (node.resources || [])
+          .find(r => r.property === "instance");
+        // An instanced node whose source the outline could not name has no
+        // type to add and no scene to wire. Refuse rather than emit
+        // `add_node(type="(instance)")`, which invents a node that is not a node.
+        if (node.instance && !inst){ broken.push(node.path); return; }
+        /* AN OVERRIDE IS NOT A NODE.
+           A block with a parent inside an instance and no `type` —
+           `[node name="Art" parent="Prop_00" index="0"]` — is Godot RE-SETTING
+           a property on something that already exists inside prop.tscn. It has
+           no type to create and no scene to wire, and `add_node` given a type
+           would put a SECOND Art beside the instance's own. There is no safe
+           endpoint that appends an override block, so the copy leaves them off
+           and says so before the write rather than after it. */
+        if (!inst && !node.type){
+          dropped.push(`${node.name} (override inside the instance)`);
+          return;                    // and everything under it is more of them
+        }
+        const props = {};
+        Object.entries(node.properties || {}).forEach(([k, v]) => {
+          if (k === "script") return;
+          // The root's position is written from where the ghost was dropped,
+          // so carrying the source's would be a wasted request and a flicker.
+          if (parentRel === null && k === "position") return;
+          if (WRITABLE_VALUE.test(String(v))) props[k] = v;
+          else dropped.push(`${node.name}.${k}`);
+        });
+        plan.push({
+          rel, parentRel, name: node.name, type: node.type,
+          instance: inst ? inst.path : null,
+          script: node.script || "",
+          properties: props,
+          resources: (node.resources || [])
+            .filter(r => r.property !== "instance" && r.property !== "script")
+            .map(r => ({ property: r.property, path: r.path })),
+        });
+        (kidsOf.get(node.path) || []).forEach(kid =>
+          walk(kid, rel === "" ? kid.name : `${rel}/${kid.name}`, rel));
+      };
+      walk(n, "", null);
+      total += plan.length;
+      clones.push({ path: n.path, name: n.name, parent: n.parent || ".",
+                    plan, dropped });
+    }
+    if (broken.length)
+      return { error: `${broken[0]} is an instanced scene whose source this `
+        + "file does not name — there is nothing to make a second copy of. "
+        + "Nothing was staged." };
+    if (total > CLONE_MAX)
+      return { error: `that is ${total} node(s) — copying it would be ${total} `
+        + `separate writes to the file. Duplicate ${CLONE_MAX} nodes or fewer, `
+        + "or instance a .tscn with `place` instead." };
+    return { clones };
+  }
+
+  /* The node's real `visible`, across the whole selection, staged. Distinct
+     from the layer strip's eyes, which are a view filter and write nothing. */
+  function setSelectionVisible(want){
+    if (surface !== "viewport" || !window.SceneView || !SceneView.list){
+      say("that stages a change, which the viewport surface owns — switch to it");
+      return;
+    }
+    SceneView.setVisibleBatch([...selection], want);
+    [...selection].forEach(paintTreeVis);
+  }
+
+  function copySelection(){
+    const r = clonePlans([...selection]);
+    if (r.error){ say(r.error); return; }
+    clipboard = r;
+    const n = r.clones.reduce((a, c) => a + c.plan.length, 0);
+    say(`copied ${r.clones.length} node(s)${
+      n > r.clones.length ? ` and ${n - r.clones.length} child node(s)` : ""}`,
+      "ok");
+  }
+
+  /* Paste lands UNDER the selection, the way Godot does — the selected node is
+     where you are pointing, and pasting a chair beside the chair you selected
+     rather than into the room you selected is the wrong half of the time. */
+  function pasteClipboard(){
+    if (!clipboard){ say("nothing copied yet — Ctrl+C first"); return; }
+    if (surface !== "viewport"){
+      say("paste stages a change, which the viewport surface owns — switch to it");
+      return;
+    }
+    if (!window.SceneView || !SceneView.list){ say("the viewport is not open"); return; }
+    const parent = sel && byPath.has(sel) ? sel : ".";
+    SceneView.pasteClones(clipboard.clones, true, parent);
+  }
+
+  /* ── keyboard ─────────────────────────────────────────────────────────────
+   * What makes a thing feel like an editor rather than a form.
+   *
+   * SCOPE IS THE WHOLE PROBLEM HERE, not the bindings. One window listener,
+   * refusing to act unless the Atlas view is the visible one, the scene mode is
+   * the visible mode inside it, the focus is not in a field, and no modal is
+   * up. Getting that wrong deletes a node while someone is renaming one, and it
+   * only takes one to make the shortcuts something people ask to turn off.
+   */
+  function typingIn(el){
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const tag = (el.tagName || "").toUpperCase();
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
+        || tag === "OPTION" || tag === "BUTTON";
+  }
+
+  function keysLive(){
+    const view = document.getElementById("view-atlas");
+    if (!view || !view.classList.contains("active")) return false;
+    const pane = document.getElementById("atlas-scene");
+    if (!pane || pane.hidden) return false;
+    // A dialog is up: the diff preview, or ask.js's confirm. Whatever the key
+    // means, it does not mean it to the scene behind them.
+    if (document.getElementById("sb-modal")) return false;
+    if (document.querySelector(".ask-scrim")) return false;
+    return true;
+  }
+
+  const stageOnly = () => {
+    if (surface === "viewport" && window.SceneView && SceneView.list) return true;
+    say("that stages a change, which the viewport surface owns — switch to it");
+    return false;
+  };
+
+  function installKeys(){
+    if (installKeys._on) return;
+    installKeys._on = true;
+    window.addEventListener("keydown", onKey);
+  }
+
+  function onKey(ev){
+    if (!keysLive()) return;
+    const mod = ev.ctrlKey || ev.metaKey;
+    const k = ev.key;
+    // Ctrl+F must work FROM the tree filter as well as into it, and Escape has
+    // to be able to leave a field — those two are the only keys allowed
+    // through while something is focused for typing.
+    if (typingIn(ev.target)){
+      if (k === "Escape"){ ev.target.blur(); return; }
+      if (mod && (k === "f" || k === "F")){ ev.preventDefault(); treeFocus(); }
+      return;
+    }
+    const take = () => { ev.preventDefault(); ev.stopPropagation(); };
+
+    if (mod && (k === "f" || k === "F")){ take(); treeFocus(); return; }
+    if (k === "Escape"){
+      if (window.SceneView && SceneView.escape && SceneView.escape()){ take(); return; }
+      if (selection.size){ take(); pick(null, "set"); }
+      return;
+    }
+    if (k === "Delete" || k === "Backspace"){
+      if (!selection.size) return;
+      take();
+      // The graph surface stages nothing, so its delete is the diff-then-write
+      // one that has always been there. Same discipline, different moment.
+      if (surface === "viewport" && window.SceneView && SceneView.list)
+        SceneView.removeSelected();
+      else if (selection.size > 1)
+        say(`${selection.size} nodes are selected and the graph surface writes `
+            + "one edit at a time — switch to the viewport to delete a batch");
+      else remove();
+      return;
+    }
+    if (mod && (k === "d" || k === "D")){
+      take();
+      if (stageOnly()) SceneView.duplicateSelected();
+      return;
+    }
+    if (mod && (k === "c" || k === "C")){
+      // Never steal a copy from someone with text HIGHLIGHTED on the page. A
+      // collapsed selection is a caret, not a highlight — testing the object
+      // for truthiness instead swallowed every Ctrl+C in the panel, because a
+      // stray caret is almost always somewhere.
+      const text = window.getSelection && window.getSelection();
+      if (text && !text.isCollapsed && String(text)) return;
+      if (!selection.size) return;
+      take(); copySelection(); return;
+    }
+    if (mod && (k === "v" || k === "V")){ take(); pasteClipboard(); return; }
+    if (mod && (k === "z" || k === "Z")){
+      take();
+      if (!stageOnly()) return;
+      if (ev.shiftKey) SceneView.redo(); else SceneView.undo();
+      return;
+    }
+    if (mod && (k === "y" || k === "Y")){
+      take();
+      if (stageOnly()) SceneView.redo();
+      return;
+    }
+    if (!mod && (k === "f" || k === "F")){
+      take();
+      if (surface === "viewport" && window.SceneView && SceneView.frame)
+        SceneView.frame();
+      return;
+    }
+    const arrow = { ArrowLeft:[-1, 0], ArrowRight:[1, 0],
+                    ArrowUp:[0, -1], ArrowDown:[0, 1] }[k];
+    if (arrow && !mod){
+      if (!selection.size) return;
+      take();
+      if (stageOnly()) SceneView.nudge(arrow[0], arrow[1], ev.shiftKey);
+      return;
+    }
+  }
+
   /* ── controls ─────────────────────────────────────────────────────────── */
-  function setScene(id){ scene = id; sel = null; data = null; activate(id, true); }
+  function setScene(id){
+    scene = id; sel = null; data = null;
+    selection.clear(); anchor = null; treeOpen.clear(); treeQ = "";
+    activate(id, true);
+  }
   function toggleRole(r){ filter.has(r) ? filter.delete(r) : filter.add(r); render(); }
   function refresh(){ activate(scene, true); }
 
@@ -816,9 +1607,12 @@ window.SceneBuild = (() => {
       SceneView.suspend();
   }
 
-  return { activate, render, refresh, setScene, setSurface, toggleRole, select, rename,
-           deactivate,
+  return { activate, render, refresh, setScene, setSurface, toggleRole, select,
+           pick, rename, deactivate,
            setProp, clearProp, addNode, remove, swapMenu, swapTo, editPixels,
-           editAudio, act, closeModal,
-           get data(){ return data; }, get scene(){ return scene; } };
+           editAudio, act, closeModal, wireMenu, wireTo,
+           treeToggle, treeFilter, treeCollapseAll, treeFocus,
+           clonePlans, copySelection, pasteClipboard, setSelectionVisible,
+           get data(){ return data; }, get scene(){ return scene; },
+           get selection(){ return [...selection]; } };
 })();

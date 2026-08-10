@@ -286,10 +286,59 @@ class TestResponsiveTargetsLiveMarkup:
         # the fixed letterbox height is gone
         assert "#play-holder,#gameframe{min-height:300px}" not in shell.replace(" ", "")
 
-    def test_the_rail_collapses_before_the_stage_does(self, shell):
+    def test_the_rail_is_collapsed_by_default(self, shell):
+        """The icon rail is the resting state, not a narrow-window fallback.
+
+        This test used to assert that ``@media(max-width:1180px)`` rewrote the
+        deck to ``64px 1fr`` — which was the entire collapse mechanism back
+        when the DEFAULT was a 236px track. The default is the icon rail now:
+        64px, expanding on hover and focus as an overlay so the stage never
+        reflows. The assertions move with it.
+        """
+        flat = shell.replace(" ", "")
+        assert "--rail-c:64px" in flat, "the collapsed width is no longer a token"
+        assert ".deck{display:grid;grid-template-columns:var(--rail-c)1fr" in flat, \
+            "the rail no longer starts collapsed"
+        # Expanding must not touch the grid — only the overlay's own width.
+        assert ".rail-inner{" in flat
+        assert ":is(.rail:hover,.rail:focus-within).rail-inner{" in flat, \
+            "the rail no longer opens for a keyboard"
+
+    def test_only_a_pinned_rail_takes_room_from_the_stage(self, shell):
+        """A real track and a drag handle appear together, or not at all.
+
+        A splitter that writes a width onto a track nobody reads is a value
+        waiting to bite when the state changes, so the handle is in the layout
+        for exactly the state that can use it.
+        """
+        flat = shell.replace(" ", "")
+        assert ".deck:has(.rail.pin){grid-template-columns:var(--rail-w)" in flat
+        assert '.deck>.split[data-split="rail"]{display:none}' in flat
+        assert '.deck:has(.rail.pin)>.split[data-split="rail"]{display:block}' in flat
+
+    def test_the_pin_cannot_survive_a_narrow_window(self, shell, page):
+        """A held-open rail may not eat the stage on a small screen.
+
+        Belt (the script drops the class, keeping the stored preference so it
+        comes back when the window does) and braces (the stylesheet forces the
+        track back to 64px even if the script never ran).
+        """
         flat = shell.replace(" ", "")
         assert "@media(max-width:1180px)" in flat
-        assert ".deck{grid-template-columns:64px1fr}" in flat
+        narrow = flat.split("@media(max-width:1180px){", 1)[1].split("\n}", 1)[0]
+        # Unconditional here — the pin has no standing at this width, so the
+        # track and the handle go back to what an unpinned rail gets. (The
+        # responsive layer is declared last, so this outranks the :has() rule
+        # in the layout layer without needing to out-specify it.)
+        assert ".deck{grid-template-columns:var(--rail-c)1fr}" in narrow
+        assert ".deck>.split{display:none}" in narrow
+        assert ".rail.pin.rail-inner{width:var(--rail-c)" in narrow
+
+        assert "bgate-rail-pinned" in page, "the pin no longer persists"
+        body = _function_body(page, "syncRailPin")
+        assert "railNarrow.matches" in body, \
+            "the pin is applied without asking how wide the window is"
+        assert 'classList.toggle("pin"' in body
 
     def test_reduced_motion_is_still_honoured(self, shell):
         assert "prefers-reduced-motion" in shell

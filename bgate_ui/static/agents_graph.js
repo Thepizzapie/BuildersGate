@@ -240,6 +240,8 @@
       if (!state || !this.host) return;
       this.state = state;
       try { this.rebuild(); } catch (e) { try { console.warn("[agents-graph]", e); } catch (_) {} }
+      // After the rebuild: the node has to exist in the DOM before it can be lit.
+      try { this.spotlight(this.liveSet()); } catch (e) {}
     },
 
     liveSet() {
@@ -247,6 +249,44 @@
       return new Set((s.agents || [])
         .filter(a => a && a.state === "running" && a.item_id != null)
         .map(a => Number(a.item_id)));
+    },
+
+    /* ---- the spotlight ──────────────────────────────────────────────────
+     * A NEW AGENT STARTING LOOKED EXACTLY LIKE ONE THAT HAD BEEN RUNNING FOR
+     * TEN MINUTES. The graph is a static diagram between polls: nodes gain a
+     * border treatment and a glyph, both of which you have to already be
+     * looking at the right node to notice. On a stream nobody is — the viewer
+     * is reading the conversation, and the moment work gets handed to a seat is
+     * the moment they should look right.
+     *
+     * So a node that has JUST started blooms, and the rest of the canvas dims
+     * behind it for a beat. Deliberately short and deliberately once: a
+     * permanent highlight is just another border, and dimming that outstays the
+     * event makes the board unreadable exactly when several things are running.
+     *
+     * Seeded on the first apply() so opening the view does not spotlight every
+     * agent already at work — "already there" is not an event.
+     */
+    _lit: null, _spotTimer: 0,
+
+    spotlight(live) {
+      const before = this._lit;
+      this._lit = new Set(live);
+      if (!before) return;                       // first payload seeds only
+      const fresh = [...live].filter(id => !before.has(id));
+      if (!fresh.length || !this.host) return;
+      // One at a time. Two nodes blooming while the canvas dims reads as a
+      // flicker rather than as a pointer, and a fan-out starts four at once.
+      const id = "task_" + fresh[0];
+      const el = this.host.querySelector(`[data-node="${CSS.escape(id)}"]`);
+      if (!el) return;
+      this.host.classList.add("nc-spotting");
+      el.classList.add("nc-spot");
+      clearTimeout(this._spotTimer);
+      this._spotTimer = setTimeout(() => {
+        this.host.classList.remove("nc-spotting");
+        this.host.querySelectorAll(".nc-spot").forEach(n => n.classList.remove("nc-spot"));
+      }, 1800);
     },
 
     place(id, x, y) {
