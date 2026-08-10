@@ -36,12 +36,16 @@ def current_actor() -> str:
     env = os.environ.get("BGATE_ACTOR", "").strip()
     if env:
         return env[:120]
-    return _local_identity()
+    return local_identity()
 
 
-def _local_identity() -> str:
-    """Fallback for a core-only process (MCP, hook, CLI) — mirrors
-    bgate_ui.api.local_identity so both name the same human."""
+def local_identity() -> str:
+    """The machine's human identity, for a single-user local install.
+
+    THE one implementation. bgate_ui.api delegates here rather than keeping its
+    own — it had a byte-identical copy, and two functions whose entire contract
+    is "name the same human" cannot be allowed to drift apart in two files.
+    """
     configured = os.environ.get("BGATE_STUDIO_USER", "").strip()
     if configured:
         return configured[:120]

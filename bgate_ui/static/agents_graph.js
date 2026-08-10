@@ -240,6 +240,8 @@
       if (!state || !this.host) return;
       this.state = state;
       try { this.rebuild(); } catch (e) { try { console.warn("[agents-graph]", e); } catch (_) {} }
+      // After the rebuild: the node has to exist in the DOM before it can be lit.
+      try { this.spotlight(this.liveSet()); } catch (e) {}
     },
 
     liveSet() {
@@ -247,6 +249,44 @@
       return new Set((s.agents || [])
         .filter(a => a && a.state === "running" && a.item_id != null)
         .map(a => Number(a.item_id)));
+    },
+
+    /* ---- the spotlight ──────────────────────────────────────────────────
+     * A NEW AGENT STARTING LOOKED EXACTLY LIKE ONE THAT HAD BEEN RUNNING FOR
+     * TEN MINUTES. The graph is a static diagram between polls: nodes gain a
+     * border treatment and a glyph, both of which you have to already be
+     * looking at the right node to notice. On a stream nobody is — the viewer
+     * is reading the conversation, and the moment work gets handed to a seat is
+     * the moment they should look right.
+     *
+     * So a node that has JUST started blooms, and the rest of the canvas dims
+     * behind it for a beat. Deliberately short and deliberately once: a
+     * permanent highlight is just another border, and dimming that outstays the
+     * event makes the board unreadable exactly when several things are running.
+     *
+     * Seeded on the first apply() so opening the view does not spotlight every
+     * agent already at work — "already there" is not an event.
+     */
+    _lit: null, _spotTimer: 0,
+
+    spotlight(live) {
+      const before = this._lit;
+      this._lit = new Set(live);
+      if (!before) return;                       // first payload seeds only
+      const fresh = [...live].filter(id => !before.has(id));
+      if (!fresh.length || !this.host) return;
+      // One at a time. Two nodes blooming while the canvas dims reads as a
+      // flicker rather than as a pointer, and a fan-out starts four at once.
+      const id = "task_" + fresh[0];
+      const el = this.host.querySelector(`[data-node="${CSS.escape(id)}"]`);
+      if (!el) return;
+      this.host.classList.add("nc-spotting");
+      el.classList.add("nc-spot");
+      clearTimeout(this._spotTimer);
+      this._spotTimer = setTimeout(() => {
+        this.host.classList.remove("nc-spotting");
+        this.host.querySelectorAll(".nc-spot").forEach(n => n.classList.remove("nc-spot"));
+      }, 1800);
     },
 
     place(id, x, y) {
@@ -673,11 +713,11 @@
         // A parked item is not a claim worth a glance, it is a stopped chain.
         // Both used to read "your call", which made the one that is actually
         // holding work up indistinguishable from the ten that are not.
-        const what = g.kind === "art" ? "a human decides — approve or reject"
+        const what = g.kind === "art" ? "a human decides - approve or reject"
           : g.kind === "signoff" ? (g.parked
-              ? "held in review — the chain behind it waits on you"
-              : "the agent says this is done — your call")
-          : g.kind === "escalation" ? "QA loop broken — you arbitrate"
+              ? "held in review - the chain behind it waits on you"
+              : "the agent says this is done - your call")
+          : g.kind === "escalation" ? "QA loop broken - you arbitrate"
           : "verifying the claim before it counts";
         return `<div class="cg-meta"><span>${esc(g.seat || "")}</span>
           <span>${esc(g.status || "")}</span></div>
@@ -695,7 +735,7 @@
           <span class="cg-chip" style="--sc:${seatColor(it.seat)}">${esc(it.seat || "")}</span>
           <span>#${esc(it.id)}</span>
           <span>${esc(it.source || "")}</span></div>
-        <div class="cg-line ${n.running ? "live" : ""}">${line || "—"}</div>`;
+        <div class="cg-line ${n.running ? "live" : ""}">${line || "-"}</div>`;
     },
 
     /* ---- selection + the detail rail ----------------------------------- */
@@ -846,7 +886,7 @@
           : "";
         return head(`Phase ${ph.n} · item #${n.itemId}`, ph.title || "working")
           + `<div class="cg-kv"><span>state</span><span>${esc(ph.state || "")}</span></div>`
-          + `<div class="cg-kv"><span>tools</span><span>${esc((ph.tools || []).join(", ")) || "—"}</span></div>`
+          + `<div class="cg-kv"><span>tools</span><span>${esc((ph.tools || []).join(", ")) || "-"}</span></div>`
           + (ph.error ? `<div class="cg-note bad">${esc(ph.error)}</div>` : "")
           + looking
           + reading
@@ -896,7 +936,7 @@
           + `<div class="cg-kv"><span>status</span><span>${esc(g.status)}</span></div>`
           + (g.over_item_id ? `<div class="cg-kv"><span>over</span><span>#${g.over_item_id}</span></div>` : "")
           + `<div class="cg-note">${g.kind === "escalation"
-              ? "Deliberately not dispatched — three rounds failed and another agent will not settle it."
+              ? "Deliberately not dispatched - three rounds failed and another agent will not settle it."
               : "An agent is checking another agent's claim before it counts as done."}</div>`
           + `<div class="cg-acts">
                ${g.status === "queued" ? `<button class="qbtn small" data-act="dispatch" data-id="${g.item_id}">dispatch</button>` : ""}
@@ -933,7 +973,7 @@
              `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}"
                  target="_blank" rel="noopener"
                  data-peek="${esc(rel)}" data-peek-item="${Number(it.id)}"
-                 title="${esc(rel)} — click to expand">${thumb({ path: rel }, "cg-thumb", it.id)}</a>`
+                 title="${esc(rel)} - click to expand">${thumb({ path: rel }, "cg-thumb", it.id)}</a>`
            ).join("")}</div>`
         : "";
       // The files the run is working IN, and — because this is the task rail and
@@ -945,7 +985,7 @@
            <div class="cg-fchips">${touched.map(rel =>
              `<button class="cg-fchip" type="button" data-peek="${esc(rel)}"
                       data-peek-item="${Number(it.id)}" data-peek-view="diff"
-                      title="${esc(rel)} — opens the diff">${esc(rel.split("/").pop())}</button>`
+                      title="${esc(rel)} - opens the diff">${esc(rel.split("/").pop())}</button>`
            ).join("")}</div>`
         : "";
 
@@ -1017,7 +1057,7 @@
             title: `Send #${id} back`,
             body: "What is wrong with it? This is appended to the brief, so the "
                 + "next agent on this item reads exactly what you wrote.",
-            placeholder: "the idle is off-model against the pinned ref — redo it…",
+            placeholder: "the idle is off-model against the pinned ref - redo it…",
             ok: "send it back", required: true,
           });
           if (reason == null) return;

@@ -25,6 +25,7 @@ just as loudly as a capability being removed.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -439,3 +440,67 @@ class TestTheBriefRoutesToTheStrongerTool:
     def test_the_two_dimensional_note_routes_the_same_way(self):
         note = seats._kind_note("art", "2d")
         assert "image_sprites" in note or "image_talkhead" in note
+
+
+class TestTheBriefActuallyFitsItsCeiling:
+    """BRIEF_CHARS was a suggestion, and nothing measured it.
+
+    `_fit` walked a ladder of trims and returned whatever it had when the
+    ladder ran out — so a brief could exceed the ceiling by two thirds and
+    still report, truthfully and uselessly, that it HAD been shrunk. Measured
+    on a real project: 40,198 characters against a 24,000 ceiling, ~10k tokens
+    injected into every agent at startup and then re-sent on all 8,304 model
+    calls of that night.
+
+    Two causes, one symptom. `pinned_refs` was the largest field in the payload
+    and appeared in no trim step; and blanking a bible body left the id, rank,
+    version and two timestamps of every section behind, which was 10,038
+    characters of nothing a seat can act on.
+    """
+
+    @pytest.fixture()
+    def crowded(self, root):
+        """A project big enough to blow the ceiling — which the default test
+        project is not, and that is why this went unnoticed."""
+        from bgate_core import bible, refs
+        for i in range(40):
+            bible.add(root, "constraint", f"chapter {i}",
+                      body="prose about the world. " * 120)
+        art = root / "art"
+        art.mkdir(exist_ok=True)
+        for i in range(30):
+            src = art / f"ref_{i}.png"
+            src.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+            refs.pin(root, f"reference number {i}", str(src),
+                     note="why this reference matters, at length. " * 20)
+        return root
+
+    def test_a_crowded_project_still_gets_a_brief_under_the_ceiling(self, crowded):
+        import json
+        for role in seats.roles_for(crowded):
+            payload = json.dumps(seats.brief(crowded, role), default=str)
+            assert len(payload) <= seats.BRIEF_CHARS, (
+                f"{role}: {len(payload)} chars against a "
+                f"{seats.BRIEF_CHARS} ceiling")
+
+    def test_what_was_cut_is_named_rather_than_silently_dropped(self, crowded):
+        brief = seats.brief(crowded, "art")
+        assert brief["truncated"], "a shrunk brief that says nothing was cut"
+        assert "bible_read" in json.dumps(brief["truncated"]), (
+            "the seat has to be told which tool pages the prose back")
+
+    def test_a_trimmed_bible_keeps_titles_so_the_seat_knows_what_exists(
+            self, crowded):
+        # A group can legitimately be None — that chapter has no sections. The
+        # assertion is about the ones that DO exist keeping their titles.
+        sections = [s for group in seats.brief(crowded, "art")["bible"].values()
+                    for s in (group if isinstance(group, list) else [group])
+                    if isinstance(s, dict)]
+        assert sections, "the bible was dropped rather than trimmed"
+        assert all(s.get("title") for s in sections), (
+            "a chapter with no title is one the seat cannot ask bible_read for")
+
+    def test_a_trimmed_ref_keeps_its_path(self, crowded):
+        for ref in seats.brief(crowded, "art")["pinned_refs"]:
+            assert ref.get("path") or ref.get("logical_name"), (
+                "a pinned ref trimmed past identification is not a pointer")

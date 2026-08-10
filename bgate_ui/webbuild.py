@@ -68,11 +68,6 @@ def _newest_source(game_dir: Path) -> tuple[float, str]:
     return latest, newest
 
 
-def _newest_source_mtime(game_dir: Path) -> float:
-    """Back-compat shim for callers that only want the number."""
-    return _newest_source(game_dir)[0]
-
-
 def status(root: str | os.PathLike[str]) -> dict:
     """Is there a build, and is it current with the source?"""
     game = _game(root)

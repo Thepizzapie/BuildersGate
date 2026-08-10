@@ -42,7 +42,7 @@ window.AudioLab = (() => {
   const say = (m, k) => { try { toast(m, k); } catch (e) { console.warn(m); } };
   const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
   const fmt = s => {
-    if (s == null || !isFinite(s)) return "—";
+    if (s == null || !isFinite(s)) return "-";
     const m = Math.floor(s / 60), r = s - m * 60;
     return m ? `${m}:${r.toFixed(2).padStart(5, "0")}` : `${r.toFixed(3)}s`;
   };
@@ -56,6 +56,137 @@ window.AudioLab = (() => {
 
   let S = null, $ = {};
 
+  /* ── geometry ─────────────────────────────────────────────────────────────
+   * The arrangement's row height is a CONSTANT, not a fraction of the pane.
+   * The track headers are DOM and the lanes are a canvas, and the only way two
+   * different rendering systems agree on where row 4 starts is if neither of
+   * them gets to decide. Everything below — the header column, the canvas, the
+   * hit tests, the shared vertical scroll — reads these three numbers. */
+  const RULER_H = 26;                    // the time strip along the top, CSS px
+  const LANE_H  = 56;                    // one arrangement row
+  const HEADS_W = 254;                   // the fixed left column
+
+  /* ── track colour ─────────────────────────────────────────────────────────
+   * Soundtrap tells its tracks apart by colour before it tells them apart by
+   * name, and that is the one part of its palette that cannot come from the
+   * theme tokens: a clip has to stay ITSELF across the parchment ground, the
+   * charcoal ground and orbit's #000000.
+   *
+   * So the hue is derived from the source path (stable across reorder, and a
+   * split's two halves keep their parent's colour because they are the same
+   * sound), and the LIGHTNESS is then solved — not chosen — so that every hue
+   * lands on the same WCAG relative luminance, 0.26. That single number is the
+   * whole guarantee:
+   *
+   *     vs white (1.0):  1.05 / 0.31 = 3.4:1
+   *     vs black (0.0):  0.31 / 0.05 = 6.2:1
+   *
+   * Both clear the 3:1 floor for graphical objects, so the same swatch reads on
+   * paper and on pure black without a per-ground palette. Solving for luminance
+   * rather than picking an HSL lightness is what stops yellow from blowing out
+   * and blue from disappearing — at a fixed L=55% those two differ by 4x.
+   *
+   * The ink drawn INSIDE a clip is white at 85%: at luminance 0.26 the block is
+   * always dark enough to take it, on every ground. That is part of the clip
+   * palette too, not a stray hardcoded colour. */
+  const CLIP_INK = "rgba(255,255,255,.86)";
+  const CLIP_LUM = 0.26;
+  const _clipColor = new Map();
+
+  /* Golden-ratio hashing rather than `hash % 360`. Two paths that differ only
+     in their last few characters produce adjacent 32-bit hashes, and modulo 360
+     then hands them adjacent hues — observed: sfx_ability_cast and sfx_back
+     came back as two oranges 11° apart, which is not an identity, it is a
+     smudge. Multiplying into the fractional part scatters neighbours. */
+  function _hue(key){
+    let h = 2166136261;
+    const s = String(key || "");
+    for (let i = 0; i < s.length; i++){
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) * 0.6180339887498949 % 1) * 360;
+  }
+  function _hsl(h, s, l){                       // → [r,g,b] in 0..1
+    const c = (1 - Math.abs(2 * l - 1)) * s, hh = h / 60;
+    const x = c * (1 - Math.abs((hh % 2) - 1)), m = l - c / 2;
+    const t = hh < 1 ? [c,x,0] : hh < 2 ? [x,c,0] : hh < 3 ? [0,c,x]
+            : hh < 4 ? [0,x,c] : hh < 5 ? [x,0,c] : [c,0,x];
+    return [t[0] + m, t[1] + m, t[2] + m];
+  }
+  function _lum(rgb){
+    const f = v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+  }
+  function _hex(rgb){
+    return "#" + rgb.map(v =>
+      Math.round(clamp(v, 0, 1) * 255).toString(16).padStart(2, "0")).join("");
+  }
+  /* The accent's own hue is RESERVED. Lane 0 — the open clip — is drawn in
+     --accent, so a layer that lands within 26° of it is a layer you cannot tell
+     from the clip. Observed on the orbit ground, whose accent is a 203° blue:
+     the first layer came out #2393d5, one degree away. Seeded lazily because
+     the ground can change under us, and re-seeded on a ground change so new
+     tracks avoid the new accent; already-coloured tracks keep what they have. */
+  function _rgbHue(css){
+    let r, g, b;
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(css || "").trim());
+    if (m){
+      const n = parseInt(m[1], 16);
+      r = (n >> 16 & 255) / 255; g = (n >> 8 & 255) / 255; b = (n & 255) / 255;
+    } else {
+      const p = /rgba?\(([^)]+)\)/i.exec(String(css || ""));
+      if (!p) return null;
+      const v = p[1].split(",").map(Number);
+      r = v[0] / 255; g = v[1] / 255; b = v[2] / 255;
+    }
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+    if (!d) return null;
+    const h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return ((h * 60) % 360 + 360) % 360;
+  }
+  const _usedHues = [];
+  function reserveAccentHue(){
+    const h = _rgbHue(BGTheme.color("--accent"));
+    if (h != null && _usedHues.indexOf(h) < 0) _usedHues.push(h);
+  }
+  try{ window.addEventListener("bgate:theme", () => { try{ reserveAccentHue(); }catch(e){} }); }catch(e){}
+
+  function clipColor(key){
+    const k = String(key || "clip");
+    if (_clipColor.has(k)) return _clipColor.get(k);
+    if (!_usedHues.length) reserveAccentHue();
+    // Then push a new hue off any it would collide with. Order-dependent, but
+    // the result is CACHED per source path, so a colour never moves once a
+    // track has one — reordering or splitting lanes cannot recolour them.
+    let h = _hue(k);
+    // ((a-b+540) % 360) - 180 is the SIGNED shortest way round; its magnitude
+    // is the circular distance. (Getting this inverted put two clips 11° apart
+    // and the separation pass silently did nothing.)
+    const near = x => _usedHues.some(u =>
+      Math.abs(((x - u + 540) % 360) - 180) < 26);
+    for (let i = 0; i < 8 && near(h); i++) h = (h + 47) % 360;
+    _usedHues.push(h);
+    // Bisect the lightness until the hue sits on the target luminance. 18 steps
+    // is far past the precision 8-bit channels can express.
+    let lo = 0.05, hi = 0.95, sat = 0.72;
+    for (let i = 0; i < 18; i++){
+      const mid = (lo + hi) / 2;
+      if (_lum(_hsl(h, sat, mid)) < CLIP_LUM) lo = mid; else hi = mid;
+    }
+    const out = _hex(_hsl(h, sat, (lo + hi) / 2));
+    _clipColor.set(k, out);
+    return out;
+  }
+  /* Lane 0 is the open clip and is not one of the coloured layers: it is the
+     thing everything else is arranged AGAINST, so it takes the theme accent and
+     follows the ground like the rest of the chrome. */
+  function laneColor(i){
+    if (!i) return BGTheme.color("--accent");
+    const t = S.tracks[i - 1];
+    return clipColor(t ? (t.source || t.name) : "lane" + i);
+  }
+
   /* ── styles ───────────────────────────────────────────────────────────── */
   function injectStyle(){
     if (document.getElementById("audiolab-style")) return;
@@ -64,87 +195,203 @@ window.AudioLab = (() => {
     s.textContent = [
       // --overlay, not a baked near-black: on the light ground a hardcoded dark
       // scrim buries the panel it is supposed to sit behind.
-      ".ab-back{position:fixed;inset:0;z-index:1400;background:var(--overlay);backdrop-filter:blur(3px);display:flex;flex-direction:column}",
+      ".ab-back{position:fixed;inset:0;z-index:1400;background:var(--overlay);backdrop-filter:blur(3px);display:flex;flex-direction:column;font-size:var(--fs-sm)}",
       // Embedded in a Studio tab: a panel in the page, not a sheet over it.
-      ".ab-back.ab-embed{position:relative;inset:auto;z-index:auto;background:var(--surface-2);backdrop-filter:none;height:100%;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}",
+      ".ab-back.ab-embed{position:relative;inset:auto;z-index:auto;background:var(--surface-1);backdrop-filter:none;height:100%;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}",
       ".ab-back.ab-embed .ab-closebtn{display:none}",
       // A file is hovering over the pane. Outline rather than a border so the
       // layout does not shift by 2px the moment a drag enters.
       ".ab-back.ab-drop,.ab-land.ab-drop{outline:2px dashed var(--accent);outline-offset:-6px}",
       ".ab-land{display:grid;place-items:center;height:100%;min-height:420px;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg)}",
-      ".ab-land-in{text-align:center;max-width:380px;padding:var(--s-8)}",
+      ".ab-land-in{text-align:center;max-width:420px;padding:var(--s-8)}",
       ".ab-land-btns{display:flex;gap:var(--s-3);justify-content:center;flex-wrap:wrap}",
       ".ab-land-in h3{font-size:var(--fs-xl);font-weight:var(--fw-regular);color:var(--text);margin-bottom:var(--s-4)}",
       ".ab-land-in p{color:var(--text-3);font-size:var(--fs-md);line-height:var(--lh);margin-bottom:var(--s-7)}",
-      ".ab-bar{display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--seam);background:var(--iron);flex:none}",
-      ".ab-title{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--bone);text-transform:uppercase}",
-      ".ab-sub{font-family:var(--mono);font-size:10px;color:var(--ash2)}",
+
+      /* ── top bar ────────────────────────────────────────────────────────
+         Soundtrap's: mark, inline-editable title, a saved state, then the
+         actions. The title here is the SAVE PATH, because that is what this
+         document's name actually is. */
+      ".ab-bar{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-3) var(--s-5);border-bottom:1px solid var(--line);background:var(--surface-1);flex:none;min-height:46px}",
+      ".ab-brand{display:flex;align-items:center;gap:var(--s-3);color:var(--text-2);flex:none}",
+      ".ab-title{font-family:var(--mono);font-size:var(--fs-2xs);letter-spacing:var(--track-label);color:var(--text-3);text-transform:uppercase;white-space:nowrap}",
+      ".ab-name{flex:1;min-width:90px;max-width:520px;background:transparent;border:1px solid transparent;border-radius:var(--r-xs);color:var(--text);font:inherit;font-family:var(--mono);font-size:var(--fs-sm);padding:var(--s-2) var(--s-3)}",
+      ".ab-name:hover{border-color:var(--line)}",
+      ".ab-name:focus{outline:none;border-color:var(--accent);background:var(--surface-2)}",
+      ".ab-saved{display:flex;align-items:center;gap:var(--s-2);font-family:var(--mono);font-size:var(--fs-2xs);color:var(--good);flex:none;white-space:nowrap}",
+      ".ab-saved.dirty{color:var(--warn)}",
+      ".ab-saved i{width:7px;height:7px;border-radius:var(--r-full);background:currentColor;display:block}",
+      ".ab-sub{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3)}",
       ".ab-dirty{color:var(--warn)}",
       ".ab-spacer{flex:1}",
-      ".ab-btn{padding:6px 11px;background:var(--plate);border:1px solid var(--seam);border-radius:7px;color:var(--bone);font:inherit;font-size:11.5px;cursor:pointer}",
-      ".ab-btn:hover:not(:disabled){border-color:var(--ember)}",
+      ".ab-sep{width:1px;align-self:stretch;background:var(--line);margin:var(--s-2) var(--s-1);flex:none}",
+
+      /* buttons ─ one family: a pill for a toggle, a plate for an action,
+         a circle for an icon-only control. */
+      ".ab-btn{display:inline-flex;align-items:center;gap:var(--s-2);padding:var(--s-3) var(--s-4);background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-xs);color:var(--text);font:inherit;font-size:var(--fs-xs);cursor:pointer;white-space:nowrap}",
+      ".ab-btn:hover:not(:disabled){border-color:var(--accent);background:var(--surface-3)}",
       ".ab-btn:disabled{opacity:.4;cursor:default}",
-      ".ab-btn.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
-      ".ab-btn.wide{width:100%;margin-bottom:6px}",
-      ".ab-body{flex:1;display:flex;min-height:0}",
-      ".ab-main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}",
-      ".ab-modes{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid var(--seam);background:var(--iron);flex:none}",
-      ".ab-mode{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;padding:5px 12px;border:1px solid var(--seam);border-radius:999px;background:none;color:var(--ash);cursor:pointer}",
-      ".ab-mode:hover{border-color:var(--ember);color:var(--bone)}",
-      ".ab-mode.active{background:var(--plate);border-color:var(--ember);color:var(--bone)}",
+      ".ab-btn.go{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}",
+      ".ab-btn.go:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover)}",
+      ".ab-btn.wide{width:100%;justify-content:center;margin-bottom:var(--s-3)}",
+      ".ab-btn.sm{padding:var(--s-2) var(--s-3);font-size:var(--fs-2xs)}",
+      ".ab-ico{display:inline-grid;place-items:center;width:30px;height:30px;padding:0;flex:none;border-radius:var(--r-xs);background:var(--surface-2);border:1px solid var(--line);color:var(--text-2);cursor:pointer}",
+      ".ab-ico:hover:not(:disabled){color:var(--text);border-color:var(--accent)}",
+      ".ab-ico:disabled{opacity:.35;cursor:default}",
+      ".ab-ico.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}",
+      ".ab-ico.rnd{border-radius:var(--r-full)}",
+      ".ab-tg{display:inline-flex;align-items:center;gap:var(--s-2);font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:.06em;padding:var(--s-2) var(--s-4);border:1px solid var(--line);border-radius:var(--r-full);background:var(--surface-2);color:var(--text-3);cursor:pointer;white-space:nowrap}",
+      ".ab-tg:hover{color:var(--text);border-color:var(--line-strong)}",
+      ".ab-tg.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}",
+      ".ab-tg.ok.on{border-color:var(--good);color:var(--good);background:var(--good-soft)}",
+      ".ab-tg.bad.on{border-color:var(--bad);color:var(--bad);background:var(--bad-soft)}",
+
+      /* ── the stack: arrangement over sheet over transport, rail at the edge */
+      ".ab-body{flex:1;display:flex;min-height:0;background:var(--bg)}",
+      ".ab-main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}",
+
+      /* ── arrangement ────────────────────────────────────────────────────
+         A fixed left column of track headers and a canvas of lanes, sharing
+         one vertical scroll offset and one row height. */
+      ".ab-arr{flex:1;min-height:0;display:flex;overflow:hidden;background:var(--bg)}",
+      ".ab-arr[hidden]{display:none}",
+      ".ab-heads{width:" + HEADS_W + "px;flex:none;display:flex;flex-direction:column;background:var(--surface-1);border-right:1px solid var(--line);overflow:hidden}",
+      ".ab-heads-top{height:" + RULER_H + "px;flex:none;display:flex;align-items:center;gap:var(--s-2);padding:0 var(--s-3);border-bottom:1px solid var(--line);background:var(--surface-2)}",
+      ".ab-heads-top .l{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".ab-heads-top .mini{width:20px;height:18px;border-radius:var(--r-xs);border:1px solid var(--line);background:var(--surface-1);color:var(--text-3);display:grid;place-items:center;cursor:pointer;padding:0;flex:none}",
+      ".ab-heads-top .mini:hover{color:var(--text);border-color:var(--accent)}",
+      ".ab-heads-clip{flex:1;min-height:0;overflow:hidden;position:relative}",
+      ".ab-heads-in{position:absolute;left:0;right:0;top:0;will-change:transform}",
+      ".ab-head{height:" + LANE_H + "px;box-sizing:border-box;display:flex;align-items:center;gap:var(--s-2);padding:0 var(--s-3) 0 var(--s-4);border-bottom:1px solid var(--line-soft);cursor:pointer;position:relative}",
+      ".ab-head:hover{background:var(--surface-2)}",
+      ".ab-head.sel{background:var(--surface-2)}",
+      // The colour bar is the track's identity, held at the edge where the eye
+      // learns one position for it.
+      ".ab-head .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--line)}",
+      ".ab-head.sel .bar{width:4px}",
+      ".ab-head .badge{width:24px;height:24px;flex:none;border-radius:var(--r-full);display:grid;place-items:center;border:1px solid currentColor;background:var(--surface-2)}",
+      ".ab-head .col{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}",
+      ".ab-head .nm{width:100%;background:transparent;border:1px solid transparent;border-radius:var(--r-xs);color:var(--text);font:inherit;font-family:var(--mono);font-size:var(--fs-xs);padding:1px var(--s-2);text-overflow:ellipsis}",
+      ".ab-head .nm:hover{border-color:var(--line)}",
+      ".ab-head .nm:focus{outline:none;border-color:var(--accent);background:var(--surface-3)}",
+      ".ab-head .nm[readonly]{cursor:default}",
+      ".ab-head .meta{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);padding-left:var(--s-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".ab-head .btns{display:flex;align-items:center;gap:2px;flex:none}",
+      ".ab-head .hb{width:21px;height:21px;padding:0;display:grid;place-items:center;border:1px solid transparent;border-radius:var(--r-xs);background:none;color:var(--text-3);cursor:pointer}",
+      ".ab-head .hb:hover{color:var(--text);border-color:var(--line)}",
+      ".ab-head .hb.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}",
+      ".ab-head .hb.solo.on{color:var(--good);border-color:var(--good);background:var(--good-soft)}",
+      ".ab-head .hb.rec.on{color:var(--bad);border-color:var(--bad);background:var(--bad-soft)}",
+      ".ab-lanes{flex:1;position:relative;min-width:0;min-height:0}",
+      ".ab-lanes canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}",
+      // The overlay owns the pointer: it is the topmost layer, and it is the
+      // only one that repaints while the playhead moves.
+      ".ab-lanes canvas.over{cursor:grab;background:transparent}",
+      ".ab-wave{flex:1;position:relative;min-height:120px}",
+      ".ab-wave canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}",
+      ".ab-wave canvas.over{cursor:text;background:transparent}",
+      ".ab-hud{position:absolute;left:var(--s-4);bottom:var(--s-3);font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-xs);padding:2px var(--s-3);pointer-events:none;white-space:pre;opacity:.92}",
+
+      /* ── the context sheet ──────────────────────────────────────────────
+         Soundtrap's bottom sheet: whatever is selected gets its editor here,
+         and the arrangement above it collapses rather than being navigated
+         away from. */
+      ".ab-sheet{flex:none;display:flex;flex-direction:column;background:var(--surface-1);border-top:1px solid var(--line);min-height:0}",
+      ".ab-sheet.collapsed{height:auto!important}",
+      ".ab-grip{height:7px;flex:none;cursor:ns-resize;background:var(--surface-2);border-bottom:1px solid var(--line);display:grid;place-items:center}",
+      ".ab-grip::after{content:'';width:44px;height:2px;border-radius:2px;background:var(--line-strong)}",
+      ".ab-grip:hover::after{background:var(--accent)}",
+      ".ab-sheet.collapsed .ab-grip{cursor:default}",
+      ".ab-tabs{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-3) var(--s-4);border-bottom:1px solid var(--line);flex:none;overflow-x:auto;scrollbar-width:thin}",
+      ".ab-tab{display:inline-flex;align-items:center;gap:var(--s-2);font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;padding:var(--s-2) var(--s-4);border:1px solid transparent;border-radius:var(--r-full);background:none;color:var(--text-3);cursor:pointer;white-space:nowrap}",
+      ".ab-tab:hover{color:var(--text)}",
+      ".ab-tab.on{color:var(--accent);border-color:var(--accent-line);background:var(--accent-soft)}",
+      ".ab-pane{flex:1;min-height:0;overflow:auto;padding:var(--s-5)}",
+      ".ab-pane.flush{padding:0;display:flex;min-height:0}",
+      ".ab-sheet.collapsed .ab-pane,.ab-sheet.collapsed .ab-tabhint{display:none}",
+      ".ab-clipwrap{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}",
+      ".ab-clipbar{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-3) var(--s-4);border-bottom:1px solid var(--line-soft);flex:none;flex-wrap:wrap;background:var(--surface-1)}",
+      ".ab-rack{width:288px;flex:none;border-left:1px solid var(--line);overflow-y:auto;padding:var(--s-4);background:var(--surface-1)}",
+
+      /* ── the panel rail ─────────────────────────────────────────────────
+         Soundtrap's right edge: a vertical stack of circular buttons, each
+         opening a panel into the sheet. */
+      ".ab-rail{width:66px;flex:none;display:flex;flex-direction:column;align-items:center;gap:var(--s-2);padding:var(--s-4) 0;background:var(--surface-1);border-left:1px solid var(--line);overflow-y:auto}",
+      ".ab-rb{width:52px;padding:var(--s-2) 0;border:0;background:none;color:var(--text-3);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px}",
+      ".ab-rb i{display:grid;place-items:center;width:34px;height:34px;border-radius:var(--r-full);border:1px solid var(--line);background:var(--surface-2)}",
+      ".ab-rb s{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:.04em;text-decoration:none;text-transform:uppercase}",
+      ".ab-rb:hover{color:var(--text)}",
+      ".ab-rb:hover i{border-color:var(--line-strong)}",
+      ".ab-rb.on{color:var(--accent)}",
+      ".ab-rb.on i{border-color:var(--accent);background:var(--accent-soft)}",
+
+      /* ── the transport, which is always in the same place ───────────────── */
+      ".ab-tr{flex:none;display:flex;align-items:center;gap:var(--s-3);padding:var(--s-3) var(--s-5);border-top:1px solid var(--line);background:var(--surface-2);flex-wrap:wrap}",
+      ".ab-tr .grp{display:flex;align-items:center;gap:var(--s-2)}",
+      ".ab-clock{font-family:var(--mono);font-size:var(--fs-xl);letter-spacing:-.01em;color:var(--text);min-width:104px;text-align:center;font-variant-numeric:tabular-nums}",
+      ".ab-tr .big{width:38px;height:38px;border-radius:var(--r-full)}",
+      ".ab-tr .rec.armed{color:var(--bad);border-color:var(--bad)}",
+      ".ab-vol{width:88px;accent-color:var(--accent)}",
+      ".ab-read{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);white-space:nowrap}",
+      ".ab-pop{position:absolute;bottom:46px;right:var(--s-5);z-index:5;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:var(--shadow-3);padding:var(--s-4);width:238px}",
+      ".ab-pop[hidden]{display:none}",
+      ".ab-pop .ab-h:first-child{margin-top:0}",
+
+      // setMode()/openSheet() hide these with the `hidden` attribute, and the UA
+      // rule that implements it ([hidden]{display:none}) loses to any author
+      // display. Without this line hiding a flex box is a no-op.
+      ".ab-studio[hidden],.ab-wave[hidden],.ab-stage[hidden],.ab-arr[hidden],.ab-rangebar[hidden]{display:none}",
       ".ab-studio{flex:1;min-height:0;display:flex}",
       ".ab-studio>*{flex:1;min-width:0}",
-      ".ab-wave{flex:1;position:relative;min-height:0}",
-      ".ab-wave canvas{position:absolute;inset:0;width:100%;height:100%;cursor:text;touch-action:none}",
-      ".ab-layers{flex:1;position:relative;min-height:0}",
-      ".ab-layers canvas{position:absolute;inset:0;width:100%;height:100%;cursor:grab;touch-action:none}",
-      ".ab-hud{position:absolute;left:10px;bottom:8px;font-family:var(--mono);font-size:10px;color:var(--ash2);background:var(--surface-1);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;pointer-events:none;white-space:pre}",
-      ".ab-transport{display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--seam);background:var(--iron);flex:none;flex-wrap:wrap}",
-      // setMode() hides these with the `hidden` attribute, and the UA rule that
-      // implements it ([hidden]{display:none}) loses to any author display.
-      // Without this line the studio and the clip transport were both permanently
-      // on screen and mode switching looked like a no-op.
-      ".ab-studio[hidden],.ab-transport[hidden],.ab-wave[hidden],.ab-stage[hidden],.ab-layers[hidden]{display:none}",
-      // The range ops, which only exist while a range does. A flex row of its
-      // own so the four buttons wrap as a unit, and its own [hidden] rule for
-      // the same reason the line above needs one.
-      "#ab-lrange{display:flex;align-items:center;gap:8px}",
-      "#ab-lrange[hidden]{display:none}",
+      // The range ops, which only exist while a range does.
+      ".ab-rangebar{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-5);border-top:1px solid var(--accent-line);background:var(--accent-wash);flex:none;flex-wrap:wrap}",
       // The audition strip. Sits on the accent ground so a pending edit reads as
-      // a state the pane is IN, not as one more row of buttons.
-      ".ab-stage{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-4);border-top:1px solid var(--accent-line);background:var(--accent-soft);flex:none;flex-wrap:wrap}",
+      // a state the pane is IN, not as one more row of buttons. Directly above
+      // the transport, so it is always found in the same place.
+      ".ab-stage{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-5);border-top:1px solid var(--accent-line);background:var(--accent-soft);flex:none;flex-wrap:wrap}",
       ".ab-stage .lbl{font-family:var(--mono);font-size:var(--fs-xs);color:var(--text)}",
-      ".ab-side{width:302px;flex:none;background:var(--iron);border-left:1px solid var(--seam);overflow-y:auto;padding:12px}",
-      ".ab-h{font-family:var(--mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ash2);margin:16px 0 7px;display:flex;align-items:center;gap:7px}",
+
+      /* ── arc knobs ──────────────────────────────────────────────────────
+         A knob for a continuous value, a pill for a toggle. Drag vertically;
+         double-click returns it to its default. The arc and the readout are
+         patched in place, never re-rendered — re-rendering a control mid-drag
+         is how you kill the drag. */
+      ".ab-knobs{display:flex;flex-wrap:wrap;gap:var(--s-4);margin-bottom:var(--s-4)}",
+      ".ab-knob{display:flex;flex-direction:column;align-items:center;gap:1px;width:56px;flex:none;cursor:ns-resize;touch-action:none;user-select:none}",
+      ".ab-knob.sm{width:34px;gap:0}",
+      ".ab-knob svg{display:block;overflow:visible}",
+      ".ab-knob .trk{stroke:var(--line-strong);fill:none}",
+      ".ab-knob .arc{stroke:var(--accent);fill:none}",
+      ".ab-knob .ptr{stroke:var(--text);fill:none}",
+      ".ab-knob .kl{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)}",
+      ".ab-knob .kv{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text);font-variant-numeric:tabular-nums}",
+      ".ab-knob:hover .kv{color:var(--accent)}",
+
+      ".ab-h{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-wide);text-transform:uppercase;color:var(--text-3);margin:var(--s-6) 0 var(--s-3);display:flex;align-items:center;gap:var(--s-3)}",
       ".ab-h:first-child{margin-top:0}",
-      ".ab-h span{flex:1;height:1px;background:var(--seam)}",
-      ".ab-row{display:flex;align-items:center;gap:7px;margin-bottom:6px}",
-      ".ab-row label{font-family:var(--mono);font-size:10px;color:var(--ash2);flex:none;min-width:46px}",
-      ".ab-in{flex:1;min-width:0;background:var(--void);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font:inherit;font-size:11.5px;padding:5px 7px}",
-      ".ab-in:focus{outline:none;border-color:var(--ember)}",
-      ".ab-in.num{flex:none;width:70px}",
-      ".ab-grid2{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px}",
+      ".ab-h span{flex:1;height:1px;background:var(--line)}",
+      ".ab-row{display:flex;align-items:center;gap:var(--s-3);margin-bottom:var(--s-3);flex-wrap:wrap}",
+      ".ab-row label{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);flex:none;min-width:46px}",
+      ".ab-in{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-xs);color:var(--text);font:inherit;font-size:var(--fs-xs);padding:var(--s-3)}",
+      ".ab-in:focus{outline:none;border-color:var(--accent)}",
+      ".ab-in.num{flex:none;width:76px}",
+      ".ab-grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-3);margin-bottom:var(--s-3)}",
       // A toggle sharing a row with a field must not be squeezed by it.
       ".ab-row .ab-tg{flex:none}",
       ".ab-row .ab-btn{flex:none}",
-      ".ab-grid2 .ab-btn{width:100%}",
-      ".ab-note{font-size:11px;color:var(--ash);line-height:1.5;margin-bottom:8px}",
-      ".ab-note b{color:var(--bone)}",
+      ".ab-grid2 .ab-btn{width:100%;justify-content:center;margin-bottom:0}",
+      ".ab-note{font-size:var(--fs-xs);color:var(--text-2);line-height:var(--lh);margin-bottom:var(--s-4)}",
+      ".ab-note b{color:var(--text)}",
       ".ab-warn{color:var(--warn)}",
-      ".ab-track{border:1px solid var(--seam);border-radius:8px;padding:7px;margin-bottom:6px;background:var(--void)}",
-      ".ab-track .hd{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;color:var(--bone);margin-bottom:5px}",
-      ".ab-track .hd .x{margin-left:auto;cursor:pointer;color:var(--ash2)}",
-      ".ab-track .hd .x:hover{color:var(--bad)}",
-      ".ab-track .mini{display:flex;gap:4px;margin-top:5px}",
-      ".ab-tg{font-family:var(--mono);font-size:9px;padding:2px 7px;border:1px solid var(--seam);border-radius:999px;background:none;color:var(--ash2);cursor:pointer}",
-      ".ab-tg.on{border-color:var(--ember);color:var(--bone);background:var(--plate)}",
+      ".ab-cols{display:flex;gap:var(--s-6);align-items:flex-start;flex-wrap:wrap}",
+      ".ab-col{flex:1;min-width:240px}",
       ".ab-pick{position:fixed;inset:0;z-index:1401;background:var(--overlay);display:flex;align-items:center;justify-content:center;padding:40px}",
-      ".ab-pbox{background:var(--iron);border:1px solid var(--seam);border-radius:12px;width:min(720px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}",
-      ".ab-plist{overflow-y:auto;padding:8px}",
-      ".ab-pi{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--bone)}",
-      ".ab-pi:hover{background:var(--plate)}",
-      ".ab-pi .m{margin-left:auto;color:var(--ash2);font-size:10px}",
-      ".ab-tag{font-size:9px;padding:1px 6px;border-radius:999px;border:1px solid var(--seam);color:var(--ash2)}",
+      ".ab-pbox{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-md);width:min(720px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}",
+      ".ab-plist{overflow-y:auto;padding:var(--s-4)}",
+      ".ab-pi{display:flex;align-items:center;gap:var(--s-4);padding:var(--s-3) var(--s-4);border-radius:var(--r-xs);cursor:pointer;font-family:var(--mono);font-size:var(--fs-xs);color:var(--text)}",
+      ".ab-pi:hover{background:var(--surface-3)}",
+      ".ab-pi .m{margin-left:auto;color:var(--text-3);font-size:var(--fs-2xs)}",
+      ".ab-tag{font-size:var(--fs-3xs);padding:1px var(--s-3);border-radius:var(--r-full);border:1px solid var(--line);color:var(--text-3)}",
       ".ab-tag.on{border-color:var(--good);color:var(--good)}",
       ".ab-tag.loop{border-color:var(--line-strong);color:var(--text)}",
       // The "new sound" chooser reuses the picker's sheet, but its rows are a
@@ -243,7 +490,7 @@ window.AudioLab = (() => {
     }
     if (wanted && buf.sampleRate !== wanted){
       say(`this browser decoded at ${buf.sampleRate}Hz, not the file's ${wanted}Hz `
-          + "— saving will resample");
+          + "- saving will resample");
     }
 
     S = {
@@ -269,6 +516,9 @@ window.AudioLab = (() => {
       // normalise_session rejects a track with no `source`.
       clipLane: { muted: false, solo: false, gain_db: 0, pan: 0 },
       status: null, mode: "clip", studioMounted: false,
+      // Which context panel the bottom sheet is showing, and how tall it is.
+      sheet: "clip", sheetOpen: true, sheetH: 330,
+      master: null, masterVol: 0.8, monMuted: false,
       synth: { wave:"square", freq:440, sweep:-40, seconds:0.22,
                attack:0.005, decay:0.08, sustain:0.25, release:0.09,
                noise:0, crush:0, gain:0.8 },
@@ -282,6 +532,7 @@ window.AudioLab = (() => {
             ltool: "move" },
       saveAs: rel,
     };
+    makeMaster();
     mount();
     labStatus();
     paint();
@@ -307,11 +558,17 @@ window.AudioLab = (() => {
     recTeardown();
     if (window.BeatMaker) try { BeatMaker.unmount(); } catch (e) {}
     if (S){
+      // The overlay loop is the one thing that keeps calling back into a torn
+      // down session. Clearing the flag is what stops it: both of its scheduled
+      // callbacks check it, and they check S too.
+      S._tick = 0;
       try { S.ctx.close(); } catch (e) {}
       if (S.ro) try { S.ro.disconnect(); } catch (e) {}
       if (S.lro) try { S.lro.disconnect(); } catch (e) {}
       if (S.onResize) window.removeEventListener("resize", S.onResize);
     }
+    // Peaks are keyed on a buffer identity that dies with the context.
+    PEAKS.clear();
     const back = document.getElementById("ab-back");
     if (back) back.remove();
     document.removeEventListener("keydown", onKey, true);
@@ -322,7 +579,7 @@ window.AudioLab = (() => {
     const d = await readJSON("/api/audio/lab/status", null);
     if (!S) return;
     S.status = d && !d.__error ? d : null;
-    renderSide();
+    renderSheet();
   }
 
   /* ── picker ───────────────────────────────────────────────────────────── */
@@ -454,6 +711,8 @@ window.AudioLab = (() => {
       lplay: null, lhead: 0,
       clipLane: { muted: false, solo: false, gain_db: 0, pan: 0 },
       status: null, mode: "clip", studioMounted: false,
+      sheet: "clip", sheetOpen: true, sheetH: 330,
+      master: null, masterVol: 0.8, monMuted: false,
       synth: { wave:"square", freq:440, sweep:-40, seconds:0.22,
                attack:0.005, decay:0.08, sustain:0.25, release:0.09,
                noise:0, crush:0, gain:0.8 },
@@ -464,6 +723,7 @@ window.AudioLab = (() => {
             ltool: "move" }, keepUi || {}),
       saveAs: saveAs || "game/assets/audio/sfx_new.wav",
     };
+    makeMaster();
     mount();
     labStatus();
     paint();
@@ -503,7 +763,7 @@ window.AudioLab = (() => {
   function newBuild(rate, length, channels){
     try { return newCtxBuf(rate, length, channels); }
     catch (e){
-      say(`could not start that sound${e && e.message ? " — " + e.message : ""}`);
+      say(`could not start that sound${e && e.message ? " - " + e.message : ""}`);
       return null;
     }
   }
@@ -558,8 +818,8 @@ window.AudioLab = (() => {
       made.buf.getChannelData(c).set(S.buf.getChannelData(c).subarray(a, b));
     close();
     newSession(made.ctx, made.buf, saveAs, keep);
-    say(selOnly ? `${fmt((b - a) / rate)} carved out — save it as ${saveAs}`
-                : `duplicated — save it as ${saveAs}`, "ok");
+    say(selOnly ? `${fmt((b - a) / rate)} carved out - save it as ${saveAs}`
+                : `duplicated - save it as ${saveAs}`, "ok");
   }
   function newDup(){ return newFromClip(false); }
   function newFromSel(){ return newFromClip(true); }
@@ -617,7 +877,7 @@ window.AudioLab = (() => {
         <div class="ab-opt${canSel ? "" : " off"}">
           <div class="hd"><b>from the selection</b><span>${canSel
             ? E(`${fmt((S.sel.b - S.sel.a) / rate)} selected`)
-            : (can ? "no selection — drag on the waveform" : why)}</span></div>
+            : (can ? "no selection - drag on the waveform" : why)}</span></div>
           <div class="ab-note">Carve one hit out of a take: the selected span becomes
             a sound of its own and the take keeps every sample it had.</div>
           <button class="ab-btn wide"${canSel ? "" : " disabled"}
@@ -636,50 +896,114 @@ window.AudioLab = (() => {
     const f = host.querySelector("#ab-new-secs"); if (f) f.focus();
   }
 
-  /* ── DOM ──────────────────────────────────────────────────────────────── */
+  /* ── DOM ──────────────────────────────────────────────────────────────────
+   * ONE SCREEN. The lab used to be three exclusive modes — clip, layers,
+   * studio — with a 300px column of every control the module owns stacked
+   * beside whichever one was showing. Switching modes was navigation: the
+   * arrangement disappeared to edit a clip, the clip disappeared to place it.
+   *
+   * This is Soundtrap's shape instead, because Soundtrap solved exactly this:
+   *
+   *   · the ARRANGEMENT is always on screen — a fixed left column of track
+   *     headers and a lane canvas sharing one row height and one scroll;
+   *   · whatever is selected gets a CONTEXT SHEET at the bottom, which grows
+   *     and shrinks rather than replacing the arrangement;
+   *   · the TRANSPORT is pinned under both and never moves, so play is in one
+   *     place whatever you are editing;
+   *   · a RAIL of circular buttons down the right edge opens the panels.
+   *
+   * The panels are the old side column, cut along the lines the work actually
+   * has: clip / effects / instrument / patterns / mix / export.
+   */
+  const PANELS = [
+    { id: "clip",    icon: "waveform", label: "clip",    title: "Clip - the waveform and what it is made of" },
+    { id: "fx",      icon: "edit",     label: "fx",      title: "Effects - gain, fades, normalise, speed, repeat" },
+    { id: "synth",   icon: "audio",    label: "synth",   title: "Instrument - a sound effect out of nothing" },
+    { id: "pattern", icon: "atlas",    label: "pattern", title: "Patterns - the step sequencer" },
+    { id: "mix",     icon: "agents",   label: "mix",     title: "Mix - layers, mixdown and bounce" },
+    { id: "out",     icon: "assets",   label: "out",     title: "Export - save, and the Godot loop points" },
+  ];
+  const SHEET_MIN = 132, SHEET_MAX_FRAC = 0.78;
+  function ic(name, size){ return BGIcon(name, { size: size || 16 }); }
+
   function mount(){
     const back = document.createElement("div");
     back.className = "ab-back"; back.id = "ab-back";
     back.innerHTML = `
       <div class="ab-bar">
+        <span class="ab-brand" data-icon="audio" data-icon-size="18"></span>
         <span class="ab-title">audio lab</span>
-        <span class="ab-sub" id="ab-name"></span>
+        <input class="ab-name" id="ab-name" spellcheck="false"
+               title="Where this saves. Editing it here is the same as editing it in the export panel."
+               oninput="AudioLab.saveAsField(this.value)"
+               onchange="AudioLab.renderSheet()">
+        <span class="ab-saved" id="ab-saved"><i></i><b id="ab-saved-t">saved</b></span>
         <span class="ab-spacer"></span>
-        <button class="ab-btn" id="ab-undo" onclick="AudioLab.undo()" title="Undo (Ctrl+Z)">↶</button>
-        <button class="ab-btn" id="ab-redo" onclick="AudioLab.redo()" title="Redo">↷</button>
-        <button class="ab-btn" onclick="AudioLab.pick()">open…</button>
-        <button class="ab-btn" title="Start another sound — empty, a duplicate of this clip, or the selection"
-                onclick="AudioLab.newDialog()">new…</button>
-        <button class="ab-btn" title="Bring a sound in from disk as the clip"
-                onclick="document.getElementById('ab-file').click()">import…</button>
+        <button class="ab-ico" id="ab-undo" onclick="AudioLab.undo()" title="Undo (Ctrl+Z)">${ic("undo")}</button>
+        <button class="ab-ico" id="ab-redo" onclick="AudioLab.redo()" title="Redo (Ctrl+Shift+Z)">${ic("redo")}</button>
+        <span class="ab-sep"></span>
+        <button class="ab-btn sm" onclick="AudioLab.pick()">open</button>
+        <button class="ab-btn sm" title="Start another sound - empty, a duplicate of this clip, or the selection"
+                onclick="AudioLab.newDialog()">new</button>
+        <button class="ab-btn sm" title="Bring a sound in from disk as the clip"
+                onclick="document.getElementById('ab-file').click()">import</button>
         <input type="file" id="ab-file" accept="audio/*" multiple style="display:none"
                onchange="AudioLab.importPicked(event,false)">
-        <button class="ab-btn ab-recbtn" title="Capture from a microphone as the clip"
-                onclick="AudioLab.recStart(false)">● record…</button>
-        <button class="ab-btn go" id="ab-save" onclick="AudioLab.save()">save</button>
-        <button class="ab-btn ab-closebtn" onclick="AudioLab.close()">close</button>
+        <button class="ab-btn sm go" id="ab-save" onclick="AudioLab.save()">save</button>
+        <button class="ab-btn sm ab-closebtn" onclick="AudioLab.close()">exit</button>
       </div>
       <div class="ab-why" id="ab-why" hidden></div>
       <div class="ab-body">
         <div class="ab-main">
-          <div class="ab-modes" id="ab-modes">
-            <button class="ab-mode active" data-m="clip" onclick="AudioLab.setMode('clip')">clip</button>
-            <button class="ab-mode" data-m="layers" onclick="AudioLab.setMode('layers')">layers</button>
-            <button class="ab-mode" data-m="studio" onclick="AudioLab.setMode('studio')">studio · beat maker</button>
+
+          <div class="ab-arr" id="ab-arr">
+            <div class="ab-heads" id="ab-heads">
+              <div class="ab-heads-top">
+                <span class="l" id="ab-heads-l">tracks</span>
+                <button class="mini" title="Layer another project sound"
+                        onclick="AudioLab.addTrack()">${ic("select", 12)}</button>
+                <button class="mini" title="Clear every mute and solo"
+                        onclick="AudioLab.clearMutes()">${ic("mute", 12)}</button>
+              </div>
+              <div class="ab-heads-clip" id="ab-heads-clip">
+                <div class="ab-heads-in" id="ab-heads-in"></div>
+              </div>
+            </div>
+            <div class="ab-lanes" id="ab-lanes">
+              <canvas id="ab-lcanvas"></canvas>
+              <canvas id="ab-lover" class="over"></canvas>
+              <div class="ab-hud" id="ab-lhud"></div>
+            </div>
           </div>
-          <div class="ab-studio" id="ab-studio" hidden></div>
-          <div class="ab-wave" id="ab-wave"><canvas id="ab-canvas"></canvas>
-            <div class="ab-hud" id="ab-hud"></div></div>
-          <div class="ab-layers" id="ab-layers" hidden><canvas id="ab-lcanvas"></canvas>
-            <div class="ab-hud" id="ab-lhud"></div></div>
+
+          <div class="ab-sheet" id="ab-sheet">
+            <div class="ab-grip" id="ab-grip" title="Drag to resize · double-click to collapse"></div>
+            <div class="ab-tabs" id="ab-tabs"></div>
+            <div class="ab-pane" id="ab-pane"></div>
+          </div>
+
+          <div class="ab-rangebar" id="ab-rangebar" hidden>
+            <span class="ab-sub" id="ab-rangeinfo"></span>
+            <span class="ab-spacer"></span>
+            <button class="ab-btn sm" onclick="AudioLab.rangeTrim()"
+                    title="Keep only the selected span of this layer">${ic("trim", 13)} trim to range</button>
+            <button class="ab-btn sm" onclick="AudioLab.rangeRemove()"
+                    title="Drop the selected span; a cut in the middle splits the lane in two">${ic("delete", 13)} remove range</button>
+            <button class="ab-btn sm" onclick="AudioLab.rangePlay()"
+                    title="Hear just this layer over just this span">${ic("run", 13)} play range</button>
+            <button class="ab-tg" onclick="AudioLab.clearRange()"
+                    title="Escape does this too">clear</button>
+          </div>
+
           <div class="ab-stage" id="ab-stage" hidden>
             <span class="lbl" id="ab-stage-label"></span>
             <span class="ab-spacer"></span>
             <button class="ab-tg" id="ab-abtg" onclick="AudioLab.toggleAB()"
                     title="Hear the original instead, without losing the edit">A/B</button>
-            <button class="ab-btn go" onclick="AudioLab.applyStaged()" title="Apply (Enter)">apply</button>
-            <button class="ab-btn" onclick="AudioLab.cancelStaged()" title="Cancel (Esc)">cancel</button>
+            <button class="ab-btn sm go" onclick="AudioLab.applyStaged()" title="Apply (Enter)">apply</button>
+            <button class="ab-btn sm" onclick="AudioLab.cancelStaged()" title="Cancel (Esc)">cancel</button>
           </div>
+
           <div class="ab-rec" id="ab-rec" hidden>
             <span class="dot"></span>
             <span class="t" id="ab-rec-t">0.000s</span>
@@ -687,84 +1011,217 @@ window.AudioLab = (() => {
             <span class="note" id="ab-rec-note"></span>
             <span class="ab-spacer"></span>
             <span class="ab-sub" id="ab-rec-dest"></span>
-            <button class="ab-btn go" onclick="AudioLab.recStop()">■ stop &amp; keep</button>
-            <button class="ab-btn" onclick="AudioLab.recCancel()"
+            <button class="ab-btn sm go" onclick="AudioLab.recStop()">${ic("stop", 13)} stop &amp; keep</button>
+            <button class="ab-btn sm" onclick="AudioLab.recCancel()"
                     title="Throw the take away and close the microphone">discard</button>
           </div>
-          <div class="ab-transport">
-            <button class="ab-btn go" id="ab-play" onclick="AudioLab.togglePlay()">▶ play</button>
-            <button class="ab-tg" id="ab-loopsel" onclick="AudioLab.toggleLoopSel()"
-                    title="Play the selection round and round">↻ loop sel</button>
-            <button class="ab-btn" onclick="AudioLab.stop()">■</button>
-            <button class="ab-btn" onclick="AudioLab.selectAll()">select all</button>
-            <button class="ab-btn" onclick="AudioLab.clearSel()">clear selection</button>
-            <button class="ab-btn" onclick="AudioLab.zoomSel()">zoom to selection</button>
-            <button class="ab-btn" onclick="AudioLab.zoomFit()">fit</button>
-            <span class="ab-sub" id="ab-selinfo"></span>
-          </div>
-          <div class="ab-transport" id="ab-ltransport" hidden>
-            <button class="ab-btn go" id="ab-lplay" onclick="AudioLab.toggleStack()"
-                    title="Hear the clip and every layer together (Space)">▶ play stack</button>
-            <button class="ab-btn" onclick="AudioLab.stop()">■</button>
-            <button class="ab-tg" id="ab-ltool-move" onclick="AudioLab.setLayerTool('move')"
-                    title="Drag a lane to slide it in time — hold Alt for the other tool">⇔ move</button>
-            <button class="ab-tg" id="ab-ltool-sel" onclick="AudioLab.setLayerTool('select')"
-                    title="Drag across a lane to select a span of it — hold Alt for the other tool">▭ select</button>
-            <button class="ab-tg" id="ab-lclipm" onclick="AudioLab.clipLaneField('muted')"
-                    title="Mute the clip lane">clip M</button>
-            <button class="ab-tg" id="ab-lclips" onclick="AudioLab.clipLaneField('solo')"
-                    title="Solo the clip lane">clip S</button>
-            <button class="ab-btn" onclick="AudioLab.addTrack()">+ layer a sound</button>
-            <button class="ab-btn" title="Save a file from disk into the project and layer it"
-                    onclick="document.getElementById('ab-lfile').click()">+ import a file</button>
-            <input type="file" id="ab-lfile" accept="audio/*" multiple style="display:none"
-                   onchange="AudioLab.importPicked(event,true)">
-            <button class="ab-btn ab-recbtn" title="Record a take into the project and layer it"
-                    onclick="AudioLab.recStart(true)">● record a take</button>
-            <button class="ab-btn" onclick="AudioLab.splitLayer()"
-                    title="Cut the focused layer in two where the playhead is">✂ split at playhead</button>
-            <button class="ab-btn" onclick="AudioLab.layersFit()">fit</button>
-            <span id="ab-lrange" hidden>
-              <button class="ab-btn" onclick="AudioLab.rangeTrim()"
-                      title="Keep only the selected span of this layer">⇥ trim to range</button>
-              <button class="ab-btn" onclick="AudioLab.rangeRemove()"
-                      title="Drop the selected span; a cut in the middle splits the lane in two">✂ remove range</button>
-              <button class="ab-btn" onclick="AudioLab.rangePlay()"
-                      title="Hear just this layer over just this span">▶ play range</button>
-              <button class="ab-tg" onclick="AudioLab.clearRange()"
-                      title="Escape does this too">clear range</button>
+
+          <div class="ab-tr" id="ab-tr" style="position:relative">
+            <span class="grp">
+              <button class="ab-ico" onclick="AudioLab.toggleMute()" id="ab-mon"
+                      title="Monitor level - this is what you hear, never what gets written">${ic("mute")}</button>
+              <input class="ab-vol" id="ab-vol" type="range" min="0" max="100" step="1" value="80"
+                     title="Monitor level"
+                     oninput="AudioLab.setMaster(this.value)">
             </span>
-            <span class="ab-sub" id="ab-linfo"></span>
+            <span class="ab-sep"></span>
+            <span class="ab-clock" id="ab-clock">00:00.0</span>
+            <span class="grp">
+              <button class="ab-ico rnd rec ab-recbtn" id="ab-recbtn" onclick="AudioLab.recStart(false)"
+                      title="Record from a microphone">${ic("record")}</button>
+              <button class="ab-ico rnd" onclick="AudioLab.toStart()"
+                      title="Back to the start">${ic("skip_start")}</button>
+              <button class="ab-ico rnd big go" id="ab-play" onclick="AudioLab.togglePlay()"
+                      title="Play (Space)">${ic("run", 18)}</button>
+              <button class="ab-ico rnd" onclick="AudioLab.stop()" title="Stop">${ic("stop")}</button>
+              <button class="ab-ico rnd" id="ab-loopsel" onclick="AudioLab.toggleLoopSel()"
+                      title="Loop the selection round and round">${ic("loop")}</button>
+            </span>
+            <span class="ab-sep"></span>
+            <span class="ab-read" id="ab-read"></span>
+            <span class="ab-spacer"></span>
+            <span class="ab-read" id="ab-selinfo"></span>
+            <button class="ab-ico" id="ab-gear" onclick="AudioLab.togglePrefs()"
+                    title="Editing preferences">${ic("settings")}</button>
+            <div class="ab-pop" id="ab-prefs" hidden></div>
           </div>
         </div>
-        <div class="ab-side" id="ab-side"></div>
+        <div class="ab-rail" id="ab-rail"></div>
       </div>`;
-    if (_host) { back.classList.add("ab-embed"); _host.innerHTML = ""; _host.appendChild(back); }
-    else document.body.appendChild(back);
-    $ = { back, name: back.querySelector("#ab-name"),
-          wave: back.querySelector("#ab-wave"), canvas: back.querySelector("#ab-canvas"),
-          hud: back.querySelector("#ab-hud"), side: back.querySelector("#ab-side"),
-          selinfo: back.querySelector("#ab-selinfo"), play: back.querySelector("#ab-play"),
-          layers: back.querySelector("#ab-layers"), lcanvas: back.querySelector("#ab-lcanvas"),
-          lhud: back.querySelector("#ab-lhud"), linfo: back.querySelector("#ab-linfo") };
+    /* _host is module state and OUTLIVES the pane it points at. A seat that has
+       been switched away from leaves a host that is still in the document and
+       still non-null but has no boxes — and mounting into it renders the whole
+       mixer somewhere nobody can see, with no error and nothing in the console.
+       Observed: AudioLab.open() from the asset library painted into the hidden
+       #aud-editor (overlayOnBody 0, inSeat true) instead of opening the overlay.
+       spriteedit.js carries the same guard for the same reason. */
+    const visible = el => !!el && el.isConnected && el.getClientRects().length > 0;
+    if (visible(_host)) { back.classList.add("ab-embed"); _host.innerHTML = ""; _host.appendChild(back); }
+    else { _host = null; document.body.appendChild(back); }
+
+    /* The clip waveform and the beat maker are PERSISTENT nodes that the sheet
+       borrows. Rebuilding either from innerHTML on a tab change would drop the
+       canvas's listeners and remount the sequencer, so they live in a detached
+       stash and get moved into the pane instead. */
+    $ = { back,
+          name: back.querySelector("#ab-name"),
+          heads: back.querySelector("#ab-heads-in"),
+          headsClip: back.querySelector("#ab-heads-clip"),
+          lanes: back.querySelector("#ab-lanes"),
+          lcanvas: back.querySelector("#ab-lcanvas"),
+          lover: back.querySelector("#ab-lover"),
+          lhud: back.querySelector("#ab-lhud"),
+          sheet: back.querySelector("#ab-sheet"),
+          tabs: back.querySelector("#ab-tabs"),
+          pane: back.querySelector("#ab-pane"),
+          rail: back.querySelector("#ab-rail"),
+          clock: back.querySelector("#ab-clock"),
+          read: back.querySelector("#ab-read"),
+          selinfo: back.querySelector("#ab-selinfo"),
+          play: back.querySelector("#ab-play"),
+          stash: document.createElement("div") };
+    $.stash.style.display = "none";
+
+    // The clip surface: a static waveform canvas with an overlay for the parts
+    // that move. See _paint() for why that split is not decoration.
+    $.wave = document.createElement("div");
+    $.wave.className = "ab-wave"; $.wave.id = "ab-wave";
+    $.wave.innerHTML = `<canvas id="ab-canvas"></canvas>
+      <canvas id="ab-over" class="over"></canvas>
+      <div class="ab-hud" id="ab-hud"></div>`;
+    $.canvas = $.wave.querySelector("#ab-canvas");
+    $.over = $.wave.querySelector("#ab-over");
+    $.hud = $.wave.querySelector("#ab-hud");
+    $.studio = document.createElement("div");
+    $.studio.className = "ab-studio"; $.studio.id = "ab-studio";
+    $.stash.appendChild($.wave);
+    $.stash.appendChild($.studio);
+    back.appendChild($.stash);
+
     $.ctx2d = $.canvas.getContext("2d");
+    $.octx2d = $.over.getContext("2d");
     $.lctx2d = $.lcanvas.getContext("2d");
+    $.loctx2d = $.lover.getContext("2d");
+
+    if (window.BGIcon) BGIcon.upgrade(back);
     bindWave();
     bindLayers();
     bindDrop(back);
+    bindKnobs(back);
+    bindGrip();
+    bindHeadScroll();
     syncLoopBtn();
     document.addEventListener("keydown", onKey, true);
     if (window.ResizeObserver){
       S.ro = new ResizeObserver(() => paint());
       S.ro.observe($.wave);
-      S.lro = new ResizeObserver(() => paintLayers());
-      S.lro.observe($.layers);
+      S.lro = new ResizeObserver(() => { paintLayers(); paintHead(); });
+      S.lro.observe($.lanes);
     }
-    S.onResize = () => paint();
+    S.onResize = () => { paint(); paintLayers(); paintHead(); };
     window.addEventListener("resize", S.onResize);
+    sizeSheet();
     sizeCanvas();
-    renderSide();
-    requestAnimationFrame(() => paint());
+    renderRail();
+    renderSheet();
+    renderHeads();
+    applyMaster();
+    // The arrangement is on screen from the first frame now, so its layers have
+    // to be fetched from the first frame too. This used to be deferred until
+    // somebody switched to "layers" mode, which no longer exists.
+    S.tracks.forEach(t => ensureLayerBuf(t.source));
+    layersFit();
+    requestAnimationFrame(() => { paint(); paintLayers(); paintHead(); });
+  }
+
+  /* ── the panel rail and the sheet ─────────────────────────────────────── */
+  function renderRail(){
+    if (!$.rail) return;
+    $.rail.innerHTML = PANELS.map(p => `
+      <button class="ab-rb${S.sheet === p.id && S.sheetOpen ? " on" : ""}"
+              title="${E(p.title)}" onclick="AudioLab.setSheet('${p.id}')">
+        <i>${ic(p.icon, 17)}</i><s>${E(p.label)}</s></button>`).join("");
+  }
+  function sheetTabs(){
+    if (!$.tabs) return;
+    const p = PANELS.find(x => x.id === S.sheet) || PANELS[0];
+    $.tabs.innerHTML = PANELS.map(x => `
+      <button class="ab-tab${x.id === S.sheet ? " on" : ""}"
+              title="${E(x.title)}" onclick="AudioLab.setSheet('${x.id}',true)">
+        ${ic(x.icon, 13)}${E(x.label)}</button>`).join("")
+      + `<span class="ab-spacer"></span>
+         <button class="ab-tg" onclick="AudioLab.toggleSheet()">${
+           S.sheetOpen ? "collapse" : "open"} ${E(p.label)}</button>`;
+  }
+  function sizeSheet(){
+    if (!$.sheet) return;
+    const open = !!S.sheetOpen;
+    $.sheet.classList.toggle("collapsed", !open);
+    const max = Math.max(SHEET_MIN, ($.back.clientHeight || 700) * SHEET_MAX_FRAC);
+    S.sheetH = clamp(S.sheetH || 320, SHEET_MIN, max);
+    $.sheet.style.height = open ? S.sheetH + "px" : "";
+  }
+  function toggleSheet(){
+    if (!S) return;
+    S.sheetOpen = !S.sheetOpen;
+    sizeSheet(); sheetTabs(); renderRail();
+    if (S.sheetOpen) renderSheet();
+    requestAnimationFrame(() => { paint(); paintLayers(); paintHead(); });
+  }
+  /* Clicking the panel you are already in collapses it — the same button that
+     opened the sheet is the one that puts the arrangement back. */
+  function setSheet(id, force){
+    if (!S) return;
+    if (S.sheet === id && S.sheetOpen && !force){ toggleSheet(); return; }
+    S.sheet = PANELS.some(p => p.id === id) ? id : "clip";
+    S.sheetOpen = true;
+    S.mode = S.sheet === "pattern" ? "studio" : S.sheet === "clip" ? "clip" : S.mode;
+    sizeSheet(); renderRail(); renderSheet();
+    requestAnimationFrame(() => { paint(); paintLayers(); paintHead(); });
+  }
+  function bindGrip(){
+    const g = document.getElementById("ab-grip");
+    if (!g) return;
+    g.addEventListener("dblclick", toggleSheet);
+    g.addEventListener("pointerdown", ev => {
+      if (!S || !S.sheetOpen) return;
+      g.setPointerCapture(ev.pointerId);
+      const y0 = ev.clientY, h0 = S.sheetH;
+      const max = Math.max(SHEET_MIN, $.back.clientHeight * SHEET_MAX_FRAC);
+      const move = e => {
+        S.sheetH = clamp(h0 + (y0 - e.clientY), SHEET_MIN, max);
+        $.sheet.style.height = S.sheetH + "px";
+      };
+      const up = () => {
+        g.removeEventListener("pointermove", move);
+        g.removeEventListener("pointerup", up);
+        paint(); paintLayers(); paintHead();
+      };
+      g.addEventListener("pointermove", move);
+      g.addEventListener("pointerup", up);
+    });
+  }
+  /* The header column and the lane canvas are two rendering systems showing one
+     list, so exactly one number decides where row i is: S.lscroll. */
+  function bindHeadScroll(){
+    if (!$.headsClip) return;
+    $.headsClip.addEventListener("wheel", ev => {
+      if (!S) return;
+      ev.preventDefault();
+      scrollLanes(ev.deltaY);
+    }, { passive: false });
+  }
+  function maxLaneScroll(){
+    const H = ($.lanes ? $.lanes.clientHeight : 0) - RULER_H;
+    return Math.max(0, (S.tracks.length + 1) * LANE_H - H);
+  }
+  function scrollLanes(dy){
+    S.lscroll = clamp(S.lscroll + dy, 0, maxLaneScroll());
+    syncHeadScroll();
+    paintLayers(); paintHead();
+  }
+  function syncHeadScroll(){
+    if ($.heads) $.heads.style.transform = `translateY(${-Math.round(S.lscroll)}px)`;
   }
 
   /* Returns true when the backing store actually changed.
@@ -780,6 +1237,9 @@ window.AudioLab = (() => {
     const w = Math.max(1, Math.round(r.width * dpr));
     const h = Math.max(1, Math.round(r.height * dpr));
     S.dpr = dpr;
+    if ($.over.width !== w || $.over.height !== h){
+      $.over.width = w; $.over.height = h;
+    }
     if ($.canvas.width === w && $.canvas.height === h) return false;
     $.canvas.width = w; $.canvas.height = h;
     return true;
@@ -792,6 +1252,41 @@ window.AudioLab = (() => {
      deliberately keeps reading S.buf, so restaging at a different amount
      recomputes from the original instead of compounding on the last preview. */
   function viewBuf(){ return S.staged && !S.staged.ab ? S.staged.buf : S.buf; }
+
+  /* ── peaks, and why they are cached ───────────────────────────────────────
+   * Reducing a 45-second stereo buffer to 1200 columns is ~500k reads. That was
+   * happening on EVERY repaint: every pointermove of a selection drag, and
+   * every animation frame while the playhead moved. The picture it produced was
+   * identical each time — the samples had not changed and neither had the view.
+   *
+   * Two fixes, and they are the whole latency story here:
+   *   1. the moving parts (selection, playhead, range) are drawn on a SECOND
+   *      canvas stacked over the waveform, so a drag or a playing transport
+   *      repaints ~20 lines instead of the surface;
+   *   2. what is left is memoised on (buffer, channel, window, width), so the
+   *      first frame after a zoom pays for the scan and no frame after it does.
+   *
+   * There is no worker: an AudioBuffer's channel data cannot cross a postMessage
+   * boundary without a copy that costs more than the scan, so the honest answer
+   * is to do the scan far less often rather than somewhere else.
+   */
+  let _bufSeq = 0;
+  function bufId(buf){
+    if (!buf.__abid) buf.__abid = ++_bufSeq;
+    return buf.__abid;
+  }
+  const PEAKS = new Map();
+  const PEAKS_CAP = 160;
+  function peaksFor(buf, channel, from, to, width){
+    const key = bufId(buf) + "|" + channel + "|" + Math.round(from) + "|"
+              + Math.round(to) + "|" + width;
+    const hit = PEAKS.get(key);
+    if (hit) return hit;
+    const out = peaks(buf, channel, from, to, width);
+    if (PEAKS.size >= PEAKS_CAP) PEAKS.delete(PEAKS.keys().next().value);
+    PEAKS.set(key, out);
+    return out;
+  }
 
   // Takes the buffer explicitly: layers mode draws a different buffer per lane,
   // and reading viewBuf() internally made this only ever able to draw the clip.
@@ -829,7 +1324,8 @@ window.AudioLab = (() => {
   // listener), so paint() picks up the new values.
   try{ window.addEventListener("bgate:theme", () => {
     try{ paint(); }catch(e){}
-    try{ paintLayers(); }catch(e){}
+    try{ paintLayers(); paintHead(); }catch(e){}
+    try{ renderHeads(); }catch(e){}
   }); }catch(e){}
 
   function paint(){
@@ -841,6 +1337,9 @@ window.AudioLab = (() => {
     setTimeout(run, 120);
   }
 
+  /* The static half: ground, waveform, channel rules, Godot loop markers.
+     Repainted when the audio, the view or the ground changes — and at no other
+     time. Everything that moves is in _paintSel below. */
   function _paint(){
     if (!S) return;
     sizeCanvas();
@@ -856,22 +1355,13 @@ window.AudioLab = (() => {
     const { from, to } = S.view;
     const width = Math.max(1, Math.floor(W));
 
-    // selection band, under the waveform
-    let selX = null;
-    if (S.sel){
-      const x0 = sampleToX(S.sel.a, W), x1 = sampleToX(S.sel.b, W);
-      selX = [Math.min(x0, x1), Math.max(x0, x1)];
-      c.fillStyle = BGTheme.color("--accent-soft");
-      c.fillRect(selX[0], 0, selX[1] - selX[0], H);
-    }
-
     for (let k = 0; k < ch; k++){
       const top = k * laneH, mid = top + laneH / 2;
       // The zero line and the channel divider were baked near-white — invisible
       // on the light ground, which is the whole reason BGTheme.color exists.
       c.strokeStyle = BGTheme.color("--line");
       c.beginPath(); c.moveTo(0, mid); c.lineTo(W, mid); c.stroke();
-      const p = peaks(vb, k, from, to, width);
+      const p = peaksFor(vb, k, from, to, width);
       c.strokeStyle = BGTheme.color("--accent-hover");
       c.beginPath();
       for (let x = 0; x < width; x++){
@@ -887,20 +1377,13 @@ window.AudioLab = (() => {
       }
     }
 
-    // Grips, over the waveform. An edge you cannot see is an edge nobody drags.
-    if (selX){
-      c.fillStyle = BGTheme.color("--accent");
-      c.fillRect(Math.round(selX[0]) - 1, 0, 2, H);
-      c.fillRect(Math.round(selX[1]) - 1, 0, 2, H);
-    }
-
     // Godot loop markers — the setting you cannot hear, drawn where you can see it.
     if (S.loop && S.loop.enabled){
       const rate = S.buf.sampleRate;
       const b = sampleToX(S.loop.begin_s * rate, W);
       c.strokeStyle = BGTheme.color("--info"); c.lineWidth = 1.5;
       c.beginPath(); c.moveTo(b, 0); c.lineTo(b, H); c.stroke();
-      c.fillStyle = BGTheme.color("--info"); c.font = "10px ui-monospace,monospace";
+      c.fillStyle = BGTheme.color("--info"); c.font = "10px " + MONO;
       c.fillText("loop", b + 4, 12);
       if (S.loop.end_s != null){
         const e = sampleToX(S.loop.end_s * rate, W);
@@ -908,6 +1391,37 @@ window.AudioLab = (() => {
         c.fillText("end", e + 4, 12);
       }
       c.lineWidth = 1;
+    }
+
+    const rate = vb.sampleRate;
+    $.hud.textContent = [
+      `${fmt(vb.length / rate)}  ·  ${rate}Hz  ·  ${ch === 2 ? "stereo" : "mono"}`,
+      `view ${fmt(from / rate)}–${fmt(to / rate)}`,
+    ].join("   ");
+    refreshHistory();
+    syncStage();
+    _paintSel();
+  }
+
+  /* The moving half. Selection band, its two grips, and the clip playhead —
+     everything a drag or a running transport changes. Nothing here reads the
+     samples, so this is cheap enough to run every frame. */
+  function _paintSel(){
+    if (!S || !$.octx2d || !$.over) return;
+    const c = $.octx2d, dpr = S.dpr || 1;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const W = $.over.width / dpr, H = $.over.height / dpr;
+    c.clearRect(0, 0, W, H);
+
+    if (S.sel){
+      const x0 = sampleToX(S.sel.a, W), x1 = sampleToX(S.sel.b, W);
+      const a = Math.min(x0, x1), b = Math.max(x0, x1);
+      c.fillStyle = BGTheme.color("--accent-soft");
+      c.fillRect(a, 0, b - a, H);
+      // Grips. An edge you cannot see is an edge nobody drags.
+      c.fillStyle = BGTheme.color("--accent");
+      c.fillRect(Math.round(a) - 1, 0, 2, H);
+      c.fillRect(Math.round(b) - 1, 0, 2, H);
     }
 
     if (S.play){
@@ -918,24 +1432,66 @@ window.AudioLab = (() => {
         const w = S.sel.b - S.sel.a;
         if (w > 0 && t > S.sel.b) t = S.sel.a + ((t - S.sel.a) % w);
       }
-      const x = sampleToX(t, W);
-      c.strokeStyle = BGTheme.color("--text");
-      c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke();
-      paint();                                  // keep the playhead moving
+      drawHead(c, sampleToX(t, W), H, true);
     }
 
-    const rate = vb.sampleRate;
-    $.hud.textContent = [
-      `${fmt(vb.length / rate)}  ·  ${rate}Hz  ·  ${ch === 2 ? "stereo" : "mono"}`,
-      `view ${fmt(from / rate)}–${fmt(to / rate)}`,
-    ].join("   ");
+    const rate = viewBuf().sampleRate;
     if ($.selinfo){
       $.selinfo.textContent = S.sel
-        ? `selection ${fmt(S.sel.a / rate)} → ${fmt(S.sel.b / rate)}  (${fmt((S.sel.b - S.sel.a) / rate)})`
-        : "no selection — edits apply to the whole clip";
+        ? `sel ${fmt(S.sel.a / rate)} → ${fmt(S.sel.b / rate)} (${fmt((S.sel.b - S.sel.a) / rate)})`
+        : "no selection - edits apply to the whole clip";
     }
-    refreshHistory();
-    syncStage();
+  }
+
+  /* Soundtrap draws the playhead as a line with a triangular grab handle at the
+     top, which is what tells you the line is a control and not a decoration.
+     Same shape on both surfaces, so it reads as one object. */
+  function drawHead(c, x, H, live, top){
+    const y = top || 0;
+    c.strokeStyle = BGTheme.color(live ? "--text" : "--text-dim");
+    c.lineWidth = 1;
+    c.beginPath(); c.moveTo(Math.round(x) + .5, y); c.lineTo(Math.round(x) + .5, H); c.stroke();
+    c.fillStyle = BGTheme.color(live ? "--text" : "--text-dim");
+    c.beginPath();
+    c.moveTo(x - 5, y); c.lineTo(x + 5, y); c.lineTo(x, y + 7);
+    c.closePath(); c.fill();
+  }
+  const MONO = "ui-monospace,Consolas,monospace";
+
+  /* ONE animation loop for everything that moves: both overlays and the clock.
+     It starts when something starts playing and stops itself when nothing is,
+     so an idle pane costs no frames. The old code recursed paint() from inside
+     paint(), which meant a moving playhead re-derived the whole waveform. */
+  function startTick(){
+    if (!S || S._tick) return;
+    S._tick = 1;
+    // rAF AND a timeout, whichever lands first — the same non-latching idiom
+    // paint() uses, and for the same reason: rAF does not fire while the page
+    // is not compositing (a background tab, a pane that is not on screen), and
+    // a loop that only chains on rAF freezes the playhead and the clock for the
+    // rest of the session. Observed while driving this pane headlessly.
+    const run = () => {
+      if (!S || !S._tick) return;
+      S._tick = 0;
+      _paintSel();
+      paintHead();
+      syncClock();
+      if (S.play || S.lplay) startTick();
+    };
+    requestAnimationFrame(run);
+    setTimeout(run, 40);
+  }
+  /* The big readout. Whichever transport is live is what it counts, because
+     there is only one of them on screen and it has to mean something. */
+  function syncClock(){
+    if (!S || !$.clock) return;
+    let t = 0;
+    if (S.lplay) t = S.lplay.from + (S.ctx.currentTime - S.lplay.startCtxTime);
+    else if (S.play) t = (S.playFrom + (S.ctx.currentTime - S.playStart) * S.buf.sampleRate)
+                         / S.buf.sampleRate;
+    else t = S.lhead || 0;
+    const m = Math.floor(Math.max(0, t) / 60), s = Math.max(0, t) - m * 60;
+    $.clock.textContent = `${String(m).padStart(2, "0")}:${s < 10 ? "0" : ""}${s.toFixed(1)}`;
   }
 
   function sampleToX(sample, W){
@@ -997,7 +1553,10 @@ window.AudioLab = (() => {
   }
 
   function bindWave(){
-    const el = $.canvas;
+    // The OVERLAY takes the pointer, because it is the topmost layer. Every
+    // move below repaints only it — the waveform underneath does not move while
+    // a selection is being dragged, so it must not be redrawn while one is.
+    const el = $.over;
     el.addEventListener("pointerdown", ev => {
       if (!S) return;
       el.setPointerCapture(ev.pointerId);
@@ -1012,7 +1571,7 @@ window.AudioLab = (() => {
       }
       S.drag = { mode: "new", a: xToSample(x) };
       S.sel = null;
-      paint();
+      _paintSel();
     });
     el.addEventListener("pointermove", ev => {
       if (!S) return;
@@ -1034,11 +1593,11 @@ window.AudioLab = (() => {
         S.sel = p === S.drag.a ? null
               : { a: Math.min(S.drag.a, p), b: Math.max(S.drag.a, p) };
       }
-      paint();
+      _paintSel();
     });
     // Snap on release only: snapping mid-drag makes the edge jump under the
     // pointer and you can never land where you meant to.
-    const end = () => { if (S){ if (S.drag) snapSel(); S.drag = null; renderSide(); paint(); } };
+    const end = () => { if (S){ if (S.drag) snapSel(); S.drag = null; renderSheet(); paint(); } };
     el.addEventListener("pointerup", end);
     el.addEventListener("pointercancel", end);
     el.addEventListener("wheel", ev => {
@@ -1072,7 +1631,7 @@ window.AudioLab = (() => {
     const v = samples / unitScale();
     return u === "ms" ? v.toFixed(1) : v.toFixed(4);
   }
-  /* Writes the boxes back without re-rendering the panel: renderSide() replaces
+  /* Writes the boxes back without re-rendering the panel: renderSheet() replaces
      the very input the value was typed into, which blurs it mid-edit. */
   function syncSelFields(){
     const s = S.sel;
@@ -1102,9 +1661,9 @@ window.AudioLab = (() => {
   function selUnits(u){
     if (!S) return;
     S.ui.units = (u === "ms" || u === "samples") ? u : "s";
-    renderSide(); paint();
+    renderSheet(); paint();
   }
-  function toggleSnap(){ if (S){ S.ui.snap = !S.ui.snap; renderSide(); paint(); } }
+  function toggleSnap(){ if (S){ S.ui.snap = !S.ui.snap; renderSheet(); paint(); } }
 
   /* Nudge. 1 ms a press, 10 ms with Shift; Alt moves the in point instead of
      the out, Ctrl/Cmd slides the whole selection. */
@@ -1125,7 +1684,7 @@ window.AudioLab = (() => {
     }
     if (b < a){ const t = a; a = b; b = t; }
     S.sel = b - a < 1 ? null : { a, b };
-    renderSide(); paint();
+    renderSheet(); paint();
   }
 
   function onKey(ev){
@@ -1157,19 +1716,15 @@ window.AudioLab = (() => {
     // edit above does: dismissing the selection is what Escape means for a
     // selection everywhere else here, and closing the editor instead would take
     // the arrangement with it.
-    if (ev.key === "Escape" && S.mode === "layers" && S.lrange){
+    if (ev.key === "Escape" && S.lrange){
       ev.preventDefault(); clearRange(); return;
     }
     // Overlay only. Embedded, close() strips #ab-back without restoring the
     // landing markup embed() wrote, leaving the Studio tab blank for good.
     if (ev.key === "Escape" && !_host){ ev.preventDefault(); closeAsk(); return; }
-    // Space is "play what I am looking at": in layers that is the whole stack,
-    // not the clip on its own.
-    if (ev.key === " "){
-      ev.preventDefault();
-      if (S.mode === "layers") toggleStack(); else togglePlay();
-      return;
-    }
+    // Space is "play what I am looking at", and togglePlay() is now the one
+    // place that decides what that means — see its comment.
+    if (ev.key === " "){ ev.preventDefault(); togglePlay(); return; }
     if ((ev.ctrlKey || ev.metaKey) && k === "z"){
       ev.preventDefault(); ev.shiftKey ? redo() : undo(); return; }
     if ((ev.ctrlKey || ev.metaKey) && k === "s"){ ev.preventDefault(); save(); return; }
@@ -1189,22 +1744,62 @@ window.AudioLab = (() => {
       const span = Math.min(S.buf.length, S.view.to - S.view.from);
       S.view = ev.key === "Home" ? { from: 0, to: span }
                                  : { from: S.buf.length - span, to: S.buf.length };
-      renderSide(); paint();
+      renderSheet(); paint();
       return;
     }
     if (ev.key === "Delete" || ev.key === "Backspace"){ ev.preventDefault(); cut(); return; }
   }
 
-  /* ── playback ─────────────────────────────────────────────────────────── */
-  function togglePlay(){ S && (S.play ? stop() : play()); }
+  /* ── playback ─────────────────────────────────────────────────────────────
+   * Everything live goes through ONE master gain, which is the transport's
+   * volume slider. It is a monitor level and nothing else: no render path
+   * (mixdown, bounce, the beat maker's offline render, encodeWav) can see it,
+   * because a level control that silently scaled what lands on disk is the
+   * single worst bug a mixer can have. */
+  function makeMaster(){
+    if (!S || S.master) return;
+    try {
+      S.master = S.ctx.createGain();
+      S.master.gain.value = S.monMuted ? 0 : S.masterVol;
+      S.master.connect(S.ctx.destination);
+    } catch (e){ S.master = null; }
+  }
+  /* The live destination. BeatMaker schedules into this too, so its preview
+     obeys the same slider as everything else in the pane. */
+  function dest(){ return (S && S.master) || (S && S.ctx.destination) || null; }
+  function setMaster(v){
+    if (!S) return;
+    S.masterVol = clamp(Number(v) / 100, 0, 1);
+    if (S.monMuted && S.masterVol > 0) S.monMuted = false;
+    applyMaster();
+  }
+  function toggleMute(){ if (S){ S.monMuted = !S.monMuted; applyMaster(); } }
+  function applyMaster(){
+    if (S && S.master) S.master.gain.value = S.monMuted ? 0 : S.masterVol;
+    const b = document.getElementById("ab-mon");
+    if (b) b.classList.toggle("on", !!(S && S.monMuted));
+    const sl = document.getElementById("ab-vol");
+    if (sl) sl.value = Math.round((S ? S.masterVol : 0.8) * 100);
+  }
+
+  /* One button, two transports. With the arrangement permanently on screen the
+     question "what does play mean" has a real answer: the clip on its own when
+     you are looking at its editor, the whole stack otherwise. */
+  function togglePlay(){
+    if (!S) return;
+    if (S.play || S.lplay){ stop(); return; }
+    if (S.sheet === "clip" && S.sheetOpen) play();
+    else playStack(S.lhead || 0);
+  }
   function play(){
     if (!S) return;
     stop();
     try { S.ctx.resume(); } catch (e) {}
+    makeMaster();
     const vb = viewBuf();
     const src = S.ctx.createBufferSource();
     src.buffer = vb;
-    src.connect(S.ctx.destination);
+    src.connect(dest());
     const rate = vb.sampleRate;
     // A staged length-changing edit (speed, repeat, insert) is shorter or longer
     // than the selection was drawn against, so clamp before it reaches start():
@@ -1241,15 +1836,38 @@ window.AudioLab = (() => {
     const b = document.getElementById("ab-loopsel");
     if (b) b.classList.toggle("on", !!(S && S.ui && S.ui.loopSel));
   }
+  /* Back to zero. Whichever transport is live decides what "the start" is —
+     the clip's own head when the clip is playing, the arrangement's otherwise. */
+  function toStart(){
+    if (!S) return;
+    const wasStack = !!S.lplay, wasClip = !!S.play;
+    stop();
+    S.lhead = 0;
+    if (S.sel) S.view = { from: 0, to: S.view.to - S.view.from };
+    paintHead(); syncClock(); _paintSel();
+    if (wasStack) playStack(0); else if (wasClip) play();
+  }
   function stop(){
     if (!S) return;
     stopPreview();
     stopStack();                 // every path that silences the lab silences the stack
-    if (!S.play) return;
+    if (!S.play){ syncPlay(); _paintSel(); return; }
     try { S.play.onended = null; S.play.stop(); } catch (e) {}
-    S.play = null; syncPlay(); paint();
+    S.play = null; syncPlay(); _paintSel();
   }
-  function syncPlay(){ if ($.play) $.play.textContent = S && S.play ? "❚❚ pause" : "▶ play"; }
+  /* One play button for two transports. Which one it drives is decided by
+     togglePlay(); what it SHOWS is simply whether anything is running, because
+     there is one of them on screen and two states would be a lie. */
+  function syncPlay(){
+    const on = !!(S && (S.play || S.lplay));
+    if ($.play){
+      $.play.innerHTML = ic(on ? "pause" : "run", 18);
+      $.play.title = on ? "Pause (Space)" : "Play (Space)";
+      $.play.classList.toggle("go", !on);
+      if (window.BGIcon) BGIcon.upgrade($.play);
+    }
+    if (on) startTick(); else syncClock();
+  }
 
   /* ── history ──────────────────────────────────────────────────────────── */
   function bufBytes(b){ return b.length * b.numberOfChannels * 4; }
@@ -1323,7 +1941,7 @@ window.AudioLab = (() => {
         S.sel = b - a < 1 ? null : { a, b };
       }
     }
-    renderSide(); paint();
+    renderSheet(); paint();
     if (label) say(label, "ok");
   }
 
@@ -1345,7 +1963,7 @@ window.AudioLab = (() => {
     if (!S) return;
     stop();
     S.staged = { buf, label, remap, sel: sel || null, ab: false };
-    renderSide(); paint();
+    renderSheet(); paint();
   }
   /* Some ops want the selection to land on what they just made (the silence you
      inserted, the block you repeated). Held on the staged entry and applied
@@ -1355,7 +1973,7 @@ window.AudioLab = (() => {
     const len = S.buf.length;
     const a = clamp(sel.a, 0, len), b = clamp(sel.b, 0, len);
     S.sel = b - a < 1 ? null : { a, b };
-    renderSide(); paint();
+    renderSheet(); paint();
   }
   function applyStaged(){
     if (!S || !S.staged) return;
@@ -1369,7 +1987,7 @@ window.AudioLab = (() => {
     if (!S || !S.staged) return;
     stop();
     S.staged = null;
-    renderSide(); paint();
+    renderSheet(); paint();
   }
   function toggleAB(){
     if (!S || !S.staged) return;
@@ -1409,7 +2027,7 @@ window.AudioLab = (() => {
     S.buf = e.buf;
     S.dirty = true;
     restoreFrame(e);
-    renderSide(); paint();
+    renderSheet(); paint();
   }
   function redo(){
     if (!S || !S.redo.length) return;
@@ -1421,14 +2039,23 @@ window.AudioLab = (() => {
     S.buf = e.buf;
     S.dirty = true;
     restoreFrame(e);
-    renderSide(); paint();
+    renderSheet(); paint();
   }
+  /* Soundtrap's "Saved! ✓" beside the title, and its inline-editable title. The
+     title here is the save PATH, because that is what this document's name
+     actually is — and it is a real input, so renaming and saving is one gesture
+     rather than a trip to a panel. The input is never rewritten while it has
+     focus; doing that ate the character you had just typed. */
   function refreshHistory(){
     const u = document.getElementById("ab-undo"), r = document.getElementById("ab-redo");
     if (u) u.disabled = !S.undo.length;
     if (r) r.disabled = !S.redo.length;
-    if ($.name) $.name.innerHTML =
-      `${E(S.rel || S.saveAs + " (new)")}${S.dirty ? ' <span class="ab-dirty">● unsaved</span>' : ""}`;
+    if ($.name && document.activeElement !== $.name)
+      $.name.value = S.rel || S.saveAs || "";
+    const chip = document.getElementById("ab-saved");
+    const txt = document.getElementById("ab-saved-t");
+    if (chip) chip.classList.toggle("dirty", !!S.dirty);
+    if (txt) txt.textContent = S.dirty ? "unsaved" : (S.rel ? "saved" : "new");
   }
 
   /* ── edits ────────────────────────────────────────────────────────────── */
@@ -1724,7 +2351,8 @@ window.AudioLab = (() => {
     try { S.ctx.resume(); } catch (e) {}
     stopPreview();
     const src = S.ctx.createBufferSource();
-    src.buffer = buf; src.connect(S.ctx.destination); src.start();
+    makeMaster();
+    src.buffer = buf; src.connect(dest()); src.start();
     src.onended = () => { if (S && S.preview === src) S.preview = null; };
     S.preview = src;
   }
@@ -1746,11 +2374,9 @@ window.AudioLab = (() => {
   }
   function synthField(key, v){
     S.synth[key] = key === "wave" ? v : parseFloat(v);
-    if (key === "wave"){ renderSide(); return; }
-    // Patch the readout in place. renderSide() here would replace the slider
-    // mid-drag and kill it, so the printed number used to just sit frozen.
-    const el = document.getElementById("ab-sv-" + key);
-    if (el) el.textContent = S.synth[key];
+    if (key === "wave"){ renderSheet(); return; }
+    // Everything else is behind a knob, which patches its own arc and readout.
+    // renderSheet() here would replace the control mid-drag and kill the drag.
   }
 
   /* ── mixer ────────────────────────────────────────────────────────────── */
@@ -1768,10 +2394,10 @@ window.AudioLab = (() => {
                     gain_db: 0, pan: 0, muted: false, solo: false, reverse: false });
     focusLane(S.tracks.length);           // focus what you just added
     ensureLayerBuf(rel);
-    renderSide();
+    renderSheet();
     paintLayers();
   }
-  /* The numeric fields are bound to oninput, and renderSide() replaces the whole
+  /* The numeric fields are bound to oninput, and renderSheet() replaces the whole
      panel — so re-rendering here destroyed the very box being typed into. Only
      the toggles, which change what the panel draws, may re-render. */
   function trackField(i, key, v){
@@ -1781,7 +2407,22 @@ window.AudioLab = (() => {
     // against, and reverse flips which end of the source it points at.
     if (key !== "gain_db" && key !== "pan") dropRange(i + 1);
     if (key === "muted" || key === "solo" || key === "reverse"){
-      t[key] = !!v; renderSide(); paintLayers(); return;
+      t[key] = !!v; renderHeads(); paintLayers(); return;
+    }
+    // The track name is editable in its header now, so this setter has to take
+    // a string. Falling through to parseFloat made it a silent no-op — the box
+    // kept what you typed and S.tracks kept the old name until the next render
+    // put it back. 80 chars because normalise_session slices there.
+    if (key === "name"){
+      t.name = String(v || "").slice(0, 80) || t.source.split("/").pop();
+      renderHeads(); paintLayers(); return;
+    }
+    // Gain and pan change what a lane SOUNDS like, not what it looks like, so
+    // the static canvas is left alone — this is the path a knob drag is on.
+    if (key === "gain_db" || key === "pan"){
+      const g = parseFloat(v);
+      if (isFinite(g)) t[key] = key === "pan" ? clamp(g, -1, 1) : clamp(g, -60, 12);
+      return;
     }
     // An emptied out_s box means "to the end of the source" — the same null the
     // session stores. Falling through to parseFloat would leave the old number
@@ -1804,7 +2445,7 @@ window.AudioLab = (() => {
     if (!t) return;
     t.in_s = 0; t.out_s = null;
     dropRange(i + 1);                   // the block just grew back under it
-    renderSide(); paintLayers();
+    renderSheet(); paintLayers();
   }
   function dropTrack(i){
     S.tracks.splice(i, 1);
@@ -1812,7 +2453,7 @@ window.AudioLab = (() => {
     // a range that still matched S.lrange.i would now be on someone else.
     dropRange(null);
     S.lsel = clamp(S.lsel, 0, S.tracks.length);
-    renderSide(); paintLayers();
+    renderSheet(); paintLayers();
   }
 
   /* Render every track plus the current clip into one buffer, offline. The
@@ -1851,7 +2492,7 @@ window.AudioLab = (() => {
     // The count guard above is on the raw track list; mute/solo can empty it
     // here, and the 0.01 s floor below then committed 10 ms of silence over the
     // clip and marked the file dirty.
-    if (!loaded.length && !includeCurrent){ say("every layer is muted — nothing to mix"); return null; }
+    if (!loaded.length && !includeCurrent){ say("every layer is muted - nothing to mix"); return null; }
     const ends = loaded.map(({t, buf}) => t.offset_s + trackSpan(t, buf).len);
     if (includeCurrent) ends.push(S.buf.duration);
     const seconds = Math.max(0.01, ...ends);
@@ -1934,7 +2575,7 @@ window.AudioLab = (() => {
     if (!r0) return;
     // The server's validate_wav refuses anything past 900 s. Catching it here
     // saves encoding tens of megabytes of base64 for a guaranteed 400.
-    if (r0.buf.duration > 900){ say("that mix is longer than 15 minutes — shorten it first"); return; }
+    if (r0.buf.duration > 900){ say("that mix is longer than 15 minutes - shorten it first"); return; }
     const wav = encodeWav(r0.buf);
     // No mtime: the target is a file this session has never read, so there is
     // nothing to be stale against — only the "already exists" 409 can fire.
@@ -2043,7 +2684,7 @@ window.AudioLab = (() => {
       // and deserves the audition bar and the undo stack like any other op.
       deliver(copy, label, "reset");
       S.saveAs = "game/assets/audio/" + stem + ".wav";
-      renderSide();
+      renderSheet();
       return;
     }
 
@@ -2077,7 +2718,7 @@ window.AudioLab = (() => {
     // without a word — so a three-file drop in clip mode kept the third and
     // lost two in silence. Take the first and say where the others went.
     if (!asLayer && list.length > 1){
-      say(`importing ${list[0].name} — the other ${list.length - 1} need layers mode`);
+      say(`importing ${list[0].name} - the other ${list.length - 1} need layers mode`);
       list = list.slice(0, 1);
     }
     for (const f of list){
@@ -2087,7 +2728,7 @@ window.AudioLab = (() => {
       } catch (e){
         // The name AND the reason: "could not decode" alone leaves you guessing
         // between a codec this browser lacks and a file that is not audio.
-        say(`could not decode ${f.name}${e && e.message ? " — " + e.message : ""}`);
+        say(`could not decode ${f.name}${e && e.message ? " - " + e.message : ""}`);
         continue;                    // one unreadable file must not end the drop
       }
       if (!S) return;                // the pane can be closed mid-decode
@@ -2104,10 +2745,14 @@ window.AudioLab = (() => {
     el.value = "";      // or picking the same file twice fires no `change` at all
   }
 
-  /* Drop anywhere on the pane. Where you drop decides what it becomes: in
-     layers mode the file is filed into the project and layered, anywhere else
-     it opens as the clip. Bound to `back`, which close() removes — so these go
-     with it and there is nothing to unbind. */
+  /* Drop anywhere on the pane. WHERE you drop still decides what it becomes,
+     but it is now a place rather than a mode: onto the arrangement (the lanes
+     or the track headers) files the sound into the project and layers it;
+     anywhere else — the clip editor, a panel, the chrome — it opens as the
+     clip. That is a better rule than the old "whatever mode you are in",
+     because with one screen there is no mode to be in.
+     Bound to `back`, which close() removes — so these go with it and there is
+     nothing to unbind. */
   function bindDrop(back){
     const isFiles = ev => !!ev.dataTransfer &&
       Array.from(ev.dataTransfer.types || []).indexOf("Files") >= 0;
@@ -2126,7 +2771,10 @@ window.AudioLab = (() => {
       if (!isFiles(ev)) return;
       ev.preventDefault();
       back.classList.remove("ab-drop");
-      importFiles(ev.dataTransfer.files, S && S.mode === "layers");
+      const onArrangement = !!(S && $.lanes && ev.target &&
+        (($.lanes.contains(ev.target)) ||
+         ($.headsClip && $.headsClip.contains(ev.target))));
+      importFiles(ev.dataTransfer.files, onArrangement);
     });
   }
 
@@ -2153,14 +2801,14 @@ window.AudioLab = (() => {
         !navigator.mediaDevices.getUserMedia){
       bad.push({ name: "capture api",
         reason: "this page is not allowed to reach a microphone",
-        fix: "open the dashboard on http://127.0.0.1:7788 — browsers offer the "
+        fix: "open the dashboard on http://127.0.0.1:7788 - browsers offer the "
            + "microphone to localhost or https only, never to a plain LAN address" });
       return bad;                     // nothing below can run without it
     }
     if (typeof window.MediaRecorder === "undefined")
       bad.push({ name: "mediarecorder",
         reason: "this browser has no MediaRecorder",
-        fix: "use Chrome, Edge or Firefox — or import a file instead" });
+        fix: "use Chrome, Edge or Firefox - or import a file instead" });
     try {
       const devs = await navigator.mediaDevices.enumerateDevices();
       const ins = devs.filter(d => d.kind === "audioinput");
@@ -2189,7 +2837,7 @@ window.AudioLab = (() => {
         fix: "click the padlock in the address bar, allow the microphone for this page, then try again" };
     if (n === "NotReadableError" || n === "TrackStartError" || n === "AbortError")
       return { name: "device busy", reason: msg || "the microphone is held by something else",
-        fix: "close whatever has it open — a call, OBS, a DAW — and try again" };
+        fix: "close whatever has it open - a call, OBS, a DAW - and try again" };
     return { name: "microphone", reason: msg || "the microphone could not be opened",
       fix: "check the device in the system sound settings, then try again" };
   }
@@ -2212,7 +2860,7 @@ window.AudioLab = (() => {
     const box = recWhyBox();
     if (!box){                        // nowhere to draw: say the first one and stop
       const c = checks[0];
-      say(c ? `${c.reason} — ${c.fix}` : "cannot record");
+      say(c ? `${c.reason} - ${c.fix}` : "cannot record");
       return;
     }
     box.innerHTML =
@@ -2221,7 +2869,7 @@ window.AudioLab = (() => {
       + '<ul class="ab-checks">' + checks.map(c =>
           `<li><b>${E(c.name)}</b><span class="r">${E(c.reason)}</span>`
           + `<span class="fix">→ ${E(c.fix)}</span></li>`).join("") + "</ul>"
-      + '<div class="foot">Everything else in the lab works without a microphone — '
+      + '<div class="foot">Everything else in the lab works without a microphone - '
       + 'import a file, or synthesise one.</div>';
     box.hidden = false;
   }
@@ -2256,7 +2904,7 @@ window.AudioLab = (() => {
   async function recBegin(asLayer){
     injectStyle();
     const bad = await recPreflight();
-    if (bad.length){ recWhy(bad); say("no microphone — see the panel"); return; }
+    if (bad.length){ recWhy(bad); say("no microphone - see the panel"); return; }
     // A take that replaces the clip is a bigger commitment than picking a file,
     // and it arrives minutes after the decision. Ask BEFORE the take, so a "no"
     // costs nothing; deliver() still makes the result itself undoable.
@@ -2276,7 +2924,7 @@ window.AudioLab = (() => {
         echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     } catch (e){
       if (S) recWhy([recDenied(e)]);
-      say("the microphone did not open — see the panel");
+      say("the microphone did not open - see the panel");
       return;
     }
     // The permission prompt is modal and slow; the pane can be gone by the time
@@ -2291,7 +2939,7 @@ window.AudioLab = (() => {
       try { stream.getTracks().forEach(t => t.stop()); } catch (x) {}
       recWhy([{ name: "mediarecorder",
         reason: (e && e.message) || "the recorder would not start",
-        fix: "this browser offers no capture format the lab can read — import a file instead" }]);
+        fix: "this browser offers no capture format the lab can read - import a file instead" }]);
       return;
     }
 
@@ -2313,7 +2961,7 @@ window.AudioLab = (() => {
     mr.ondataavailable = ev => { if (ev.data && ev.data.size) R.chunks.push(ev.data); };
     mr.onerror = ev => {
       const err = ev && ev.error;
-      say(`the recorder failed${err && err.message ? " — " + err.message : ""}`);
+      say(`the recorder failed${err && err.message ? " - " + err.message : ""}`);
       R.cancelled = true;
       recStop();
     };
@@ -2322,7 +2970,7 @@ window.AudioLab = (() => {
       const type = (R.mr && R.mr.mimeType) || recMime() || "audio/webm";
       recTeardown();                   // device released before anything slow happens
       if (cancelled){ say("take discarded"); return; }
-      if (!chunks.length){ say("nothing was captured — the input produced no audio"); return; }
+      if (!chunks.length){ say("nothing was captured - the input produced no audio"); return; }
       recLand(new Blob(chunks, { type }), asL);
     };
     try {
@@ -2421,8 +3069,8 @@ window.AudioLab = (() => {
     if (note){
       // A device that opens and then delivers silence looks exactly like a
       // working recorder, and that is the failure this machine actually has.
-      const msg = R.hot ? "clipping — turn the input down"
-        : (R.an && !R.heard && secs > REC_SILENT_AFTER) ? "no signal — the input is silent"
+      const msg = R.hot ? "clipping - turn the input down"
+        : (R.an && !R.heard && secs > REC_SILENT_AFTER) ? "no signal - the input is silent"
         : "";
       if (note.textContent !== msg){
         note.textContent = msg;
@@ -2440,7 +3088,7 @@ window.AudioLab = (() => {
     try { buf = await S.ctx.decodeAudioData(await blob.arrayBuffer()); }
     catch (e){
       say("the take was recorded but this browser could not decode it"
-          + (e && e.message ? " — " + e.message : ""));
+          + (e && e.message ? " - " + e.message : ""));
       return;
     }
     if (!S) return;                    // the pane can be closed mid-decode
@@ -2462,15 +3110,14 @@ window.AudioLab = (() => {
       return;
     }
     if (key === "norm_per_channel" || key === "preview"){
-      S.ui[key] = !!v; renderSide(); return;   // changes what the panel draws
+      S.ui[key] = !!v; renderSheet(); return;   // changes what the panel draws
     }
     const n = parseFloat(v);
     if (!isFinite(n)) return;          // a half-typed "-" or "." must not be 0
     S.ui[key] = n;
-    // Same trap as synthField: renderSide() here would replace the slider
-    // mid-drag and kill it. Patch the readout in place instead.
-    const el = document.getElementById("ab-uv-" + key);
-    if (el) el.textContent = n + (el.dataset.sfx || "");
+    // Same trap as synthField: renderSheet() here would replace the knob
+    // mid-drag and kill it. The knob patches its own arc and readout; there is
+    // nothing left for this to write.
   }
 
   async function save(asNew){
@@ -2519,15 +3166,15 @@ window.AudioLab = (() => {
     S.rel = r.data.rel; S.mtime = r.data.mtime; S.saveAs = r.data.rel;
     S.meta = r.data; S.loop = r.data.loop || S.loop;
     S.dirty = false;
-    renderSide(); paint();
+    renderSheet(); paint();
     say(r.data.created
         ? `created ${r.data.rel}${r.data.needs_godot_import
-            ? " — open the project in Godot once so it imports" : ""}`
+            ? " - open the project in Godot once so it imports" : ""}`
         : `saved · previous copy at ${r.data.backup}`, "ok");
   }
 
   async function writeLoop(enabled){
-    if (!S || !S.rel){ say("save the file first — loop points live in its .import"); return; }
+    if (!S || !S.rel){ say("save the file first - loop points live in its .import"); return; }
     const rate = S.buf.sampleRate;
     const begin = S.sel ? S.sel.a / rate : (S.loop.begin_s || 0);
     const end = S.sel ? S.sel.b / rate : S.loop.end_s;
@@ -2539,19 +3186,254 @@ window.AudioLab = (() => {
               mode: (S.loop.mode && S.loop.mode !== "disabled") ? S.loop.mode : "forward" }});
     if (!r.ok) return;
     S.loop = r.data.loop;
-    renderSide(); paint();
+    renderSheet(); paint();
     say(enabled ? `loop set from ${fmt(begin)}` : "looping turned off", "ok");
     if ((r.data.ignored || []).length) say(r.data.ignored[0]);
   }
 
-  /* ── side panel ───────────────────────────────────────────────────────── */
-  function renderSide(){
-    if (!S || !$.side) return;
-    const rate = S.buf.sampleRate;
-    const sel = S.sel;
-    const p = S.synth;
-    const st = S.status;
-    const loop = S.loop || {};
+  /* ── track headers ────────────────────────────────────────────────────────
+   * Soundtrap's left column, and the single most transferable thing about it:
+   * every track's controls are in the SAME PLACE on every row, so the eye
+   * learns one position for mute and never looks for it again. The lab used to
+   * put these in a scrolling form at the far right of the window, several
+   * hundred pixels from the lane they controlled.
+   *
+   * Lane 0 is the open clip. It carries the same controls as a layer because it
+   * is a lane in the same mix — but its mute/solo live on S.clipLane rather
+   * than in S.tracks, because normalise_session refuses a track with no source.
+   */
+  function headRow(i){
+    const isClip = !i;
+    const t = isClip ? null : S.tracks[i - 1];
+    const st = laneState(i);
+    const col = laneColor(i);
+    const buf = isClip ? S.buf : S.layerBufs[t.source];
+    const sp = isClip ? null : (buf ? trackSpan(t, buf) : null);
+    const cut = sp && buf && (sp.in_s > 0.0005 || sp.out_s < buf.duration - 0.0005);
+    const meta = isClip
+      ? `${fmt(S.buf.duration)} · ${(S.buf.sampleRate / 1000).toFixed(1)}k`
+      : buf === undefined ? "decoding…"
+      : buf === null ? "could not decode"
+      : `at ${fmt(t.offset_s || 0)}${cut ? ` · cut ${fmt(sp.len)}` : ""}`;
+    const name = isClip ? ((S.rel || S.saveAs || "clip").split("/").pop())
+                        : (t.name || t.source);
+    return `<div class="ab-head${S.lsel === i ? " sel" : ""}" data-lane="${i}"
+                 onclick="AudioLab.focusLaneUI(${i})">
+      <span class="bar" style="background:${col}"></span>
+      <span class="badge" style="color:${col}">${ic(isClip ? "waveform" : "waveform", 13)}</span>
+      <span class="col">
+        <input class="nm" value="${E(name)}" spellcheck="false"${isClip ? " readonly" : ""}
+               title="${E(isClip ? (S.rel || S.saveAs || "the open clip") : t.source)}"
+               onclick="event.stopPropagation()"
+               onchange="AudioLab.trackField(${i - 1},'name',this.value)">
+        <span class="meta">${E(meta)}</span>
+      </span>
+      ${knob("k" + i + "g", "vol", st.gain_db || 0, -60, 12, .5, "db",
+             (isClip ? "clip:gain_db" : "track:" + (i - 1) + ":gain_db"), true)}
+      <span class="btns">
+        <button class="hb${st.solo ? " on" : ""} solo" title="Solo - hear only the soloed lanes"
+                onclick="event.stopPropagation();AudioLab.laneToggle(${i},'solo')">${ic("solo", 13)}</button>
+        <button class="hb${st.muted ? " on" : ""}" title="Mute"
+                onclick="event.stopPropagation();AudioLab.laneToggle(${i},'muted')">${ic("mute", 13)}</button>
+        <button class="hb" title="More - trim, split, reverse, remove"
+                onclick="event.stopPropagation();AudioLab.laneMenu(${i})">${ic("seats", 13)}</button>
+      </span>
+    </div>`;
+  }
+
+  function renderHeads(){
+    if (!S || !$.heads) return;
+    // Never rebuild the column out from under a name being typed into it.
+    if ($.heads.contains(document.activeElement)) return;
+    const rows = [headRow(0)];
+    for (let i = 1; i <= S.tracks.length; i++) rows.push(headRow(i));
+    $.heads.innerHTML = rows.join("");
+    if (window.BGIcon) BGIcon.upgrade($.heads);
+    const l = document.getElementById("ab-heads-l");
+    if (l) l.textContent = `${S.tracks.length + 1} track${S.tracks.length ? "s" : ""}`;
+    syncHeadScroll();
+  }
+
+  function focusLaneUI(i){
+    if (!S) return;
+    focusLane(i);
+    renderHeads();
+    paintLayers(); paintHead();
+  }
+  function laneToggle(i, key){
+    if (!S) return;
+    if (i) trackField(i - 1, key, !S.tracks[i - 1][key]);
+    else clipLaneField(key);
+    renderHeads();
+  }
+  /* The `…` overflow. Everything here is real and every entry that cannot run
+     says why rather than vanishing — a menu whose contents change shape is a
+     menu you have to read every time. */
+  async function laneMenu(i){
+    if (!S) return;
+    focusLane(i);
+    renderHeads();
+    if (!i){
+      const pick = await askPick({
+        title: "the clip lane", placeholder: "", empty: "",
+        fetch: async () => ({ items: [
+          { value: "clip", label: "open its editor",  meta: "the clip panel below" },
+          { value: "sel",  label: "carve out the selection", meta: "a new sound from the selected span" },
+          { value: "dup",  label: "duplicate the clip", meta: "same audio, new name" },
+        ], total: 3, truncated: false }) });
+      if (pick === "clip") setSheet("clip");
+      else if (pick === "sel") newFromSel();
+      else if (pick === "dup") newDup();
+      return;
+    }
+    const t = S.tracks[i - 1];
+    if (!t) return;
+    const pick = await askPick({
+      title: t.name || t.source, placeholder: "", empty: "",
+      fetch: async () => ({ items: [
+        { value: "reverse", label: t.reverse ? "play it forwards again" : "play it backwards",
+          meta: "the kept region, reversed" },
+        { value: "split", label: "split at the playhead",
+          meta: "two lanes, one source, complementary trims" },
+        { value: "reset", label: "undo the trim", meta: "back to the whole file" },
+        { value: "solo",  label: "audition this lane alone", meta: "play just this one" },
+        { value: "drop",  label: "remove the layer", meta: "the file on disk is untouched" },
+      ], total: 5, truncated: false }) });
+    if (!S) return;
+    if (pick === "reverse") trackField(i - 1, "reverse", !t.reverse);
+    else if (pick === "split"){ focusLane(i); splitLayer(); }
+    else if (pick === "reset") resetTrim(i - 1);
+    else if (pick === "solo"){
+      const bl = laneBlock(i);
+      if (bl) playStack(bl.t0, { lane: i, until: bl.t1 });
+      else say("that layer has not decoded yet");
+    }
+    else if (pick === "drop") dropTrack(i - 1);
+    renderHeads();
+  }
+  function clearMutes(){
+    if (!S) return;
+    S.clipLane.muted = S.clipLane.solo = false;
+    S.tracks.forEach(t => { t.muted = false; t.solo = false; });
+    renderHeads(); paintLayers();
+    say("every mute and solo cleared", "ok");
+  }
+
+  /* ── arc knobs ────────────────────────────────────────────────────────────
+   * A knob for a continuous value, a pill for a toggle. That is Soundtrap's
+   * rule and it is a good one: a row of sliders all look like the same control,
+   * whereas a knob reads as one setting you turn and takes a quarter of the
+   * width, which is what makes a per-track volume fit in a track header at all.
+   *
+   * `set` is a routing string — "track:2:gain_db", "ui:norm_db", "synth:freq",
+   * "clip:pan" — because the drag is bound once by delegation rather than as an
+   * inline handler per knob. On drag the arc and the readout are PATCHED, never
+   * re-rendered: re-rendering the element you are dragging kills the drag,
+   * which is the same trap synthField() and uiField() already document.
+   */
+  const KNOB_R = 13, KNOB_SWEEP = 270;
+  function knobArc(frac){
+    const a0 = -KNOB_SWEEP / 2, a1 = a0 + KNOB_SWEEP * clamp(frac, 0, 1);
+    const pt = a => {
+      const r = (a - 90) * Math.PI / 180;
+      return [(20 + KNOB_R * Math.cos(r)).toFixed(2), (20 + KNOB_R * Math.sin(r)).toFixed(2)];
+    };
+    const p0 = pt(a0), p1 = pt(a1);
+    return `M${p0[0]} ${p0[1]} A${KNOB_R} ${KNOB_R} 0 ${
+      KNOB_SWEEP * frac > 180 ? 1 : 0} 1 ${p1[0]} ${p1[1]}`;
+  }
+  function knobPtr(frac){
+    const a = (-KNOB_SWEEP / 2 + KNOB_SWEEP * clamp(frac, 0, 1) - 90) * Math.PI / 180;
+    return `M${(20 + KNOB_R * 0.45 * Math.cos(a)).toFixed(2)} ${(20 + KNOB_R * 0.45 * Math.sin(a)).toFixed(2)}`
+         + `L${(20 + KNOB_R * 0.95 * Math.cos(a)).toFixed(2)} ${(20 + KNOB_R * 0.95 * Math.sin(a)).toFixed(2)}`;
+  }
+  function knobText(v, unit){
+    if (unit === "db") return (v > 0 ? "+" : "") + Number(v).toFixed(1);
+    if (unit === "pan") return Math.abs(v) < .02 ? "C"
+      : (v < 0 ? "L" : "R") + Math.round(Math.abs(v) * 100);
+    if (unit === "x") return "×" + Number(v).toFixed(2);
+    if (unit === "ms") return Math.round(v * 1000) + "m";
+    if (unit === "hz") return Math.round(v) + "";
+    return Number(v).toFixed(Math.abs(v) < 10 ? 2 : 0);
+  }
+  function knob(id, label, value, min, max, step, unit, set, small){
+    const f = (Number(value) - min) / Math.max(1e-9, max - min);
+    return `<span class="ab-knob${small ? " sm" : ""}" id="${id}" data-set="${E(set)}"
+        data-min="${min}" data-max="${max}" data-step="${step}" data-unit="${E(unit)}"
+        data-v="${value}" title="${E(label)} - drag up and down, double-click to reset"
+        onclick="event.stopPropagation()">
+      <svg width="${small ? 30 : 40}" height="${small ? 30 : 40}" viewBox="0 0 40 40">
+        <path class="trk" stroke-width="3" stroke-linecap="round" d="${knobArc(1)}"/>
+        <path class="arc" stroke-width="3" stroke-linecap="round" d="${knobArc(f)}"/>
+        <path class="ptr" stroke-width="2" stroke-linecap="round" d="${knobPtr(f)}"/>
+      </svg>
+      ${small ? "" : `<span class="kl">${E(label)}</span>`}
+      <span class="kv">${E(knobText(value, unit))}</span></span>`;
+  }
+  function knobSet(el, v){
+    const min = +el.dataset.min, max = +el.dataset.max;
+    const step = +el.dataset.step || 0.01;
+    v = clamp(Math.round(v / step) * step, min, max);
+    el.dataset.v = v;
+    const f = (v - min) / Math.max(1e-9, max - min);
+    const arc = el.querySelector(".arc"), ptr = el.querySelector(".ptr");
+    const kv = el.querySelector(".kv");
+    if (arc) arc.setAttribute("d", knobArc(f));
+    if (ptr) ptr.setAttribute("d", knobPtr(f));
+    if (kv) kv.textContent = knobText(v, el.dataset.unit);
+    knobApply(el.dataset.set, v);
+  }
+  /* One place that knows what a knob is wired to. Everything it can reach is a
+     setter that already existed — the knob is a new way to hold a value, not a
+     new value. */
+  function knobApply(set, v){
+    const parts = String(set || "").split(":");
+    if (parts[0] === "track") trackField(+parts[1], parts[2], v);
+    else if (parts[0] === "clip"){ S.clipLane[parts[1]] = v; paintLayers(); }
+    else if (parts[0] === "ui") uiField(parts[1], v);
+    else if (parts[0] === "synth") synthField(parts[1], v);
+    else if (parts[0] === "master") setMaster(v * 100);
+  }
+  function bindKnobs(root){
+    root.addEventListener("pointerdown", ev => {
+      const el = ev.target.closest && ev.target.closest(".ab-knob");
+      if (!el || !S) return;
+      ev.preventDefault(); ev.stopPropagation();
+      el.setPointerCapture(ev.pointerId);
+      const min = +el.dataset.min, max = +el.dataset.max;
+      const y0 = ev.clientY, v0 = +el.dataset.v;
+      // 180 px of travel covers the full range; Shift makes it 720 for a value
+      // like gain where the last dB matters.
+      const move = e => knobSet(el,
+        v0 + ((y0 - e.clientY) / (e.shiftKey ? 720 : 180)) * (max - min));
+      const up = () => {
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+        renderHeads();
+      };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+    });
+    root.addEventListener("dblclick", ev => {
+      const el = ev.target.closest && ev.target.closest(".ab-knob");
+      if (!el || !S) return;
+      // Zero is the neutral value for every knob here except length and pitch,
+      // and for those the minimum is the sane rest position.
+      const min = +el.dataset.min, max = +el.dataset.max;
+      knobSet(el, min <= 0 && max >= 0 ? 0 : min);
+      renderHeads();
+    });
+  }
+
+  /* ── the context sheet ────────────────────────────────────────────────────
+   * Six panels, cut along the lines the work actually has. What used to be one
+   * 300px column containing selection + edit + extend + loop + synth + mixer +
+   * save, in that order, with no way to see the arrangement at the same time.
+   */
+  function renderSheet(){
+    if (!S || !$.pane) return;
     const u = S.ui || (S.ui = { speed: 1, silence: 0.25, reps: 3, xf: 120 });
     if (u.units == null) u.units = "s";
     if (u.snap == null) u.snap = true;
@@ -2560,248 +3442,397 @@ window.AudioLab = (() => {
     if (u.norm_db == null) u.norm_db = -1;
     if (u.semitones == null) u.semitones = 0;
     if (u.preview == null) u.preview = true;
-    const step = unitStep();
 
-    $.side.innerHTML = `
-      <div class="ab-h">selection<span></span></div>
-      <div class="ab-row">
-        <label>in</label>
+    sheetTabs();
+    renderHeads();
+    refreshHistory();
+    syncTransportRead();
+    if (!S.sheetOpen){ paintLayers(); return; }
+
+    // The clip canvas and the sequencer are borrowed, not rebuilt. Park them
+    // before innerHTML wipes the pane or the canvas loses its listeners and
+    // BeatMaker loses the DOM it mounted into.
+    if ($.wave.parentNode !== $.stash) $.stash.appendChild($.wave);
+    if ($.studio.parentNode !== $.stash) $.stash.appendChild($.studio);
+
+    const id = S.sheet;
+    $.pane.classList.toggle("flush", id === "clip" || id === "pattern");
+    $.pane.innerHTML =
+        id === "clip"    ? paneClip()
+      : id === "fx"      ? paneFx(u)
+      : id === "synth"   ? paneSynth()
+      : id === "pattern" ? `<div id="ab-studio-slot" style="flex:1;min-width:0;display:flex"></div>`
+      : id === "mix"     ? paneMix()
+      :                    paneOut();
+
+    if (id === "clip"){
+      const slot = $.pane.querySelector("#ab-clipslot");
+      if (slot) slot.appendChild($.wave);
+      sizeCanvas(); paint();
+    } else if (id === "pattern"){
+      const slot = $.pane.querySelector("#ab-studio-slot");
+      if (slot) slot.appendChild($.studio);
+      mountStudio();
+    }
+    if (window.BGIcon) BGIcon.upgrade($.pane);
+    paintLayers();
+  }
+
+  /* CLIP — the waveform, what is selected in it, and the structural cuts. The
+     ops here are not judged by ear (a trim either kept the right span or it did
+     not), so they commit rather than staging. */
+  function paneClip(){
+    const rate = S.buf.sampleRate, sel = S.sel, u = S.ui;
+    const step = unitStep();
+    return `<div class="ab-clipwrap">
+      <div class="ab-clipbar">
+        <label style="min-width:0">in</label>
         <input class="ab-in num" id="ab-sel-a" type="number" step="${step}" min="0"
                value="${toUnits(sel ? sel.a : 0)}" onchange="AudioLab.selField('a',this.value)">
-        <label style="min-width:22px">out</label>
+        <label style="min-width:0">out</label>
         <input class="ab-in num" id="ab-sel-b" type="number" step="${step}" min="0"
                value="${toUnits(sel ? sel.b : S.buf.length)}" onchange="AudioLab.selField('b',this.value)">
-      </div>
-      <div class="ab-row">
-        <label>length</label>
+        <label style="min-width:0">len</label>
         <input class="ab-in num" id="ab-sel-len" type="number" step="${step}" min="0"
                value="${toUnits(sel ? sel.b - sel.a : 0)}" onchange="AudioLab.selField('len',this.value)">
-        <select class="ab-in" onchange="AudioLab.selUnits(this.value)">
+        <select class="ab-in" style="flex:none;width:78px" onchange="AudioLab.selUnits(this.value)">
           ${["s","ms","samples"].map(x =>
-            `<option value="${x}"${u.units===x?" selected":""}>${x}</option>`).join("")}
+            `<option value="${x}"${u.units === x ? " selected" : ""}>${x}</option>`).join("")}
         </select>
+        <span class="ab-sep"></span>
+        <button class="ab-btn sm" onclick="AudioLab.selectAll()">all</button>
+        <button class="ab-btn sm" onclick="AudioLab.clearSel()">none</button>
+        <button class="ab-ico" title="Zoom to the selection" onclick="AudioLab.zoomSel()">${ic("zoom_in", 14)}</button>
+        <button class="ab-ico" title="Fit the whole clip" onclick="AudioLab.zoomFit()">${ic("zoom_out", 14)}</button>
+        <span class="ab-spacer"></span>
+        <span class="ab-read">${sel ? fmt((sel.b - sel.a) / rate) + " selected"
+                                     : "whole clip"}</span>
       </div>
-      <div class="ab-row">
-        <button class="ab-tg${u.snap?" on":""}" onclick="AudioLab.toggleSnap()">snap to zero</button>
-        <span class="ab-sub">${sel ? fmt((sel.b - sel.a) / rate) : "whole clip"}</span>
-      </div>
-      <div class="ab-note">Drag an edge to move it, ←/→ to nudge by 1 ms (Shift
-        10 ms, Alt the in point, Ctrl the whole selection). Snapping lands the
-        boundary on a zero crossing, which is what stops a trim from clicking.</div>
-
-      <div class="ab-h">edit<span></span></div>
-      <div class="ab-note">${sel
-        ? `Selection <b>${fmt(sel.a / rate)} → ${fmt(sel.b / rate)}</b>`
-        : `No selection — these apply to the <b>whole clip</b>. Drag on the
-           waveform to select.`}</div>
+      <div id="ab-clipslot" style="flex:1;min-height:0;position:relative;display:flex"></div>
+    </div>
+    <div class="ab-rack">
+      <div class="ab-h">cut<span></span></div>
       <div class="ab-grid2">
-        <button class="ab-btn" onclick="AudioLab.trim()">trim to selection</button>
-        <button class="ab-btn" onclick="AudioLab.cut()">delete</button>
+        <button class="ab-btn" onclick="AudioLab.trim()">${ic("trim", 13)} trim to sel</button>
+        <button class="ab-btn" onclick="AudioLab.cut()">${ic("delete", 13)} delete</button>
         <button class="ab-btn" onclick="AudioLab.silence()">silence</button>
         <button class="ab-btn" onclick="AudioLab.reverse()">reverse</button>
       </div>
-      <button class="ab-btn wide" onclick="AudioLab.toMono()">to mono</button>
+      <button class="ab-btn wide" onclick="AudioLab.toMono()">mix down to mono</button>
+      <div class="ab-note">Drag an edge to move it, ←/→ nudges by 1 ms (Shift 10 ms,
+        Alt the in point, Ctrl the whole selection). <b>Snap to zero</b> — in the
+        transport's gear — lands the boundary on a zero crossing, which is what
+        stops a trim from clicking.</div>
 
-      <div class="ab-row">
-        <button class="ab-tg${u.preview?" on":""}"
-                onclick="AudioLab.uiField('preview',${!u.preview})">audition first</button>
-        <span class="ab-sub">${u.preview ? "apply / cancel each one" : "straight to the clip"}</span>
-      </div>
-      <div class="ab-note">With this on, the ops below render into a bar over the
-        transport instead of into the clip: play it, <b>A/B</b> it against the
-        original, then apply or cancel. Trim, delete and the rest commit either
-        way — there is nothing to dial in on those.</div>
-
-      ${uiRow("gain_db", "gain", u.gain_db, -36, 24, 0.5, " dB")}
-      <button class="ab-btn wide" onclick="AudioLab.gain(AudioLab.state.ui.gain_db)">apply gain</button>
-
-      <div class="ab-row">
-        <label>fade</label>
-        <select class="ab-in" onchange="AudioLab.uiField('fade_curve',this.value)">
-          ${FADES.map(c =>
-            `<option value="${c}"${u.fade_curve===c?" selected":""}>${c}</option>`).join("")}
-        </select>
-      </div>
-      <div class="ab-grid2">
-        <button class="ab-btn" onclick="AudioLab.fade('in')">fade in</button>
-        <button class="ab-btn" onclick="AudioLab.fade('out')">fade out</button>
-      </div>
-      <div class="ab-note">A <b>linear</b> fade-out on a tail sounds like it stops
-        early — logarithmic or equal-power is what a tail actually wants.</div>
-
-      <div class="ab-row">
-        <label>norm dB</label>
-        <input class="ab-in num" id="ab-norm" type="number" step="0.5" min="-60" max="0"
-               value="${u.norm_db}" oninput="AudioLab.uiField('norm_db',this.value)">
-        <button class="ab-tg${u.norm_per_channel?" on":""}"
-                onclick="AudioLab.uiField('norm_per_channel',${!u.norm_per_channel})">per channel</button>
-      </div>
-      <button class="ab-btn wide" onclick="AudioLab.normalize(AudioLab.state.ui.norm_db)">normalise</button>
-      <div class="ab-note">Leave headroom: a stinger normalised to <b>0 dBFS</b>
-        clips the moment anything else plays under it.</div>
-
+      <div class="ab-h">insert<span></span></div>
       <div class="ab-row">
         <label>silence</label>
         <input class="ab-in num" id="ab-sil" type="number" step="0.05" min="0" max="60"
-               value="${u.silence}" oninput="AudioLab.uiField('silence',this.value)">
+               value="${S.ui.silence}" oninput="AudioLab.uiField('silence',this.value)">
         <button class="ab-btn" onclick="AudioLab.insertSilence(+document.getElementById('ab-sil').value)">insert</button>
       </div>
-      <div class="ab-row">
-        <label>speed</label>
-        <input class="ab-in num" id="ab-speed" type="number" step="0.05" min="0.25" max="4"
-               value="${u.speed}" oninput="AudioLab.uiField('speed',this.value)">
-        <button class="ab-btn" onclick="AudioLab.speed(+document.getElementById('ab-speed').value)">apply</button>
-      </div>
-      <div class="ab-row">
-        <label>pitch st</label>
-        <input class="ab-in num" id="ab-semi" type="number" step="1" min="-24" max="24"
-               value="${u.semitones}" oninput="AudioLab.uiField('semitones',this.value)">
-        <button class="ab-btn" onclick="AudioLab.speed(Math.pow(2,AudioLab.state.ui.semitones/12))">apply</button>
-      </div>
-      <div class="ab-note">Speed moves pitch with it, like pitching tape — which
-        is how you make a heavy version of a light hit. Semitones is the same
-        resample said in musical units, so the clip gets shorter as it goes up.</div>
+      <div class="ab-note">Lands at the selection's in point, or at the end when
+        nothing is selected.</div>
 
-      <div class="ab-h">extend<span></span></div>
-      <div class="ab-row">
-        <label>repeat</label>
-        <input class="ab-in num" id="ab-reps" type="number" min="2" max="64"
-               value="${u.reps}" oninput="AudioLab.uiField('reps',this.value)">×
-        <input class="ab-in num" id="ab-xf" type="number" min="0" max="2000"
-               value="${u.xf}" oninput="AudioLab.uiField('xf',this.value)">ms
+      <div class="ab-h">this clip<span></span></div>
+      <div class="ab-note">
+        <b>${fmt(S.buf.duration)}</b> · ${rate} Hz ·
+        ${S.buf.numberOfChannels === 2 ? "stereo" : "mono"}<br>
+        ${E(S.rel || (S.saveAs + " - not written yet"))}</div>
+      <div class="ab-grid2">
+        <button class="ab-btn" onclick="AudioLab.newDup()">duplicate</button>
+        <button class="ab-btn" onclick="AudioLab.newFromSel()">carve out sel</button>
       </div>
-      <button class="ab-btn wide" onclick="AudioLab.repeat(+document.getElementById('ab-reps').value,+document.getElementById('ab-xf').value)">
-        repeat with crossfade</button>
-      <div class="ab-note">An equal-power crossfade is what stops a butt-joined
-        loop from clicking at the seam.</div>
+    </div>`;
+  }
 
-      <div class="ab-h">godot loop<span></span></div>
-      ${loop.supported ? `
-        <div class="ab-note">${loop.enabled
-          ? `This clip <b>loops</b> from <b>${fmt(loop.begin_s)}</b>${
-              loop.end_s != null ? ` to <b>${fmt(loop.end_s)}</b>` : ""}.`
-          : `<span class="ab-warn">This clip does not loop.</span> The setting
-             lives in its <b>.import</b>, not in the audio — a music track that
-             plays once and stops looks and sounds perfect right here.`}</div>
-        ${loop.importer === "wav" ? `<div class="ab-row">
-          <label>mode</label>
-          <select class="ab-in" onchange="AudioLab.loopMode(this.value)">
-            ${["forward","pingpong","backward"].map(m =>
-              `<option value="${m}"${loop.mode===m?" selected":""}>${m}</option>`).join("")}
-          </select></div>` : `<div class="ab-note">An .ogg loops from its offset
-            to the end of the stream — Godot's ogg importer has no loop end.</div>`}
-        <div class="ab-grid2">
-          <button class="ab-btn go" onclick="AudioLab.writeLoop(true)">${
-            sel ? "loop from selection" : "enable looping"}</button>
-          <button class="ab-btn" onclick="AudioLab.writeLoop(false)">turn off</button>
+  /* FX — everything with an amount on it. Every op here goes through deliver(),
+     so with "audition first" on it renders into the bar above the transport and
+     waits for an apply. */
+  function paneFx(u){
+    return `<div class="ab-cols">
+      <div class="ab-col">
+        <div class="ab-h">level<span></span></div>
+        <div class="ab-knobs">
+          ${knob("kf-gain", "gain", u.gain_db, -36, 24, .5, "db", "ui:gain_db")}
+          ${knob("kf-norm", "target", u.norm_db, -60, 0, .5, "db", "ui:norm_db")}
         </div>
-        ${!loop.has_import ? `<div class="ab-note ab-warn">No .import yet — open
-          the project in Godot once so the engine writes one.</div>` : ""}`
-        : `<div class="ab-note">${E(S.rel || "this clip")} has no Godot loop
-            settings (${E(loop.importer || "unknown importer")}).</div>`}
+        <div class="ab-grid2">
+          <button class="ab-btn" onclick="AudioLab.gain(AudioLab.state.ui.gain_db)">apply gain</button>
+          <button class="ab-btn" onclick="AudioLab.normalize(AudioLab.state.ui.norm_db)">normalise</button>
+        </div>
+        <div class="ab-row">
+          <button class="ab-tg${u.norm_per_channel ? " on" : ""}"
+                  onclick="AudioLab.uiField('norm_per_channel',${!u.norm_per_channel})">per channel</button>
+          <span class="ab-read">${u.norm_per_channel ? "each side reaches the target"
+                                                     : "one factor keeps the image"}</span>
+        </div>
+        <div class="ab-note">Leave headroom: a stinger normalised to <b>0 dBFS</b>
+          clips the moment anything else plays under it.</div>
 
-      <div class="ab-h">synth<span></span></div>
+        <div class="ab-h">fade<span></span></div>
+        <div class="ab-row">
+          <label>curve</label>
+          <select class="ab-in" onchange="AudioLab.uiField('fade_curve',this.value)">
+            ${FADES.map(c => `<option value="${c}"${u.fade_curve === c ? " selected" : ""}>${c}</option>`).join("")}
+          </select>
+        </div>
+        <div class="ab-grid2">
+          <button class="ab-btn" onclick="AudioLab.fade('in')">fade in</button>
+          <button class="ab-btn" onclick="AudioLab.fade('out')">fade out</button>
+        </div>
+        <div class="ab-note">A <b>linear</b> fade-out on a tail sounds like it stops
+          early — logarithmic or equal-power is what a tail actually wants.</div>
+      </div>
+
+      <div class="ab-col">
+        <div class="ab-h">pitch &amp; time<span></span></div>
+        <div class="ab-knobs">
+          ${knob("kf-speed", "speed", u.speed, 0.25, 4, .01, "x", "ui:speed")}
+          ${knob("kf-semi", "semitones", u.semitones, -24, 24, 1, "n", "ui:semitones")}
+        </div>
+        <div class="ab-grid2">
+          <button class="ab-btn" onclick="AudioLab.speed(AudioLab.state.ui.speed)">resample</button>
+          <button class="ab-btn" onclick="AudioLab.speed(Math.pow(2,AudioLab.state.ui.semitones/12))">by semitones</button>
+        </div>
+        <div class="ab-note">Speed moves pitch with it, like pitching tape — which
+          is how you make a heavy version of a light hit. Semitones is the same
+          resample said in musical units, so the clip gets shorter as it goes up.</div>
+
+        <div class="ab-h">extend<span></span></div>
+        <div class="ab-knobs">
+          ${knob("kf-reps", "repeat", u.reps, 2, 64, 1, "n", "ui:reps")}
+          ${knob("kf-xf", "crossfade", u.xf, 0, 2000, 10, "n", "ui:xf")}
+        </div>
+        <button class="ab-btn wide"
+                onclick="AudioLab.repeat(AudioLab.state.ui.reps,AudioLab.state.ui.xf)">
+          repeat with crossfade</button>
+        <div class="ab-note">An equal-power crossfade is what stops a butt-joined
+          loop from clicking at the seam. Crossfade is in milliseconds.</div>
+
+        <div class="ab-row">
+          <button class="ab-tg${u.preview ? " on" : ""}"
+                  onclick="AudioLab.uiField('preview',${!u.preview})">audition first</button>
+          <span class="ab-read">${u.preview ? "apply / cancel each one"
+                                            : "straight to the clip"}</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  /* INSTRUMENT — Soundtrap's knob row, and the closest thing this project has
+     to one: the synth that makes an SFX out of nothing, no file and no API. */
+  function paneSynth(){
+    const p = S.synth;
+    const i = WAVES.indexOf(p.wave);
+    return `<div class="ab-cols">
+      <div class="ab-col" style="max-width:520px">
+        <div class="ab-h">instrument<span></span></div>
+        <div class="ab-row">
+          <button class="ab-ico" title="Previous waveform"
+                  onclick="AudioLab.stepWave(-1)">${ic("undo", 13)}</button>
+          <span class="ab-in" style="text-align:center;font-family:var(--mono)">${E(p.wave)}</span>
+          <button class="ab-ico" title="Next waveform"
+                  onclick="AudioLab.stepWave(1)">${ic("redo", 13)}</button>
+          <span class="ab-read">${i + 1} / ${WAVES.length}</span>
+        </div>
+        <div class="ab-knobs">
+          ${knob("ks-freq", "pitch", p.freq, 20, 8000, 1, "hz", "synth:freq")}
+          ${knob("ks-sweep", "sweep", p.sweep, -100, 100, 1, "n", "synth:sweep")}
+          ${knob("ks-seconds", "length", p.seconds, 0.02, 6, .01, "ms", "synth:seconds")}
+          ${knob("ks-noise", "noise", p.noise, 0, 1, .01, "n", "synth:noise")}
+          ${knob("ks-crush", "crush", p.crush, 0, 7, 1, "n", "synth:crush")}
+        </div>
+        <div class="ab-h">envelope<span></span></div>
+        <div class="ab-knobs">
+          ${knob("ks-attack", "attack", p.attack, 0, 1, .005, "ms", "synth:attack")}
+          ${knob("ks-decay", "decay", p.decay, 0, 2, .005, "ms", "synth:decay")}
+          ${knob("ks-sustain", "sustain", p.sustain, 0, 1, .01, "n", "synth:sustain")}
+          ${knob("ks-release", "release", p.release, 0, 2, .005, "ms", "synth:release")}
+          ${knob("ks-gain", "gain", p.gain, 0, 1, .01, "n", "synth:gain")}
+        </div>
+        <div class="ab-grid2">
+          <button class="ab-btn" onclick="AudioLab.synthPreview()">${ic("run", 13)} audition</button>
+          <button class="ab-btn" onclick="AudioLab.synthAppend()">append to clip</button>
+        </div>
+        <button class="ab-btn wide go" onclick="AudioLab.synthReplace()">generate — replace the clip</button>
+        <div class="ab-note">Deterministic: the same settings are the same sound
+          every time, so "that one was good, do it again" works. Replacing the
+          clip is undoable like any other edit.</div>
+      </div>
+    </div>`;
+  }
+
+  /* MIX — the arrangement's own panel. The lanes above are the picture; this is
+     what you can do to the whole stack. */
+  function paneMix(){
+    const solo = S.tracks.some(t => t.solo) || S.clipLane.solo;
+    return `<div class="ab-cols">
+      <div class="ab-col">
+        <div class="ab-h">layers<span></span></div>
+        <div class="ab-note">${S.tracks.length
+          ? `<b>${S.tracks.length}</b> layer${S.tracks.length === 1 ? "" : "s"} under the clip${
+              solo ? " · <b>solo is active</b>, so only soloed lanes are heard" : ""}.
+             Drag a lane to move it, drag either end to trim, ${
+             S.ui.ltool === "select" ? "drag across it to select a span (Alt-drag moves)"
+                                     : "Alt-drag across it to select a span"}.`
+          : `Layer other project sounds under this one — a hit plus a noise tail,
+             a stinger over a pad. Nothing on disk is touched: a layer is a path,
+             an offset and a trim.`}</div>
+        <div class="ab-row">
+          <button class="ab-tg${S.ui.ltool === "move" ? " on" : ""}"
+                  onclick="AudioLab.setLayerTool('move')"
+                  title="Drag a lane to slide it in time - Alt for the other tool">move</button>
+          <button class="ab-tg${S.ui.ltool === "select" ? " on" : ""}"
+                  onclick="AudioLab.setLayerTool('select')"
+                  title="Drag across a lane to select a span - Alt for the other tool">select span</button>
+          <button class="ab-tg" onclick="AudioLab.layersFit()">fit the view</button>
+        </div>
+        <div class="ab-grid2">
+          <button class="ab-btn" onclick="AudioLab.addTrack()">layer a sound</button>
+          <button class="ab-btn" title="Save a file from disk into the project and layer it"
+                  onclick="document.getElementById('ab-lfile').click()">import a file</button>
+          <button class="ab-btn ab-recbtn" onclick="AudioLab.recStart(true)">${ic("record", 13)} record a take</button>
+          <button class="ab-btn" onclick="AudioLab.splitLayer()">split at playhead</button>
+        </div>
+        <input type="file" id="ab-lfile" accept="audio/*" multiple style="display:none"
+               onchange="AudioLab.importPicked(event,true)">
+        <div class="ab-h">clip lane<span></span></div>
+        <div class="ab-knobs">
+          ${knob("km-cg", "clip vol", S.clipLane.gain_db || 0, -60, 12, .5, "db", "clip:gain_db")}
+          ${knob("km-cp", "clip pan", S.clipLane.pan || 0, -1, 1, .02, "pan", "clip:pan")}
+        </div>
+      </div>
+
+      <div class="ab-col">
+        <div class="ab-h">render<span></span></div>
+        <div class="ab-grid2">
+          <button class="ab-btn go" onclick="AudioLab.mixdown(true)">mix into this clip</button>
+          <button class="ab-btn" onclick="AudioLab.mixdown(false)">layers only</button>
+        </div>
+        <div class="ab-row">
+          <input class="ab-in" id="ab-bounce" value="${E(S.bounceAs || defaultBounce())}"
+                 oninput="AudioLab.bounceAsField(this.value)">
+        </div>
+        <button class="ab-btn wide" id="ab-bounce-go" onclick="AudioLab.bounce()">bounce to that file</button>
+        <div class="ab-note"><b>Mix</b> replaces this clip${(S.ui && S.ui.preview !== false)
+          ? " - with an apply/cancel step, since <b>audition first</b> is on" : ""}.
+          <b>Bounce</b> writes the stack to the path above and leaves this clip
+          exactly as it is.</div>
+        <button class="ab-btn wide" onclick="AudioLab.saveSession()">save the mix session</button>
+        <div class="ab-note">The session — every layer's path, offset, trim, gain
+          and pan — lands in a sidecar next to the clip, so a mixdown stays a
+          document you can re-open rather than a one-shot.</div>
+      </div>
+    </div>`;
+  }
+
+  /* EXPORT — how this leaves the lab. Where it saves, in what format, and the
+     Godot loop points, which are the one setting no audio editor can hear. */
+  function paneOut(){
+    const st = S.status, loop = S.loop || {}, sel = S.sel;
+    return `<div class="ab-cols">
+      <div class="ab-col">
+        <div class="ab-h">save<span></span></div>
+        <div class="ab-row">
+          <input class="ab-in" id="ab-saveas" value="${E(S.saveAs || S.rel || "")}"
+                 oninput="AudioLab.saveAsField(this.value)" onchange="AudioLab.renderSheet()">
+        </div>
+        <div class="ab-grid2">
+          <button class="ab-btn go" onclick="AudioLab.save(false)">save</button>
+          <button class="ab-btn" onclick="AudioLab.save(true)">save as</button>
+        </div>
+        <div class="ab-note">${st
+          ? (st.ogg ? "Both <b>.wav</b> and <b>.ogg</b> can be written here."
+                    : `<span class="ab-warn">${E(st.ogg_reason)}</span>`)
+          : "checking what this install can write…"}</div>
+        <div class="ab-note">A save keeps the previous bytes: the old copy lands
+          in <b>.bgate_out/audio_backups</b> and the toast names it.</div>
+      </div>
+
+      <div class="ab-col">
+        <div class="ab-h">godot loop<span></span></div>
+        ${loop.supported ? `
+          <div class="ab-note">${loop.enabled
+            ? `This clip <b>loops</b> from <b>${fmt(loop.begin_s)}</b>${
+                loop.end_s != null ? ` to <b>${fmt(loop.end_s)}</b>` : ""}.`
+            : `<span class="ab-warn">This clip does not loop.</span> The setting
+               lives in its <b>.import</b>, not in the audio — a music track that
+               plays once and stops looks and sounds perfect right here.`}</div>
+          ${loop.importer === "wav" ? `<div class="ab-row">
+            <label>mode</label>
+            <select class="ab-in" onchange="AudioLab.loopMode(this.value)">
+              ${["forward","pingpong","backward"].map(m =>
+                `<option value="${m}"${loop.mode === m ? " selected" : ""}>${m}</option>`).join("")}
+            </select></div>` : `<div class="ab-note">An .ogg loops from its offset
+              to the end of the stream — Godot's ogg importer has no loop end.</div>`}
+          <div class="ab-grid2">
+            <button class="ab-btn go" onclick="AudioLab.writeLoop(true)">${ic("loop", 13)} ${
+              sel ? "loop from selection" : "enable looping"}</button>
+            <button class="ab-btn" onclick="AudioLab.writeLoop(false)">turn off</button>
+          </div>
+          ${!loop.has_import ? `<div class="ab-note ab-warn">No .import yet — open
+            the project in Godot once so the engine writes one.</div>` : ""}`
+          : `<div class="ab-note">${E(S.rel || "this clip")} has no Godot loop
+              settings (${E(loop.importer || "unknown importer")}).</div>`}
+      </div>
+    </div>`;
+  }
+
+  /* The transport's gear. Soundtrap hangs the metronome's options off one here;
+     what this lab has behind the same button is the three preferences that
+     change how an edit lands rather than what it sounds like. */
+  function togglePrefs(){
+    const p = document.getElementById("ab-prefs");
+    if (!p || !S) return;
+    if (!p.hidden){ p.hidden = true; return; }
+    const u = S.ui;
+    p.innerHTML = `
+      <div class="ab-h">editing<span></span></div>
       <div class="ab-row">
-        <label>wave</label>
-        <select class="ab-in" onchange="AudioLab.synthField('wave',this.value)">
-          ${WAVES.map(w => `<option value="${w}"${p.wave===w?" selected":""}>${w}</option>`).join("")}
+        <button class="ab-tg${u.preview ? " on" : ""}"
+                onclick="AudioLab.uiField('preview',${!u.preview});AudioLab.togglePrefs();AudioLab.togglePrefs()">audition first</button>
+      </div>
+      <div class="ab-row">
+        <button class="ab-tg${u.snap ? " on" : ""}"
+                onclick="AudioLab.toggleSnap();AudioLab.togglePrefs();AudioLab.togglePrefs()">snap to zero</button>
+      </div>
+      <div class="ab-row">
+        <label>units</label>
+        <select class="ab-in" onchange="AudioLab.selUnits(this.value)">
+          ${["s","ms","samples"].map(x =>
+            `<option value="${x}"${u.units === x ? " selected" : ""}>${x}</option>`).join("")}
         </select>
       </div>
-      ${synthRow("freq", "pitch Hz", p.freq, 20, 8000, 1)}
-      ${synthRow("sweep", "sweep", p.sweep, -100, 100, 1)}
-      ${synthRow("seconds", "length s", p.seconds, 0.02, 6, 0.01)}
-      ${synthRow("attack", "attack", p.attack, 0, 1, 0.005)}
-      ${synthRow("decay", "decay", p.decay, 0, 2, 0.005)}
-      ${synthRow("sustain", "sustain", p.sustain, 0, 1, 0.01)}
-      ${synthRow("release", "release", p.release, 0, 2, 0.005)}
-      ${synthRow("noise", "noise", p.noise, 0, 1, 0.01)}
-      ${synthRow("crush", "bitcrush", p.crush, 0, 7, 1)}
-      <div class="ab-grid2">
-        <button class="ab-btn" onclick="AudioLab.synthPreview()">▶ preview</button>
-        <button class="ab-btn" onclick="AudioLab.synthAppend()">append</button>
-      </div>
-      <button class="ab-btn wide" onclick="AudioLab.synthReplace()">replace the clip</button>
-
-      <div class="ab-h">mixer<span></span></div>
-      ${S.tracks.length ? S.tracks.map((t, i) => `
-        <div class="ab-track">
-          <div class="hd">${E(t.name)}
-            <span class="x" onclick="AudioLab.dropTrack(${i})">✕</span></div>
-          <div class="ab-row"><label>at s</label>
-            <input class="ab-in num" type="number" step="0.01" value="${t.offset_s}"
-                   oninput="AudioLab.trackField(${i},'offset_s',this.value)">
-            <label>dB</label>
-            <input class="ab-in num" type="number" step="1" value="${t.gain_db}"
-                   oninput="AudioLab.trackField(${i},'gain_db',this.value)"></div>
-          <div class="ab-row"><label>in s</label>
-            <input class="ab-in num" type="number" step="0.01" min="0" value="${t.in_s || 0}"
-                   oninput="AudioLab.trackField(${i},'in_s',this.value)">
-            <label>out s</label>
-            <input class="ab-in num" type="number" step="0.01" placeholder="end"
-                   value="${t.out_s == null ? "" : t.out_s}"
-                   oninput="AudioLab.trackField(${i},'out_s',this.value)"></div>
-          <div class="ab-row"><label>pan</label>
-            <input class="ab-in" type="range" min="-1" max="1" step="0.05" value="${t.pan}"
-                   oninput="AudioLab.trackField(${i},'pan',this.value)"></div>
-          <div class="mini">
-            <button class="ab-tg${t.muted?" on":""}" onclick="AudioLab.trackField(${i},'muted',${!t.muted})">mute</button>
-            <button class="ab-tg${t.solo?" on":""}" onclick="AudioLab.trackField(${i},'solo',${!t.solo})">solo</button>
-            <button class="ab-tg${t.reverse?" on":""}" onclick="AudioLab.trackField(${i},'reverse',${!t.reverse})">reverse</button>
-            <button class="ab-tg" onclick="AudioLab.resetTrim(${i})">reset trim</button>
-          </div>
-        </div>`).join("")
-        : `<div class="ab-note">Layer other project sounds under this one — a hit
-            plus a noise tail, a stinger over a pad.</div>`}
-      <button class="ab-btn wide" onclick="AudioLab.addTrack()">+ layer a sound</button>
-      <div class="ab-grid2">
-        <button class="ab-btn go" onclick="AudioLab.mixdown(true)">mix with this clip</button>
-        <button class="ab-btn" onclick="AudioLab.mixdown(false)">layers only</button>
-      </div>
-      <div class="ab-row">
-        <input class="ab-in" id="ab-bounce" value="${E(S.bounceAs || defaultBounce())}"
-               oninput="AudioLab.bounceAsField(this.value)">
-      </div>
-      <button class="ab-btn wide" id="ab-bounce-go"
-              onclick="AudioLab.bounce()">bounce to a new file</button>
-      <div class="ab-note"><b>Mix</b> replaces this clip${(S.ui && S.ui.preview !== false)
-        ? " — with an apply/cancel step, since <b>audition first</b> is on" : ""}.
-        <b>Bounce</b> writes the stack to the file above and leaves this clip
-        exactly as it is.</div>
-      <button class="ab-btn wide" onclick="AudioLab.saveSession()">save mix session</button>
-
-      <div class="ab-h">save<span></span></div>
-      <div class="ab-row">
-        <input class="ab-in" id="ab-saveas" value="${E(S.saveAs || S.rel || "")}"
-               oninput="AudioLab.saveAsField(this.value)">
-      </div>
-      <div class="ab-grid2">
-        <button class="ab-btn go" onclick="AudioLab.save(false)">save</button>
-        <button class="ab-btn" onclick="AudioLab.save(true)">save as</button>
-      </div>
-      <div class="ab-note">${st
-        ? (st.ogg ? "Both <b>.wav</b> and <b>.ogg</b> can be written here."
-                  : `<span class="ab-warn">${E(st.ogg_reason)}</span>`)
-        : "checking what this install can write…"}</div>`;
-    refreshHistory();
-    if (S.mode === "layers") paintLayers();
+      <div class="ab-note">Audition renders an amount-op into the bar above the
+        transport instead of into the clip. Snapping lands a boundary on a zero
+        crossing, which is what stops a trim clicking.</div>`;
+    p.hidden = false;
   }
 
-  function synthRow(key, label, value, min, max, step){
-    return `<div class="ab-row"><label>${E(label)}</label>
-      <input class="ab-in" type="range" min="${min}" max="${max}" step="${step}"
-             value="${value}" oninput="AudioLab.synthField('${key}',this.value)">
-      <span class="ab-sub" id="ab-sv-${key}" style="width:44px;text-align:right">${value}</span></div>`;
+  function syncTransportRead(){
+    if (!S || !$.read) return;
+    const b = S.buf;
+    $.read.textContent = `${b.sampleRate} Hz · ${b.numberOfChannels === 2 ? "stereo" : "mono"}`
+      + `  ·  ${fmt(b.duration)}`;
   }
 
-  /* The edit rack's parallel of synthRow. The suffix rides on the readout as a
-     data attribute so uiField can rebuild the text without knowing the units. */
-  function uiRow(key, label, value, min, max, step, suffix){
-    const sfx = suffix || "";
-    return `<div class="ab-row"><label>${E(label)}</label>
-      <input class="ab-in" type="range" min="${min}" max="${max}" step="${step}"
-             value="${value}" oninput="AudioLab.uiField('${key}',this.value)">
-      <span class="ab-sub" id="ab-uv-${key}" data-sfx="${E(sfx)}"
-            style="width:52px;text-align:right">${value}${E(sfx)}</span></div>`;
+  function stepWave(d){
+    if (!S) return;
+    const i = (WAVES.indexOf(S.synth.wave) + d + WAVES.length) % WAVES.length;
+    synthField("wave", WAVES[i]);
+  }
+
+  function mountStudio(){
+    if (!window.BeatMaker){
+      $.studio.innerHTML =
+        `<div class="ab-note" style="padding:var(--s-8)">the beat maker did not load</div>`;
+      return;
+    }
+    if (!S.studioMounted){
+      BeatMaker.mount($.studio, (S.meta && S.meta.beat) || null);
+      S.studioMounted = true;
+    }
   }
 
   /* ── layers mode ──────────────────────────────────────────────────────── */
@@ -2816,12 +3847,13 @@ window.AudioLab = (() => {
    * own sample rate and can end long past the clip, so this view has to be in
    * seconds spanning the whole stack — a quantity S.view cannot hold. */
 
-  const RULER_H = 18;                    // the time strip along the top, CSS px
   const MIN_LEN = 0.02;                  // the shortest a trimmed lane may get, s
 
-  function laneHeight(H){
-    return clamp((H - RULER_H) / (S.tracks.length + 1), 38, 88);
-  }
+  /* Row height is a constant now — see RULER_H / LANE_H at the top of the
+     module. It has to be: the headers are DOM and the lanes are a canvas, and a
+     height that depended on how tall the pane happened to be is a height the
+     two would compute differently the moment one of them was laid out and the
+     other was not. laneHeight() is gone; read LANE_H. */
   /* The kept region of a track, clamped against the source it was decoded from.
      A trim is stored as two seconds-into-the-file numbers and nothing else, so
      every read of "how long is this layer" has to come through here or the four
@@ -2885,19 +3917,29 @@ window.AudioLab = (() => {
     }
     if (!S) return null;
     delete S.layerBusy[rel];
+    // The header column prints the lane's length and trim, and until this
+    // moment it could only print "decoding…" — so it has to be told too, or
+    // every layer stays labelled as still decoding once it has finished.
+    renderHeads();
     // The fit that ran before this decode landed could not know how long the
     // layer was, so a still-fitted view re-fits rather than clipping it off.
-    if (S.lfit) layersFit(); else paintLayers();
+    if (S.lfit) layersFit(); else { paintLayers(); paintHead(); }
     return S.layerBufs[rel];
   }
 
+  /* Both lane canvases are the same size. The static one carries the ruler, the
+     lane grounds and the coloured clips; the overlay carries the playhead, the
+     range and the drag feedback. */
   function sizeLayerCanvas(){
     if (!S || !$.lcanvas) return false;
-    const r = $.layers.getBoundingClientRect();
+    const r = $.lanes.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = Math.max(1, Math.round(r.width * dpr));
     const h = Math.max(1, Math.round(r.height * dpr));
     S.ldpr = dpr;
+    if ($.lover.width !== w || $.lover.height !== h){
+      $.lover.width = w; $.lover.height = h;
+    }
     if ($.lcanvas.width === w && $.lcanvas.height === h) return false;
     $.lcanvas.width = w; $.lcanvas.height = h;
     return true;
@@ -2926,11 +3968,10 @@ window.AudioLab = (() => {
   /* Which lane a y lands on — null over the ruler or past the bottom lane. */
   function laneAt(y){
     if (!S || y < RULER_H) return null;
-    const H = $.lcanvas.height / (S.ldpr || 1);
-    const lh = laneHeight(H);
-    const i = Math.floor((y - RULER_H + S.lscroll) / lh);
+    const i = Math.floor((y - RULER_H + S.lscroll) / LANE_H);
     return (i < 0 || i > S.tracks.length) ? null : i;
   }
+  function laneTop(i){ return RULER_H + i * LANE_H - S.lscroll; }
   /* Lane 0 is the clip; 1..n are S.tracks. Both carry muted/solo, but the clip's
      live outside S.tracks (see S.clipLane), so reads go through here. */
   function laneLabel(i){
@@ -2970,25 +4011,11 @@ window.AudioLab = (() => {
     return { tr, buf, sp, t0, t1: t0 + sp.len };
   }
 
-  /* Where lane i's M and S chips sit, in CSS px. The painter and the hit test
-     both call this, so a chip you can see is a chip you can press. */
-  function laneChips(i, top){
-    const c = $.lctx2d;
-    if (!c) return null;
-    c.font = "10px ui-monospace,monospace";
-    const x0 = 4 + c.measureText(laneLabel(i)).width + 10 + 5;
-    return { m: { x: x0, y: top + 4, w: 15, h: 14 },
-             s: { x: x0 + 18, y: top + 4, w: 15, h: 14 } };
-  }
-  function inChip(b, x, y){
-    return !!b && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
-  }
-
   /* Which end of lane i's block the pointer is on — "in", "out" or null — using
      the same EDGE_PX grab radius the clip canvas's selection edges use, because
      it is the same gesture: grab an end, drag it, the audio behind it is kept
      or hidden. The interior of the block is still the move, so this is hit
-     tested before the drag branch exactly like the M/S chips are.
+     tested before the drag branch.
      Lane 0 is the clip: it is what t=0 MEANS here, so it never trims. */
   function laneEdgeAt(i, x, y){
     if (!S || !i) return null;
@@ -2996,10 +4023,8 @@ window.AudioLab = (() => {
     if (!tr) return null;
     const buf = S.layerBufs[tr.source];
     if (!buf) return null;               // undecoded: no length to grab an end of
-    const H = $.lcanvas.height / (S.ldpr || 1);
-    const lh = laneHeight(H);
-    const top = RULER_H + i * lh - S.lscroll;
-    if (y < top || y > top + lh) return null;
+    const top = laneTop(i);
+    if (y < top || y > top + LANE_H) return null;
     const W = $.lcanvas.width / (S.ldpr || 1);
     const off = tr.offset_s || 0;
     const da = Math.abs(secToX(off, W) - x);
@@ -3008,18 +4033,19 @@ window.AudioLab = (() => {
     if (db <= EDGE_PX) return "out";
     return null;
   }
-  function drawChip(c, b, glyph, on, onToken){
-    c.fillStyle = BGTheme.color(on ? onToken : "--surface-3");
-    c.fillRect(b.x, b.y, b.w, b.h);
-    c.fillStyle = BGTheme.color(on ? "--accent-fg" : "--text-3");
-    c.font = "10px ui-monospace,monospace";
-    c.fillText(glyph, b.x + 4, b.y + 11);
-  }
 
   // 60 px is about the narrowest a m:ss label reads at. The list runs past the
   // 1–60 s band at both ends so a hard zoom never leaves the ruler blank.
   const TICK_STEPS = [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600];
 
+  /* The STATIC arrangement: ruler, lane grounds, the coloured clip blocks and
+   * their waveforms, trim caps, and the Godot loop bracket. Nothing here moves
+   * while the transport runs, so none of it is repainted while it does.
+   *
+   * The labels and the mute/solo chips that used to be drawn INTO this canvas
+   * are gone: they are DOM now, in the fixed header column, which is what makes
+   * them reachable at any zoom, selectable, and renameable in place. A canvas
+   * label was also unreadable the moment a clip started under it. */
   function _paintLayers(){
     if (!S || !$.lctx2d) return;
     if (!S.lview) S.lview = { from: 0, to: layersTotal() * 1.02 };
@@ -3032,56 +4058,79 @@ window.AudioLab = (() => {
 
     const { from, to } = S.lview;
     const pps = W / Math.max(1e-6, to - from);
-    const lh = laneHeight(H);
     const n = S.tracks.length + 1;
-    // Keep the stack from scrolling off its own bottom after a lane is dropped.
-    const maxScroll = Math.max(0, n * lh - (H - RULER_H));
-    S.lscroll = clamp(S.lscroll, 0, maxScroll);
+    S.lscroll = clamp(S.lscroll, 0, Math.max(0, n * LANE_H - (H - RULER_H)));
+    syncHeadScroll();
 
     // ── ruler
     let step = TICK_STEPS[TICK_STEPS.length - 1];
     for (const s of TICK_STEPS){ if (s * pps >= 60){ step = s; break; } }
-    c.strokeStyle = BGTheme.color("--line");
+    c.fillStyle = BGTheme.color("--surface-2");
+    c.fillRect(0, 0, W, RULER_H);
+    c.strokeStyle = BGTheme.color("--line-strong");
     c.fillStyle = BGTheme.color("--text-3");
-    c.font = "10px ui-monospace,monospace";
-    // Ticks stay inside the band: the lane fills below are opaque, so a
-    // full-height gridline would be paint nobody ever sees.
+    c.font = "10px " + MONO;
     c.beginPath();
     for (let t = Math.ceil(from / step) * step; t <= to; t += step){
       const x = Math.round(secToX(t, W)) + .5;
-      c.moveTo(x, RULER_H - 5); c.lineTo(x, RULER_H);
+      c.moveTo(x, RULER_H - 6); c.lineTo(x, RULER_H);
     }
     c.stroke();
     for (let t = Math.ceil(from / step) * step; t <= to; t += step){
       const m = Math.floor(t / 60), s = t - m * 60;
       const lbl = `${m}:${s < 10 ? "0" : ""}${step < 1 ? s.toFixed(2) : Math.round(s)}`;
-      c.fillText(lbl, Math.round(secToX(t, W)) + 3, 10);
+      c.fillText(lbl, Math.round(secToX(t, W)) + 3, 12);
+    }
+    // Faint gridlines down the lanes, so a clip's position reads against the
+    // ruler rather than against nothing.
+    c.strokeStyle = BGTheme.color("--line-soft");
+    c.beginPath();
+    for (let t = Math.ceil(from / step) * step; t <= to; t += step){
+      const x = Math.round(secToX(t, W)) + .5;
+      c.moveTo(x, RULER_H); c.lineTo(x, H);
+    }
+    c.stroke();
+
+    // ── the Godot loop bracket, in the ruler where Soundtrap puts its loop
+    // region. This is the one loop this project actually persists: it lives in
+    // the clip's .import and is the reason a music track plays once and stops.
+    if (S.loop && S.loop.enabled){
+      const a = secToX(S.loop.begin_s || 0, W);
+      const b = secToX(S.loop.end_s != null ? S.loop.end_s : S.buf.duration, W);
+      c.fillStyle = BGTheme.color("--info-soft");
+      c.fillRect(a, 0, Math.max(2, b - a), RULER_H);
+      c.strokeStyle = BGTheme.color("--info"); c.lineWidth = 1.5;
+      c.beginPath();
+      c.moveTo(a + .5, RULER_H - 1); c.lineTo(a + .5, 3); c.lineTo(b - .5, 3);
+      c.lineTo(b - .5, RULER_H - 1);
+      c.stroke(); c.lineWidth = 1;
+      c.fillStyle = BGTheme.color("--info");
+      c.font = "9px " + MONO;
+      c.fillText("loop", a + 4, 12);
     }
 
     // ── lanes. 0 is the clip and defines t=0; 1..n are S.tracks.
+    c.save();
+    c.beginPath(); c.rect(0, RULER_H, W, H - RULER_H); c.clip();
     for (let i = 0; i < n; i++){
-      const top = RULER_H + i * lh - S.lscroll;
-      if (top > H || top + lh < RULER_H) continue;
+      const top = laneTop(i);
+      if (top > H || top + LANE_H < RULER_H) continue;
       const tr = i ? S.tracks[i - 1] : null;
       const buf = i ? S.layerBufs[tr.source] : S.buf;
       const off = i ? (tr.offset_s || 0) : 0;
       const focused = S.lsel === i;
 
-      c.save();
-      c.beginPath(); c.rect(0, RULER_H, W, H - RULER_H); c.clip();
+      c.fillStyle = BGTheme.color(focused ? "--surface-2" : "--surface-1");
+      c.fillRect(0, top, W, LANE_H);
 
-      c.fillStyle = BGTheme.color(i % 2 ? "--surface-2" : "--surface-1");
-      c.fillRect(0, top, W, lh);
-
-      const label = i ? (tr.name || tr.source) : (S.rel || S.saveAs || "clip");
       if (i && buf === undefined){
         c.fillStyle = BGTheme.color("--text-3");
-        c.font = "10px ui-monospace,monospace";
-        c.fillText(`${label}   decoding…`, 8, top + lh / 2 + 3);
+        c.font = "10px " + MONO;
+        c.fillText("decoding…", 10, top + LANE_H / 2 + 3);
       } else if (i && buf === null){
         c.fillStyle = BGTheme.color("--bad");
-        c.font = "10px ui-monospace,monospace";
-        c.fillText(`${label}   could not decode`, 8, top + lh / 2 + 3);
+        c.font = "10px " + MONO;
+        c.fillText("could not decode this source", 10, top + LANE_H / 2 + 3);
       } else if (buf){
         // The block is the KEPT region: it starts at offset_s and runs for
         // span.len, and its waveform is read from in_s into the source rather
@@ -3092,125 +4141,153 @@ window.AudioLab = (() => {
         if (t1 > t0){
           const x0 = secToX(t0, W), x1 = secToX(t1, W);
           const px = Math.max(1, Math.floor(x1 - x0));
-          if (focused){
-            c.fillStyle = BGTheme.color("--accent-soft");
-            c.fillRect(x0, top + 1, x1 - x0, lh - 2);
-          }
-          const mid = top + lh / 2;
-          c.strokeStyle = BGTheme.color("--line");
-          c.beginPath(); c.moveTo(x0, mid); c.lineTo(x1, mid); c.stroke();
-          // Channel 0 only: a lane this short cannot show two, and which one is
-          // louder is not what you are reading a layer stack for.
-          const p = peaks(buf, 0, (sp.in_s + (t0 - off)) * buf.sampleRate,
-                          (sp.in_s + (t1 - off)) * buf.sampleRate, px);
           const st = laneState(i);
-          c.strokeStyle = BGTheme.color(
-            st.muted ? "--text-3" : st.solo ? "--good"
-                     : i ? "--text-2" : "--accent-hover");
+          const col = laneColor(i);
+          const y = top + 4, h = LANE_H - 9;
+
+          // Soundtrap's clip: a saturated rounded block in the track's own
+          // colour, waveform drawn inside it. Muted drops the fill to a ghost —
+          // but KEEPS the outline at full strength, because a fill alone at 28%
+          // vanished into the parchment ground and the lane read as empty
+          // rather than as silenced.
+          c.save();
+          c.globalAlpha = st.muted ? 0.22 : 1;
+          roundRect(c, x0, y, Math.max(2, x1 - x0), h, 4);
+          c.fillStyle = col; c.fill();
+          if (st.muted){
+            c.globalAlpha = 1;
+            c.strokeStyle = col; c.lineWidth = 1.5;
+            roundRect(c, x0 + .75, y + .75, Math.max(2, x1 - x0) - 1.5, h - 1.5, 4);
+            c.stroke(); c.lineWidth = 1;
+            c.globalAlpha = 0.22;
+          }
+
+          const p = peaksFor(buf, 0, (sp.in_s + (t0 - off)) * buf.sampleRate,
+                             (sp.in_s + (t1 - off)) * buf.sampleRate, px);
+          c.save();
+          roundRect(c, x0, y, Math.max(2, x1 - x0), h, 4); c.clip();
+          c.strokeStyle = CLIP_INK;
           c.beginPath();
-          const amp = lh / 2 - 6;
+          const mid = y + h / 2, amp = h / 2 - 4;
           for (let x = 0; x < px; x++){
             const lo = p[x * 2], hi = p[x * 2 + 1];
-            const px0 = Math.floor(x0) + x + .5;
-            const y0 = mid - hi * amp, y1 = mid - lo * amp;
-            c.moveTo(px0, y0); c.lineTo(px0, Math.max(y1, y0 + .6));
+            const cx = Math.floor(x0) + x + .5;
+            const ya = mid - hi * amp, yb = mid - lo * amp;
+            c.moveTo(cx, ya); c.lineTo(cx, Math.max(yb, ya + .6));
           }
           c.stroke();
-          // A cut end gets a rule, or a trimmed layer is indistinguishable from
-          // a short file and there is nothing telling you audio is being held
-          // back behind that edge.
-          c.fillStyle = BGTheme.color("--accent-hover");
-          if (sp.in_s > 0.0005) c.fillRect(secToX(off, W), top + 1, 2, lh - 2);
+          c.restore();
+
+          // A cut end gets a hard rule, or a trimmed layer is indistinguishable
+          // from a short file and nothing tells you audio is held back there.
+          c.fillStyle = BGTheme.color("--text");
+          if (sp.in_s > 0.0005) c.fillRect(secToX(off, W), y, 2, h);
           if (sp.out_s < buf.duration - 0.0005)
-            c.fillRect(secToX(off + sp.len, W) - 2, top + 1, 2, lh - 2);
+            c.fillRect(secToX(off + sp.len, W) - 2, y, 2, h);
+          c.restore();
+
+          // Focus ring last, in the theme accent — "the lane you are editing"
+          // is chrome, not identity, so it follows the ground.
+          if (focused){
+            c.strokeStyle = BGTheme.color("--accent"); c.lineWidth = 2;
+            roundRect(c, x0 + 1, y + 1, Math.max(2, x1 - x0) - 2, h - 2, 4);
+            c.stroke(); c.lineWidth = 1;
+          }
+          if (st.solo){
+            c.strokeStyle = BGTheme.color("--good"); c.lineWidth = 2;
+            roundRect(c, x0 + 1, y + 1, Math.max(2, x1 - x0) - 2, h - 2, 4);
+            c.stroke(); c.lineWidth = 1;
+          }
         }
       }
 
-      // The range, if this is the lane holding it. Deliberately NOT a fill: the
-      // focused lane is already washed in --accent-soft above, so a soft fill
-      // over it would be invisible. A hard bar along the top edge plus a rule
-      // at each end reads at every lane height from 38 px up.
-      if (S.lrange && S.lrange.i === i){
-        const rx0 = secToX(S.lrange.a, W), rx1 = secToX(S.lrange.b, W);
-        c.fillStyle = BGTheme.color("--accent");
-        c.fillRect(rx0, top + 1, Math.max(1, rx1 - rx0), 3);
-        c.fillRect(Math.round(rx0), top + 1, 1, lh - 2);
-        c.fillRect(Math.round(rx1) - 1, top + 1, 1, lh - 2);
-      }
-
-      // Label chip last, over the waveform — a name you cannot read is no label.
-      c.font = "10px ui-monospace,monospace";
-      const tw = c.measureText(label).width;
-      c.fillStyle = BGTheme.color("--surface-3");
-      c.fillRect(4, top + 4, tw + 10, 14);
-      c.fillStyle = BGTheme.color("--text");
-      c.fillText(label, 9, top + 14);
-
-      // M/S beside the name, so the stack can be muted and soloed without
-      // leaving the canvas for the side panel.
-      const chips = laneChips(i, top);
-      if (chips){
-        const lst = laneState(i);
-        drawChip(c, chips.m, "M", !!lst.muted, "--accent");
-        drawChip(c, chips.s, "S", !!lst.solo, "--good");
-      }
-
-      c.strokeStyle = BGTheme.color("--line");
+      c.strokeStyle = BGTheme.color("--line-soft");
       c.beginPath();
-      c.moveTo(0, top + lh - .5); c.lineTo(W, top + lh - .5); c.stroke();
-      c.restore();
+      c.moveTo(0, top + LANE_H - .5); c.lineTo(W, top + LANE_H - .5); c.stroke();
     }
+    c.restore();
 
-    // After the lanes: lane 0's fill starts exactly at RULER_H and would
-    // otherwise swallow the seam between the ruler and the stack.
     c.strokeStyle = BGTheme.color("--line");
     c.beginPath(); c.moveTo(0, RULER_H + .5); c.lineTo(W, RULER_H + .5); c.stroke();
 
-    // ── playhead. Live while the stack plays, parked and dimmer when it does
-    // not — the parked one is where the next ▶ starts from, so it has to show.
+    if ($.lhud) $.lhud.textContent =
+      `${n} lane${n === 1 ? "" : "s"}  ·  view ${fmt(from)}–${fmt(to)}`;
+    syncStack();
+    paintHead();
+  }
+
+  function roundRect(c, x, y, w, h, r){
+    const rr = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+    c.beginPath();
+    if (c.roundRect){ c.roundRect(x, y, w, h, rr); return; }
+    c.moveTo(x + rr, y);
+    c.arcTo(x + w, y, x + w, y + h, rr);
+    c.arcTo(x + w, y + h, x, y + h, rr);
+    c.arcTo(x, y + h, x, y, rr);
+    c.arcTo(x, y, x + w, y, rr);
+    c.closePath();
+  }
+
+  /* The MOVING arrangement: the playhead, the range, and the hint line. Called
+     every frame while the stack plays and on every drag — and it never touches
+     a sample, which is the entire point of the split. */
+  function paintHead(){
+    if (!S || !$.loctx2d || !S.lview) return;
+    const c = $.loctx2d, dpr = S.ldpr || 1;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const W = $.lover.width / dpr, H = $.lover.height / dpr;
+    c.clearRect(0, 0, W, H);
+
+    // The live range, on the lane holding it.
+    if (S.lrange){
+      const top = laneTop(S.lrange.i);
+      if (top + LANE_H > RULER_H && top < H){
+        const rx0 = secToX(S.lrange.a, W), rx1 = secToX(S.lrange.b, W);
+        c.save();
+        c.beginPath(); c.rect(0, RULER_H, W, H - RULER_H); c.clip();
+        c.fillStyle = BGTheme.color("--accent-soft");
+        c.fillRect(rx0, top + 2, Math.max(1, rx1 - rx0), LANE_H - 5);
+        c.fillStyle = BGTheme.color("--accent");
+        c.fillRect(rx0, top + 2, Math.max(1, rx1 - rx0), 3);
+        c.fillRect(Math.round(rx0), top + 2, 1, LANE_H - 5);
+        c.fillRect(Math.round(rx1) - 1, top + 2, 1, LANE_H - 5);
+        c.restore();
+      }
+    }
+
+    // Live while the stack plays, parked and dimmer when it does not — the
+    // parked one is where the next play starts from, so it has to show.
     const head = S.lplay
       ? S.lplay.from + (S.ctx.currentTime - S.lplay.startCtxTime)
       : (S.lhead || 0);
-    const hx = Math.round(secToX(head, W)) + .5;
-    if (hx >= 0 && hx <= W){
-      c.strokeStyle = BGTheme.color(S.lplay ? "--text" : "--text-3");
-      c.beginPath(); c.moveTo(hx, 0); c.lineTo(hx, H); c.stroke();
-    }
+    const hx = secToX(head, W);
+    if (hx >= -6 && hx <= W + 6) drawHead(c, hx, H, !!S.lplay);
+    syncRangeBar();
+  }
 
-    if ($.lhud) $.lhud.textContent =
-      `${n} lanes  ·  view ${fmt(from)}–${fmt(to)}`;
-    if ($.linfo){
-      const tr = S.lsel ? S.tracks[S.lsel - 1] : null;
-      // The hint is the whole discoverability story for this canvas: trim is
-      // invisible until you are within 6 px of an end, and which meaning a
-      // plain drag carries depends on a toggle. Both get written down, plus the
-      // Alt inverse, plus the live range if there is one.
-      const tb = tr ? S.layerBufs[tr.source] : null;
-      const sp = tb ? trackSpan(tr, tb) : null;
-      const cut = sp && (sp.in_s > 0.0005 || sp.out_s < tb.duration - 0.0005);
+  /* The one line of prose the arrangement needs, and it earns its place: trim
+     is invisible until you are within 6 px of an end, and which meaning a plain
+     drag carries depends on a toggle. */
+  function syncRangeBar(){
+    const bar = document.getElementById("ab-rangebar");
+    const info = document.getElementById("ab-rangeinfo");
+    const live = !!(S && S.lrange && !S.lrdrag);
+    if (bar) bar.hidden = !live;
+    if (info && live){
       const rg = S.lrange;
-      const tool = S.ui.ltool === "select"
-        ? "drag across a lane to select a span (Alt-drag moves it)"
-        : "drag the lane to move it (Alt-drag selects a span)";
-      $.linfo.textContent = S.lplay
-        ? `playing from ${fmt(S.lplay.from)}  ·  ${fmt(head)}`
-        : rg
-          ? `range ${fmt(rg.b - rg.a)} on ${laneLabel(rg.i)}`
-            + `  ·  ${fmt(rg.a)}–${fmt(rg.b)}`
-            + " — trim to it, remove it or play it; a fade, a silence or a gain"
-            + " over a range is a clip-mode edit, not something a layer can hold"
-          : tr
-            ? `${tr.name || tr.source} at ${fmt(tr.offset_s || 0)}`
-              + (cut ? `  ·  trimmed to ${fmt(sp.len)} (${fmt(sp.in_s)}–${fmt(sp.out_s)} of the file)` : "")
-              + ` — ${tool}, drag either end to trim (Shift for fine)`
-            : `click the ruler to set the playhead — ${tool}, drag either end of a lane to trim`;
+      info.textContent = `range ${fmt(rg.b - rg.a)} on ${laneLabel(rg.i)}`
+        + `  ·  ${fmt(rg.a)}–${fmt(rg.b)} - a fade, a silence or a gain over a`
+        + ` range is a clip edit, not something a layer can hold`;
     }
-    syncStack();
-    if (S.lplay) paintLayers();          // keep the playhead moving
   }
 
   function bindLayers(){
-    const el = $.lcanvas;
+    // The overlay is on top, so it is what the pointer reaches. Everything the
+    // drags below change lives on the overlay too, so a lane being moved or
+    // trimmed repaints ~30 lines rather than every waveform on screen; the
+    // static canvas is asked for a repaint only when the audio underneath
+    // actually changed shape.
+    const el = $.lover;
     if (!el) return;
     el.addEventListener("pointerdown", ev => {
       if (!S || !S.lview) return;
@@ -3220,27 +4297,17 @@ window.AudioLab = (() => {
       // and re-arm from there if the stack is already running.
       if (py < RULER_H){
         S.lhead = clamp(xToSec(px), 0, layersTotal());
-        if (S.lplay) playStack(S.lhead); else paintLayers();
+        if (S.lplay) playStack(S.lhead); else { paintHead(); syncClock(); }
         return;
       }
       el.setPointerCapture(ev.pointerId);
       const i = laneAt(py);
       if (i == null) return;
       focusLane(i);                 // moving the focus is what drops a range
-      // Chips are hit BEFORE the drag branch: a press that lands on one is a
-      // toggle, not the start of a time drag.
-      const lh0 = laneHeight($.lcanvas.height / (S.ldpr || 1));
-      const chips = laneChips(i, RULER_H + i * lh0 - S.lscroll);
-      const hit = chips && (inChip(chips.m, px, py) ? "muted"
-                          : inChip(chips.s, px, py) ? "solo" : null);
-      if (hit){
-        if (i) trackField(i - 1, hit, !S.tracks[i - 1][hit]);
-        else clipLaneField(hit);
-        return;
-      }
-      // …and an end is hit before the drag, for the same reason: the precedence
-      // is ruler → chips → edge → move, so the interior of a block still moves
-      // the lane exactly as it did before trimming existed.
+      renderHeads();                // …and the header column follows the focus
+      // The mute and solo chips that used to be hit-tested here are DOM in the
+      // header column now, so the precedence is simply ruler → edge → drag: the
+      // interior of a block still moves the lane exactly as it always did.
       const edge = laneEdgeAt(i, px, py);
       if (edge){
         const t = S.tracks[i - 1];
@@ -3261,7 +4328,7 @@ window.AudioLab = (() => {
         const bl = laneBlock(i);
         if (!bl){
           say(i ? "that layer has not decoded yet"
-                : "the clip lane holds no range — select on the waveform in clip mode");
+                : "the clip lane holds no range - select on the waveform in clip mode");
           paintLayers();
           return;
         }
@@ -3319,19 +4386,16 @@ window.AudioLab = (() => {
         // has to make the same range as dragging rightwards.
         const at = clamp(xToSec(x), d.lo, d.hi);
         S.lrange = { i: d.i, a: Math.min(d.a, at), b: Math.max(d.a, at) };
-        paintLayers();
+        paintHead();                 // a range is overlay-only; the audio has not moved
         return;
       }
       if (!S.ldrag){
         const y = ev.clientY - r.top;
         const i = laneAt(y);
-        const lh0 = i == null ? 0 : laneHeight($.lcanvas.height / (S.ldpr || 1));
-        const ch = i == null ? null : laneChips(i, RULER_H + i * lh0 - S.lscroll);
         // Same test the pointerdown makes, so the cursor promises the gesture
         // you are actually about to get.
         const selecting = (S.ui.ltool === "select") !== ev.altKey;
-        el.style.cursor = (ch && (inChip(ch.m, x, y) || inChip(ch.s, x, y))) ? "pointer"
-                        : (i != null && laneEdgeAt(i, x, y)) ? "col-resize"
+        el.style.cursor = (i != null && laneEdgeAt(i, x, y)) ? "col-resize"
                         : (i != null && i > 0) ? (selecting ? "crosshair" : "grab")
                         : y < RULER_H ? "col-resize" : "default";
         return;
@@ -3360,7 +4424,7 @@ window.AudioLab = (() => {
         // nothing, and leaving it armed would leave the range row live over it.
         if (S.lrange && S.lrange.b - S.lrange.a < MIN_LEN) S.lrange = null;
         el.style.cursor = S.ui.ltool === "select" ? "crosshair" : "grab";
-        paintLayers();
+        paintHead();
         return;
       }
       if (S.ltrim){
@@ -3379,7 +4443,8 @@ window.AudioLab = (() => {
         }
         S.ltrim = null;
         el.style.cursor = "grab";
-        renderSide();             // the in/out boxes must agree with the canvas
+        renderHeads();             // the header's "trimmed to" must agree with the canvas
+        renderSheet();
         paintLayers();
         return;
       }
@@ -3388,7 +4453,7 @@ window.AudioLab = (() => {
       if (t) t.offset_s = Math.round((t.offset_s || 0) * 1000) / 1000;
       S.ldrag = null;
       el.style.cursor = "grab";
-      renderSide();               // the mixer form must agree with the canvas
+      renderHeads();               // the header's "at 0:03" must agree with the canvas
       paintLayers();
     };
     el.addEventListener("pointerup", end);
@@ -3398,11 +4463,7 @@ window.AudioLab = (() => {
       ev.preventDefault();
       const r = el.getBoundingClientRect();
       if (ev.shiftKey){
-        const H = $.lcanvas.height / (S.ldpr || 1);
-        const lh = laneHeight(H);
-        const maxScroll = Math.max(0, (S.tracks.length + 1) * lh - (H - RULER_H));
-        S.lscroll = clamp(S.lscroll + ev.deltaY, 0, maxScroll);
-        paintLayers();
+        scrollLanes(ev.deltaY);      // shared with the header column
         return;
       }
       const at = xToSec(ev.clientX - r.left);
@@ -3422,7 +4483,7 @@ window.AudioLab = (() => {
     S.lview = { from: 0, to: layersTotal() * 1.02 };
     S.lscroll = 0;
     S.lfit = true;
-    paintLayers();
+    paintLayers(); paintHead();
   }
 
   /* The right half's name. An existing ·N is stripped before the next one is
@@ -3449,12 +4510,12 @@ window.AudioLab = (() => {
     if (!S) return;
     const i = S.lsel;
     // Lane 0 is the clip and is what t=0 means here; it has no in/out to split.
-    if (!i){ say("focus a layer lane first — the clip lane cannot be split"); return; }
+    if (!i){ say("focus a layer lane first - the clip lane cannot be split"); return; }
     const t = S.tracks[i - 1];
     if (!t) return;
     // Checked at the gesture rather than at save: normalise_session rejects a
     // session past 32 tracks outright, and failing there loses the whole save.
-    if (S.tracks.length >= 32){ say("32 layers is the cap — nothing left to split into"); return; }
+    if (S.tracks.length >= 32){ say("32 layers is the cap - nothing left to split into"); return; }
     const buf = S.layerBufs[t.source];
     if (!buf){ say("that layer has not decoded yet"); return; }
     const sp = trackSpan(t, buf);
@@ -3466,16 +4527,16 @@ window.AudioLab = (() => {
       : (S.lhead || 0);
     const d = head - off;                  // how far into the block the cut is
     if (d <= 0 || d >= sp.len){
-      say("the playhead is not inside that lane — click the ruler to move it");
+      say("the playhead is not inside that lane - click the ruler to move it");
       return;
     }
     if (d < MIN_LEN || sp.len - d < MIN_LEN){
-      say(`too close to an end — each half must be at least ${Math.round(MIN_LEN * 1000)} ms`);
+      say(`too close to an end - each half must be at least ${Math.round(MIN_LEN * 1000)} ms`);
       return;
     }
     // The right half starts at the playhead, and that becomes an offset_s that
     // normalise_session validates against the same 900 s the drag clamps to.
-    if (head > 900){ say("past the 900s cap — nothing can start there"); return; }
+    if (head > 900){ say("past the 900s cap - nothing can start there"); return; }
 
     const ms = v => Math.round(v * 1000) / 1000;
     // out_s at the file's end goes back to null, the same "to the end of the
@@ -3498,7 +4559,7 @@ window.AudioLab = (() => {
     // Directly after the original, so lane order still reads left to right.
     S.tracks.splice(i, 0, right);
     focusLane(i + 1);
-    renderSide();
+    renderSheet();
     paintLayers();
   }
 
@@ -3515,9 +4576,9 @@ window.AudioLab = (() => {
     // move-mode user can pull one range and then reach for these buttons, and
     // clearing it here would make that path pointless.
     S.ui.ltool = name === "select" ? "select" : "move";
-    paintLayers();
+    renderSheet();
   }
-  function clearRange(){ if (S && S.lrange){ S.lrange = null; paintLayers(); } }
+  function clearRange(){ if (S && S.lrange){ S.lrange = null; paintHead(); } }
 
   /* Timeline [a, b] on this lane, expressed as the two seconds-into-the-SOURCE
      numbers a track stores. A reversed block plays its kept region backwards, so
@@ -3562,11 +4623,11 @@ window.AudioLab = (() => {
     const rg = liveRange();
     if (!rg) return;
     const { bl, a, b } = rg;
-    if (a > 900){ say("past the 900s cap — nothing can start there"); return; }
+    if (a > 900){ say("past the 900s cap - nothing can start there"); return; }
     const s = rangeToSource(bl.tr, bl.sp, a, b);
     writeSpan(bl.tr, bl.buf, s.in_s, s.out_s, a);
     S.lrange = null;                     // the range IS the lane now
-    renderSide(); paintLayers();
+    renderSheet(); paintLayers();
   }
 
   /* Drop what the range covers. At either end of the block that is one trim; in
@@ -3580,10 +4641,10 @@ window.AudioLab = (() => {
     const tr = bl.tr, buf = bl.buf, sp = bl.sp;
     const head = a - bl.t0, tail = bl.t1 - b;   // what survives on each side
     if (head < MIN_LEN && tail < MIN_LEN){
-      say("that is the whole layer — drop it from the mixer instead"); return;
+      say("that is the whole layer - drop it from the mixer instead"); return;
     }
     if (head < MIN_LEN){                        // touches the start: a head trim
-      if (b > 900){ say("past the 900s cap — nothing can start there"); return; }
+      if (b > 900){ say("past the 900s cap - nothing can start there"); return; }
       const s = rangeToSource(tr, sp, b, bl.t1);
       writeSpan(tr, buf, s.in_s, s.out_s, b);
     } else if (tail < MIN_LEN){                 // touches the end: a tail trim
@@ -3593,8 +4654,8 @@ window.AudioLab = (() => {
       // Checked at the gesture rather than at save: normalise_session rejects a
       // session past 32 tracks outright and failing there loses the whole save.
       if (S.tracks.length >= 32){
-        say("32 layers is the cap — nothing left to split into"); return; }
-      if (b > 900){ say("past the 900s cap — nothing can start there"); return; }
+        say("32 layers is the cap - nothing left to split into"); return; }
+      if (b > 900){ say("past the 900s cap - nothing can start there"); return; }
       // The right piece is copied off the track BEFORE the track is rewritten,
       // and both spans are measured from the `sp` snapshot for the same reason.
       const right = Object.assign({}, tr, {
@@ -3607,7 +4668,7 @@ window.AudioLab = (() => {
       focusLane(S.lrange.i + 1);
     }
     S.lrange = null;
-    renderSide(); paintLayers();
+    renderSheet(); paintLayers();
   }
 
   /* Audition just this lane over just this span. Straight through playStack —
@@ -3634,6 +4695,7 @@ window.AudioLab = (() => {
     if (!S) return;
     stop();                                  // clears the clip source and any prior stack
     try { S.ctx.resume(); } catch (e) {}
+    makeMaster();
     const at = Math.max(0, fromSec || 0);
 
     const cl = S.clipLane || {};
@@ -3687,7 +4749,7 @@ window.AudioLab = (() => {
         p.pan.value = clamp(l.pan || 0, -1, 1);
         tail.connect(p); tail = p;
       }
-      tail.connect(S.ctx.destination);
+      tail.connect(dest());
       if (l.off >= at) node.start(t0 + (l.off - at));
       else node.start(t0, at - l.off);       // already running: seek into it
       // A scoped audition stops at the range's end rather than at the buffer's.
@@ -3725,71 +4787,42 @@ window.AudioLab = (() => {
   function clipLaneField(key, v){
     if (!S || !S.clipLane) return;
     S.clipLane[key] = v === undefined ? !S.clipLane[key] : v;
-    renderSide();
-    paintLayers();
+    // gain and pan are heard, not seen; only mute and solo change the picture.
+    if (key === "muted" || key === "solo"){ renderHeads(); paintLayers(); }
   }
 
   function syncStack(){
-    const b = document.getElementById("ab-lplay");
-    if (b) b.textContent = S && S.lplay ? "❚❚ stop" : "▶ play stack";
-    const cl = (S && S.clipLane) || {};
-    const m = document.getElementById("ab-lclipm");
-    const s = document.getElementById("ab-lclips");
-    if (m) m.classList.toggle("on", !!cl.muted);
-    if (s) s.classList.toggle("on", !!cl.solo);
-    const tool = (S && S.ui && S.ui.ltool) === "select" ? "select" : "move";
-    const tm = document.getElementById("ab-ltool-move");
-    const ts = document.getElementById("ab-ltool-sel");
-    if (tm) tm.classList.toggle("on", tool === "move");
-    if (ts) ts.classList.toggle("on", tool === "select");
-    // Hidden while the drag that makes the range is still running: the row
-    // wraps the transport, and having it appear under the pointer mid-gesture
-    // moves every other button out from under it.
-    const rr = document.getElementById("ab-lrange");
-    if (rr) rr.hidden = !(S && S.lrange && !S.lrdrag);
+    syncPlay();
+    syncRangeBar();
   }
 
-  /* ── studio mode ──────────────────────────────────────────────────────── */
-  /* The beat maker is a second view onto the SAME clip, not a second document.
-   * It renders through `adopt`, which lands the result in the normal undo stack
-   * — so a rendered beat can then be trimmed, faded, looped and saved by
-   * everything that already exists here. */
+  /* ── modes, as they now are ───────────────────────────────────────────────
+   * There are no modes any more — the arrangement is always up and the sheet
+   * shows whichever panel you asked for. setMode() survives because it is a
+   * PUBLIC entry point and because mixdown() and adopt() call it to bring the
+   * audition bar into view, so it maps the three old names onto panels rather
+   * than disappearing and breaking every caller.
+   *
+   *   "clip"   → the clip panel (where apply/cancel lives)
+   *   "layers" → collapse the sheet; the arrangement is the whole pane
+   *   "studio" → the patterns panel
+   */
   function setMode(mode){
     if (!S) return;
-    // Leaving the clip pane with an audition pending would hide the only bar
-    // that can apply it, so it goes with you as a cancel.
     if (mode === "studio" || mode === "layers") cancelStaged();
     S.mode = (mode === "studio" || mode === "layers") ? mode : "clip";
-    const studio = document.getElementById("ab-studio");
-    const wave = document.getElementById("ab-wave");
-    // :not() because the layers bar is a .ab-transport too now, and a bare
-    // querySelector would be a document-order coin flip between the two.
-    const transport = document.querySelector(".ab-transport:not(#ab-ltransport)");
-    const layers = document.getElementById("ab-layers");
-    const ltransport = document.getElementById("ab-ltransport");
-    document.querySelectorAll("#ab-modes .ab-mode").forEach(b =>
-      b.classList.toggle("active", b.dataset.m === S.mode));
-    if (studio) studio.hidden = S.mode !== "studio";
-    if (wave) wave.hidden = S.mode !== "clip";
-    if (transport) transport.hidden = S.mode !== "clip";
-    if (layers) layers.hidden = S.mode !== "layers";
-    if (ltransport) ltransport.hidden = S.mode !== "layers";
-    if (S.mode === "studio"){
+    if (mode === "studio"){
       stop();
-      if (!window.BeatMaker){ studio.innerHTML =
-        `<div style="padding:24px;color:var(--ash2)">the beat maker did not load</div>`; return; }
-      if (!S.studioMounted){
-        BeatMaker.mount(studio, (S.meta && S.meta.beat) || null);
-        S.studioMounted = true;
-      }
-    } else if (S.mode === "layers"){
+      setSheet("pattern", true);
+    } else if (mode === "layers"){
       stop();
       if (window.BeatMaker) BeatMaker.stop();
       S.tracks.forEach(t => ensureLayerBuf(t.source));
-      if (!S.lview) layersFit(); else paintLayers();
+      if (S.sheetOpen){ S.sheetOpen = false; sizeSheet(); renderRail(); sheetTabs(); }
+      if (!S.lview) layersFit(); else { paintLayers(); paintHead(); }
     } else {
       if (window.BeatMaker) BeatMaker.stop();
-      paint();
+      setSheet("clip", true);
     }
   }
 
@@ -3806,13 +4839,13 @@ window.AudioLab = (() => {
     setMode("clip");
   }
 
-  function loopMode(m){ S.loop.mode = m; renderSide(); }
-  function selectAll(){ S.sel = { a: 0, b: S.buf.length }; renderSide(); paint(); }
-  function clearSel(){ S.sel = null; renderSide(); paint(); }
+  function loopMode(m){ S.loop.mode = m; renderSheet(); }
+  function selectAll(){ S.sel = { a: 0, b: S.buf.length }; renderSheet(); paint(); }
+  function clearSel(){ S.sel = null; renderSheet(); paint(); }
   function zoomSel(){ if (S.sel){ S.view = { from: S.sel.a, to: S.sel.b }; paint(); } }
   function zoomFit(){ S.view = { from: 0, to: S.buf.length }; paint(); }
 
-  // Studio entry point: render into `host` instead of over the whole page.
+  // Seat entry point: render into `host` instead of over the whole page.
   function embed(host, rel){
     _host = host || null;
     // The landing card below is styled by the injected sheet, and every other
@@ -3825,10 +4858,12 @@ window.AudioLab = (() => {
     if (host) host.innerHTML =
       '<div class="ab-land">' +
         '<div class="ab-land-in">' +
-          '<h3>Audio mixer</h3>' +
-          '<p>Choose a sound to work on, start an empty one, or bring one in from ' +
-            'disk — you can drop a file straight onto this pane. Everything you ' +
-            'open here saves back to the project.</p>' +
+          '<h3>Audio lab</h3>' +
+          '<p>One screen: an arrangement of lanes, a context panel under it for ' +
+            'whatever is selected, and a transport that never moves. Choose a ' +
+            'sound to work on, start an empty one, or bring one in from disk - ' +
+            'you can drop a file straight onto this pane. Everything you open ' +
+            'here saves back to the project.</p>' +
           '<div class="ab-land-btns">' +
             '<button class="qbtn" onclick="AudioLab.pick()">open a sound…</button>' +
             '<button class="qbtn ghost" onclick="AudioLab.newDialog()">new sound…</button>' +
@@ -3851,7 +4886,29 @@ window.AudioLab = (() => {
   // throws the unsaved-edits confirm at someone who did not ask to close.
   function unembed(){ if (S) close(); _host = null; }
 
+  /* The rail's Audio lab page. Deliberately NOT unembed()'s counterpart: this
+     one reparents a live session instead of tearing it down. unembed() exists
+     because Studio destroys its host's markup on a tab change and would have
+     orphaned a running ctx; a rail page keeps its host, so leaving and coming
+     back must leave the arrangement, the undo stack and a playing transport
+     alone. Rebuilding here would also remount the beat maker and drop the
+     waveform canvas's listeners, which the stash exists to prevent. */
+  function activate(){
+    const host = document.getElementById("ab-page");
+    if (!host) return false;
+    _host = host;
+    injectStyle();
+    if (!S) { embed(host); return true; }
+    if ($ && $.back && $.back.parentNode !== host){
+      $.back.classList.add("ab-embed");
+      host.innerHTML = "";
+      host.appendChild($.back);
+    }
+    return true;
+  }
+
   return {
+    activate,
     // The exported close is the one that asks; the bare teardown stays private
     // so no caller can skip the question by reaching for it.
     open, close: closeAsk, pick, pickSound, pickSearch, closePick, newSound, setMode, adopt,
@@ -3871,6 +4928,13 @@ window.AudioLab = (() => {
     importFiles, importPicked,
     recStart, recStop, recCancel, recDismiss,
     toggleStack, playStack, stopStack, clipLaneField,
+    // The redesign's own surface. Everything above kept its name and signature
+    // — seats/audio.js mounts through embed()/unembed() and the asset library
+    // calls open(rel), and both still mean exactly what they meant.
+    renderSheet, setSheet, toggleSheet,
+    focusLaneUI, laneToggle, laneMenu, clearMutes,
+    setMaster, toggleMute, toStart, togglePrefs, stepWave,
+    dest,
     get state(){ return S; },
   };
 })();

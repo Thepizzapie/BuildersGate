@@ -93,7 +93,7 @@ window.AssetLib = (() => {
       // drawer
       ".al-scrim{position:fixed;inset:0;z-index:1200;background:rgba(4,5,7,.7);opacity:0;transition:opacity .16s}",
       ".al-scrim.open{opacity:1}",
-      ".al-draw{position:fixed;top:0;right:0;bottom:0;width:min(720px,94vw);z-index:1201;background:var(--iron);border-left:1px solid var(--seam);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .18s}",
+      ".al-draw{position:fixed;top:0;right:0;bottom:0;width:min(720px,94vw);z-index:1201;background:var(--solid-1);border-left:1px solid var(--seam);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .18s}",
       ".al-draw.open{transform:none}",
       ".al-dh{display:flex;align-items:flex-start;gap:12px;padding:15px 17px;border-bottom:1px solid var(--seam)}",
       ".al-dh h3{margin:0;font-size:16px;color:var(--bone);font-weight:var(--fw-semi)}",
@@ -196,7 +196,7 @@ window.AssetLib = (() => {
                value="${E(view.search)}" oninput="AssetLib.setSearch(this.value)">
         ${chip(view.status === "used", "good", "AssetLib.setStatus('used')",
                `in use <b>${st.in_use || 0}</b>`,
-               "Reached by a scene or script — including paths the game builds at runtime.")}
+               "Reached by a scene or script - including paths the game builds at runtime.")}
         ${chip(view.status === "unused", "warn", "AssetLib.setStatus('unused')",
                `unused <b>${st.unused || 0}</b>`,
                "On disk, reached by nothing. Approved is not the same as shipping.")}
@@ -204,9 +204,9 @@ window.AssetLib = (() => {
                `needs review`, "Has a candidate revision waiting on a decision.")}
         ${chip(view.status === "rigged", "", "AssetLib.setStatus('rigged')",
                `rigged <b>${st.rigged || 0}</b>`,
-               "Carries a rig sidecar — labelled slots the gear pipeline can read.")}
+               "Carries a rig sidecar - labelled slots the gear pipeline can read.")}
         ${chip(view.status === "unrigged", "", "AssetLib.setStatus('unrigged')",
-               `no rig`, "Image families with no rig sidecar — the gear pipeline has to guess.")}
+               `no rig`, "Image families with no rig sidecar - the gear pipeline has to guess.")}
         <span class="al-sum">${shown.length} of ${
           view.working ? (st.working || 0)
                        : (st.in_use || 0) + (st.unused || 0)} families ·
@@ -223,7 +223,7 @@ window.AssetLib = (() => {
         ${chip(view.dense, "", "AssetLib.toggleDense()", "compact")}
         ${st.working ? chip(view.working, "", "AssetLib.toggleWorking()",
           `working files <b>${st.working}</b>`,
-          "Files outside res://assets/** — the art seat's scratch renders, tmp/, "
+          "Files outside res://assets/** - the art seat's scratch renders, tmp/, "
           + "test fixtures. The engine cannot load any of them, so they are all "
           + "'unused' and none of that is a defect.") : ""}
         ${chip(false, "", "AssetLib.refresh()", "rescan")}
@@ -307,7 +307,7 @@ window.AssetLib = (() => {
     openKey = key;
     let fam = (data && data.families || []).find(f => f.key === key);
     if (!fam) fam = await readJSON(`/api/assets/family?key=${encodeURIComponent(key)}`, null);
-    if (!fam || fam.__error){ say("that family is gone — rescan"); return; }
+    if (!fam || fam.__error){ say("that family is gone - rescan"); return; }
 
     let scrim = document.getElementById("al-scrim");
     if (!scrim){
@@ -422,13 +422,14 @@ window.AssetLib = (() => {
     AudioLab.open(rel);
   }
   function wire(resPath){
-    if (!window.AtlasGraph) return say("the atlas graph did not load");
+    if (!window.SceneBuild) return say("the scene builder did not load");
     close();
-    // The wiring menu lives on the graph, and the graph needs its scan — flip
-    // to it rather than duplicating the flow in two places.
+    // The wiring menu used to live on the Atlas graph. That mode is gone and
+    // the flow moved to the scene builder, which already owns every other
+    // write to a .tscn — flip to it rather than duplicating the flow here.
     if (typeof setWorkspace === "function") setWorkspace("atlas");
-    if (typeof setAtlasMode === "function") setAtlasMode("graph");
-    setTimeout(() => AtlasGraph.wireMenu(resPath), 700);
+    if (typeof setAtlasMode === "function") setAtlasMode("scene");
+    setTimeout(() => SceneBuild.wireMenu(resPath), 700);
   }
   /* Atlas owns the composer prefill, and it needs its scan loaded to describe
      the node. Ensure it, then hand over — duplicating the prefill here would

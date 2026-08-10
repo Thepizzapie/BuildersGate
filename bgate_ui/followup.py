@@ -69,6 +69,7 @@ from bgate_core import (
     settings as _settings, spend as _spend, writelog,
 )
 from bgate_ui import qa_gate as _qa_gate
+from bgate_ui.pump import Pump
 
 # The router's own cursors. Two, not one: the ROUTING cursor advances as soon as
 # a batch has been acted on, while the NOTICE cursor only advances when a notice
@@ -132,9 +133,10 @@ SWEEP_EVERY = 10
 # Kinds that reach a branch at all. Anything else is notice-only.
 _ROUTED = ("item.failed", "item.review", "item.done", "item.approved")
 
-_started: set[str] = set()
 _lock = threading.Lock()
 _ticks: dict[str, int] = {}
+# The daemon loop itself is built at the bottom of this module, next to the
+# catch-up function it wraps.
 
 
 # ---------------------------------------------------------------------------
@@ -1388,17 +1390,17 @@ def _bootstrap(root: str) -> int:
 CATCHUP_MAX = 20
 
 
-def _run(root: str) -> None:
-    while True:
-        time.sleep(POLL_S)
-        try:
-            result = tick(root)
-            for _ in range(CATCHUP_MAX):
-                if not result.get("more"):
-                    break
-                result = tick(root)
-        except Exception:
-            pass  # fail-safe: the router must never take the dashboard down
+def _catchup(root: str) -> None:
+    """One wake-up: a tick, then up to CATCHUP_MAX more while the batch is full."""
+    result = tick(root)
+    for _ in range(CATCHUP_MAX):
+        if not result.get("more"):
+            break
+        result = tick(root)
+
+
+_pump = Pump("bgate-followup", lambda: POLL_S, _catchup,
+             env_var="BGATE_FOLLOWUP")
 
 
 def start(root: str | os.PathLike[str]) -> bool:
@@ -1411,25 +1413,14 @@ def start(root: str | os.PathLike[str]) -> bool:
     can change under a long-lived server, and a latched flag keeps routing the
     project the user already left.
     """
-    if os.environ.get("BGATE_FOLLOWUP", "1").strip().lower() in (
-            "0", "false", "off"):
-        return False
-    key = str(root)
-    with _lock:
-        if key in _started:
-            return True
-        _started.add(key)
-    threading.Thread(target=_run, args=(key,), daemon=True,
-                     name="bgate-followup").start()
-    return True
+    return _pump.start(root)
 
 
 def reset(root: Optional[str | os.PathLike[str]] = None) -> None:
     """Forget that the router started here. Tests use this; nothing else should."""
     with _lock:
         if root is None:
-            _started.clear()
             _ticks.clear()
         else:
-            _started.discard(str(root))
             _ticks.pop(str(root), None)
+    _pump.reset(root)

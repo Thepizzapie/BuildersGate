@@ -35,8 +35,11 @@ docstring in `bgate_adapters/krea.py` has the full comparison.
 out. They were not, for a while, which is how following these instructions
 committed a key. Keys are loaded per-project and never logged.
 
-`bgate doctor` probes `OPENAI_API_KEY` only. A Krea-only setup shows
-`MISS openai_key` and exits 1 while working fine.
+You can also set these from the dashboard — **Settings → Art providers**, or the
+**Generators** tab on Studio. Either writes the key into this same gitignored
+`.env` (adding the ignore rule first if the project is missing it) and makes it
+live without a restart. `bgate doctor`'s `art_key` row is green when any
+provider has a key.
 
 ## Platform support
 

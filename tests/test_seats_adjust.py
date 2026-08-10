@@ -315,7 +315,7 @@ class TestWorkflowHousekeeping:
         assert "f.detail" in src
 
 
-class TestGameplayControlsAndAtlasBadge:
+class TestGameplayControlsAndTheAtlasScan:
     def test_stop_and_steer_start_disabled(self):
         src = _read("seats", "gameplay.js")
         assert 'id="gp-stop" disabled' in src
@@ -326,11 +326,27 @@ class TestGameplayControlsAndAtlasBadge:
         src = _read("seats", "gameplay.js")
         assert "/diff" in src and "/reopen" in src and "/cancel" in src
 
-    def test_atlas_badge_paints_without_opening_the_panel(self):
+    def test_the_atlas_nav_badge_is_gone_on_purpose(self):
+        """It counted dead + missing assets and the LIST VIEW was the only place
+        those were listed — its tooltip said "open Atlas to see them". The list
+        and graph modes were removed on the user's instruction and the badge went
+        with them, because a count you cannot click through to is a number that
+        only nags. This asserts the removal rather than leaving the old
+        assertion to fail, so nobody restores the badge without also deciding
+        where dead and missing assets are supposed to live.
+        """
         src = _read("atlas.js")
-        assert "function badge()" in src
-        assert "sessionStorage" in src
+        assert "function badge()" not in src
+        assert "sessionStorage" not in src, "the badge's summary cache is back"
+        assert "rc-atlas" not in src
+
+    def test_the_shared_scan_survived_the_badge(self):
+        """What the other panels actually depend on. The scene builder and the
+        code editor read their screen lists from this one cached scan, so the
+        cache had to outlive the view that used to trigger it."""
+        src = _read("atlas.js")
         assert "TTL_MS" in src
+        assert "ensure" in src
 
 
 class TestNarrativeIsWiredIn:

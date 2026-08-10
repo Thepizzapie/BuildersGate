@@ -295,6 +295,186 @@ def test_an_instances_nodes_paint_after_the_instance_not_at_the_end():
 
 
 # ---------------------------------------------------------------------------
+# Overrides on nodes inside an instance
+# ---------------------------------------------------------------------------
+# THE REASON A DRESSED FLOOR RENDERED AS FIVE HUNDRED CROSSES.
+#
+# Opening the instance was never the gap — the tests above prove that has
+# always worked. The gap is that in these projects the instanced scene is a
+# BLANK: prop.tscn ships an empty Sprite2D called Art, and which picture it
+# wears is decided by the HOST file as a Godot override block with no `type=`.
+# Read separately both files are correct and neither draws. Godot composes
+# them; so must this, or the endpoint reports "nothing in it draws in the file"
+# — true, and useless — for every prop on the floor.
+BLANK_PROP = (
+    '[gd_scene format=3]\n\n'
+    '[node name="Prop" type="Node2D"]\n\n'
+    '[node name="Art" type="Sprite2D" parent="."]\n')
+
+DRESSED = (
+    '[gd_scene load_steps=3 format=3]\n\n'
+    '[ext_resource type="PackedScene" path="res://prop.tscn" id="1_p"]\n'
+    '[ext_resource type="Texture2D" path="res://cabinet.png" id="2_c"]\n\n'
+    '[node name="Floor" type="Node2D"]\n\n'
+    '[node name="Cab_00" parent="." instance=ExtResource("1_p")]\n'
+    'position = Vector2(64, 64)\n\n'
+    '[node name="Art" parent="Cab_00" index="0"]\n'
+    'texture = ExtResource("2_c")\n'
+    'offset = Vector2(-13.5, -30)\n')
+
+
+def _dressed(**kw):
+    return _draw(DRESSED, sizes={"res://cabinet.png": (32, 64)},
+                 reads={"res://prop.tscn": BLANK_PROP}, **kw)
+
+
+def test_an_override_dresses_the_node_inside_the_instance():
+    at = _by_path(_dressed())
+    art = at["Cab_00/Art"]
+    assert art["draw"]["kind"] == "image", art["draw"]
+    assert art["draw"]["rel"] == "game/cabinet.png"
+    assert art["draw"]["offset"] == [-13.5, -30.0]
+    assert at["Cab_00"]["drawn"] == 1
+    assert "nothing in it draws" not in at["Cab_00"]["draw"].get("reason", "")
+
+
+def test_an_override_block_is_a_patch_not_a_second_node():
+    """It has no type, so emitting it too produced a second item on the same
+    path that drew nothing — and the viewport hit-tested against whichever of
+    the two it reached first."""
+    paths = [i["path"] for i in _dressed()["items"]]
+    assert paths.count("Cab_00/Art") == 1
+    # ...and it is not counted as a child of the instance either.
+    assert _by_path(_dressed())["Cab_00"]["children"] == 1
+
+
+def test_one_props_override_does_not_leak_onto_the_next():
+    """The parsed source scene is cached per request and the patch is written
+    into it, so a shared copy would put the first cabinet's texture on all of
+    them. The cache has to hand out its own copy."""
+    two = DRESSED + (
+        '\n[node name="Cab_01" parent="." instance=ExtResource("1_p")]\n'
+        'position = Vector2(128, 64)\n')
+    at = _by_path(_draw(two, sizes={"res://cabinet.png": (32, 64)},
+                        reads={"res://prop.tscn": BLANK_PROP}))
+    assert at["Cab_00/Art"]["draw"]["kind"] == "image"
+    assert at["Cab_01/Art"]["draw"]["kind"] == "marker", \
+        "Cab_01 has no override of its own and must stay undressed"
+
+
+def test_the_instanced_scene_is_parsed_once_however_many_instances():
+    """281 props over three .tscn files. This endpoint exists so that panning
+    is not a network operation; it must not become a disk one."""
+    reads: list[str] = []
+
+    def read(path):
+        reads.append(path)
+        return {"res://prop.tscn": BLANK_PROP}.get(path)
+
+    many = DRESSED + "".join(
+        f'\n[node name="Cab_{n:02d}" parent="." instance=ExtResource("1_p")]\n'
+        f'position = Vector2({n * 32}, 64)\n' for n in range(1, 30))
+    scenedraw.draw_list(many, read=read, size_of=lambda p: (32, 64),
+                        rel_of=lambda p: p.replace("res://", "game/"))
+    assert reads.count("res://prop.tscn") == 1, reads
+
+
+def test_a_typed_node_added_under_an_instance_stays_a_node():
+    """Godot lets you add a NEW child beside an instance's own contents, and
+    that block does carry a type. Only the typeless ones are patches."""
+    added = DRESSED + (
+        '\n[node name="Glow" type="Sprite2D" parent="Cab_00"]\n'
+        'texture = ExtResource("2_c")\n')
+    at = _by_path(_draw(added, sizes={"res://cabinet.png": (32, 64)},
+                        reads={"res://prop.tscn": BLANK_PROP}))
+    assert at["Cab_00/Glow"]["draw"]["kind"] == "image"
+    assert "of" not in at["Cab_00/Glow"], "it lives in THIS file and is editable"
+
+
+# ---------------------------------------------------------------------------
+# Lighting
+# ---------------------------------------------------------------------------
+# A floor lit warm over the bullpen and cold over the server aisle rendered as
+# one even grey, because the viewport drew albedo and nothing else. The whole
+# difference on this project is one CanvasModulate over ~44 point lights.
+LIGHT_SCENE = (
+    '[gd_scene load_steps=2 format=3]\n\n'
+    '[ext_resource type="Texture2D" path="res://cookie.tres" id="1_c"]\n\n'
+    '[node name="Fluoro" type="PointLight2D"]\n'
+    'scale = Vector2(1, 0.5)\n'
+    'color = Color(0.8, 0.93, 0.86, 1)\n'
+    'energy = 1.45\n'
+    'texture = ExtResource("1_c")\n'
+    'texture_scale = 1.55\n')
+
+COOKIE = (
+    '[gd_resource type="GradientTexture2D" load_steps=2 format=3]\n\n'
+    '[sub_resource type="Gradient" id="g"]\n'
+    'offsets = PackedFloat32Array(0, 0.62, 1)\n'
+    'colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0.3, 1, 1, 1, 0)\n\n'
+    '[resource]\ngradient = SubResource("g")\nwidth = 256\nheight = 256\n'
+    'fill = 1\n')
+
+
+def test_a_canvas_modulate_rides_on_the_payload_not_a_node():
+    """It multiplies the whole canvas, so it is not any one node's rectangle —
+    and a preview that drops it is a preview of a different scene."""
+    scene = (HEADER + '[node name="Root" type="Node2D"]\n\n'
+             '[node name="Night" type="CanvasModulate" parent="."]\n'
+             'color = Color(0.3, 0.33, 0.4, 1)\n')
+    out = _draw(scene)
+    assert out["tint"] == [0.3, 0.33, 0.4, 1.0]
+    assert _by_path(out)["Night"]["draw"]["kind"] == "tint"
+
+
+def test_an_invisible_canvas_modulate_does_not_tint():
+    scene = (HEADER + '[node name="Root" type="Node2D"]\n\n'
+             '[node name="Night" type="CanvasModulate" parent="."]\n'
+             'visible = false\ncolor = Color(0.3, 0.33, 0.4, 1)\n')
+    assert _draw(scene)["tint"] is None
+
+
+def test_a_light_cookie_is_a_gradient_resource_not_an_image():
+    """Every fixture in these projects points at a GradientTexture2D .tres —
+    there is no file for the browser to fetch, which is why 44 lit rooms
+    reported `no light texture assigned`. Send the ramp instead."""
+    out = _draw(LIGHT_SCENE, reads={"res://cookie.tres": COOKIE})
+    d = _by_path(out)["."]["draw"]
+    assert d["kind"] == "light"
+    assert d["gradient"] == [[0.0, 1.0], [0.62, 0.3], [1.0, 0.0]]
+    assert d["size"] == [256, 256]
+    assert d["color"] == [0.8, 0.93, 0.86, 1.0]
+    assert d["energy"] == 1.45 and d["scale"] == 1.55
+
+
+def test_a_light_with_an_unreadable_cookie_is_still_a_light():
+    d = _by_path(_draw(LIGHT_SCENE))["."]["draw"]
+    assert d["kind"] == "light" and d["gradient"], \
+        "a fixture must not vanish because its texture is a format we cannot read"
+
+
+def test_an_instanced_lights_own_squash_survives_the_instance():
+    """light_fluoro_panel.tscn sets scale.y = 0.5 so the pool lands on the
+    isometric floor plane instead of reading as a sphere in the air. That
+    scale belongs to the PICTURE, not to the node in the host file — folding it
+    into the host would write it into the parent .tscn the first time anyone
+    nudged the light."""
+    floor = (
+        '[gd_scene load_steps=2 format=3]\n\n'
+        '[ext_resource type="PackedScene" path="res://fluoro.tscn" id="1_f"]\n\n'
+        '[node name="Floor" type="Node2D"]\n\n'
+        '[node name="Lamp" parent="." instance=ExtResource("1_f")]\n'
+        'position = Vector2(128, 140)\n')
+    at = _by_path(_draw(floor, reads={"res://fluoro.tscn": LIGHT_SCENE,
+                                      "res://cookie.tres": COOKIE}))
+    lamp = at["Lamp"]
+    assert lamp["draw"]["kind"] == "light"
+    assert lamp["draw"]["local"]["sy"] == 0.5
+    assert (lamp["sx"], lamp["sy"]) == (1.0, 1.0), \
+        "the host node's own transform is what a drag reads and writes"
+
+
+# ---------------------------------------------------------------------------
 # Viewport
 # ---------------------------------------------------------------------------
 def test_the_viewport_comes_from_the_project_not_a_guess():
@@ -302,3 +482,83 @@ def test_the_viewport_comes_from_the_project_not_a_guess():
             "window/size/viewport_height=360\n")
     assert scenedraw.viewport_of(text) == (640, 360)
     assert scenedraw.viewport_of("") == scenedraw.DEFAULT_VIEWPORT
+
+
+# ---------------------------------------------------------------------------
+# Content scale — the factor between a world pixel and a pixel the player sees
+# ---------------------------------------------------------------------------
+# THIS IS THE NUMBER THAT MADE ATLAS LOOK WRONG THREE TIMES RUNNING, and the
+# measurement below is why the module is confident about it rather than
+# reasoning about it. `godot --resolution 1280x720 scenes/floor_tut.tscn` was
+# captured, the viewport was rendered over the same 640x360 world rectangle at
+# this factor, and the two frames were registered against each other:
+#
+#   frame-to-frame registration        scale 1.000, offset (-1, 0) px
+#   floor lattice, both captures       128 x 64 screen px  (64x32 world at x2)
+#   DeskCrtSE_028, both captures       93 x 83 px          ratio 1.0000
+#   OfficeChairSE_007/_027             ratio 0.983 / 1.035 (one 0.01 sweep step)
+#
+# So the geometry was never wrong. What differs between the panel and the
+# engine is one global factor, and these pin where it comes from.
+DOWNSIZING_PROJECT = (
+    "[display]\n\n"
+    "window/size/viewport_width=640\n"
+    "window/size/viewport_height=360\n"
+    "window/size/window_width_override=1280\n"
+    "window/size/window_height_override=720\n"
+    'window/stretch/mode="canvas_items"\n'
+    'window/stretch/scale_mode="integer"\n')
+
+
+def test_a_stretched_project_presents_every_canvas_item_at_the_window_ratio():
+    assert scenedraw.content_scale(DOWNSIZING_PROJECT) == 2.0
+
+
+def test_a_project_that_does_not_stretch_presents_one_to_one():
+    for mode in ('"disabled"', '"viewport"'):
+        text = DOWNSIZING_PROJECT.replace('"canvas_items"', mode)
+        assert scenedraw.content_scale(text) == 1.0, \
+            "only canvas_items scales the DRAWING; viewport renders small " \
+            "and blits, which does not change a canvas item's size"
+
+
+def test_the_old_2d_alias_still_counts_as_canvas_items():
+    text = DOWNSIZING_PROJECT.replace('"canvas_items"', '"2d"')
+    assert scenedraw.content_scale(text) == 2.0
+
+
+def test_integer_scale_mode_floors_the_factor():
+    """A 1000x700 window over a 640x360 stage is 1.56x of room and exactly 1x
+    of picture — `integer` refuses the fraction and pillarboxes the rest. A
+    viewport reporting 1.56 would be reporting a size nothing is drawn at."""
+    text = (DOWNSIZING_PROJECT
+            .replace("window_width_override=1280", "window_width_override=1000")
+            .replace("window_height_override=720", "window_height_override=700"))
+    assert scenedraw.content_scale(text) == 1.0
+    loose = text.replace('scale_mode="integer"', 'scale_mode="fractional"')
+    assert scenedraw.content_scale(loose) == pytest.approx(1.5625)
+
+
+def test_no_window_override_means_no_stretch():
+    text = ("[display]\n\nwindow/size/viewport_width=640\n"
+            "window/size/viewport_height=360\n"
+            'window/stretch/mode="canvas_items"\n')
+    assert scenedraw.content_scale(text) == 1.0
+
+
+def test_an_empty_or_unreadable_project_file_is_one_not_a_crash():
+    assert scenedraw.content_scale("") == 1.0
+    assert scenedraw.content_scale("garbage = [") == 1.0
+
+
+def test_the_draw_list_carries_the_scale_so_the_panel_can_name_it():
+    """Without this key the viewport cannot tell the game's 100% from the
+    editor's, and says "100%" while showing half the size the player sees —
+    which is the whole reason the panel was reported as mis-scaling props."""
+    out = scenedraw.draw_list(
+        HEADER + '[node name="Root" type="Node2D"]\n',
+        read=lambda p: None, size_of=lambda p: None, rel_of=lambda p: None,
+        viewport=(640, 360), scale=2.0)
+    assert out["scale"] == 2.0
+    bare = _draw(HEADER + '[node name="Root" type="Node2D"]\n')
+    assert bare["scale"] == 1.0, "a project that does not stretch is 1, not 0"

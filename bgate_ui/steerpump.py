@@ -20,17 +20,12 @@ looking at "why didn't my correction apply" is already looking.
 from __future__ import annotations
 
 import os
-import threading
-import time
+from typing import Optional
 
 from bgate_core import activity, steerbox
+from bgate_ui.pump import Pump
 
 POLL_S = 2.0
-
-# Per project, for the same reason autodeploy is: the active project can change
-# under a long-lived server and a latched flag pumps the wrong one.
-_started: set[str] = set()
-_lock = threading.Lock()
 
 
 def drain(root: str | os.PathLike[str]) -> dict:
@@ -82,21 +77,17 @@ def _say(root, item_id: int, summary: str) -> None:
         pass
 
 
-def _run(root: str) -> None:
-    while True:
-        time.sleep(POLL_S)
-        try:
-            drain(root)
-        except Exception:
-            pass  # fail-safe: the pump must never take the dashboard down
+# Per project, for the same reason autodeploy is: the active project can change
+# under a long-lived server and a latched flag pumps the wrong one. See pump.py
+# for the rest of the invariants.
+_pump = Pump("bgate-steerpump", lambda: POLL_S, lambda root: drain(root))
 
 
 def start(root: str | os.PathLike[str]) -> bool:
-    key = str(root)
-    with _lock:
-        if key in _started:
-            return True
-        _started.add(key)
-    threading.Thread(target=_run, args=(key,), daemon=True,
-                     name="bgate-steerpump").start()
-    return True
+    """Idempotently start the pump for this project in this process."""
+    return _pump.start(root)
+
+
+def reset(root: Optional[str | os.PathLike[str]] = None) -> None:
+    """Forget that the pump started here. Tests use this; nothing else should."""
+    _pump.reset(root)

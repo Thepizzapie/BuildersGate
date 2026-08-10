@@ -620,13 +620,27 @@ def test_a_child_of_a_moved_parent_moves_with_it_in_the_render(client, game):
 STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
 
 
-def test_the_editor_and_graph_are_loaded_by_the_shell():
+def test_the_editor_is_loaded_by_the_shell():
     """A module nobody <script src=>s is a module that silently does not exist."""
     html = (STATIC / "index.html").read_text(encoding="utf-8")
-    for js in ("spriteedit.js", "atlas_graph.js"):
-        assert f'src="/static/{js}"' in html, f"{js} is never loaded"
-        assert (STATIC / js).is_file()
-    assert 'id="atlas-graph"' in html
+    assert 'src="/static/spriteedit.js"' in html, "spriteedit.js is never loaded"
+    assert (STATIC / "spriteedit.js").is_file()
+
+
+def test_the_atlas_graph_is_gone_and_nothing_still_reaches_for_it():
+    """The graph mode was removed. A leftover `src=` for a deleted file is a 404
+    on every page load, and a leftover `window.AtlasGraph` call is a button that
+    reports "did not load" forever — both are silent until someone clicks."""
+    assert not (STATIC / "atlas_graph.js").exists()
+    for js in STATIC.rglob("*.js"):
+        assert "AtlasGraph" not in js.read_text(encoding="utf-8"), (
+            f"{js.name} still calls AtlasGraph")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    assert "atlas_graph.js" not in html
+    assert "AtlasGraph" not in html
+    assert 'id="atlas-graph"' not in html
+    assert 'data-m="graph"' not in html
+    assert 'data-m="list"' not in html
 
 
 def test_the_editor_uses_the_shared_endpoints_not_invented_ones():
@@ -634,10 +648,18 @@ def test_the_editor_uses_the_shared_endpoints_not_invented_ones():
     for path in ("/api/sprite/open", "/api/sprite/save", "/api/sprite/rig",
                  "/api/sprite/spriteframes", "/api/sprite/autogrid"):
         assert path in js
-    graph = (STATIC / "atlas_graph.js").read_text(encoding="utf-8")
-    for path in ("/api/screenmap", "/api/scene/wire", "/api/scene/unwire",
-                 "/api/scene/tree"):
-        assert path in graph
+
+
+def test_wiring_survived_the_graphs_removal():
+    """`wire into a scene…` lived on the graph and moved to the scene builder;
+    the Asset Library's wire button is its only caller and must reach the new
+    home, not the deleted one."""
+    build = (STATIC / "scenebuild.js").read_text(encoding="utf-8")
+    for path in ("/api/scene/wirable", "/api/scene/wire"):
+        assert path in build, f"{path} did not move to the scene builder"
+    lib = (STATIC / "assetlib.js").read_text(encoding="utf-8")
+    assert "SceneBuild.wireMenu" in lib
+    assert 'setAtlasMode("scene")' in lib
 
 
 def test_the_scene_builder_is_loaded_and_previews_before_it_writes():

@@ -1,15 +1,17 @@
 # Builders Gate
 
+[![builders-gate.com](https://img.shields.io/badge/site-builders--gate.com-ff6a3d)](https://builders-gate.com)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![Platform: Windows primary](https://img.shields.io/badge/platform-Windows%20primary-lightgrey)](docs/setup.md#platform-support)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Dev streams on Twitch](https://img.shields.io/badge/twitch-thepizzzapie-9146FF)](https://twitch.tv/thepizzzapie)
 
 Builders Gate is an MCP server for building games with Claude Code.
+**[builders-gate.com](https://builders-gate.com)**
 
-It gives Claude 78 tools scoped to one game project: a design database, a work
-queue, reference-pinned art generation, Godot and Blender adapters, and playtest
-capture. State lives in one SQLite file in the project.
+It gives Claude 144 tools scoped to one game project: a design database, a work
+queue, reference-pinned art and music generation, Godot and Blender adapters, and
+playtest capture. State lives in one SQLite file in the project.
 
 You run several Claude Code sessions at once, each assigned a role: art,
 gameplay, narrative, QA, audio, tech. They read and write the same database, so
@@ -37,6 +39,43 @@ Local-first. No daemon, no cloud, no build step in the frontend.
 
 <p align="center"><em>The dashboard, running against a real project.
 <a href="docs/screenshots.md">More screenshots →</a></em></p>
+
+### The editors
+
+The scene editor reads the project's real `.tscn` files and writes them back,
+with the playable build beside it, so a change and its result are on one screen.
+
+<p align="center">
+  <img src="docs/screenshots/atlas.png" width="820"
+       alt="Atlas: the node tree, an isometric floor in the viewport, and the inspector">
+</p>
+
+A sprite editor with frame detection, rig labels and per-frame regeneration, and
+an audio lab with lanes, clip editing and a step sequencer. Both are pages in the
+dashboard, not a trip out to another program.
+
+<p align="center">
+  <img src="docs/screenshots/sprite-editor.gif" width="820"
+       alt="The sprite editor: a 15-frame sheet, the radial tool menu, and rig labels">
+</p>
+
+### Talk it through before dispatching
+
+Brainstorm is a conversation with a writing pad and a drawing pad beside it.
+Nothing is queued until you press Deploy, which turns the session into work items
+you review first.
+
+<p align="center">
+  <img src="docs/screenshots/brainstorm.png" width="820"
+       alt="Brainstorm: chat, a writing pad and a drawing pad, with a Deploy button">
+</p>
+
+### Three themes
+
+<p align="center">
+  <img src="docs/screenshots/themes.png" width="900"
+       alt="The same view in the dark, light and orbit themes">
+</p>
 
 **Who it is for:** people running Claude Code who are building a game and want
 more than one session working on it. It is more machinery than a small project
@@ -68,11 +107,15 @@ tests are `slow`-marked or skip when Blender is absent, so a normal test run say
 nothing about them. Nothing here generates 3D geometry, so treat 3D as the
 less-travelled path.
 
-**Half-built, and named as such.** The audio seat's workspace is a deliberate v1
-of sound library, playback and cue sheet, and the UI says so in a banner. The
-dashboard's error surfacing is uneven; a failed mutation still sometimes renders
-as nothing happening. Godot
-version detection reports "unknown" on some builds.
+**Newer, and less travelled.** Music generation through kie.ai's Suno API has
+been run against the live service, including the failure paths, but it is days
+old rather than months. Same for Deepgram speech, the streamer chat integration,
+and the local-runtime and coding-agent setup panels, which detect and describe
+what you have installed rather than starting or stopping it.
+
+**Half-built, and named as such.** The dashboard's error surfacing is uneven; a
+failed mutation still sometimes renders as nothing happening. Godot version
+detection reports "unknown" on some builds.
 
 **A proposal, not a product.** [`bgate_engine/`](bgate_engine/) is a design note
 with JSON schemas and **no runtime code**. Nothing in the repository imports it.
@@ -96,7 +139,9 @@ and its status header says which.
 - Optional: [Blender 4.2+](https://blender.org) for the 3D leg, `ffmpeg` and
   `ffprobe` for playtest capture, `faster-whisper` and `sounddevice` for
   transcription
-- Optional: an `OPENAI_API_KEY` or `KREA_API_KEY` for generated art
+- Optional: an `OPENAI_API_KEY` or `KREA_API_KEY` for generated art, a
+  `KIE_API_KEY` for generated music, a `DEEPGRAM_API_KEY` for speech. All of
+  them can be set from the dashboard rather than by editing a file
 
 **Windows is the supported platform.** Linux is best-effort: parts of the product
 shell out to Windows tooling, and the suite has not been kept green there. macOS
@@ -288,11 +333,18 @@ otherwise. Linux is `continue-on-error`.
 ## Dev streams
 
 Builders Gate is built on stream at
-[twitch.tv/thepizzzapie](https://twitch.tv/thepizzzapie) — the tool being used to
+[twitch.tv/thepizzzapie](https://twitch.tv/thepizzzapie), the tool being used to
 make a game with it, which is the only way most of these gates get found. The
 dashboard has a streamer mode for exactly this (Settings → Privacy): it hides
 absolute paths, your username, hostname and any API key from the dashboard, the
 logs and the CLI.
+
+Streamer mode also brings the stream's chat into the dashboard, and it can run a
+**feedback session**: while one is open, chat's reactions and notes are captured
+against the build, and closing it hands the whole session to the director, which
+synthesises it into notes you can brainstorm from or dispatch a team against.
+None of the channel configuration lives in this repository. It is read from the
+environment, so a public checkout carries the feature and none of the account.
 
 ## Contributing, security, licence
 

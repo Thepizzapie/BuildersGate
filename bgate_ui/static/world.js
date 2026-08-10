@@ -158,7 +158,7 @@ window.World = (() => {
             <button class="qbtn small ghost" onclick="World.addSection('scope_tier')">＋ tier</button></div>
         </div>
         <p class="wl-note">Drag to rank, drag the line to cut. Rank is priority — highest first.</p>
-        <div class="wl-list" id="wl-tiers">${rows || `<div class="empty">no scope tiers yet — add the first thing you are actually building</div>`}</div>
+        <div class="wl-list" id="wl-tiers">${rows || `<div class="empty">no scope tiers yet - add the first thing you are actually building</div>`}</div>
       </div>`;
   }
 
@@ -191,7 +191,7 @@ window.World = (() => {
     return { short: `${n} · ${lines} ln`, full: `${chars} characters · ${lines} lines` };
   }
   const peek = body => body.split("\n").map(l => l.trim()).find(Boolean)
-    || "empty — the seats read this, so say something";
+    || "empty - the seats read this, so say something";
 
   /* The bible is a design document, not a settings list: ~52k characters across
    * 33 sections used to paint as 33 always-open bodies in one column. Sections
@@ -237,7 +237,7 @@ window.World = (() => {
           <button class="wl-x" title="Delete" onclick="World.removeSection(${section.id})">✕</button>
         </div>
         <button class="wl-peek" tabindex="-1" onclick="World.toggleSection(${section.id})">${E(peek(body))}</button>
-        <div class="wl-body" contenteditable="true" spellcheck="false" data-empty="say more — the seats read this"
+        <div class="wl-body" contenteditable="true" spellcheck="false" data-empty="say more - the seats read this"
              onblur="World.rebody(${section.id}, this.innerText)">${E(body)}</div>
       </article>`;
   }
@@ -320,7 +320,7 @@ window.World = (() => {
       <div class="wl-card ${list.length ? "alarm" : ""}">
         <div class="wl-head"><h3>Stranded by the line <span class="wl-n ${list.length ? "bad" : ""}">${list.length}</span></h3></div>
         <p class="wl-note">Open work sitting at or below the cut line. The line is retroactive or it is theatre — re-file it or cut it.</p>
-        <div class="wl-list">${rows || `<div class="empty">nothing stranded — the line and the queue agree</div>`}</div>
+        <div class="wl-list">${rows || `<div class="empty">nothing stranded - the line and the queue agree</div>`}</div>
       </div>`;
   }
 
@@ -765,7 +765,7 @@ window.World = (() => {
 
     const hostEl = document.getElementById("wl-canvas");
     if (!(g.nodes || []).length) {
-      hostEl.innerHTML = `<div class="empty">no lore yet — the first entity is usually the place the game happens in</div>`;
+      hostEl.innerHTML = `<div class="empty">no lore yet - the first entity is usually the place the game happens in</div>`;
       paintLoreFilter();
       return;
     }
@@ -820,7 +820,7 @@ window.World = (() => {
     const count = document.getElementById("wl-count");
     if (count) count.textContent = on
       ? `${vis.size} of ${loreEntities().length} entities match`
-      : `${loreEntities().length} entities · ${(lore.graph.edges || []).length} links — drag a port to link two of them`;
+      : `${loreEntities().length} entities · ${(lore.graph.edges || []).length} links - drag a port to link two of them`;
     const clear = document.getElementById("wl-clear");
     if (clear) clear.hidden = !on;
   }
@@ -895,7 +895,7 @@ window.World = (() => {
 
   function renderProse(body) {
     const blocks = proseBlocks(body);
-    if (!blocks.length) return `<div class="empty">no prose yet — the narrative seats read this</div>`;
+    if (!blocks.length) return `<div class="empty">no prose yet - the narrative seats read this</div>`;
     let html = "", open = false;
     const closeList = () => { if (open) { html += "</ul>"; open = false; } };
     blocks.forEach(b => {
@@ -1003,7 +1003,7 @@ window.World = (() => {
       <label class="wl-l">Links <span class="wl-n">${links.length}</span></label>
       <div class="wl-list">${links.map(l =>
         `<div class="wl-fact"><span>${l.dir === "out" ? "→" : "←"} <b>${E(l.rel)}</b> · ${E(l.name)}</span></div>`
-      ).join("") || `<div class="empty">no links — drag between node ports</div>`}</div>`;
+      ).join("") || `<div class="empty">no links - drag between node ports</div>`}</div>`;
     // innerHTML empties the scroll box; put the reader back where they were.
     panel.scrollTop = entityView.scroll || 0;
   }
@@ -1252,7 +1252,7 @@ window.World = (() => {
       .wl-rf-v{min-width:0;color:var(--text)}
       .wl-rl{margin:0 0 var(--s-5);padding:0 0 0 var(--s-6);list-style:none}
       .wl-rl li{position:relative;margin-bottom:var(--s-3)}
-      .wl-rl li:before{content:"—";position:absolute;left:calc(-1 * var(--s-6));color:var(--text-3)}
+      .wl-rl li:before{content:"-";position:absolute;left:calc(-1 * var(--s-6));color:var(--text-3)}
       .wl-entity textarea,.wl-entity input,.wl-toolbar select,.wl-strand-a select,.wl-opt select{width:100%;padding:8px 10px;background:var(--void);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12.5px}
       .wl-toolbar select{width:auto}
       .wl-entity textarea{resize:vertical;margin-bottom:8px}

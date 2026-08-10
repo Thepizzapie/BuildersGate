@@ -52,6 +52,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from bgate_adapters import imageto3d as _i3d
 from bgate_core import envfile
 
 API_BASE = "https://api.krea.ai"
@@ -571,32 +572,11 @@ TRAIN_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 TRAIN_USD: Optional[float] = None
 
 
-def _multipart(fields: dict, filename: str, blob: bytes,
-               field: str = "file") -> tuple[bytes, str]:
-    """A multipart/form-data body, stdlib only.
-
-    /assets is the one endpoint here that is not JSON, and pulling in requests
-    for one call would put a dependency on the critical path of a tool whose
-    whole HTTP surface is otherwise four urllib calls wide.
-    """
-    boundary = "----bgate" + base64.urlsafe_b64encode(os.urandom(9)).decode()
-    out = bytearray()
-    for name, value in (fields or {}).items():
-        if value is None:
-            continue
-        out += f"--{boundary}\r\n".encode()
-        out += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
-        out += f"{value}\r\n".encode()
-    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-            ".webp": "image/webp"}.get(Path(filename).suffix.lower(),
-                                       "application/octet-stream")
-    out += f"--{boundary}\r\n".encode()
-    out += (f'Content-Disposition: form-data; name="{field}"; '
-            f'filename="{filename}"\r\n').encode()
-    out += f"Content-Type: {mime}\r\n\r\n".encode()
-    out += blob + b"\r\n"
-    out += f"--{boundary}--\r\n".encode()
-    return bytes(out), f"multipart/form-data; boundary={boundary}"
+# /assets is the one endpoint here that is not JSON. The encoder lives in
+# imageto3d because that module needs the same one for two of its backends, and
+# the copy that used to sit here was byte-identical apart from its content-type
+# guess — two adapters quietly disagreeing about the MIME of the same .webp.
+_multipart = _i3d.multipart
 
 
 def prepare_training_image(path: str | os.PathLike, *,

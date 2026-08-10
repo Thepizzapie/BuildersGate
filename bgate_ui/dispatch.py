@@ -176,6 +176,51 @@ def _runner_for(root: str, seat: str) -> "_runners.Runner":
         return _runners.get(_runners.DEFAULT_RUNNER)
 
 
+def _model_for(root: str, seat: str) -> Optional[str]:
+    """Which model this seat's agent runs on.
+
+    NOTHING PASSED --model BEFORE THIS. Every dispatch call site — autodeploy,
+    the QA gate, follow-up, the console, the orchestrator — called dispatch()
+    without a model, so `["--model", model] if model else []` in runners.py
+    always evaluated to the empty branch and every seat inherited whatever the
+    CLI happened to default to. On 2026-08-08 that was opus-5[1m]: 82 runs,
+    1.19 billion input-side tokens, a 5-hour session allowance gone in three
+    and a half. The default was never chosen; it was just never overridden.
+
+    Art is the seat that gets the exception, and it is the only one. Its output
+    is judged on taste — a portrait that is merely syntactically valid is a
+    failed portrait — whereas a seat editing GDScript is judged on whether the
+    engine loads the scene, which a cheaper model settles just as well.
+
+    An unreadable setting returns None rather than a guess, which restores the
+    old inherit-the-default behaviour instead of silently pinning a model this
+    machine might not have.
+    """
+    key = ("dispatch.model_art"
+           if (seat or "").strip().lower() == "art" else "dispatch.model")
+    try:
+        chosen = str(_settings.get(root, key) or "").strip()
+        if not chosen and key == "dispatch.model_art":
+            chosen = str(_settings.get(root, "dispatch.model") or "").strip()
+        return chosen or None
+    except Exception:
+        return None
+
+
+def _max_turns(root: str) -> int:
+    """The per-run turn ceiling, or 0 for none.
+
+    Separate from the cost ceiling because they fail differently: _observed_cost
+    only sees a price at a result boundary, so an agent grinding through a long
+    tool loop can run far past its dollar ceiling without ever offering the
+    dispatcher a place to stop it. Turns are counted by the CLI itself.
+    """
+    try:
+        return max(0, int(_settings.get(root, "dispatch.max_turns") or 0))
+    except Exception:
+        return 0
+
+
 def _native_images(root: str, runner: "_runners.Runner") -> bool:
     """Does this run generate its own pixels, or call image_generate?
 
@@ -373,6 +418,73 @@ def _verify_rule(root: str) -> str:
     return "; ".join(parts) + "."
 
 
+# The toolchain the agent INHERITS, resolved once by the dashboard.
+#
+# WHY THIS EXISTS, observed 2026-08-09: two agents spawned a minute apart each
+# ran `find / -iname godot*.exe` against the whole filesystem — one of them with
+# no -maxdepth at all. They were still walking 22 minutes later, ~20 CPU-minutes
+# each, having outlived the agents that started them; nothing was left to read
+# their output. The search was never needed. find_godot() checks a handful of
+# known install roots and BGATE_GODOT short-circuits even that.
+#
+# The cost is not the CPU. A drive-wide find outruns the Bash tool's timeout, so
+# the agent gets nothing back, tries again with different flags, and each of
+# those turns re-sends the entire context — the same mechanism the SPEND TURNS
+# section below was written for. An agent searches when nobody handed it a path,
+# so this hands it the path.
+#
+# Successes are cached, misses are NOT: a dashboard left running while the user
+# installs Blender should pick it up on the next dispatch rather than at the
+# next restart. A finder that raises is not fatal here — a project with no
+# Blender still dispatches every seat that never calls it, and the adapter
+# raises its own explanatory error at the call site if one ever does.
+_TOOLCHAIN: dict[str, str] = {}
+_TOOLCHAIN_LOCK = threading.Lock()
+
+
+def _toolchain_env() -> dict[str, str]:
+    """{BGATE_GODOT: path, ...} for every tool that resolves right now."""
+    from bgate_adapters.blender import find_blender
+    from bgate_adapters.godot import find_godot
+    from bgate_adapters.recorder import find_ffmpeg
+
+    finders = (("BGATE_GODOT", find_godot),
+               ("BGATE_BLENDER", find_blender),
+               ("BGATE_FFMPEG", find_ffmpeg))
+    with _TOOLCHAIN_LOCK:
+        for var, finder in finders:
+            if var in _TOOLCHAIN:
+                continue
+            # An override already in the dashboard's environment WINS. It is how
+            # a human pins one specific build, and re-resolving would discard
+            # that for whatever the glob happens to rank highest.
+            existing = os.environ.get(var, "").strip()
+            if existing:
+                _TOOLCHAIN[var] = existing
+                continue
+            try:
+                path = finder()
+            except Exception:
+                continue
+            if path:
+                _TOOLCHAIN[var] = str(path)
+        return dict(_TOOLCHAIN)
+
+
+def _toolchain_rule() -> str:
+    """The one line that stops an agent going looking for a binary."""
+    resolved = _toolchain_env()
+    if not resolved:
+        return ("- Never search the filesystem for a program. bgate_doctor "
+                "reports every dependency, with its path, in ONE call.\n")
+    names = ", ".join("$" + var for var in sorted(resolved))
+    return ("- The toolchain is ALREADY RESOLVED in your environment: "
+            f"{names}. Never search for a binary — no `find /`, no drive-wide "
+            "glob. One of those ran for 22 minutes, outlived the agent, and "
+            "returned nothing to anybody. bgate_doctor reports every "
+            "dependency, with its path, in ONE call.\n")
+
+
 def _image_policy(root: str, item: dict, native: bool) -> str:
     """What the art seat is told about where pixels come from.
 
@@ -428,16 +540,43 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         + (seat_rule + "\n\n" if seat_rule else "")
         + (policy + "\n\n" if policy else "")
         + "Protocol, in order:\n"
-        "1. seat_brief for your role — mission, lanes, bible, pinned refs, notes.\n"
-        f"2. Read .bgate/progress/item-{item['id']}.jsonl if it exists (a "
-        "predecessor's trail); append one JSON line "
-        '{"step":...,"artifacts":[...],"next":...} after EVERY unit of work.\n'
-        "3. Do the work inside your lanes (the PreToolUse hook enforces them; "
-        "seat_can_write is the oracle). Lock binaries before editing.\n"
-        f"4. Verify per house norms: {_verify_rule(root)}\n"
-        "5. seat_post_note with what changed.\n"
-        f"6. Mark the item: call queue_complete with item_id={item['id']} and a "
-        "one-paragraph result (status 'done', or 'failed' with the honest reason).\n"
+        "1. seat_brief for your role, ONCE. It carries mission, lanes, bible, "
+        "pinned refs and notes; a second call returns the same payload and "
+        "costs what the first one did.\n"
+        "2. Do the work inside your lanes. The PreToolUse hook enforces them, "
+        "so write and let it refuse — seat_can_write is for when you need to "
+        "know BEFORE a long generation, not a checkpoint before every edit. "
+        "Lock binaries before editing.\n"
+        f"3. Verify per house norms: {_verify_rule(root)}\n"
+        f"4. Mark the item: call queue_complete with item_id={item['id']} and a "
+        "one-paragraph result (status 'done', or 'failed' with the honest "
+        "reason). That paragraph IS the record — no separate note is owed.\n"
+        "\n"
+        "Also: seat_post_note only when another seat must know something your "
+        f"result paragraph will not tell them. Append to .bgate/progress/item-"
+        f"{item['id']}.jsonl only on a handoff or a failure worth resuming from "
+        "— it is a trail for whoever picks this up, not a log of your turns.\n"
+        # WHY THIS SECTION EXISTS, measured on 2026-08-08 across 60 runs: 8,304
+        # model calls, 42 of them on average before the first productive one,
+        # and 1.19 BILLION input-side tokens against 77k of output. Nothing was
+        # expensive because agents wrote a lot. It was expensive because every
+        # turn re-sends the whole context, so a wasted turn is not free — it is
+        # priced at the size of everything read so far. That makes turn count,
+        # not token count, the thing an agent controls.
+        "\n"
+        "SPEND TURNS LIKE THEY COST SOMETHING — they do, and it is not linear. "
+        "Every turn re-sends everything already in your context, so turn 90 "
+        "bills for all 89 before it:\n"
+        "- Read and Grep are for files. sed/head/cat/`python -c` in Bash pay a "
+        "full round-trip to do what one Read does, and last run that was 2,171 "
+        "shell calls against 890 reads.\n"
+        "- Read a file, a screenshot or a reference ONCE. It stays in context; "
+        "re-reading buys nothing and is charged on every turn after it. One "
+        "run re-read the same paths 22 times.\n"
+        "- Batch independent commands into one call rather than one per line.\n"
+        "- Orient enough to act, then act. Reading more of the codebase is the "
+        "most expensive way to avoid starting.\n"
+        + _toolchain_rule()
         # What "done" costs and who checks it, stated up front. An agent that
         # thinks its word closes the item writes a thinner result note than one
         # that knows a picky reviewer — or the owner — reads it next.
@@ -610,6 +749,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
 
     env = {
         **os.environ,
+        # Resolved paths, so no agent ever has a reason to go looking for a
+        # binary. Placed after os.environ deliberately — _toolchain_env has
+        # already preferred any override that was set there.
+        **_toolchain_env(),
         "BGATE_SEAT": item["seat"],
         "BGATE_ROOT": str(root),
         "BGATE_WORK_ITEM": str(item_id),
@@ -624,8 +767,13 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # The flags each CLI needs to stream its work live are that CLI's business —
     # see runners.py, which also records what each one CANNOT do (steering, cost)
     # so the rest of this module stops assuming both.
+    # An explicit model on the call wins; otherwise the seat's configured one.
+    # Before _model_for existed this was `model` alone, which every caller left
+    # as None — see _model_for for what that cost.
+    model = model or _model_for(root, item.get("seat") or "")
     args = runner.build_args(exe, permission_mode=permission_mode,
-                             model=model, cwd=cwd, native_images=native_images)
+                             model=model, cwd=cwd, native_images=native_images,
+                             max_turns=_max_turns(root))
 
     log_handle = open(log_path, "ab")
     # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
@@ -1036,10 +1184,16 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
         turns = final.get("turns")
         if turns:
             _queue.set_run_fields(root, item_id, num_turns=int(turns))
-        if isinstance(cost, (int, float)) and cost > 0:
+        tokens = final.get("tokens") or {}
+        if (isinstance(cost, (int, float)) and cost > 0) or any(tokens.values()):
             # spend.record also increments work_item.total_cost_usd — one write,
-            # one truth; do not add it a second time here.
-            _spend.record(root, float(cost), kind="agent", work_item_id=item_id,
+            # one truth; do not add it a second time here. Tokens ride along
+            # because on a subscription they, not the dollars, are what runs
+            # out — and a run under a plan reporting no price is still a run
+            # worth having in the ledger.
+            _spend.record(root, float(cost or 0), kind="agent",
+                          work_item_id=item_id, model=str(final.get("model") or ""),
+                          tokens=tokens,
                           detail=f"agent session for item {item_id}")
     except Exception:
         pass
@@ -1404,6 +1558,20 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
     except Exception as exc:
         errors.append(f"orphan sweep: {type(exc).__name__}: {exc}")
 
+    # The brainstorm room's thinking partners. They hold no tools and can write
+    # nothing, so they are not agents in the sense the rest of this function
+    # means — but they ARE spawned CLI processes on this project, and a kill
+    # switch that leaves processes running is a kill switch nobody trusts twice.
+    # Lazily imported and fully guarded: the emergency stop must not fail on a
+    # module it only touches as a courtesy.
+    thinking = []
+    try:
+        from bgate_ui import brainsession as _brainsession
+
+        thinking = _brainsession.stop_all(root).get("stopped") or []
+    except Exception as exc:
+        errors.append(f"brainstorm partners: {type(exc).__name__}: {exc}")
+
     settled = {}
     try:
         settled = reconcile(root)
@@ -1421,6 +1589,7 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
         pass
     return {"ok": True, "stopped": stopped, "orphans": orphans.get("killed") or [],
             "settled": settled.get("cleared") or settled.get("settled") or [],
+            "brainstorms": thinking,
             "autopilot": auto, "errors": errors, "reason": note}
 
 
@@ -1616,6 +1785,17 @@ def status(root: str) -> list[dict]:
                     "cost_tracked": bool(entry.get("cost_tracked", True)),
                     "steerable": bool(entry.get("steerable", True)),
                     "native_images": bool(entry.get("native_images")),
+                    # HOW LONG AND HOW MUCH, WHILE IT IS STILL RUNNING. Both were
+                    # on the exit event only, so the console could say what a run
+                    # had cost the moment it no longer mattered and nothing at
+                    # all while you were deciding whether to steer or stop it.
+                    # started_at is MONOTONIC: 0 means "not recorded" rather than
+                    # the epoch, and subtracting the epoch would report the
+                    # machine's uptime as the run's duration.
+                    "seconds": (int(max(0.0, time.monotonic()
+                                        - float(entry["started_at"])))
+                                if entry.get("started_at") else 0),
+                    "cost_usd": round(float(entry.get("cost_usd") or 0), 4),
                     "last_output_s": _last_output_age_s(root, entry)})
     with _lock:
         finished = [dict(row) for key, row in _done.items() if key[0] == project]
@@ -1713,9 +1893,54 @@ def _absorb(state: dict, raw: bytes) -> None:
         state["final"] = {"subtype": ev.get("subtype"),
                           "text": str(ev.get("result", ""))[:20000],
                           "cost": ev.get("total_cost_usd"),
-                          "turns": ev.get("num_turns")}
+                          "turns": ev.get("num_turns"),
+                          # The tokens, and which model spent them. `cost` on a
+                          # subscription is what this WOULD have cost on the
+                          # API; these are what the rolling usage window
+                          # actually meters, and cache_read dominates them by
+                          # four orders of magnitude over output.
+                          "model": _final_model(ev),
+                          "tokens": _final_tokens(ev)}
     elif etype and etype.startswith(("thread.", "turn.", "item.")):
         _absorb_codex(state, etype, ev)
+
+
+def _final_tokens(ev: dict) -> dict:
+    """The run's token usage, in this module's four names.
+
+    Read off `usage` rather than summed from the per-turn assistant events:
+    the CLI already totals it there, and re-adding 8,000 assistant messages to
+    reach a number the result event carries is the kind of work this feed's
+    byte cursor exists to avoid.
+    """
+    usage = ev.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+    def n(key: str) -> int:
+        try:
+            return max(0, int(usage.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+    return {"input": n("input_tokens"), "output": n("output_tokens"),
+            "cache_read": n("cache_read_input_tokens"),
+            "cache_write": n("cache_creation_input_tokens")}
+
+
+def _final_model(ev: dict) -> str:
+    """Which model actually ran, as the CLI names it.
+
+    Recorded because nothing else in this system knew. Every dispatch left
+    --model unset, so the answer was whatever the CLI defaulted to that day —
+    unlogged, unqueryable, and discovered only by reading a raw session log
+    after the bill looked wrong. `modelUsage` is keyed by the resolved name
+    including its context-window suffix, which is the distinction that matters:
+    an opus-5[1m] run and an opus-5 run meter differently.
+    """
+    usage = ev.get("modelUsage")
+    if isinstance(usage, dict) and usage:
+        return max(usage, key=lambda k: (usage[k] or {}).get("cacheReadInputTokens", 0)
+                   if isinstance(usage[k], dict) else 0)
+    return str(ev.get("model") or "")
 
 
 # ---------------------------------------------------------------------------

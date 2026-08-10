@@ -337,5 +337,5 @@ reports `{available, path, version, min_required, reason}` for each. It never
 opens the microphone, launches an engine, or spends money. The key check is
 presence only, never a paid validation call. It exits 1 if **anything** is
 missing, which is right for a CI step and alarming for a human: read the rows,
-not the exit code. It probes `OPENAI_API_KEY` only, so a Krea-only setup shows
-`MISS openai_key` and exits 1 while working fine.
+not the exit code. The `art_key` row asks the provider registry, so it is green
+when either `OPENAI_API_KEY` or `KREA_API_KEY` is set.

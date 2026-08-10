@@ -356,7 +356,7 @@
        the ones that landed while the click was in flight either. */
     async markRead(btn) {
       const r = await window.mutate("/api/events/read", { body: {}, button: btn, quiet: true });
-      if (!r.ok) { window.toast(`the bell could not be cleared — ${r.error}`); return; }
+      if (!r.ok) { window.toast(`the bell could not be cleared - ${r.error}`); return; }
       const d = r.data || {};
       this.readSeq = num(d.read_seq);
       this.unread = num(d.unread);
@@ -387,7 +387,7 @@
       const key = String(seq || "");
       const text = String(this.drafts[key] || "").trim();
       if (!text) {
-        window.toast("write the answer first — an empty reply is not an answer");
+        window.toast("write the answer first - an empty reply is not an answer");
         return;
       }
       const r = await window.mutate("/api/console/answer",
@@ -405,7 +405,7 @@
       // steer, a finished one left a handoff note. Saying "sent" would hide the
       // difference that matters.
       window.toast(String(d.delivery || "answer recorded"), "ok");
-      if (d.delivery_error) window.toast(`partly delivered — ${d.delivery_error}`);
+      if (d.delivery_error) window.toast(`partly delivered - ${d.delivery_error}`);
       this.questions = this.questions.map(q =>
         q.seq === Number(key) ? { ...q, answer: text } : q);
       this.cold = true;
@@ -440,10 +440,10 @@
       bell.classList.toggle("muted", !this.inApp);
       bell.setAttribute("aria-expanded", this.open ? "true" : "false");
       bell.setAttribute("aria-label", ring
-        ? `Notifications — ${ring} unread`
+        ? `Notifications - ${ring} unread`
         : "Notifications");
-      bell.title = this._err ? `the event log is unreachable — ${this._err}`
-        : !this.inApp ? "notifications are off (notify.in_app) — the drawer still lists everything"
+      bell.title = this._err ? `the event log is unreachable - ${this._err}`
+        : !this.inApp ? "notifications are off (notify.in_app) - the drawer still lists everything"
           : ring ? `${ring} unread${this.unreadTotal > ring ? ` · ${this.unreadTotal} events in all` : ""}`
             : "nothing new";
     },
@@ -506,7 +506,7 @@
     _banners() {
       let out = "";
       if (this._err) {
-        out += `<div class="nt-err">the event log is unreachable — ${esc(this._err)}</div>`;
+        out += `<div class="nt-err">the event log is unreachable - ${esc(this._err)}</div>`;
       }
       // A pruned range is reported, never silently skipped: "you missed 40
       // events" and "nothing happened" must not look the same.
@@ -542,7 +542,7 @@
           ${q.refs.length ? `<div class="nt-q-refs">${
             q.refs.map(r => `<code>${esc(trunc(r, 60))}</code>`).join(" ")}</div>` : ""}
           <textarea class="nt-q-reply" rows="2" data-nt-reply="${q.seq}"
-            placeholder="answer it in a sentence — it is delivered to the agent that asked"
+            placeholder="answer it in a sentence - it is delivered to the agent that asked"
             >${esc(draft)}</textarea>
           <div class="nt-q-row">
             <span class="nt-q-hint">${q.item_id
@@ -589,7 +589,7 @@
     _foot() {
       const kinds = this.notifyKinds.length
         ? `ringing for ${this.notifyKinds.length} of ${this.vocabulary.length || 14} kinds`
-        : "ringing for nothing — notify.kinds is empty";
+        : "ringing for nothing - notify.kinds is empty";
       return `<div class="nt-foot">
         <span>${esc(kinds)}${this.inApp ? "" : " · muted (notify.in_app)"}</span>
         <span class="nt-honest">the bell only reaches you while this page is
@@ -624,10 +624,10 @@
       const p = (e && e.payload) || {};
       const kind = String((e && e.kind) || "");
       if (p._truncated) {
-        return `<i>a payload too large to store — ${num(p.chars)} chars</i>`;
+        return `<i>a payload too large to store - ${num(p.chars)} chars</i>`;
       }
       if (kind === "chain.advanced") {
-        return `${esc(trunc(p.from_title || "a link", 44))} landed — `
+        return `${esc(trunc(p.from_title || "a link", 44))} landed - `
           + `<b>#${num(p.to)} ${esc(p.to_seat || "next")}</b> is ready`
           + (num(p.waiting) > 1 ? ` · ${num(p.waiting) - 1} more behind it` : "");
       }
@@ -637,12 +637,12 @@
         // head at all, and reading it with the chain branch renders "chain  has
         // not moved for 0m — #0 is stuck", which is a reminder about nothing.
         if (p.question_seq) {
-          return `still waiting on your answer — `
+          return `still waiting on your answer - `
             + esc(trunc(p.question || "a director question", 100));
         }
         const head = p.head || {};
         return `chain <b>${esc(trunc(p.chain_id || "", 24))}</b> has not moved for `
-          + `${num(p.idle_min)}m — #${num(head.item)} ${esc(head.seat || "")} is `
+          + `${num(p.idle_min)}m - #${num(head.item)} ${esc(head.seat || "")} is `
           + `${esc(head.status || "stuck")}`
           + (p.reason ? ` · ${esc(trunc(p.reason, 90))}` : "");
       }
@@ -656,7 +656,7 @@
           + (p.env_override ? ` · ${esc(trunc(p.env_override, 70))}` : "");
       }
       if (kind === "budget.refused") {
-        return `<b>${esc(p.what || "a dispatch")}</b> was refused — `
+        return `<b>${esc(p.what || "a dispatch")}</b> was refused - `
           + esc(trunc(p.reason || "over a ceiling", 110));
       }
       if (kind === "director.question") {
@@ -664,7 +664,7 @@
       }
       if (p.title) {
         const title = `<b>${esc(trunc(p.title, 48))}</b>`;
-        const note = p.result ? ` — ${esc(trunc(p.result, 90))}` : "";
+        const note = p.result ? ` - ${esc(trunc(p.result, 90))}` : "";
         const chain = p.chain_id ? ` · link ${num(p.chain_pos)}` : "";
         return title + chain + note;
       }

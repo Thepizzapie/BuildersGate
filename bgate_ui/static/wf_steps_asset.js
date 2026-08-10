@@ -79,7 +79,7 @@
     const cur = (node.config && node.config[field]) || "";
     const known = CHARS.slice();
     const inList = cur && known.includes(cur);
-    const opts = [`<option value="">— pick a character —</option>`]
+    const opts = [`<option value="">- pick a character -</option>`]
       .concat(known.map(n => `<option value="${esc(n)}"${n === cur ? " selected" : ""}>${esc(n)}</option>`))
       .concat([`<option value="__custom__"${cur && !inList ? " selected" : ""}>+ custom (type below)…</option>`])
       .join("");
@@ -100,7 +100,7 @@
     const seen = [""].concat(CHARS.slice());
     if (cur && seen.indexOf(cur) === -1) seen.push(cur);
     refreshChars();   // freshen for the next render
-    return seen.map(v => ({ value: v, label: v || "— pick a character —" }));
+    return seen.map(v => ({ value: v, label: v || "- pick a character -" }));
   };
 
   // the workflow's Task text, so briefs can reference it
@@ -125,13 +125,13 @@
     defaults: { style: "painterly key art", count: 4, quality: "medium" },
     ports() { return { in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "concepts", type: "image" }] }; },
     body(n) {
-      return producedStrip(n, "no concepts yet — run to generate")
+      return producedStrip(n, "no concepts yet - run to generate")
         + w.text(n, "style", { label: "Style", placeholder: "painterly key art, 16-bit pixel" })
         + w.number(n, "count", { label: "Variants", min: 1, max: 6, value: 4 })
         + w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" });
     },
     config() {
-      return `<div class="wf-insp-p">Explore the look before committing. Generates several concept images in one style for the task — style, variant count and quality tier are on the node, and the title bar prices them from the image adapter's own table.</div>`;
+      return `<div class="wf-insp-p">Explore the look before committing. Generates several concept images in one style for the task - style, variant count and quality tier are on the node, and the title bar prices them from the image adapter's own table.</div>`;
     },
     agentSeat: "art",
     imageCost(n) { return { images: +cfg(n, "count", 4) || 0, quality: qualityOf(n) }; },
@@ -162,9 +162,9 @@
         + w.toggle(n, "transparent", { label: "Alpha", value: true });
     },
     config(n) {
-      return `<div class="wf-insp-p">The <b>canonical idle frame</b>. Everything downstream anchors to this — animation frames, edits and QA all reference it, so lock it before generating anything else.</div>`
+      return `<div class="wf-insp-p">The <b>canonical idle frame</b>. Everything downstream anchors to this - animation frames, edits and QA all reference it, so lock it before generating anything else.</div>`
         + `<div class="wf-row" style="flex-direction:column;align-items:stretch"><label style="margin-bottom:5px">Character (or type a name the pin list does not have)</label>${charSelect(n, "character")}</div>`
-        + `<div class="wf-b-note" style="margin-top:8px">Higher strictness rejects more off-model output — use <b>high</b> for hero characters.</div>`;
+        + `<div class="wf-b-note" style="margin-top:8px">Higher strictness rejects more off-model output - use <b>high</b> for hero characters.</div>`;
     },
     agentSeat: "art",
     imageCost(n) { return { images: 1, quality: qualityOf(n) }; },
@@ -199,7 +199,7 @@
       return `<div class="wf-insp-p">The flagship step. Each frame is conditioned on the anchor (and optionally the previous frame) so the character stays on-model across the whole animation. Multiple <b>variants per frame</b> are generated so a human can pick the best one.</div>`
         + `<div class="wf-insp-p">Name the frames on the node (comma-separated) or clear that field and set a plain count.</div>`
         + numRow(n, "fps", "Playback fps", 12, 1, 60)
-        + `<div class="wf-b-note" style="margin-top:8px">Total candidates: <b>${frameCount(n) * (+cfg(n, "variantsPerFrame", 2) || 1)}</b> images (${frameCount(n)} frames × ${+cfg(n, "variantsPerFrame", 2)} variants) — the number the node's price estimate multiplies.</div>`;
+        + `<div class="wf-b-note" style="margin-top:8px">Total candidates: <b>${frameCount(n) * (+cfg(n, "variantsPerFrame", 2) || 1)}</b> images (${frameCount(n)} frames × ${+cfg(n, "variantsPerFrame", 2)} variants) - the number the node's price estimate multiplies.</div>`;
     },
     agentSeat: "art",
     imageCost(n) {
@@ -211,7 +211,7 @@
       const cond = cfg(n, "conditioning", "anchor+prev") === "anchor+prev"
         ? "conditioned on BOTH the character anchor and the previous frame"
         : "conditioned on the character anchor";
-      return `Generate the animation frames (${frames}) at ${+cfg(n, "fps", 12)}fps, ${qualityOf(n)} quality. Every frame must be ${cond} so the character stays perfectly on-model — never re-imagine the character. Produce ${+cfg(n, "variantsPerFrame", 2)} variant(s) of EACH frame so the best can be selected. Task: ${taskText(wf)}.`;
+      return `Generate the animation frames (${frames}) at ${+cfg(n, "fps", 12)}fps, ${qualityOf(n)} quality. Every frame must be ${cond} so the character stays perfectly on-model - never re-imagine the character. Produce ${+cfg(n, "variantsPerFrame", 2)} variant(s) of EACH frame so the best can be selected. Task: ${taskText(wf)}.`;
     },
   });
 
@@ -229,12 +229,12 @@
         + w.toggle(n, "keepAnchor", { label: "On anchor", value: true });
     },
     config() {
-      return `<div class="wf-insp-p">Targeted edit of one incoming frame — fix a hand, recolor, adjust silhouette — without regenerating from scratch. Write the instruction on the node; <b>On anchor</b> holds the edit to the canonical design instead of letting the model re-imagine the character.</div>`;
+      return `<div class="wf-insp-p">Targeted edit of one incoming frame - fix a hand, recolor, adjust silhouette - without regenerating from scratch. Write the instruction on the node; <b>On anchor</b> holds the edit to the canonical design instead of letting the model re-imagine the character.</div>`;
     },
     agentSeat: "art",
     imageCost(n) { return { images: 1, quality: qualityOf(n) }; },
     toBrief(n, wf) {
-      return `Edit the incoming frame at ${qualityOf(n)} quality: ${cfg(n, "instruction", "apply the requested change")}.${cfg(n, "keepAnchor", true) ? " Keep it on-model against the character anchor — do not drift from the canonical design." : ""} Task: ${taskText(wf)}.`;
+      return `Edit the incoming frame at ${qualityOf(n)} quality: ${cfg(n, "instruction", "apply the requested change")}.${cfg(n, "keepAnchor", true) ? " Keep it on-model against the character anchor - do not drift from the canonical design." : ""} Task: ${taskText(wf)}.`;
     },
   });
 
@@ -255,13 +255,13 @@
             hint: "enforced against the WORST recorded score" });
     },
     config(n) {
-      return `<div class="wf-insp-p">An <b>independent</b> art-QA pass (run by the QA seat, not the artist) that checks each candidate frame against its anchor/reference. Independence is the point — the generator does not grade its own output.</div>`
-        + `<div class="wf-b-note" style="margin-top:8px">The threshold is <b>enforced by the run</b>, not just written into the brief: when the reviewer finishes, its recorded scores (one per candidate, from <code>art_qa_verdict</code>) are compared to it and the <b>worst</b> one decides. Below the line the step fails and the whole run fails — one off-model frame is an off-model sheet. A review that records no score at all cannot pass either.</div>`;
+      return `<div class="wf-insp-p">An <b>independent</b> art-QA pass (run by the QA seat, not the artist) that checks each candidate frame against its anchor/reference. Independence is the point - the generator does not grade its own output.</div>`
+        + `<div class="wf-b-note" style="margin-top:8px">The threshold is <b>enforced by the run</b>, not just written into the brief: when the reviewer finishes, its recorded scores (one per candidate, from <code>art_qa_verdict</code>) are compared to it and the <b>worst</b> one decides. Below the line the step fails and the whole run fails - one off-model frame is an off-model sheet. A review that records no score at all cannot pass either.</div>`;
     },
     agentSeat: "qa",
     toBrief(n, wf) {
       const t = +cfg(n, "threshold", 80);
-      return `Independently review each incoming frame against its character anchor/reference. Score every candidate 0-100 on-model and record it with art_qa_verdict(artifact_id, verdict, score, reasons) — flag silhouette, palette, proportion and detail drift. The run enforces a ${t}% floor on the WORST score, so a score you do not record is a step that cannot pass. You are the QA seat, independent of the artist. Task: ${taskText(wf)}.`;
+      return `Independently review each incoming frame against its character anchor/reference. Score every candidate 0-100 on-model and record it with art_qa_verdict(artifact_id, verdict, score, reasons) - flag silhouette, palette, proportion and detail drift. The run enforces a ${t}% floor on the WORST score, so a score you do not record is a step that cannot pass. You are the QA seat, independent of the artist. Task: ${taskText(wf)}.`;
     },
   });
 
@@ -278,7 +278,7 @@
         + w.tag("no agent");
     },
     config() {
-      return `<div class="wf-insp-p">Fan the upstream output into N parallel variants for selection. This is an option modifier — it does not run an agent of its own; it multiplies the step feeding it.</div>`;
+      return `<div class="wf-insp-p">Fan the upstream output into N parallel variants for selection. This is an option modifier - it does not run an agent of its own; it multiplies the step feeding it.</div>`;
     },
   });
 
@@ -299,7 +299,7 @@
         + w.note("blocks until a human picks") + w.tag("human gate");
     },
     config() {
-      return `<div class="wf-insp-p">A human-in-the-loop gate, and a real one: the run <b>stops here</b> — nothing downstream is queued — until a person approves it from the run bar (having picked their variant in the art workspace) or rejects it, which fails the run. An agent cannot open it. No options.</div>`;
+      return `<div class="wf-insp-p">A human-in-the-loop gate, and a real one: the run <b>stops here</b> - nothing downstream is queued - until a person approves it from the run bar (having picked their variant in the art workspace) or rejects it, which fails the run. An agent cannot open it. No options.</div>`;
     },
   });
 
@@ -350,7 +350,7 @@
   /* ===================================================================== */
   WF.registerTemplate({
     id: "tpl.concept", name: "Concept", category: "asset", glyph: "✎",
-    hint: "explore the look — concepts → pick one",
+    hint: "explore the look - concepts → pick one",
     build() {
       return {
         nodes: [

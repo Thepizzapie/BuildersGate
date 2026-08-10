@@ -795,13 +795,31 @@ def _fit(payload: dict) -> dict:
                     section["body"] = section["body"][:chars] + \
                         "\n…[truncated — bible_read for the full section]"
 
+    def trim_refs(limit: int) -> None:
+        """PINNED REFS WERE NEVER IN THIS LADDER, and they were the biggest
+        field in the payload — 11,804 characters of them in the run that
+        exposed this. Every step below fired, none of them touched refs, the
+        loop ran out of steps and returned a 40,198-character brief under a
+        24,000-character ceiling. Silently: `truncated.over_budget` said the
+        brief HAD been shrunk, which was true and useless.
+
+        A pinned ref is a pointer, so the trim keeps the pointer and drops the
+        prose — the seat still knows the reference exists and ref_list still
+        pages the whole record."""
+        keep = ("id", "logical_name", "path", "kind", "role")
+        payload["pinned_refs"] = [
+            {k: v for k, v in ref.items() if k in keep}
+            for ref in (payload.get("pinned_refs") or [])[:limit]]
+
     steps = [
         lambda: trim_bible(300),
+        lambda: trim_refs(20),
         lambda: payload.__setitem__("approved_artifacts",
                                     (payload.get("approved_artifacts") or [])[:8]),
         lambda: payload.__setitem__("canon", (payload.get("canon") or [])[:12]),
         lambda: payload.__setitem__("notes", (payload.get("notes") or [])[:4]),
         lambda: trim_bible(120),
+        lambda: trim_refs(8),
         lambda: payload.__setitem__(
             "promoted_feedback",
             [{k: v for k, v in item.items() if k != "text"}
@@ -814,7 +832,27 @@ def _fit(payload: dict) -> dict:
                     "shrunk — bible_read, ref_list, lore_list, playtest_list "
                     "and seat_notes all page the full thing"}
         if size() <= BRIEF_CHARS:
-            break
+            return payload
+    # THE LADDER RAN OUT AND THE PAYLOAD IS STILL OVER. That used to return
+    # anyway, which is how a ceiling that every caller trusted became a
+    # suggestion. The bible is the only field left big enough to matter, so it
+    # goes down to a table of contents; a seat that needs prose has bible_read.
+    #
+    # The row is rebuilt rather than having its body blanked, because blanking
+    # the body left 10,038 characters of id/rank/version/created_at/updated_at
+    # behind — per section, across every chapter. None of that tells a seat
+    # anything it can act on, and bible_read carries all of it for the one
+    # section the seat actually opens.
+    for key, group in list((payload.get("bible") or {}).items()):
+        sections = group if isinstance(group, list) else [group]
+        payload["bible"][key] = [
+            {"title": s.get("title", ""), "kind": s.get("kind", "")}
+            for s in sections if isinstance(s, dict)]
+    cuts["over_budget"] = {
+        "note": f"this brief exceeded {BRIEF_CHARS} characters even after "
+                "every trim; the bible is listed by section title only — "
+                "bible_read, ref_list, lore_list, playtest_list and seat_notes "
+                "all page the full thing"}
     return payload
 
 

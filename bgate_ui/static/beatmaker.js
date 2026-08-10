@@ -214,6 +214,21 @@ window.BeatMaker = (() => {
     return pattern.tracks.filter(t => !t.muted && (!solo || t.solo));
   }
 
+  /* Where a LIVE note goes. The lab now owns a master gain that the transport's
+     volume slider drives, and a sequencer that reached ctx.destination directly
+     would be the one thing in the pane that ignored it. Only live playback goes
+     through it — renderBuffer() builds its own offline graph, so the monitor
+     level can never scale what lands on disk. */
+  function live(){
+    try {
+      if (window.AudioLab && AudioLab.dest){
+        const d = AudioLab.dest();
+        if (d) return d;
+      }
+    } catch (e) {}
+    return ctx.destination;
+  }
+
   /* One scheduling primitive, used by the live scheduler AND the offline
      render. Two code paths here would be two different-sounding results. */
   function fire(destCtx, dest, t, cell, when){
@@ -263,7 +278,7 @@ window.BeatMaker = (() => {
       const patternIndex = ui.song
         ? B.patterns.findIndex(p => p.name === B.song[nextSongIndex % B.song.length])
         : patIndex();
-      scheduleStep(ctx, ctx.destination, patternIndex < 0 ? 0 : patternIndex,
+      scheduleStep(ctx, live(), patternIndex < 0 ? 0 : patternIndex,
                    nextStep, nextTime);
       const at = nextTime, at_step = nextStep;
       // The playhead is a VIEW of the clock, never the thing driving it.
@@ -564,7 +579,7 @@ window.BeatMaker = (() => {
     }
     ui.track = ti;
     render();
-    if (c.on) fire(ctx, ctx.destination, t, c, ctx.currentTime + 0.01);
+    if (c.on) fire(ctx, live(), t, c, ctx.currentTime + 0.01);
   }
   function stepWheel(ev, ti, si){
     ev.preventDefault();
@@ -573,7 +588,7 @@ window.BeatMaker = (() => {
     if (!c.on) return;
     c.note = clamp(c.note + (ev.deltaY < 0 ? 1 : -1), -36, 36);
     render();
-    fire(ctx, ctx.destination, t, c, ctx.currentTime + 0.01);
+    fire(ctx, live(), t, c, ctx.currentTime + 0.01);
   }
   function selectPattern(i){ ui.pattern = i; ui.track = 0; render(); }
   function selectTrack(i){ ui.track = i; render(); }
@@ -630,7 +645,7 @@ window.BeatMaker = (() => {
       const names = B.patterns.map(p => p.name);
       const wanted = String(v).toUpperCase().split(/[\s,]+/).filter(Boolean);
       const bad = wanted.filter(x => !names.includes(x));
-      if (bad.length){ say(`no pattern named ${bad[0]} — have ${names.join(", ")}`); render(); return; }
+      if (bad.length){ say(`no pattern named ${bad[0]} - have ${names.join(", ")}`); render(); return; }
       B.song = wanted.slice(0, 64);
     } else if (key === "steps"){
       const n = clamp(parseInt(v, 10) || 16, 1, 64);

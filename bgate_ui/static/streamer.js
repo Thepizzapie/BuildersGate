@@ -53,7 +53,7 @@
     el.title =
       'Hiding: ' + (covered.join(', ') || 'nothing detected to hide') + '.\n' +
       (s.env_forced ? 'Forced on by BGATE_STREAMER in the environment.\n' : '') +
-      'Display filter only — the .env, the database and devtools are ' +
+      'Display filter only - the .env, the database and devtools are ' +
       'unchanged, and the dashboard token is not redacted because the page ' +
       'needs it to authenticate.';
   }

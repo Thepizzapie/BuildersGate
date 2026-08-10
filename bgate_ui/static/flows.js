@@ -28,14 +28,15 @@
   // survived. Its module is gone from the tree; nothing lazily loads here now.
   const MODULES = {};
   // Flows this file implements itself — the fallback when a module is absent.
-  const BUILTIN = {
-    // The sprite editor and the audio mixer were reachable only as fullscreen
-    // overlays launched from a small button on the Assets view. They are full
-    // editors, so they get tabs of their own; SpriteEdit.embed()/AudioLab.embed()
-    // render the same tools inline instead of over the page.
-    sprite: { label: "Sprite editor", icon: "art" },
-    audio: { label: "Audio mixer", icon: "audio" },
-  };
+  //
+  // THE SPRITE EDITOR AND THE AUDIO MIXER LEFT. They were tabs here, which put
+  // the art tools in a workspace that has nothing else to do with art and left
+  // the art seat as a review-only surface that could point at a bad sprite and
+  // not fix it. They are now mounted inside the seats that own that work —
+  // SeatWS.art and SeatWS.audio call the same SpriteEdit.embed()/AudioLab.embed()
+  // this used to. Deliberately NOT left behind as redirect tabs: a tab whose
+  // only content is "it moved" is a third place to look for a tool with one home.
+  const BUILTIN = {};
   const CORE = { workflows: { label: "Workflows", icon: "studio" } };
 
   function loadScript(src) {
@@ -94,11 +95,9 @@
       document.querySelectorAll("#studio-subnav .seat-tab").forEach(t => t.classList.toggle("active", t.dataset.flow === flow));
       const body = document.getElementById("studio-body");
       if (!body) return;
-      // Leaving a tab that hosted an embedded editor: hand it back its overlay
-      // behaviour, or the next launch from the Assets view would try to render
-      // into a container that is no longer on the page.
-      try { if (window.SpriteEdit && SpriteEdit.unembed) SpriteEdit.unembed(); } catch (e) {}
-      try { if (window.AudioLab && AudioLab.unembed) AudioLab.unembed(); } catch (e) {}
+      // No tab here hosts an embedded editor any more — the art and audio seats
+      // own those, and unembedding them from Studio would tear down a session
+      // living in a workspace this dispatcher does not manage.
       body.innerHTML = ""; this._nc = null;
       try {
         if (flow === "workflows") {
@@ -116,22 +115,6 @@
       return { NodeCanvas: window.NodeCanvas, get, post, toast, esc,
                reselect: () => this.select(this._flow),
                setCanvas: nc => { this._nc = nc; } };
-    },
-
-    /* ══════════════════ SPRITE EDITOR ══════════════════ */
-    sprite(host) {
-      if (!window.SpriteEdit || !SpriteEdit.embed) {
-        host.innerHTML = `<div class="empty">sprite editor not loaded</div>`; return;
-      }
-      SpriteEdit.embed(host);
-    },
-
-    /* ══════════════════ AUDIO MIXER ══════════════════ */
-    audio(host) {
-      if (!window.AudioLab || !AudioLab.embed) {
-        host.innerHTML = `<div class="empty">audio mixer not loaded</div>`; return;
-      }
-      AudioLab.embed(host);
     },
 
     /* ══════════════════ AGENT FLOW ══════════════════ */

@@ -1,0 +1,490 @@
+<!doctype html>
+<!--
+  GENERATED FILE - DO NOT EDIT.
+  Source : stream-assets/studio/_src/live-crew.bgate.tpl.html
+  Build  : stream-assets/studio/_src/build.ps1
+  Any edit made here is overwritten on the next build.
+--><html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Builders Gate - Crew</title>
+<style>
+/* ── Builders Gate · pixel build-shop ─────────────────────────────────────────
+   Hard rules for this system. Break one and it stops reading as pixel art:
+
+     · no border-radius, anywhere
+     · no blur, no soft shadows, no smooth gradients
+     · shading is DITHERED (checkerboard/bayer), never a gradient ramp
+     · every dimension is a multiple of U (4px) so nothing lands off-grid
+     · animation uses steps() only - 2 to 8 frames, never smooth easing
+     · colour comes from the ramp below and nowhere else
+
+   The palette is built around the mascot so the cat belongs here instead of
+   sitting on top of someone else's design system: its cream/orange/bone are
+   the same values the chrome uses.
+*/
+:root{
+  --u:4px;                       /* the pixel unit. everything snaps to this */
+  --ink:#0b0d14;                 /* ground */
+  --pit:#05060a;                 /* wells, holes, the darkest hole */
+  --dusk:#1b2130;                /* raised surface */
+  --mid:#2a3142;                 /* panel face */
+  --line:#46506b;               /* borders, rules */
+  --lift:#6b789c;                /* top/left bevel highlight */
+  --bone:#e8e0d0;                /* body text - matches the cat's cream */
+  --white:#fffdf8;
+  --orange:#ff7a3d;              /* primary accent */
+  --ember:#c1441a;               /* accent shade / bevel-dark */
+  --blue:#7ea0ff;                /* secondary accent */
+  --deep:#3d5aa8;                /* blue shade */
+
+  /* dither tiles - 2px checker and a lighter 25% fill */
+  --dither50:repeating-conic-gradient(from 0deg,currentColor 0% 25%,transparent 0% 50%);
+  --dither25:repeating-conic-gradient(from 0deg,currentColor 0% 12.5%,transparent 0% 50%);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;
+  background:var(--ink);color:var(--bone);
+  font-family:"Cascadia Mono",ui-monospace,monospace;   /* fallback only */
+  -webkit-font-smoothing:none;font-smooth:never}
+
+/* canvases carry all real type - keep them hard */
+canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
+
+/* ── chrome ──────────────────────────────────────────────────────────────────
+   A classic 8-bit bevel: hard outer keyline, light top/left, dark bottom/right.
+   No radius, no blur - the depth is 3 flat steps, exactly like a sprite. */
+.panel{position:relative;background:var(--mid);
+  box-shadow:
+    0 0 0 var(--u) var(--pit),                          /* outer keyline */
+    inset var(--u) var(--u) 0 0 var(--lift),            /* top-left light */
+    inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--ember); /* btm-rt dark */
+}
+.panel.cool{box-shadow:
+    0 0 0 var(--u) var(--pit),
+    inset var(--u) var(--u) 0 0 var(--lift),
+    inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--deep)}
+
+/* a well - content sunk INTO the surface (used around video panes) */
+.well{position:relative;
+  box-shadow:
+    inset var(--u) var(--u) 0 0 var(--pit),
+    inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--lift),
+    0 0 0 var(--u) var(--pit)}
+
+/* dithered shading band - this is how we fake a gradient */
+.dither{position:absolute;inset:0;pointer-events:none;
+  background-image:var(--dither50);background-size:var(--u) var(--u)}
+.dither.q{background-image:var(--dither25);background-size:calc(var(--u) * 2) calc(var(--u) * 2)}
+
+/* ── motion ──────────────────────────────────────────────────────────────────
+   steps() only. A 2-frame blink reads as a sprite; a smooth fade does not.
+   Everything still animates transform/opacity only, so the encoder cost stays
+   where it was (see the performance note that shipped with the glass set). */
+@keyframes blink2{0%,49.9%{opacity:1}50%,100%{opacity:.25}}
+@keyframes bob2{0%,49.9%{transform:translate3d(0,0,0)}50%,100%{transform:translate3d(0,var(--u),0)}}
+@keyframes march{to{transform:translate3d(calc(var(--u) * -8),0,0)}}
+@keyframes sweep8{to{transform:translate3d(100%,0,0)}}
+
+.blink{animation:blink2 1.1s steps(1,end) infinite}
+.blink.slow{animation-duration:1.9s}
+.bob{animation:bob2 .9s steps(1,end) infinite}
+
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+
+</style>
+<style>
+/* ── CREW · 460x421 · live ───────────────────────────────────────────────────
+   THIS FILE MUST BE SERVED FROM THE DASHBOARD (:7788/static/live-crew.html).
+   The API sends no Access-Control-Allow-Origin, so a file:// copy of this page
+   cannot fetch it - same-origin is the whole reason it lives in bgate_ui/static
+   next to agent-feed / agent-ticker / agent-stage.
+
+   Data:  /api/agents          -> {agents:[{state,item_id}]}
+          /api/queue/<item_id> -> {seat,title}
+   Names: /static/agent-names.js (window.AGENT_NAMES / agentName)
+
+   Add ?demo=1 to the URL to render a fake busy shop - useful for dressing the
+   layout when no agents are actually running.
+*/
+html,body{background:var(--ink)}
+body{position:relative;padding:14px 14px 12px;display:flex;flex-direction:column;
+  box-shadow:inset var(--u) var(--u) 0 0 var(--lift),
+             inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--pit),
+             0 0 0 var(--u) var(--pit)}
+
+.head{display:flex;align-items:center;gap:10px;flex:0 0 auto;padding-bottom:10px}
+.head .sp{flex:1 1 auto}
+.rule{height:var(--u);background:var(--pit);box-shadow:0 var(--u) 0 0 #131828;flex:0 0 auto}
+
+/* ── the shop floor: every seat is a character ───────────────────────────── */
+/* Two rows of cells. One row of seven put 60px under names like MARLOW, which
+   needs 72px at this scale, so they ran together into one long word. */
+.floor{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:4px 0;padding:10px 0 8px;
+  justify-content:space-around}
+.crew{position:relative;width:106px;display:flex;flex-direction:column;align-items:center;gap:4px}
+.cell{position:relative;width:56px;height:70px;overflow:hidden}
+/* The sprite strip translates in whole frames - transform only, never
+   background-position, which would repaint the layer every frame.
+   Sheets: _walk = 8 frames of 128x160, _talk = 4 frames of 128x128.
+   Both scale by 0.4375 so a frame lands exactly 56px wide; the idle sheet is
+   shorter, so it sits on the floor line instead of being stretched to match. */
+.cell i{position:absolute;left:0;display:block;image-rendering:pixelated;
+  background-repeat:no-repeat}
+/* THE _walk SHEET IS TWO DIRECTIONS: frames 0-3 walk LEFT, frames 4-7 are the
+   mirrored walk RIGHT. Animating all 8 snapped the character between facings
+   twice a second. Play ONE direction only - frames 0-3, facing left. The strip
+   stays the full 8 frames wide; the keyframes walk the first half (4*56=224).
+   To face the other way, shift both keyframes by 224px. */
+.cell i.walk{top:0;height:70px;width:448px;background-size:448px 70px;
+  animation:walk4 .4s steps(4,end) infinite}
+.cell i.idle{bottom:0;height:56px;width:224px;background-size:224px 56px}
+@keyframes walk4{
+  from{transform:translate3d(0,0,0)}
+  to  {transform:translate3d(-224px,0,0)}
+}
+
+.crew.off .cell{opacity:.26}
+.crew .lamp{position:absolute;right:18px;top:2px;width:8px;height:8px;background:var(--line)}
+.crew.on .lamp{background:var(--orange);animation:blink2 1.1s steps(1,end) infinite}
+/* a floor line under each crew member so they stand on something */
+.crew::after{content:"";position:absolute;left:14px;right:14px;top:70px;height:2px;
+  background:var(--pit)}
+.crew.on::after{background:var(--ember)}
+
+/* ── what they're on ─────────────────────────────────────────────────────── */
+.jobs{flex:1 1 auto;min-height:0;padding-top:10px;display:flex;flex-direction:column;gap:9px;overflow:hidden}
+.job{display:flex;align-items:flex-start;gap:9px}
+.job .pip{flex:0 0 auto;width:8px;height:8px;margin-top:2px;background:var(--orange)}
+.job .col{display:flex;flex-direction:column;gap:4px;min-width:0}
+.empty{opacity:.5}
+
+/* ── queue ───────────────────────────────────────────────────────────────── */
+.q{flex:0 0 auto;padding-top:10px;display:flex;align-items:center;gap:8px}
+.blocks{display:flex;gap:3px;flex:1 1 auto}
+.blocks i{width:12px;height:14px;background:var(--dusk);
+  box-shadow:inset 2px 2px 0 0 var(--line)}
+.blocks i.f{background:var(--orange);box-shadow:inset 2px 2px 0 0 #ffb089}
+.blocks i.r{background:var(--blue);box-shadow:inset 2px 2px 0 0 #c2d2ff}
+</style>
+</head>
+<body>
+  <div class="head">
+    <canvas data-text="CREW" data-scale="3" data-ink="white" data-track="2"></canvas>
+    <span class="sp"></span>
+    <canvas id="hcount" data-text="0 WORKING" data-scale="2" data-ink="orange" data-track="1"></canvas>
+  </div>
+  <i class="rule"></i>
+
+  <div class="floor" id="floor"></div>
+  <i class="rule"></i>
+
+  <div class="jobs" id="jobs"></div>
+
+  <i class="rule"></i>
+  <div class="q">
+    <canvas data-text="QUEUE" data-scale="2" data-ink="blue" data-track="1"></canvas>
+    <span class="blocks" id="qblocks"></span>
+    <canvas id="qcount" data-text="0" data-scale="2" data-ink="bone" data-track="1"></canvas>
+  </div>
+
+<script src="/static/agent-names.js"></script>
+<script>
+/* ── Builders Gate · 5x7 bitmap face ──────────────────────────────────────────
+   Hand-authored because no pixel font exists on this machine and the overlays
+   must not fetch anything at runtime. Each glyph is 35 chars = 7 rows x 5 cols,
+   row-major, '1' = filled.
+
+   Rendered to <canvas> with smoothing off, so it stays hard-edged at any
+   integer scale. Any string works, which is the point: live agent names and
+   ticket titles get the same type as the static labels.
+
+   Usage:  <canvas data-text="QUEUE" data-scale="4" data-ink="orange"></canvas>
+   then    PX.paintAll()   (called automatically on DOMContentLoaded)
+   or      PX.paint(canvasEl, "NEW TEXT")   to re-render with fresh data.
+*/
+window.PX = (function () {
+  var F = {
+    "A":"01110100011000111111100011000110001",
+    "B":"11110100011000111110100011000111110",
+    "C":"01110100011000010000100001000101110",
+    "D":"11110100011000110001100011000111110",
+    "E":"11111100001000011110100001000011111",
+    "F":"11111100001000011110100001000010000",
+    "G":"01110100011000010111100011000101111",
+    "H":"10001100011000111111100011000110001",
+    "I":"11111001000010000100001000010011111",
+    "J":"00111000100001000010000101001001100",
+    "K":"10001100101010011000101001001010001",
+    "L":"10000100001000010000100001000011111",
+    "M":"10001110111010110101100011000110001",
+    "N":"10001110011010110011100011000110001",
+    "O":"01110100011000110001100011000101110",
+    "P":"11110100011000111110100001000010000",
+    "Q":"01110100011000110001101011001001101",
+    "R":"11110100011000111110101001001010001",
+    "S":"01111100001000001110000010000111110",
+    "T":"11111001000010000100001000010000100",
+    "U":"10001100011000110001100011000101110",
+    "V":"10001100011000110001100010101000100",
+    "W":"10001100011000110101101011010101010",
+    "X":"10001100010101000100010101000110001",
+    "Y":"10001100010101000100001000010000100",
+    "Z":"11111000010001000100010001000011111",
+    "0":"01110100011001110101110011000101110",
+    "1":"00100011000010000100001000010001110",
+    "2":"01110100010000100010001000100011111",
+    "3":"11111000100010000010000011000101110",
+    "4":"00010001100101010010111110001000010",
+    "5":"11111100001111000001000011000101110",
+    "6":"00110010001000011110100011000101110",
+    "7":"11111000010001000100010000100001000",
+    "8":"01110100011000101110100011000101110",
+    "9":"01110100011000101111000010001001100",
+    " ":"00000000000000000000000000000000000",
+    ".":"00000000000000000000000000110001100",
+    ",":"00000000000000000000001100011000100",
+    ":":"00000011000110000000011000110000000",
+    ";":"00000011000110000000011000110001000",
+    "-":"00000000000000011111000000000000000",
+    "+":"00000001000010011111001000010000000",
+    "=":"00000000001111100000111110000000000",
+    "_":"00000000000000000000000000000011111",
+    "!":"00100001000010000100001000000000100",
+    "?":"01110100010000100010001000000000100",
+    "/":"00001000100001000100010000100010000",
+    "\\":"10000010000100000100001000001000001",
+    "'":"01100011000100000000000000000000000",
+    "\"":"01010010100101000000000000000000000",
+    "(":"00010001000100001000010000010000010",
+    ")":"01000001000001000010000100010001000",
+    "[":"01110010000100001000010000100001110",
+    "]":"01110000100001000010000100001001110",
+    "#":"01010010101111101010111110101001010",
+    "*":"00000101010111011111011101010100000",
+    "%":"11001110100001000100010000101110011",
+    "<":"00001000100010001000001000001000001",
+    ">":"10000010000010000010001000100010000",
+    "&":"01100100101010001000101011001001101",
+    "@":"01110100011011110101101111000001110",
+    "•":"00000000000111001110011100000000000"
+  };
+  var MISS = "11111100011000110001100011000111111"; /* tofu box */
+
+  var INK = {
+    bone:"#e8e0d0", white:"#fffdf8", orange:"#ff7a3d", ember:"#c1441a",
+    blue:"#7ea0ff", deep:"#3d5aa8", mid:"#46506b", dusk:"#2a3142", ink:"#0b0d14"
+  };
+
+  var GW = 5, GH = 7, GAP = 1;
+
+  function measure(t, s) {
+    var n = t.length;
+    return { w: (n * GW + (n - 1) * GAP) * s, h: GH * s };
+  }
+
+  /* Live data carries typographic punctuation the 5x7 face has no glyph for -
+     an em dash in a ticket title rendered as a tofu box on stream. Fold the
+     common ones down to ASCII before drawing rather than adding glyphs for
+     every dash and quote variant. */
+  function asciify(s) {
+    return s
+      .replace(/[‐-―−]/g, "-")   /* dashes, minus */
+      .replace(/[‘’‛′]/g, "'")
+      .replace(/[“”‟″]/g, '"')
+      .replace(/…/g, "...")
+      .replace(/[   ]/g, " ")
+      .replace(/[•·]/g, "*");
+  }
+
+  function paint(cv, text) {
+    if (text != null) cv.dataset.text = text;
+    var t = asciify(String(cv.dataset.text == null ? "" : cv.dataset.text)).toUpperCase();
+    var s = parseInt(cv.dataset.scale || "3", 10);
+    var col = INK[cv.dataset.ink] || cv.dataset.ink || INK.bone;
+    var sh = cv.dataset.shadow ? (INK[cv.dataset.shadow] || cv.dataset.shadow) : null;
+    var track = parseInt(cv.dataset.track || "0", 10);   /* extra px between glyphs */
+
+    var n = t.length;
+    var stepX = (GW + GAP + track) * s;
+    var w = n ? (n * GW + (n - 1) * (GAP + track)) * s : 1;
+    var h = GH * s + (sh ? s : 0);
+
+    cv.width = w; cv.height = h;
+    cv.style.width = w + "px"; cv.style.height = h + "px";
+
+    var g = cv.getContext("2d");
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, w, h);
+
+    for (var pass = sh ? 0 : 1; pass < 2; pass++) {
+      g.fillStyle = pass === 0 ? sh : col;
+      var oy = pass === 0 ? s : 0;
+      for (var i = 0; i < n; i++) {
+        var bits = F[t[i]] || MISS;
+        var ox = i * stepX;
+        for (var r = 0; r < GH; r++) {
+          for (var c = 0; c < GW; c++) {
+            if (bits.charCodeAt(r * GW + c) === 49) {
+              g.fillRect(ox + c * s, oy + r * s, s, s);
+            }
+          }
+        }
+      }
+    }
+    return cv;
+  }
+
+  function paintAll(root) {
+    var list = (root || document).querySelectorAll("canvas[data-text]");
+    for (var i = 0; i < list.length; i++) paint(list[i]);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { paintAll(); });
+  } else { paintAll(); }
+
+  return { paint: paint, paintAll: paintAll, measure: measure, INK: INK, FONT: F };
+})();
+
+</script>
+<script>
+(function () {
+  var SHEETS = "/static/img/agents/";
+  var POLL   = 3000;
+  var DEMO   = /[?&]demo=1/.test(location.search);
+  var MAXJOB = 4;
+
+  var floor = document.getElementById("floor");
+  var jobs  = document.getElementById("jobs");
+  var qb    = document.getElementById("qblocks");
+
+  var SEATS = Object.keys(window.AGENT_NAMES || {
+    director:1, narrative:1, gameplay:1, art:1, qa:1, tech:1, audio:1
+  });
+
+  /* build the roster once; only classes and text change afterwards */
+  var cells = {};
+  SEATS.forEach(function (seat) {
+    var d = document.createElement("div");
+    d.className = "crew off";
+    var cell = document.createElement("div");
+    cell.className = "cell";
+    var sp = document.createElement("i");
+    sp.className = "idle";
+    sp.style.backgroundImage = "url('" + SHEETS + seat + "_talk.png')";
+    cell.appendChild(sp);
+    var lamp = document.createElement("i");
+    lamp.className = "lamp";
+    var nm = document.createElement("canvas");
+    nm.dataset.text  = window.agentName ? window.agentName(seat) : seat;
+    nm.dataset.scale = "2";
+    nm.dataset.ink   = "bone";
+    d.append(cell, lamp, nm);
+    floor.appendChild(d);
+    cells[seat] = { root: d, sprite: sp, name: nm };
+    PX.paint(nm);
+  });
+
+  function setBusy(seat, busy) {
+    var c = cells[seat];
+    if (!c) return;
+    c.root.className = "crew " + (busy ? "on" : "off");
+    var want = busy ? "walk" : "idle";
+    if (c.sprite.className !== want) {
+      c.sprite.className = want;
+      c.sprite.style.backgroundImage =
+        "url('" + SHEETS + seat + (busy ? "_walk.png" : "_talk.png") + "')";
+    }
+  }
+
+  function renderJobs(list) {
+    jobs.innerHTML = "";
+    if (!list.length) {
+      var e = document.createElement("div");
+      e.className = "job empty";
+      var c = document.createElement("canvas");
+      c.dataset.text = "SHOP IS QUIET"; c.dataset.scale = "2"; c.dataset.ink = "bone"; c.dataset.track = "1";
+      e.appendChild(c); jobs.appendChild(e); PX.paint(c);
+      return;
+    }
+    list.slice(0, MAXJOB).forEach(function (j) {
+      var row = document.createElement("div"); row.className = "job";
+      var pip = document.createElement("i"); pip.className = "pip";
+      var col = document.createElement("div"); col.className = "col";
+      var who = document.createElement("canvas");
+      who.dataset.text = (window.agentName ? window.agentName(j.seat) : j.seat);
+      who.dataset.scale = "2"; who.dataset.ink = "blue"; who.dataset.track = "1";
+      var what = document.createElement("canvas");
+      what.dataset.text = (j.title || "").slice(0, 34);
+      what.dataset.scale = "2"; what.dataset.ink = "bone"; what.dataset.track = "0";
+      col.append(who, what); row.append(pip, col); jobs.appendChild(row);
+      PX.paint(who); PX.paint(what);
+    });
+  }
+
+  function renderQueue(running, waiting) {
+    qb.innerHTML = "";
+    var total = Math.max(10, running + waiting);
+    var shown = Math.min(total, 14);
+    for (var i = 0; i < shown; i++) {
+      var b = document.createElement("i");
+      if (i < running) b.className = "r";
+      else if (i < running + waiting) b.className = "f";
+      qb.appendChild(b);
+    }
+    PX.paint(document.getElementById("qcount"), String(running + waiting));
+  }
+
+  function getJSON(u) {
+    return fetch(u, { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(r.status); return r.json();
+    });
+  }
+
+  function demo() {
+    return Promise.resolve({
+      jobs: [
+        { seat: "art",      title: "BLENDER ASSET SWEEP" },
+        { seat: "tech",     title: "GODOT IMPORT EVIDENCE" },
+        { seat: "qa",       title: "SEAT ROUTING GATE" }
+      ],
+      waiting: 6
+    });
+  }
+
+  function live() {
+    return getJSON("/api/agents").then(function (res) {
+      var running = (res.agents || []).filter(function (a) { return a.state === "running"; });
+      return Promise.all(running.map(function (a) {
+        return getJSON("/api/queue/" + a.item_id)
+          .then(function (d) { return { seat: d.seat || "", title: d.title || "" }; })
+          .catch(function () { return null; });
+      })).then(function (rows) {
+        return { jobs: rows.filter(Boolean), waiting: 0 };
+      });
+    });
+  }
+
+  function tick() {
+    (DEMO ? demo() : live()).then(function (d) {
+      var busy = {};
+      d.jobs.forEach(function (j) { if (j.seat) busy[j.seat] = 1; });
+      SEATS.forEach(function (s) { setBusy(s, !!busy[s]); });
+      renderJobs(d.jobs);
+      renderQueue(d.jobs.length, d.waiting);
+      PX.paint(document.getElementById("hcount"), d.jobs.length + " WORKING");
+    }).catch(function () {
+      SEATS.forEach(function (s) { setBusy(s, false); });
+      renderJobs([]);
+      PX.paint(document.getElementById("hcount"), "NO LINK");
+    });
+  }
+
+  tick();
+  setInterval(tick, POLL);   /* polling, not rAF - nothing animates from JS */
+})();
+</script>
+</body>
+</html>

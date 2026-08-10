@@ -139,9 +139,9 @@ bgate doctor
 
 `bgate doctor` exits 1 if *anything* on its list of eight is missing. That is
 right for a CI step and alarming for a human: you only need Python and Godot for
-the core loop. Read the rows, not the exit code. It also probes `OPENAI_API_KEY`
-only, so a Krea-only setup will report `MISS openai_key` and exit 1 while
-working perfectly.
+the core loop. Read the rows, not the exit code. The `art_key` row covers every
+art provider, so either `OPENAI_API_KEY` or `KREA_API_KEY` turns it green — and
+you can set either one from the dashboard (Settings → Art providers).
 
 ### 1. Make a project
 

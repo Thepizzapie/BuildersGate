@@ -44,6 +44,21 @@ scripts and SpriteFrames.
 
 ![Atlas](screenshots/atlas.png)
 
+The playable build sits beside the tree. An edit, a rebuild and the result are
+one screen rather than three programs.
+
+![Atlas, with the build running](screenshots/atlas-play.png)
+
+---
+
+## Brainstorm
+
+A conversation with a writing pad and a drawing pad beside it. Nothing is queued
+until you press Deploy, and Deploy shows you the plan and the agents it would
+dispatch before anything is filed.
+
+![Brainstorm](screenshots/brainstorm.png)
+
 ---
 
 ## Seat workspaces
@@ -75,7 +90,10 @@ Pixel editing with the sheet grid detected, per-frame navigation, a named edit
 history you can step back through, a looping preview, and onion skin showing
 the frames *before and after* the one you are painting.
 
-![Sprite editor](screenshots/sprite-editor.png)
+![Sprite editor](screenshots/sprite-editor.gif)
+
+Ctrl+right-click anywhere on the canvas raises the tools around the cursor, so
+the common operations stop being a trip to the edge of the screen.
 
 ### Audio lab
 
@@ -106,6 +124,15 @@ Recorded sessions: video, transcript, telemetry and the director's triage, all
 on one clock.
 
 ![Playtests](screenshots/playtests.png)
+
+---
+
+## Themes
+
+Dark, light, and orbit. Orbit is the opinionated one: glass over a true black
+ground with an iridescent rim.
+
+![The three themes](screenshots/themes.png)
 
 ---
 

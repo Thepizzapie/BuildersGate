@@ -144,7 +144,7 @@ window.SeatWS.qa = {
           <div class="qa-row qa-sp"><h3 style="margin:0">Bot roster</h3>
             <div class="qa-row">
               <button class="qa-btn small pri" onclick="SeatWS.qa.runAll()"
-                title="Run every bot in sequence and take one verdict for the set — one failure fails it, anything unproven is unknown">▶ run all</button>
+                title="Run every bot in sequence and take one verdict for the set - one failure fails it, anything unproven is unknown">▶ run all</button>
               <button class="qa-btn small" onclick="SeatWS.qa.newBot()">+ new bot</button>
             </div></div>
           <div id="qa-roster"><div class="qa-empty">loading bots…</div></div>
@@ -243,7 +243,7 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._bots || !this._bots.length) {
-      host.innerHTML = '<div class="qa-empty">no bots yet — click “+ new bot”.</div>';
+      host.innerHTML = '<div class="qa-empty">no bots yet - click “+ new bot”.</div>';
       return;
     }
     host.innerHTML = this._bots.map((b, i) => `
@@ -331,14 +331,14 @@ window.SeatWS.qa = {
           <input class="qa-in num qa-e-ticks" type="number" min="1" value="${bot.ticks}">
         </div>
         <div class="meta" style="color:var(--text-3);margin-bottom:6px">action schedule (60 ticks ≈ 1 second)</div>
-        <div id="qa-actions">${rows || '<div class="qa-empty">no actions — add one below.</div>'}</div>
+        <div id="qa-actions">${rows || '<div class="qa-empty">no actions - add one below.</div>'}</div>
         <div class="qa-row" style="margin-top:8px">
           <button class="qa-btn small" onclick="SeatWS.qa.addAction()">+ action</button>
         </div>
         <datalist id="qa-props">${props.map(p => `<option value="${p}">`).join("")}</datalist>
         <div class="meta" style="color:var(--text-3);margin:14px 0 6px">expectations — what this run has to prove.
           A bot with none reports <b class="qa-unknown">UNKNOWN</b>, never PASS.</div>
-        <div id="qa-expects">${expRows || '<div class="qa-empty">no expectations — this bot cannot pass.</div>'}</div>
+        <div id="qa-expects">${expRows || '<div class="qa-empty">no expectations - this bot cannot pass.</div>'}</div>
         <div class="qa-row" style="margin-top:8px">
           <button class="qa-btn small" onclick="SeatWS.qa.addExpect()">+ expectation</button>
           <div style="flex:1"></div>
@@ -435,7 +435,7 @@ window.SeatWS.qa = {
     const v = (res && res.verdict) || (res && res.ok ? "unknown" : "error");
     if (v === "pass") this._bg.toast(`${bot.name}: PASS`);
     else this._bg.toast(`${bot.name}: ${v.toUpperCase()}` +
-      ((res && res.error) ? " — " + res.error : ""), v !== "pass");
+      ((res && res.error) ? " - " + res.error : ""), v !== "pass");
   },
 
   /* One verdict for the whole roster — the shape a gate can consume. The
@@ -456,7 +456,7 @@ window.SeatWS.qa = {
     this._loadRuns();
     if (!host) return;
     const err = this._err(res);
-    if (err) { host.innerHTML = `<div class="qa-fail"><span class="lbl">run-all failed</span> — ${this._bg.esc(err)}</div>`; return; }
+    if (err) { host.innerHTML = `<div class="qa-fail"><span class="lbl">run-all failed</span> - ${this._bg.esc(err)}</div>`; return; }
     const d = this._data(res) || {};
     const counts = d.counts || {};
     host.innerHTML = `
@@ -515,7 +515,7 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._runs.length) {
-      host.innerHTML = '<div class="qa-empty">no bot runs recorded yet — run a bot and its verdict is kept here, so "when did this start failing" has an answer.</div>';
+      host.innerHTML = '<div class="qa-empty">no bot runs recorded yet - run a bot and its verdict is kept here, so "when did this start failing" has an answer.</div>';
       return;
     }
     host.innerHTML = this._runs.map(r => `
@@ -555,7 +555,7 @@ window.SeatWS.qa = {
       </div>
       <span class="meta" style="color:var(--text-3)">${r.seconds != null ? r.seconds + "s" : ""}</span></div>`;
     if (verdict === "unknown") {
-      html += `<div class="qa-empty qa-unknown">this run asserted nothing — add expectations to the bot so it can pass or fail. Unknown is not a pass.</div>`;
+      html += `<div class="qa-empty qa-unknown">this run asserted nothing - add expectations to the bot so it can pass or fail. Unknown is not a pass.</div>`;
     }
 
     const failures = Array.isArray(r.failures) ? r.failures : [];
@@ -580,7 +580,7 @@ window.SeatWS.qa = {
         `${c.property} ${c.was} → ${c.now}`).join(" · ");
       html += `<div class="qa-verdict" style="margin-bottom:8px">
         <div class="meta" style="color:var(--text-3)">vs baseline #${bg.esc(diff.baseline_id)} (${bg.esc(diff.verdict_was || "?")} → ${bg.esc(diff.verdict_now || "?")})${
-          diff.regressed ? ' — <b class="qa-bad">REGRESSION</b>' : ""}</div>
+          diff.regressed ? ' - <b class="qa-bad">REGRESSION</b>' : ""}</div>
         ${flips ? `<div class="qa-bad" style="font-size:12px;margin-top:4px">${bg.esc(flips)}</div>` : ""}
         ${moved ? `<div class="meta" style="color:var(--text-3);margin-top:4px">${bg.esc(moved)}</div>` : ""}
       </div>`;
@@ -588,7 +588,7 @@ window.SeatWS.qa = {
 
     if (s && s.final) {
       const f = s.final;
-      const kv = (label, val, cls) => `<div><span>${label}</span><b class="${cls || ""}">${val == null ? "—" : val}</b></div>`;
+      const kv = (label, val, cls) => `<div><span>${label}</span><b class="${cls || ""}">${val == null ? "-" : val}</b></div>`;
       html += `<div class="qa-kv">
         ${kv("player x", f.player_x)}
         ${kv("opponent x", f.opponent_x)}
@@ -605,9 +605,9 @@ window.SeatWS.qa = {
         </tr></thead><tbody>` +
         s.samples.map(sm => `<tr>
           <td>${sm.tick}</td><td>${sm.player_x}</td><td>${sm.opponent_x}</td><td>${sm.distance}</td>
-          <td>${sm.player_hp == null ? "—" : sm.player_hp}</td>
-          <td>${sm.opponent_hp == null ? "—" : sm.opponent_hp}</td>
-          <td>${sm.player_stamina == null ? "—" : sm.player_stamina}</td></tr>`).join("") +
+          <td>${sm.player_hp == null ? "-" : sm.player_hp}</td>
+          <td>${sm.opponent_hp == null ? "-" : sm.opponent_hp}</td>
+          <td>${sm.player_stamina == null ? "-" : sm.player_stamina}</td></tr>`).join("") +
         `</tbody></table>`;
     } else if (r.ok) {
       html += '<div class="qa-empty">the probe ran but sampled no fighter state.</div>';
@@ -690,7 +690,7 @@ window.SeatWS.qa = {
       <div class="meta" style="color:var(--text-3);margin-top:8px">${
         notReady
           ? `<span class="qa-bad">not ready: ${bg.esc(blockers.join(" · ") || "preflight failed")}</span>`
-          : "records a live human/agent play session — the same path as the overview's record button: preflight, rebuild a stale build, then boot the telemetry frame."
+          : "records a live human/agent play session - the same path as the overview's record button: preflight, rebuild a stale build, then boot the telemetry frame."
       }</div>
       <div class="meta" id="qa-pt-msg" style="color:var(--text-3);margin-top:4px"></div>`;
   },
@@ -708,7 +708,7 @@ window.SeatWS.qa = {
       const p = await bg.get("/api/playtest/preflight?native=false").catch(() => null);
       this._preflight = p;
       if (p && p.ready === false) {
-        msg("record blocked — preflight is not ready; see the blockers above", true);
+        msg("record blocked - preflight is not ready; see the blockers above", true);
         this._paintPlaytest();
         return;
       }
@@ -717,7 +717,7 @@ window.SeatWS.qa = {
         msg("rebuilding the current build before recording…");
         const rebuilt = await bg.post("/api/play/rebuild", {});
         if (!rebuilt || !rebuilt.ok) {
-          msg("record blocked: current build failed — " + ((rebuilt && rebuilt.error) || "?"), true);
+          msg("record blocked: current build failed - " + ((rebuilt && rebuilt.error) || "?"), true);
           return;
         }
       }
@@ -732,7 +732,7 @@ window.SeatWS.qa = {
       if (sid && typeof window.bootFrame === "function") {
         try { window.bootFrame(sid); } catch (e) {}
       }
-      msg("recording — play the build in the Play & record view and talk through it");
+      msg("recording - play the build in the Play & record view and talk through it");
       bg.toast("recording started");
     } catch (e) {
       msg("could not start recording: " + (e && e.message), true);
@@ -747,7 +747,7 @@ window.SeatWS.qa = {
       const r = await this._bg.post("/api/playtest/stop", {});
       if (r && r.ok === false) { msg("stop failed: " + (r.error || "?"), true); this._bg.toast("stop failed", true); }
       else {
-        msg(`session ${(r && r.session_id) || ""} transcribing — a director triage item lands in the queue when it finishes`);
+        msg(`session ${(r && r.session_id) || ""} transcribing - a director triage item lands in the queue when it finishes`);
         if (typeof window.bootFrame === "function") { try { window.bootFrame(); } catch (e) {} }
         this._bg.toast("recording stopped");
       }
@@ -792,7 +792,7 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._gates.length) {
-      host.innerHTML = '<div class="qa-empty">no QA-gate runs yet — when a maker seat completes a work item, an automatic verify run lands here with a PASS/FAIL verdict.</div>';
+      host.innerHTML = '<div class="qa-empty">no QA-gate runs yet - when a maker seat completes a work item, an automatic verify run lands here with a PASS/FAIL verdict.</div>';
       return;
     }
     const style = {
@@ -830,7 +830,7 @@ window.SeatWS.qa = {
             <b>${bg.esc(label.slice(0, 80))}</b>
           </div>
           <div class="qa-row">
-            ${ref ? `<button class="qa-btn small" title="the reviewed work item — a FAIL reopens it with the nitpick list"
+            ${ref ? `<button class="qa-btn small" title="the reviewed work item - a FAIL reopens it with the nitpick list"
                        onclick="SeatWS.qa.focusRef(${ref})">item #${ref}</button>` : ""}
             <button class="qa-btn small" title="open this run's live activity feed below"
               onclick="SeatWS.qa.selectItem(${g.id});document.querySelectorAll('.qa-item-sel').forEach(s=>s.value=${g.id})">log</button>
@@ -845,7 +845,7 @@ window.SeatWS.qa = {
     // Make the offending item the shared active work item (director/art/
     // gameplay panels read it) so "fix it" starts one click from the verdict.
     this._bg.setActiveItem(id);
-    this._bg.toast("work item #" + id + " set active — its seat's workspace now targets it");
+    this._bg.toast("work item #" + id + " set active - its seat's workspace now targets it");
   },
 
   _paintAgent() {
@@ -883,7 +883,7 @@ window.SeatWS.qa = {
     if (!feed) return;
     const bg = this._bg;
     if (!act || !Array.isArray(act.steps) || !act.steps.length) {
-      feed.innerHTML = `<div class="qa-empty">${act && act.running ? "agent running — no steps yet." : "no activity recorded for this item."}</div>`;
+      feed.innerHTML = `<div class="qa-empty">${act && act.running ? "agent running - no steps yet." : "no activity recorded for this item."}</div>`;
       if (act && act.final) feed.innerHTML += `<div class="qa-step"><span class="k">result</span>${bg.esc(act.final.text || "")}</div>`;
       return;
     }

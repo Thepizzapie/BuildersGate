@@ -33,6 +33,42 @@ STATUSES = ("queued", "dispatched", "review", "done", "failed", "cancelled")
 # of them: the whole point of the hold is that the next link waits.
 SATISFIED = ("done",)
 
+# HOW MUCH OF A RESULT SURVIVES THE WRITE.
+#
+# This was 2000 characters and it was SILENTLY EATING THE DELIVERABLE. A chat
+# turn's result IS the director's answer to you — the whole point of the turn —
+# and a long one arrived in the console cut off mid-word with nothing saying so.
+# Measured on a real board: two answers stored at exactly 2000 chars, one ending
+# "...as you asked — just sequen", the other "...rather than how it is coloured
+# — s". A reader cannot tell that from an agent that stopped talking.
+#
+# 20k is not a guess about answers, it is a bound on runaway: it is far past any
+# real result note (the longest observed was 1634) while still refusing to let a
+# loop dump a log into a column every list query reads. Downstream consumers cap
+# for their own contexts already — event payloads at 400, queue_list previews at
+# 240 — so nothing else has to change for this to be safe.
+MAX_RESULT = 20000
+# What is appended when the ceiling is genuinely hit. The truncation being
+# VISIBLE is the actual fix here; the higher ceiling only makes it rare.
+CLIPPED = "\n\n…[result truncated at %d characters — the run's full output is in "
+CLIPPED += "its log]"
+
+
+def clip_result(text: str) -> str:
+    """Bound a result note, and SAY SO when it is bounded.
+
+    Cuts at a line break where one is near the ceiling, so the marker does not
+    land mid-sentence on top of the mid-word cut it exists to explain.
+    """
+    text = str(text or "")
+    if len(text) <= MAX_RESULT:
+        return text
+    head = text[:MAX_RESULT]
+    cut = head.rfind("\n", MAX_RESULT - 500)
+    if cut > 0:
+        head = head[:cut]
+    return head + (CLIPPED % MAX_RESULT)
+
 
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
@@ -352,7 +388,7 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
         conn.execute(
             "UPDATE work_item SET status = ?, result = ?, "
             "updated_at = datetime('now') WHERE id = ?",
-            (status, result[:2000], item_id),
+            (status, clip_result(result), item_id),
         )
     item = get(root, item_id)
     activity.log(root, "queue", f"item {item_id} -> {status}: {item['title'][:60]}",
@@ -376,7 +412,7 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
             root, iteration_id,
             "resulting_change" if status in ("done", "failed") else "queued_change",
             "work_item", str(item_id), f"Work item {item_id} -> {status}",
-            {"status": status, "result": result[:2000], "seat": item["seat"]})
+            {"status": status, "result": clip_result(result), "seat": item["seat"]})
     return item
 
 

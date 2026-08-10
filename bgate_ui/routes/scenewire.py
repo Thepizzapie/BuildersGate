@@ -15,6 +15,7 @@ The res:// namespace is the addressing scheme throughout, matching /api/screenma
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -391,6 +392,12 @@ def scene_render(scene: str) -> dict:
         raise api.bad_request("not a scene file", scene=scene)
     gd = _godot_dir(project_root)
 
+    # MEMOISED FOR THE LIFE OF THE REQUEST. A dressed floor asks for the same
+    # handful of prop textures hundreds of times — 233 props over ~40 distinct
+    # images — and every uncached `size_of` is a PIL open of a file already on
+    # the page. Panning must not be a network operation and this endpoint must
+    # not be a disk one either.
+    @lru_cache(maxsize=None)
     def read(res_path: Optional[str]) -> Optional[str]:
         if not res_path:
             return None
@@ -400,9 +407,11 @@ def scene_render(scene: str) -> dict:
         except Exception:
             return None
 
+    @lru_cache(maxsize=None)
     def rel_of(res_path: str) -> Optional[str]:
         return _preview_for(project_root, res_path)
 
+    @lru_cache(maxsize=None)
     def size_of(res_path: str):
         try:
             from PIL import Image
@@ -422,7 +431,8 @@ def scene_render(scene: str) -> dict:
     try:
         out = scenedraw.draw_list(
             text, read=read, size_of=size_of, rel_of=rel_of,
-            viewport=scenedraw.viewport_of(project_text))
+            viewport=scenedraw.viewport_of(project_text),
+            scale=scenedraw.content_scale(project_text))
     except scenewire.WireError as exc:
         raise api.bad_request(str(exc), scene=scene)
     out["scene"] = _as_res(project_root, target)

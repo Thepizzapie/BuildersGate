@@ -38,6 +38,8 @@ window.SpriteEdit = (() => {
 
   const E = s => String(s ?? "").replace(/[&<>"']/g,
     c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  // Icon set, one grid, one stroke weight — see icons.js. Never a raw glyph.
+  const I = (name, size) => (window.BGIcon ? BGIcon(name, { size: size || 16 }) : "");
   const say = (m, k) => { try { toast(m, k); } catch (e) { console.warn(m); } };
   const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
 
@@ -46,14 +48,68 @@ window.SpriteEdit = (() => {
   // sheet and a 32² sheet must not get the same 40-deep history.
   const UNDO_BYTES = 96 * 1024 * 1024;
 
+  /* Geometry from the icon set, not symbol-font characters. The seven tools
+     used to be ✎ ⌫ ◍ ⊙ ╱ ▭ ✜, resolved through whatever glyph the OS had, so
+     no two shared a stroke weight or a baseline — the exact failure icons.js
+     was built to end. `i` is a registry name; a name the set has not drawn yet
+     renders as a visible dashed placeholder rather than a blank button. */
   const TOOLS = [
-    {id:"pencil", g:"✎", k:"b", t:"Pencil — paint pixels (B)"},
-    {id:"eraser", g:"⌫", k:"e", t:"Eraser — clear to transparent (E)"},
-    {id:"bucket", g:"◍", k:"g", t:"Fill — flood the contiguous colour (G)"},
-    {id:"picker", g:"⊙", k:"i", t:"Eyedropper — take a colour off the sheet (I)"},
-    {id:"line",   g:"╱", k:"l", t:"Line (L)"},
-    {id:"rect",   g:"▭", k:"r", t:"Rectangle — hold Shift to fill (R)"},
-    {id:"anchor", g:"✜", k:"a", t:"Rig anchor — mark where a slot attaches (A)"},
+    {id:"pencil", i:"brush",      k:"b", t:"Pencil - paint pixels (B)"},
+    {id:"eraser", i:"eraser",     k:"e", t:"Eraser - clear to transparent (E)"},
+    {id:"bucket", i:"fill",       k:"g", t:"Fill - flood the contiguous colour (G)"},
+    {id:"picker", i:"eyedropper", k:"i", t:"Eyedropper - take a colour off the sheet (I)"},
+    {id:"line",   i:"line",       k:"l", t:"Line (L)"},
+    {id:"rect",   i:"rect",       k:"r", t:"Rectangle - hold Shift to fill (R)"},
+    {id:"anchor", i:"anchor",     k:"a", t:"Rig anchor - mark where a slot attaches (A)"},
+  ];
+
+  /* ── the hot wheel: fixed angular slots ───────────────────────────────────
+   * Ctrl+right-click on the canvas puts the rail under the cursor, so a stroke
+   * never has to travel to the edge of the screen to change tool.
+   *
+   * The ENTIRE value of a radial menu is that after a week your hand knows
+   * "up-left is the eraser" without reading anything. That only survives if the
+   * angles are constants. So: twelve slots, 30° apart, and an entry keeps its
+   * angle forever. Nothing here reorders by recency, frequency or context — an
+   * entry that is unavailable right now is DIMMED IN PLACE, never removed, so
+   * the gap never closes and the slot after it never moves.
+   *
+   * The order is not arbitrary either. The seven tools walk CLOCKWISE FROM
+   * 12 O'CLOCK in exactly the order they sit top-to-bottom in the left rail, so
+   * a hand that already knows the rail already knows the wheel. That fills the
+   * right half (0°–180°); the five mid-stroke options fill the left half
+   * (210°–330°). Tools right, options left.
+   *
+   * What is NOT here, deliberately: the sheet-grid detector, cell/frame sizing
+   * and de-halo (setup you do once per sheet, not mid-stroke), redo (Ctrl+
+   * Shift+Z, and the slot is worth more to `grid`), focus (set once; clicking
+   * another cell retargets anyway), frame prev/next (ArrowLeft/Right are
+   * already under the resting hand), and everything below it in the sidebar —
+   * flips, nudges, animations, rig save, regeneration, preview, history. A
+   * wheel that carries everything is a sidebar you have to aim at.
+   *
+   * Every entry is reachable without the wheel. It is a second path, never the
+   * only one.
+   */
+  const WHEEL_SLOTS = 12;
+  const WHEEL_STEP  = 360 / WHEEL_SLOTS;
+  const WHEEL_R_MAX = 108, WHEEL_R_MIN = 68;
+  const BRUSH_STEPS = [1, 2, 3, 4, 6, 8, 12, 16];
+  const ONION_ORDER = ["off", "prev", "both", "all"];
+
+  const WHEEL = [
+    {a:  0, kind:"tool", id:"pencil", i:"brush",      lab:"pencil"},
+    {a: 30, kind:"tool", id:"eraser", i:"eraser",     lab:"eraser"},
+    {a: 60, kind:"tool", id:"bucket", i:"fill",       lab:"fill"},
+    {a: 90, kind:"tool", id:"picker", i:"eyedropper", lab:"eyedropper"},
+    {a:120, kind:"tool", id:"line",   i:"line",       lab:"line"},
+    {a:150, kind:"tool", id:"rect",   i:"rect",       lab:"rectangle"},
+    {a:180, kind:"tool", id:"anchor", i:"anchor",     lab:"rig anchor"},
+    {a:210, kind:"act",  id:"undo",   i:"undo",       lab:"undo"},
+    {a:240, kind:"act",  id:"brush",  i:"brush",      lab:"brush size"},
+    {a:270, kind:"act",  id:"colour", i:"theme",      lab:"colour"},
+    {a:300, kind:"act",  id:"grid",   i:"snap_grid",  lab:"grid"},
+    {a:330, kind:"act",  id:"onion",  i:"onion",      lab:"onion"},
   ];
 
   const SLOT_COLOR = {
@@ -107,7 +163,14 @@ window.SpriteEdit = (() => {
       ".se-btn.go{background:var(--ember);color:var(--bg);border-color:var(--ember);font-weight:var(--fw-semi)}",
       ".se-body{flex:1;display:flex;min-height:0}",
       ".se-tools{width:52px;flex:none;background:var(--iron);border-right:1px solid var(--seam);padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:5px;overflow-y:auto}",
-      ".se-tool{width:36px;height:36px;display:grid;place-items:center;background:var(--plate);border:1px solid var(--seam);border-radius:8px;color:var(--ash);font-size:16px;cursor:pointer;flex:none}",
+      ".se-tool{width:36px;height:36px;display:grid;place-items:center;background:var(--plate);border:1px solid var(--seam);border-radius:8px;color:var(--ash);font:inherit;font-size:16px;padding:0;cursor:pointer;flex:none}",
+      // Icon + label buttons: the svg has to sit on the text's centre line, and
+      // a baseline-aligned inline svg does not.
+      ".se-btn{display:inline-flex;align-items:center;gap:6px}",
+      ".se-btn .bgi{flex:none}",
+      // The "unsaved"/"labelled" marks were the bullet character. Drawn, so
+      // they are the same disc at every size on every machine.
+      ".se-mark{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block;vertical-align:middle;margin-right:5px}",
       ".se-tool:hover{border-color:var(--ember);color:var(--bone)}",
       ".se-tool.on{background:var(--ember);border-color:var(--ember);color:var(--bg)}",
       ".se-stage{flex:1;position:relative;min-width:0;overflow:hidden;background:var(--bg)}",
@@ -155,7 +218,7 @@ window.SpriteEdit = (() => {
       ".se-fr .dots{position:absolute;right:2px;bottom:2px;display:flex;gap:2px}",
       ".se-fr .dots i{width:5px;height:5px;border-radius:50%;display:block}",
       ".se-fr.picked{border-color:var(--text);box-shadow:0 0 0 1px var(--text)}",
-      ".se-fr.picked::after{content:'●';position:absolute;right:3px;top:1px;font-size:8px;color:var(--text)}",
+      ".se-fr.picked::after{content:'';position:absolute;right:3px;top:3px;width:6px;height:6px;border-radius:50%;background:var(--text)}",
       // hand buttons
       ".se-hands{display:flex;gap:6px}",
       ".se-hand{flex:1;display:flex;align-items:center;gap:6px;padding:7px 9px;background:var(--plate);border:1px solid var(--seam);border-radius:8px;color:var(--ash);font:inherit;font-size:11.5px;cursor:pointer;position:relative}",
@@ -201,6 +264,38 @@ window.SpriteEdit = (() => {
       ".se-pick-i .m{margin-left:auto;color:var(--ash2);font-size:10px}",
       ".se-tag{font-size:9px;padding:1px 5px;border-radius:999px;border:1px solid var(--seam);color:var(--ash2)}",
       ".se-tag.on{border-color:var(--good);color:var(--good)}",
+
+      /* the hot wheel. `inset:0` on .se-back, so in the Studio tab it is
+         clipped to the embedded host and can never escape onto the page. */
+      ".se-wheelwrap{position:absolute;inset:0;z-index:30;touch-action:none}",
+      // Everything inside is paint. All hit-testing is done on geometry against
+      // the stored centre, so aiming works on the whole 30° sector rather than
+      // only on the 46px disc, and the buttons never steal the pointer stream.
+      ".se-wheel{position:absolute;pointer-events:none;user-select:none;animation:se-wpop .11s ease-out}",
+      "@keyframes se-wpop{from{opacity:.25;transform:scale(.9)}to{opacity:1;transform:scale(1)}}",
+      ".se-wring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;" +
+        "border:1px solid var(--line);box-shadow:0 0 0 1px var(--accent-wash),0 12px 44px rgba(0,0,0,.6)}",
+      // Opaque: it carries text over pixel art. --solid-1, never --surface-N.
+      ".se-whub{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);border-radius:50%;" +
+        "background:var(--solid-1);border:1px solid var(--line-strong);display:grid;place-items:center}",
+      ".se-wlab{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);white-space:nowrap;" +
+        "max-width:184px;overflow:hidden;text-overflow:ellipsis;background:var(--solid-1);" +
+        "border:1px solid var(--line);border-radius:var(--r-full);padding:3px 10px;" +
+        "font-family:var(--mono);font-size:10px;color:var(--text-2);text-align:center}",
+      ".se-wi{position:absolute;transform:translate(-50%,-50%);width:var(--wb);height:var(--wb);" +
+        "border-radius:50%;background:var(--solid-2);border:1px solid var(--line-strong);" +
+        "color:var(--text-2);display:grid;place-items:center;padding:0;font:inherit}",
+      ".se-wi.on{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}",
+      ".se-wi.hot{border-color:var(--accent);color:var(--text);z-index:2;" +
+        "box-shadow:0 0 0 2px var(--accent),0 0 22px var(--accent-soft);" +
+        "transform:translate(-50%,-50%) scale(1.12)}",
+      ".se-wi.on.hot{color:var(--accent-fg)}",
+      // Unavailable keeps its angle and dims. Closing the gap would move every
+      // slot after it and cost the muscle memory the wheel exists for.
+      ".se-wi.off{opacity:.34}",
+      ".se-wi.off.hot{border-color:var(--line-strong);box-shadow:0 0 0 2px var(--line-strong)}",
+      ".se-wnum{font-family:var(--mono);font-size:14px;color:inherit;font-variant-numeric:tabular-nums}",
+      ".se-wsw{width:58%;height:58%;border-radius:50%;border:1px solid var(--line-strong);display:block}",
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -250,7 +345,7 @@ window.SpriteEdit = (() => {
       preview: { on: false, fps: 8, i: 0, timer: null, row: "sheet" },
       undo: [], redo: [], undoBytes: 0,
       dirty: false, rigDirty: false,
-      drag: null, hover: null, clip: null,
+      drag: null, hover: null, clip: null, wheel: null,
       picked: new Set(),        // frames selected for a batch regeneration
       regen: { prompt: "", quality: "medium", busy: false, results: [],
                status: null },
@@ -267,7 +362,7 @@ window.SpriteEdit = (() => {
   async function close(silent){
     if (S && S.dirty && !silent && !(await askConfirm({
       title: "You have unsaved pixel edits. Close anyway?",
-      body: "The undo history closes with the sheet — reopening it reads the file on disk.",
+      body: "The undo history closes with the sheet - reopening it reads the file on disk.",
       ok: "close anyway", danger: true,
     }))) return;
     if (S){
@@ -275,6 +370,7 @@ window.SpriteEdit = (() => {
       if (S.onResize) window.removeEventListener("resize", S.onResize);
     }
     previewStop();
+    wheelClose();          // its listeners live on window, not on the torn-down DOM
     const back = document.getElementById("se-back");
     if (back) back.remove();
     document.removeEventListener("keydown", onKey, true);
@@ -370,7 +466,7 @@ window.SpriteEdit = (() => {
     const shown = _pickCat ? _pickAll.filter(s => categoryOf(s.rel) === _pickCat) : _pickAll;
     const n = document.getElementById("se-pick-n");
     if (n) n.textContent = _pickTruncated
-      ? `${_pickAll.length} of ${_pickTotal} — narrow the filter`
+      ? `${_pickAll.length} of ${_pickTotal} - narrow the filter`
       : `${shown.length} editable image${shown.length === 1 ? "" : "s"}`;
 
     const list = document.getElementById("se-pick-list");
@@ -400,9 +496,11 @@ window.SpriteEdit = (() => {
         <span class="se-title">sprite editor</span>
         <span class="se-sub" id="se-name"></span>
         <span class="se-spacer"></span>
-        <button class="se-btn" id="se-undo" onclick="SpriteEdit.undo()" title="Undo (Ctrl+Z)">↶</button>
-        <button class="se-btn" id="se-redo" onclick="SpriteEdit.redo()" title="Redo (Ctrl+Shift+Z)">↷</button>
-        <button class="se-btn" onclick="SpriteEdit.fit()" title="Fit to view (0)">⊡ fit</button>
+        <button class="se-btn" id="se-undo" onclick="SpriteEdit.undo()"
+                title="Undo (Ctrl+Z)" aria-label="Undo">${I("undo")}</button>
+        <button class="se-btn" id="se-redo" onclick="SpriteEdit.redo()"
+                title="Redo (Ctrl+Shift+Z)" aria-label="Redo">${I("redo")}</button>
+        <button class="se-btn" onclick="SpriteEdit.fit()" title="Fit to view (0)">fit</button>
         <button class="se-btn" onclick="SpriteEdit.pick()">open…</button>
         <button class="se-btn go" id="se-save" onclick="SpriteEdit.save()">save sheet</button>
         <button class="se-btn se-closebtn" onclick="SpriteEdit.close()">close</button>
@@ -433,8 +531,9 @@ window.SpriteEdit = (() => {
     };
     $.ctx = $.view.getContext("2d");
     $.tools.innerHTML = TOOLS.map(t =>
-      `<div class="se-tool" data-tool="${t.id}" title="${E(t.t)}"
-            onclick="SpriteEdit.setTool('${t.id}')">${t.g}</div>`).join("");
+      `<button class="se-tool" type="button" data-tool="${t.id}" title="${E(t.t)}"
+               aria-label="${E(t.t)}"
+               onclick="SpriteEdit.setTool('${t.id}')">${I(t.i, 18)}</button>`).join("");
     bindStage();
     document.addEventListener("keydown", onKey, true);
     if (window.ResizeObserver){
@@ -814,7 +913,7 @@ window.SpriteEdit = (() => {
     if (u) u.disabled = !S.undo.length;
     if (r) r.disabled = !S.redo.length;
     if ($.name) $.name.innerHTML =
-      `${E(S.rel)}${S.dirty ? ' <span class="se-dirty">● unsaved</span>' : ""}`;
+      `${E(S.rel)}${S.dirty ? ' <span class="se-dirty"><span class="se-mark"></span>unsaved</span>' : ""}`;
     renderHistory();
   }
 
@@ -1013,6 +1112,18 @@ window.SpriteEdit = (() => {
     const v = $.view;
     v.addEventListener("pointerdown", ev => {
       if (!S) return;
+      /* Ctrl+right is the hot wheel — tested BEFORE the pan branch and before
+         setPointerCapture(). Before the pan branch because right-drag has
+         panned this canvas since the day it shipped and must keep panning;
+         before the capture because the wheel wants the move/up stream on
+         window, and a capture on the canvas would hide it. Right WITHOUT ctrl
+         falls straight through to the pan, byte for byte as before. */
+      if (ev.button === 2 && (ev.ctrlKey || ev.metaKey)){
+        ev.preventDefault(); ev.stopPropagation();
+        wheelOpen(ev.clientX, ev.clientY);
+        return;
+      }
+      if (S.wheel){ wheelClose(); return; }
       v.setPointerCapture(ev.pointerId);
       const p = toImage(ev);
       if (ev.button === 1 || ev.button === 2 || ev.altKey || S.space){
@@ -1111,6 +1222,264 @@ window.SpriteEdit = (() => {
     }, {passive:false});
   }
 
+  /* ── the hot wheel ─────────────────────────────────────────────────────────
+   * Two ways in, because the two kinds of user are not the same person:
+   *
+   *   FLICK   press Ctrl+right, drag in a direction, release. No reading, no
+   *           second click — this is the one that becomes reflex.
+   *   LATCH   Ctrl+right and let go without moving. The wheel stays up and you
+   *           click what you want. This is the one that teaches the first.
+   *
+   * Releasing in the middle, pressing Escape, or clicking outside the ring all
+   * cancel with nothing selected. A cycler (brush size, grid, onion) keeps a
+   * latched wheel open so you can tap it twice; everything else closes.
+   *
+   * The centre is nailed to the press point and the angles are constants, so
+   * the direction of every entry is identical on every open. Near an edge the
+   * RADIUS shrinks before the centre moves, and the centre only slides as a
+   * last resort in a host too small to hold the floor size — neither changes
+   * an angle, which is the only thing the hand remembers.
+   */
+  function wheelHostBox(){
+    const r = $.back.getBoundingClientRect();
+    const pad = 6;
+    return {
+      l: Math.max(r.left, 0) + pad,
+      t: Math.max(r.top, 0) + pad,
+      r: Math.min(r.right, window.innerWidth || r.right) - pad,
+      b: Math.min(r.bottom, window.innerHeight || r.bottom) - pad,
+      ox: r.left, oy: r.top,
+    };
+  }
+
+  function nextBrush(){
+    const i = BRUSH_STEPS.indexOf(S.brush);
+    if (i >= 0) return BRUSH_STEPS[(i + 1) % BRUSH_STEPS.length];
+    return BRUSH_STEPS.find(v => v > S.brush) || BRUSH_STEPS[0];
+  }
+  function nextOnion(){
+    const i = ONION_ORDER.indexOf(S.onion);
+    return ONION_ORDER[(i < 0 ? 0 : i + 1) % ONION_ORDER.length];
+  }
+
+  /* One entry per fixed slot, always WHEEL_SLOTS of them, always in slot order.
+     `off` dims without moving anything. */
+  function wheelItems(){
+    const w = S.wheel;
+    if (w && w.page === "colour"){
+      const pal = (w.pal || []).slice(0, WHEEL_SLOTS);
+      return WHEEL.map((s, i) => {
+        const c = pal[i] || null;
+        return { a:s.a, id:"swatch", colour:c, off:!c, on:!!c && !!S.color &&
+                 c.toLowerCase() === String(S.color).toLowerCase(),
+                 lab: c || "-",
+                 html: c ? `<span class="se-wsw" style="background:${E(c)}"></span>` : "" };
+      });
+    }
+    return WHEEL.map(s => wheelFace(s));
+  }
+
+  function wheelFace(s){
+    const o = { a:s.a, id:s.id, kind:s.kind, lab:s.lab, on:false, off:false, html:I(s.i, 20) };
+    if (s.kind === "tool"){
+      const t = TOOLS.find(x => x.id === s.id);
+      o.on = S.tool === s.id;
+      o.lab = t ? `${s.lab} (${t.k.toUpperCase()})` : s.lab;
+      return o;
+    }
+    const multi = frameCount() > 1;
+    if (s.id === "undo"){
+      o.off = !S.undo.length;
+      o.lab = S.undo.length ? `undo ${S.undo[S.undo.length - 1].label}` : "nothing to undo";
+    } else if (s.id === "brush"){
+      o.html = `<b class="se-wnum">${S.brush}</b>`;
+      o.lab = `brush ${S.brush} → ${nextBrush()}`;
+    } else if (s.id === "colour"){
+      o.html = `<span class="se-wsw" style="background:${E(S.color)}"></span>`;
+      o.off = !(S.wheel && S.wheel.pal && S.wheel.pal.length);
+      o.lab = o.off ? "sheet has no colours" : `colour · ${S.color}`;
+    } else if (s.id === "grid"){
+      o.on = !!S.showGrid;
+      o.off = !multi;
+      o.lab = o.off ? "one frame - no grid" : (S.showGrid ? "grid on → off" : "grid off → on");
+    } else if (s.id === "onion"){
+      o.on = S.onion !== "off";
+      o.off = !multi;
+      o.lab = o.off ? "one frame - no onion" : `onion ${S.onion} → ${nextOnion()}`;
+    }
+    return o;
+  }
+
+  function wheelOpen(clientX, clientY){
+    if (!S || !$.back) return;
+    wheelClose();
+    const box = wheelHostBox();
+    // Radius follows the HOST, not the cursor: a wheel that resized every time
+    // you clicked nearer an edge would cost the distance memory as surely as a
+    // reorder costs the direction memory.
+    const R = clamp(Math.min(box.r - box.l, box.b - box.t) / 2 / 1.24,
+                    WHEEL_R_MIN, WHEEL_R_MAX);
+    const btn = clamp(Math.round(R * 0.42), 28, 46);
+    const need = R + btn / 2 + 2;
+    const cx = clamp(clientX, box.l + need, Math.max(box.l + need, box.r - need));
+    const cy = clamp(clientY, box.t + need, Math.max(box.t + need, box.b - need));
+    S.wheel = { cx, cy, R, btn, mode:"press", page:"root", idx:-1,
+                t0: Date.now(), sx: clientX, sy: clientY, moved: 0,
+                pal: palette(), items: [] };
+    wheelRender();
+    window.addEventListener("pointermove", onWheelMove, true);
+    window.addEventListener("pointerup", onWheelUp, true);
+    window.addEventListener("pointercancel", onWheelCancelPtr, true);
+    window.addEventListener("pointerdown", onWheelDown, true);
+    window.addEventListener("contextmenu", onWheelMenu, true);
+  }
+
+  function wheelRender(){
+    const w = S && S.wheel;
+    if (!w || !$.back) return;
+    w.items = wheelItems();
+    const box = wheelHostBox();
+    const rim = w.R + w.btn / 2 + 4;
+    const hub = Math.max(30, Math.round(w.R * 0.34));
+
+    let wrap = document.getElementById("se-wheel");
+    if (!wrap){
+      wrap = document.createElement("div");
+      wrap.className = "se-wheelwrap";
+      wrap.id = "se-wheel";
+      $.back.appendChild(wrap);
+    }
+    wrap.innerHTML =
+      `<div class="se-wheel" style="left:${(w.cx - box.ox - rim).toFixed(1)}px;` +
+        `top:${(w.cy - box.oy - rim).toFixed(1)}px;width:${(rim*2).toFixed(1)}px;` +
+        `height:${(rim*2).toFixed(1)}px;--wb:${w.btn}px">` +
+      `<div class="se-wring" style="width:${w.R*2}px;height:${w.R*2}px"></div>` +
+      `<div class="se-whub" style="width:${hub*2}px;height:${hub*2}px"></div>` +
+      w.items.map((it, i) => {
+        const th = it.a * Math.PI / 180;
+        const x = rim + w.R * Math.sin(th), y = rim - w.R * Math.cos(th);
+        return `<div class="se-wi${it.on ? " on" : ""}${it.off ? " off" : ""}" ` +
+          `data-i="${i}" role="img" aria-label="${E(it.lab)}" ` +
+          `style="left:${x.toFixed(1)}px;top:${y.toFixed(1)}px">${it.html}</div>`;
+      }).join("") +
+      `<span class="se-wlab" id="se-wlab"></span></div>`;
+    w.idx = -2;                       // force wheelHot() to paint the first label
+    wheelHot(-1);
+  }
+
+  function wheelHot(i){
+    const w = S && S.wheel;
+    if (!w || w.idx === i) return;
+    w.idx = i;
+    const wrap = document.getElementById("se-wheel");
+    if (!wrap) return;
+    wrap.querySelectorAll(".se-wi").forEach(
+      el => el.classList.toggle("hot", Number(el.dataset.i) === i));
+    const lab = wrap.querySelector("#se-wlab");
+    if (lab) lab.textContent = (i >= 0 && w.items[i]) ? w.items[i].lab : "cancel";
+  }
+
+  /* Which slot a point aims at. Angle only — never distance — so the answer is
+     the same whether the wheel drew at 108px or shrank to 68px in a narrow
+     Studio pane. Inside the hub is the cancel zone and aims at nothing. */
+  function wheelAim(x, y){
+    const w = S.wheel;
+    const dx = x - w.cx, dy = y - w.cy;
+    if (Math.hypot(dx, dy) < Math.max(30, w.R * 0.34)) return -1;
+    let th = Math.atan2(dx, -dy) * 180 / Math.PI;
+    if (th < 0) th += 360;
+    return Math.round(th / WHEEL_STEP) % WHEEL_SLOTS;
+  }
+
+  function onWheelMove(ev){
+    const w = S && S.wheel;
+    if (!w) return;
+    // The FURTHEST the gesture ever got, not where it ended. Someone who drags
+    // out to the eraser, changes their mind and comes back to the middle has
+    // made a gesture and cancelled it; measuring only the final delta would
+    // read that as a tap and leave the wheel up.
+    w.moved = Math.max(w.moved, Math.hypot(ev.clientX - w.sx, ev.clientY - w.sy));
+    wheelHot(wheelAim(ev.clientX, ev.clientY));
+  }
+
+  function onWheelUp(ev){
+    const w = S && S.wheel;
+    if (!w || w.mode !== "press") return;
+    ev.preventDefault(); ev.stopPropagation();
+    // A tap that went nowhere is "show me the wheel", not "pick nothing".
+    if (w.moved < 6 && Date.now() - w.t0 < 320){ w.mode = "open"; return; }
+    const i = wheelAim(ev.clientX, ev.clientY);
+    if (i < 0) wheelClose(); else wheelPick(i);
+  }
+
+  /* Any pointerdown AFTER the one that opened the wheel — the opening event was
+     already dispatched before these listeners existed, so it never lands here.
+     Deliberately not gated on mode: a flick whose pointerup went missing (the
+     pointer left the window mid-gesture) would otherwise leave a wheel that
+     nothing could click. */
+  function onWheelDown(ev){
+    const w = S && S.wheel;
+    if (!w) return;
+    ev.preventDefault(); ev.stopPropagation();
+    w.mode = "open";
+    // Outside the ring entirely: clicked away.
+    if (Math.hypot(ev.clientX - w.cx, ev.clientY - w.cy) > w.R + w.btn) return wheelClose();
+    const i = wheelAim(ev.clientX, ev.clientY);
+    if (i < 0) wheelClose(); else wheelPick(i);
+  }
+
+  function onWheelMenu(ev){ if (S && S.wheel){ ev.preventDefault(); ev.stopPropagation(); } }
+
+  // A cancelled gesture picked nothing, but it should not eat the wheel either:
+  // leave it up as if it had been tapped open.
+  function onWheelCancelPtr(){ if (S && S.wheel) S.wheel.mode = "open"; }
+
+  function wheelClose(){
+    window.removeEventListener("pointermove", onWheelMove, true);
+    window.removeEventListener("pointerup", onWheelUp, true);
+    window.removeEventListener("pointercancel", onWheelCancelPtr, true);
+    window.removeEventListener("pointerdown", onWheelDown, true);
+    window.removeEventListener("contextmenu", onWheelMenu, true);
+    const wrap = document.getElementById("se-wheel");
+    if (wrap) wrap.remove();
+    if (S) S.wheel = null;
+  }
+
+  function wheelPick(i){
+    const w = S && S.wheel;
+    if (!w) return;
+    const it = w.items[i];
+    if (!it || it.off) return wheelClose();     // dimmed slot: cancel, no surprise
+    const latched = w.mode === "open";
+
+    if (w.page === "colour"){
+      wheelClose();
+      if (it.colour) setColor(it.colour);
+      return;
+    }
+    if (it.kind === "tool"){ wheelClose(); setTool(it.id); return; }
+
+    switch (it.id){
+      case "undo":
+        wheelClose(); undo(); return;
+      case "colour":
+        // The sheet's own top colours, at the same twelve angles. One extra
+        // flick, no new geometry to learn.
+        w.page = "colour"; w.mode = "open"; wheelRender(); return;
+      case "brush":
+        S.brush = nextBrush(); renderSide(); break;
+      case "grid":
+        S.showGrid = !S.showGrid; renderSide(); paint(); break;
+      case "onion":
+        setOnion(nextOnion()); break;
+      default:
+        wheelClose(); return;
+    }
+    // Cyclers: a latched wheel stays up so you can tap to the value you want. A
+    // flick is one gesture and ends where it ends.
+    if (latched) wheelRender(); else wheelClose();
+  }
+
   function pickColor(p){
     if (p.x<0||p.y<0||p.x>=S.w||p.y>=S.h) return;
     const [r,g,b,a] = pixelAt(p.x, p.y);
@@ -1122,6 +1491,12 @@ window.SpriteEdit = (() => {
 
   function onKey(ev){
     if (!S) return;
+    // Above the input guard on purpose: the wheel can be up while focus is
+    // still in a sidebar field, and there Escape must close the wheel rather
+    // than blur the field — or close the whole editor.
+    if (S.wheel && ev.key === "Escape"){
+      ev.preventDefault(); ev.stopPropagation(); wheelClose(); return;
+    }
     const t = ev.target;
     // This listener is on document in the CAPTURE phase, so it sees keys before
     // anything an ask dialog stops. Escape there means "cancel the question",
@@ -1366,12 +1741,18 @@ window.SpriteEdit = (() => {
       <div class="se-h">frames</div>
       <div class="se-strip" id="se-strip"></div>
       <div class="se-row" style="margin-top:8px;flex-wrap:wrap">
-        <button class="se-btn" title="Flip horizontally" onclick="SpriteEdit.frameOp('fliph')">⇋</button>
-        <button class="se-btn" title="Flip vertically" onclick="SpriteEdit.frameOp('flipv')">⇅</button>
-        <button class="se-btn" title="Nudge left" onclick="SpriteEdit.frameOp('left')">←</button>
-        <button class="se-btn" title="Nudge right" onclick="SpriteEdit.frameOp('right')">→</button>
-        <button class="se-btn" title="Nudge up" onclick="SpriteEdit.frameOp('up')">↑</button>
-        <button class="se-btn" title="Nudge down" onclick="SpriteEdit.frameOp('down')">↓</button>
+        <button class="se-btn" title="Flip horizontally" aria-label="Flip horizontally"
+                onclick="SpriteEdit.frameOp('fliph')">${I("flip_h")}</button>
+        <button class="se-btn" title="Flip vertically" aria-label="Flip vertically"
+                onclick="SpriteEdit.frameOp('flipv')">${I("flip_v")}</button>
+        <button class="se-btn" title="Nudge this frame one pixel left"
+                onclick="SpriteEdit.frameOp('left')">nudge left</button>
+        <button class="se-btn" title="Nudge this frame one pixel right"
+                onclick="SpriteEdit.frameOp('right')">right</button>
+        <button class="se-btn" title="Nudge this frame one pixel up"
+                onclick="SpriteEdit.frameOp('up')">up</button>
+        <button class="se-btn" title="Nudge this frame one pixel down"
+                onclick="SpriteEdit.frameOp('down')">down</button>
         <button class="se-btn" onclick="SpriteEdit.frameOp('copy')">copy</button>
         <button class="se-btn" onclick="SpriteEdit.frameOp('paste')">paste</button>
         <button class="se-btn" onclick="SpriteEdit.frameOp('clear')">clear</button>
@@ -1404,7 +1785,7 @@ window.SpriteEdit = (() => {
       ${labels.length ? labels.map(l => `
         <div class="se-lab"><i style="background:${slotColor(l.slot)}"></i>
           ${E(l.slot)} · ${l.x},${l.y}
-          <span class="x" title="remove" onclick="SpriteEdit.dropLabel(${l.frame},'${E(l.slot)}')">✕</span></div>`).join("")
+          <span class="x" title="remove this label" role="button" aria-label="remove this label" onclick="SpriteEdit.dropLabel(${l.frame},'${E(l.slot)}')">${I("delete", 13)}</span></div>`).join("")
         : `<div class="se-note se-warn">frame ${S.frame} has no labels</div>`}
       <div class="se-row" style="margin-top:7px">
         <button class="se-btn" onclick="SpriteEdit.spreadLabels()">spread to all frames</button>
@@ -1421,7 +1802,7 @@ window.SpriteEdit = (() => {
             <input class="se-in" value="${E(a.name)}" oninput="SpriteEdit.animField(${i},'name',this.value)">
             <label title="loop"><input type="checkbox" ${a.loop?"checked":""}
               onchange="SpriteEdit.animField(${i},'loop',this.checked)"></label>
-            <span class="x" style="cursor:pointer;color:var(--ash2)" onclick="SpriteEdit.dropAnimation(${i})">✕</span>
+            <span class="x" style="cursor:pointer;color:var(--ash2)" title="remove this animation" role="button" aria-label="remove this animation" onclick="SpriteEdit.dropAnimation(${i})">${I("delete", 13)}</span>
           </div>
           <input class="se-in" value="${a.frames.join(", ")}"
                  oninput="SpriteEdit.animField(${i},'frames',this.value)">
@@ -1436,7 +1817,7 @@ window.SpriteEdit = (() => {
 
       <div class="se-h">save</div>
       <div class="se-row"><button class="se-btn" style="flex:1" id="se-rigsave"
-        onclick="SpriteEdit.saveRig()">save rig${S.rigDirty ? " ●" : ""}</button></div>
+        onclick="SpriteEdit.saveRig()">${S.rigDirty ? '<span class="se-mark"></span>' : ""}save rig</button></div>
       <div class="se-row"><button class="se-btn" style="flex:1"
         onclick="SpriteEdit.exportFrames()">export SpriteFrames .tres</button></div>
       <div class="se-note">The sidecar is <b>${E((S.info && S.info.sidecar) || "")}</b> —
@@ -1449,7 +1830,7 @@ window.SpriteEdit = (() => {
       </div>
       <div class="se-row">
         <button class="se-btn${S.preview.on ? " on" : ""}" style="flex:1"
-          onclick="SpriteEdit.previewToggle()">${S.preview.on ? "❚❚ pause" : "▶ play"}</button>
+          onclick="SpriteEdit.previewToggle()">${S.preview.on ? I("pause") + " pause" : I("run") + " play"}</button>
         <label class="se-fps">fps
           <input class="se-in" type="number" min="1" max="60" value="${S.preview.fps}"
                  style="width:52px" onchange="SpriteEdit.previewField('fps',this.value)"></label>
@@ -1481,7 +1862,7 @@ window.SpriteEdit = (() => {
     return `<button class="se-hand${S.slot === h.slot ? " on" : ""}${has ? " has" : ""}"
       style="--hc:${slotColor(h.slot)}" title="${E(h.label)}"
       onclick="SpriteEdit.setSlot('${h.slot}')">
-      <i></i>${E(h.short)}<span class="tick">${has ? "✓" : ""}</span></button>`;
+      <i></i>${E(h.short)}<span class="tick">${has ? I("select", 13) : ""}</span></button>`;
   }
 
   function coverageNow(){
@@ -1643,7 +2024,7 @@ window.SpriteEdit = (() => {
     renderSide();
     const bad = S.regen.results.filter(x => x.error).length;
     say(bad ? `${S.regen.results.length - bad} of ${S.regen.results.length} frames came back`
-            : `${S.regen.results.length} frame(s) ready — accept or discard each`,
+            : `${S.regen.results.length} frame(s) ready - accept or discard each`,
         bad ? undefined : "ok");
   }
 
@@ -1680,7 +2061,7 @@ window.SpriteEdit = (() => {
     S.regen.results = S.regen.results.filter(r => r.error);
     S.dirty = true;
     refreshHistory(); renderSide(); paint(); thumbs();
-    say(`${pending.length} frame(s) applied — save the sheet to keep them`, "ok");
+    say(`${pending.length} frame(s) applied - save the sheet to keep them`, "ok");
   }
 
   function dropRegen(i){ S.regen.results.splice(i, 1); renderSide(); }
@@ -1746,7 +2127,6 @@ window.SpriteEdit = (() => {
     S.mtime = r.data.mtime;
     refreshHistory();
     say(`saved · previous copy at ${r.data.backup}`, "ok");
-    try { if (window.Atlas) Atlas.badge(); } catch (e) {}
   }
 
   async function saveRig(){
@@ -1773,7 +2153,6 @@ window.SpriteEdit = (() => {
     const r = await mutate("/api/sprite/spriteframes", {body:{rel:S.rel}});
     if (!r.ok) return;
     say(`wrote ${r.data.written} · ${(r.data.animations||[]).join(", ")}`, "ok");
-    try { if (window.Atlas) Atlas.badge(); } catch (e) {}
   }
 
   function setColor(v){ if (S){ S.color = v; renderSide(); } }
@@ -1783,6 +2162,13 @@ window.SpriteEdit = (() => {
   // Studio entry point: render into `host` instead of over the whole page.
   function embed(host, rel){
     _host = host || null;
+    // The landing card below is styled by the injected sheet, and every OTHER
+    // entry point injects it on the way in (open, pick). Landing here cold —
+    // which is exactly what opening the page does — therefore painted .se-land
+    // with no rules at all: no card, no centring, just a heading and a button
+    // in the top-left corner. audiolab.embed() has always carried this call;
+    // this one was missing it.
+    injectStyle();
     if (rel) return open(rel);
     // Landing state. Opening the tab used to fire the picker modal straight
     // away, which reads as an error dialog rather than as a workspace.
@@ -1797,8 +2183,27 @@ window.SpriteEdit = (() => {
   }
   function unembed(){ _host = null; }
 
+  /* The rail's Sprite editor page. Called by activateWorkspace every time the
+     view is shown, which includes coming BACK to it with a sheet still open, so
+     it must not be a remount: reparenting moves the node and a canvas keeps its
+     bitmap, where rebuilding from mount() would drop the undo history, the
+     picked frames and every bound key. */
+  function activate(){
+    const host = document.getElementById("se-page");
+    if (!host) return false;
+    _host = host;
+    if (!S) { embed(host); return true; }
+    if ($ && $.back && $.back.parentNode !== host){
+      $.back.classList.add("se-embed");
+      host.innerHTML = "";
+      host.appendChild($.back);
+    }
+    return true;
+  }
+
   return {
     open, close, pick, pickSearch, closePick, fit, undo, redo, save, saveRig, exportFrames,
+    activate,
     previewToggle, previewField, setOnion,
     embed, unembed,
     setTool, setColor, setBrush, setFrame, clickFrame, setSlot, dropLabel,

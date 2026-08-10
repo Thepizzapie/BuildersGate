@@ -49,8 +49,7 @@ window.AtlasCode = (() => {
   };
   const modeFor = name => MODE[String(name).split(".").pop().toLowerCase()] || null;
 
-  const atlasMap = () => (window.Atlas && Atlas.map)
-    || (window.AtlasGraph && AtlasGraph.map) || null;
+  const atlasMap = () => (window.Atlas && Atlas.map) || null;
 
   let host = null, cm = null, built = false;
   let scene = null, data = null, mainScene = null;
@@ -426,7 +425,7 @@ window.AtlasCode = (() => {
   }
 
   async function rebuild(){
-    out("exporting the web build — Godot takes a minute on a cold project…");
+    out("exporting the web build - Godot takes a minute on a cold project…");
     const r = await mutate("/api/play/rebuild", { body: {}, quiet: true,
                                                   button: "ac-rebuild" });
     if (!r.ok || (r.data && r.data.ok === false))

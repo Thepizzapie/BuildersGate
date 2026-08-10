@@ -20,12 +20,12 @@
   var PRESETS = {
     beat:    { title: "New beat", text: "" },
     outline: { title: "Story outline",
-               text: "Act 1 — setup:\nAct 2 — escalation:\nAct 3 — payoff:" },
+               text: "Act 1 - setup:\nAct 2 - escalation:\nAct 3 - payoff:" },
     lore:    { title: "Lore: topic",
                text: "Canon fact:\nWhy it matters to the story:" },
     note:    { title: "Note", text: "" }
   };
-  var HINT_EMPTY = "empty board — click “+ Panel” or pick a starter below";
+  var HINT_EMPTY = "empty board - click “+ Panel” or pick a starter below";
   var HINT_READY = "drag a panel header to move · scroll / drag empty canvas to pan";
 
   var LORE_KINDS = ["character", "faction", "place", "event", "item", "concept", "species"];
@@ -51,11 +51,42 @@
     render: function (container, bg) {
       try {
         this._bg = bg;
-        this._root = container;
+        this._host = container;
+        try {
+          this._mode = localStorage.getItem("nrt-mode") === "brainstorm"
+            ? "brainstorm" : "board";
+        } catch (e0) {}
+        // Two full-bleed tools, one seat: the storyboard and the brainstorm
+        // workspace take turns rather than stacking, because either one folded
+        // into half the pane is worse than both being one click apart.
+        container.innerHTML =
+          '<style>' +
+          '.nrt-modes{display:flex;gap:6px;margin-bottom:12px}' +
+          '.nrt-modebtn{display:flex;align-items:center;gap:6px;padding:5px 12px;' +
+            'background:var(--surface-2);border:1px solid var(--line);border-radius:8px;' +
+            'color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}' +
+          '.nrt-modebtn:hover{border-color:var(--accent);color:var(--text-2)}' +
+          '.nrt-modebtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}' +
+          '.nrt-brain{min-height:640px}' +
+          '</style>' +
+          '<div class="nrt-modes">' +
+            '<button class="nrt-modebtn" data-m="board">' + BGICON("narrative") + ' Storyboard</button>' +
+            '<button class="nrt-modebtn" data-m="brainstorm">' + BGICON("concept") + ' Brainstorm</button>' +
+          '</div>' +
+          '<div class="nrt-brain" id="nrt-brain" hidden></div>' +
+          '<div id="nrt-board"></div>';
+        var self = this;
+        container.querySelectorAll(".nrt-modebtn").forEach(function (b) {
+          b.addEventListener("click", function () { self._setMode(b.dataset.m); });
+        });
+        // Everything below writes into the board half; keeping `_root` pointed
+        // at it means no other method in this file had to learn about modes.
+        this._root = container.querySelector("#nrt-board");
         this._selected = null;
         this._linkMode = false;
         this._linkSrc = null;
         this._buildShell();
+        this._applyMode();
         this._load();
         this._loadLore();
       } catch (e) {
@@ -70,6 +101,42 @@
     // Called ~every 3s while the seat is active. Deliberately a no-op so it can
     // never clobber in-progress typing / dragging with a server reload.
     refresh: function () {},
+
+    /* ---- board / brainstorm ------------------------------------------- */
+    _setMode: function (mode) {
+      var next = mode === "brainstorm" ? "brainstorm" : "board";
+      if (next === this._mode) return;
+      this._mode = next;
+      try { localStorage.setItem("nrt-mode", next); } catch (e) {}
+      this._applyMode();
+    },
+
+    _applyMode: function () {
+      var host = this._host;
+      if (!host) return;
+      var brain = this._mode === "brainstorm";
+      var board = host.querySelector("#nrt-board");
+      var pad = host.querySelector("#nrt-brain");
+      if (board) board.hidden = brain;
+      if (pad) pad.hidden = !brain;
+      host.querySelectorAll(".nrt-modebtn").forEach(function (b) {
+        b.classList.toggle("on", (b.dataset.m === "brainstorm") === brain);
+      });
+      if (!brain) { this._unmountBrain(); return; }
+      if (!window.Brainstorm || !Brainstorm.mount) {
+        if (pad) pad.innerHTML = '<div class="empty">the brainstorm workspace did not load</div>';
+        return;
+      }
+      try { Brainstorm.mount(pad, { seat: "narrative" }); }
+      catch (e) { if (pad) pad.innerHTML = '<div class="empty">brainstorm failed to start</div>'; }
+    },
+
+    _unmountBrain: function () {
+      try { if (window.Brainstorm && Brainstorm.unmount) Brainstorm.unmount(); } catch (e) {}
+    },
+
+    // SeatShell calls this before the container is discarded.
+    unmount: function () { this._unmountBrain(); },
 
     /* ---- shell / static DOM ------------------------------------------- */
     _buildShell: function () {
@@ -103,7 +170,7 @@
               '<div class="nar-empty" id="nar-empty" hidden>' +
                 '<div class="nar-empty-inner">' +
                   '<div class="nar-empty-glyph">' + BGICON("narrative") + '</div>' +
-                  "<p>No panels yet — storyboard the game's beats here.</p>" +
+                  "<p>No panels yet - storyboard the game's beats here.</p>" +
                   '<p class="nar-empty-sub">Panels are draggable cards (title + text + optional image); Link mode draws the arrows between them. Start with:</p>' +
                   '<div class="nar-presets">' +
                     '<button class="nar-btn nar-primary" data-act="add" data-kind="beat">+ Beat</button>' +
@@ -152,7 +219,7 @@
         .catch(function (e) {
           console.warn("narrative load", e);
           self._adopt({});
-          self._setStatus("offline — starting empty", true);
+          self._setStatus("offline - starting empty", true);
         });
     },
 
@@ -272,7 +339,7 @@
 
     _setLinkSrc: function (id) {
       this._linkSrc = id;
-      this._setHint(id ? "source set — click a target panel (or the source again to cancel)"
+      this._setHint(id ? "source set - click a target panel (or the source again to cancel)"
                        : "LINK MODE: click a source panel, then a target");
       this._paintLinkState();
     },
@@ -640,8 +707,8 @@
       var self = this, bg = this._bg;
       var p = this._selectedPanel();
       var text = p ? this._panelText(p) : this._boardText();
-      if (!text) { bg.toast("nothing to check — write a panel first", true); return; }
-      var overlay = this._modal(p ? "Canon check — " + (p.title || "panel") : "Canon check — whole board",
+      if (!text) { bg.toast("nothing to check - write a panel first", true); return; }
+      var overlay = this._modal(p ? "Canon check - " + (p.title || "panel") : "Canon check - whole board",
         '<div class="empty">checking against canon…</div>');
       this._bg.post("/api/canon/check", { text: text }).then(function (r) {
         var body = overlay.querySelector(".nar-modal-body");
@@ -667,7 +734,7 @@
       var self = this, bg = this._bg;
       var p = this._selectedPanel();
       if (!p) { bg.toast("select a panel first", true); return; }
-      var opts = '<option value="">— none —</option>';
+      var opts = '<option value="">- none -</option>';
       for (var i = 0; i < this._lore.length; i++) {
         var e = this._lore[i];
         opts += '<option value="' + bg.esc(e.slug) + '"' + (e.slug === p.lore ? " selected" : "") + ">" +
@@ -676,7 +743,7 @@
       var kinds = LORE_KINDS.map(function (k) {
         return '<option value="' + k + '"' + (k === "concept" && p.kind === "lore" ? " selected" : "") + ">" + k + "</option>";
       }).join("");
-      var overlay = this._modal("Lore — " + (p.title || "panel"),
+      var overlay = this._modal("Lore - " + (p.title || "panel"),
         '<div class="nar-fieldrow"><label>Bind to an existing entity</label>' +
           '<select id="nar-lore-sel">' + opts + "</select>" +
           '<button class="nar-btn" id="nar-lore-bind">bind</button></div>' +
@@ -707,7 +774,7 @@
       var kind = overlay.querySelector("#nar-lore-kind").value;
       var status = overlay.querySelector("#nar-lore-status").value;
       var name = (p.title || "").trim();
-      if (!name) { out.innerHTML = '<div class="nar-flag hard">give the panel a title first — it becomes the entity name</div>'; return; }
+      if (!name) { out.innerHTML = '<div class="nar-flag hard">give the panel a title first - it becomes the entity name</div>'; return; }
       out.innerHTML = '<div class="empty">writing…</div>';
       var body = { kind: kind, name: name, summary: (p.text || "").slice(0, 2000), status: status };
       if (override) body.override = true;
@@ -718,7 +785,7 @@
           out.innerHTML = '<div class="nar-flag hard">' + bg.esc(err) + "</div>" +
             (flags.length ? self._flagHtml(flags) : "") +
             (flags.length && !override
-              ? '<button class="nar-btn nar-danger" id="nar-lore-force">override — I am a human and this is intended</button>'
+              ? '<button class="nar-btn nar-danger" id="nar-lore-force">override - I am a human and this is intended</button>'
               : "");
           var force = out.querySelector("#nar-lore-force");
           if (force) force.addEventListener("click", function () { self._createLore(p, overlay, out, true); });
@@ -792,7 +859,7 @@
         (p.lore ? "\n\nCanon entity: " + p.lore : "") +
         (p.img ? "\n\nReference image: " + p.img : "") +
         "\n\n(from the narrative storyboard, panel " + p.id + ")";
-      var overlay = this._modal("Queue work — " + (p.title || "panel"),
+      var overlay = this._modal("Queue work - " + (p.title || "panel"),
         '<div class="nar-fieldrow"><label>seat</label><select id="nar-w-seat">' + seats + "</select>" +
           '<label>priority</label><input id="nar-w-pri" type="number" min="0" max="5" value="2" style="width:64px"></div>' +
         '<div class="nar-fieldrow" style="flex-direction:column;align-items:stretch"><label>title</label>' +

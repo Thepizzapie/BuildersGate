@@ -70,6 +70,7 @@ from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
 from bgate_core import seats as _seats
 from bgate_core import bible as _bible
+from bgate_core import brainstorm as _bs
 from bgate_core import playtest as _playtest
 from bgate_core import scaffold as _scaffold
 from bgate_core import canon as _canon
@@ -659,8 +660,11 @@ def bgate_doctor(refresh: bool = False) -> dict:
     is-my-toolchain-here check. Results are cached a few seconds, so polling
     this is cheap; pass refresh=True right after installing something.
 
-    Returns {blender, godot, ffmpeg, ffprobe, whisper, openai_key, python},
-    each {available: bool, path, version, min_required, reason}. `reason` is
+    Returns {blender, godot, ffmpeg, ffprobe, whisper, art_key, python},
+    each {available: bool, path, version, min_required, reason}. `art_key` is
+    green when ANY registered art provider has a key (it used to probe
+    OPENAI_API_KEY alone and call a working Krea-only setup broken).
+    `reason` is
     filled in when available is False (missing, too old, or the probe hung) and
     says what to install or which BGATE_* env var points at it. Never raises.
     """
@@ -2286,6 +2290,12 @@ def image_status() -> dict:
             legs["krea"] = {"available": False,
                             "reason": f"{type(exc).__name__}: {exc}"}
         try:
+            from bgate_adapters import kie
+            legs["kie"] = dict(kie.available(root))
+        except Exception as exc:
+            legs["kie"] = {"available": False,
+                           "reason": f"{type(exc).__name__}: {exc}"}
+        try:
             from bgate_adapters import localgen
             legs["local"] = dict(localgen.status(probe=True))
         except Exception as exc:
@@ -2305,6 +2315,50 @@ def image_status() -> dict:
                       "no image provider is configured — set OPENAI_API_KEY or "
                       "KREA_API_KEY in the project's .env, or configure a local "
                       "ComfyUI (see the local leg's `how`)",
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def local_status() -> dict:
+    """Every generator running on THIS machine: 2D, 3D, and what each one needs.
+
+    The read half of the local setup surface. ``image_status`` answers for the
+    2D leg only and folds local in beside the hosted providers; this is the
+    whole local registry — the ComfyUI image path, every local image-to-3D
+    backend — each with a STAGE rather than a boolean, because "not set up",
+    "set up but nothing is running" and "running but the workflow file is gone"
+    are three different problems with three different fixes and a caller told
+    only "unavailable" cannot pick one.
+
+    READ ONLY, AND DELIBERATELY WITHOUT A WRITE COUNTERPART. Configuring a local
+    runtime writes the project's .env and repoints what every subsequent
+    generation runs; the dashboard gates that on a human (see
+    ``bgate_ui/routes/localsetup.py``) and an MCP tool that did it would be that
+    gate with a hole in it. The same reason there is no ``set_api_key`` tool.
+    Report the reason to the human instead — every row here carries the
+    adapter's own sentence, which is what to tell them.
+
+    Nothing here starts anything either. Builders Gate talks to software the
+    user runs; it does not run it.
+    """
+    try:
+        from bgate_core import localruntimes
+
+        root = _root()  # triggers .env load
+        rows = localruntimes.status(root, probe=True)
+        ready = [r["id"] for r in rows if r["available"]]
+        return {
+            "available": bool(ready),
+            "ready": ready,
+            "runtimes": rows,
+            "stages": localruntimes.STAGES,
+            "reason": "" if ready else
+                      "nothing local is running. Each row's `reason` says what "
+                      "it needs; a human sets that up in the dashboard under "
+                      "Settings → Local & agents. Hosted providers are "
+                      "unaffected — see image_status.",
         }
     except Exception as exc:
         return _fail(exc)
@@ -2370,7 +2424,15 @@ def _pick_provider(asked: str = "") -> str:
         return "openai"
     if os.environ.get("KREA_API_KEY"):
         return "krea"
-    # Neither configured: return the historical default so the error a caller
+    # kie LAST, and it is the only one of the three that has to be named to be
+    # used for anything else. Its image fields take public URLs only, so
+    # auto-selecting it would silently turn every anchored generation in the
+    # product into unanchored prompt-only work — see bgate_core.providers. A
+    # kie-only project still reaches this tool; it just gets told, once, that
+    # the pinned refs cannot come along.
+    if os.environ.get("KIE_API_KEY"):
+        return "kie"
+    # None configured: return the historical default so the error a caller
     # sees is the familiar "OPENAI_API_KEY not set", not a surprise about a
     # provider they never mentioned.
     return "openai"
@@ -2936,11 +2998,6 @@ def _palette_hist(path):
 
 def _hist_intersect(a, b) -> float:
     return sum(min(x, y) for x, y in zip(a, b))
-
-
-def _palette_similarity(ref_path, frame_path) -> float:
-    """Histogram intersection (0..1) of opaque-pixel colors."""
-    return _hist_intersect(_palette_hist(ref_path), _palette_hist(frame_path))
 
 
 def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
@@ -5637,6 +5694,504 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
+# Brainstorm — the cheap room, from the other door
+# ---------------------------------------------------------------------------
+# The dashboard grew this room and the tool list did not, which in a system with
+# two front doors means the capability did not exist for half of it: an agent
+# could file work on the board but could not see, join or continue the
+# conversation the work came out of, and a human who thought out loud in the
+# dashboard was invisible to the session they were talking to. These tools call
+# bgate_core.brainstorm — the same functions bgate_ui.routes.brainstorm calls —
+# so the two doors cannot drift on what a session IS.
+# tests/test_brainstorm_mcp.py asserts they haven't.
+#
+# WHAT DOES NOT COME ACROSS FOR FREE IS THE DISPATCH BAN, AND IT IS THE POINT.
+# On the web side "a message cannot dispatch" is nearly free: that process holds
+# no tools. Here it is the opposite — this module IS the tool set and queue_add
+# is a hundred lines down, so "it has no mechanism" stops being true by accident
+# and has to be true by construction. It is:
+#
+#   * brainstorm_say and brainstorm_synthesize reach a thinking partner only
+#     through brainstorm.ask, which spawns a CLI session built WITHOUT tools:
+#     an empty built-in tool set, no MCP server and --strict-mcp-config so it
+#     cannot inherit the one this very process is serving, no settings sources
+#     to add any of it back, and plan mode behind that. The partner used to be
+#     a bare chat-completions call; it is a real Claude Code session now, and
+#     the guarantee moved from "no tools were passed" to "no tools exist" —
+#     which matters most HERE, where the tool being withheld is the one this
+#     module is currently exporting;
+#   * brainstorm_deploy is the only function in this section that so much as
+#     names the queue, and it is the only one a machine may not call.
+@_tool
+def brainstorm_list(seat: Optional[str] = None, status: Optional[str] = None,
+                    limit: int = 50) -> dict:
+    """The brainstorm file drawer — what has been thought about, and what it filed.
+
+    THE CHEAP ROOM. A brainstorm session is where an idea is still an idea:
+    conversation, a writing pad and a drawing pad, none of which queue anything.
+    The board is the expensive room. Read a session before proposing work in its
+    area — half the "new" ideas an agent files were already argued out and cut
+    in a room nobody looked in.
+
+    seat: director (what to BUILD) | narrative (what is TRUE).
+    status: open | deployed | archived. Archived sorts last whatever you pass.
+
+    Titles and counts only — never the pads, which come one session at a time
+    from brainstorm_open, because an index that ships every scratch document is
+    an index nobody can afford to poll.
+    """
+    try:
+        root = _root()
+        if seat and seat not in _bs.SEATS:
+            return {"ok": False, "error": f"seat must be one of {_bs.SEATS}"}
+        if status and status not in _bs.STATUSES:
+            return {"ok": False, "error": f"status must be one of {_bs.STATUSES}"}
+        return {"sessions": _bs.list_sessions(root, seat=seat, status=status,
+                                              limit=min(int(limit or 50), 200)),
+                "seats": list(_bs.SEATS),
+                "model": _bs.available(root)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_new(seat: str = "director", title: str = "") -> dict:
+    """Open a brainstorm session. Nothing about this reaches the board.
+
+    Use it when the human is thinking rather than asking — "what if the hub had
+    weather" is not a work order, and turning it into one costs a spawned
+    session per half-thought and leaves a board full of items nobody meant to
+    file. Everything said here stays here until a human deploys it.
+
+    seat picks what the room is FOR, and it is enforced at plan time rather than
+    trusted to the prompt:
+      director   what to BUILD. May propose work for any seat.
+      narrative  what is TRUE — canon, lore, the bible. May propose narrative
+                 work only.
+    """
+    try:
+        return _bs.create(_root(), seat=seat, title=title)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_open(session_id: int) -> dict:
+    """One session, whole: the conversation, the notes pad, the drawing, what it filed.
+
+    THE DRAWING COMES BACK AS WORDS. `drawing_text` is the pad's elements
+    rendered as lines — "rectangle#hub-1 'hub'", "arrow#a1 hub-1 -> shrine-1" —
+    which is the content of the board and is readable without vision. The raw
+    `drawing` scene is there too, and the ids in it are what you reuse if you
+    write elements back with brainstorm_note. `drawing_png` is a preview path
+    the browser renders; it is never the source of truth.
+
+    `deploys` is what this session has already put on the board. Read it before
+    proposing more: a session that filed three items last week is not a blank
+    page.
+
+    `thinker` is who else is in the room: which runner and model this session's
+    partner runs on, whether a process is live right now, what the conversation
+    has cost, and the path to its raw transcript. Worth a glance before you pass
+    `reply=` to brainstorm_say — if a partner is already live, its answers and
+    yours are two voices in one conversation.
+    """
+    try:
+        root = _root()
+        session = _bs.read(root, int(session_id))
+        return {**session, "drawing_text": _bs.drawing_digest(session["drawing"]),
+                "thinker": _bs.thinker(root, int(session_id))}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_say(session_id: int, text: str, reply: str = "") -> dict:
+    """Say something in a brainstorm session. NOTHING ELSE HAPPENS.
+
+    No work item, no dispatched agent, no approval gate: a turn here is two rows
+    in a table. queue_add and brainstorm_deploy are the two calls that file
+    work, and neither is reachable from this one.
+
+    `reply` IS THE POINT OF THIS DOOR, and it is worth more now than it was.
+    YOU are a model and you are already holding the session, so pass your own
+    answer and it is stored as the assistant turn — no second session, no CLI,
+    no cost, and no key was ever needed for it. Leave it empty and the dashboard's
+    partner answers instead, which spawns a real (tool-less, read-only) CLI
+    session and bills a turn against the subscription. Between an answer you
+    already have and a process you have to start, the answer you already have is
+    strictly better.
+
+    So: a MACHINE must pass `reply=`. A caller stamped as an agent that leaves it
+    empty is refused rather than allowed to spawn a nested thinking session —
+    an agent already inside a CLI session paying to start another one to think
+    for it is a loop with a bill attached, and it was one flag away from being
+    the default behaviour of this tool.
+
+    Either way the human's sentence is stored BEFORE anything is asked, so a
+    dead partner costs a reply and never what was typed.
+
+    Push back in the reply when something does not hold together, and say which
+    part. Do not write a task list here — proposing the work is a separate step
+    (brainstorm_synthesize) that a human takes when they are ready.
+    """
+    try:
+        root = _root()
+        session = _bs.read(root, int(session_id))
+        _bs.ensure_open(session)
+        said = _bs.append_message(root, int(session_id), "user", text)
+        answered = str(reply or "").strip()[:_bs.MAX_MESSAGE]
+        model = {"ok": True, "answered_by": "the caller", "estimated_usd": 0.0}
+        if not answered and _caller_is_agent():
+            model = {"ok": False, "error":
+                     "pass reply= — you are a model holding this session "
+                     "already, and spawning a second CLI session to think on "
+                     "your behalf costs a turn against the subscription for an "
+                     "answer you can simply write. The sentence is stored; "
+                     "nothing was lost."}
+        elif not answered:
+            # session_id makes the room a CONVERSATION: one spawned session
+            # answers every message rather than a fresh process per turn.
+            model = _bs.ask(root, _bs.chat_system(session["seat"]),
+                            _bs.transcript(root, int(session_id)),
+                            session_id=int(session_id))
+        if not answered and model.get("ok"):
+            answered = model["text"][:_bs.MAX_MESSAGE]
+        wrote = (_bs.append_message(root, int(session_id), "assistant", answered)
+                 if answered else None)
+        out = {"message": said, "reply": wrote, "model": model,
+               "session_id": int(session_id)}
+        if wrote is None:
+            out["note"] = ("the sentence is stored and nothing was lost — pass "
+                           "reply= to write the answer yourself, which needs no "
+                           "key and spawns nothing")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_note(session_id: int, notes: Optional[str] = None,
+                    title: Optional[str] = None,
+                    drawing: Optional[dict] = None) -> dict:
+    """Write the session's pads — the title, the writing pad, the drawing scene.
+
+    `notes` REPLACES the whole pad. It is one text area a person types into, not
+    a patch protocol, so brainstorm_open it and send the whole document back if
+    you are adding to somebody's writing — a partial write here deletes the rest
+    of their hour.
+
+    `drawing` is the pad's structured scene ({"elements": [...], "appState":
+    {...}}), which is the whole reason a text model can work on it: reuse the
+    element ids brainstorm_open showed you rather than inventing new ones, or
+    the arrows come back unbound. The flattened PNG is not settable here —
+    only the browser renders one.
+
+    Omitted fields are left alone. Nothing here queues anything.
+    """
+    try:
+        root = _root()
+        session = _bs.read(root, int(session_id))
+        _bs.ensure_open(session)
+        changed: list[str] = []
+        if title is not None:
+            _bs.rename(root, int(session_id), str(title))
+            changed.append("title")
+        if notes is not None:
+            _bs.set_notes(root, int(session_id), str(notes))
+            changed.append("notes")
+        if drawing is not None:
+            _bs.set_drawing(root, int(session_id), drawing)
+            changed.append("drawing")
+        if not changed:
+            return {"ok": False,
+                    "error": "nothing to change — pass notes, title or drawing"}
+        after = _bs.read(root, int(session_id))
+        return {**after, "changed": changed,
+                "drawing_text": _bs.drawing_digest(after["drawing"])}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_synthesize(session_id: int) -> dict:
+    """THE PREVIEW: what work this session adds up to. WRITES NOTHING.
+
+    Not a work item, not the session's status, not even the plan — a stored plan
+    would be a fourth thing that can go stale. Safe to press, and safe to press
+    twice.
+
+    What comes back under `plan` is exactly the shape brainstorm_deploy takes:
+    {"summary", "chained", "questions", "items": [{"seat", "title", "brief"}]}.
+    `plan.notes` lists every repair made to the model's answer (a seat it named
+    that a narrative session may not file, an item with no brief) — those are
+    corrections a human should see, not silent fixes.
+
+    HAND THE RESULT TO THE HUMAN. You may not deploy it; see brainstorm_deploy
+    for why. If there is no thinking partner on this machine the call fails and
+    you can write the plan yourself in that same shape — the review step is what
+    matters, not which model drafted it.
+    """
+    try:
+        root = _root()
+        session = _bs.read(root, int(session_id))
+        turns = _bs.synthesis_turns(root, session)
+        # persist=False: a synthesis is one question under a different system
+        # prompt, and its JSON must not land in the middle of the conversation
+        # the human is going to read back.
+        answer = _bs.ask(root, _bs.synthesis_system(session["seat"]), turns,
+                         session_id=int(session_id), persist=False,
+                         tag="synth", timeout=_bs.SYNTH_TIMEOUT,
+                         usd=_bs.USD_PER_SYNTH)
+        if not answer.get("ok"):
+            return {"ok": False, "wrote_nothing": True,
+                    "error": answer.get("error") or "synthesis failed",
+                    "note": "no model here — draft the plan yourself in the "
+                            "shape brainstorm_deploy takes and put it in front "
+                            "of the human"}
+        plan = _bs.parse_plan(answer["text"], session["seat"])
+        return {"session_id": int(session_id), "seat": session["seat"],
+                "plan": plan,
+                # Said out loud in the payload because the whole design of this
+                # step is that it is safe to press.
+                "wrote_nothing": True,
+                "already_filed": _bs.already_filed(session, plan),
+                "model": {k: answer[k]
+                          for k in ("model", "runner", "seconds",
+                                    "estimated_usd") if k in answer}}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
+    """File a confirmed plan onto the board. HUMAN-ONLY, AND THE ONLY ONE HERE.
+
+    WHY A MACHINE IS REFUSED. This whole room exists so a human reads a plan
+    before agents are dispatched against it. An agent that can deploy closes
+    that loop on itself: it writes the session, synthesizes a plan out of its
+    own sentences, files N items, and each of those spawns another agent — a
+    work generator with a review step nobody attended. The same reasoning
+    already refuses a machine the write lanes in seat_configure and the
+    human-only settings in bgate_core.settings, and the same fail-closed test is
+    used: BGATE_SEAT / BGATE_WORK_ITEM, not the actor string alone, because a
+    gate that reads one stamp is disabled by forgetting one line.
+
+    A human's own session — no seat, no work item — deploys normally. Nothing is
+    taken away by this rule: that session could already call queue_add, and
+    routing through here is what keeps `source=brainstorm` on the items so the
+    board can name the conversation they came from.
+
+    `plan` is what brainstorm_synthesize returned, as the human approved it —
+    edits included, since their text is the point. Items are validated strictly
+    rather than repaired: quietly rewriting a confirmed plan files something
+    other than what was agreed. Set "chained": true ONLY when each item needs
+    what the one before it produced; that becomes a real dependency chain rather
+    than a priority preference two agents can start in the same tick.
+
+    `again=True` overrides the guard against filing the identical plan twice.
+    """
+    try:
+        if _caller_is_agent():
+            raise PermissionError(
+                f"{_actor() or 'an agent session'} may not deploy brainstorm "
+                f"{session_id} — a brainstorm is filed by the human who read the "
+                "plan, and an agent filing its own proposals is the review step "
+                "reviewing itself. Leave the plan where they will see it: "
+                "brainstorm_synthesize writes nothing and its result is the "
+                "thing to hand over, ask_human gets you a decision without "
+                "blocking, and queue_add still files the one item you are sure "
+                "of under your own seat, where it is attributed to you.")
+        root = _root()
+        session = _bs.read(root, int(session_id))
+        return _bs.file_plan(root, session, plan, again=bool(again),
+                             by=_actor())
+    except _bs.AlreadyFiled as exc:
+        return {"ok": False, "error": str(exc), "already_filed": exc.entry}
+    except _bs.PartialDeploy as exc:
+        # Some rows ARE on the board. Say which, or the caller re-files them.
+        return {"ok": False, "error": str(exc),
+                "filed": [int(f["id"]) for f in exc.filed]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_close(session_id: int) -> dict:
+    """End the session's THINKING PARTNER process. Keeps everything it said.
+
+    THREE WORDS THAT ALL SOUND FINAL, kept apart on purpose:
+      close     (this) stops the spawned CLI process. The conversation, the
+                notes and the drawing are untouched, and the next message
+                reopens it — resuming the same CLI session where it left off, or
+                replaying the transcript if the CLI no longer has it. It is
+                about the PROCESS. Nothing is decided and nothing is lost.
+      archive   files the SESSION away as a record: no new turns, notes or
+                deploys until reopened. Implies a close.
+      deployed  a STATUS, not an ending: this session put work on the board.
+                Usually still open, and usually still being talked in.
+
+    Available to a machine, unlike deploy and delete: stopping a process costs
+    nobody their work, and an agent that noticed a room has gone quiet should be
+    able to stop it paying for a listener. Idempotent.
+    """
+    try:
+        return _bs.close_partner(_root(), int(session_id))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_feed(session_id: int, cursor: int = 0) -> dict:
+    """What the session's partner PROCESS actually emitted — the terminal channel.
+
+    Not the conversation (brainstorm_open has that): this is the raw stream the
+    spawned CLI wrote — run boundaries, its own `init` event stating the tool
+    list it really built, its calls to the two-tool pad server, their results,
+    and its prose. Read forward from `cursor`; keep the one you are handed and
+    pass it back to get only what is new.
+
+    Worth reading when a human asks what the partner has been doing, or when you
+    want to check the room's promise rather than take it on trust: the `init`
+    step names every tool the process holds, and there should be exactly two.
+    """
+    try:
+        return _bs.feed(_root(), int(session_id), cursor=int(cursor or 0))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_archive(session_id: int, archived: bool = True) -> dict:
+    """File a session away, or take it back out. NOTHING IS DELETED either way.
+
+    An archived session is a record rather than a workspace: it still reads, but
+    it takes no new turns, notes or deploys until it is reopened with
+    archived=False. Reopening restores the status it earned — a session that has
+    filed work stays 'deployed', because resetting it to 'open' would erase the
+    one field saying that work exists.
+    """
+    try:
+        return _bs.archive(_root(), int(session_id), archived=bool(archived))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_delete(session_id: int) -> dict:
+    """Really delete a session and its messages. HUMAN-ONLY. Prefer archiving.
+
+    Refused for a machine on the same reasoning as brainstorm_deploy, pointing
+    the other way: what this destroys is the human's own writing — an hour of
+    notes and a drawing that exist nowhere else — and no agent has enough
+    context to be sure a quiet session is finished. brainstorm_archive is the
+    reversible motion and it is available to any caller.
+
+    Work items already filed from the session are NOT touched. They are on the
+    board, they are somebody's job, and they outlive the room they were thought
+    up in.
+    """
+    try:
+        if _caller_is_agent():
+            raise PermissionError(
+                f"{_actor() or 'an agent session'} may not delete brainstorm "
+                f"{session_id} — it holds writing that exists nowhere else. "
+                "Use brainstorm_archive, which files it away, deletes nothing "
+                "and can be undone.")
+        return _bs.delete(_root(), int(session_id))
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Voice — Deepgram speech, the half of it that has two doors
+# ---------------------------------------------------------------------------
+# MCP PARITY, AND WHERE IT DELIBERATELY STOPS. The dashboard's voice surface is
+# three endpoints (bgate_ui/routes/voice.py): a status read, a TTS POST, and a
+# websocket that relays a live microphone. The first two are ordinary
+# request/response capabilities and they get tools here, because a capability
+# behind one front door is a capability half the system lacks.
+#
+# THE LISTEN SOCKET GETS NO TOOL, and this is the stated reason rather than an
+# omission. It is not a request/response at all: it is a duplex stream whose
+# input is a microphone that only exists in front of the browser and whose value
+# is entirely in the INTERIM results it emits while a human is still speaking.
+# An MCP tool has one call and one return; the only thing it could offer is
+# "transcribe this file", which is a different capability that this product
+# already has locally in bgate_adapters/transcribe.py and does not need a
+# metered hosted copy of. A tool that wrapped the socket would be a worse
+# version of a thing we have, wearing the name of a thing we could not offer.
+@_tool
+def voice_status() -> dict:
+    """Can this project do speech in and out, and if not, what is missing?
+
+    Presence and reasons only — never the key. Two independent things can be
+    absent (DEEPGRAM_API_KEY, and the `websockets` extra) and they need
+    different actions from the human, so both are reported separately.
+    """
+    try:
+        from bgate_adapters import deepgram as _deepgram
+        verdict = dict(_deepgram.available(_root()))
+        verdict["speak_models"] = list(_deepgram.SPEAK_MODELS)
+        verdict["listen_models"] = list(_deepgram.LISTEN_MODELS)
+        verdict["max_speak_chars"] = _deepgram.MAX_SPEAK_CHARS
+        return verdict
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def voice_speak(text: str, out_path: str = "",
+                model: str = "") -> dict:
+    """Say `text` out loud with Deepgram Aura and WRITE THE WAV to the project.
+
+    The dashboard's twin of this streams the bytes straight to an <audio> tag;
+    an MCP caller has no speaker, so this one lands a file and returns its path.
+    Same adapter, same ledger row, same 2000-character cap.
+
+    out_path   project-relative .wav path. Default: a timestamped file under
+               .bgate/voice/, which is inside the already-gitignored .bgate dir
+               so a generated read-aloud never turns up in the game's history.
+    model      an Aura voice; default aura-2-thalia-en. voice_status lists them.
+    """
+    try:
+        import time as _time
+        from pathlib import Path as _Path
+
+        from bgate_adapters import deepgram as _deepgram
+        from bgate_core import spend as _spend
+
+        root = _root()
+        verdict = _deepgram.available(root)
+        if not verdict["available"]:
+            raise RuntimeError(verdict["reason"])
+
+        result = _deepgram.speak(str(text),
+                                 model=str(model or _deepgram.DEFAULT_SPEAK_MODEL))
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "speech failed"))
+
+        rel = str(out_path or f".bgate/voice/speak-{int(_time.time())}.wav")
+        target = (_Path(root) / rel).resolve()
+        # The same refusal deps.safe_under makes on the HTTP side: a path that
+        # leaves the project is refused before anything is written, not after.
+        if not str(target).startswith(str(_Path(root).resolve())):
+            raise ValueError(f"{rel} escapes the project root")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(result["audio"])
+
+        _spend.record(root, float(result.get("usd") or 0.0), kind="speech",
+                      model=str(result.get("model") or ""),
+                      detail=f"deepgram tts {result.get('chars', 0)} chars")
+        return {"ok": True, "path": rel, "bytes": len(result["audio"]),
+                "chars": result.get("chars"), "usd": result.get("usd"),
+                "model": result.get("model"),
+                "request_id": result.get("request_id")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
 # Work queue
 # ---------------------------------------------------------------------------
 @_tool
@@ -6205,6 +6760,311 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
                  ref=emitted["scene_res"])
         return {**emitted, "slot": slot, "texture": str(target),
                 "pivot_source": entry.get("pivot_source", "default")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# kie.ai — Suno music and Seedance video
+# ---------------------------------------------------------------------------
+# THE TWO CAPABILITIES THIS PRODUCT HAS NEVER HAD. audiolab MIXES audio and has
+# never generated a note; nothing anywhere has generated a frame of video. Both
+# arrive behind one key, so both get a tool here rather than waiting on a UI
+# surface — a capability with no door is a capability the system does not have,
+# which is the rule tests/test_brainstorm_mcp.py::TestParity was added to hold.
+#
+# MUSIC IS A PIPELINE ASSET NOW; VIDEO STILL IS NOT. These tools used to say the
+# same thing about both — "nothing downstream imports this, listen to it and
+# that is all". That is still true of a .mp4: no importer, no gate, no manifest
+# kind. It is no longer true of a track. bgate_core.music registers every
+# generated take as a candidate artifact revision and installs a KEPT one under
+# the engine project, so music now runs the same candidate -> human decision ->
+# asset path the art seat does, with the same 'only a human may approve' rule.
+#
+# WHICH IS WHY THE MUSIC TOOLS GO THROUGH bgate_core.music, NOT THE ADAPTER.
+# kie.generate_music still exists and still just writes files; calling it
+# directly from here would produce paid-for .mp3s in a scratch directory with no
+# provenance row, no ledger entry and no way for the audio seat to see them —
+# the same reason kie's IMAGES get no tool of their own and reach the pipeline
+# through image_generate(provider="kie") instead. One door per capability.
+@_tool
+def kie_status() -> dict:
+    """Is kie.ai usable, and what does it reach? Never exposes the key.
+
+    kie is one key over three capabilities: images (Nano Banana, FLUX.2, Qwen),
+    Suno music, and Seedance video. No 3D — that stays on Krea.
+    """
+    try:
+        root = _root()  # triggers .env load
+        from bgate_adapters import kie
+
+        got = dict(kie.available(root))
+        got["models"] = kie.models()
+        return {"ok": True, **got}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def kie_music_options() -> dict:
+    """What a music generation may ask for: models, per-mode character limits,
+    which model takes a duration, and whether kie is reachable at all.
+
+    Read this BEFORE writing a long prompt. Every ceiling here is enforced
+    locally before the request is sent, so exceeding one costs a refusal rather
+    than a round trip and a 422 that does not say which field was too long.
+    """
+    try:
+        from bgate_core import music as _music
+
+        return {"ok": True, **_music.options(_root())}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def kie_music_generate(prompt: str, name: str = "", instrumental: bool = True,
+                       model: str = "", custom: bool = False, style: str = "",
+                       title: str = "", negative_tags: str = "",
+                       vocal_gender: str = "", duration: Optional[int] = None,
+                       timeout: float = 900.0) -> dict:
+    """Generate MUSIC with Suno through kie.ai. Costs real credits.
+
+    ONE REQUEST RETURNS SEVERAL TRACKS — Suno generates variations, typically
+    two, and no page of the reference commits to a number. So this returns a
+    BATCH OF CANDIDATES, not a file: every take is downloaded and registered as
+    an artifact revision under one logical name, exactly as a batch of candidate
+    images is. Audition them (music_candidates), then music_keep ONE — keeping
+    installs it under the engine project and approves the revision; the rest get
+    music_discard. Nothing reaches the game until a human keeps it.
+
+    instrumental defaults to TRUE: background music with a vocalist singing over
+    the dialogue is the wrong asset almost every time. Pass False for a title
+    song or a diegetic track — and only then does vocal_gender ('m'/'f') apply.
+
+    custom=False (simple mode) takes a 500-character DESCRIPTION and Suno writes
+    everything. custom=True takes lyrics up to 3,000-5,000 characters depending
+    on the model, plus `style` and `title` — which are refused in simple mode
+    rather than silently dropped. See kie_music_options for the exact ceilings.
+
+    duration is V5_5 ONLY (10-360s). Every other model would be charged for its
+    default length while ignoring the request, so it is refused here.
+
+    Candidates land in .bgate_out/audio/<name>/ and are DOWNLOADED inside this
+    call, never linked: kie serves its own copies for fourteen days only.
+
+    WHAT IT COST MAY BE UNKNOWN. The Suno record carries no creditsConsumed, so
+    the charge is measured as the account-balance delta around the call and the
+    result says which number it is (`credits_source`). With no rate configured
+    (BGATE_KIE_USD_PER_CREDIT) the run is reported UNPRICED and `accounted` is
+    false — it is never filed as $0.00, which a budget check would read as free.
+
+    Runs for one to three minutes. This blocks for the whole batch.
+    """
+    try:
+        from bgate_core import music as _music
+
+        suno: dict = {"instrumental": bool(instrumental), "custom": bool(custom)}
+        for key, value in (("model", model), ("style", style), ("title", title),
+                           ("negative_tags", negative_tags),
+                           ("vocal_gender", vocal_gender)):
+            if value:
+                suno[key] = value
+        if duration is not None:
+            suno["duration"] = int(duration)
+        return _music.generate(_root(), prompt, name=name,
+                               work_item_id=_work_item_id(),
+                               timeout=float(timeout), **suno)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def kie_music_status(task_id: str) -> dict:
+    """Where a Suno task got to, straight from kie. Costs nothing.
+
+    Reports the eight documented statuses. CALLBACK_EXCEPTION is the subtle one:
+    it means kie could not deliver its webhook, NOT that the music failed, so it
+    is only a failure when the record also carries no audio.
+
+    This only LOOKS. When it says `recoverable`, kie_music_recover is what puts
+    the audio on disk — do not re-run kie_music_generate to get files for a task
+    that already has them, that is paying twice.
+    """
+    try:
+        from bgate_core import music as _music
+
+        return _music.status(_root(), task_id)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def kie_music_recover(task_id: str, name: str = "") -> dict:
+    """Download and register the tracks of a task ALREADY PAID FOR. Costs nothing.
+
+    kie_music_generate submits, waits, downloads and files in one blocking call,
+    so anything that goes wrong after the submit — a timeout, a dropped
+    connection, a cancel, a CDN refusing the download — leaves a task id, a
+    charge, and no files. kie holds the audio for FOURTEEN DAYS from generation.
+    This collects it.
+
+    Not hypothetical: kie's file host answered this product's downloads with a
+    403 (Cloudflare bot integrity, not auth) for every generation it made, so
+    every batch rendered, was billed, and was thrown away at the last step.
+
+    IDEMPOTENT. Takes are matched against the Suno track ids already registered,
+    so running this twice downloads nothing twice and files nothing twice; the
+    result reports how many were `skipped`.
+
+    NO COST IS CLAIMED against this call — the charge happened at submit time,
+    possibly days ago, and a balance delta measured now would be fiction.
+    """
+    try:
+        from bgate_core import music as _music
+
+        return _music.recover(_root(), task_id, name=name,
+                              work_item_id=_work_item_id())
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def music_candidates(logical_name: str = "", limit: int = 100) -> dict:
+    """Generated tracks awaiting a keep-or-discard decision, plus what was kept.
+
+    Every row carries its artifact_id (what music_keep / music_discard take),
+    its on-disk path, its prompt and what it cost. LISTEN to a candidate before
+    keeping it — the dashboard's audio seat plays them inline; from a shell the
+    path is a real file.
+    """
+    try:
+        from bgate_core import music as _music
+
+        root = _root()
+        cap = max(1, min(int(limit), 500))
+        return {"ok": True,
+                "candidates": _music.candidates(root, logical_name=logical_name,
+                                                limit=cap),
+                "kept": _music.kept(root, limit=cap)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def music_keep(artifact_id: int, note: str = "") -> dict:
+    """Keep one candidate: install it under the engine project and approve it.
+
+    THIS IS THE STEP THAT MAKES A TRACK REAL. The file is copied from the
+    scratch directory to game/assets/audio/music/ — inside the audio seat's
+    write lane, inside the Godot project, and visible to both the audio library
+    and the audio lab's mixer — and only then is the revision approved.
+
+    APPROVAL IS A HUMAN'S CALL and this does not get around that: it goes
+    through artifacts.review, which refuses an agent by name unless the project
+    has deliberately turned its approval gate off. If you are an agent and this
+    refuses you, say which candidate you would keep and why; do not look for
+    another route to the same write.
+    """
+    try:
+        from bgate_core import music as _music
+
+        return _music.keep(_root(), int(artifact_id), note=note)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def music_install(artifact_id: int) -> dict:
+    """Put an ALREADY-APPROVED take where the game can load it. The repair verb.
+
+    music_keep installs and approves together, which assumes a take is a
+    candidate until a human keeps it. On a project whose approval gate is off
+    (`gate.mode = none`, or `art.auto_approve`) that assumption is false:
+    artifacts.register approves each take as it is filed, so there is no
+    candidate, no keep, and — before this existed — no installed file. The row
+    said approved and the engine project had nothing.
+
+    Use it when music_candidates shows a kept track with `installed: false`, or
+    when an approved track's file has been deleted out of the engine project.
+    Idempotent, and it does not change review state — music_keep is what picks a
+    DIFFERENT take from an auto-approved batch.
+    """
+    try:
+        from bgate_core import music as _music
+
+        return _music.install(_root(), int(artifact_id))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def music_discard(artifact_id: int, note: str = "") -> dict:
+    """Reject a candidate track. Refusing to ship something is an agent's call
+    to make, so unlike music_keep this needs no human.
+
+    The file is left where it is — under .bgate_out, gitignored and outside the
+    engine project. Only the decision is recorded, with the reason, against an
+    immutable revision row. Say what was wrong with it; 'discarded' teaches the
+    next generation nothing.
+    """
+    try:
+        from bgate_core import music as _music
+
+        return _music.discard(_root(), int(artifact_id), note=note)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def kie_video_generate(prompt: str, filename: str, duration: Optional[int] = None,
+                       resolution: str = "", aspect_ratio: str = "",
+                       first_frame_url: str = "", generate_audio: Optional[bool] = None,
+                       model: str = "", timeout: float = 1800.0) -> dict:
+    """Generate a VIDEO CLIP with Seedance through kie.ai. Costs real credits,
+    and video is the most expensive thing this product can buy — kie's own docs
+    put video at 100-500 credits against an image's 10-50.
+
+    The first video generation in this product. Seedance 2.0 takes a prompt
+    (3-20,000 chars), an optional first/last frame and reference clips, and
+    generates its own audio unless generate_audio=False.
+
+      duration      4-15 seconds (default 5)
+      resolution    480p | 720p | 1080p | 4k (default 720p)
+      aspect_ratio  1:1 | 4:3 | 3:4 | 16:9 | 9:16 | 21:9 | adaptive
+
+    first_frame_url must be a PUBLIC URL — kie's reference documents every image
+    field as a URI and says nothing about base64, so a local plate cannot be
+    sent and is refused rather than guessed at.
+
+    Runs in MINUTES, not seconds; the default timeout is half an hour.
+    filename lands under .bgate_out/video/.
+
+    NOTHING DOWNSTREAM IMPORTS A CLIP YET. No importer, no gate, no manifest
+    kind — this is a reference a human watches, not a pipeline asset.
+    """
+    try:
+        root = _Path(_root())
+        from bgate_adapters import kie
+
+        base = (root / ".bgate_out" / "video").resolve()
+        out = (base / (filename or "clip.mp4")).resolve()
+        try:
+            out.relative_to(base)
+        except ValueError:
+            return {"ok": False,
+                    "error": "filename must stay inside .bgate_out/video — "
+                             f"refusing {filename!r}"}
+        result = kie.generate_video(
+            prompt, str(out), model=model or kie.DEFAULT_VIDEO_MODEL,
+            duration=duration, resolution=resolution, aspect_ratio=aspect_ratio,
+            first_frame_url=first_frame_url, generate_audio=generate_audio,
+            root=str(root), logical_name=out.stem,
+            work_item_id=_work_item_id(), timeout=float(timeout))
+        if result.get("ok"):
+            _log("video", f"generated a {result.get('model')} clip {out.name}",
+                 ref=result["path"])
+        return result
     except Exception as exc:
         return _fail(exc)
 

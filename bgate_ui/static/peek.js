@@ -187,7 +187,7 @@
     }
     else if (d.kind === "audio") body(`<audio class="pk-audio" controls src="${esc(d.url)}"></audio>`);
     else if (d.kind === "text") body(lineRows(d));
-    else if (d.kind === "missing") body(`<div class="pk-note">nothing at that path — it may not have been written yet</div>`);
+    else if (d.kind === "missing") body(`<div class="pk-note">nothing at that path - it may not have been written yet</div>`);
     else body(`<div class="pk-note">${esc(d.note || d.kind || "not readable here")}</div>`);
   }
 

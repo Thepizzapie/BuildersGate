@@ -851,7 +851,7 @@ _MIGRATIONS: list = [
     # 0019 — a stop is not a crash, and prose is not a field.
     #
     # A human ending a run banks the item as `status='failed'` with the only
-    # evidence in the result note: "stopped by Adrian — this run was ended by
+    # evidence in the result note: "stopped by Sam — this run was ended by
     # hand, it did not die on its own". Honest, and unreadable to anything that
     # is not a person. Measured: three items across three seats flipped to
     # 'failed' in the same second and read as three separate bugs until someone
@@ -872,6 +872,339 @@ _MIGRATIONS: list = [
     """
     ALTER TABLE work_item ADD COLUMN stopped_by TEXT NOT NULL DEFAULT '';
     ALTER TABLE work_item ADD COLUMN stopped_at TEXT NOT NULL DEFAULT '';
+    """,
+
+    # 00NN — TOKENS ON THE SPEND LEDGER, AND WHICH BILL A ROW LANDS ON.
+    #
+    # The ledger held one number, `usd`, and summed every kind into it. Two
+    # different bills were being added together:
+    #
+    #   image / mesh / audio   real money, invoiced by OpenAI or Krea, and the
+    #                          only rows where a dollar is a dollar.
+    #   agent                  total_cost_usd off the Claude CLI, which on a
+    #                          subscription is what the run WOULD have cost on
+    #                          the API. Nobody is billed it. Adding it to the
+    #                          image rows produced a project total that matched
+    #                          no statement anywhere.
+    #
+    # `billing` is which of those a row is, so the two can be reported apart and
+    # the daily ceiling can stop refusing image generation because agents had a
+    # busy afternoon of spend that was never charged.
+    #
+    # The token columns are the other half. What actually runs out on a
+    # subscription is a rolling usage window, and that window is driven by
+    # TOKENS — 1.19 billion input-side tokens in eight hours emptied a 5-hour
+    # allowance in three and a half while the dollar ledger showed a number
+    # nobody pays. A ledger that cannot see tokens cannot see the limit that
+    # actually bites, so it records them and the model that spent them.
+    """
+    ALTER TABLE spend_event ADD COLUMN billing TEXT NOT NULL DEFAULT 'api';
+    ALTER TABLE spend_event ADD COLUMN model TEXT NOT NULL DEFAULT '';
+    ALTER TABLE spend_event ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE spend_event ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE spend_event ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE spend_event ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+    UPDATE spend_event SET billing = 'subscription' WHERE kind = 'agent';
+    CREATE INDEX IF NOT EXISTS idx_spend_billing ON spend_event(billing, created_at);
+    """,
+    # 0021 — brainstorm sessions: the room before the board.
+    #
+    # Every sentence typed at the console becomes a work item and is dispatched
+    # to a real Claude Code session, which is right for "do this" and ruinous
+    # for "what if" — thinking out loud there bills a spawned agent per
+    # half-thought and leaves a board full of items nobody meant to file. There
+    # was nowhere in the product for the twenty minutes BEFORE you know what you
+    # want built, so people used the console for it and paid for the mismatch.
+    #
+    # NOT workspace_doc, which is where a small per-seat JSON blob would
+    # normally go. A brainstorm has an unbounded message list that is appended
+    # to from one end and read as a window from the other; in a single JSON
+    # document every append is a full read-modify-write of the entire
+    # conversation, and two tabs on the same session lose messages to the
+    # optimistic-version retry that workspace.set exists to catch.
+    #
+    # drawing_json is the pad's ELEMENTS, not a picture, and that is the point:
+    # a flattened PNG is something a model can only look at, and only with
+    # vision — it cannot tell you the box in the corner is called "shrine", and
+    # it cannot add one. drawing_png rides alongside for previews and is never
+    # the source of truth.
+    #
+    # deploys_json is what the session put on the board. The work items also
+    # carry source='brainstorm' + source_ref=<session id>, so the link exists in
+    # both directions on purpose: an item can name the conversation it came
+    # from, and a session reopened next month can say what it produced without
+    # scanning a queue those items may since have been deleted from.
+    """
+    CREATE TABLE brainstorm_session (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        seat        TEXT NOT NULL DEFAULT 'director'
+                        CHECK (seat IN ('director','narrative')),
+        title       TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open','deployed','archived')),
+        notes         TEXT NOT NULL DEFAULT '',
+        drawing_json  TEXT NOT NULL DEFAULT '{}',
+        drawing_png   TEXT NOT NULL DEFAULT '',
+        deploys_json  TEXT NOT NULL DEFAULT '[]',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_brainstorm_seat ON brainstorm_session(seat, status, id DESC);
+
+    -- 'user' / 'assistant' are the model API's own role names, kept verbatim so
+    -- the transcript maps 1:1 onto a messages array. A translation table here is
+    -- where the off-by-one that puts the model's words in the human's mouth
+    -- lives.
+    CREATE TABLE brainstorm_message (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  INTEGER NOT NULL
+                        REFERENCES brainstorm_session(id) ON DELETE CASCADE,
+        role        TEXT NOT NULL CHECK (role IN ('user','assistant')),
+        text        TEXT NOT NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_brainstorm_message ON brainstorm_message(session_id, id);
+    """,
+    # 0022 — where a line of playtest evidence CAME FROM.
+    #
+    # Everything in playtest_segment/playtest_item has until now been whisper's
+    # output, so provenance was implicit and nothing needed to record it. The
+    # notepad breaks that: a note the player TYPES mid-play is the same kind of
+    # object as a spoken remark — same clock, same triage, same report — but it
+    # was not heard, and two things go wrong without a column saying so.
+    #
+    # 1. IT GETS DELETED. transcribe_session runs `DELETE FROM playtest_segment
+    #    WHERE session_id = ?` and `DELETE FROM playtest_item WHERE session_id =
+    #    ? AND status = 'new'` before it writes the transcript, so it can be
+    #    re-run without duplicating anything. A typed note lives in exactly
+    #    those two tables and is 'new' by definition, so stopping the session —
+    #    the very next thing you do after taking notes — silently destroyed
+    #    every one of them. The DELETEs now exclude source='typed'; the column
+    #    is what makes that expressible.
+    # 2. A READER CANNOT TELL. "the boss hitbox is wrong" carries different
+    #    weight depending on whether the human typed it deliberately or whisper
+    #    guessed it out of a noisy mic, and the review UI, the bug report and
+    #    the QA queue all show the text with no way to say which.
+    #
+    # Default '' rather than 'transcribed': every existing row predates the
+    # notepad and IS transcribed, but '' means "nobody recorded this", which is
+    # the honest statement about a row written before the question was asked.
+    # Readers treat anything that is not 'typed' as speech, so the default is
+    # also the correct behaviour.
+    """
+    ALTER TABLE playtest_segment ADD COLUMN source TEXT NOT NULL DEFAULT '';
+    ALTER TABLE playtest_item ADD COLUMN source TEXT NOT NULL DEFAULT '';
+    """,
+    # 0023 — the spend ledger has been SILENTLY DROPPING a whole category.
+    #
+    # spend_event's CHECK was written in 0001 as ('agent','image','audio','other')
+    # and never widened. spend.KINDS grew 'mesh' when image-to-3D landed, and
+    # spend.record swallows every exception by design — "losing the ledger must
+    # not lose the work that produced it" — so each mesh row raised an
+    # IntegrityError, was caught, and vanished. A textured generation is ~$0.30,
+    # an order of magnitude over an image, and NONE of it has ever reached the
+    # ledger or the daily ceiling. The constraint that was meant to catch typos
+    # was quietly deleting the most expensive rows in the table.
+    #
+    # 'video' is added at the same time rather than repeating the mistake one
+    # capability later: kie's own docs put a clip at 100-500 credits against an
+    # image's 10-50, so it is now the dearest thing this product can buy.
+    #
+    # A CHECK cannot be ALTERed in SQLite, so this is the 12-step rebuild. It is
+    # written to be replay-safe (IF NOT EXISTS / IF EXISTS throughout) because
+    # _apply_sql_step's repair path replays a step whose objects already exist.
+    # No other table references spend_event, so there is nothing to re-point.
+    """
+    CREATE TABLE IF NOT EXISTS spend_event_new (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL DEFAULT 'agent'
+                         CHECK (kind IN ('agent','image','audio','video',
+                                         'mesh','other')),
+        work_item_id INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        logical_name TEXT NOT NULL DEFAULT '',
+        usd          REAL NOT NULL DEFAULT 0,
+        detail       TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        billing      TEXT NOT NULL DEFAULT 'api',
+        model        TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO spend_event_new
+        (id, kind, work_item_id, logical_name, usd, detail, created_at,
+         billing, model, input_tokens, output_tokens, cache_read_tokens,
+         cache_write_tokens)
+    SELECT id, kind, work_item_id, logical_name, usd, detail, created_at,
+           billing, model, input_tokens, output_tokens, cache_read_tokens,
+           cache_write_tokens
+    FROM spend_event;
+    DROP TABLE spend_event;
+    ALTER TABLE spend_event_new RENAME TO spend_event;
+    CREATE INDEX IF NOT EXISTS idx_spend_created ON spend_event(created_at);
+    CREATE INDEX IF NOT EXISTS idx_spend_item ON spend_event(work_item_id);
+    CREATE INDEX IF NOT EXISTS idx_spend_billing
+        ON spend_event(billing, created_at);
+    """,
+    # 0024 — 'speech' joins the ledger, and it is deliberately NOT 'audio'.
+    #
+    # Deepgram bills the human talking to the brainstorm agent by the minute
+    # ($0.0048) and the agent talking back by the character ($0.030/1k). Filed
+    # under 'audio' those rows would sum into the same bucket as a generated
+    # music track, which is the exact complaint 0023 makes about 'mesh' landing
+    # in 'other': the bucket stops answering the question an author reads it to
+    # ask. They are also different rate drivers — one scales with how long
+    # somebody spoke, the other with how much the model wrote — so a single
+    # number over both explains nothing when the month looks wrong.
+    #
+    # Without this step spend.record coerces 'speech' to 'other' (KINDS guards
+    # the insert before SQLite sees it), so the rows are not lost either way.
+    # This is what makes them findable.
+    #
+    # Same 12-step CHECK rebuild as 0023, replay-safe for the same reason.
+    """
+    CREATE TABLE IF NOT EXISTS spend_event_new (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL DEFAULT 'agent'
+                         CHECK (kind IN ('agent','image','audio','video',
+                                         'mesh','speech','other')),
+        work_item_id INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        logical_name TEXT NOT NULL DEFAULT '',
+        usd          REAL NOT NULL DEFAULT 0,
+        detail       TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        billing      TEXT NOT NULL DEFAULT 'api',
+        model        TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO spend_event_new
+        (id, kind, work_item_id, logical_name, usd, detail, created_at,
+         billing, model, input_tokens, output_tokens, cache_read_tokens,
+         cache_write_tokens)
+    SELECT id, kind, work_item_id, logical_name, usd, detail, created_at,
+           billing, model, input_tokens, output_tokens, cache_read_tokens,
+           cache_write_tokens
+    FROM spend_event;
+    DROP TABLE spend_event;
+    ALTER TABLE spend_event_new RENAME TO spend_event;
+    CREATE INDEX IF NOT EXISTS idx_spend_created ON spend_event(created_at);
+    CREATE INDEX IF NOT EXISTS idx_spend_item ON spend_event(work_item_id);
+    CREATE INDEX IF NOT EXISTS idx_spend_billing
+        ON spend_event(billing, created_at);
+    """,
+    # 0025 — community feedback sessions: what live chat said, while it was asked.
+    #
+    # WHY NOT playtest_item, WHICH IS THE SAME SHAPE. It very nearly fits — the
+    # kind/seat/status vocabulary here is playtest_item's, copied deliberately so
+    # bgate_core.feedback's classify() and route() do the work for both — but
+    # playtest_item.session_id is NOT NULL against playtest_session, and a chat
+    # session is not a playtest: there is no recording, no transcript, no clock
+    # to hang `t` off and no device. Filing chat under a fabricated playtest
+    # session would put rows in front of transcribe_session's DELETE and into
+    # the playtest report, both of which describe something that never happened.
+    # Same vocabulary, own table.
+    #
+    # AUTHORS ARE STORED BY THE PLATFORM'S OWN ID AND DISPLAY NAME AND NOTHING
+    # ELSE. That is what a moderator's delete and the per-author rate limit need,
+    # and it is the entire extent of what this product knows about a viewer.
+    #
+    # `flags` records what the sanitiser removed on the way in (an injection
+    # attempt, a link, a truncation). The hostile form of a message is never
+    # stored — chatlink.sanitise runs at capture — so this is the only trace
+    # that somebody tried, which is a thing a dev should be able to count after
+    # a stream rather than a thing that vanishes silently.
+    #
+    # `brainstorm_id` is the ONE link to the rest of the product, and it points
+    # at a room that cannot file work either. There is deliberately no
+    # work_item_id here: the path from chat to the board runs through a plan a
+    # human read and confirmed, and a column would be an invitation to shorten
+    # it.
+    """
+    CREATE TABLE chat_feedback_session (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform      TEXT NOT NULL DEFAULT 'twitch',
+        channel       TEXT NOT NULL DEFAULT '',
+        title         TEXT NOT NULL DEFAULT '',
+        prompt        TEXT NOT NULL DEFAULT '',
+        capture       TEXT NOT NULL DEFAULT 'all'
+                          CHECK (capture IN ('all','marked')),
+        status        TEXT NOT NULL DEFAULT 'open'
+                          CHECK (status IN ('open','closed')),
+        fence         TEXT NOT NULL DEFAULT '',
+        brainstorm_id INTEGER,
+        seen          INTEGER NOT NULL DEFAULT 0,
+        dropped       INTEGER NOT NULL DEFAULT 0,
+        started_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        stopped_at    TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX idx_chatfb_status
+        ON chat_feedback_session(status, id DESC);
+
+    CREATE TABLE chat_feedback_item (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  INTEGER NOT NULL
+                        REFERENCES chat_feedback_session(id) ON DELETE CASCADE,
+        msg_id      TEXT NOT NULL DEFAULT '',
+        user_id     TEXT NOT NULL DEFAULT '',
+        author      TEXT NOT NULL DEFAULT 'viewer',
+        kind        TEXT NOT NULL DEFAULT 'note'
+                        CHECK (kind IN ('like','fix','add','change',
+                                        'question','note')),
+        text        TEXT NOT NULL,
+        seat        TEXT NOT NULL DEFAULT 'unassigned',
+        marked      INTEGER NOT NULL DEFAULT 0,
+        flags       TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'new'
+                        CHECK (status IN ('new','promoted','dismissed',
+                                          'retracted')),
+        at          REAL NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_chatfb_item ON chat_feedback_item(session_id, id);
+    CREATE INDEX idx_chatfb_item_msg ON chat_feedback_item(msg_id);
+    CREATE INDEX idx_chatfb_item_user ON chat_feedback_item(session_id, user_id);
+    """,
+    # 0026 — WHO SAID IT, once a playtest note can come from somebody who is not
+    # in the room.
+    #
+    # Migration 0022 added `source` so a note the player TYPED could be told
+    # apart from a sentence whisper guessed. That was enough while every note in
+    # the session came from one person: the player. A viewer's note is a third
+    # case — deliberate like a typed note, but NOT the dev's own observation —
+    # and "source" cannot carry it, because source answers "how did this arrive"
+    # and this question is "whose opinion is this".
+    #
+    # It has to be answerable at a glance, and it has to be answerable
+    # downstream. A dev reading their notepad must be able to weigh "the boss
+    # feels unfair" differently depending on whether they wrote it or a stranger
+    # did, and the bug report and the work-item brief built from that note carry
+    # the same distinction into the hands of an agent. Encoding the author into
+    # `source` (source='chat:someviewer') was the alternative and it is the
+    # worse one: every existing filter compares source for equality, so each of
+    # them would have had to become a prefix match, and a prefix match is how
+    # 'typed' starts matching 'typedbychat' two years from now.
+    #
+    # Empty means the project owner, which is what every row written before this
+    # column existed was. That default is not a placeholder — it is the correct
+    # statement about those rows, so nothing needs backfilling.
+    #
+    # THERE IS DELIBERATELY NO COLUMN HERE JOINING A FEEDBACK SESSION TO A
+    # RECORDING. They are two separate features with two separate triggers and
+    # two separate destinations — a chat note belongs to the recording it was
+    # stamped against, a feedback session belongs to the question the dev asked
+    # — and a foreign key between them would be the first step towards a message
+    # that exists in both. The rule that keeps that impossible is a routing rule
+    # rather than a schema one (chatfeedback.owner: an open feedback session owns
+    # chat capture, otherwise a live recording does, and never both), because the
+    # thing being prevented is a message being WRITTEN TWICE, and only the writer
+    # can prevent that.
+    """
+    ALTER TABLE playtest_segment ADD COLUMN author TEXT NOT NULL DEFAULT '';
+    ALTER TABLE playtest_item ADD COLUMN author TEXT NOT NULL DEFAULT '';
     """,
 ]
 

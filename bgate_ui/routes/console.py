@@ -324,7 +324,12 @@ def _reply(root_dir, item: dict) -> dict:
     said = [s.get("text", "") for s in feed.get("steps") or []
             if s.get("kind") == "say" and s.get("text")]
     return {
-        "text": text[:2000],
+        # NOT 2000. This is the director's answer to the human — the deliverable
+        # of a chat turn, not a status note — and clipping it here reintroduced
+        # the exact mid-word cut queue.clip_result was fixed to stop. The store
+        # already bounds it (queue.MAX_RESULT) and says so when it bites, so a
+        # second, smaller, silent cap on the way out is pure loss.
+        "text": text[:_queue.MAX_RESULT],
         "thinking": said[-1][:400] if said and not text else "",
         "running": bool(feed.get("running")),
         "steps": feed.get("steps") or [],

@@ -47,6 +47,7 @@ import time
 from typing import Optional
 
 from bgate_core import activity, db, settings as _settings, workspace as _ws
+from bgate_ui.pump import Pump
 
 SEAT = "director"
 KEY = "autopilot"
@@ -75,11 +76,12 @@ FLOOR_CODES = ("concurrency_limit", "budget_exceeded", "dirty_tree",
                "worktree_failed")
 FLOOR_COOLDOWN_S = 20.0
 
-# Which projects have a loop running. Keyed by root, not a single flag: the
-# active project can change under a long-lived server (BGATE_ROOT, `bgate use`),
-# and a latched flag meant the thread kept dispatching into the project the user
-# had already left.
-_started: set[str] = set()
+# Which projects have a loop running, and the kill switch that decides whether
+# one starts at all. Keyed by root, not a single flag: the active project can
+# change under a long-lived server (BGATE_ROOT, `bgate use`), and a latched flag
+# meant the thread kept dispatching into the project the user had already left.
+_pump = Pump("bgate-autodeploy", lambda: POLL_S, lambda root: tick(root),
+             env_var="BGATE_AUTODEPLOY")
 _lock = threading.Lock()
 # root -> {"cool": {item_id: until}, "floor_until": float, "last": {...}}
 _MEM: dict[str, dict] = {}
@@ -121,8 +123,7 @@ def state(root: str | os.PathLike[str]) -> dict:
         on, source = bool(_settings.get(root, SETTING)), _settings.source(root, SETTING)
     except Exception:
         on, source = bool(doc.get("on")), _settings.SOURCE_STORED
-    forced = os.environ.get("BGATE_AUTODEPLOY", "").strip().lower() in (
-        "0", "false", "off")
+    forced = _pump.disabled()
     return {
         "on": on,
         "stored_on": bool(doc.get("on")),
@@ -135,7 +136,7 @@ def state(root: str | os.PathLike[str]) -> dict:
         "dispatched": int(mem.get("dispatched") or 0),
         "last_refusal": mem.get("last"),
         "held_sources": list(HELD_SOURCES),
-        "running": str(root) in _started,
+        "running": _pump.running(root),
     }
 
 
@@ -255,36 +256,25 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
     return {"on": True, "dispatched": sent, "refused": refused}
 
 
-def _run(root: str) -> None:
-    while True:
-        time.sleep(POLL_S)
-        try:
-            tick(root)
-        except Exception:
-            pass  # fail-safe: autopilot must never take the dashboard down
-
-
 def start(root: str | os.PathLike[str]) -> bool:
     """Idempotently start the loop for this server process.
 
     The thread runs whether or not the switch is on — it reads the switch every
-    tick, so turning it on in the browser must not require a restart.
+    tick, so turning it on in the browser must not require a restart. Returns
+    False only for ``BGATE_AUTODEPLOY=0``, which is read once and decides whether
+    the thread exists at all.
     """
-    if os.environ.get("BGATE_AUTODEPLOY", "1").strip().lower() in (
-            "0", "false", "off"):
-        return False
-    key = str(root)
-    with _lock:
-        if key in _started:
-            return True
-        _started.add(key)
-    threading.Thread(target=_run, args=(key,), daemon=True,
-                     name="bgate-autodeploy").start()
-    return True
+    return _pump.start(root)
 
 
 def reset(root: Optional[str | os.PathLike[str]] = None) -> None:
-    """Drop the in-memory cooldowns. Tests use this; nothing else should."""
+    """Drop the in-memory cooldowns. Tests use this; nothing else should.
+
+    It deliberately does NOT clear the pump's started-latch. This loop is the one
+    that spends money — un-latching it would let the next ``start`` put a SECOND
+    dispatching thread on the same project, and a test that only wanted its
+    cooldowns cleared would be running two autopilots.
+    """
     with _lock:
         if root is None:
             _MEM.clear()

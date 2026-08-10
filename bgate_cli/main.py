@@ -84,17 +84,9 @@ def _is_bgate_hook(entry: dict, needle: str = "bgate_cli.hook") -> bool:
 
 
 def _pin(config: dict) -> dict:
-    """The same entry with the interpreter pinned, for user scope. See below."""
-    return {**config, "hooks": [
-        {**h, "command": h["command"].replace(
-            "python -m ", f'"{sys.executable}" -m ', 1)}
-        for h in config["hooks"]]}
+    """The same entry with the interpreter pinned — user scope only.
 
-
-def _user_hook_config() -> dict:
-    """The same gate, addressed to ONE machine instead of one repo.
-
-    The `python -m` rule above exists because the project copy is COMMITTED and
+    The configs above say `python -m` because the project copy is COMMITTED, and
     an absolute interpreter path would bake this machine's venv into everyone
     else's checkout. ~/.claude/settings.json is committed nowhere and shared with
     nobody, so that argument does not apply — and the opposite hazard does. A
@@ -104,11 +96,10 @@ def _user_hook_config() -> dict:
     symptom but a line in hook.log. This is the same lesson `claude mcp add`
     already carries in CLAUDE.md: use the absolute interpreter.
     """
-    return {
-        "matcher": HOOK_MATCHER,
-        "hooks": [{"type": "command",
-                   "command": f'"{sys.executable}" -m bgate_cli.hook'}],
-    }
+    return {**config, "hooks": [
+        {**h, "command": h["command"].replace(
+            "python -m ", f'"{sys.executable}" -m ', 1)}
+        for h in config["hooks"]]}
 
 
 def install_hook(project_dir: str, scope: str = "project") -> dict:
