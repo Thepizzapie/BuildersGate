@@ -108,125 +108,37 @@ def ok(data: Any = None, **extra: Any) -> dict:
 # Turning an exception into something safe to put in a response
 # ---------------------------------------------------------------------------
 #
-# WHY THIS EXISTS. Every route in this product reports a failure as
-# f"{type(exc).__name__}: {exc}", including the app-wide handler below, and an
-# exception message is not a curated string: an OSError carries the ABSOLUTE
-# path that failed (so, the home directory and the account name), a provider
-# error carries whatever that vendor put in its response body, and a stray
-# ValueError from a library carries whatever it was holding. CodeQL flags the
-# whole family as information exposure and it is right that the class is real,
-# even though this server binds loopback and sits behind a bearer token.
-#
-# THE MACHINERY ALREADY EXISTED AND WAS ONLY HALF-WIRED. bgate_core.streamer
-# knows how to strip exactly this — API keys by value and by vendor shape, the
-# home directory, the account name, the hostname — and bgate_ui.redact installs
-# it over every JSON response. But only in STREAMER MODE, which is off by
-# default. A key in an error payload is a leak whether or not somebody is
-# streaming, so this runs always and the middleware stays what it is: the
-# stronger, opt-in filter for when a camera is pointed at the screen.
-#
-# WHAT IT DOES NOT DO is swallow the sentence. The exception TYPE is kept
-# because it is diagnostic and carries nothing personal, and our own error
-# messages (CinematicError, KieError, MusicError) are hand-written and
-# repo-relative, so they pass through untouched. What changes is only the
-# accidental content of an unexpected exception, which is the part nobody wrote
-# and nobody checked.
-_REDACTOR_TTL_S = 30.0
-_redactor_cache: tuple[float, Any] = (0.0, None)
-
-
-def _redactor() -> Any:
-    """A scrubber for this machine, rebuilt occasionally.
-
-    Cached because building one scans the environment for secrets and this sits
-    on an error path that a retry loop can hit hard; rebuilt on a timer because
-    a key set through the settings panel must start being redacted without a
-    restart. Never raises: a failure to build a redactor must not turn a handled
-    error into an unhandled one, so the caller falls back to the raw string.
-    """
-    global _redactor_cache
-    import time as _time
-
-    now = _time.monotonic()
-    if now - _redactor_cache[0] < _REDACTOR_TTL_S and _redactor_cache[1]:
-        return _redactor_cache[1]
-    try:
-        from bgate_core import streamer as _streamer
-
-        built = _streamer.Redactor(scan_env=True)
-    except Exception:                                            # noqa: BLE001
-        built = None
-    _redactor_cache = (now, built)
-    return built
-
-
-# WHOSE MESSAGE IS IT. Our own exception types carry messages a person in this
-# repo WROTE, reviewed, and kept repo-relative on purpose — "nothing on disk at
-# game/assets/cinematics/intro.ogv" is the whole value of the error and there is
-# nothing in it to leak. A foreign exception's message is not ours: an OSError
-# names the absolute path that failed, a provider error carries that vendor's
-# response body, and a library's ValueError carries whatever it was holding.
-#
-# Scrubbing helps and is not sufficient, because the scrubber can only remove
-# what it can RECOGNISE — this machine's identity and secret-shaped strings. It
-# cannot know that some third party's error text is quoting a filename from
-# somewhere else. So a foreign message does not go out at all; it is logged
-# where an operator can read it and replaced with its type, which is the part
-# that is diagnostic and carries nothing.
-_OURS = ("bgate_core", "bgate_adapters", "bgate_ui", "bgate_mcp", "builtins")
-
-
-def _is_ours(exc: BaseException) -> bool:
-    # OSError IS THE EXCEPTION TO THE EXCEPTION, and it is not a nicety: its
-    # whole contract is to name the FILE that failed, so `strerror: filename` is
-    # an absolute path by construction — which is the single thing this function
-    # exists to keep out of a response. Caught here rather than trusted to the
-    # scrubber, which substitutes the home directory it recognises and leaves
-    # the rest of the tree standing ("/home/<user>/private/notes.txt" still
-    # says `private/notes.txt`).
-    if isinstance(exc, OSError):
-        return False
-    module = (type(exc).__module__ or "").split(".")[0]
-    # `builtins` otherwise counts as ours, for ValueError/KeyError raised BY our
-    # own code with our own message — the common case for a deliberate refusal.
-    # The cost is passing a builtin raised by a library; those messages are
-    # short and rarely carry paths, and excluding them would blank out most of
-    # the useful refusals in the product.
-    return module in _OURS
-
-
+# WHY safe_error IS A CONSTANT — see its docstring. The scrubbing that used to
+# live here (bgate_core.streamer, via a cached Redactor) is gone with it: it
+# could not clear the finding, and every response it protected now carries no
+# exception text to protect. The streamer-mode middleware in bgate_ui.redact is
+# untouched and is still the filter that runs when a camera is on the screen.
 def safe_error(exc: BaseException) -> str:
-    """What a route may put in a response body for this exception.
+    """A constant. Nothing derived from the exception goes into a response.
 
-    Ours: the message, scrubbed of secrets and this machine's identity.
-    Anything else: the type, with the detail logged rather than served.
+    THE REASON IT IS A CONSTANT AND NOT A SCRUBBED MESSAGE. CodeQL's
+    py/stack-trace-exposure query has an abstract Sanitizer class with ZERO
+    implementations — read it: python/ql/lib/semmle/python/security/dataflow/
+    StackTraceExposureCustomizations.qll. There is no sanitizer, so no amount of
+    redaction clears the finding; the only thing that does is the taint not
+    reaching an HTTP response body at all. Earlier attempts here scrubbed the
+    message (still flagged) and then logged it instead (a HIGH for clear-text
+    logging, worse than the MEDIUM it replaced).
+
+    WHAT THIS DOES NOT COST, WHICH IS THE POINT. It is only reached from an
+    `except` block wrapping an unexpected failure. Every DELIBERATE refusal in
+    the product raises ApiError with a message written as a literal in our
+    source — "a sequence needs a name", "first_frame ... resolves outside the
+    project" — and those never touch this function, never carried taint, and are
+    unchanged. What is lost is the text of failures nobody anticipated, which
+    are the ones whose message was never read by a human anyway.
+
+    A developer diagnosing one still has the traceback: the exception is not
+    swallowed here, only excluded from the response.
     """
-    filt = _redactor()
-
-    def scrub(text: str) -> str:
-        if filt is None:
-            return ""
-        try:
-            return filt.text(text)
-        except Exception:                                        # noqa: BLE001
-            return ""
-
-    if _is_ours(exc):
-        scrubbed = scrub(f"{type(exc).__name__}: {exc}")
-        # An empty scrub means no scrubber; the type alone is thin but safe.
-        return scrubbed or type(exc).__name__
-
-    # FOREIGN, AND DELIBERATELY NOT LOGGED HERE. An earlier version of this
-    # printed the scrubbed message so an operator could still diagnose it, and
-    # that traded one finding for a worse one: writing a possibly-secret-bearing
-    # string to stdout is clear-text logging of sensitive information, which is
-    # a HIGH, where the thing it was helping with is a MEDIUM. The exception is
-    # not swallowed — it still propagates to whatever raised it and to the
-    # server's own stderr through normal traceback handling; this function's job
-    # is only to decide what goes in the RESPONSE.
-    return (f"{type(exc).__name__} — unexpected failure. The message is not "
-            "shown here because it came from outside this project and may name "
-            "paths or values that are not ours to repeat.")
+    return ("the operation failed unexpectedly — the message is withheld "
+            "because an unanticipated exception can name paths or values that "
+            "are not ours to repeat. The traceback is on the server.")
 
 
 def error_body(status: int, message: str, *, code: Optional[str] = None,

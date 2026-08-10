@@ -242,123 +242,70 @@ class TestPagination:
 
 
 class TestExceptionsDoNotLeak:
-    """An exception message is not a curated string.
+    """Nothing derived from an exception reaches a response body.
 
-    Every route reports a failure as "TypeName: message", and for our OWN error
-    types that message is hand-written and repo-relative. For anything else it
-    is whatever the exception happened to be carrying: an OSError names the
-    ABSOLUTE path that failed — so the home directory and the account name — and
-    a provider error carries whatever that vendor put in its response body,
-    which can include the key it just rejected.
+    CodeQL's py/stack-trace-exposure has an abstract Sanitizer class with ZERO
+    implementations, so no amount of redaction clears it — the taint simply must
+    not reach the sink. Two earlier attempts are recorded in safe_error's
+    docstring: scrubbing (still flagged) and logging instead (a HIGH, worse).
 
-    bgate_core.streamer already knew how to strip all of that; it was only wired
-    into streamer mode, which is off by default. A key in an error payload is a
-    leak whether or not somebody is streaming.
+    The cost is bounded on purpose. Only UNEXPECTED failures lose their text;
+    every deliberate refusal raises ApiError with a message written as a literal
+    in our source and is untouched.
     """
 
-    def test_the_home_directory_does_not_survive(self, monkeypatch):
-        """Against a FICTIONAL machine, not this one. Reading the real home
-        would make the test skip wherever that path is too generic to assert on
-        (`/root` in any container) and pass for the wrong reason elsewhere —
-        the same trap tests/test_streamer.py's `marta` fixture exists for."""
-        from bgate_core import streamer
+    @pytest.mark.parametrize("exc", [
+        OSError(2, "No such file", "/home/marta/private/notes.txt"),
+        RuntimeError("rejected sk-live-NOTREAL-abcdefghijklmnop"),
+        ValueError("nothing on disk at game/assets/cinematics/intro.ogv"),
+    ])
+    def test_no_part_of_the_exception_survives(self, exc):
         from bgate_ui import api
 
-        monkeypatch.setattr(api, "_redactor", lambda: streamer.Redactor(
-            home=r"C:\Users\marta", user="marta", host="marta-desktop",
-            scan_env=False))
-        out = api.safe_error(
-            OSError(r"[Errno 2] No such file: 'C:\Users\marta\rpg\game.db'"))
-        assert "marta" not in out
-        assert "OSError" in out, "the TYPE is diagnostic and carries nothing"
+        out = api.safe_error(exc)
+        assert "marta" not in out and "NOTREAL" not in out
+        # Not even the type name: an attribute read on a caught exception is
+        # still a read of the exception.
+        assert type(exc).__name__ not in out
 
-    def test_a_live_key_does_not_survive(self, monkeypatch):
-        """By VALUE — the primary defence, and the one that catches a vendor
-        nobody has written a pattern for."""
+    def test_it_is_the_same_string_every_time(self):
+        """A constant, which is what makes it untainted rather than sanitised."""
         from bgate_ui import api
 
-        monkeypatch.setenv("KIE_API_KEY", "sk-live-NOTREAL-abcdefghijklmnop")
-        api._redactor_cache = (0.0, None)      # the env just changed
-        out = api.safe_error(
-            RuntimeError("rejected sk-live-NOTREAL-abcdefghijklmnop"))
-        assert "NOTREAL" not in out
+        assert api.safe_error(ValueError("a")) == api.safe_error(OSError("b"))
 
-    def test_an_unknown_vendors_key_shape_does_not_survive(self):
-        """A key in a provider's error body did not come from this machine's
-        environment, so there is nothing to compare it against — shape is all
-        there is."""
+    def test_it_still_says_something_a_person_can_act_on(self):
+        """A blank panel is what api.py exists to prevent. The message has to
+        explain that detail was withheld and where to find it."""
         from bgate_ui import api
 
-        out = api.safe_error(
-            RuntimeError("provider said sk-ant-api03-"
-                         "AAAAAAAAAAAAAAAAAAAAAAAAAA is invalid"))
-        assert "sk-ant-api03-AAAA" not in out
+        out = api.safe_error(ValueError("x"))
+        assert "traceback" in out.lower() and len(out) > 40
 
-    def test_our_own_messages_pass_through_intact(self):
-        """The point is not to swallow the sentence. A curated, repo-relative
-        message is exactly what the panel should show, and an error nobody can
-        act on is why users turn diagnostics off."""
-        from bgate_ui import api
+    def test_deliberate_refusals_keep_their_message(self, client):
+        """The 95% of errors a user actually hits. These raise ApiError with a
+        literal we wrote, never touch safe_error, and must not be collateral."""
+        got = client.post("/api/cinematic/plan", json={"name": "x", "shots": []})
+        assert got.status_code == 400
+        assert "not a plan" in got.text
 
-        message = "nothing on disk at game/assets/cinematics/intro.ogv"
-        assert message in api.safe_error(ValueError(message))
+    def test_a_traversal_refusal_still_explains_itself(self, client):
+        got = client.post("/api/cinematic/plan", json={
+            "name": "x", "shots": [{"action": "a", "duration": 5,
+                                    "first_frame": "../../../etc/passwd"}]})
+        assert got.status_code == 400
+        assert "outside the project" in got.text
 
-    def test_a_broken_redactor_still_yields_a_usable_error(self, monkeypatch):
-        """A failure to scrub must not turn a handled error into an unhandled
-        one. Falls back to the type, which is thin but safe."""
-        from bgate_ui import api
-
-        monkeypatch.setattr(api, "_redactor", lambda: None)
-        assert api.safe_error(ValueError("anything")) == "ValueError"
-
-    def test_the_unhandled_handler_scrubs_too(self, client, monkeypatch):
-        """The widest exposure in the product, because it catches what nobody
-        anticipated — and an unanticipated exception is exactly the one whose
-        message was never read by a human."""
-        from bgate_ui import api
+    def test_the_unhandled_handler_says_nothing_either(self, client,
+                                                       monkeypatch):
+        """The widest sink in the product."""
         import bgate_ui.app as app_module
-
-        monkeypatch.setenv("KIE_API_KEY", "sk-live-NOTREAL-zyxwvutsrqponm")
-        api._redactor_cache = (0.0, None)
 
         @app_module.app.get("/api/_boom_for_test")
         def _boom():
-            raise RuntimeError("leaked sk-live-NOTREAL-zyxwvutsrqponm")
+            raise RuntimeError("leaked /home/marta/secret sk-live-NOTREAL-xyz")
 
         got = TestClient(app_module.app, raise_server_exceptions=False).get(
             "/api/_boom_for_test")
         assert got.status_code == 500
-        assert "NOTREAL" not in got.text
-
-    def test_a_foreign_exceptions_message_never_reaches_the_response(self):
-        """Scrubbing helps and is not sufficient: it removes what it can
-        RECOGNISE — this machine's identity and secret shapes — and cannot know
-        that a third party's error text is quoting a filename from somewhere
-        else. So a foreign message is logged, not served."""
-        from bgate_ui import api
-
-        out = api.safe_error(
-            __import__("json").JSONDecodeError("bad", '{"k":"/srv/other"}', 0))
-        assert "/srv/other" not in out
-        assert "JSONDecodeError" in out, "the type is still diagnostic"
-
-    def test_an_oserror_is_foreign_however_builtin_it_is(self):
-        """OSError's whole contract is to name the FILE that failed, so its
-        message is an absolute path by construction — the one thing this is for.
-        The scrubber alone would substitute the home directory it recognises and
-        leave the rest of the tree standing."""
-        from bgate_ui import api
-
-        out = api.safe_error(
-            FileNotFoundError(2, "No such file", "/srv/elsewhere/secret.key"))
-        assert "elsewhere" not in out and "secret.key" not in out
-        assert "FileNotFoundError" in out
-
-    def test_our_own_builtin_refusals_still_speak(self):
-        """A ValueError raised BY our own code with our own message is the
-        common shape of a deliberate refusal, and blanking those would make
-        most of the product's useful errors unreadable."""
-        from bgate_ui import api
-
-        message = "a sequence with no shots is not a plan"
-        assert message in api.safe_error(ValueError(message))
+        assert "marta" not in got.text and "NOTREAL" not in got.text
