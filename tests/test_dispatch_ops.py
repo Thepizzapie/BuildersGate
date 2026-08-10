@@ -167,7 +167,9 @@ class TestSpendCeiling:
     def test_dispatch_refused_when_the_day_budget_is_spent(self, client, root,
                                                            fake_claude):
         spend.set_budget(root, per_day_usd=2, per_item_usd=5, enforced=1)
-        spend.record(root, 1.5, kind="agent", detail="earlier tonight")
+        # kind="image", not "agent": the day ceiling measures REAL money, and
+        # an agent session on a subscription is not any. See TestBillingSplit.
+        spend.record(root, 1.5, kind="image", detail="earlier tonight")
         item = queue.add(root, "art", "expensive")
 
         got = client.post(f"/api/queue/{item['id']}/dispatch").json()
@@ -196,12 +198,15 @@ class TestSpendCeiling:
         row = queue.get(root, item["id"])
         assert row["total_cost_usd"] == pytest.approx(1.25)
         assert row["num_turns"] == 9
-        assert spend.totals(root)["project_usd"] == pytest.approx(1.25)
+        # The notional price lands on the SUBSCRIPTION side. project_usd is
+        # real money and an agent session is not any of it.
+        assert spend.totals(root)["subscription"]["usd"] == pytest.approx(1.25)
+        assert spend.totals(root)["project_usd"] == pytest.approx(0)
 
         # Idempotent: reaping twice must not bill twice.
         entry = {"log": str(log), "finalized": True}
         dispatch._finalize(str(root), item["id"], entry)
-        assert spend.totals(root)["project_usd"] == pytest.approx(1.25)
+        assert spend.totals(root)["subscription"]["usd"] == pytest.approx(1.25)
 
     def test_spend_endpoints(self, client, root):
         spend.record(root, 3.0, kind="image", logical_name="hero")
@@ -214,6 +219,53 @@ class TestSpendCeiling:
         assert patched["data"]["per_day_usd"] == 9.0
         assert client.patch("/api/spend/budget",
                             json={"max_concurrent": 0}).status_code == 400
+
+
+class TestBillingSplit:
+    """Two bills, and the ledger used to add them together.
+
+    An image generation is invoiced by a vendor. An agent session on a
+    subscription reports what it WOULD have cost on the API and is charged to
+    nobody. Summing them gave a project total matching no statement, and made
+    an evening of uncharged agent work refuse a purchase that costs money.
+    """
+
+    def test_agent_spend_is_not_real_money(self, root):
+        spend.record(root, 12.0, kind="agent", detail="a long session")
+        totals = spend.totals(root)
+        assert totals["project_usd"] == pytest.approx(0)
+        assert totals["subscription"]["usd"] == pytest.approx(12.0)
+
+    def test_image_spend_is(self, root):
+        spend.record(root, 3.0, kind="image", logical_name="hero")
+        assert spend.totals(root)["project_usd"] == pytest.approx(3.0)
+
+    def test_agent_spend_cannot_lock_out_a_purchase(self, root):
+        """The regression that motivated the split: $400 of subscription agent
+        work against a $25 day ceiling refused every image generation after
+        it, while doing nothing at all to slow the agents down."""
+        spend.set_budget(root, per_day_usd=25, enforced=1)
+        spend.record(root, 400.0, kind="agent", detail="a busy night")
+        assert spend.check(root, projected_usd=1.0)["allowed"] is True
+        # Real money still bites.
+        spend.record(root, 24.5, kind="image", logical_name="hero")
+        assert spend.check(root, projected_usd=1.0)["allowed"] is False
+
+    def test_tokens_are_recorded_because_dollars_do_not_meter_a_subscription(
+            self, root):
+        spend.record(root, 0.0, kind="agent", model="claude-opus-5[1m]",
+                     tokens={"input": 164, "output": 72_911,
+                             "cache_read": 13_793_062, "cache_write": 200_780})
+        sub = spend.totals(root)["subscription"]
+        assert sub["cache_read_tokens"] == 13_793_062
+        assert sub["input_side_tokens"] == 164 + 13_793_062 + 200_780
+        # A priced-at-zero run is still a run. Dropping it because usd was 0
+        # would hide exactly the plans where tokens are the only signal.
+        assert sub["runs"] == 1
+
+    def test_a_run_with_neither_dollars_nor_tokens_is_not_a_row(self, root):
+        spend.record(root, 0.0, kind="agent")
+        assert spend.totals(root)["subscription"]["runs"] == 0
 
 
 class TestConcurrencyCap:

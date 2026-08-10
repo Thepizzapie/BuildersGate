@@ -216,6 +216,32 @@ SETTINGS: tuple[Setting, ...] = (
              "this, which is what stops a fan-out from eating the machine. "
              "Machine-writable would make it self-service: observed going from "
              "the 4 a human set to 9 and then 11 inside one run."),
+    Setting(
+        key="dispatch.model", group="Dispatch", kind=STRING, default="sonnet",
+        store=("registry", "dispatch.model"), scope=MACHINE,
+        env="BGATE_MODEL", human_only=True,
+        help="The model every seat runs on unless overridden below. Nothing "
+             "used to pass --model at all, so every agent silently inherited "
+             "whatever the CLI defaulted to — a night of 82 runs went out on "
+             "opus-5[1m] and moved 1.19 BILLION input-side tokens in eight "
+             "hours. A seat that edits GDScript does not need the biggest "
+             "model; naming one here is what stops the default deciding."),
+    Setting(
+        key="dispatch.model_art", group="Dispatch", kind=STRING, default="opus",
+        store=("registry", "dispatch.model_art"), scope=MACHINE,
+        env="BGATE_MODEL_ART", human_only=True,
+        help="The art seat's model, because art is the one seat whose output "
+             "is judged on taste rather than on whether it parses. Blank "
+             "falls back to dispatch.model."),
+    Setting(
+        key="dispatch.max_turns", group="Dispatch", kind=INT, default=120,
+        minimum=0, maximum=1000, store=("registry", "dispatch.max_turns"),
+        scope=MACHINE, env="BGATE_MAX_TURNS", human_only=True,
+        help="Hard ceiling on assistant turns per run; 0 disables it. There "
+             "was no ceiling: one item took 395 turns and another 393, and "
+             "because every turn re-sends the whole context the last hundred "
+             "cost more than the first hundred. The cost ceiling only trips at "
+             "a result boundary, which a grinding agent may not reach."),
 
     # -- Gates --------------------------------------------------------------
     Setting(
@@ -434,6 +460,43 @@ SETTINGS: tuple[Setting, ...] = (
         help="How many phase rows the graph draws per item before it stops. A "
              "long-running agent otherwise paints a node taller than the "
              "canvas."),
+    Setting(
+        key="brainstorm.runner", group="Console", kind=STRING, default="claude",
+        store=("registry", "brainstorm.runner"), scope=MACHINE,
+        env="BGATE_BRAINSTORM_RUNNER", human_only=True,
+        # NOT an ENUM. The list of runners that can hold a read-only
+        # conversation lives in bgate_ui.runners, which this module may not
+        # import, and a choices tuple copied out of it is a second list that
+        # goes stale the day somebody adds a local model. An unknown name falls
+        # back to the default and the room says which runner it ended up on.
+        help="Which CLI the brainstorm room's thinking partner runs on. It is "
+             "spawned with the built-in tool set EMPTY and one two-tool MCP "
+             "server registered — read and draw on this session's own pads, "
+             "nothing else — so it can talk, it can join your diagram, and it "
+             "cannot reach the queue, the repo or a generator. A runner that "
+             "has not declared that read-only mode is refused rather than "
+             "started with the dispatch flags. `claude` is the only one that "
+             "has, so far; codex and local models are one table entry each."),
+    Setting(
+        key="brainstorm.model", group="Console", kind=STRING, default="sonnet",
+        store=("registry", "brainstorm.model"), scope=MACHINE,
+        env="BGATE_BRAINSTORM_MODEL", human_only=True,
+        help="The model a brainstorm turn runs on. Named rather than inherited "
+             "for the same reason dispatch.model is: an unset --model means "
+             "whatever the CLI defaults to that day, which is how a night of "
+             "work went out on the largest model nobody chose. Blank inherits "
+             "the CLI default and accepts that."),
+    Setting(
+        key="brainstorm.max_usd", group="Console", kind=FLOAT, default=2.0,
+        minimum=0.0, maximum=100.0, store=("registry", "brainstorm.max_usd"),
+        scope=MACHINE, human_only=True,
+        help="What one brainstorm conversation may spend before it stops "
+             "answering. This is the CHEAP room — that is the whole reason it "
+             "exists next to the board — and the partner is now a real CLI "
+             "session rather than a fraction-of-a-cent API call: one trivial "
+             "measured turn was $0.06. Passed to the CLI's own --max-budget-usd "
+             "and also tracked across the conversation, so respawning cannot "
+             "launder a per-process ceiling into no ceiling. 0 removes it."),
 
     # -- Privacy ------------------------------------------------------------
     # MACHINE scope, not PROJECT. Whose home directory is on screen is a fact
@@ -452,6 +515,42 @@ SETTINGS: tuple[Setting, ...] = (
              "screen-sharing and screenshots. It is a DISPLAY filter: the .env, "
              "the database and devtools are unchanged, and the dashboard's own "
              "auth token is deliberately left alone because the page needs it."),
+
+    # -- Community ----------------------------------------------------------
+    # Live-stream chat. The CREDENTIALS are not here and must not be: a channel
+    # name and a token are env-bound, in the project's gitignored .env, because
+    # this registry is served verbatim by /api/settings and printed whole by
+    # `bgate doctor` (see routes/providers.py for that argument in full). What
+    # IS here is behaviour — how much of chat to keep, and whether viewers may
+    # write on a recording — which is exactly what a switch should be.
+    Setting(
+        key="chat.autoconnect", group="Community", kind=BOOL, default=False,
+        store=("registry", "chat.autoconnect"), scope=MACHINE,
+        env_coerce=("BGATE_CHAT", lambda raw: False if _falsey(raw) else None),
+        env_note="BGATE_CHAT=0 stops the connection from being made at all, so "
+                 "the stored switch cannot take effect until it is unset",
+        help="Connect to your stream's chat when the dashboard starts, instead "
+             "of pressing connect. Off by default: opening a socket to a public "
+             "chat room is not something a dev tool should do because it "
+             "launched."),
+    Setting(
+        key="chat.capture", group="Community", kind=ENUM, default="all",
+        choices=("all", "marked"),
+        store=("registry", "chat.capture"),
+        help="What counts as feedback during a session. 'all' keeps everything "
+             "that survives the filler filter, because the honest reaction is "
+             "the unmarked one nobody typed a command for — one person can "
+             "still only contribute a capped number of lines. 'marked' keeps "
+             "only messages starting !fb, which is the right choice for a big "
+             "channel or a raid."),
+    Setting(
+        key="chat.playtest_notes", group="Community", kind=BOOL, default=True,
+        store=("registry", "chat.playtest_notes"),
+        help="Let viewers leave notes on a playtest while it records, on the "
+             "same clock as your own typed notes and attributed to them. They "
+             "land as candidates only — a note from chat is never "
+             "auto-promoted, and nothing reaches an agent without you "
+             "confirming a plan."),
 )
 
 BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}

@@ -152,7 +152,14 @@ def queue_revert(request: Request, item_id: int,
 
 @router.get("/api/spend")
 def spend_view() -> dict:
-    """Spent, by day/project/kind, against the ceilings that stop dispatch."""
+    """Spent, by day/project/kind, against the ceilings that stop dispatch.
+
+    ``project_usd`` and ``today_usd`` are REAL money — vendor-invoiced image,
+    mesh and audio generation. Agent sessions report a notional API-equivalent
+    price that a subscription already covers, and they live under
+    ``subscription`` with the tokens that actually meter the plan. Summing the
+    two gave this project a $1,307 total of which $13.91 had ever been charged.
+    """
     return api.ok(_spend.totals(root()))
 
 

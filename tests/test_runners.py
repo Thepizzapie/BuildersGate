@@ -138,6 +138,79 @@ class TestRouting:
 
 
 # ---------------------------------------------------------------------------
+# Which model, which is a question nothing used to ask
+# ---------------------------------------------------------------------------
+class TestModelRouting:
+    """`["--model", model] if model else []` had a live branch and a dead one.
+
+    Every dispatch call site — autodeploy, the QA gate, follow-up, the console,
+    the orchestrator — passed no model, so the dead branch was the only one
+    that ever ran and each agent inherited whatever the CLI defaulted to. On
+    2026-08-08 that was opus-5[1m] for all 82 runs: 1.19 billion input-side
+    tokens in eight hours, and a five-hour allowance gone in three and a half.
+    """
+
+    def test_only_art_gets_the_expensive_model(self, root):
+        assert dispatch._model_for(root, "art") == "opus"
+        for seat in ("gameplay", "tech", "narrative", "qa", "audio", "director"):
+            assert dispatch._model_for(root, seat) == "sonnet", seat
+
+    def test_the_seat_model_reaches_the_argv(self, root):
+        argv = runners.get("claude").build_args(
+            "claude", permission_mode="acceptEdits",
+            model=dispatch._model_for(root, "art"),
+            cwd="C:/game", native_images=False)
+        assert argv[argv.index("--model") + 1] == "opus"
+
+    def test_art_falls_back_to_the_general_model_when_blank(self, root):
+        settings.set(root, "dispatch.model_art", "")
+        settings.set(root, "dispatch.model", "haiku")
+        assert dispatch._model_for(root, "art") == "haiku"
+
+    def test_a_blank_general_model_inherits_the_cli_default(self, root):
+        """None, not a guessed name: pinning a model this machine may not have
+        turns a working board into one that refuses every dispatch."""
+        settings.set(root, "dispatch.model", "")
+        settings.set(root, "dispatch.model_art", "")
+        assert dispatch._model_for(root, "tech") is None
+        argv = runners.get("claude").build_args(
+            "claude", permission_mode="acceptEdits", model=None,
+            cwd="C:/game", native_images=False)
+        assert "--model" not in argv
+
+
+class TestTurnCeiling:
+    """The cost ceiling reads total_cost_usd, which the CLI prints only at a
+    result boundary. An agent grinding through a tool loop never offers one —
+    two runs reached 395 and 393 turns unbudgeted, and because every turn
+    re-sends the whole context the last hundred cost more than the first."""
+
+    def test_the_ceiling_reaches_the_argv(self, root):
+        argv = runners.get("claude").build_args(
+            "claude", permission_mode="acceptEdits", model=None,
+            cwd="C:/game", native_images=False, max_turns=120)
+        assert argv[argv.index("--max-turns") + 1] == "120"
+
+    def test_zero_means_no_flag(self, root):
+        argv = runners.get("claude").build_args(
+            "claude", permission_mode="acceptEdits", model=None,
+            cwd="C:/game", native_images=False, max_turns=0)
+        assert "--max-turns" not in argv
+
+    def test_the_default_is_a_real_ceiling(self, root):
+        assert dispatch._max_turns(root) == 120
+
+    def test_codex_takes_the_argument_and_drops_it(self):
+        """One call site in dispatch. A caller branching on runner name to
+        decide which arguments are accepted is the hardcoding runners.py
+        exists to remove."""
+        argv = runners.get("codex").build_args(
+            "codex.cmd", permission_mode="acceptEdits", model=None,
+            cwd="C:/game", native_images=False, max_turns=120)
+        assert "--max-turns" not in argv
+
+
+# ---------------------------------------------------------------------------
 # The brief
 # ---------------------------------------------------------------------------
 class TestImagePolicy:

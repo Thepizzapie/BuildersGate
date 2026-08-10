@@ -115,6 +115,33 @@ def _toml_str(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class Chat:
+    """How a runner holds a THINKING conversation that cannot touch the repo.
+
+    A second shape for the same CLI, and it exists because the brainstorm room
+    needed a real Claude Code session and the room's whole promise is that
+    nothing is written until a human presses Deploy. A dispatched agent is the
+    opposite of that by design, so the two cannot share ``build_args``.
+
+    ``readonly_by`` is the flags that make "it cannot write" a FACT about the
+    process rather than a sentence in a prompt. It is stored as text because it
+    is the thing to SHOW a human who asks why they should believe the promise —
+    see brainsession.thinker(), which puts it in the session payload.
+
+    ``prompt_via`` repeats the field of the same name on Runner because the two
+    can differ: a runner may be steerable while dispatched and still have no way
+    to take a second conversational turn. "stream" means one process holds the
+    whole conversation; "stdin_once" means every turn is a fresh process that
+    has to be re-seeded with the transcript.
+    """
+
+    build_args: Callable[..., list[str]] = field(repr=False, default=None)
+    prompt_via: str = "stream"
+    cost_tracked: bool = True
+    readonly_by: str = ""
+
+
+@dataclass(frozen=True)
 class Runner:
     name: str
     find: Callable[[], Optional[str]]
@@ -125,10 +152,14 @@ class Runner:
     # Why this runner might be chosen over the default, shown in Settings.
     note: str = ""
     build_args: Callable[..., list[str]] = field(repr=False, default=None)
+    # How this runner talks WITHOUT being able to write. None means it has no
+    # such mode here yet, and the brainstorm room refuses it rather than
+    # guessing — see the codex entry below for exactly what an entry needs.
+    chat: Optional[Chat] = None
 
 
 def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
-                 cwd: str, native_images: bool) -> list[str]:
+                 cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
     """Unchanged from the single-runner era, on purpose.
 
     stream-json OUTPUT makes claude emit one NDJSON event per step AS IT WORKS
@@ -142,16 +173,24 @@ def _claude_args(exe: str, *, permission_mode: str, model: Optional[str],
     parameter stays in the signature so the two runners share one call site —
     a caller that had to know which runner accepts which argument would be the
     hardcoding this module exists to remove.
+
+    --max-turns is a SECOND ceiling, not a duplicate of the cost one. The cost
+    ceiling reads total_cost_usd, which the CLI only prints at a result
+    boundary; an agent grinding through a tool loop offers no such boundary and
+    runs past its dollars unobserved. Turns are counted by the CLI and end the
+    session on their own. 0 means the caller wants none.
     """
     return [exe, "-p", "--permission-mode", permission_mode,
             "--input-format", "stream-json", "--output-format", "stream-json",
             "--verbose", "--replay-user-messages",
             "--allowedTools", f"mcp__{MCP_SERVER_NAME}", "Read", "Edit", "Write",
-            "Glob", "Grep", "Bash"] + (["--model", model] if model else [])
+            "Glob", "Grep", "Bash"] \
+        + (["--model", model] if model else []) \
+        + (["--max-turns", str(max_turns)] if max_turns else [])
 
 
 def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
-                cwd: str, native_images: bool) -> list[str]:
+                cwd: str, native_images: bool, max_turns: int = 0) -> list[str]:
     """`codex exec`, JSONL, sandboxed to the project directory.
 
     --sandbox workspace-write --cd <project> writes to the REAL tree. Verified
@@ -167,6 +206,13 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
     path is the one carrying the pinned references, the style, the consistency
     check and the artifact ledger. Prompt text asking it not to would be a
     request; a missing tool is a fact.
+
+    `max_turns` is accepted and dropped: `codex exec` has no turn ceiling to
+    pass it to. Taking the argument keeps ONE call site in dispatch — the
+    alternative is the caller branching on runner name, which is the
+    hardcoding this module exists to remove. Runs here are already marked
+    cost-not-tracked wherever they are shown, and unbounded turns are the same
+    class of fact about the same runner.
     """
     args = [exe, "exec", "--json", "--sandbox", "workspace-write", "--cd", cwd]
     args += mcp_overrides()
@@ -176,6 +222,150 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
     return args
 
 
+# THE FLAGS THAT MAKE A BRAINSTORM SESSION UNABLE TO WRITE.
+#
+# Named as a constant, and read by both the argv builder and the sentence shown
+# to the human, so the two cannot drift into a promise the process is not
+# keeping. Every one of these was checked against `claude --version 2.1.226` by
+# reading the session's own `system/init` event, which reports the tool list and
+# the MCP servers the CLI actually constructed — the model's own account of what
+# tools it has is a hallucination and was observed to be one (it recited the
+# standard list at a session whose init said `"tools":[]`).
+#
+#   --tools ""              THE guarantee. Not a permission preference: the
+#                           built-in tool set is EMPTY, so there is no Write, no
+#                           Edit, no Bash and no Read to grant. init reported
+#                           "tools":[] and a session asked to write a file
+#                           produced no file.
+#   --strict-mcp-config     ONLY the servers named by --mcp-config, whatever is
+#                           registered on the machine. This is the flag that
+#                           matters most on a developer machine: builders-gate
+#                           is registered at USER scope, so a plain `claude`
+#                           spawned in a game project would inherit queue_add,
+#                           bible_add and image_generate. With no --mcp-config
+#                           init reported "mcp_servers":[]; with the pad
+#                           document it reported exactly ["pads"] and a tool
+#                           list of exactly the two pad tools.
+#   --setting-sources ""    user/project/local settings cannot add tools,
+#                           permissions, hooks or MCP servers back.
+#   --disable-slash-commands
+#                           a brainstorm message is arbitrary human text, and a
+#                           message that happens to start with "/" must not be
+#                           able to run a skill. init reported
+#                           "slash_commands":[] and "skills":[] with this on,
+#                           and both were POPULATED without it.
+#   --allowedTools <the two pad tools, by full name>
+#                           the belt, and it is NAMED rather than broad. With
+#                           the built-in set empty and one two-tool server
+#                           registered, this list and the actual tool list are
+#                           the same two strings — so a server that ever got in
+#                           by another route contributes nothing that is
+#                           approved. Written as full names, not the
+#                           `mcp__pads` prefix a dispatched agent uses, because
+#                           a prefix approves whatever that server grows.
+#
+# WHAT IS DELIBERATELY *NOT* HERE ANY MORE, and both removals were forced by
+# measurement rather than preference:
+#
+#   --permission-mode plan  it was the belt, and it turned out to refuse THE PAD
+#                           TOOLS TOO. Observed: a session holding exactly
+#                           mcp__pads__pad_read answered "I'm currently in plan
+#                           mode, which blocks me from calling tools other than
+#                           writing to the plan file — including the read-only
+#                           pad_read call you asked for". Keeping it would have
+#                           shipped a two-tool server that could never be
+#                           called, which is worse than either alternative:
+#                           a feature that silently does nothing reads as the
+#                           model being unhelpful. The guarantee never rested on
+#                           plan mode anyway — it rests on the tool set being
+#                           empty and the MCP config being exhaustive, both of
+#                           which are unchanged and both of which were read back
+#                           off the CLI's own init event.
+#   --no-session-persistence
+#                           it was here on the reasoning that the transcript
+#                           already lives in the project's DB and a second copy
+#                           of somebody's private thinking under ~/.claude is a
+#                           copy nobody asked for. That lost to a direct request
+#                           — "proper cli emulation for seamless resumes" —
+#                           because the flag and --resume are one switch read
+#                           two ways: a session that was never persisted cannot
+#                           be resumed, and re-seeding a transcript into a fresh
+#                           process is a replay, not a continuation. The trade
+#                           is stated rather than hidden.
+#
+# WHAT THE ROOM'S PROMISE NOW RESTS ON, in one sentence, because two flags left
+# and one arrived and it should be possible to check without reading all of the
+# above: the process holds exactly two tools, both of which write to one row of
+# one table in this project's own database, and neither of which can file work,
+# run a command or touch a file.
+
+# The two tools the pad server exposes, by their full CLI-side names. Imported
+# from nowhere on purpose: bgate_mcp.padserver pulls in the MCP SDK, and this
+# module is loaded by every dispatch on a machine that may not have it. The
+# names are asserted equal to padserver.TOOL_NAMES in the tests, which is where
+# a drift between the two belongs.
+PAD_TOOLS = ("mcp__pads__pad_read", "mcp__pads__pad_draw")
+
+_CLAUDE_READONLY = ["--tools", "", "--strict-mcp-config",
+                    "--setting-sources", "", "--disable-slash-commands",
+                    "--permission-mode", "acceptEdits"]
+
+CLAUDE_READONLY_BY = (
+    'claude --tools "" (the built-in tool set is empty — no Write, no Bash, no '
+    "Read), --strict-mcp-config with --mcp-config naming a two-tool pad server "
+    "and nothing else (so no builders-gate and no queue_add), --allowedTools "
+    'listing exactly those two tools by name, and --setting-sources "" so no '
+    "settings file can add any of it back. Checked against the session's own "
+    "init event, which is the only account of its tools that is not the model's")
+
+
+def _claude_chat_args(exe: str, *, system: str, model: Optional[str],
+                      max_usd: float = 0.0, mcp_config: str = "",
+                      resume: str = "") -> list[str]:
+    """A Claude Code session that can THINK and cannot TOUCH THE PROJECT.
+
+    Same CLI and the same stream-json channel as a dispatched agent — one
+    process, stdin held open, one `result` event per turn — with the entire
+    capability surface removed rather than merely unused, and then exactly two
+    tools handed back. See _CLAUDE_READONLY for what each flag is doing and
+    what was observed without it.
+
+    --system-prompt REPLACES the default rather than appending to it. The
+    default one describes a coding agent with a working directory and a task,
+    which is exactly the wrong frame for the cheap room and is also the bulk of
+    the per-turn cache write: the same trivial turn measured 9,860 cache-creation
+    tokens with the stock prompt and 3,076 with this one.
+
+    ``mcp_config`` IS THE ONLY WAY A TOOL GETS IN, and it is a JSON document
+    rather than a server name — see bgate_mcp.padserver.config, which builds it.
+    Paired with --strict-mcp-config it is an exhaustive statement: these servers
+    and no others, whatever is registered on the machine. The pad server is two
+    tools over one brainstorm session; passing "" here is a session with no
+    tools at all, which is what a synthesis gets.
+
+    ``resume`` continues a real CLI session by id instead of starting one. It is
+    what makes reopening a brainstorm a CONTINUATION rather than a replay. It is
+    also the flag most likely to fail for reasons outside this process — a
+    pruned session store, a moved machine, a version bump — so the caller must
+    treat a resumed spawn as provisional and fall back to a fresh one; see
+    brainsession._collect, which detects it, and ask(), which retries once.
+
+    --max-budget-usd is the CLI's OWN ceiling and is the only one that can bite
+    between result boundaries. The dashboard tracks cumulative session spend as
+    well, but that number dies with the process and this one does not.
+    """
+    return [exe, "-p",
+            "--input-format", "stream-json", "--output-format", "stream-json",
+            "--verbose", "--replay-user-messages",
+            *_CLAUDE_READONLY] \
+        + (["--mcp-config", mcp_config, "--allowedTools", *PAD_TOOLS]
+           if mcp_config else []) \
+        + (["--resume", resume] if resume else []) \
+        + ["--system-prompt", system] \
+        + (["--model", model] if model else []) \
+        + (["--max-budget-usd", f"{max_usd:.2f}"] if max_usd > 0 else [])
+
+
 # `find` is late-bound through this module's own globals rather than holding the
 # function object, so monkeypatching `runners.find_claude` (which the dispatch
 # tests do, to stand a fake CLI up on disk) is actually seen by the table.
@@ -183,10 +373,34 @@ RUNNERS: dict[str, Runner] = {
     "claude": Runner(
         name="claude", find=lambda: find_claude(), steerable=True, cost_tracked=True,
         prompt_via="stream", build_args=_claude_args,
+        chat=Chat(build_args=_claude_chat_args, prompt_via="stream",
+                  cost_tracked=True, readonly_by=CLAUDE_READONLY_BY),
         note="The default. Live steering and per-run cost tracking both work."),
     "codex": Runner(
         name="codex", find=lambda: find_codex(), steerable=False, cost_tracked=False,
         prompt_via="stdin_once", requires_git_repo=True, build_args=_codex_args,
+        # NO CHAT ENTRY, AND THAT IS A STATEMENT RATHER THAN A GAP. Codex
+        # documents `--sandbox read-only`, which is the right mechanism, but the
+        # claude one above was believed only because its own init event was read
+        # back and a write attempt was made and failed. Nothing here has been
+        # verified that way, and a read-only claim that turns out to be wrong is
+        # worse than a runner the room refuses to use.
+        #
+        # WHAT A CODEX (OR LOCAL-LLM) ENTRY NEEDS, so this is one row of work:
+        #   build_args   argv that removes the capability rather than declining
+        #                to use it — for codex `--sandbox read-only --cd <a
+        #                scratch dir>` and NO mcp_overrides() call, since that
+        #                helper injects the whole builders-gate server including
+        #                its writers.
+        #   prompt_via   "stdin_once" for `codex exec`, which reads stdin once
+        #                and closes it. brainsession already handles that: it
+        #                re-seeds a fresh process with the transcript per turn
+        #                rather than pretending the conversation persisted.
+        #   cost_tracked False for codex — it reports tokens and no price, so a
+        #                brainstorm on it spends against the ledger's blind
+        #                spot and the payload says so.
+        #   readonly_by the sentence a human is shown when they ask why they
+        #                should believe the room writes nothing.
         note="Generates images natively. No live steering, and it reports "
              "tokens rather than dollars — the per-run cost ceiling cannot "
              "bite, so runs on it are marked cost-not-tracked."),
