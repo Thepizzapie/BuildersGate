@@ -9,6 +9,110 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.35] - 2026-08-09
+
+Twenty-two commits. The tool count went from 78 to 144, which is the shape of
+this release: the dashboard grew the surfaces that were missing rather than
+deepening the ones that already worked. Music generation, speech, the stream's
+chat, a room to think in before dispatching, and one place to put every API key.
+
+Underneath it, three things had been quietly broken for weeks and none of them
+said so.
+
+### Added
+
+- **Music generation through Suno (kie.ai).** A request comes back with two
+  takes, they land as candidates, a human auditions and keeps one, and only then
+  does anything reach the game. The same candidate-then-keep path art uses,
+  because a track is an asset. Progress is reported in words rather than a
+  spinner, since "still working" and "stuck" look identical at three minutes.
+
+- **Brainstorm.** A conversation with the director that ends in a plan. Nothing
+  is queued until you press Deploy, and Deploy shows the plan and the agents it
+  would dispatch before anything is filed. Director and narrative get a writing
+  pad and a drawing pad beside the chat; the agents console gets the same
+  conversation type without the pads, so you can talk it through where you
+  already dispatch from.
+
+- **Streamer chat, and feedback sessions.** Chat lands in the dashboard live. A
+  feedback session is started and stopped by hand, and closing it hands the whole
+  session to the director to synthesise into notes you can brainstorm from or
+  dispatch against. Synthesis waits for the close on purpose: a running commentary
+  is not a conclusion. No channel configuration lives in this repository.
+
+- **Deepgram speech, both directions**, for the part of this that is thinking out
+  loud.
+
+- **A provider registry.** One table holds every API key: id, label, env var,
+  what it powers, where to get one, and a probe. Keys can be set from the
+  dashboard instead of by editing a file, and adding a provider no longer means
+  touching the adapter, the doctor, the settings page and `.env.example`
+  separately.
+
+- **Local runtime and coding-agent setup panels.** They detect and describe what
+  is installed rather than starting or stopping it, because a tool that silently
+  launches and kills GPU processes fights whatever else was using that card.
+
+- **A playtest notepad** that writes into the transcript itself, with the current
+  frame attachable to a note.
+
+- **Work history on the overview**, so finished work is somewhere after it leaves
+  the board.
+
+- **The sprite editor and audio lab are pages again**, with rail items of their
+  own. Both are full-bleed direct-manipulation tools; reaching one used to cost a
+  seat pick and then a mode pick.
+
+- **An `orbit` theme**, glass over a true black ground, and 59 more icons so no
+  toolbar is built from unicode glyphs.
+
+### Fixed
+
+- **The spend ledger had been discarding every 3D row since image-to-3D
+  shipped.** `spend_event` carried a `CHECK` on `kind` written before `mesh`
+  existed. The insert is wrapped in a "never lose the work" guard, so each row
+  raised, was swallowed, and vanished with no error anywhere. Migration 0023
+  widens it; verified against a copy of a real database first, 476 rows and
+  $1,379.36 preserved.
+
+- **Playtests recorded a black rectangle with a live cursor.** The capture used a
+  window rect that did not account for DWM's extended frame bounds, so it recorded
+  the wrong region of the desktop.
+
+- **Atlas disagreed with Godot in three ways at once**, all invisible from inside
+  the viewport because it was consistently wrong with itself. `cell_center`
+  returned the diamond's top corner where `map_to_local` returns its centre; the
+  draw rect had the texture-origin sign backwards, sinking art by `h-32`px, which
+  is nothing for a floor tile and 68px for a wall; and cells drew in file order,
+  which on an isometric map paints the wall behind over the wall in front.
+
+- **An injection wrapped in `<instructions>` tags reached the director
+  unflagged.** The chat filter matched the singular `<instruction>` only, and the
+  plural is the spelling that gets used.
+
+- **The chat digest cap never worked.** It was a default argument reading a module
+  constant, so Python froze it at import and no later change could move it.
+
+- **Cancelling a music generation in the first second crashed** instead of
+  returning, because the submit-stage progress call sat outside the try that
+  handles cancellation.
+
+- **The diff endpoint spawned a process per file and never answered** on a large
+  change: 90 seconds and a timeout became 3.7 seconds for 2,381 files.
+
+- `bgate doctor`'s `art_key` row asks the provider registry now, so a working
+  Krea-only setup stops reporting `MISS openai_key`. Four doc pages carried a
+  warning about that and no longer need to.
+
+### Changed
+
+- Test fixtures no longer carry the author's real first name.
+- Em dashes are out of the copy the dashboard actually renders (594 of them).
+  Comments and docstrings keep theirs.
+- Atlas drops its list and graph modes; it is two editors over one scan now.
+- The queue board shows only active work, which is what makes the new history
+  necessary rather than redundant.
+
 ## [0.1.34] - 2026-08-08
 
 Twenty-two commits, and one sentence covers most of them: **a check that grades
