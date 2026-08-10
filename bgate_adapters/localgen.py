@@ -357,24 +357,11 @@ def _images(history: dict, task: str) -> list[dict]:
 
     Node ids and saver class names are per-graph and per-plugin-release, so
     keying on either would break on somebody else's edit to their own workflow.
-    Scanning for a usable suffix is stable against all of it.
+    Scanning for a usable suffix is stable against all of it — see
+    ``imageto3d.comfy_scan``, which is the same walk over the same history shape
+    and is shared so a fix to one scanner cannot miss the other.
     """
-    run = (history or {}).get(task) or {}
-    found: list[dict] = []
-    for node_id, out in (run.get("outputs") or {}).items():
-        if not isinstance(out, dict):
-            continue
-        for entries in out.values():
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                name = str(entry.get("filename") or "")
-                if name.lower().rsplit(".", 1)[-1] in IMAGE_SUFFIXES:
-                    found.append({"node": str(node_id), "filename": name,
-                                  "subfolder": str(entry.get("subfolder") or ""),
-                                  "type": str(entry.get("type") or "output")})
+    found = _i3d.comfy_scan(history, task, IMAGE_SUFFIXES)
     # SAVED OUTPUTS BEAT PREVIEWS. A typical graph has a PreviewImage as well as
     # a SaveImage, and the preview is a temp-type entry at whatever resolution
     # the preview node felt like. Taking the last saved output is the closest

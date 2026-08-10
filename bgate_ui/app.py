@@ -14,6 +14,7 @@ import re
 import subprocess
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 from typing import Optional
@@ -39,14 +40,25 @@ from bgate_ui import followup as _followup
 from bgate_ui import steerpump as _steerpump
 from bgate_ui import routes as _routes
 
-app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Called directly rather than through a threadpool, which is exactly what
+    # the `on_event("startup")` decorator this replaced did with a sync handler:
+    # Starlette awaits async startup handlers and calls sync ones inline. Every
+    # step below is already individually fail-safe, so an inline call cannot
+    # wedge the boot.
+    _start_reactors()
+    yield
+
+
+app = FastAPI(title="builders-gate-ui", docs_url=None, redoc_url=None,
+              lifespan=_lifespan)
 
 # One error envelope for every failure — see bgate_ui/api.py. Installed before
 # anything else so even a startup-time raise comes back as parseable JSON.
 _api.install_error_handlers(app)
 
 
-@app.on_event("startup")
 def _start_reactors() -> None:
     # The follow-up router: ONE subscriber on the event bus that owns everything
     # that happens after an agent finishes — the auto-QA gate (which used to have
@@ -1458,6 +1470,11 @@ def pt_status() -> dict:
             "id": recording["id"], "name": recording["name"],
             "telemetry_events": event_count,
             "native": bool(recording["game_cmd"]),
+            # The session clock's ZERO. The notepad needs it to show what
+            # mm:ss a note is about to land on before it posts — the server
+            # does the real conversion, but a pad that cannot say "02:14"
+            # until after you save is asking you to trust it blind.
+            "started_epoch": recording["started_epoch"],
         }
         # Mic level rides along on the poll the record button already makes —
         # a dead mic has to be visible while the playthrough can still be saved,

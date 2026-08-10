@@ -1581,13 +1581,27 @@ def _request(backend: str, path: str, key: str = "", *,
             f"{backend} returned a non-JSON response: {raw[:200]}") from exc
 
 
-def _multipart(fields: dict, filename: str, blob: bytes,
-               field: str = "file") -> tuple[bytes, str]:
+# The image types this pipeline actually uploads, resolved without asking the
+# machine. mimetypes.guess_type() consults the Windows registry, where a stray
+# file association can decide that a .png is `image/x-png` — for an upload whose
+# acceptance is the backend's call, that is a per-machine failure with no local
+# symptom. The registry is only consulted for suffixes not listed here.
+_UPLOAD_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".glb": "model/gltf-binary",
+                ".gltf": "model/gltf+json"}
+
+
+def multipart(fields: dict, filename: str, blob: bytes,
+              field: str = "file") -> tuple[bytes, str]:
     """A multipart/form-data body, stdlib only.
 
-    Same reasoning as krea._multipart: two endpoints here are not JSON, and
-    pulling in `requests` for them would put a dependency on the critical path
-    of a module whose whole HTTP surface is otherwise a handful of urllib calls.
+    Some endpoints here and in krea are not JSON, and pulling in `requests` for
+    them would put a dependency on the critical path of modules whose whole HTTP
+    surface is otherwise a handful of urllib calls.
+
+    Public and shared: krea carried a byte-identical copy that differed only in
+    how it guessed the content type, so the two adapters disagreed about the MIME
+    of the same file.
     """
     boundary = "----bgate" + base64.urlsafe_b64encode(os.urandom(9)).decode()
     out = bytearray()
@@ -1597,7 +1611,10 @@ def _multipart(fields: dict, filename: str, blob: bytes,
         out += f"--{boundary}\r\n".encode()
         out += f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
         out += f"{value}\r\n".encode()
-    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    suffix = Path(filename).suffix.lower()
+    mime = (_UPLOAD_MIME.get(suffix)
+            or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream")
     out += f"--{boundary}\r\n".encode()
     out += (f'Content-Disposition: form-data; name="{field}"; '
             f'filename="{filename}"\r\n').encode()
@@ -1778,7 +1795,7 @@ def upload(backend: str, path: str | os.PathLike[str], *, root: Any = None,
     if not p.is_file():
         raise ImageTo3DError(f"input image not found: {p}")
     key = api_key(backend, root)
-    body, content_type = _multipart({}, p.name, p.read_bytes(),
+    body, content_type = multipart({}, p.name, p.read_bytes(),
                                     field=spec.get("upload_field", "file"))
     headers = {"Accept": "application/json", "Content-Type": content_type}
     if spec.get("auth") == "bearer" and key:
@@ -1874,13 +1891,17 @@ def build_comfy_prompt(image_name: str, *, seed: Optional[int] = None,
     return {"prompt": graph, "client_id": "builders-gate"}
 
 
-def _comfy_outputs(history: dict, task: str) -> list[dict]:
-    """Every file this run wrote that the pipeline could use.
+def comfy_scan(history: dict, task: str, suffixes) -> list[dict]:
+    """Every file a ComfyUI run wrote whose suffix is in ``suffixes``.
 
     SCANNED, not looked up by node id or class name. 3D-Pack's saver nodes are
     renamed between releases and differ per model, so keying on one would break
     on an upgrade of somebody else's plugin. Scanning for a usable suffix is
     stable against all of that.
+
+    Public and suffix-parameterised because localgen's image scan was the same
+    four nested type-guards over the same history shape with a different suffix
+    set — the one thing about a ComfyUI response that actually varies by caller.
     """
     run = (history or {}).get(task) or {}
     found: list[dict] = []
@@ -1894,11 +1915,16 @@ def _comfy_outputs(history: dict, task: str) -> list[dict]:
                 if not isinstance(entry, dict):
                     continue
                 name = str(entry.get("filename") or "")
-                if name.lower().rsplit(".", 1)[-1] in USABLE_FORMATS:
-                    found.append({"node": node_id, "filename": name,
+                if name.lower().rsplit(".", 1)[-1] in suffixes:
+                    found.append({"node": str(node_id), "filename": name,
                                   "subfolder": str(entry.get("subfolder") or ""),
                                   "type": str(entry.get("type") or "output")})
     return found
+
+
+def _comfy_outputs(history: dict, task: str) -> list[dict]:
+    """Every file this run wrote that the 3D pipeline could use."""
+    return comfy_scan(history, task, USABLE_FORMATS)
 
 
 # ---------------------------------------------------------------------------
@@ -2396,7 +2422,7 @@ def _run_sync(backend: str, image_path, out_path, *, root, timeout: float,
         if target and value is not None:
             form[target] = value
     p = Path(image_path)
-    body, content_type = _multipart(form, p.name, p.read_bytes(),
+    body, content_type = multipart(form, p.name, p.read_bytes(),
                                     field=spec.get("upload_field", "image"))
     req = urllib.request.Request(
         base_url(backend) + spec["submit_path"], data=body, method="POST",

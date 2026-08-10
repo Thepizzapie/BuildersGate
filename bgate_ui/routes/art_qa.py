@@ -23,15 +23,6 @@ from bgate_ui.deps import root
 router = APIRouter()
 
 
-def _project_rel(abs_or_rel: str) -> str:
-    """Best-effort project-relative path. resolved_refs are absolute; slice from
-    the first '.bgate' segment so the reviewer (cwd = project root) can Read them
-    and the UI can preview them. Already-relative paths pass through."""
-    s = str(abs_or_rel or "").replace("\\", "/")
-    idx = s.find(".bgate")
-    return s[idx:] if idx != -1 else s
-
-
 def _ref_paths(art: dict) -> list[str]:
     """Reference image paths a candidate was drawn against — prefer the resolved
     absolute paths in metadata, fall back to the raw refs list."""

@@ -61,15 +61,6 @@ SEAT_RULES: list[tuple[str, str]] = [
     ("qa", r"\b(?:bugs?|broken|glitch(?:es|y)?|repro|softlock|stuck)\b"),
 ]
 
-# Utterances that only make sense next to the one before them. "I do not like it"
-# is real feedback with no routable noun in it — alone it lands 'unassigned' and
-# an agent never sees it. Within a segment, inherit the previous seat.
-_ANAPHORIC = re.compile(
-    r"^(?:but |and |so |also )?(?:i |it |that |this |they |these |those )?"
-    r"(?:do|does|did|is|was|are|were|really|just|kind of|sort of|"
-    r"n'?t| not| never)?\b", re.I)
-_ANAPHOR_MAX_WORDS = 8
-
 SEATS = ("director", "narrative", "gameplay", "tech", "art", "audio", "qa", "unassigned")
 KINDS = ("like", "fix", "add", "change", "question", "note")
 
@@ -249,12 +240,3 @@ def extract(segments: list[dict], max_gap: float = THOUGHT_GAP) -> list[dict]:
             "scores": scores,
         })
     return items
-
-
-def _is_anaphoric(text: str) -> bool:
-    """Short and pronoun-led — meaningless without the sentence before it."""
-    words = tokens(text)
-    if len(words) > _ANAPHOR_MAX_WORDS:
-        return False
-    return bool(re.match(r"^(?:but|and|so|also)?\s*(?:i|it|that|this|they|these|those)\b",
-                         text.strip(), re.I))

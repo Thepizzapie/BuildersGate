@@ -405,6 +405,24 @@ def existing_session_path(audio: str | os.PathLike[str]) -> Optional[Path]:
     return None
 
 
+def _track_num(raw: dict, i: int, key: str, lo: float, hi: float,
+               default: float) -> float:
+    """One numeric track field, range-checked, named in the error.
+
+    Module level rather than a closure rebuilt on every track: it captured the
+    loop's `raw` and `i`, which is only correct because it happens to be called
+    inside the same iteration — a shape that reads as a latent bug and is one
+    the moment anybody stores the callable.
+    """
+    try:
+        v = float(raw.get(key, default))
+    except (TypeError, ValueError):
+        raise AudioError(f"tracks[{i}].{key} is not a number")
+    if not lo <= v <= hi:
+        raise AudioError(f"tracks[{i}].{key} is out of range [{lo}, {hi}]")
+    return v
+
+
 def normalise_session(data: dict) -> dict:
     """Validate a mixer session. Sources are project-relative and must stay so."""
     if not isinstance(data, dict):
@@ -418,19 +436,11 @@ def normalise_session(data: dict) -> dict:
             raise AudioError(f"tracks[{i}] has no source")
         if src.startswith("/") or ".." in src.split("/"):
             raise AudioError(f"tracks[{i}] source escapes the project: {src}")
-        def _num(key, lo, hi, default):
-            try:
-                v = float(raw.get(key, default))
-            except (TypeError, ValueError):
-                raise AudioError(f"tracks[{i}].{key} is not a number")
-            if not lo <= v <= hi:
-                raise AudioError(f"tracks[{i}].{key} is out of range [{lo}, {hi}]")
-            return v
         # in_s/out_s are seconds into the SOURCE file, not the timeline: the
         # kept region is [in_s, out_s) and it lands at offset_s. out_s is None
         # for "to the end", which is what every session written before this
         # existed means. Trimming stays non-destructive; the file is untouched.
-        in_s = _num("in_s", 0.0, MAX_SECONDS, 0.0)
+        in_s = _track_num(raw, i, "in_s", 0.0, MAX_SECONDS, 0.0)
         raw_out = raw.get("out_s")
         if raw_out is None or raw_out == "":
             out_s = None
@@ -447,11 +457,11 @@ def normalise_session(data: dict) -> dict:
         tracks.append({
             "source": src,
             "name": str(raw.get("name") or Path(src).name)[:80],
-            "offset_s": _num("offset_s", 0.0, MAX_SECONDS, 0.0),
+            "offset_s": _track_num(raw, i, "offset_s", 0.0, MAX_SECONDS, 0.0),
             "in_s": in_s,
             "out_s": out_s,
-            "gain_db": _num("gain_db", -60.0, 12.0, 0.0),
-            "pan": _num("pan", -1.0, 1.0, 0.0),
+            "gain_db": _track_num(raw, i, "gain_db", -60.0, 12.0, 0.0),
+            "pan": _track_num(raw, i, "pan", -1.0, 1.0, 0.0),
             "muted": bool(raw.get("muted")),
             "solo": bool(raw.get("solo")),
             "reverse": bool(raw.get("reverse")),

@@ -21,15 +21,15 @@ same-origin + bearer-token guard on the mutating surface.
 """
 from __future__ import annotations
 
-import getpass
 import os
 import secrets
-import socket
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from fastapi import Query, Request
 from fastapi.responses import JSONResponse
+
+from bgate_core import activity as _activity
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -220,7 +220,12 @@ class Page:
 # Actor identity
 # ---------------------------------------------------------------------------
 
-AGENT_PREFIX = "agent:"
+# Re-exported, not re-declared. The prefix, the identity fallback and the
+# human/agent predicate below all live in bgate_core.activity, which is the layer
+# the MCP server, the hook and the CLI also go through — a second copy here is a
+# second thing to keep in step, and "only a human may approve" is not a rule that
+# survives two definitions of "human".
+AGENT_PREFIX = _activity.AGENT_PREFIX
 
 
 def current_actor(request: Optional[Request] = None) -> str:
@@ -260,25 +265,8 @@ def current_actor(request: Optional[Request] = None) -> str:
     return local_identity()
 
 
-def local_identity() -> str:
-    """The machine's human identity, for a single-user local dashboard."""
-    configured = os.environ.get("BGATE_STUDIO_USER", "").strip()
-    if configured:
-        return configured[:120]
-    try:
-        user = getpass.getuser()
-    except Exception:
-        user = "unknown"
-    try:
-        host = socket.gethostname()
-    except Exception:
-        host = "local"
-    return f"{user}@{host}"[:120]
-
-
-def is_human(actor: str) -> bool:
-    """An agent may propose; only a human may approve."""
-    return bool(actor) and not actor.startswith(AGENT_PREFIX)
+local_identity = _activity.local_identity
+is_human = _activity.is_human
 
 
 def require_human(actor: str, action: str = "approve") -> None:

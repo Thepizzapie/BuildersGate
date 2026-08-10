@@ -22,6 +22,15 @@ venv/
 
 # QA gate vendored deps (installed cache, not source)
 .qa_deps/
+# ...and the throwaway project the QA gate runs those deps against.
+.qa_run_project/
+
+# The virtualenvs the local CI rehearsal builds. `.qa_deps/` was ignored and
+# these two were not, which is 230MB of site-packages sitting one `git add -A`
+# away from the index — the same accident the .env rule above exists to stop,
+# with a bigger blast radius.
+.ci-venv/
+.ci-clean/
 
 # Generated asset work directory
 .asset_work/
@@ -32,6 +41,7 @@ venv/
 arcade/
 
 .pytest_cache/
+.ruff_cache/
 .coverage
 
 # Godot

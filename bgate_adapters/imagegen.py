@@ -360,9 +360,15 @@ def edit(prompt: str, ref_paths: list[str], out_path: str, *,
 
     client = OpenAI(timeout=timeout)
     model = _model_for(transparent)  # same routing as generate() — keep in sync
-    handles = [open(ref, "rb") for ref in ref_paths]
+    # Appended one at a time inside the try, not built as a comprehension above
+    # it: a comprehension that raises on the fourth reference never binds the
+    # list, so the three handles it had already opened were unreachable and the
+    # finally below could not close them.
+    handles: list = []
     started = time.monotonic()
     try:
+        for ref in ref_paths:
+            handles.append(open(ref, "rb"))
         kwargs = {
             "model": model,
             "image": handles if len(handles) > 1 else handles[0],
