@@ -104,6 +104,79 @@ def ok(data: Any = None, **extra: Any) -> dict:
     return body
 
 
+# ---------------------------------------------------------------------------
+# Turning an exception into something safe to put in a response
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. Every route in this product reports a failure as
+# f"{type(exc).__name__}: {exc}", including the app-wide handler below, and an
+# exception message is not a curated string: an OSError carries the ABSOLUTE
+# path that failed (so, the home directory and the account name), a provider
+# error carries whatever that vendor put in its response body, and a stray
+# ValueError from a library carries whatever it was holding. CodeQL flags the
+# whole family as information exposure and it is right that the class is real,
+# even though this server binds loopback and sits behind a bearer token.
+#
+# THE MACHINERY ALREADY EXISTED AND WAS ONLY HALF-WIRED. bgate_core.streamer
+# knows how to strip exactly this — API keys by value and by vendor shape, the
+# home directory, the account name, the hostname — and bgate_ui.redact installs
+# it over every JSON response. But only in STREAMER MODE, which is off by
+# default. A key in an error payload is a leak whether or not somebody is
+# streaming, so this runs always and the middleware stays what it is: the
+# stronger, opt-in filter for when a camera is pointed at the screen.
+#
+# WHAT IT DOES NOT DO is swallow the sentence. The exception TYPE is kept
+# because it is diagnostic and carries nothing personal, and our own error
+# messages (CinematicError, KieError, MusicError) are hand-written and
+# repo-relative, so they pass through untouched. What changes is only the
+# accidental content of an unexpected exception, which is the part nobody wrote
+# and nobody checked.
+_REDACTOR_TTL_S = 30.0
+_redactor_cache: tuple[float, Any] = (0.0, None)
+
+
+def _redactor() -> Any:
+    """A scrubber for this machine, rebuilt occasionally.
+
+    Cached because building one scans the environment for secrets and this sits
+    on an error path that a retry loop can hit hard; rebuilt on a timer because
+    a key set through the settings panel must start being redacted without a
+    restart. Never raises: a failure to build a redactor must not turn a handled
+    error into an unhandled one, so the caller falls back to the raw string.
+    """
+    global _redactor_cache
+    import time as _time
+
+    now = _time.monotonic()
+    if now - _redactor_cache[0] < _REDACTOR_TTL_S and _redactor_cache[1]:
+        return _redactor_cache[1]
+    try:
+        from bgate_core import streamer as _streamer
+
+        built = _streamer.Redactor(scan_env=True)
+    except Exception:                                            # noqa: BLE001
+        built = None
+    _redactor_cache = (now, built)
+    return built
+
+
+def safe_error(exc: BaseException) -> str:
+    """``"TypeName: message"`` with secrets and this machine's identity removed.
+
+    The one way a route should put an exception into a response body.
+    """
+    raw = f"{type(exc).__name__}: {exc}"
+    filt = _redactor()
+    if filt is None:
+        # No scrubber. The type alone is still useful and carries nothing —
+        # better a thin error than an unfiltered one.
+        return type(exc).__name__
+    try:
+        return filt.text(raw)
+    except Exception:                                            # noqa: BLE001
+        return type(exc).__name__
+
+
 def error_body(status: int, message: str, *, code: Optional[str] = None,
                detail: Optional[dict] = None) -> dict:
     return {
@@ -159,9 +232,12 @@ def install_error_handlers(app) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception):
+        # THE WIDEST EXPOSURE IN THE PRODUCT, because it catches what nobody
+        # anticipated — and an unanticipated exception is exactly the one whose
+        # message was never read by a human. See safe_error.
         return JSONResponse(
             status_code=500,
-            content=error_body(500, f"{type(exc).__name__}: {exc}"),
+            content=error_body(500, safe_error(exc)),
         )
 
 

@@ -120,7 +120,7 @@ def music_generate(payload: dict, request: Request) -> dict:
             # Returned, not raised: a failure here is a real answer the seat
             # renders ("Suno refused: prompt is 900 characters"), where a
             # raised one becomes a job error with a traceback in it.
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": api.safe_error(exc)}
         if job_id:
             _core_jobs.progress(
                 project, job_id, fraction=1.0,
@@ -260,7 +260,7 @@ def music_recover(payload: dict, request: Request) -> dict:
     except _music.MusicError as exc:
         raise api.bad_request(str(exc), task_id=task_id)
     except Exception as exc:                                     # noqa: BLE001
-        raise api.unavailable(f"{type(exc).__name__}: {exc}", task_id=task_id)
+        raise api.unavailable(api.safe_error(exc), task_id=task_id)
 
 
 @router.get("/api/music/candidates")
@@ -352,7 +352,7 @@ def music_task(task_id: str) -> dict:
         # about.
         raise api.bad_request(str(exc), task_id=task_id)
     except Exception as exc:                                     # noqa: BLE001
-        raise api.unavailable(f"{type(exc).__name__}: {exc}", task_id=task_id)
+        raise api.unavailable(api.safe_error(exc), task_id=task_id)
 
 
 def _artifact_id(payload: Optional[dict]) -> int:

@@ -139,7 +139,7 @@ def cinematic_generate(payload: dict, request: Request) -> dict:
                                          generate_audio=audio,
                                          on_progress=progress)
         except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": api.safe_error(exc)}
         if job_id:
             _core_jobs.progress(project, job_id, fraction=1.0,
                                 stage="done" if result.get("ok") else "failed")
@@ -171,7 +171,7 @@ def cinematic_assemble(payload: dict, request: Request) -> dict:
         try:
             result = _cine.assemble(project, name, quality=quality)
         except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": api.safe_error(exc)}
         if job_id:
             _core_jobs.progress(project, job_id, fraction=1.0, stage="done")
         return result
@@ -210,7 +210,7 @@ def cinematic_continuity(payload: dict, request: Request) -> dict:
         try:
             result = _cine.check_continuity(project, name)
         except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": api.safe_error(exc)}
         if job_id:
             _core_jobs.progress(project, job_id, fraction=1.0, stage="done")
         return result
@@ -282,7 +282,7 @@ def cinematic_keep(payload: dict, request: Request) -> dict:
                                 quality=quality, actor=actor,
                                 install_to_engine=to_engine)
         except Exception as exc:                                 # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            return {"ok": False, "error": api.safe_error(exc)}
         if job_id:
             _core_jobs.progress(project, job_id, fraction=1.0, stage="done")
         return result

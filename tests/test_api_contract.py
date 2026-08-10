@@ -239,3 +239,93 @@ class TestPagination:
         got = client.get(f"/api/playtest/{sid}").json()
         assert "session" in got and isinstance(got["items"], list)
         assert got["page"]["offset"] == 0
+
+
+class TestExceptionsDoNotLeak:
+    """An exception message is not a curated string.
+
+    Every route reports a failure as "TypeName: message", and for our OWN error
+    types that message is hand-written and repo-relative. For anything else it
+    is whatever the exception happened to be carrying: an OSError names the
+    ABSOLUTE path that failed — so the home directory and the account name — and
+    a provider error carries whatever that vendor put in its response body,
+    which can include the key it just rejected.
+
+    bgate_core.streamer already knew how to strip all of that; it was only wired
+    into streamer mode, which is off by default. A key in an error payload is a
+    leak whether or not somebody is streaming.
+    """
+
+    def test_the_home_directory_does_not_survive(self, monkeypatch):
+        """Against a FICTIONAL machine, not this one. Reading the real home
+        would make the test skip wherever that path is too generic to assert on
+        (`/root` in any container) and pass for the wrong reason elsewhere —
+        the same trap tests/test_streamer.py's `marta` fixture exists for."""
+        from bgate_core import streamer
+        from bgate_ui import api
+
+        monkeypatch.setattr(api, "_redactor", lambda: streamer.Redactor(
+            home=r"C:\Users\marta", user="marta", host="marta-desktop",
+            scan_env=False))
+        out = api.safe_error(
+            OSError(r"[Errno 2] No such file: 'C:\Users\marta\rpg\game.db'"))
+        assert "marta" not in out
+        assert "OSError" in out, "the TYPE is diagnostic and carries nothing"
+
+    def test_a_live_key_does_not_survive(self, monkeypatch):
+        """By VALUE — the primary defence, and the one that catches a vendor
+        nobody has written a pattern for."""
+        from bgate_ui import api
+
+        monkeypatch.setenv("KIE_API_KEY", "sk-live-NOTREAL-abcdefghijklmnop")
+        api._redactor_cache = (0.0, None)      # the env just changed
+        out = api.safe_error(
+            RuntimeError("rejected sk-live-NOTREAL-abcdefghijklmnop"))
+        assert "NOTREAL" not in out
+
+    def test_an_unknown_vendors_key_shape_does_not_survive(self):
+        """A key in a provider's error body did not come from this machine's
+        environment, so there is nothing to compare it against — shape is all
+        there is."""
+        from bgate_ui import api
+
+        out = api.safe_error(
+            RuntimeError("provider said sk-ant-api03-"
+                         "AAAAAAAAAAAAAAAAAAAAAAAAAA is invalid"))
+        assert "sk-ant-api03-AAAA" not in out
+
+    def test_our_own_messages_pass_through_intact(self):
+        """The point is not to swallow the sentence. A curated, repo-relative
+        message is exactly what the panel should show, and an error nobody can
+        act on is why users turn diagnostics off."""
+        from bgate_ui import api
+
+        message = "nothing on disk at game/assets/cinematics/intro.ogv"
+        assert message in api.safe_error(ValueError(message))
+
+    def test_a_broken_redactor_still_yields_a_usable_error(self, monkeypatch):
+        """A failure to scrub must not turn a handled error into an unhandled
+        one. Falls back to the type, which is thin but safe."""
+        from bgate_ui import api
+
+        monkeypatch.setattr(api, "_redactor", lambda: None)
+        assert api.safe_error(ValueError("anything")) == "ValueError"
+
+    def test_the_unhandled_handler_scrubs_too(self, client, monkeypatch):
+        """The widest exposure in the product, because it catches what nobody
+        anticipated — and an unanticipated exception is exactly the one whose
+        message was never read by a human."""
+        from bgate_ui import api
+        import bgate_ui.app as app_module
+
+        monkeypatch.setenv("KIE_API_KEY", "sk-live-NOTREAL-zyxwvutsrqponm")
+        api._redactor_cache = (0.0, None)
+
+        @app_module.app.get("/api/_boom_for_test")
+        def _boom():
+            raise RuntimeError("leaked sk-live-NOTREAL-zyxwvutsrqponm")
+
+        got = TestClient(app_module.app, raise_server_exceptions=False).get(
+            "/api/_boom_for_test")
+        assert got.status_code == 500
+        assert "NOTREAL" not in got.text
