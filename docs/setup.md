@@ -18,8 +18,15 @@ MCP server, and platform detail.
 
 ## API keys: two image providers, either or both
 
-The art seat needs at least one. Copy [`.env.example`](../.env.example) to
-`.env` **at your game project's root** and fill in what you have.
+The art seat needs at least one.
+
+```bash
+bgate key set openai --global    # stored once, every project inherits it
+bgate key                        # what is set, and which layer supplies it
+```
+
+The key is prompted for with echo off — there is no argument that takes one, so
+it never lands in shell history or a process list.
 
 | Variable | Provider | What it buys |
 |---|---|---|
@@ -31,15 +38,59 @@ Neither provider returns usable transparency. Measured:
 through the chroma-key path in `bgate_core/chroma.py` either way. The module
 docstring in `bgate_adapters/krea.py` has the full comparison.
 
+### Where a key can live, and which one wins
+
+Three layers, most specific first. Whichever is highest on this list and set is
+the one actually being sent:
+
+| Layer | Where | Use it when |
+|---|---|---|
+| Shell variable | your own environment | CI, or a one-off override for a single session |
+| Project `.env` | `<game>/.env` | this game bills a different account from your others |
+| Machine-wide `.env` | `~/.bgate/.env` (or `$BGATE_HOME/.env`) | **the usual case** — a personal machine, one set of keys |
+
+`bgate key` prints the layer in force per provider, which is the question worth
+asking when a key is set and nothing works. Clearing a project key **uncovers**
+the machine-wide one rather than leaving the provider unset.
+
+The machine-wide store is also the only one that exists when you are not in a
+project, so `bgate doctor` and `image_status` answer correctly with no game in
+sight. Copying [`.env.example`](../.env.example) to a project `.env` by hand
+still works and is unchanged.
+
+### Using a tool with no project open
+
+A key you can set without a project is only useful if something can then use it
+without one. The image tools — `image_generate`, `image_edit`, `image_sprites`,
+`image_talkhead` — fall back to a **scratch project** at `~/.bgate/scratch` when
+there is nowhere else to put the result, and `project_dir="scratch"` asks for it
+explicitly from inside a project you would rather not touch.
+
+It is a real project rather than a loose output folder, because everything
+downstream of a generation needs one: the artifact registry, the spend ledger,
+`.bgate_out`, the review queue. It carries no game, so a tool that needs an
+engine still says so. It is created the first time something needs it.
+
+It is the **last** resort, below the remembered active project — so if you have
+ever run `bgate init`, `bgate adopt` or `bgate use`, your own project keeps
+winning and a mistyped path keeps failing loudly. Tools that edit game files,
+run Godot or take locks do not fall back at all. `project_status` tells you when
+the scratch project is the one in use.
+
 `.env` and `.env.*` are gitignored here and in every project `bgate init` stamps
 out. They were not, for a while, which is how following these instructions
-committed a key. Keys are loaded per-project and never logged.
+committed a key. `~/.bgate` is not a repository, so the machine-wide store has
+nothing to leak into; it is written `0600` where the OS supports it. Keys are
+never logged.
 
 You can also set these from the dashboard — **Settings → Art providers**, or the
-**Generators** tab on Studio. Either writes the key into this same gitignored
-`.env` (adding the ignore rule first if the project is missing it) and makes it
-live without a restart. `bgate doctor`'s `art_key` row is green when any
-provider has a key.
+**Generators** tab on Studio. Both have a *save for every project on this
+machine* tick box, add the ignore rule first when writing a project `.env`, and
+make the key live without a restart. Writing a key is human-only in both the
+dashboard and the CLI, and there is deliberately **no MCP tool** that sets one:
+an agent that can write credentials can hand itself a provider nobody paid for.
+`bgate doctor`'s `art_key` row is green when any provider has a key, from any
+layer.
 
 ## Platform support
 

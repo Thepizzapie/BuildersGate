@@ -909,6 +909,12 @@
           printed on this page. These have their own endpoint, and it never sends
           a key back: what you see below is a state, a reason and the last four
           characters.</p>
+        <p class="cfg-note">The rest of this page is <b>this project's</b>
+          settings. Keys are the exception: a credential belongs to the person,
+          not the game, so each one below can be saved for every project on this
+          machine instead. The panel says which layer is actually supplying each
+          value, which is the question worth asking when a key is set and
+          nothing works.</p>
         <div id="cfg-creds-slot"></div>`;
     },
 

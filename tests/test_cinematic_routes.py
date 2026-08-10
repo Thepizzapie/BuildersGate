@@ -162,3 +162,52 @@ class TestPostProductionEndpoints:
     def test_continuity_needs_a_sequence(self, client):
         assert client.post("/api/cinematic/continuity",
                            json={}).status_code == 400
+
+
+class TestMachineWideKeys:
+    """A key set with `bgate key set <provider> --global` and nowhere else was
+    invisible to every panel that asks an adapter whether it is configured.
+
+    The adapters call envfile.load_project_env, which reads a PROJECT's .env
+    only; the machine-wide store is loaded by envfile.load_env. The MCP server's
+    _root() already did that and the dashboard's did not, so `bgate key` listed
+    a key as in force while the panel said no provider was configured — the most
+    expensive kind of wrong this product can be about credentials.
+    """
+
+    def test_a_machine_wide_key_reaches_the_panels(self, root, monkeypatch,
+                                                   tmp_path):
+        from bgate_core import envfile
+
+        monkeypatch.setenv("BGATE_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("KIE_API_KEY", raising=False)
+        gdir = envfile.global_dir()
+        gdir.mkdir(parents=True, exist_ok=True)
+        (gdir / ".env").write_text("KIE_API_KEY=machine-wide\n",
+                                   encoding="utf-8")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+
+        client = TestClient(app)
+        got = data(client.get("/api/cinematic/options"))
+        assert got["provider_available"] is True
+
+    def test_the_project_still_beats_the_machine_wide_store(self, root,
+                                                            monkeypatch,
+                                                            tmp_path):
+        """Precedence is shell > project > machine-wide, and a panel that
+        reported the wrong layer is how a stale key survives a debugging
+        session."""
+        from bgate_core import envfile
+
+        monkeypatch.setenv("BGATE_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("KIE_API_KEY", raising=False)
+        gdir = envfile.global_dir()
+        gdir.mkdir(parents=True, exist_ok=True)
+        (gdir / ".env").write_text("KIE_API_KEY=machine-wide\n",
+                                   encoding="utf-8")
+        (root / ".env").write_text("KIE_API_KEY=project-key\n", encoding="utf-8")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+
+        TestClient(app).get("/api/cinematic/options")
+        import os
+        assert os.environ.get("KIE_API_KEY") == "project-key"

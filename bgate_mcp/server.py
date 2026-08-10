@@ -83,6 +83,8 @@ from bgate_core import iterations as _iterations
 from bgate_core import items as _items
 from bgate_core import project as _project
 from bgate_core import search as _search
+from bgate_core import animspec as _animspec
+from bgate_core import spritekit as _spritekit
 from bgate_core import vfx as _vfx
 
 # THE ONE CHANNEL THAT CANNOT BE DROPPED BY CHANGING DIRECTORY.
@@ -171,28 +173,79 @@ def _art_out(root, filename: str):
     return out
 
 
-def _root() -> str:
+def _keys(root: Optional[str] = None) -> None:
+    """Make credentials live: the project's .env, then ~/.bgate/.env.
+
+    Split out of :func:`_root` because the two questions came apart. "Which
+    project is this call about" can legitimately have no answer; "does this
+    machine have an OpenAI key" always does, and it used to be reachable only
+    through a project root — so a tool that needs a key and not a game could not
+    be reached at all without inventing a project to hold the credential.
+
+    Order is the precedence and is documented at envfile.load_env: shell beats
+    both files, and the project beats the machine-wide store.
+    """
+    try:
+        from bgate_core import envfile
+        envfile.load_env(root)
+    except Exception:
+        pass
+
+
+def _root(scratch: bool = False) -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
-    Also loads the project's .env (once) so secrets live with the project."""
+    Also loads the project's .env and the machine-wide one, in that order.
+
+    ``project_dir="scratch"`` (or "global") resolves to ``~/.bgate/scratch``,
+    which is how a caller says "this one is not about any of my games" without
+    leaving the directory it is standing in.
+
+    ``scratch=True`` additionally puts that project at the BOTTOM of the
+    discovery chain rather than raising. Passed by the tools whose output has
+    somewhere to go even when no game does — see :func:`_scratch_root`.
+    """
     override = _root_hint()
     if override:
-        root = override
+        # An alias is checked before the path: nobody has a project directory
+        # literally called "scratch" relative to nothing, and resolving it as
+        # one would silently create it in the cwd.
+        aliased = _project.resolve_alias(override)
+        root = str(aliased) if aliased else override
     else:
         try:
-            root = str(_project.require_root())
+            root = str(_project.require_root(scratch=scratch))
         except LookupError as exc:
             # core's own hint still points at project_select, which no longer
             # switches anything. Restate it in terms of what actually works now.
             raise LookupError(
                 f"{exc} Pass project_dir=<absolute path to the project root> on "
-                "this call, or export BGATE_ROOT, or run project_init to create "
-                "one here.") from None
-    try:
-        from bgate_core import envfile
-        envfile.load_project_env(root)
-    except Exception:
-        pass
+                "this call, or project_dir='scratch' to use ~/.bgate/scratch, "
+                "or export BGATE_ROOT, or run project_init to create one "
+                "here.") from None
+    _keys(root)
     return root
+
+
+def _scratch_root() -> str:
+    """The root for a tool whose output does not need a game to belong to.
+
+    Generation is the case: an image, a sheet, a track — all of them need a
+    project for the artifact registry, the spend ledger and `.bgate_out`, and
+    none of them need an engine. Falling back here rather than refusing is what
+    makes "just use one tool for something" possible without inventing a game to
+    hold the result.
+
+    Not the default for every tool. `godot_run` against an empty scratch project
+    is a confusing failure a long way from its cause, and a tool that edits game
+    files has nothing to edit — those keep refusing, which is the useful answer.
+    """
+    return _root(scratch=True)
+
+
+# The machine-wide keys are live from the moment the server starts, so a tool
+# that needs a credential and not a project — provider_status, doctor — answers
+# correctly in a session that never names one.
+_keys()
 
 
 # Keys a tool might have used to say WHY, in the order they are believed. The
@@ -696,7 +749,12 @@ def project_status() -> dict:
             "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
             "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
         }
-        return {"project": _project.get(root), "root": root, "counts": counts}
+        return {"project": _project.get(root), "root": root, "counts": counts,
+                # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
+                # sprite sheet go" has an answer nothing on any surface states,
+                # and the honest one — a directory under ~/.bgate that was
+                # created for you — is not a place anyone would think to look.
+                "scratch": _project.is_scratch(root)}
     except Exception as exc:
         return _fail(exc)
 
@@ -2272,7 +2330,16 @@ def image_status() -> dict:
     that decides whether the output can ship in a game you sell.
     """
     try:
-        root = _root()  # triggers .env load
+        # NO PROJECT IS NOT AN ERROR FOR THIS QUESTION. "Can this machine make
+        # an image" is about credentials and installed packages, and both have
+        # an answer before any game exists — this used to raise LookupError
+        # outside a project, which made the one tool you would reach for to
+        # diagnose a key the one tool you could not run.
+        try:
+            root = _root()          # loads project .env, then the global one
+        except LookupError:
+            root = None
+            _keys()                 # the machine-wide layer, standalone
         from bgate_adapters import imagegen
 
         legs = {}
@@ -2311,9 +2378,18 @@ def image_status() -> dict:
             "providers": usable,
             "auto_picks": (usable[0] if usable else ""),
             "legs": legs,
+            "project": root or "",
+            # Setting a key is HUMAN-ONLY and there is deliberately no tool here
+            # that does it — an agent that can write credentials can hand itself
+            # a provider nobody paid for. So the fix names what the human runs,
+            # not something to call.
             "reason": "" if usable else
-                      "no image provider is configured — set OPENAI_API_KEY or "
-                      "KREA_API_KEY in the project's .env, or configure a local "
+                      "no image provider is configured. A human can fix it with "
+                      "`bgate key set openai --global` (stores it in "
+                      "~/.bgate/.env, which every project on this machine "
+                      "inherits and which works with no project at all), or "
+                      "without --global to keep it to one game, or in the "
+                      "dashboard's provider panel — or configure a local "
                       "ComfyUI (see the local leg's `how`)",
         }
     except Exception as exc:
@@ -2505,7 +2581,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     into the game with godot_import_asset.
     """
     try:
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         named = [str(r) for r in (ref_images or []) if str(r).strip()]
@@ -2600,7 +2676,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     the API's background=transparent, which does not reliably return alpha.
     """
     try:
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
@@ -3140,6 +3216,78 @@ _chroma_key = _chroma.key
 
 
 @_tool
+def sprite_plan(archetypes: Optional[list[str]] = None, view: str = "",
+                quality: str = "medium") -> dict:
+    """The key poses and timing for standard animations. FREE — spends nothing.
+
+    Call this BEFORE image_sprites. With no arguments it returns the catalogue:
+    every archetype, how many frames it generates, how many steps it plays, and
+    one line on why it is built that way. With `archetypes=["idle","walk4",
+    "attack"]` it returns the exact pose list and timing that run would use, plus
+    what it would cost — so the plan can be read, edited and priced before any of
+    it is bought.
+
+    WHY THIS EXISTS. image_sprites will animate whatever poses it is handed, and
+    the expensive failure is not a broken sheet — it is a sheet that assembles
+    perfectly, passes the identity gate, holds its palette, and animates like
+    nothing alive. Four frames named walk/0..walk/3 and described as "walking,
+    left foot forward" / "walking" / "walking, right foot forward" / "walking"
+    is a legal, costly, useless animation and not one existing gate rejects it.
+
+    Animation has had the answer since the 1930s. A walk is CONTACT, DOWN,
+    PASSING, UP, once per leg — the body rises and falls twice per cycle and that
+    bob is what a walk IS; four frames with no height change is a character
+    sliding along the floor. An attack is ANTICIPATION, CONTACT, FOLLOW-THROUGH,
+    RECOVER, and its impact frame is HELD while its wind-up is rushed, because
+    that contrast is the feeling of a hit landing. Godot 4 has carried per-frame
+    durations all along and this pipeline emitted a flat 1.0 for every frame ever
+    made, which is why generated attacks read as a slideshow of an attack.
+
+    `view` ("side view, facing right") is prepended to every description, so the
+    camera convention is stated once rather than drifting between eight prose
+    strings. Feed the returned `poses` and `archetypes` straight to
+    image_sprites, or edit them first — this is a starting point with reasons
+    attached, not a rule.
+    """
+    try:
+        if not archetypes:
+            return {"ok": True, "catalog": _animspec.catalog(),
+                    "note": "pass archetypes=[...] for the pose list and price of "
+                            "a specific run. `generated` is what you pay for; "
+                            "`steps` is how many frames actually play — they "
+                            "differ where ping-pong is doing its job."}
+        built = _animspec.plans(list(archetypes), view=view)
+        from bgate_adapters import imagegen as _ig
+
+        per = _ig.price_per_image(quality)
+        details = []
+        for entry in archetypes:
+            key = _animspec.resolve(entry)
+            if key:
+                spec = _animspec.ARCHETYPES[key]
+                details.append({"asked": entry, "archetype": key,
+                                "why": spec["why"], "loop": spec["loop"],
+                                "pingpong": spec["pingpong"], "fps": spec["fps"]})
+        return {
+            "ok": True,
+            "animations": built["animations"],
+            "poses": built["poses"],
+            "timing": built["timing"],
+            "generated": built["generated"],
+            "steps": built["steps"],
+            "estimated_usd": round(per * built["generated"] + per, 4),
+            "detail": details,
+            "note": f"{built['generated']} images to generate, {built['steps']} "
+                    f"frames of playback (the difference is ping-pong), plus one "
+                    f"reference. Pass archetypes={list(archetypes)!r} to "
+                    "image_sprites to run exactly this, or edit `poses` and pass "
+                    "those instead.",
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
@@ -3147,16 +3295,28 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   res_dir: str = "assets/sprites", max_retries: int = 1,
                   max_cost_usd: float = 0.0, timeout: int = 300,
                   max_seconds: int = 1800, provider: str = "openai",
-                  model: str = "", ref_strength: float = 0.6) -> dict:
+                  model: str = "", ref_strength: float = 0.6,
+                  archetypes: Optional[list[str]] = None, view: str = "",
+                  palette_lock: str = "auto", palette_colors: int = 64,
+                  sheet_padding: int = 0, anchor_views: int = 3) -> dict:
     """PAINTED sprite set — REFERENCE-FIRST for consistency.
 
     provider: "openai" (gpt-image, default) or "krea". They condition on the
     reference in genuinely different ways, and it changes what you get:
     gpt-image EDITS the reference image, which holds identity hard but drags
-    the reference's own lighting along; krea takes it as a STYLE REFERENCE at
-    `ref_strength`, which follows an art style more faithfully and holds a
-    specific face less. Pick per job; `model` names the exact model within the
-    provider (see bgate_adapters.krea.MODELS) or defaults per provider.
+    the reference's own lighting along; a STYLE REFERENCE at `ref_strength`
+    follows an art style more faithfully and holds a specific face less.
+
+    On krea this tool takes nano-banana-2 unless `model` says otherwise, and
+    that pin is the same distinction: krea-2-large (the provider's general
+    default) conditions on a reference as STYLE, and a style reference cannot be
+    asked to hold a subject through a pose change, because holding the subject
+    is not what it does — measured on the party idles, krea-2-medium drew a FACE
+    in seven of eight frames when four of them were specified as back views.
+    nano-banana-2 takes its references as edit inputs, keeps `styles` so a
+    trained LoRA still rides alongside, and bills a flat $0.06 against
+    krea-2-large's $0.065-with-references. Name `model` to override; every
+    entry in bgate_adapters.krea.MODELS is available.
 
 
     How it works (and why): a fresh generation invents a new character every
@@ -3165,8 +3325,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     one — reusing the ref is also how you REGENERATE a single pose later without
     changing the fighter); (2) each pose is an EDIT conditioned on that
     reference — same character, new stance; (3) frames are alpha-trimmed,
-    bottom-centered, stitched into <name>_sheet.png + <name>_frames.tres (one
-    animation per pose) — drop-in for AnimatedSprite2D.
+    registered on the body's mass, stitched into <name>_sheet.png +
+    <name>_frames.tres — drop-in for AnimatedSprite2D.
 
     character_prompt: the character + art style (full body, single character —
     framing/transparency contracts are appended automatically).
@@ -3175,6 +3335,45 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     stance. LOOK at the reference preview before the poses run wild, and at the
     sheet preview before importing. Cost: 1 ref + 1 edit per pose (~$0.04-0.25
     each by quality). Failed poses are listed, never silently shipped.
+
+    ARCHETYPES ARE THE BETTER WAY TO ORDER AN ANIMATION, and they cost nothing
+    extra. Pass `archetypes=["idle", "walk", "attack"]` INSTEAD of `poses` and
+    the key poses come from bgate_core.animspec: a walk built from contact /
+    down / passing / up rather than four frames described as "walking", an
+    attack whose impact frame HOLDS while its wind-up is quick, an idle that
+    ping-pongs so its loop cannot seam. Call sprite_plan first to see exactly
+    what will be generated and what it will cost. `view` ("side view, facing
+    right") is prepended to every pose description so the camera convention is
+    stated once instead of drifting between eight prose strings. Hand-written
+    `poses` still work and are still right for anything the catalogue does not
+    cover.
+
+    anchor_views: how many views of the character condition every pose. 3 (the
+    default) generates a three-quarter and a profile view off the approved
+    anchor ONCE and passes all three on every call; 1 is the old single
+    front-view behaviour. This is the highest-leverage knob here. One front view
+    plus previous frames that are near-copies of it is the weak reference
+    configuration — distinct angles carry far more identity than more of the
+    same angle — and it bites hardest in the normal case, a side-view game asking
+    for side-view poses against a front-view anchor, where the model re-invents
+    the profile on every call and re-invents it differently each time. That is
+    not drift a re-roll fixes; a re-roll buys another guess at information the
+    anchor never carried. Two extra generations per character against one per
+    pose plus one per re-roll.
+
+    palette_lock: "auto" (default), "on" or "off". Locking quantises every frame
+    to the reference's own palette, which makes colour drift UNREPRESENTABLE
+    rather than merely detectable — the existing palette gate finds drift and
+    pays for a re-roll; this leaves nowhere for the drift to be stored. It is a
+    posteriser, so "auto" measures the reference and turns it on only for flat,
+    cel or limited-palette art, where it is free. Painterly art with real
+    gradients is left alone.
+
+    sheet_padding: transparent gutter between cells, in pixels. 0 is a plain
+    strip. Raise it to 1-2 if the game draws sprites at a non-integer scale with
+    linear filtering, where sampling at a region edge otherwise pulls in the
+    neighbouring frame. Sheets long enough to exceed the safe texture width wrap
+    into a padded grid automatically whatever this says.
 
     THIS IS THE MOST EXPENSIVE TOOL HERE and it is capped like it. The plan is
     priced before anything is bought and REFUSED if it exceeds max_cost_usd (or,
@@ -3186,15 +3385,35 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     is still assembled, because half a sheet plus a reason beats a hung call.
 
     Returns the assembled sheet result, or {ok: false, stage, error} when the
-    spend gate, the reference gate or every pose fails.
+    spend gate, the reference gate or every pose fails. The result carries a
+    `motion` block — duplicated frames, popped poses, cycles that do not close,
+    figures in more than one piece — which is the half of quality the identity
+    judge cannot see, because every one of those faults is perfectly on-model.
     """
     try:
+        timing: dict = {}
+        if archetypes:
+            # The catalogue REPLACES a hand-written pose list rather than
+            # merging with one: two sources for the same animation's frames is a
+            # way to get walk/0 twice with different descriptions, and the
+            # emitter would happily ship it.
+            if poses:
+                return {"ok": False, "stage": "plan", "name": name,
+                        "error": "pass EITHER archetypes OR poses, not both — "
+                                 "the catalogue writes the whole pose list "
+                                 "including its frame numbering, and merging it "
+                                 "with hand-written poses duplicates frames. "
+                                 "Call sprite_plan(archetypes) to see the poses "
+                                 "it would generate, then edit those if you want "
+                                 "to hand-tune them."}
+            built = _animspec.plans(list(archetypes), view=view)
+            poses, timing = built["poses"], built["timing"]
         if not poses:
-            raise ValueError("poses list is empty")
+            raise ValueError("poses list is empty (and no archetypes given)")
         for p in poses:
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
@@ -3204,9 +3423,35 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # bounded per pose and caught by the running check below; pricing the
         # worst case up front would refuse healthy runs.
         ceiling = _run_ceiling(str(root), max_cost_usd)
-        per_pose = imagegen.price_per_image(quality)
+
+        def _unit(q: str) -> float:
+            """What ONE call of this run costs, on the provider it will run on.
+
+            This used to read the gpt-image price table whichever provider was
+            named, which quietly under-quoted every Krea run — and the spend gate
+            is described as a cap rather than an invoice, so a gate fed the wrong
+            provider's prices is the failure that description exists to rule out.
+            Krea prices per model and payload rather than per quality, so `q` is
+            simply not part of its answer.
+            """
+            if provider == "krea":
+                from bgate_adapters import krea as _krea
+
+                return _krea.price_for(model or _krea.model_for("animation"),
+                                       style_refs=1)
+            if provider in ("local", "comfy", "localgen"):
+                return 0.0        # the user's own GPU, and the ledger says so
+            return imagegen.price_per_image(q)
+
+        per_pose = _unit(quality)
+        # The model-sheet views are priced in. They are bought whether or not the
+        # anchor was passed in — a supplied ref_image is one approved drawing,
+        # and the extra angles are derived FROM it — so they are not conditional
+        # on the anchor being generated here.
+        extra_views = max(0, min(2, int(anchor_views) - 1))
         projected = round(
-            (0.0 if ref_image else imagegen.price_per_image(ref_quality))
+            (0.0 if ref_image else _unit(ref_quality))
+            + _unit(ref_quality) * extra_views
             + per_pose * len(poses), 4)
         refused = _spend_gate(
             str(root), projected,
@@ -3375,6 +3620,71 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                         f"spent of ${ceiling:.2f})")
             return ""
 
+        # ── THE MODEL SHEET ──────────────────────────────────────────────────
+        # ONE FRONT VIEW IS THE WEAKEST ANCHOR THAT STILL LOOKS LIKE AN ANCHOR.
+        #
+        # Every reference this run carried was the same view of the character:
+        # the front-facing idle, plus previous frames that are near-copies of it.
+        # The reference-conditioning literature is consistent that this is the
+        # weak configuration — two or three images from DISTINCT ANGLES improve
+        # identity retention substantially, and four distinct angles carry more
+        # information than ten near-identical front shots. It is also just what
+        # animation has always done: a model sheet exists so the profile and
+        # three-quarter views are on the desk, and proportions do not wander
+        # between drawings.
+        #
+        # It matters most in the case this tool is usually used for. A side-view
+        # action game asks for side-view poses against a front-view anchor, so
+        # the model re-invents the profile on EVERY call, slightly differently
+        # each time. That is not drift a re-roll fixes — it is drift the anchor
+        # never constrained, and re-rolling it buys another guess at the same
+        # missing information.
+        #
+        # Cost is two generations per character, once, against a run that pays
+        # one per pose and up to one more per re-roll. A twelve-pose set goes
+        # from 13 calls to 15 before it has prevented a single re-roll.
+        views: list[str] = []
+        _VIEWS = (
+            ("three_quarter",
+             "the SAME character turned to a three-quarter view, facing "
+             "front-left, same neutral stance, same scale, head to toe"),
+            ("profile",
+             "the SAME character in exact side profile, facing left, same "
+             "neutral stance, same scale, head to toe"),
+        )
+        for label, angle in _VIEWS[:max(0, int(anchor_views) - 1)]:
+            if not _Path(ref_path).is_file():
+                break
+            stop = _stop_reason(imagegen.price_per_image(ref_quality))
+            if stop:
+                result.setdefault("model_sheet_skipped", []).append(
+                    {"view": label, "reason": stop})
+                break
+            view_png = str(art_dir / f"reference_{label}.png")
+            got = _chroma.generate(
+                "This exact character from the reference image — identical "
+                "design, colours, face, build and art style. Show " + angle
+                + ". Exactly one character, no text, no ground shadow." + identity,
+                view_png, provider=provider, model=model, task_kind="anchor",
+                ref_paths=[ref_path], ref_strength=ref_strength,
+                size="1024x1536", quality=ref_quality, root=root,
+                logical_name=name, work_item_id=_work_item_id(),
+                timeout=call_timeout)
+            _tally(got)
+            # An auxiliary view IMPROVES the anchor; it is not part of it. A bad
+            # one is dropped and the run continues on the views it does have —
+            # failing the whole set because the profile came back badly would be
+            # strictly worse than the single-view behaviour this replaces.
+            ok_view, why = ((False, str(got.get("error") or "generation failed"))
+                            if not got.get("ok") else _reference_sanity(view_png))
+            if ok_view:
+                views.append(view_png)
+            else:
+                result.setdefault("model_sheet_dropped", []).append(
+                    {"view": label, "reason": why})
+        sheet_refs = [ref_path] + views
+        result["model_sheet"] = sheet_refs
+
         for pose in poses:
             pname = pose["name"]
             desc = pose.get("description", pname)
@@ -3388,7 +3698,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 continue
             anim, _, idx = pname.partition("/")
             out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
-            refs = [ref_path]
+            refs = list(sheet_refs)
             is_last_of_cycle = (idx.isdigit() and anim_counts[anim] > 1
                                 and int(idx) == anim_counts[anim] - 1)
             if is_last_of_cycle and anim in anim_first and anim_first[anim] != prev_frame:
@@ -3435,10 +3745,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             anchor (the old behavior) optimizes the gate's identity metric while
             silently dropping the cross-frame conditioning — a re-rolled mid-cycle
             frame could score better on identity yet pop out of the walk. The gate
-            doesn't measure motion, so nothing caught it. Rebuild: anchor, plus
-            the cycle's first frame for a closing frame, plus the previous frame."""
+            doesn't measure motion, so nothing caught it. Rebuild: the model
+            sheet, plus the cycle's first frame for a closing frame, plus the
+            previous frame."""
             anim, _, idx = pname.partition("/")
-            refs = [ref_path]
+            refs = list(sheet_refs)
             if (idx.isdigit() and anim_counts.get(anim, 1) > 1
                     and int(idx) == anim_counts[anim] - 1):
                 first = pose_path.get(f"{anim}/0")
@@ -3451,14 +3762,34 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     refs.append(prev)
             return refs
 
+        # PALETTE LOCK: "auto" asks the reference what kind of art it is. Flat,
+        # cel and limited-palette work is quantised to the reference's own
+        # colours, which costs nothing visible and makes drift unrepresentable;
+        # painterly work with real gradients is left alone, because locking it
+        # would band the shading and that is a downgrade nobody ordered.
+        lock_mode = str(palette_lock or "auto").strip().lower()
+        if lock_mode in ("auto", ""):
+            do_lock = _spritekit.looks_limited_palette(ref_path)
+            lock_why = ("the reference reads as flat / limited-palette art, "
+                        "where locking is free" if do_lock else
+                        "the reference reads as painterly (many near-identical "
+                        "shades), where locking would band the shading — left off")
+        else:
+            do_lock = lock_mode in ("on", "true", "yes", "1")
+            lock_why = f"palette_lock={palette_lock!r}, set explicitly"
+
         def _assemble_and_gate():
             asm = _sp.from_pose_images(
                 [(p, pose_path[p]) for p in pose_order],
                 out_dir=str(root / ".bgate_out" / "sprites"), name=name,
                 frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
-                ref_path=ref_path)
+                ref_path=ref_path, timing=timing or None,
+                palette_lock=do_lock, palette_colors=palette_colors,
+                pad=max(0, int(sheet_padding)))
             asm.setdefault("failed", [])
             asm["failed"].extend(pose_errors)
+            asm.setdefault("palette", {})["mode"] = lock_mode
+            asm["palette"]["why"] = lock_why
             cons = {"ok": False}
             if asm.get("ok"):
                 fm = asm.get("frames", {})
@@ -3509,6 +3840,13 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 assembled, consistency = _assemble_and_gate()
 
         assembled["reference"] = ref_path
+        # The model sheet is part of the run's provenance, not a detail of it:
+        # "which views was this character conditioned on" is the first question
+        # to ask about a set that drifted, and the answer has to survive into the
+        # result a caller actually reads (which is `assembled`, not `result`).
+        for key in ("model_sheet", "model_sheet_dropped", "model_sheet_skipped"):
+            if key in result:
+                assembled[key] = result[key]
         assembled["chroma"] = result.get("chroma")
         assembled["spend"] = {
             "estimated_usd": round(tally["estimated_usd"], 4),
@@ -3536,6 +3874,9 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                           "preview": archived or "",
                           "consistency": consistency,
                           "sequence": assembled.get("sequence"),
+                          "motion": assembled.get("motion"),
+                          "palette": assembled.get("palette"),
+                          "timing": timing or None,
                           "fps": fps,
                           "animations": assembled.get("animations", {}),
                           "seconds": round(tally["seconds"], 2),
@@ -3581,12 +3922,22 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "detail, or lower the floor if this is as good as the model gets.")
 
             seq = assembled.get("sequence") or {}
-            seq_note = (f", motion-jitter in {seq['flagged']}"
+            seq_note = (f", height-jitter in {seq['flagged']}"
                         if seq.get("flagged") else "")
+            # The motion report is what the identity judge structurally cannot
+            # see: a duplicated frame, a popped pose, a cycle that does not
+            # close and a figure in two pieces are all perfectly on-model, so
+            # every score above the floor is compatible with every one of them.
+            motion = assembled.get("motion") or {}
+            kinds = sorted({f["kind"]
+                            for anim in (motion.get("animations") or {}).values()
+                            for f in anim.get("findings", [])})
+            motion_note = (f", MOTION {'/'.join(kinds)} in {motion['flagged']}"
+                           if motion.get("flagged") else "")
             _log("sprites", f"painted sprite set {name!r} (reference-first): "
                             f"{len(frame_map)}/{len(poses)} poses"
                             + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else "")
-                            + cons_note + seq_note,
+                            + cons_note + seq_note + motion_note,
                  ref=assembled["sheet"])
         return assembled
     except Exception as exc:
@@ -3641,7 +3992,7 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
     try:
         from bgate_core import talkhead as _th
 
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         limit = float(drift_limit or _th.DRIFT_LIMIT)
         stage = root / ".bgate_out" / "art" / "talkheads" / name
         stage.mkdir(parents=True, exist_ok=True)

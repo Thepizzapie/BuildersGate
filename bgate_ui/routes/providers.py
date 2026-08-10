@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from bgate_core import project as _project
 from bgate_core import providers as _providers
 from bgate_ui import api
 from bgate_ui.deps import root
@@ -47,7 +48,38 @@ def _payload(rows: list[dict]) -> dict:
         # already had, so the fact rides along with every read rather than being
         # something the UI has to think to ask for.
         "env_gitignored": _providers.env_is_ignored(root()),
+        # WHERE THE OTHER STORE IS. A panel offering two destinations has to be
+        # able to name the second one; "global" on a button means nothing until
+        # you can see it is a file on your own disk.
+        "scopes": list(_providers.SCOPES),
+        "global_env": str(_providers.envfile.global_path()),
+        # WHERE MACHINE-WIDE WORK LANDS, beside where machine-wide keys live.
+        # The two facts belong together: a key that is not tied to a project
+        # implies generations that are not either, and the first question anyone
+        # asks after "it worked" is where the file went. Reported without
+        # creating anything — a directory nobody has generated into yet should
+        # not be conjured by opening a settings page.
+        "scratch_root": str(_project.scratch_root(create=False)),
+        "scratch_exists": (_project.scratch_root(create=False)
+                           / ".bgate" / "game.db").exists(),
+        "scratch_active": _project.is_scratch(root()),
     }
+
+
+def _scope(value) -> str:
+    """The requested store, validated here rather than deep in core.
+
+    A bad scope is a 400 with the legal values in it, not a silent fall back to
+    the project store: "my key went to the wrong file" is indistinguishable from
+    "my key did not save" from the outside, and only one of them is fixed by
+    trying again.
+    """
+    scope = (value or "project")
+    if not isinstance(scope, str) or scope.strip().lower() not in _providers.SCOPES:
+        raise api.bad_request(
+            "scope must be 'project' (the .env beside this game) or 'global' "
+            "(~/.bgate/.env, shared by every project on this machine)")
+    return scope.strip().lower()
 
 
 @router.get("/api/providers")
@@ -77,8 +109,9 @@ def provider_set_key(provider_id: str, request: Request, payload: dict) -> dict:
     value = body.get("key")
     if not isinstance(value, str):
         raise api.bad_request("send {\"key\": \"...\"} — the key as a string")
+    scope = _scope(body.get("scope"))
     try:
-        row = _providers.set_key(root(), provider_id, value,
+        row = _providers.set_key(root(), provider_id, value, scope=scope,
                                  actor=api.current_actor(request))
     except _providers.ProviderError as exc:
         # Never echo `value` back in the message, not even truncated. The
@@ -93,11 +126,20 @@ def provider_set_key(provider_id: str, request: Request, payload: dict) -> dict:
 
 
 @router.delete("/api/providers/{provider_id}/key")
-def provider_clear_key(provider_id: str, request: Request) -> dict:
-    """Forget one provider's key — out of the .env and out of this process."""
+def provider_clear_key(provider_id: str, request: Request,
+                       scope: str = "project") -> dict:
+    """Forget one provider's key — out of that .env and out of this process.
+
+    Clearing the PROJECT store while the global one also holds the key uncovers
+    the global value rather than leaving the provider unset, which is why the
+    response is a fresh status row and not an echo of the request: after this
+    call the key may well still be configured, from the other layer, and a panel
+    that painted "cleared" from its own optimism would be wrong.
+    """
     api.require_human(api.current_actor(request), "clear an API key")
+    scope = _scope(scope)
     try:
-        row = _providers.clear_key(root(), provider_id,
+        row = _providers.clear_key(root(), provider_id, scope=scope,
                                    actor=api.current_actor(request))
     except _providers.ProviderError as exc:
         raise api.bad_request(str(exc), provider=provider_id)

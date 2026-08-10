@@ -194,7 +194,9 @@ MODELS: dict[str, dict] = {
         "ref_field": "image_urls",
         "ref_plain": True,
         "supports": {"styles", "style_images", "resolution"},
-        "note": "A quarter of Pro's price with the same reference contract.",
+        "note": "A quarter of Pro's price with the same reference contract. "
+                "PINNED for character animation on this provider — see "
+                "CHARACTER_MODEL.",
     },
     "seedream-5-lite": {
         "path": "/generate/image/bytedance/seedream-5-lite",
@@ -253,6 +255,50 @@ MODELS: dict[str, dict] = {
     },
 }
 DEFAULT_MODEL = "krea-2-large"
+
+# ---------------------------------------------------------------------------
+# THE CHARACTER-ANIMATION PIN
+# ---------------------------------------------------------------------------
+# Sprite and character-animation work on this provider goes to nano-banana-2,
+# not to the general default, and the reason is the split this table already
+# draws between STYLE models and EDIT models a few entries up.
+#
+# krea-2-large and krea-2-medium condition on a reference as STYLE: they follow
+# a look and owe nothing to a pose. That is the right contract for a plate or a
+# concept sweep and the wrong one for "this exact character, now mid-stride" —
+# the measured failure is recorded above this table's edit section: krea-2-medium
+# drew a FACE in seven of eight frames when four of them were specified as back
+# views. A style reference cannot be asked to hold a subject through a pose
+# change, because holding the subject is not what it does.
+#
+# nano-banana-2 takes its references as `image_urls`: plain edit inputs, the same
+# contract nano-banana-pro uses, at a quarter of Pro's price. It also keeps
+# `styles`, so a project that trained a LoRA still has it ride alongside — which
+# is the whole point of training one, per the note further down: the LoRA carries
+# the style and the reference slot is freed to carry identity.
+#
+# It is not a cost decision but it is not a cost REGRESSION either: anchored work
+# on krea-2-large bills usd_with_style_refs at $0.065, and this is a flat $0.06
+# however many references ride with it.
+CHARACTER_MODEL = "nano-banana-2"
+
+# The task kinds that mean "a specific character, holding still through a change
+# of pose". Deliberately narrow: an item, a prop, a decal or a VFX key frame has
+# no pose continuity to preserve, so none of them needs an edit model and none of
+# them should silently change provider behaviour because this constant exists.
+CHARACTER_KINDS = frozenset({"anchor", "animation"})
+
+
+def model_for(task_kind: str = "") -> str:
+    """The model this KIND of work should use when the caller named none.
+
+    Lives here rather than at the call site because it is a fact about this
+    catalogue — which models edit and which merely style — and a caller that had
+    to know that would be reimplementing the table.
+    """
+    if str(task_kind or "").strip().lower() in CHARACTER_KINDS:
+        return CHARACTER_MODEL
+    return DEFAULT_MODEL
 
 # Krea takes an aspect ratio, not pixels. The rest of this codebase speaks
 # WxH, so translate rather than making every call site learn a second vocabulary.

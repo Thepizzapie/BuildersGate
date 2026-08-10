@@ -81,6 +81,7 @@
         <div class="rail-group">Edit</div>
         <button class="rail-item" data-view="spriteedit" onclick="setWorkspace('spriteedit',this)"><span class="ic" data-icon="brush"></span><span class="lb">Sprite editor</span></button>
         <button class="rail-item" data-view="audiolab" onclick="setWorkspace('audiolab',this)"><span class="ic" data-icon="audio"></span><span class="lb">Audio lab</span></button>
+        <button class="rail-item" data-view="modeledit" onclick="setWorkspace('modeledit',this)"><span class="ic" data-icon="model"></span><span class="lb">3D viewer</span></button>
         <div class="rail-group">Library</div>
         <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic" data-icon="assets"></span><span class="lb">Assets</span></button>
         <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic" data-icon="atlas"></span><span class="lb">Atlas</span></button>
@@ -491,6 +492,10 @@
         <div id="ab-page" class="editor-page"></div>
       </section>
 
+      <section class="deck-view" id="view-modeledit">
+        <div id="me-page" class="editor-page"></div>
+      </section>
+
       <section class="deck-view" id="view-playtests">
         <div class="view-heading"><div><span class="eyebrow">Evidence</span><h2>Playtests</h2></div><p>Play the current build and record a session - then open a recording for video, transcript, telemetry, and the director's triage.</p></div>
         <!-- Play &amp; record lives here, next to the recordings it produces.
@@ -520,7 +525,7 @@
       </section>
 
       <section class="deck-view" id="view-assets">
-        <div class="view-heading"><div><span class="eyebrow">Library</span><h2>Assets</h2></div><div style="display:flex;gap:8px"><button class="qbtn small ghost" onclick="SpriteEdit.pick()">sprite editor</button><button class="qbtn small ghost" onclick="AudioLab.pick()">audio lab</button><button class="qbtn small ghost" onclick="fullAudit()">run integrity audit</button></div></div>
+        <div class="view-heading"><div><span class="eyebrow">Library</span><h2>Assets</h2></div><div style="display:flex;gap:8px"><button class="qbtn small ghost" onclick="SpriteEdit.pick()">sprite editor</button><button class="qbtn small ghost" onclick="AudioLab.pick()">audio lab</button><button class="qbtn small ghost" onclick="ModelEdit.pick()">3D viewer</button><button class="qbtn small ghost" onclick="fullAudit()">run integrity audit</button></div></div>
         <div id="asset-lib-root"><div class="empty">reading the library…</div></div>
         <details class="asset-vault" style="margin-top:16px"><summary>Review queue · generated candidates by logical name</summary>
           <div class="asset-toolbar">
@@ -833,7 +838,7 @@ const DECK_CRUMB = {
   overview:"Overview", agents:"Agents", settings:"Settings", studio:"Studio",
   seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
   world:"World bible", timeline:"Timeline",
-  spriteedit:"Sprite editor", audiolab:"Audio lab",
+  spriteedit:"Sprite editor", audiolab:"Audio lab", modeledit:"3D viewer",
 };
 /* Hand the view to whichever module owns it.
  *
@@ -847,7 +852,7 @@ function activateWorkspace(name){
   const owners = { seats: "SeatShell", studio: "Studio", atlas: "Atlas",
                    world: "World", assets: "AssetLib", agents: "AgentsConsole",
                    settings: "SettingsView",
-                   spriteedit: "SpriteEdit", audiolab: "AudioLab" };
+                   spriteedit: "SpriteEdit", audiolab: "AudioLab", modeledit: "ModelEdit" };
   if (name === "atlas") return setAtlasMode(atlasMode);
   // RETURN, like atlas: setAgentsMode already activates the console, and
   // falling through to the owners map below activated it a second time —
@@ -1294,6 +1299,8 @@ function renderAssetDrawer(){
         <div class="revision-meta" style="margin-top:11px"><div title="${esc(selected?.path||"")}">${esc(selected?.path||"")}</div></div>
         ${/^.+\.(png|webp)$/i.test(selected?.path || "") ? `<button class="qbtn small ghost" style="margin-top:9px"
           onclick="SpriteEdit.open('${esc(selected.path)}')">open in sprite editor</button>` : ""}
+        ${/^.+\.(glb|gltf|obj)$/i.test(selected?.path || "") ? `<button class="qbtn small ghost" style="margin-top:9px"
+          onclick="ModelEdit.open('${esc(selected.path)}')">open in 3D viewer</button>` : ""}
         ${fold("Generation prompt", selected?.prompt)}
         ${fold("Work note", selected?.work_item?.result)}
         ${selected?.review_note ? fold("Review decision", selected.review_note) : ""}
@@ -2664,6 +2671,19 @@ setInterval(pollQueue, 3500);
 <script src="/static/spriteedit.js"></script>
 <script src="/static/audiolab.js"></script>
 <script src="/static/beatmaker.js"></script>
+<!-- The 3D model viewer/editor. An ES module (three.js only ships as one) —
+     the import map below is what lets modeledit.js and every vendored addon
+     under static/vendor/three/examples/jsm write `import ... from "three"`
+     instead of a long relative path to the vendored build. Inlined rather
+     than an external src= file: Chromium only honours an out-of-line import
+     map when it is the very first thing to reference "three", and a src=
+     fetch loses that race often enough in practice to not be worth it. Must
+     sit before the module script that uses it — this is the only import map
+     in the page, so there is nothing earlier to conflict with. -->
+<script type="importmap">
+{"imports": {"three": "/static/vendor/three/build/three.module.min.js"}}
+</script>
+<script type="module" src="/static/modeledit.js"></script>
 <script src="/static/assetlib.js"></script>
 <!-- The playtest notepad + live frame grab. Self-contained: injects its own
      style, mounts its own slide-out, and installs its hotkey INTO the game

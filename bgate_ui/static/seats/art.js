@@ -703,7 +703,7 @@
       const flags = this._seqFlags(a);
       if (!flags.length) {
         return Array.isArray(s.flagged)
-          ? this._chip("motion steady", "var(--good)",
+          ? this._chip("height steady", "var(--good)",
               "no adjacent-frame height jitter above the 18% advisory", "art-cons")
           : "";
       }
@@ -713,6 +713,46 @@
         `the drawn character height pops between adjacent frames of ${f.anim}` +
         (Array.isArray(f.height_range) ? ` (${f.height_range.join("–")}px)` : "") +
         " - advisory: a human should look, not an auto-reject",
+        "art-cons")).join("");
+    },
+
+    /* metadata.motion — spritekit.sheet_report: what the identity judge cannot
+     * see. A duplicated frame, a popped pose, a cycle that does not close and a
+     * figure in two pieces are all perfectly ON-MODEL, so a sheet can score
+     * clean on every consistency chip beside this one and still animate wrong.
+     * Advisory by design (see the module docstring), so these are warn chips
+     * and never a rejection - but they belong where a human is already looking,
+     * because the alternative is that they live only in a log line. */
+    _motionChips(a) {
+      const m = this._meta(a).motion;
+      if (!m || typeof m !== "object" || !m.animations) return "";
+      const findings = [];
+      for (const [anim, rep] of Object.entries(m.animations)) {
+        for (const f of (rep.findings || [])) findings.push({ anim, ...f });
+      }
+      if (!findings.length) {
+        return this._chip("motion clean", "var(--good)",
+          "no duplicated frames, popped poses, open loops or detached limbs " +
+          "across any animation on this sheet", "art-cons");
+      }
+      /* One chip per FAULT KIND, not per finding: a six-frame walk that popped
+       * three times is one problem, and three identical chips is how a card
+       * stops being read. */
+      const label = {
+        duplicate: "duplicate frames", pop: "pose pops",
+        open_loop: "loop does not close", detached: "figure in pieces",
+        static: "nothing moves",
+      };
+      const seen = new Set();
+      return findings.filter(f => {
+        const key = f.kind;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).map(f => this._chip(
+        `${label[f.kind] || f.kind}: ${f.anim}`,
+        f.kind === "detached" ? "var(--bad)" : "var(--warn)",
+        `${f.pair ? f.pair + " - " : ""}${f.note}`,
         "art-cons")).join("");
     },
 
@@ -805,6 +845,7 @@
         const cons = this._meta(a).consistency || {};
         const composite = this._projRel(cons.composite);
         const evid = this._consChips(a) + this._seqChips(a) +
+                     this._motionChips(a) +
                      this._driftChips(a) + this._liveChips(a);
         return `<div class="art-cand" data-card="${a.id}">
           <div class="art-cand-top">

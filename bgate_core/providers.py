@@ -262,20 +262,31 @@ def _fingerprint(value: str) -> str:
     return value[-4:] if len(value) >= 12 else ""
 
 
-def _one_status(one: Provider, root: Optional[Path], from_file: dict) -> dict:
+def _one_status(one: Provider, root: Optional[Path], from_file: dict,
+                from_global: Optional[dict] = None) -> dict:
+    from_global = from_global or {}
     live = (os.environ.get(one.env) or "").strip()
     stored = (from_file.get(one.env) or "").strip()
+    shared = (from_global.get(one.env) or "").strip()
 
-    # WHICH LAYER WON, stated. load_project_env deliberately lets a shell
-    # variable beat the file, so a panel reading os.environ alone would report a
-    # key the user just saved as being in force while a stale `set
-    # OPENAI_API_KEY=` in their shell profile is the value actually being sent —
-    # the same class of lie the settings panel's `source` column exists to stop.
+    # WHICH LAYER WON, stated. load_env deliberately lets a shell variable beat
+    # both files and the project file beat the machine-wide one, so a panel
+    # reading os.environ alone would report a key the user just saved as being
+    # in force while a stale `set OPENAI_API_KEY=` in their shell profile is the
+    # value actually being sent — the same class of lie the settings panel's
+    # `source` column exists to stop.
+    #
+    # The project layer is checked BEFORE the global one because that is the
+    # precedence: with the same key in both files the project's is the one in
+    # force, and reporting "global" there would send someone to edit the file
+    # that is not being read.
     if live and stored and live == stored:
         source = "env_file"
+    elif live and shared and live == shared:
+        source = "global_file"
     elif live:
         source = "environment"
-    elif stored:
+    elif stored or shared:
         # The loader could not apply the file's value, which means the name is
         # present in os.environ as an EMPTY string — a shell that exported it
         # blank. Nothing generates, and nothing else on screen would say why.
@@ -293,8 +304,15 @@ def _one_status(one: Provider, root: Optional[Path], from_file: dict) -> dict:
         "help": one.help,
         "configured": bool(live),
         "in_env_file": bool(stored),
+        "in_global_file": bool(shared),
+        # Where a WRITE would land to change what is in force. Not the same
+        # question as `source`: a key inherited from the global file is answered
+        # "global" here, so a panel offering "change this" edits the file the
+        # value is actually coming from rather than shadowing it with a project
+        # copy the user then has to remember exists.
+        "scope": "project" if stored else ("global" if shared else ""),
         "source": source,
-        "last4": _fingerprint(live or stored),
+        "last4": _fingerprint(live or stored or shared),
     }
 
     # The adapter's own verdict. A key can be set and the provider still
@@ -318,23 +336,28 @@ def _one_status(one: Provider, root: Optional[Path], from_file: dict) -> dict:
 def status(root: Optional[str | os.PathLike[str]] = None) -> list[dict]:
     """Every provider: what it powers, whether it is usable, and why not.
 
+    ``root=None`` is a supported, meaningful call and not a degraded one: the
+    machine-wide layer is read either way, so "what can this machine generate"
+    has an answer with no project in sight.
+
     NEVER RETURNS A KEY. ``last4`` is the whole fingerprint; there is no field
     here, and no flag, that widens to the value.
     """
-    if root:
-        try:
-            envfile.load_project_env(root)
-        except Exception:
-            pass  # a panel that will not render because .env is odd helps nobody
+    try:
+        envfile.load_env(root)
+    except Exception:
+        pass  # a panel that will not render because .env is odd helps nobody
     from_file = envfile.file_vars(root) if root else {}
+    from_global = envfile.file_vars(envfile.global_dir())
     base = Path(root) if root else None
-    return [_one_status(one, base, from_file) for one in PROVIDERS]
+    return [_one_status(one, base, from_file, from_global) for one in PROVIDERS]
 
 
 def status_for(root: Optional[str | os.PathLike[str]], provider_id: str) -> dict:
     one = by_id(provider_id)
     from_file = envfile.file_vars(root) if root else {}
-    return _one_status(one, Path(root) if root else None, from_file)
+    from_global = envfile.file_vars(envfile.global_dir())
+    return _one_status(one, Path(root) if root else None, from_file, from_global)
 
 
 def configured(root: Optional[str | os.PathLike[str]] = None) -> list[str]:
@@ -389,15 +412,99 @@ def _protect(root: str | os.PathLike[str]) -> str:
         return ""
 
 
-def set_key(root: str | os.PathLike[str], provider_id: str, value: str, *,
-            actor: str = "") -> dict:
-    """Store one provider's key in the project's .env and make it live NOW.
+# Where a key can be stored. "project" is the .env beside the game; "global" is
+# ~/.bgate/.env, which every project on the machine inherits and which is the
+# only one that exists when there is no project at all.
+SCOPES = ("project", "global")
+
+
+def _shell_owns(one: Provider, root: Optional[str | os.PathLike[str]]) -> bool:
+    """Is the live value a SHELL export rather than something a file supplied?
+
+    Asked before a write, because the answer decides whether the write is
+    allowed to change what is in force. A shell export beats every file — that
+    rule predates the global store and is what the ``shadowed`` status exists to
+    surface — so a save that silently overwrote it would make the panel agree
+    with itself and disagree with the process.
+
+    Inferred rather than tracked: if the live value matches neither file, no
+    file put it there.
+    """
+    live = (os.environ.get(one.env) or "").strip()
+    if not live:
+        return False
+    known = {(envfile.file_vars(root).get(one.env) or "").strip() if root else "",
+             (envfile.file_vars(envfile.global_dir()).get(one.env) or "").strip()}
+    return live not in known
+
+
+def _reapply(one: Provider, root: Optional[str | os.PathLike[str]],
+             shell_owned: bool) -> None:
+    """Make ``os.environ`` agree with the files, by the documented precedence.
+
+    THE STEP THAT ONLY MATTERS ONCE THERE ARE TWO LAYERS, in both directions:
+    writing a global key must NOT stamp over a project key that outranks it, and
+    clearing a project key must UNCOVER the global one rather than leaving the
+    provider unset until a restart. Assigning the value that was just written —
+    which is what a single-store version could get away with — gets the first of
+    those backwards and the second one silently wrong.
+    """
+    if shell_owned:
+        return
+    envfile.reset_cache()
+    value = ""
+    if root:
+        value = (envfile.file_vars(root).get(one.env) or "").strip()
+    if not value:
+        value = (envfile.file_vars(envfile.global_dir()).get(one.env) or "").strip()
+    if value:
+        os.environ[one.env] = value
+    else:
+        os.environ.pop(one.env, None)
+
+
+def _store(root: Optional[str | os.PathLike[str]], scope: str) -> Path:
+    """The directory whose .env this write targets, or a refusal.
+
+    A scope typo must not fall back to the other store: "I set my key and it did
+    not take" and "I set my key into the wrong file" look identical from the
+    outside, and only one of them is recoverable by trying again.
+    """
+    scope = (scope or "project").strip().lower()
+    if scope not in SCOPES:
+        raise ProviderError(
+            f"unknown scope '{scope}' — 'project' (the .env beside this game) "
+            "or 'global' (~/.bgate/.env, shared by every project on this "
+            "machine)")
+    if scope == "global":
+        return envfile.global_dir()
+    if not root:
+        raise ProviderError(
+            "there is no project here to store a key in. Use scope='global' to "
+            "put it in ~/.bgate/.env, which every project inherits and which "
+            "works with no project at all.")
+    return Path(root)
+
+
+def set_key(root: Optional[str | os.PathLike[str]], provider_id: str,
+            value: str, *, actor: str = "", scope: str = "project") -> dict:
+    """Store one provider's key and make it live NOW.
+
+    ``scope='project'`` writes the .env beside the game; ``scope='global'``
+    writes ``~/.bgate/.env``, which every project on this machine inherits and
+    which is readable with no project at all. Project beats global when both
+    hold the same key — see :func:`envfile.load_env`.
 
     Three steps, and all three are load-bearing:
 
     1. the .env is gitignored first (see :func:`_protect`);
     2. :func:`envfile.write_var` preserves the rest of the file, atomically;
     3. the running process is updated in place.
+
+    Step 1 is a no-op for the global store and correctly so: ``~/.bgate`` is not
+    a repository, so there is nothing there to leak a key into. That is not an
+    exemption from the rule but the rule's own answer — :func:`env_is_ignored`
+    already returns True for a directory with no ``.git``.
 
     Step 3 is the one that looks redundant and is not. ``load_project_env``
     refuses to overwrite a name already in ``os.environ`` — the shell must win —
@@ -408,42 +515,61 @@ def set_key(root: str | os.PathLike[str], provider_id: str, value: str, *,
     Returns the provider's status row (no key in it) plus what the write did.
     """
     one = by_id(provider_id)
-    protected = _protect(root)
+    target = _store(root, scope)
+    shell_owned = _shell_owns(one, root)
+    protected = _protect(target)
     try:
-        action = envfile.write_var(root, one.env, value)
+        action = envfile.write_var(target, one.env, value)
     except envfile.EnvWriteError as exc:
         raise ProviderError(str(exc)) from None
 
-    envfile.reset_cache()
-    os.environ[one.env] = (value or "").strip()
+    _reapply(one, root, shell_owned)
 
     # The ledger records THAT a key moved and who moved it, never the key. An
     # audit trail for credentials is worth having; an audit trail that contains
     # the credential is the leak with a timestamp on it.
-    _note(root, f"{one.label} API key set", ref=one.env, actor=actor)
+    #
+    # A GLOBAL write has no project ledger to land in, and that is a real gap
+    # rather than a hidden one: the row is written to the project you are
+    # standing in when there is one, so the machine-wide store is the one place
+    # a key change is not audited. Said out loud in the docs rather than papered
+    # over with a second log file nothing else reads.
+    if root:
+        _note(root, f"{one.label} API key set ({scope})", ref=one.env,
+              actor=actor)
 
     row = status_for(root, one.id)
     row["write"] = action
+    row["scope_written"] = "global" if scope == "global" else "project"
     row["gitignore"] = protected
     return row
 
 
-def clear_key(root: str | os.PathLike[str], provider_id: str, *,
-              actor: str = "") -> dict:
-    """Remove one provider's key from the .env and from this process.
+def clear_key(root: Optional[str | os.PathLike[str]], provider_id: str, *,
+              actor: str = "", scope: str = "project") -> dict:
+    """Remove one provider's key from one store and from this process.
 
     Both halves, for the mirror of the reason ``set_key`` writes ``os.environ``:
     deleting the line alone leaves the value live until a restart, so the panel
     would say "not set" while generations kept billing the key it just cleared.
+
+    AND THEN THE LAYERS ARE RE-READ, which is the part that only matters once
+    there are two of them. Clearing a project key over a global one must UNCOVER
+    the global one, not leave the provider unset until a restart — otherwise
+    "remove this project's override" reads as "break generation here", and the
+    fix (restart the server) is not a thing anyone would guess.
     """
     one = by_id(provider_id)
-    removed = envfile.remove_var(root, one.env)
-    envfile.reset_cache()
-    os.environ.pop(one.env, None)
-    if removed:
-        _note(root, f"{one.label} API key cleared", ref=one.env, actor=actor)
+    target = _store(root, scope)
+    shell_owned = _shell_owns(one, root)
+    removed = envfile.remove_var(target, one.env)
+    _reapply(one, root, shell_owned)
+    if removed and root:
+        _note(root, f"{one.label} API key cleared ({scope})", ref=one.env,
+              actor=actor)
     row = status_for(root, one.id)
     row["write"] = "removed" if removed else "absent"
+    row["scope_written"] = "global" if scope == "global" else "project"
     return row
 
 

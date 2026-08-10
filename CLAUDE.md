@@ -66,13 +66,37 @@ directory you are standing in, which surprises people.
 
 ## Keys
 
-Put them in a `.env` at the GAME PROJECT root, not in the BuildersGate checkout.
-See `.env.example`. Both `init` and `adopt` stamp a `.gitignore` that ignores
-`.env`, so this is safe by default now, but do not talk the user out of it: an
-earlier version of these instructions caused a committed key.
+There are two places, and for a first-time setup you almost always want the
+second one:
+
+```bash
+bgate key set openai --global     # ~/.bgate/.env — every project inherits it
+bgate key set openai              # this project's .env only
+bgate key                         # what is set, and which layer supplies it
+```
+
+`--global` is right for a personal machine: the key follows the person, not the
+game, so the next project works with no setup at all and there is no key in any
+repository to commit by accident. Use the project scope when a game has its own
+billing account, or when you want one project on a different key.
+
+Precedence, most specific first: **a shell variable beats the project `.env`,
+which beats `~/.bgate/.env`.** `bgate key` prints which one is actually in force,
+which is the question worth asking when a key is set and nothing works.
+
+The dashboard's Generators panel does the same thing with a tick box, and it is
+the only other place that can write one — this is deliberately not an MCP tool,
+because an agent that can write credentials can hand itself a provider nobody
+paid for.
+
+Both `init` and `adopt` stamp a `.gitignore` that ignores `.env`, so the project
+scope is safe by default, but do not talk the user out of it: an earlier version
+of these instructions caused a committed key. `~/.bgate` is not a repository, so
+the global store has nothing to leak into.
 
 Never write a key into a file you are about to commit, never echo one back in
-chat, and never put one on a command line.
+chat, and never put one on a command line — `bgate key set` prompts with echo
+off for exactly that reason, and takes no key argument at all.
 
 ## Register the MCP server
 

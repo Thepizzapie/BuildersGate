@@ -30,7 +30,8 @@ New here, or never run an MCP server before? Read these three, in order.
 
 | Document | What it is |
 |---|---|
-| [cinematic-research.md](cinematic-research.md) | The video-model landscape, the Godot format wall that silently swallows a finished cutscene, the anchoring limitation that turned out not to be real, and why cutscenes are an eighth seat rather than a wider art seat. |
-| [visual-taste-research.md](visual-taste-research.md) | Whether an agent can judge whether art, a rig or an animation is any good — what is computable, what is judge-territory, what is unsolved. |
+| [cinematic-research.md](cinematic-research.md) | The video-model landscape, the Godot format wall that silently swallows a finished cutscene, the anchoring limitation that turned out not to be real, why cutscenes are an eighth seat rather than a wider art seat, and the post-production half — transitions, score, captions, continuity and the scene that plays it. |
+| [sprite-animation-research.md](sprite-animation-research.md) | Why sheets that passed every gate still animated badly. The registration bug (bounding boxes are not bodies), palette locking versus palette detection, per-frame timing Godot had all along, and the four cross-frame faults an identity judge structurally cannot see. Measured, with what was deliberately not built. |
+| [visual-taste-research.md](visual-taste-research.md) | What the research literature says is computable about art, rigging and animation quality, what is judge-territory, and what is unsolved. Notes, not a build plan. |
 | [lessons-from-a-shipped-game.md](lessons-from-a-shipped-game.md) | What a real shipped game cost to make, and the rules that came out of it. |
 | [history/](history) | Archived agent-to-owner handoff notes. Historical only, see each file's header. |
