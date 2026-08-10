@@ -9,6 +9,24 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+
+- **A 3D model viewer and editor**, the third page beside the sprite editor and
+  audio lab. The Blender/image-to-3D pipeline has generated `.glb` files for a
+  while with nowhere in the dashboard to actually look at one — this closes
+  that gap: orbit camera with environment lighting, shaded/wireframe/unlit/
+  normals display modes, an outliner with per-node visibility and tint, and
+  animation clip playback for rigged characters. The editing half is named
+  attachment **sockets** — a 3D position and rotation, optionally hung off a
+  node, placed by clicking the mesh — which is rigmap's sprite slot-anchor
+  system carried into three dimensions and deliberately shares its taxonomy
+  (`main_hand`, `off_hand`, `head`, ...): a project that ships both a 2D rig
+  and a 3D character does not maintain two vocabularies for "where the sword
+  goes." The mesh's bytes are never rewritten, only a JSON sidecar next to it
+  — a browser cannot safely re-export a `.glb`, so this surface is look, label,
+  never repaint. three.js is vendored under `bgate_ui/static/vendor/three/`,
+  self-contained like the CodeMirror build beside it.
+
 ## [0.1.35] - 2026-08-09
 
 Twenty-two commits. The tool count went from 78 to 144, which is the shape of

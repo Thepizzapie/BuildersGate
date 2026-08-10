@@ -51,8 +51,12 @@ with the playable build beside it, so a change and its result are on one screen.
 </p>
 
 A sprite editor with frame detection, rig labels and per-frame regeneration, and
-an audio lab with lanes, clip editing and a step sequencer. Both are pages in the
-dashboard, not a trip out to another program.
+an audio lab with lanes, clip editing and a step sequencer. A 3D viewer sits
+beside them for `.glb`/`.gltf`/`.obj` meshes — shading modes, an outliner, and
+attachment sockets labelled with the same slot names (`main_hand`, `head`, ...)
+the sprite rig uses, so gear placement means one thing whether the character is
+2D or 3D. All three are pages in the dashboard, not a trip out to another
+program.
 
 <p align="center">
   <img src="docs/screenshots/sprite-editor.gif" width="820"
