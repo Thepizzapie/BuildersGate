@@ -29,6 +29,17 @@ dependencies = [
 # an unchanged tree teaches everyone to ignore it.
 dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.12,<0.13"]
 stt = ["faster-whisper>=1.0"]
+# Talking to the brainstorm agent — Deepgram realtime STT and Aura TTS.
+#
+# `websockets` is needed in BOTH directions and neither is covered by the pins
+# above: the server needs a client to reach wss://api.deepgram.com, and uvicorn
+# needs a websocket protocol implementation before FastAPI's own @websocket
+# routes can accept a connection at all. It looks pinned because it is usually
+# present — it is an extra of uvicorn[standard], mcp[ws] and openai[realtime] —
+# but a clean `pip install -e .` resolves none of those and voice would fail
+# with an import error rather than a sentence. deepgram.available() reports its
+# absence explicitly for the same reason.
+voice = ["websockets>=13"]
 record = ["sounddevice>=0.4", "numpy>=1.26"]
 # `bgate app` — the dashboard in a native window. On Windows this renders
 # through the Edge WebView2 runtime that ships with 11, so the extra is one

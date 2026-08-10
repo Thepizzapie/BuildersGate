@@ -36,8 +36,9 @@ are what the core loop requires. Blender, ffmpeg and whisper are for the 3D,
 playtest-capture and voice paths respectively; a red row there is not a blocker
 and you should say that instead of trying to fix it.
 
-Known: doctor only probes `OPENAI_API_KEY`. A user with only a Krea key gets a
-`MISS openai_key` row and a non-zero exit while their setup is fine.
+The `art_key` row is green when **any** art provider has a key — OpenAI or
+Krea. (It used to probe `OPENAI_API_KEY` alone and fail a working Krea-only
+setup; if you see `MISS openai_key`, that build predates the fix.)
 
 ## Point it at a game
 
