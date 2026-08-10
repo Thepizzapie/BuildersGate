@@ -3224,7 +3224,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   model: str = "", ref_strength: float = 0.6,
                   archetypes: Optional[list[str]] = None, view: str = "",
                   palette_lock: str = "auto", palette_colors: int = 64,
-                  sheet_padding: int = 0) -> dict:
+                  sheet_padding: int = 0, anchor_views: int = 3) -> dict:
     """PAINTED sprite set — REFERENCE-FIRST for consistency.
 
     provider: "openai" (gpt-image, default) or "krea". They condition on the
@@ -3264,6 +3264,19 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     stated once instead of drifting between eight prose strings. Hand-written
     `poses` still work and are still right for anything the catalogue does not
     cover.
+
+    anchor_views: how many views of the character condition every pose. 3 (the
+    default) generates a three-quarter and a profile view off the approved
+    anchor ONCE and passes all three on every call; 1 is the old single
+    front-view behaviour. This is the highest-leverage knob here. One front view
+    plus previous frames that are near-copies of it is the weak reference
+    configuration — distinct angles carry far more identity than more of the
+    same angle — and it bites hardest in the normal case, a side-view game asking
+    for side-view poses against a front-view anchor, where the model re-invents
+    the profile on every call and re-invents it differently each time. That is
+    not drift a re-roll fixes; a re-roll buys another guess at information the
+    anchor never carried. Two extra generations per character against one per
+    pose plus one per re-roll.
 
     palette_lock: "auto" (default), "on" or "off". Locking quantises every frame
     to the reference's own palette, which makes colour drift UNREPRESENTABLE
@@ -3328,8 +3341,14 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # worst case up front would refuse healthy runs.
         ceiling = _run_ceiling(str(root), max_cost_usd)
         per_pose = imagegen.price_per_image(quality)
+        # The model-sheet views are priced in. They are bought whether or not the
+        # anchor was passed in — a supplied ref_image is one approved drawing,
+        # and the extra angles are derived FROM it — so they are not conditional
+        # on the anchor being generated here.
+        extra_views = max(0, min(2, int(anchor_views) - 1))
         projected = round(
             (0.0 if ref_image else imagegen.price_per_image(ref_quality))
+            + imagegen.price_per_image(ref_quality) * extra_views
             + per_pose * len(poses), 4)
         refused = _spend_gate(
             str(root), projected,
@@ -3498,6 +3517,71 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                         f"spent of ${ceiling:.2f})")
             return ""
 
+        # ── THE MODEL SHEET ──────────────────────────────────────────────────
+        # ONE FRONT VIEW IS THE WEAKEST ANCHOR THAT STILL LOOKS LIKE AN ANCHOR.
+        #
+        # Every reference this run carried was the same view of the character:
+        # the front-facing idle, plus previous frames that are near-copies of it.
+        # The reference-conditioning literature is consistent that this is the
+        # weak configuration — two or three images from DISTINCT ANGLES improve
+        # identity retention substantially, and four distinct angles carry more
+        # information than ten near-identical front shots. It is also just what
+        # animation has always done: a model sheet exists so the profile and
+        # three-quarter views are on the desk, and proportions do not wander
+        # between drawings.
+        #
+        # It matters most in the case this tool is usually used for. A side-view
+        # action game asks for side-view poses against a front-view anchor, so
+        # the model re-invents the profile on EVERY call, slightly differently
+        # each time. That is not drift a re-roll fixes — it is drift the anchor
+        # never constrained, and re-rolling it buys another guess at the same
+        # missing information.
+        #
+        # Cost is two generations per character, once, against a run that pays
+        # one per pose and up to one more per re-roll. A twelve-pose set goes
+        # from 13 calls to 15 before it has prevented a single re-roll.
+        views: list[str] = []
+        _VIEWS = (
+            ("three_quarter",
+             "the SAME character turned to a three-quarter view, facing "
+             "front-left, same neutral stance, same scale, head to toe"),
+            ("profile",
+             "the SAME character in exact side profile, facing left, same "
+             "neutral stance, same scale, head to toe"),
+        )
+        for label, angle in _VIEWS[:max(0, int(anchor_views) - 1)]:
+            if not _Path(ref_path).is_file():
+                break
+            stop = _stop_reason(imagegen.price_per_image(ref_quality))
+            if stop:
+                result.setdefault("model_sheet_skipped", []).append(
+                    {"view": label, "reason": stop})
+                break
+            view_png = str(art_dir / f"reference_{label}.png")
+            got = _chroma.generate(
+                "This exact character from the reference image — identical "
+                "design, colours, face, build and art style. Show " + angle
+                + ". Exactly one character, no text, no ground shadow." + identity,
+                view_png, provider=provider, model=model, task_kind="anchor",
+                ref_paths=[ref_path], ref_strength=ref_strength,
+                size="1024x1536", quality=ref_quality, root=root,
+                logical_name=name, work_item_id=_work_item_id(),
+                timeout=call_timeout)
+            _tally(got)
+            # An auxiliary view IMPROVES the anchor; it is not part of it. A bad
+            # one is dropped and the run continues on the views it does have —
+            # failing the whole set because the profile came back badly would be
+            # strictly worse than the single-view behaviour this replaces.
+            ok_view, why = ((False, str(got.get("error") or "generation failed"))
+                            if not got.get("ok") else _reference_sanity(view_png))
+            if ok_view:
+                views.append(view_png)
+            else:
+                result.setdefault("model_sheet_dropped", []).append(
+                    {"view": label, "reason": why})
+        sheet_refs = [ref_path] + views
+        result["model_sheet"] = sheet_refs
+
         for pose in poses:
             pname = pose["name"]
             desc = pose.get("description", pname)
@@ -3511,7 +3595,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 continue
             anim, _, idx = pname.partition("/")
             out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
-            refs = [ref_path]
+            refs = list(sheet_refs)
             is_last_of_cycle = (idx.isdigit() and anim_counts[anim] > 1
                                 and int(idx) == anim_counts[anim] - 1)
             if is_last_of_cycle and anim in anim_first and anim_first[anim] != prev_frame:
@@ -3558,10 +3642,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             anchor (the old behavior) optimizes the gate's identity metric while
             silently dropping the cross-frame conditioning — a re-rolled mid-cycle
             frame could score better on identity yet pop out of the walk. The gate
-            doesn't measure motion, so nothing caught it. Rebuild: anchor, plus
-            the cycle's first frame for a closing frame, plus the previous frame."""
+            doesn't measure motion, so nothing caught it. Rebuild: the model
+            sheet, plus the cycle's first frame for a closing frame, plus the
+            previous frame."""
             anim, _, idx = pname.partition("/")
-            refs = [ref_path]
+            refs = list(sheet_refs)
             if (idx.isdigit() and anim_counts.get(anim, 1) > 1
                     and int(idx) == anim_counts[anim] - 1):
                 first = pose_path.get(f"{anim}/0")
@@ -3652,6 +3737,13 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 assembled, consistency = _assemble_and_gate()
 
         assembled["reference"] = ref_path
+        # The model sheet is part of the run's provenance, not a detail of it:
+        # "which views was this character conditioned on" is the first question
+        # to ask about a set that drifted, and the answer has to survive into the
+        # result a caller actually reads (which is `assembled`, not `result`).
+        for key in ("model_sheet", "model_sheet_dropped", "model_sheet_skipped"):
+            if key in result:
+                assembled[key] = result[key]
         assembled["chroma"] = result.get("chroma")
         assembled["spend"] = {
             "estimated_usd": round(tally["estimated_usd"], 4),

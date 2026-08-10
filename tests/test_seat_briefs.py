@@ -122,9 +122,9 @@ NOT_TOOLS = {
     "bg_help", "bg_join", "bg_mat", "bg_mirror", "bg_plane", "bg_smooth",
     "bg_stats", "bg_taper", "bg_unwrap",
     # parameters and result keys
-    "artifact_id", "decal_on", "dry_run", "max_cost_usd", "ref_image",
-    "ref_images", "ref_strength", "task_kind", "tileable", "unweighted_verts",
-    "use_pinned", "source_ref", "work_item_id",
+    "anchor_views", "artifact_id", "decal_on", "dry_run", "max_cost_usd",
+    "ref_image", "ref_images", "ref_strength", "task_kind", "tileable",
+    "unweighted_verts", "use_pinned", "source_ref", "work_item_id",
     # not ours
     "add_child", "one_of",
 }

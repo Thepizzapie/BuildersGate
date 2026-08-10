@@ -4,10 +4,55 @@
 because the painted sprite path was close to right and kept producing sheets
 that passed every gate and still looked wrong in play.
 
-The short version: 0.1.35 could prove a sheet was **the same character**. It had
-almost nothing that could prove the sheet was **a character moving**. Those are
-different questions, they fail in different ways, and the second one is what a
-player actually sees.
+Two halves, and the first one is the one that changes what the models return.
+
+**Generation side** — how to get better, more consistent character action frames
+out of the models this project already calls. That is findings 0, 8 and 9 below,
+plus the negative results, and it is where the leverage is.
+
+**Assembly side** — 0.1.35 could prove a sheet was *the same character*; it had
+almost nothing that could prove the sheet was *a character moving*. That is
+findings 1–7. Different question, different failures, and it is what a player
+sees.
+
+---
+
+## Finding 0 — the anchor was the weakest reference configuration available
+
+This is the largest single lever found, and it is one line of policy.
+
+Every reference `image_sprites` carried was **the same view of the character**:
+one front-facing idle, plus previous frames that are near-copies of it. The
+reference-conditioning literature is consistent that this is the weak
+configuration. Two to three images **from distinct angles** materially improve
+identity retention, and four distinct angles carry more useful information than
+ten slightly-different front shots. Adding more same-angle references does not
+substitute.
+
+Animation reached the same answer a century earlier and gave it a name. A model
+sheet exists precisely so the profile and three-quarter views are on the desk;
+animators reference them so proportions do not wander between drawings.
+
+It bites hardest in the case this tool is normally used for. A side-view action
+game asks for **side-view poses** against a **front-view anchor**. The model has
+to invent the profile on every single call, and it invents it slightly
+differently each time. That is not drift the consistency gate can fix: re-rolling
+a flagged frame buys another guess at information the anchor never carried. The
+gate then flags the next one, and the retry budget goes on re-guessing.
+
+`anchor_views=3` (now the default) generates a three-quarter and a profile view
+off the approved anchor **once**, and passes all three on every pose call. Cost
+is two generations per character against a run that pays one per pose plus up to
+one more per re-roll — a twelve-pose set goes from 13 calls to 15 before it has
+prevented a single re-roll. `anchor_views=1` restores the old behaviour.
+
+Related, and free: `ideogram-3` is the only model in the Krea catalogue with a
+dedicated `character_reference_images` field rather than a style slot doing two
+jobs — which is exactly the split the art brief's rule 4 says cannot share a
+weight. The adapter already routes references to a model's own `ref_field`, so
+this needs no plumbing, only knowing to reach for it. It bills 2.5× once
+references are attached, so it is for when a cast keeps collapsing into one
+person, not for everything.
 
 ---
 
@@ -268,8 +313,113 @@ of them derives the geometry independently.
 
 ---
 
+## Finding 8 — the one technique that buys continuity per-frame generation cannot
+
+Everything in this pipeline generates each frame in its own call, so identity is
+re-established from scratch every time and the whole gate/re-roll apparatus
+exists to catch what that loses. There is one way around it, and it is the
+AI-native answer to character in-betweening:
+
+> Within a single generation, consistency works because the model produces all
+> frames in one pass, treating the full sequence as a single context — geometry,
+> palette and lighting stay stable across frames because **nothing resets
+> mid-generation**.
+
+That is a property per-frame generation cannot buy at any price, and it is the
+same argument `vfx.py` already makes for deriving effect frames arithmetically —
+except that a character's motion is not an affine transform, which is exactly
+the case `vfx.animate` says is out of scope and should be handled by generating
+a second key frame. A video model interpolating between two approved key poses
+*is* that missing middle.
+
+The documented production workflow matches what is already here, closely enough
+to be worth stating step by step:
+
+1. Generate the key poses through the existing keyable-background contract, so
+   the character is on a flat chroma backdrop. (The published workflow
+   independently arrives at `#FF00FF` for this. `chroma.CHROMA[0]` is
+   `(255, 0, 255)`.)
+2. Feed the first and last key pose to a video model as `first_frame_url` /
+   `last_frame_url` and let it generate the in-betweens.
+3. Extract frames with ffmpeg.
+4. Key each extracted frame — `chroma.finish`, unchanged.
+5. Assemble — `sprites.from_pose_images`, unchanged.
+
+Steps 1, 4 and 5 already exist and need no changes. **This was not built**, for
+three reasons that should be resolved before it is:
+
+- **It could not be exercised here at all.** No kie key and no ffmpeg in this
+  environment, so neither the API half nor the extraction half could be run once.
+  Shipping a paid pipeline whose every step is untested is worse than not
+  shipping it.
+- **Chroma through video compression is unproven and is the likeliest failure.**
+  H.264 4:2:0 subsampling halves chroma resolution, and a pure-chroma key colour
+  is the worst case for it. The magenta edge may smear enough that the alpha
+  audit rejects every extracted frame — which would at least fail loudly, since
+  the audit is already the gate, but it may mean the key colour has to be chosen
+  for compression survival rather than for palette distance, or the resolution
+  forced to 1080p/4k.
+- **It uploads the user's art to a third party.** kie's image fields take public
+  URLs, and kie ships a file-upload API (`/api/file-base64-upload`, same bearer
+  token, files deleted after 24 hours) that turns a local anchor into one. That
+  makes it possible — it does not make it automatic. It should be an explicitly
+  invoked tool that says plainly what it uploads and for how long, never a
+  silent default inside `image_sprites`.
+
+Worth noting for the economics: kie prices video at "typically 100–500 credits"
+against "10–50" for images, so this is **not** reliably a cost saving. What it
+buys is continuity, not cheapness.
+
+The same upload endpoint also retires a refusal that is now too strong.
+`chroma.generate` tells callers that "kie cannot condition on the pinned refs —
+its image fields take public URLs only, and every anchor here is a local file."
+The first half is true; the conclusion is not, now that there is a documented way
+to make a local file into one of those URLs.
+
+---
+
+## Finding 9 — the pose prompt breaks this project's own rule 5
+
+Not changed, because changing a prompt that currently works without any way to
+measure the result is how things get worse. Recorded because it is a cheap
+experiment with a clear A/B.
+
+The art brief's rule 5 is stated as measured: **"NEGATION SUMMONS THE THING.
+'No face, no hair' returns a face with hair. Reframe rather than forbid."**
+
+The per-pose prompt in `image_sprites` is built almost entirely out of negations:
+
+> "…do **NOT** slim him down, bulk him up, change his muscle definition, or
+> restyle the body between frames… **no** text, **no** cropping of limbs."
+
+By the project's own finding, that phrasing is a candidate cause of the very
+build-drift the consistency gate keeps flagging. The positive reframing —
+describing the build to hold rather than the ways it must not change, and asking
+for a full-body framing rather than forbidding crops — is a one-line change and
+an obvious A/B: same character, same eight poses, same seed budget, scored by the
+existing `_vision_consistency` judge. That experiment has not been run.
+
+---
+
 ## What was considered and deliberately not built
 
+- **Seed locking across the frames of one animation.** The obvious idea, and a
+  negative result: fixing the seed is brittle the moment the prompt changes, and
+  a changed prompt with a fixed seed commonly returns a *completely different*
+  composition rather than a nearby one. Seed control is for minor tweaks to one
+  image, not for holding a character across pose changes — reference-based
+  conditioning is, which is what finding 0 spends the effort on instead. Every
+  Krea model exposes `seed` and the sprite path deliberately continues not to
+  set it.
+- **LoRA / custom character model training** (5–20 images of the character,
+  trained before production, so every generation inherits the proportions and
+  palette). Genuinely the strongest identity mechanism available and the one the
+  tooling literature recommends for exactly this. Not new work here:
+  `styles.for_generation` and `art.style_source == 'lora'` already ride
+  alongside the references, deliberately so the LoRA can carry the *style* and
+  free the reference slot to carry *identity*. What is missing is a trained
+  CHARACTER rather than a trained style, which is a different training set and a
+  different lifecycle, not a different call.
 - **Grid generation** (asking for a 3×3 of poses in one image so the model keeps
   palette and proportions consistent because it drew them all at once). This is
   the most-recommended technique in the current tooling literature and it is
@@ -300,8 +450,8 @@ of them derives the geometry independently.
 | `bgate_core/spritekit.py` | New. Anchor registration, palette locking, connected components, silhouette overlap, motion report, sheet layout. |
 | `bgate_core/animspec.py` | New. Ten archetypes with key poses, holds, loop and ping-pong. |
 | `bgate_adapters/sprites.py` | Anchor registration, reach-based fit, per-frame durations, ping-pong order, per-animation loop and fps, grid layout and padding, motion report, histogram-based mass. |
-| `bgate_mcp/server.py` | `sprite_plan` (new, free). `image_sprites` gains `archetypes`, `view`, `palette_lock`, `palette_colors`, `sheet_padding`; reports and logs `motion` and `palette`. |
-| `bgate_core/seats.py` | Art brief: call `sprite_plan` first, read the `motion` block, and rule 2 corrected. |
+| `bgate_mcp/server.py` | `sprite_plan` (new, free). `image_sprites` gains `anchor_views` (the model sheet), `archetypes`, `view`, `palette_lock`, `palette_colors`, `sheet_padding`; reports and logs `motion` and `palette`. |
+| `bgate_core/seats.py` | Art brief: the model sheet and `ideogram-3`'s character-reference field, call `sprite_plan` first, read the `motion` block, and rule 2 corrected. |
 | `tests/test_spritekit.py` | New. 34 tests, including the registration table above. |
 
 **Rule 2 of the art brief was wrong.** It said "NEVER CONDITION FRAME N ON FRAME
@@ -314,6 +464,18 @@ continuous; and the previous frame must never be the only reference.
 ---
 
 ## Sources
+
+Generation side:
+
+- [Character reference vs style reference, and multi-angle conditioning](https://oakgen.ai/blog/ai-character-consistency-guide) — two to three distinct angles materially beat more same-angle references; character drift traced to weak identity anchoring.
+- [Reference images and staying on-model for game characters](https://sorceress.games/blog/ai-character-generator-stay-on-model-with-reference-images-2026) — the five-view model sheet as the canonical reference document.
+- [Character turnaround sheets](https://multipleangles.app/use-cases/character-turnaround-generator) — why animators keep the profile and three-quarter views on the desk.
+- [Sprite Sheet Diffusion](https://arxiv.org/html/2412.03685v2) — reference features via spatial attention, pose via a separate guider, temporal stability via a motion module: identity and pose as distinct conditioning channels.
+- [Seed behaviour in diffusion pipelines](https://getimg.ai/guides/guide-to-seed-parameter-in-stable-diffusion) and [character consistency guidance](https://thinkpeak.ai/stable-diffusion-character-consistency-tutorial/) — why seed locking is brittle across prompt changes and is not the tool for pose variation.
+- [Video-model in-betweening for sprite work](https://neatforge.com/guides/how-to-create-sprite-sheets-from-video-for-game-devs/) and [Scenario's spritesheet workflow](https://help.scenario.com/en/articles/create-spritesheets-with-scenario/) — image-to-video, extract frames, chroma key at every step; independently arrives at `#FF00FF`.
+- [kie.ai file upload API](https://docs.kie.ai/file-upload-api/upload-file-base-64) — base64 upload, 24-hour retention; what makes a local anchor into the public URL kie's image fields require.
+
+Assembly side:
 
 - [Godot `SpriteFrames` docs](https://docs.godotengine.org/en/stable/classes/class_spriteframes.html) — per-frame relative `duration`.
 - [godot-proposals#11698](https://github.com/godotengine/godot-proposals/issues/11698) — ping-pong loop mode, still open.
