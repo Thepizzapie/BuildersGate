@@ -55,47 +55,109 @@
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const trunc = (s, n) => { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
-  /* ── the cat ─────────────────────────────────────────────────────────────
-     One line per mood, rotated. They are jokes, but they are jokes ABOUT THE
-     STATE — "nobody's working" is information, and a mascot that says nothing
-     true is decoration you stop seeing after a day. */
-  const LINES = {
-    idle: [
-      "Floor's quiet. Suspiciously quiet.",
-      "Seven seats, zero agents. Say somethin'.",
-      "I've been sittin' on this fence post since sunup.",
-      "No work on the board. That's either done or denial.",
-      "Type in the box, partner. I don't read minds, I nap.",
-    ],
-    working: [
-      "We're cookin'. Don't touch the tree.",
-      "Agents ridin' out. Nobody spooks the horses.",
-      "That's the sound of somebody else doin' the work.",
-      "Steady on. I'll holler if one wanders off.",
-      "Runnin' hot and nobody's on fire. Good day.",
-    ],
-    gate: [
-      "Somethin's waitin' on YOU. Yeah. You.",
-      "There's a gate open and a cat can't sign for it.",
-      "Approvals don't approve themselves, boss.",
-      "Work's stacked up at the fence. Go look.",
-    ],
-    broken: [
-      "One of 'em went down. Ain't pretty.",
-      "We got a failure. I'm not lickin' that clean.",
-      "Somethin' broke. Read the log, then blame me.",
-      "That agent hit a wall at full gallop.",
-    ],
-    done: [
-      "Board's clear. That's a rare sight.",
-      "All shipped. I'm takin' the afternoon.",
-      "Nothin' queued, nothin' burnin'. Suspicious.",
-    ],
-    auto: [
-      "Auto-deploy's on. Work hands itself off now.",
-      "Autopilot engaged. I'm just here for the hat.",
-    ],
+  /* ── the director's work, shown as work ───────────────────────────────────
+     A RUNNING TURN USED TO RENDER AS "reading the board…" AND A STEP COUNT.
+     The payload already carried the whole feed — every tool call with its name,
+     its one-line hint and the files it touched — and the console threw all of it
+     away to print a number. Watching the director was therefore strictly less
+     informative than watching any other seat, whose steps the graph does show,
+     which is backwards: the director is the one you are in conversation with.
+
+     This is deliberately the same vocabulary a CLI session uses, because that is
+     what the human is comparing it to. A tool call is a line with a verb and a
+     target. Prose is prose. Nothing is invented that the feed did not carry. */
+
+  // A handful of the tools an agent actually reaches for, mapped to a verb a
+  // person reads faster than a function name. Anything not here falls back to
+  // the tool's own name — a lookup table that silently renames the unknown is
+  // how a UI starts lying about what ran.
+  const TOOL_VERB = {
+    queue_add: "queued", queue_add_chain: "chained", queue_update: "edited",
+    queue_complete: "closed", queue_get: "read", queue_list: "read the board",
+    seat_brief: "briefed", seat_post_note: "left a note",
+    bible_read: "read the bible", bible_add: "wrote to the bible",
+    lore_add: "added lore", lore_fact: "locked a fact", canon_check: "canon-checked",
+    image_generate: "generated", blender_run: "modelled", godot_run: "ran the game",
+    godot_screenshot: "screenshotted", ask_human: "asked you",
+    agent_steer: "steered", pending_decisions: "checked what is blocked",
   };
+
+  const stepIcon = k => k === "tool" ? "▸" : k === "result" ? "■" : k === "steer" ? "↯" : "·";
+
+  /* One sentence out of a paragraph, for the places that only have room for one
+     (the cat). Splits on terminal punctuation followed by space, and falls back
+     to a hard truncate — a "sentence" splitter that returns nothing on prose
+     without full stops would silence the bubble exactly when an agent is being
+     terse, which is when it matters most. */
+  function firstSentence(text, cap = 180) {
+    const t = String(text || "").trim().replace(/\s+/g, " ");
+    if (!t) return "";
+    const m = t.match(/^(.{20,}?[.!?])(\s|$)/);
+    const one = m ? m[1] : t;
+    return one.length > cap ? one.slice(0, cap - 1) + "…" : one;
+  }
+
+  function dirStep(s) {
+    const kind = s.kind === "tool" ? "tool" : s.kind === "steer" ? "steer"
+      : s.kind === "result" ? "res" : "say";
+    let body;
+    if (s.kind === "tool") {
+      const name = String(s.name || "tool");
+      const verb = TOOL_VERB[name];
+      body = `<span class="ck-tool">${esc(verb || name)}</span>`
+        + (verb ? `<span class="ck-toolraw">${esc(name)}</span>` : "")
+        + (s.hint ? `<span class="ck-hintx">${esc(trunc(s.hint, 90))}</span>` : "");
+    } else {
+      body = esc(trunc(s.text || "", 400));
+    }
+    // The paths it named, as chips that open. peek.js binds data-peek globally.
+    const files = (s.files || []).map(rel =>
+      `<button class="ck-fchip" type="button" data-peek="${esc(rel)}"
+               title="${esc(rel)}">${esc(String(rel).split("/").pop())}</button>`).join("");
+    return `<div class="ck-step k-${kind}"><i class="ck-stepi">${stepIcon(s.kind)}</i>`
+      + `<div class="ck-stepb">${body}`
+      + (files ? `<div class="ck-fchips">${files}</div>` : "")
+      + `</div></div>`;
+  }
+
+  /* How many steps ride in the bubble while it works, and how many stay once it
+     is done. A finished turn keeps a FOLD rather than the lot: the answer is the
+     product, the steps are the receipt, and a transcript that keeps every
+     receipt open is one nobody scrolls. */
+  const LIVE_STEPS = 6;
+
+  function dirSteps(reply, done) {
+    const steps = (reply.steps || []).filter(s => s && s.kind !== "result");
+    if (!steps.length) return "";
+    if (!done) {
+      const tail = steps.slice(-LIVE_STEPS);
+      const hidden = steps.length - tail.length;
+      return `<div class="ck-steps-live">`
+        + (hidden ? `<div class="ck-step-more">${hidden} earlier step${hidden === 1 ? "" : "s"}</div>` : "")
+        + tail.map(dirStep).join("") + `</div>`;
+    }
+    return `<details class="ck-steps-fold"><summary>${steps.length} step${
+      steps.length === 1 ? "" : "s"}</summary>${steps.map(dirStep).join("")}</details>`;
+  }
+
+  /* ── the cat ─────────────────────────────────────────────────────────────
+     THE CAT IS A REACTION, NOT A NARRATOR. IT HAS NO WORDS AT ALL.
+
+     Two versions of this were wrong in opposite directions. It began as a quote
+     machine, rotating canned cowboy lines on a 14-second timer regardless of
+     what was happening — the most animated thing on the page was the one
+     element guaranteed to be saying nothing true. Feeding it the director's
+     real voice fixed the truthfulness and created a worse problem: once the cat
+     moved INTO the conversation it sat directly beneath the director's answer
+     repeating the first sentence of it. The same words twice, six lines apart,
+     with the copy in the louder box.
+
+     There is no bubble now. The transcript is where words go — it has room for
+     the whole answer, the tool calls and the files. The cat carries only what
+     text cannot: it mouths WHILE a real voice is mid-sentence (see talk), its
+     idle animation tracks the floor's mood, and it plays a one-off beat when
+     something actually lands, fails or needs a human (see beat). Motion is the
+     signal; the reader gets the words from the panel above. */
 
   /* THE MASCOT IS A SHIPPED SPRITE, not drawn geometry.
      It used to be inline SVG so it would theme itself and need no asset. That
@@ -109,9 +171,83 @@
      idle, because a blink on every syllable is a twitch. */
   const CAT_SPRITE = `<div class="cat-sprite" aria-hidden="true"></div>`;
 
+  /* The brainstorm-mode chrome, injected rather than added to app.css — that
+   * file belongs to another agent today. Everything here is namespaced under
+   * ck- and only paints surfaces this file introduced.
+   *
+   * --solid-N, never --surface-N, on anything carrying text: Orbit surfaces are
+   * translucent and a plan you are about to spend money agreeing to must not
+   * have the board showing through it. That exact mistake has shipped twice. */
+  const CK_STYLE_ID = "ck-bs-style";
+  function injectConsoleStyle() {
+    if (document.getElementById(CK_STYLE_ID)) return;
+    const s = document.createElement("style");
+    s.id = CK_STYLE_ID;
+    s.textContent = `
+/* ONE CONTROL. The mode, the box and the consequence share a border and a
+   background so they read as a single thing that changes state — the earlier
+   shape (a pill floating above, a footer bolted below) read as three widgets
+   stacked by accident, which the user called janky and was right to. */
+.ck-say-wrap{border:1px solid var(--line);border-radius:12px;
+  background:var(--solid-1);padding:6px 8px 8px}
+.ck-say-wrap:focus-within{border-color:var(--accent)}
+.ck-say-wrap.bs{border-color:var(--good-line,var(--good))}
+.ck-mode{display:inline-flex;gap:2px;padding:2px;margin-bottom:6px;
+  background:var(--solid-2);border-radius:999px}
+.ck-mode button{padding:3px 12px;border:0;border-radius:999px;background:none;
+  color:var(--text-3);font:inherit;font-size:11.5px;cursor:pointer}
+.ck-mode button.on{background:var(--solid-0,var(--surface-2));color:var(--text-1)}
+.ck-say-wrap.bs .ck-mode button.on{color:var(--good)}
+.ck-mode button:hover:not(.on){color:var(--text-2)}
+/* The textarea gives up its own border to the wrapper — two nested boxes is
+   what made this look bolted together. */
+.ck-say-wrap .ck-composer textarea{background:transparent;border-color:transparent;
+  padding-left:2px;padding-right:2px}
+.ck-say-wrap .ck-composer textarea:focus{border-color:transparent}
+.ck-bsfoot{display:flex;align-items:center;gap:10px;margin-top:6px;
+  padding-top:7px;border-top:1px solid var(--line);font-size:11px;
+  color:var(--text-3);flex-wrap:wrap}
+.ck-bsnote b{color:var(--good)}
+.ck-bsspace{flex:1}
+.ck-bspartner{font-size:10.5px;color:var(--text-3)}
+.ck-bspartner.live{color:var(--good)}
+.ck-bsdeploy{padding:3px 12px;font-size:11.5px}
+.ck-bsbar{padding:7px 10px;margin-bottom:8px;border:1px solid var(--good-line,var(--line));
+  background:var(--good-soft,var(--solid-1));border-radius:8px;font-size:11.5px;
+  color:var(--text-2);line-height:1.5}
+.ck-bsid{color:var(--text-3);font-size:10.5px}
+/* THE REVIEW SHEET. Opaque, and it must stay that way — see the note above. */
+.ck-sheet{position:fixed;inset:0;z-index:900;display:flex;align-items:center;
+  justify-content:center;padding:24px;background:rgba(0,0,0,.55)}
+.ck-sheet[hidden]{display:none}
+.ck-sh{width:min(760px,100%);max-height:86vh;display:flex;flex-direction:column;
+  background:var(--solid-0,#14171c);border:1px solid var(--line-strong,var(--line));
+  border-radius:14px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+.ck-sh-h{padding:14px 16px;border-bottom:1px solid var(--line);background:var(--solid-1)}
+.ck-sh-h b{display:block;font-size:14px;color:var(--text-1)}
+.ck-safe{display:inline-block;margin-top:3px;font-size:11px;color:var(--good)}
+.ck-sh-b{flex:1;min-height:0;overflow:auto;padding:14px 16px;font-size:12.5px}
+.ck-sh-f{display:flex;align-items:center;gap:8px;padding:12px 16px;
+  border-top:1px solid var(--line);background:var(--solid-1)}
+.ck-plansum{margin-bottom:12px;color:var(--text-2);line-height:1.6}
+.ck-planwho{margin-bottom:12px;padding:8px 10px;border-radius:8px;
+  background:var(--solid-2);color:var(--text-2);line-height:1.55}
+.ck-planrow{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;padding:9px 0;
+  border-top:1px solid var(--line)}
+.ck-planseat{grid-row:span 2;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--accent);padding-top:2px}
+.ck-plantitle{color:var(--text-1);font-weight:600}
+.ck-planbrief{color:var(--text-3);line-height:1.55;white-space:pre-wrap}
+.ck-planwait{grid-column:2;font-size:10.5px;color:var(--warn)}
+.ck-plannotes{margin-top:12px;font-size:11.5px;color:var(--text-3)}
+.ck-plannotes ul{margin:4px 0 0 16px}
+`;
+    document.head.appendChild(s);
+  }
+
   const AgentsConsole = {
     root: null, mounted: false, timer: null, state: null,
-    mood: "idle", line: "", _lineAt: 0, _lineIx: 0, _spriteRel: "",
+    mood: "idle", line: "", _lineAt: 0, _lineIx: 0, _spriteRel: "", _saidSig: "",
     _sending: false, _lastTurnSig: "", _pinBottom: true, _talkTimer: 0,
     // Who the composer is talking to. null = the director; a number = steer
     // that running agent directly. The director can steer too (agent_steer),
@@ -125,6 +261,30 @@
     // running underneath — the graph stays live while you read history.
     viewing: null,
 
+    /* ---- WHAT TALKING DOES ----------------------------------------------
+     * "just the conversation type so i can talk about what i want before
+     * dispatching" — the same composer and the same transcript, routed at a
+     * different backend:
+     *
+     *   dispatch    /api/console/say. Files a work item, spawns an agent.
+     *   brainstorm  /api/brainstorm/{id}/message. A conversation that files
+     *               NOTHING. Deploy synthesises a plan, shows it with the
+     *               agents it intends to dispatch, and only a confirm queues.
+     *
+     * A SECOND CHAT UI WAS BUILT HERE AND REMOVED — twice, once as
+     * `Brainstorm.mount(..., {pads:false})` and once as `{chrome:"minimal"}`.
+     * Both were the wrong shape: this view already has a conversation, and what
+     * was wanted was for that conversation to be able to not-dispatch. The
+     * brainstorm workspace still exists whole in the director seat, and a
+     * session started here is an ordinary director session that shows up in its
+     * list — findable rather than a parallel track.
+     *
+     * bsSession is the session this console is talking in. Remembered in
+     * localStorage so the conversation survives a reload, re-resolved against
+     * the server on every entry because it can be archived or deleted from the
+     * seat view while this tab is open. */
+    bsMode: false, bsSession: null, bsBusy: false, bsPlan: null, bsThinker: null,
+
     /* ---- mount ---------------------------------------------------------- */
     mount() {
       if (this.mounted) return true;
@@ -135,6 +295,12 @@
 
       const mascot = document.getElementById("ck-cat");
       if (mascot) mascot.innerHTML = CAT_SPRITE;
+
+      injectConsoleStyle();
+      document.querySelectorAll("#ck-mode [data-cmode]").forEach(b =>
+        b.onclick = () => this.setSayMode(b.dataset.cmode));
+      // No Deploy wiring here: the button does not exist in dispatch mode.
+      // renderSayMode builds it and binds it when brainstorm mode is entered.
 
       const form = document.getElementById("ck-say-form");
       const input = document.getElementById("ck-say");
@@ -168,10 +334,7 @@
       };
       const clear = document.getElementById("ck-target-x");
       if (clear) clear.onclick = () => this.aim(null);
-      const all = document.getElementById("ck-deploy-all");
-      if (all) all.onclick = () => this.deployAll();
-      const clearQ = document.getElementById("ck-clear-queue");
-      if (clearQ) clearQ.onclick = () => this.clearQueue();
+      this.bindQueueButtons();
       const panic = document.getElementById("ck-panic");
       if (panic) panic.onclick = () => this.panic();
       const clearBtn = document.getElementById("ck-clear");
@@ -187,6 +350,7 @@
         AgentsGraph.mount(graphHost, document.getElementById("ck-detail"));
       }
       this.findSprite();
+      this.bindDeck();
       this.poll();
       this.retime(POLL_LIVE_MS);
       return true;
@@ -222,6 +386,17 @@
 
     activate() {
       if (!this.mount()) return;
+      // The mode is restored, not reset. Somebody who left this view mid-
+      // conversation and came back to find the composer silently re-armed to
+      // dispatch would file the next thought as work — the failure this whole
+      // toggle exists to prevent.
+      if (!this._modeRestored) {
+        this._modeRestored = true;
+        let saved = "dispatch";
+        try { saved = localStorage.getItem("bgate-ck-mode") || "dispatch"; } catch (e) {}
+        if (saved === "brainstorm") { this.setSayMode("brainstorm"); }
+        else { this.renderSayMode(); }
+      }
       this.poll();
       if (window.AgentsGraph) AgentsGraph.activate();
     },
@@ -266,6 +441,12 @@
         this.renderAuto();
         this.renderGate();
         this.renderMood();
+        this.renderLive();
+        this.renderReveal();
+        // AFTER the four page renders, never before: the deck decides which
+        // page to show from their counts, and picking on last poll's numbers is
+        // how a question that just arrived waits a full tick to be jumped to.
+        this.renderDeck();
         if (window.AgentsGraph) AgentsGraph.apply(state);
       } catch (e) { try { console.warn("[agents-console]", e); } catch (_) {} }
     },
@@ -306,6 +487,11 @@
       if (!box) return;
       this.renderSessionBar();
 
+      // BRAINSTORM MODE PAINTS THE SAME BUBBLES FROM A DIFFERENT SOURCE. Same
+      // markup on purpose — the whole point is that this is one conversation
+      // surface whose CONSEQUENCE changes, not two chat widgets.
+      if (this.bsMode) { this.renderBsChat(box); return; }
+
       // Reading an archived session: same turns, same replies, plus the one
       // thing you came back for — the log of each run.
       if (this.viewing) {
@@ -341,18 +527,23 @@
         </div>`;
         return;
       }
-      const sig = turns.map(t => `${t.id}:${t.status}:${(t.reply || {}).running ? 1 : 0}:${((t.reply || {}).text || "").length}`).join("|")
+      // The step COUNT is in the signature as well as the text length: a turn
+      // that is working its way through tool calls changes nothing else, and
+      // without this the feed froze at whatever it had when the answer's length
+      // last moved — which looked exactly like a stalled agent.
+      const sig = turns.map(t => `${t.id}:${t.status}:${(t.reply || {}).running ? 1 : 0}:${((t.reply || {}).text || "").length}:${(t.reply || {}).step_count || 0}`).join("|")
         + "//" + this.syncSteers();
       const rows = turns.map(t => {
         const r = t.reply || {};
         const answer = r.text
           ? `<div class="ck-msg dir"><div class="ck-who">director</div>
+               ${dirSteps(r, true)}
                <div class="ck-txt">${esc(r.text)}</div>
                ${r.cost ? `<div class="ck-cost">$${Number(r.cost).toFixed(3)}</div>` : ""}</div>`
           : r.running
             ? `<div class="ck-msg dir live"><div class="ck-who">director <span class="ck-dots"><i></i><i></i><i></i></span></div>
-                 <div class="ck-txt thinking">${esc(r.thinking || "reading the board…")}</div>
-                 <div class="ck-steps">${r.step_count || 0} steps</div></div>`
+                 ${dirSteps(r, false)}
+                 <div class="ck-txt thinking">${esc(r.thinking || "reading the board…")}</div></div>`
             : t.status === "failed"
               ? `<div class="ck-msg dir bad"><div class="ck-who">director</div>
                    <div class="ck-txt">that turn failed — open its log from the graph</div></div>`
@@ -445,11 +636,320 @@
       if (send) send.textContent = this.target ? "steer" : "send";
     },
 
+    renderBsChat(box) {
+      const s = this.bsSession;
+      const msgs = (s && s.messages) || [];
+      // The cockpit's poll repaints every few seconds. Rebuilding this
+      // transcript's innerHTML on each tick would drop a text selection and
+      // fight the scroll position for no gain, so an unchanged conversation
+      // paints once.
+      const sig = "bs:" + (s ? s.id : 0) + ":" + msgs.length
+        + ":" + (this.bsBusy ? 1 : 0) + ":" + (this.bsError || "");
+      if (sig === this._lastTurnSig) return;
+      let html = `<div class="ck-bsbar">thinking with the director —
+        <b>nothing here is on the board</b>. Deploy proposes the work and shows
+        it to you before anything is queued.${s ? ` <span class="ck-bsid">#${s.id}
+        · in the director seat's sessions</span>` : ""}</div>`;
+      html += msgs.map(m => `<div class="ck-msg ${m.role === "user" ? "you" : "dir"}">
+          <div class="ck-who">${m.role === "user" ? "you" : "director"}</div>
+          <div class="ck-txt">${esc(m.text)}</div></div>`).join("")
+        || `<div class="ck-empty">say what you are thinking about. It answers,
+            pushes back, and files nothing.</div>`;
+      if (this.bsBusy) {
+        html += `<div class="ck-msg dir"><div class="ck-who">director</div>
+          <div class="ck-txt">…</div></div>`;
+      }
+      if (this.bsError) {
+        // The saved-but-unanswered case has to read differently from a send
+        // that failed, or somebody retypes a message the server already has.
+        html += `<div class="ck-msg dir err"><div class="ck-who">your message is
+          saved — the partner did not answer</div>
+          <div class="ck-txt">${esc(this.bsError)}</div></div>`;
+      }
+      box.innerHTML = html;
+      this._lastTurnSig = sig;
+      if (this._pinBottom) box.scrollTop = box.scrollHeight;
+    },
+
+    /* ---- Deploy: the gate, and it is the reason this mode exists ---------
+     * Two calls, and the first one writes nothing. synthesize reads the
+     * conversation and PROPOSES; the human reads the proposal, including which
+     * seats would be dispatched; only confirm files. Deploy never
+     * re-synthesises — asking again at confirm time would file a plan nobody
+     * read, which makes the review step theatre. */
+    async bsDeployOpen() {
+      const s = this.bsSession;
+      if (!s) return;
+      this.bsSheet(`<div class="ck-sh-h"><b>Reading the conversation…</b>
+        <span class="ck-safe">Nothing is being queued — this step only reads.</span></div>
+        <div class="ck-sh-b"><div class="ck-empty">synthesising a proposal…</div></div>`);
+      let r;
+      try {
+        r = await window.mutate(`/api/brainstorm/${s.id}/synthesize`,
+          { body: {}, quiet: true });
+      } catch (e) { r = { ok: false, error: "could not reach the dashboard" }; }
+      if (!r.ok) {
+        this.bsSheet(`<div class="ck-sh-h"><b>Could not synthesize</b>
+          <span class="ck-safe">Nothing was queued.</span></div>
+          <div class="ck-sh-b">${esc(r.error || "synthesis failed")}</div>
+          <div class="ck-sh-f"><button class="qbtn ghost" data-x="close">Close</button></div>`);
+        return;
+      }
+      this.bsPlan = (r.data || {}).plan || null;
+      this.bsRenderPlan();
+    },
+
+    bsRenderPlan() {
+      const plan = this.bsPlan || {};
+      const items = plan.items || [];
+      const rows = items.map((it, i) => `<div class="ck-planrow">
+          <span class="ck-planseat">${esc(it.seat)}</span>
+          <span class="ck-plantitle">${esc(it.title)}</span>
+          <span class="ck-planbrief">${esc(String(it.brief || "").slice(0, 400))}</span>
+          ${plan.chained && i ? `<span class="ck-planwait">waits for the one above</span>` : ""}
+        </div>`).join("")
+        || `<div class="ck-empty">the director proposed no work items. Keep
+            talking, or close this.</div>`;
+      // NAMED SEATS, NOT A COUNT. "queue 4 items" tells you nothing about what
+      // is about to be spawned; the seats are what a person checks before
+      // agreeing to spend on them.
+      const seats = [...new Set(items.map(i => i.seat))];
+      const who = seats.length
+        ? `<div class="ck-planwho">This queues <b>${items.length} item${items.length === 1 ? "" : "s"}</b>
+           and will dispatch <b>${esc(seats.join(", "))}</b>${plan.chained
+             ? " — as a chain, each waiting on the one before" : ""}.</div>` : "";
+      const notes = (plan.notes || []).length
+        ? `<div class="ck-plannotes"><b>corrections made to the proposal</b>
+           <ul>${plan.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>` : "";
+      const asks = (plan.questions || []).length
+        ? `<div class="ck-plannotes"><b>it wants these confirmed</b>
+           <ul>${plan.questions.map(q => `<li>${esc(q)}</li>`).join("")}</ul></div>` : "";
+      this.bsSheet(`<div class="ck-sh-h"><b>Review before anything is queued</b>
+          <span class="ck-safe">Nothing has been filed yet.</span></div>
+        <div class="ck-sh-b">
+          ${plan.summary ? `<div class="ck-plansum">${esc(plan.summary)}</div>` : ""}
+          ${who}${asks}${rows}${notes}
+        </div>
+        <div class="ck-sh-f">
+          <button class="qbtn ghost" data-x="close">Cancel</button>
+          <span class="ck-bsspace"></span>
+          <button class="qbtn" data-x="confirm" ${items.length ? "" : "disabled"}>
+            Confirm — queue ${items.length} item${items.length === 1 ? "" : "s"}</button>
+        </div>`);
+    },
+
+    async bsConfirm() {
+      const s = this.bsSession;
+      if (!s || !this.bsPlan) return;
+      const r = await window.mutate(`/api/brainstorm/${s.id}/deploy`,
+        { body: { plan: this.bsPlan }, quiet: true });
+      if (!r.ok) {
+        window.toast(r.error || "nothing was filed");
+        return;
+      }
+      const filed = (r.data || {}).filed || [];
+      this.bsSheetClose();
+      window.toast(`queued ${filed.length} item${filed.length === 1 ? "" : "s"}`);
+      await this.bsLoad(s.id);
+      // The board is the other half of this view and it just changed.
+      this._lastTurnSig = "";
+      this.poll();
+      this.renderChat();
+    },
+
+    bsSheet(html) {
+      let el = document.getElementById("ck-bssheet");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "ck-bssheet";
+        el.className = "ck-sheet";
+        document.body.appendChild(el);
+        el.onclick = ev => {
+          if (ev.target === el) return this.bsSheetClose();
+          const b = ev.target.closest("[data-x]");
+          if (!b) return;
+          if (b.dataset.x === "close") this.bsSheetClose();
+          if (b.dataset.x === "confirm") this.bsConfirm();
+        };
+      }
+      el.hidden = false;
+      el.innerHTML = `<div class="ck-sh">${html}</div>`;
+    },
+
+    bsSheetClose() {
+      const el = document.getElementById("ck-bssheet");
+      if (el) { el.hidden = true; el.innerHTML = ""; }
+      this.bsPlan = null;
+    },
+
+    /* ---- brainstorm mode ------------------------------------------------ */
+
+    /** Flip what sending does. Purely client state — nothing is written until
+     *  somebody actually says something. */
+    async setSayMode(mode) {
+      const want = mode === "brainstorm";
+      if (want === this.bsMode) return;
+      this.bsMode = want;
+      try { localStorage.setItem("bgate-ck-mode", want ? "brainstorm" : "dispatch"); } catch (e) {}
+      // AIMING AND BRAINSTORMING ARE INCOMPATIBLE. The target rail points the
+      // composer at one running agent; a brainstorm has no agent to steer, and
+      // leaving it aimed would send a thinking sentence into a working session.
+      if (want && this.target) this.setTarget(null);
+      this.renderSayMode();
+      if (want) await this.bsEnsureSession();
+      this._lastTurnSig = "";
+      this.renderChat();
+    },
+
+    renderSayMode() {
+      document.querySelectorAll("#ck-mode [data-cmode]").forEach(b =>
+        b.classList.toggle("on", (b.dataset.cmode === "brainstorm") === this.bsMode));
+      // CREATED AND REMOVED, NEVER HIDDEN. This strip says "no work item, no
+      // dispatch" — under a composer that in the other mode files work and
+      // spawns an agent. It shipped visible in dispatch mode for a few minutes
+      // because it lived in the markup with a `hidden` attribute and this
+      // file's own `.ck-bsfoot{display:flex}` beat it; `hidden` is a default,
+      // not a guarantee. A wrong promise about consequences is not a cosmetic
+      // bug, so the element simply does not exist unless it is true.
+      const wrap = document.getElementById("ck-say-wrap");
+      let foot = document.getElementById("ck-bsfoot");
+      if (!this.bsMode) {
+        if (foot) foot.remove();
+      } else if (!foot && wrap) {
+        foot = document.createElement("div");
+        foot.className = "ck-bsfoot";
+        foot.id = "ck-bsfoot";
+        foot.innerHTML = `<span class="ck-bsnote"><b>files nothing</b> ·
+            thinking only — no work item, no dispatch, until you press Deploy</span>
+          <span class="ck-bsspace"></span>
+          <span class="ck-bspartner" id="ck-bspartner"></span>
+          <button class="qbtn ck-bsdeploy" id="ck-bsdeploy" type="button">Deploy</button>`;
+        wrap.appendChild(foot);
+        foot.querySelector("#ck-bsdeploy").onclick = () => this.bsDeployOpen();
+      }
+      const input = document.getElementById("ck-say");
+      if (input && !this.target) {
+        input.placeholder = this.bsMode
+          ? "think out loud — nothing is filed until you press Deploy…"
+          : "tell the director what you want — it answers, then delegates…";
+      }
+      const send = document.getElementById("ck-send");
+      if (send && !this.target) send.textContent = this.bsMode ? "say" : "send";
+      if (wrap) wrap.classList.toggle("bs", this.bsMode);
+      this.renderBsPartner();
+    },
+
+    renderBsPartner() {
+      const el = document.getElementById("ck-bspartner");
+      if (!el) return;
+      const t = this.bsThinker;
+      if (!t) { el.textContent = ""; return; }
+      const cost = Number(t.spent_usd || 0);
+      el.textContent = (t.live ? "partner live" : "partner closed")
+        + (t.turns ? ` · ${t.turns} turn${t.turns === 1 ? "" : "s"}` : "")
+        + (cost ? ` · $${cost.toFixed(2)}` : "");
+      el.className = "ck-bspartner" + (t.live ? " live" : "");
+      el.title = t.label ? `thinking partner: ${t.label}` : "";
+    },
+
+    /** The director session this console brainstorms in.
+     *
+     * Reuses the most recent open director session rather than opening a new
+     * one per visit — "one ongoing conversation" is the point, and a view that
+     * minted a session every time you clicked the tab would fill the seat's
+     * list with empty rooms. Creates one only when there is genuinely none.
+     */
+    async bsEnsureSession() {
+      let want = 0;
+      try { want = Number(localStorage.getItem("bgate-ck-bs")) || 0; } catch (e) {}
+      let list = [];
+      try {
+        const r = await fetch("/api/brainstorm?seat=director");
+        const b = await r.json();
+        list = ((b.data || {}).sessions || []).filter(s => s.status !== "archived");
+      } catch (e) { list = []; }
+      let pick = list.filter(s => s.id === want)[0] || list[0] || null;
+      if (!pick) {
+        const made = await window.mutate("/api/brainstorm",
+          { body: { seat: "director", title: "from the agents console" }, quiet: true });
+        if (!made.ok) { window.toast("could not open a brainstorm session"); return null; }
+        pick = made.data;
+      }
+      try { localStorage.setItem("bgate-ck-bs", String(pick.id)); } catch (e) {}
+      await this.bsLoad(pick.id);
+      return this.bsSession;
+    },
+
+    async bsLoad(id) {
+      try {
+        const r = await fetch("/api/brainstorm/" + id);
+        const b = await r.json();
+        if (!b || b.ok === false) return null;
+        this.bsSession = b.data;
+        this.bsThinker = b.data.thinker || null;
+        this.renderBsPartner();
+        return this.bsSession;
+      } catch (e) { return null; }
+    },
+
+    /** One brainstorm turn. Same composer, same disable-and-restore contract as
+     *  say(), and the same promise: the sentence comes back if it did not land. */
+    async bsSay(text, input) {
+      const session = this.bsSession || await this.bsEnsureSession();
+      if (!session) { if (input) input.value = text; return; }
+      // Optimistic, and honest: the server stores the human's message BEFORE it
+      // asks the partner and keeps it if the partner fails, so showing it
+      // immediately is a fact rather than a hope.
+      (this.bsSession.messages = this.bsSession.messages || [])
+        .push({ id: "tmp", role: "user", text });
+      this.bsBusy = true;
+      this.renderChat();
+      let r;
+      try {
+        r = await window.mutate(`/api/brainstorm/${session.id}/message`,
+          { body: { text }, button: "ck-send", quiet: true });
+      } catch (err) {
+        r = { ok: false, _local: true, error: "the brainstorm could not send that" };
+      } finally {
+        this.bsBusy = false;
+        this._sending = false;
+        if (input) { input.disabled = false; input.focus(); }
+      }
+      this.bsSession.messages = (this.bsSession.messages || [])
+        .filter(m => m.id !== "tmp");
+      if (!r.ok) {
+        // Nothing was stored on a thrown error: give them their sentence back.
+        if (input) input.value = text;
+        window.toast(r.error || "the brainstorm did not answer");
+        this.renderChat();
+        return;
+      }
+      const d = r.data || {};
+      if (d.message) this.bsSession.messages.push(d.message);
+      if (d.reply) this.bsSession.messages.push(d.reply);
+      this.bsThinker = d.thinker || this.bsThinker;
+      this.renderBsPartner();
+      // A 200 with reply:null is the no-partner path — the text IS saved, so
+      // the box stays empty and the transcript says what happened instead.
+      if (d.model && d.model.ok === false) {
+        this.bsError = d.model.error || "the partner did not answer";
+      } else { this.bsError = null; }
+      this.renderChat();
+    },
+
     async say() {
       const input = document.getElementById("ck-say");
       let text = (input && input.value || "").trim();
       if (!text) return;
       if (this._sending) return;
+      // BRAINSTORM BRANCHES BEFORE THE @-AIM AND BEFORE /api/console/say. There
+      // is no agent to steer in a conversation that has not dispatched one.
+      if (this.bsMode) {
+        this._sending = text;
+        if (input) { input.value = ""; input.style.height = "auto"; input.disabled = true; }
+        await this.bsSay(text, input);
+        return;
+      }
 
       // "@41 slow down" aims one message without changing the target — the
       // keyboard path for the same thing the rail's button does.
@@ -655,6 +1155,17 @@
         .map(t => ({ ...t, seat: "director", title: t.said || t.title, _turn: true }))
         .concat((s.items || []).filter(
           i => i.status === "queued" && i.source !== "chat"));
+    },
+
+    /* The queue's two buttons live in the deck header and are rebuilt whenever
+       the deck turns to that page, so their handlers cannot be bound once at
+       mount — this is called from both places. */
+    bindQueueButtons() {
+      const all = document.getElementById("ck-deploy-all");
+      if (all) all.onclick = () => this.deployAll();
+      const clearQ = document.getElementById("ck-clear-queue");
+      if (clearQ) clearQ.onclick = () => this.clearQueue();
+      this.renderQueue();
     },
 
     renderQueue() {
@@ -878,14 +1389,25 @@
     },
 
     renderQuestions() {
+      // The wrapper is gone — the deck owns which page is visible now — but it
+      // is still looked up rather than assumed absent, so this file keeps
+      // working against a page served by an older build instead of rendering
+      // the questions into a panel nothing ever shows.
       const wrap = document.getElementById("ck-askwrap");
       const box = document.getElementById("ck-ask");
-      if (!wrap || !box) return;
+      if (!box) return;
       const open = this.openQuestions();
-      wrap.hidden = !open.length;
+      if (wrap) wrap.hidden = !open.length;
       const n = document.getElementById("ck-ask-n");
       if (n) n.textContent = String(open.length);
-      if (!open.length) { box.innerHTML = ""; this._askSig = ""; return; }
+      // An empty state, because the deck keeps this page reachable instead of
+      // hiding the panel. "Nothing here" and "this panel is broken" have to
+      // look different, and a blank box is how they stop looking different.
+      if (!open.length) {
+        box.innerHTML = `<div class="ck-empty">no agent is waiting on you</div>`;
+        this._askSig = "";
+        return;
+      }
 
       // Its own signature, like the transcript's. The rest of this column
       // repaints whenever anything on the board moves, and rebuilding a textarea
@@ -978,14 +1500,17 @@
     },
 
     renderReview() {
-      const wrap = document.getElementById("ck-reviewwrap");
+      const wrap = document.getElementById("ck-reviewwrap");   // see renderQuestions
       const box = document.getElementById("ck-review");
-      if (!wrap || !box) return;
+      if (!box) return;
       const held = this.reviewItems();
-      wrap.hidden = !held.length;
+      if (wrap) wrap.hidden = !held.length;
       const n = document.getElementById("ck-review-n");
       if (n) n.textContent = String(held.length);
-      if (!held.length) { box.innerHTML = ""; return; }
+      if (!held.length) {
+        box.innerHTML = `<div class="ck-empty">nothing is held for approval</div>`;
+        return;
+      }
       box.innerHTML = held.slice(0, 20).map(i => `
         <div class="ck-q review" data-id="${i.id}">
           <span class="ck-rep-seat" style="color:${seatColor(i.seat)}">${esc(i.seat)}</span>
@@ -1040,6 +1565,260 @@
       this.poll();
     },
 
+    /* ---- the live strip ─────────────────────────────────────────────────
+     * Who is working, for how long, what it has cost. One line, one place,
+     * independent of which deck page is up and of whether the graph is even
+     * on screen — which is the whole requirement when the window is a stream
+     * and the viewer cannot scroll or click anything.
+     *
+     * The clock ticks LOCALLY between polls. The server sends whole seconds
+     * every 3s (12s idle), and a counter that advances in three-second jumps
+     * reads as a stalled UI rather than a slow one. So the poll sets a baseline
+     * and a 1s tick interpolates from it; nothing is invented, the offset is
+     * just wall-clock since the number arrived.
+     */
+    _liveBase: null,
+
+    /* The run the strip is about: the longest-running agent, or the director's
+       own turn when no seat is out. Longest rather than newest because on a
+       fan-out the interesting one is the one that might be stuck. */
+    liveSubject() {
+      const s = this.state || {};
+      const running = (s.agents || []).filter(a => a.state === "running");
+      if (running.length) {
+        const items = new Map((s.items || []).map(i => [Number(i.id), i]));
+        const rows = running.map(a => {
+          const it = items.get(Number(a.item_id)) || {};
+          return { seat: it.seat || "", title: it.title || `item #${a.item_id}`,
+                   seconds: Number(a.seconds) || 0, cost: Number(a.cost_usd) || 0,
+                   n: running.length };
+        }).sort((x, y) => y.seconds - x.seconds);
+        return rows[0];
+      }
+      const turns = s.turns || [];
+      const last = turns[turns.length - 1];
+      if (last && last.reply && last.reply.running) {
+        return { seat: "director", title: last.said || last.title || "thinking",
+                 seconds: 0, cost: Number(last.reply.cost) || 0, n: 1 };
+      }
+      return null;
+    },
+
+    renderLive() {
+      const host = document.getElementById("ck-live");
+      if (!host) return;
+      const subj = this.liveSubject();
+      if (!subj) {
+        host.hidden = true;
+        this._liveBase = null;
+        return;
+      }
+      host.hidden = false;
+      this._liveBase = { at: Date.now(), seconds: subj.seconds };
+      const what = document.getElementById("ck-live-what");
+      if (what) {
+        what.innerHTML =
+          (subj.seat ? `<b style="color:${seatColor(subj.seat)}">${esc(subj.seat)}</b> ` : "")
+          + esc(trunc(subj.title, 60))
+          + (subj.n > 1 ? `<span class="ck-live-n">+${subj.n - 1} more</span>` : "");
+      }
+      const cost = document.getElementById("ck-live-c");
+      if (cost) cost.textContent = subj.cost ? `$${subj.cost.toFixed(2)}` : "";
+      this.tickLive();
+    },
+
+    tickLive() {
+      const el = document.getElementById("ck-live-t");
+      const b = this._liveBase;
+      if (!el || !b) return;
+      const secs = b.seconds + Math.floor((Date.now() - b.at) / 1000);
+      const m = Math.floor(secs / 60), s = secs % 60;
+      el.textContent = `${m}:${String(s).padStart(2, "0")}`;
+    },
+
+    /* ---- the deck ───────────────────────────────────────────────────────
+     * Four panels, one frame. The rule that makes it a cockpit instrument
+     * rather than a slideshow: ROTATION IS THE IDLE BEHAVIOUR, ATTENTION WINS.
+     *
+     *   · a page with something BLOCKING on it (a question, an approval) is
+     *     jumped to and held — rotating away from an agent that is stopped
+     *     waiting for you is the one thing this must never do;
+     *   · touching a dot or an arrow pins that page, because a rotation that
+     *     steals the panel out from under a click is worse than no rotation;
+     *   · the pin decays, so a stream left alone comes back to life on its own
+     *     instead of freezing on whatever was last poked.
+     *
+     * Empty pages are still REACHABLE (the dots are always there — you can look
+     * at an empty queue on purpose) but never rotated INTO. That is the split
+     * the four stacked panels got wrong in both directions: two were always
+     * visible and usually empty, two vanished entirely and moved everything
+     * else when they came back.
+     */
+    deck: {
+      pages: [
+        { id: "queue",   label: "queue",     hint: "waiting to deploy" },
+        { id: "ask",     label: "asked you", hint: "goes back to the agent that asked", urgent: true },
+        { id: "review",  label: "approve",   hint: "approve to release the chain",      urgent: true },
+        { id: "replies", label: "responses", hint: "live only" },
+        /* The audience. Not urgent — a viewer's remark is never something an
+           agent is STOPPED waiting on, which is what urgent means here — and
+           its count is the feedback session's, not the message rate, so a busy
+           channel cannot yank the deck off an approval somebody has to make. */
+        { id: "chat",    label: "chat",      hint: "live stream chat and feedback sessions" },
+      ],
+      at: 0, pinnedUntil: 0, turnAt: 0,
+    },
+    // How long a page holds before the deck moves on, and how long a human's
+    // choice outranks the rotation. 9s is long enough to read a couple of rows
+    // and short enough that a stream does not sit on one panel; 45s is about a
+    // sentence typed and sent, which is what a pin is usually for.
+    _deckHold: 9000,
+    _deckPin: 45000,
+
+    deckCounts() {
+      const s = this.state || {};
+      return {
+        queue: this.queuedItems().length,
+        ask: this.openQuestions().length,
+        review: this.reviewItems().length,
+        replies: ((s.agents || []).filter(a => a.state === "running")).length,
+        /* What an OPEN feedback session has captured, and nothing otherwise.
+           Deliberately not the live message count: chat scrolling is not work
+           waiting for anybody, and a badge that ticks up all stream long
+           teaches people to ignore the badges that mean something. */
+        chat: (window.ChatLive && window.ChatLive.captured
+               && window.ChatLive.captured()) || 0,
+      };
+    },
+
+    /* The chat page is owned by chatlive.js, which polls on its own clock and
+       knows nothing about the deck. Mounted lazily the first time the page is
+       drawn — mounting at init would start a second poll loop on every
+       dashboard, including the ones nobody has connected a channel on. */
+    mountChat() {
+      const slot = document.getElementById("ck-chat");
+      if (!slot || slot.dataset.mounted) return;
+      if (!window.ChatLive) return;
+      slot.dataset.mounted = "1";
+      try { window.ChatLive.mount(slot); } catch (e) { /* panel stays empty */ }
+    },
+
+    /* Which page the deck WANTS to be on. Urgency first, then the rotation. */
+    deckPick(counts) {
+      const d = this.deck;
+      const now = Date.now();
+      const urgent = d.pages.findIndex(p => p.urgent && counts[p.id] > 0);
+      if (urgent >= 0) return urgent;
+      if (now < d.pinnedUntil) return d.at;
+      if (now - d.turnAt < this._deckHold) return d.at;
+      // Advance to the next page that has anything on it. All empty: stay put
+      // rather than cycling four blank frames, which is motion without content.
+      const live = d.pages.map((p, i) => [i, counts[p.id] || 0]).filter(x => x[1] > 0);
+      if (!live.length) return d.at;
+      const next = live.find(x => x[0] > d.at) || live[0];
+      return next[0];
+    },
+
+    deckGo(index, byHuman) {
+      const d = this.deck;
+      const n = d.pages.length;
+      d.at = ((index % n) + n) % n;
+      d.turnAt = Date.now();
+      if (byHuman) d.pinnedUntil = Date.now() + this._deckPin;
+      this.renderDeck();
+    },
+
+    renderDeck() {
+      const host = document.getElementById("ck-deck");
+      if (!host) return;
+      const d = this.deck;
+      const counts = this.deckCounts();
+      const want = this.deckPick(counts);
+      if (want !== d.at) { d.at = want; d.turnAt = Date.now(); }
+      const page = d.pages[d.at];
+
+      host.querySelectorAll(".ck-page").forEach(el =>
+        el.classList.toggle("on", el.dataset.page === page.id));
+      if (page.id === "chat") this.mountChat();
+
+      const tabs = document.getElementById("ck-deck-tabs");
+      if (tabs) {
+        const sig = d.pages.map(p => `${p.id}:${counts[p.id]}`).join("|") + "@" + d.at;
+        if (tabs.dataset.sig !== sig) {
+          tabs.dataset.sig = sig;
+          tabs.innerHTML = d.pages.map((p, i) => {
+            const n = counts[p.id] || 0;
+            const cls = ["ck-tab", i === d.at ? "on" : "",
+                         n ? "has" : "", p.urgent && n ? "urgent" : ""].join(" ");
+            return `<button class="${cls}" type="button" role="tab"
+                      aria-selected="${i === d.at}" data-go="${i}"
+                      title="${esc(p.hint)}">${esc(p.label)}${
+                      n ? `<span class="ck-tab-n">${n}</span>` : ""}</button>`;
+          }).join("");
+          tabs.querySelectorAll("[data-go]").forEach(b =>
+            b.onclick = () => this.deckGo(Number(b.dataset.go), true));
+        }
+      }
+
+      // The countdown bar. Restarted by writing the animation fresh, and simply
+      // absent while pinned or while an urgent page is held — a clock that is
+      // not counting down to anything is a lie about what happens next.
+      const fill = document.getElementById("ck-deck-fill");
+      if (fill) {
+        // Three ways there is nothing to count down to, and a bar that fills
+        // anyway is a promise the deck does not keep: pinned by a human, held on
+        // something urgent, or simply nowhere else with anything on it.
+        const occupied = d.pages.filter(p => (counts[p.id] || 0) > 0).length;
+        const rotating = Date.now() >= d.pinnedUntil
+          && occupied > 1
+          && !d.pages.some((p, i) => p.urgent && counts[p.id] > 0 && i === d.at);
+        host.toggleAttribute("data-rotating", rotating);
+        if (rotating) {
+          const key = String(d.turnAt);
+          if (fill.dataset.turn !== key) {
+            fill.dataset.turn = key;
+            fill.style.animation = "none";
+            void fill.offsetWidth;
+            fill.style.animation = `ckdeck ${this._deckHold}ms linear`;
+          }
+        } else {
+          fill.style.animation = "none";
+          fill.dataset.turn = "";
+        }
+      }
+    },
+
+    bindDeck() {
+      const prev = document.getElementById("ck-deck-prev");
+      const next = document.getElementById("ck-deck-next");
+      if (prev) prev.onclick = () => this.deckGo(this.deck.at - 1, true);
+      if (next) next.onclick = () => this.deckGo(this.deck.at + 1, true);
+      // Hovering the deck pauses the rotation for as long as you are over it.
+      // Reading a row while it slides away is the single most annoying thing a
+      // carousel does, and it is one line to not do it.
+      const host = document.getElementById("ck-deck");
+      if (host) {
+        host.addEventListener("pointerenter", () => {
+          this.deck.pinnedUntil = Math.max(this.deck.pinnedUntil, Date.now() + 4000);
+          this.renderDeck();
+        });
+        host.addEventListener("pointerleave", () => {
+          // Give back the last couple of seconds rather than resuming instantly
+          // under a cursor that has only just left.
+          this.deck.pinnedUntil = Math.min(this.deck.pinnedUntil, Date.now() + 2000);
+        });
+      }
+      this.renderDeck();
+      // The rotation needs its own tick: the poll is 3s when live and 12s when
+      // idle, and a deck that only advances when the server answers would sit
+      // still on exactly the quiet board this is meant to keep alive.
+      clearInterval(this._deckTimer);
+      this._deckTimer = setInterval(() => {
+        this.renderDeck();
+        this.tickLive();     // the clock, between polls — see renderLive
+      }, 1000);
+    },
+
     /* ---- the cat -------------------------------------------------------- */
     moodOf() {
       const s = this.state || {};
@@ -1053,40 +1832,296 @@
       return "idle";
     },
 
+    /* WHAT THE FLOOR IS ACTUALLY SAYING, newest real voice first.
+       Returns {who, text, live} or null when nothing on the board has spoken —
+       which is the only case the canned lines are for. Kept separate from
+       rendering so the choice can be reasoned about (and tested) on its own. */
+    floorSays() {
+      const s = this.state || {};
+      const turns = s.turns || [];
+      const last = turns[turns.length - 1];
+
+      // 1. The director, mid-turn. Its own narration beats the tool it is on:
+      //    the say-step is what it CHOSE to tell you, the tool is what it
+      //    happened to be doing when the poll landed.
+      if (last && last.reply && last.reply.running) {
+        const r = last.reply;
+        if (r.thinking) return { who: "director", text: r.thinking, live: true };
+        const tools = (r.steps || []).filter(x => x && x.kind === "tool");
+        const tool = tools[tools.length - 1];
+        if (tool) {
+          const name = String(tool.name || "tool");
+          return { who: "director", live: true,
+                   text: (TOOL_VERB[name] || name) + (tool.hint ? ` — ${tool.hint}` : "") };
+        }
+        return { who: "director", text: "reading the board…", live: true };
+      }
+
+      // 2. The answer it just gave — one sentence, not the essay. A bubble is a
+      //    glance; the transcript above it is where the whole reply lives.
+      if (last && last.reply && last.reply.text) {
+        return { who: "director", text: firstSentence(last.reply.text), live: false };
+      }
+
+      // 3. Any other seat that has just said something. This is the half of the
+      //    floor the conversation panel never shows, so the cat is the only
+      //    place a working seat gets a voice at all.
+      const live = (s.agents || []).filter(a => a.state === "running");
+      for (let i = live.length - 1; i >= 0; i--) {
+        const a = live[i];
+        const feed = ((s.steps || {})[String(a.item_id)] || []);
+        for (let j = feed.length - 1; j >= 0; j--) {
+          const st = feed[j];
+          if (st && st.kind === "say" && st.text) {
+            return { who: a.seat || "a seat", text: firstSentence(st.text), live: true };
+          }
+        }
+      }
+      return null;
+    },
+
+    /* ---- the critique window ────────────────────────────────────────────
+     * GENERATED ART WAS INVISIBLE UNLESS YOU WENT LOOKING FOR IT. An art run
+     * files candidate after candidate and the only surfaces that showed them
+     * were the Assets view and a node you had to click. So the single most
+     * watchable thing this product does — a picture appearing that did not
+     * exist a minute ago — happened entirely off screen.
+     *
+     * Newest wins if several arrive at once: a queue of reveals would still be
+     * showing the first by the time the run had moved on, which is a slideshow
+     * of the past rather than a window on now. And the FIRST poll seeds the
+     * seen-set without showing anything, or opening the page would flash every
+     * artifact the project has ever made — the same "already there" noise the
+     * deck's rotation avoids.
+     *
+     * IT IS A CRITIQUE, NOT A NOTIFICATION. A thumbnail sliding past says "a
+     * file appeared", which is the least interesting true thing about it. What
+     * makes this watchable is the JUDGEMENT: an agent made a heron, looked at
+     * it, and said the legs are cropped. The payload already carries all of
+     * that — the artifact's metadata.qa_review holds the machine verdict with
+     * its score and its reasons, and the phase's own say-steps hold the agent
+     * narrating what it just did — and none of it was on screen anywhere.
+     *
+     * BOTH DIRECTIONS, because an agent looking at a reference is as much a
+     * visual event as one producing a plate: phase.artifacts is what it MADE,
+     * phase.seen is what it had in front of it. Made wins when both land in one
+     * tick — producing is the bigger moment, and the reference was probably the
+     * input to it.
+     */
+    _art: null, _revealTimer: 0,
+
+    /* Every visual thing on the floor right now, newest last, each tagged with
+       who it belongs to and what the agent said about it. */
+    visuals() {
+      const s = this.state || {};
+      const items = new Map((s.items || []).map(i => [String(i.id), i]));
+      const out = [];
+      for (const [itemId, list] of Object.entries(s.phases || {})) {
+        const seat = (items.get(String(itemId)) || {}).seat || "";
+        for (const ph of (list || [])) {
+          // The agent's own most recent words in this pocket. Not correlated to
+          // a specific image — it cannot be, the feed does not say — so it is
+          // labelled as what it is: what the seat was saying at the time.
+          const says = (ph.steps || []).filter(x => x && x.kind === "say" && x.text);
+          const narration = says.length ? firstSentence(says[says.length - 1].text, 200) : "";
+          for (const a of (ph.artifacts || [])) {
+            if (!a || !a.id || !a.path) continue;
+            const qa = (a.metadata || {}).qa_review || {};
+            out.push({
+              key: "a" + a.id, path: a.path, seat, mode: "made",
+              name: a.logical_name || String(a.path).split("/").pop(),
+              meta: [a.kind, a.revision ? `r${a.revision}` : ""].filter(Boolean).join(" · "),
+              verdict: qa.verdict || "", score: Number(qa.score) || 0,
+              // The verdict's OWN reasons beat the narration: they are about
+              // this image, where the narration merely happened near it.
+              note: qa.reasons || narration,
+              noteIsVerdict: !!qa.reasons,
+            });
+          }
+          for (const rel of (ph.seen || [])) {
+            if (!rel) continue;
+            out.push({
+              key: "s" + rel, path: rel, seat, mode: "looking at",
+              name: String(rel).split("/").pop(), meta: "",
+              verdict: "", score: 0, note: narration, noteIsVerdict: false,
+            });
+          }
+        }
+      }
+      return out;
+    },
+
+    renderReveal() {
+      const all = this.visuals();
+      const before = this._art;
+      this._art = new Set(all.map(v => v.key));
+      if (!before) return;                 // first poll seeds, never reveals
+      const fresh = all.filter(v => !before.has(v.key));
+      if (!fresh.length) return;
+      // Made outranks looked-at; otherwise the newest.
+      const made = fresh.filter(v => v.mode === "made");
+      const v = (made.length ? made : fresh)[(made.length ? made : fresh).length - 1];
+
+      const host = document.getElementById("ck-reveal");
+      if (!host) return;
+      const verdict = v.verdict
+        ? `<span class="ck-crit-v ${v.verdict === "pass" ? "ok" : "no"}">${
+            v.verdict === "pass" ? "✓ pass" : "✗ fail"}${v.score ? ` · ${v.score}` : ""}</span>`
+        : "";
+      host.innerHTML =
+        `<div class="ck-crit-head">
+           <span class="ck-crit-seat" style="color:${seatColor(v.seat)}">${esc(v.seat || "floor")}</span>
+           <span class="ck-crit-mode">${esc(v.mode)}</span>
+           <span class="ck-spacer"></span>${verdict}
+         </div>
+         <div class="ck-crit-body">
+           <img class="ck-crit-img" src="/api/preview?rel=${encodeURIComponent(v.path)}"
+                alt="${esc(v.name)}" loading="lazy">
+           <div class="ck-crit-m">
+             <b>${esc(trunc(v.name, 44))}</b>
+             ${v.meta ? `<span class="ck-crit-meta">${esc(v.meta)}</span>` : ""}
+             ${v.note
+               ? `<blockquote class="ck-crit-note${v.noteIsVerdict ? " verdict" : ""}">${
+                   esc(trunc(v.note, 220))}</blockquote>`
+               : `<span class="ck-crit-meta">no comment recorded</span>`}
+             ${fresh.length > 1 ? `<span class="ck-crit-meta">+${fresh.length - 1} more this tick</span>` : ""}
+           </div>
+         </div>`;
+      host.hidden = false;
+      // Clicking opens it full size; peek.js binds data-peek globally.
+      host.dataset.peek = v.path;
+      clearTimeout(this._revealTimer);
+      // Long enough to read a sentence and look at the picture. A verdict earns
+      // longer than a bare reference does.
+      this._revealTimer = setTimeout(() => { host.hidden = true; },
+                                     v.noteIsVerdict ? 12000 : 8000);
+    },
+
+    /* ---- reaction beats ─────────────────────────────────────────────────
+     * The mascot animated on a TIMER: it bobbed, blinked and shook according to
+     * a mood that changes slowly, so the moments that actually matter — a run
+     * failing, work landing, a chain releasing — passed with no more motion than
+     * the four seconds before them. On a stream that is the whole game: the
+     * viewer cannot read the board, so the only way they learn something
+     * happened is that something MOVED when it did.
+     *
+     * A beat is one-off and short. It is not a mood (moods persist and describe
+     * a state) and it is not a line (lines can be read at leisure). It is the
+     * visual equivalent of looking up.
+     *
+     * FIRED FROM TRANSITIONS, NEVER FROM LEVELS. "three items are failed" is a
+     * state and the cat must not flinch at it every three seconds forever;
+     * "an item just became failed" is an event and is worth exactly one flinch.
+     */
+    _seen: null,
+
+    /* What changed since the last poll, as a beat name or "". Order is
+       priority: two things can land in one tick and only one can be played. */
+    beatFor() {
+      const s = this.state || {};
+      const items = s.items || [];
+      const now = {};
+      for (const i of items) now[i.id] = i.status;
+      const before = this._seen;
+      this._seen = now;
+      if (!before) return "";        // first poll is not a transition
+
+      let landed = 0, failed = 0, released = 0, started = 0;
+      for (const [id, status] of Object.entries(now)) {
+        const was = before[id];
+        if (was === undefined || was === status) continue;
+        if (status === "failed") failed += 1;
+        else if (status === "done") { landed += 1; if (was === "review") released += 1; }
+        else if (status === "dispatched") started += 1;
+      }
+      // Something needing a human is the one a stream host must not miss, so it
+      // outranks even a failure — a failure is visible in the transcript, an
+      // approval is a thing the room is WAITING on.
+      const gates = (s.gates || []).filter(g => g.blocking).length;
+      const wasGates = this._seenGates || 0;
+      this._seenGates = gates;
+      if (gates > wasGates) return "wants";
+      if (failed) return "oops";
+      if (released) return "released";
+      if (landed) return "landed";
+      if (started) return "dispatch";
+      return "";
+    },
+
+    /* Play one beat: a CSS class for the motion, and a line that says why.
+       Both, because motion alone tells you to look and words tell you at what. */
+    beat(name) {
+      const host = document.getElementById("ck-mascot");
+      if (!host || !name) return;
+      host.setAttribute("data-react", name);
+      clearTimeout(this._beatTimer);
+      this._beatTimer = setTimeout(() => host.removeAttribute("data-react"), 1400);
+    },
+
     renderMood() {
+      // The beat first: it is a transition and it is gone by the next poll,
+      // whereas everything below describes a state that will still be there.
+      const beat = this.beatFor();
+      if (beat) this.beat(beat);
       const mood = this.moodOf();
       const changed = mood !== this.mood;
       this.mood = mood;
       const host = document.getElementById("ck-mascot");
       if (host) host.dataset.mood = mood;
-      // A new line on a mood change, otherwise every ~14 seconds so it does not
-      // read as frozen and does not read as a slot machine either.
-      if (changed || !this.line || Date.now() - this._lineAt > 14000) this.speak(mood, changed);
+
+      const said = this.floorSays();
+      if (said) {
+        // Only on a CHANGE of words. Polling every three seconds and restarting
+        // the mouth on the same sentence is a stutter, and a mouth that never
+        // stops moving stops meaning anything.
+        const sig = said.who + "|" + said.text;
+        if (sig !== this._saidSig) {
+          this._saidSig = sig;
+          this.talk(said.text, said.who);
+        }
+        return;
+      }
+      // Nothing on the floor is speaking: the cat falls back to its idle
+      // animation, which data-mood already drives. There is no canned line to
+      // deliver any more — with no bubble there is nowhere to deliver it, and
+      // inventing chatter over a quiet board was what made the mascot the least
+      // informative thing on the page.
+      this._saidSig = "";
     },
 
-    speak(mood, force) {
-      const pool = LINES[mood] || LINES.idle;
-      if (!pool.length) return;
-      this._lineIx = (this._lineIx + 1) % pool.length;
-      this.line = pool[force ? this._lineIx : Math.floor(Math.random() * pool.length)];
-      this._lineAt = Date.now();
-      // The mouth moves only while a line is FRESH. A permanently talking cat
-      // is a screensaver; one that moves when it says something is a speaker.
+    /* IMMEDIATE FEEDBACK ON AN ACTION YOU JUST TOOK. Deploying, stopping or
+       flipping autopilot changes the floor, but the payload that proves it is
+       up to three seconds away — so the cat switches mood and moves NOW rather
+       than sitting still through the gap. It says nothing; the toast that
+       accompanies every one of these callers is where the words are. */
+    speak(mood) {
+      this.mood = mood;
       const host = document.getElementById("ck-mascot");
-      if (host) {
-        host.setAttribute("data-talking", "1");
-        clearTimeout(this._talkTimer);
-        this._talkTimer = setTimeout(
-          () => host.removeAttribute("data-talking"),
-          Math.min(6000, 900 + this.line.length * 45));
-      }
-      const bubble = document.getElementById("ck-bubble");
-      if (bubble) {
-        bubble.textContent = this.line;
-        bubble.classList.remove("pop");
-        void bubble.offsetWidth;   // restart the animation
-        bubble.classList.add("pop");
-      }
+      if (host) host.dataset.mood = mood;
+      this.talk("acknowledged", "");
+    },
+
+    /* THE CAT MOUTHS WHILE SOMEBODY IS ACTUALLY SPEAKING — it does not repeat
+       what they said. The words are in the transcript six lines up; a second
+       copy of them under the original was the loudest thing on the panel and
+       carried no information the reader did not already have.
+
+       So the utterance is used only for its LENGTH and its source: how long the
+       mouth should move, and whether this is the cat's own idle animation or it
+       relaying a real voice. Nothing is rendered. */
+    talk(text, who) {
+      this.line = String(text || "");
+      this._lineAt = Date.now();
+      const host = document.getElementById("ck-mascot");
+      if (!host) return;
+      host.setAttribute("data-talking", "1");
+      host.toggleAttribute("data-relaying", !!who);
+      clearTimeout(this._talkTimer);
+      // Roughly reading speed, so the mouth stops about when a person would
+      // have finished the sentence. A permanently talking cat is a screensaver.
+      this._talkTimer = setTimeout(
+        () => host.removeAttribute("data-talking"),
+        Math.min(6000, 900 + this.line.length * 45));
     },
 
     /* A project that has drawn its own mascot outranks the built-in cat. The

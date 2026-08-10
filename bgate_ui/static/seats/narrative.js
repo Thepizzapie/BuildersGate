@@ -51,11 +51,42 @@
     render: function (container, bg) {
       try {
         this._bg = bg;
-        this._root = container;
+        this._host = container;
+        try {
+          this._mode = localStorage.getItem("nrt-mode") === "brainstorm"
+            ? "brainstorm" : "board";
+        } catch (e0) {}
+        // Two full-bleed tools, one seat: the storyboard and the brainstorm
+        // workspace take turns rather than stacking, because either one folded
+        // into half the pane is worse than both being one click apart.
+        container.innerHTML =
+          '<style>' +
+          '.nrt-modes{display:flex;gap:6px;margin-bottom:12px}' +
+          '.nrt-modebtn{display:flex;align-items:center;gap:6px;padding:5px 12px;' +
+            'background:var(--surface-2);border:1px solid var(--line);border-radius:8px;' +
+            'color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}' +
+          '.nrt-modebtn:hover{border-color:var(--accent);color:var(--text-2)}' +
+          '.nrt-modebtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}' +
+          '.nrt-brain{min-height:640px}' +
+          '</style>' +
+          '<div class="nrt-modes">' +
+            '<button class="nrt-modebtn" data-m="board">' + BGICON("narrative") + ' Storyboard</button>' +
+            '<button class="nrt-modebtn" data-m="brainstorm">' + BGICON("concept") + ' Brainstorm</button>' +
+          '</div>' +
+          '<div class="nrt-brain" id="nrt-brain" hidden></div>' +
+          '<div id="nrt-board"></div>';
+        var self = this;
+        container.querySelectorAll(".nrt-modebtn").forEach(function (b) {
+          b.addEventListener("click", function () { self._setMode(b.dataset.m); });
+        });
+        // Everything below writes into the board half; keeping `_root` pointed
+        // at it means no other method in this file had to learn about modes.
+        this._root = container.querySelector("#nrt-board");
         this._selected = null;
         this._linkMode = false;
         this._linkSrc = null;
         this._buildShell();
+        this._applyMode();
         this._load();
         this._loadLore();
       } catch (e) {
@@ -70,6 +101,42 @@
     // Called ~every 3s while the seat is active. Deliberately a no-op so it can
     // never clobber in-progress typing / dragging with a server reload.
     refresh: function () {},
+
+    /* ---- board / brainstorm ------------------------------------------- */
+    _setMode: function (mode) {
+      var next = mode === "brainstorm" ? "brainstorm" : "board";
+      if (next === this._mode) return;
+      this._mode = next;
+      try { localStorage.setItem("nrt-mode", next); } catch (e) {}
+      this._applyMode();
+    },
+
+    _applyMode: function () {
+      var host = this._host;
+      if (!host) return;
+      var brain = this._mode === "brainstorm";
+      var board = host.querySelector("#nrt-board");
+      var pad = host.querySelector("#nrt-brain");
+      if (board) board.hidden = brain;
+      if (pad) pad.hidden = !brain;
+      host.querySelectorAll(".nrt-modebtn").forEach(function (b) {
+        b.classList.toggle("on", (b.dataset.m === "brainstorm") === brain);
+      });
+      if (!brain) { this._unmountBrain(); return; }
+      if (!window.Brainstorm || !Brainstorm.mount) {
+        if (pad) pad.innerHTML = '<div class="empty">the brainstorm workspace did not load</div>';
+        return;
+      }
+      try { Brainstorm.mount(pad, { seat: "narrative" }); }
+      catch (e) { if (pad) pad.innerHTML = '<div class="empty">brainstorm failed to start</div>'; }
+    },
+
+    _unmountBrain: function () {
+      try { if (window.Brainstorm && Brainstorm.unmount) Brainstorm.unmount(); } catch (e) {}
+    },
+
+    // SeatShell calls this before the container is discarded.
+    unmount: function () { this._unmountBrain(); },
 
     /* ---- shell / static DOM ------------------------------------------- */
     _buildShell: function () {

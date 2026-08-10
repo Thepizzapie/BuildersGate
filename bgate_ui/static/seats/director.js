@@ -22,6 +22,7 @@
     selected: {},        // item_id -> true (batch selection, queued items)
     delegateWatch: null, // delegate item id most recently spawned (highlight)
     busy: false,
+    mode: "board",       // "board" (control tower) | "brainstorm"
   };
 
   const STYLE = `
@@ -84,6 +85,14 @@
     .dir-batch{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-1);
       border:1px solid var(--accent);border-radius:9px}
     .dir-batch b{color:var(--text)}
+    /* mode bar — the control tower and the brainstorm surface are both
+       full-width tools, so they take turns instead of stacking. */
+    .dir-modes{display:flex;gap:6px;margin-bottom:var(--s-5)}
+    .dir-modebtn{display:flex;align-items:center;gap:6px;padding:5px 12px;background:var(--surface-2);
+      border:1px solid var(--line);border-radius:8px;color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}
+    .dir-modebtn:hover{border-color:var(--accent);color:var(--text-2)}
+    .dir-modebtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
+    .dir-brain{min-height:640px}
   `;
 
   function e(html) {
@@ -103,9 +112,15 @@
   function render(container, bg) {
     S.bg = bg; S.container = container;
     S.activity = {}; S.overview = { queue: {}, agents: [] };
+    try { S.mode = localStorage.getItem("dir-mode") === "brainstorm" ? "brainstorm" : "board"; } catch (err) {}
     container.innerHTML =
       `<style>${STYLE}</style>
-       <div class="dir-wrap">
+       <div class="dir-modes">
+         <button class="dir-modebtn" data-m="board">${BGICON("agents")} Control tower</button>
+         <button class="dir-modebtn" data-m="brainstorm">${BGICON("concept")} Brainstorm</button>
+       </div>
+       <div class="dir-brain" id="dir-brain" hidden></div>
+       <div class="dir-wrap" id="dir-boardwrap">
          <section class="dir-sec">
            <h3 class="dir-sec-h">${BGICON("agents")} Live agent board
              <span class="dir-count" id="dir-agent-count"></span>
@@ -123,14 +138,54 @@
            <div id="dir-queue"><div class="dir-empty">loading queue…</div></div>
          </section>
        </div>`;
+    container.querySelectorAll(".dir-modebtn").forEach(b =>
+      b.addEventListener("click", () => setMode(b.dataset.m)));
+    applyMode();
     // First paint.
     refresh();
+  }
+
+  /* The brainstorm workspace (chat + writing pad + drawing pad) is a
+   * three-panel surface in its own right; squeezing it under the agent board
+   * would give it a sliver. The two modes take turns. */
+  function setMode(mode) {
+    const next = mode === "brainstorm" ? "brainstorm" : "board";
+    if (next === S.mode) return;
+    S.mode = next;
+    try { localStorage.setItem("dir-mode", next); } catch (err) {}
+    applyMode();
+    if (next === "board") refresh();
+  }
+
+  function applyMode() {
+    if (!S.container) return;
+    const brain = S.mode === "brainstorm";
+    const board = S.container.querySelector("#dir-boardwrap");
+    const host = S.container.querySelector("#dir-brain");
+    if (board) board.hidden = brain;
+    if (host) host.hidden = !brain;
+    S.container.querySelectorAll(".dir-modebtn").forEach(b =>
+      b.classList.toggle("on", (b.dataset.m === "brainstorm") === brain));
+    if (!brain) { unmountBrain(); return; }
+    if (!window.Brainstorm || !Brainstorm.mount) {
+      if (host) host.innerHTML = `<div class="dir-empty">the brainstorm workspace did not load</div>`;
+      return;
+    }
+    try { Brainstorm.mount(host, { seat: "director" }); }
+    catch (err) { if (host) host.innerHTML = `<div class="dir-empty">brainstorm failed to start</div>`; }
+  }
+
+  function unmountBrain() {
+    try { if (window.Brainstorm && Brainstorm.unmount) Brainstorm.unmount(); } catch (err) {}
   }
 
   // ---- refresh (poll) -----------------------------------------------------
 
   function refresh() {
     if (!mounted() || !S.bg) return;
+    // Nothing on the board is on screen in brainstorm mode; polling the
+    // overview and every running agent's activity to repaint it is pure cost.
+    if (S.mode === "brainstorm") return;
     S.bg.get("/api/orchestrator/overview")
       .then(ov => {
         if (!mounted()) return;
@@ -183,10 +238,15 @@
       if (cnt) cnt.textContent = countRunning() ? `(${countRunning()} running)` : "";
       return;
     }
-    const agents = S.overview.agents || [];
+    // LIVE means live. This board used to keep every exited and stopped session
+    // on screen, so a floor with nothing running looked identical to a busy one
+    // and the two cards that mattered were buried under twenty finished ones.
+    // Finished runs are not lost — they are the completed/failed groups in the
+    // shared work panel above, with their whole transcript.
+    const agents = (S.overview.agents || []).filter(a => a && a.state === "running");
     const idx = itemIndex();
     const cnt = document.getElementById("dir-agent-count");
-    if (cnt) cnt.textContent = agents.length ? `(${countRunning()} running)` : "";
+    if (cnt) cnt.textContent = agents.length ? `(${agents.length} running)` : "";
 
     if (!agents.length) {
       host.innerHTML = `<div class="dir-empty">No agents running. Dispatch a queued item below, or "Review for delegation" to spin up a director.</div>`;
@@ -277,10 +337,19 @@
 
   // ---- queue board --------------------------------------------------------
 
+  // The board is a WORKLOAD, not an archive. A queue column that listed every
+  // done and failed item this project ever produced ran to fifty cards a seat,
+  // and the one queued item you came to dispatch was somewhere in the middle of
+  // them. Only work that is still moving is a queue.
+  const ACTIVE = { queued: 1, dispatched: 1, review: 1 };
+  const isActive = it => !!(it && ACTIVE[it.status]);
+
   function renderQueue() {
     const host = document.getElementById("dir-queue");
     if (!host) return;
-    const q = S.overview.queue || {};
+    const raw = S.overview.queue || {};
+    const q = {};
+    Object.keys(raw).forEach(s => { q[s] = (raw[s] || []).filter(isActive); });
     const order = (S.bg.seats || Object.keys(q));
     Object.keys(q).forEach(s => { if (order.indexOf(s) < 0) order.push(s); });
 
@@ -291,7 +360,7 @@
       queuedTotal += items.filter(i => i && i.status === "queued").length;
     });
     const cnt = document.getElementById("dir-queue-count");
-    if (cnt) cnt.textContent = total ? `(${total} items · ${queuedTotal} queued)` : "";
+    if (cnt) cnt.textContent = total ? `(${total} active · ${queuedTotal} queued)` : "";
 
     // Prune stale selections (items no longer queued/present).
     const present = {};
@@ -302,7 +371,7 @@
     renderBatchBar();
 
     if (!total) {
-      host.innerHTML = `<div class="dir-empty">Queue is empty. Add work from the queue view, or promote playtest feedback.</div>`;
+      host.innerHTML = `<div class="dir-empty">Nothing active. Completed and failed work is in the panel above, grouped by state, with its full transcript.</div>`;
       return;
     }
     const cols = document.createElement("div");
@@ -486,5 +555,10 @@
   window.DirCtl = DirCtl;
 
   window.SeatWS = window.SeatWS || {};
-  window.SeatWS.director = { label: "Director", glyph: BGICON("director"), render, refresh };
+  window.SeatWS.director = {
+    label: "Director", glyph: BGICON("director"), render, refresh,
+    // SeatShell calls this before the container is discarded — Brainstorm owns
+    // timers and observers it has to be told to drop.
+    unmount() { unmountBrain(); },
+  };
 })();
