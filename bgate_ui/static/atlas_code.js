@@ -425,7 +425,7 @@ window.AtlasCode = (() => {
   }
 
   async function rebuild(){
-    out("exporting the web build — Godot takes a minute on a cold project…");
+    out("exporting the web build - Godot takes a minute on a cold project…");
     const r = await mutate("/api/play/rebuild", { body: {}, quiet: true,
                                                   button: "ac-rebuild" });
     if (!r.ok || (r.data && r.data.ok === false))

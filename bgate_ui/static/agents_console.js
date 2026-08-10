@@ -431,7 +431,7 @@
         if (this.target) {
           const still = (state.agents || []).some(
             a => a.state === "running" && Number(a.item_id) === this.target.id);
-          if (!still) { window.toast(`#${this.target.id} finished — talking to the director again`); this.aim(null); }
+          if (!still) { window.toast(`#${this.target.id} finished - talking to the director again`); this.aim(null); }
         }
         this.renderChat();
         this.renderQueue();
@@ -478,7 +478,7 @@
 
     renderError(message) {
       const chat = document.getElementById("ck-chat");
-      if (chat) chat.innerHTML = `<div class="empty err">the console is unreachable — ${esc(message)}</div>`;
+      if (chat) chat.innerHTML = `<div class="empty err">the console is unreachable - ${esc(message)}</div>`;
     },
 
     /* ---- transcript ----------------------------------------------------- */
@@ -597,9 +597,9 @@
     steerHTML() {
       return this.steers.slice(-6).map(s => {
         const note = s.state === "sending" ? "sending…"
-          : s.state === "error" ? "not delivered — " + esc(s.err || "")
+          : s.state === "error" ? "not delivered - " + esc(s.err || "")
             : s.state === "read" ? "the agent has read it"
-              : "queued — the agent reads it when its current step ends";
+              : "queued - the agent reads it when its current step ends";
         return `<div class="ck-turn"><div class="ck-msg steer ${esc(s.state)}">
           <div class="ck-who">you → agent #${s.id}</div>
           <div class="ck-txt">${esc(s.text)}</div>
@@ -628,8 +628,8 @@
       }
       if (input) {
         input.placeholder = this.target
-          ? "say it straight to that agent — it reads this at the end of its current step…"
-          : "tell the director what you want — it answers, then delegates…";
+          ? "say it straight to that agent - it reads this at the end of its current step…"
+          : "tell the director what you want - it answers, then delegates…";
         input.focus();
       }
       const send = document.getElementById("ck-send");
@@ -717,7 +717,7 @@
       const who = seats.length
         ? `<div class="ck-planwho">This queues <b>${items.length} item${items.length === 1 ? "" : "s"}</b>
            and will dispatch <b>${esc(seats.join(", "))}</b>${plan.chained
-             ? " — as a chain, each waiting on the one before" : ""}.</div>` : "";
+             ? " - as a chain, each waiting on the one before" : ""}.</div>` : "";
       const notes = (plan.notes || []).length
         ? `<div class="ck-plannotes"><b>corrections made to the proposal</b>
            <ul>${plan.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul></div>` : "";
@@ -830,8 +830,8 @@
       const input = document.getElementById("ck-say");
       if (input && !this.target) {
         input.placeholder = this.bsMode
-          ? "think out loud — nothing is filed until you press Deploy…"
-          : "tell the director what you want — it answers, then delegates…";
+          ? "think out loud - nothing is filed until you press Deploy…"
+          : "tell the director what you want - it answers, then delegates…";
       }
       const send = document.getElementById("ck-send");
       if (send && !this.target) send.textContent = this.bsMode ? "say" : "send";
@@ -976,7 +976,7 @@
         try { console.warn("[agents-console] say", err); } catch (e) {}
         // _local marks a failure mutate() never saw, so it never toasted it.
         r = { ok: false, _local: true,
-              error: "the console could not send that — reload if it persists" };
+              error: "the console could not send that - reload if it persists" };
       } finally {
         this._sending = false;
         if (input) { input.disabled = false; input.focus(); }
@@ -997,9 +997,9 @@
         // what gets the operator the "run anyway" button instead of a dead end.
         if (data.refusal.code === "dirty_tree" && data.turn_id) {
           const again = await window.mutate(`/api/queue/${data.turn_id}/dispatch`, { quiet: true });
-          if (!again.ok) window.toast(`queued but not dispatched — ${data.refusal.message}`);
+          if (!again.ok) window.toast(`queued but not dispatched - ${data.refusal.message}`);
         } else {
-          window.toast(`queued but not dispatched — ${data.refusal.message}`);
+          window.toast(`queued but not dispatched - ${data.refusal.message}`);
         }
       }
       this._lastTurnSig = "";
@@ -1039,7 +1039,7 @@
                        : "Stop everything?",
         body: "Every agent on this project is killed, its process tree with it, "
             + "and auto-deploy is turned off so nothing takes its place.\n\n"
-            + "Work in progress is lost — the items are marked stopped, not "
+            + "Work in progress is lost - the items are marked stopped, not "
             + "done, so you can see exactly what was interrupted and re-queue "
             + "it.\n\nFrom a terminal, the same thing is `bgate panic`.",
         ok: "stop everything", cancel: "leave them running", danger: true,
@@ -1069,14 +1069,14 @@
       const yes = await window.askConfirm({
         title: "File this conversation?",
         body: `The ${turns} turn${turns === 1 ? "" : "s"} above move into history `
-            + "and the console starts fresh.\n\nNothing is deleted — the work "
+            + "and the console starts fresh.\n\nNothing is deleted - the work "
             + "items stay on the board and every agent's log stays where it is. "
             + "You can open the session again from 'history'.",
         ok: "file it", cancel: "keep it open",
       });
       if (!yes) return;
       const r = await window.mutate("/api/console/clear",
-                                    { button: "ck-clear", ok: "filed — fresh console" });
+                                    { button: "ck-clear", ok: "filed - fresh console" });
       if (!r.ok) return;
       this.viewing = null;
       this._lastTurnSig = "";
@@ -1087,7 +1087,7 @@
     async openHistory() {
       const sessions = ((this.state || {}).sessions || []);
       if (!sessions.length) {
-        window.toast("no earlier sessions yet — 'clear' files the current one");
+        window.toast("no earlier sessions yet - 'clear' files the current one");
         return;
       }
       const pick = await window.askPick({
@@ -1104,7 +1104,7 @@
       if (pick == null) return;
       const data = await window.readJSON(`/api/console/session/${pick}`, null);
       if (!data || data.__error) {
-        window.toast(`could not open that session — ${(data && data.__error) || "gone"}`);
+        window.toast(`could not open that session - ${(data && data.__error) || "gone"}`);
         return;
       }
       this.viewing = data;
@@ -1196,7 +1196,7 @@
           <button class="ck-x" data-discard="${i.id}" title="Discard this ticket"
                   aria-label="Discard">×</button>
         </div>`; }).join("")
-        || `<div class="ck-empty">nothing waiting — ask for something above</div>`;
+        || `<div class="ck-empty">nothing waiting - ask for something above</div>`;
       box.querySelectorAll("[data-deploy]").forEach(b =>
         b.onclick = () => this.deploy(Number(b.dataset.deploy), b));
       box.querySelectorAll("[data-discard]").forEach(b =>
@@ -1220,7 +1220,7 @@
       const yes = await window.askConfirm({
         title: `Discard ${queued.length} ticket${queued.length === 1 ? "" : "s"}?`,
         body: "Everything waiting in the queue is called off. They are marked "
-            + "cancelled with a reason — not deleted — so the board still "
+            + "cancelled with a reason - not deleted - so the board still "
             + "accounts for them.\n\nAnything already running is untouched.",
         ok: "discard them", cancel: "keep them", danger: true,
       });
@@ -1266,11 +1266,11 @@
         // firing twenty at once turns one cap refusal into twenty toasts.
         const r = await window.mutate(`/api/queue/${item.id}/dispatch`, { quiet: true });
         if (r.ok) { sent += 1; continue; }
-        window.toast(sent ? `deployed ${sent} — then stopped: ${r.error}` : r.error);
+        window.toast(sent ? `deployed ${sent} - then stopped: ${r.error}` : r.error);
         break;
       }
       if (sent) window.toast(`deployed ${sent} item(s)`
-        + (held ? ` — ${held} still waiting on earlier links` : ""), "ok");
+        + (held ? ` - ${held} still waiting on earlier links` : ""), "ok");
       this.poll();
     },
 
@@ -1302,7 +1302,7 @@
       });
 
       box.innerHTML = running.join("")
-        || `<div class="ck-empty">no agent is working — deploy something from the queue</div>`;
+        || `<div class="ck-empty">no agent is working - deploy something from the queue</div>`;
       box.querySelectorAll(".ck-rep").forEach(el => el.onclick = () => {
         if (window.AgentsGraph && AgentsGraph.select("task_" + el.dataset.id)) return;
         if (window.watchAgent) watchAgent(Number(el.dataset.id));
@@ -1347,7 +1347,7 @@
       // expensive lie a settings control can tell, so the override says so.
       host.classList.toggle("forced", !!g.env_override);
       host.title = g.env_override
-        ? `${g.env_override} — this control is overridden`
+        ? `${g.env_override} - this control is overridden`
         : (g.labels && g.labels[active]) || "";
     },
 
@@ -1471,7 +1471,7 @@
       const key = String(seq || "");
       const text = String(this.answers[key] || "").trim();
       if (!text) {
-        window.toast("write the answer first — an empty reply is not an answer");
+        window.toast("write the answer first - an empty reply is not an answer");
         return;
       }
       const r = await window.mutate("/api/console/answer",
@@ -1486,7 +1486,7 @@
       const d = r.data || {};
       delete this.answers[key];
       window.toast(String(d.delivery || "answer recorded"), "ok");
-      if (d.delivery_error) window.toast(`partly delivered — ${d.delivery_error}`);
+      if (d.delivery_error) window.toast(`partly delivered - ${d.delivery_error}`);
       this._askSig = "";
       // The bell is showing the same question; make it re-read rather than wait
       // out its throttle with a card that is no longer open.
@@ -1526,7 +1526,7 @@
 
     async approve(id, btn) {
       const r = await window.mutate(`/api/queue/${id}/approve`,
-        { body: {}, button: btn, ok: `#${id} approved — anything chained behind it can start` });
+        { body: {}, button: btn, ok: `#${id} approved - anything chained behind it can start` });
       if (!r.ok) return;
       this.poll();
     },
@@ -1540,7 +1540,7 @@
         body: "Say exactly what is wrong and what would fix it. This is appended "
             + "to the item's brief, so the next agent on it reads what you wrote "
             + "instead of repeating the run you turned down.",
-        placeholder: "the parity assertion is missing — add it and re-bake…",
+        placeholder: "the parity assertion is missing - add it and re-bake…",
         ok: "send it back", required: true,
       });
       if (reason == null || !String(reason).trim()) return;
@@ -1556,7 +1556,7 @@
       const next = !a.on;
       const r = await window.mutate("/api/console/autopilot",
         { body: { on: next }, button: "ck-auto",
-          ok: next ? "auto-deploy on — queued work dispatches itself"
+          ok: next ? "auto-deploy on - queued work dispatches itself"
                    : "auto-deploy off" });
       if (!r.ok) return;
       const sent = ((r.data || {}).tick || {}).dispatched || [];
@@ -1852,7 +1852,7 @@
         if (tool) {
           const name = String(tool.name || "tool");
           return { who: "director", live: true,
-                   text: (TOOL_VERB[name] || name) + (tool.hint ? ` — ${tool.hint}` : "") };
+                   text: (TOOL_VERB[name] || name) + (tool.hint ? ` - ${tool.hint}` : "") };
         }
         return { who: "director", text: "reading the board…", live: true };
       }

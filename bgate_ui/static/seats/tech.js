@@ -166,8 +166,8 @@ func _init():
 
     const stale = !!(p && p.stale);
     const buildPill = !p ? "" : (p.built === false
-      ? `<span class="tech-pill r">no build — ${esc(p.reason || "never exported")}</span>`
-      : (stale ? `<span class="tech-pill y">stale — source newer than build</span>`
+      ? `<span class="tech-pill r">no build - ${esc(p.reason || "never exported")}</span>`
+      : (stale ? `<span class="tech-pill y">stale - source newer than build</span>`
                : `<span class="tech-pill g">current</span>`));
     const buildMeta = p && p.build_mtime
       ? `<div class="tech-meta">built ${esc(fmtAgo(p.build_mtime))} · source ${esc(fmtAgo(p.source_mtime))}</div>` : "";
@@ -195,13 +195,13 @@ func _init():
     const out = $("#tech-rebuild-out");
     S.building = true;
     if (btn) { btn.disabled = true; btn.innerHTML = `<span class="tech-spin"></span> exporting…`; }
-    if (out) out.innerHTML = `<div class="tech-out">Exporting Web build — this takes ~15s…</div>`;
+    if (out) out.innerHTML = `<div class="tech-out">Exporting Web build - this takes ~15s…</div>`;
     let r;
     try { r = await S.bg.post("/api/play/rebuild"); } catch (e) { r = { ok: false, error: e.message }; }
     S.building = false;
     if (!$("#tech-rebuild-out")) return;
     if (r && r.ok) {
-      if (out) out.innerHTML = `<div class="tech-out tech-ok">Build OK — index.pck ${fmtBytes(r.bytes)}${r.wasm ? " · wasm " + fmtBytes(r.wasm) : ""}</div>`;
+      if (out) out.innerHTML = `<div class="tech-out tech-ok">Build OK - index.pck ${fmtBytes(r.bytes)}${r.wasm ? " · wasm " + fmtBytes(r.wasm) : ""}</div>`;
       S.bg.toast("web export rebuilt");
       loadEngine();
     } else {
@@ -332,7 +332,7 @@ func _init():
     if (sub) sub.textContent = r && r.tree ? `${countFiles(r.tree)} files` : "";
     if (sel) {
       sel.innerHTML = resources.length
-        ? `<option value="">— pick a .tscn / .tres —</option>` + resources.map((n) => `<option value="${esc(n.rel)}">${esc(n.rel)}</option>`).join("")
+        ? `<option value="">- pick a .tscn / .tres -</option>` + resources.map((n) => `<option value="${esc(n.rel)}">${esc(n.rel)}</option>`).join("")
         : `<option value="">no scenes/resources found</option>`;
     }
   }
@@ -442,7 +442,7 @@ func _init():
     // Prefer a tech item; fall back to the shared active item if it's a tech one.
     if (!S.itemId && items.some((i) => i.id === active)) S.itemId = active;
     sel.innerHTML = items.length
-      ? `<option value="">— pick a tech work item —</option>` + items.map((i) =>
+      ? `<option value="">- pick a tech work item -</option>` + items.map((i) =>
           `<option value="${i.id}" ${i.id === S.itemId ? "selected" : ""}>#${i.id} · ${esc(i.status)} · ${esc(i.title)}</option>`).join("")
       : `<option value="">no tech work items queued</option>`;
     if (S.itemId) loadAgent(true);

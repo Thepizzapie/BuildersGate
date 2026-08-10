@@ -249,7 +249,7 @@ window.SceneView = (() => {
       <div class="sv">
         <div class="sv-bar">
           <button class="sv-b" onclick="SceneView.fit()" aria-label="Fit"
-                  title="Fit the whole scene into the panel. The viewport OPENS at the game's own scale — this is the way out of it when you need the whole level at once. (F frames the selection.)">${I("fit")}</button>
+                  title="Fit the whole scene into the panel. The viewport OPENS at the game's own scale - this is the way out of it when you need the whole level at once. (F frames the selection.)">${I("fit")}</button>
           <button class="sv-b" onclick="SceneView.zoom(1.25)" aria-label="Zoom in"
                   title="Zoom in">${I("zoom_in")}</button>
           <button class="sv-b" onclick="SceneView.zoom(0.8)" aria-label="Zoom out"
@@ -257,32 +257,32 @@ window.SceneView = (() => {
           <button class="sv-b" id="sv-oneone" onclick="SceneView.gameScale()"
                   title="Show the scene at the size the GAME presents it">1:1</button>
           <span class="sv-l">snap</span>
-          <button class="sv-b ${opts.snapOn?"on":""}" title="Snap moves to the grid — hold shift to override"
+          <button class="sv-b ${opts.snapOn?"on":""}" title="Snap moves to the grid - hold shift to override"
                   onclick="SceneView.toggle('snapOn')">${opts.snapOn?"on":"off"}</button>
           <input class="sv-in" type="number" min="1" max="256" value="${opts.snap}"
-                 title="Grid size in pixels — also the large arrow-key nudge" onchange="SceneView.setSnap(this.value)">
+                 title="Grid size in pixels - also the large arrow-key nudge" onchange="SceneView.setSnap(this.value)">
           <span class="sv-l">show</span>
           <button class="sv-b ${opts.grid?"on":""}" aria-label="Grid" title="Grid" onclick="SceneView.toggle('grid')">${I("snap_grid")}</button>
           <button class="sv-b ${opts.outlines?"on":""}" aria-label="Node outlines" title="Node outlines" onclick="SceneView.toggle('outlines')">${I("outline")}</button>
           <button class="sv-b ${opts.showBodies?"on":""}" aria-label="Bodies, collision and markers" title="Bodies, collision and markers" onclick="SceneView.toggle('showBodies')">${I("collision")}</button>
           <button class="sv-b ${opts.showHidden?"on":""}" aria-label="Nodes marked invisible" title="Nodes marked invisible" onclick="SceneView.toggle('showHidden')">${I("hidden")}</button>
           <button class="sv-b ${opts.light?"on":""}" aria-label="Lighting"
-                  title="The scene's own lighting — CanvasModulate over the frame and every Light2D added on top. Off is the flat, structural read."
+                  title="The scene's own lighting - CanvasModulate over the frame and every Light2D added on top. Off is the flat, structural read."
                   onclick="SceneView.toggle('light')">${I("lighting")}</button>
           <button class="sv-b ${opts.real?"on":""}" id="sv-real"
-                  title="Run the game for a moment and use its real frame as the backdrop. Shows art that scripts assign at load — the props this view can only draw as markers. Opens a game window briefly."
+                  title="Run the game for a moment and use its real frame as the backdrop. Shows art that scripts assign at load - the props this view can only draw as markers. Opens a game window briefly."
                   onclick="SceneView.realView()">${I("real_preview")}<span>real</span></button>
           <span style="flex:1 1 auto;min-width:8px"></span>
           <button class="sv-b" onclick="SceneView.placeMenu()"
                   title="Place one of this project's scenes as a child of the selected node">${I("place")}<span>place</span></button>
           <button class="sv-b" onclick="SceneView.duplicateSelected()" aria-label="Duplicate"
-                  title="Duplicate the selection and its children (Ctrl+D) — staged, like every other edit here">${I("duplicate")}</button>
+                  title="Duplicate the selection and its children (Ctrl+D) - staged, like every other edit here">${I("duplicate")}</button>
           <button class="sv-b" onclick="SceneView.removeSelected()" aria-label="Delete"
-                  title="Delete the selection (Delete) — staged, like every other edit here">${I("delete")}</button>
+                  title="Delete the selection (Delete) - staged, like every other edit here">${I("delete")}</button>
           <button class="sv-b" onclick="SceneView.raise(1)" aria-label="Bring forward" title="Bring forward">${I("z_up")}</button>
           <button class="sv-b" onclick="SceneView.raise(-1)" aria-label="Send back" title="Send back">${I("z_down")}</button>
           <button class="sv-b" id="sv-undo" onclick="SceneView.undo()" aria-label="Undo"
-                  title="Undo the last staged change (Ctrl+Z) — nothing has been written yet">${I("undo")}<span class="sv-n" id="sv-undo-n"></span></button>
+                  title="Undo the last staged change (Ctrl+Z) - nothing has been written yet">${I("undo")}<span class="sv-n" id="sv-undo-n"></span></button>
           <button class="sv-b" id="sv-redo" onclick="SceneView.redo()" aria-label="Redo"
                   title="Redo (Ctrl+Shift+Z)">${I("redo")}<span class="sv-n" id="sv-redo-n"></span></button>
           <button class="sv-b" onclick="SceneView.snapshot()" aria-label="Export a PNG"
@@ -315,7 +315,7 @@ window.SceneView = (() => {
         <div class="split sv-split" data-split="sv-play" data-split-var="--sv-play-w"
              data-split-on=".sv-body" data-split-pane="#sv-play" data-split-edge="end"
              data-split-min="240" data-split-max="70%"
-             aria-label="Resize the running build — arrow keys adjust, Home resets"></div>
+             aria-label="Resize the running build - arrow keys adjust, Home resets"></div>
         <div class="sv-play" id="sv-play">
           <div class="sv-ph">
             <span id="sv-build">build</span>
@@ -344,7 +344,7 @@ window.SceneView = (() => {
   async function unmount(){
     if (hasPending() && !(await askConfirm({
       title: `${pendingCount()} change(s) have not been written. Leave and lose them?`,
-      body: "Nothing staged has touched the file yet — leaving drops the whole batch.",
+      body: "Nothing staged has touched the file yet - leaving drops the whole batch.",
       ok: "leave", danger: true,
     }))) return false;
     clearStaged();
@@ -540,7 +540,7 @@ window.SceneView = (() => {
                why: `${d.cells.length} tile(s) placed on this TileMapLayer` };
     if (l.type === "TileMapLayer" || l.type === "TileMap")
       return { text: d.reason || "no tiles", kind: "none",
-               why: `TileMapLayer — ${d.reason || "no tiles"}. Tiles are not `
+               why: `TileMapLayer - ${d.reason || "no tiles"}. Tiles are not `
                     + "nodes, so there is nothing here to select or edit." };
     if (l.kids)
       return { text: `${l.kids} node${l.kids === 1 ? "" : "s"}`, kind: "ok",
@@ -550,13 +550,13 @@ window.SceneView = (() => {
     const script = fillerScript(l.item);
     if (script)
       return { text: "run time", kind: "rt",
-               why: `${l.name} is empty in the FILE — ${script.split("/").pop()}`
+               why: `${l.name} is empty in the FILE - ${script.split("/").pop()}`
                     + " fills it with add_child when the game runs" };
     // "no children in the file" is the chip's own case; spelling it out in a
     // pill three words wide is worse than "empty" plus the reason on hover.
     return { text: d.reason && d.reason !== "no children in the file"
                    ? d.reason : "empty", kind: "none",
-             why: `${l.name} — ${d.reason || "nothing in the file"}. Nothing `
+             why: `${l.name} - ${d.reason || "nothing in the file"}. Nothing `
                   + "here to select." };
   }
 
@@ -668,11 +668,11 @@ window.SceneView = (() => {
             sel && sel.path === l.path ? " pri" : ""}" style="--lt:${tint}"
             role="option" aria-selected="${picked}">
             <button class="eye" title="${on ? "Hide" : "Show"} ${E(l.name)} in this view only${
-                      picked && n > 1 ? ` — and the other ${n - 1} selected` : ""
+                      picked && n > 1 ? ` - and the other ${n - 1} selected` : ""
                     }. This never touches the scene."
                     aria-label="${on ? "Hide" : "Show"} ${E(l.name)}"
                     onclick="SceneView.layerEye(event,'${E(l.path)}')">${I(on ? "visible" : "hidden", 13)}</button>
-            <button class="nm" title="Select ${E(l.name)} — shift for a range, ctrl to add. Double-click shows only this one."
+            <button class="nm" title="Select ${E(l.name)} - shift for a range, ctrl to add. Double-click shows only this one."
                     onclick="SceneView.layerClick(event,'${E(l.path)}')"
                     ondblclick="SceneView.isolateLayer('${E(l.path)}')">${E(l.name)}</button>
             <span class="ct${st.kind === "ok" ? "" : ` ${st.kind}`}"
@@ -880,7 +880,7 @@ window.SceneView = (() => {
       const label = gs !== 1 ? "game" : "1:1";
       if (one.textContent !== label) one.textContent = label;
       one.title = gs !== 1
-        ? `Show the scene at the size the GAME presents it — this project `
+        ? `Show the scene at the size the GAME presents it - this project `
           + `authors at ${v[0]}×${v[1]} and presents at ×${gs}, so the game's `
           + `own scale is ${gs * 100}% of the editor's 1:1`
         : "Show the scene at 1 world pixel per screen pixel";
@@ -897,7 +897,7 @@ window.SceneView = (() => {
             blanks.length > 3 ? ` +${blanks.length - 3} more` : ""} · click to step through`
         : "drag to move · handles scale · ring rotates · shift = free";
       tip.title = blanks.length
-        ? blanks.map(i => `${i.path} — ${i.draw.reason}`).join("\n") : "";
+        ? blanks.map(i => `${i.path} - ${i.draw.reason}`).join("\n") : "";
       tip.classList.toggle("hot", blanks.length > 0);
     }
     paintHistory();
@@ -919,10 +919,10 @@ window.SceneView = (() => {
       if (n) n.textContent = count ? String(count) : "";
     };
     set("sv-undo", history.length,
-        `Undo (Ctrl+Z) — ${history.length} staged step(s) to take back, `
+        `Undo (Ctrl+Z) - ${history.length} staged step(s) to take back, `
         + `${HISTORY_MAX} kept`, "Nothing staged to undo");
     set("sv-redo", redoStack.length,
-        `Redo (Ctrl+Shift+Z) — ${redoStack.length} step(s) forward`,
+        `Redo (Ctrl+Shift+Z) - ${redoStack.length} step(s) forward`,
         "Nothing to redo");
   }
 
@@ -966,7 +966,7 @@ window.SceneView = (() => {
          `so the scene FILE has no picture in it. That is accurate, not broken.`]
       : n <= 1
       ? [`this scene is a script host`,
-         `one node, no visuals — its screen is built at run time.`,
+         `one node, no visuals - its screen is built at run time.`,
          `add a node from the panel on the right to start placing art.`]
       : [`nothing in this scene draws`,
          `${n} nodes, none of them visual.`,
@@ -1224,7 +1224,7 @@ window.SceneView = (() => {
       ctx.font = "10px ui-monospace,monospace";
       ctx.globalAlpha *= .8;
       ctx.fillStyle = tintOf(it.role);
-      ctx.fillText(`${it.name} — ${d.reason}`, mx + 10, my + 3);
+      ctx.fillText(`${it.name} - ${d.reason}`, mx + 10, my + 3);
       ctx.restore();
     }
 
@@ -1554,7 +1554,7 @@ window.SceneView = (() => {
     if (bad.length){
       const why = bad[0].path === "."
         ? "the root node cannot be deleted here"
-        : `${bad[0].name} lives inside ${bad[0].of} — delete the instance`;
+        : `${bad[0].name} lives inside ${bad[0].of} - delete the instance`;
       say(bad.length === items.length ? why
         : `${bad.length} of ${items.length} selected node(s) cannot be deleted (${
             bad.slice(0, 3).map(b => b.name).join(", ")}${
@@ -1626,9 +1626,9 @@ window.SceneView = (() => {
     paintPending();
     paint();
     say(dropped
-      ? `${made} duplicate(s) staged — ${dropped} propert(y/ies) cannot be `
+      ? `${made} duplicate(s) staged - ${dropped} propert(y/ies) cannot be `
         + "written safely and are listed before the write"
-      : `${made} duplicate(s) staged — drag to position, then apply`, "ok");
+      : `${made} duplicate(s) staged - drag to position, then apply`, "ok");
   }
 
   /* ── interaction ──────────────────────────────────────────────────────── */
@@ -1929,7 +1929,7 @@ window.SceneView = (() => {
   }
 
   /* Children move with their parent, because they do. Moving only the node
-     itself left an instance's art standing where it was — and an instance's own
+     itself left an instance's art standing where it was - and an instance's own
      entry draws nothing, so the drag looked like a no-op. */
   function moveBy(it, dx, dy){
     const prefix = it.path === "." ? "" : it.path + "/";
@@ -1950,7 +1950,7 @@ window.SceneView = (() => {
     if (!group.length){ say("select a node first"); return; }
     const inside = group.filter(it => it.of);
     if (inside.length){
-      say(`${inside[0].name} lives inside ${inside[0].of} — there is no line in `
+      say(`${inside[0].name} lives inside ${inside[0].of} - there is no line in `
           + "this file to move");
       return;
     }
@@ -2044,7 +2044,7 @@ window.SceneView = (() => {
       + "that live inside an instanced scene.");
     lines.push("The current file is kept under .bgate_out/scene_backups.");
     if (playOpen()) lines.push("The web build will be re-exported and reloaded.");
-    if (held) lines.push(`NOTE: the ${held.seat} seat holds this file — the `
+    if (held) lines.push(`NOTE: the ${held.seat} seat holds this file - the `
                          + "write will be refused while it does.");
     const go = await askConfirm({
       title: `Write ${n} change${n === 1 ? "" : "s"} to ${String(scene).split("/").pop()}?`,
@@ -2145,7 +2145,7 @@ window.SceneView = (() => {
     paintPlacing();
     await reload();
     if (failed.length){
-      say(`${failed.length} change(s) failed — ${failed[0]}`);
+      say(`${failed.length} change(s) failed - ${failed[0]}`);
       return;                    // do not export a file the write did not land in
     }
     say(`${n} change${n === 1 ? "" : "s"} written`, "ok");
@@ -2253,7 +2253,7 @@ window.SceneView = (() => {
       n++;
     });
     paintLayers();
-    say(n ? `${n} node(s) ${want ? "shown" : "hidden"} — staged`
+    say(n ? `${n} node(s) ${want ? "shown" : "hidden"} - staged`
           : `already ${want ? "visible" : "hidden"}`, "ok");
   }
 
@@ -2518,7 +2518,7 @@ window.SceneView = (() => {
     if (!scene || real.busy) return;
     real.busy = true; real.error = null;
     realBtn();
-    say("running the game for one frame — a window will open briefly");
+    say("running the game for one frame - a window will open briefly");
     const r = await mutate("/api/godot/screenshot",
                            { body: { scene }, quiet: true });
     real.busy = false;
@@ -2654,7 +2654,7 @@ window.SceneView = (() => {
   }
 
   async function rebuild(){
-    say("exporting the web build — Godot takes a minute on a cold project…");
+    say("exporting the web build - Godot takes a minute on a cold project…");
     const r = await mutate("/api/play/rebuild", { body: {}, quiet: true,
                                                   button: "sv-rebuild" });
     const d = r.data || {};
@@ -2699,12 +2699,12 @@ window.SceneView = (() => {
     if (!el) return;
     el.hidden = !held;
     if (held) el.textContent =
-      `locked by the ${held.seat} seat — edits here will be refused until it releases`;
+      `locked by the ${held.seat} seat - edits here will be refused until it releases`;
   }
   async function setScene(id){
     if (hasPending() && !(await askConfirm({
       title: `${pendingCount()} change(s) have not been written. Switch scene and lose them?`,
-      body: "Nothing staged has touched the file yet — switching drops the whole batch.",
+      body: "Nothing staged has touched the file yet - switching drops the whole batch.",
       ok: "switch scene", danger: true,
     }))) return false;
     clearStaged();

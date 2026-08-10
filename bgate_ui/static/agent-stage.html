@@ -15,7 +15,7 @@
   #lane{position:absolute;left:0;right:0;top:872px;height:98px}
 
   /* TWO elements on purpose: the traverse and the per-bit motion both animate
-     `transform`, and two animations on one element do not compose — the later
+     `transform`, and two animations on one element do not compose - the later
      one silently wins. Outer slides, inner performs. */
   .actor{position:absolute;bottom:0;left:0;animation:cross 11s linear forwards}
   .actor.dash {animation-duration:6s}
@@ -27,7 +27,7 @@
   .shrug .inner{animation:wobble 1.5s ease-in-out infinite}
 
   /* <i> is INLINE, so width/height are ignored and the box collapses to nothing
-     — you get the tag sliding across with no sprite. The feed and ticker get
+     - you get the tag sliding across with no sprite. The feed and ticker get
      away with a bare <i> because theirs are flex items and so are blockified;
      this one is not. */
   .av{display:block}
@@ -174,7 +174,7 @@
 
   function poll() {
     j("/api/activity").then(function (res) {
-      // Bursts are the norm — a lock sweep expires eleven leases at once, and
+      // Bursts are the norm - a lock sweep expires eleven leases at once, and
       // eleven identical bits is a stutter. One stands for the batch.
       var fired = {};
       (res.events || []).slice().sort(function (a, b) { return a.id - b.id; })

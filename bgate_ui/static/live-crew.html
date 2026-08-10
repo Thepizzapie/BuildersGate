@@ -7,7 +7,7 @@
 --><html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Builders Gate — Crew</title>
+<title>Builders Gate - Crew</title>
 <style>
 /* ── Builders Gate · pixel build-shop ─────────────────────────────────────────
    Hard rules for this system. Break one and it stops reading as pixel art:
@@ -16,7 +16,7 @@
      · no blur, no soft shadows, no smooth gradients
      · shading is DITHERED (checkerboard/bayer), never a gradient ramp
      · every dimension is a multiple of U (4px) so nothing lands off-grid
-     · animation uses steps() only — 2 to 8 frames, never smooth easing
+     · animation uses steps() only - 2 to 8 frames, never smooth easing
      · colour comes from the ramp below and nowhere else
 
    The palette is built around the mascot so the cat belongs here instead of
@@ -31,14 +31,14 @@
   --mid:#2a3142;                 /* panel face */
   --line:#46506b;               /* borders, rules */
   --lift:#6b789c;                /* top/left bevel highlight */
-  --bone:#e8e0d0;                /* body text — matches the cat's cream */
+  --bone:#e8e0d0;                /* body text - matches the cat's cream */
   --white:#fffdf8;
   --orange:#ff7a3d;              /* primary accent */
   --ember:#c1441a;               /* accent shade / bevel-dark */
   --blue:#7ea0ff;                /* secondary accent */
   --deep:#3d5aa8;                /* blue shade */
 
-  /* dither tiles — 2px checker and a lighter 25% fill */
+  /* dither tiles - 2px checker and a lighter 25% fill */
   --dither50:repeating-conic-gradient(from 0deg,currentColor 0% 25%,transparent 0% 50%);
   --dither25:repeating-conic-gradient(from 0deg,currentColor 0% 12.5%,transparent 0% 50%);
 }
@@ -49,12 +49,12 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;
   font-family:"Cascadia Mono",ui-monospace,monospace;   /* fallback only */
   -webkit-font-smoothing:none;font-smooth:never}
 
-/* canvases carry all real type — keep them hard */
+/* canvases carry all real type - keep them hard */
 canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 
 /* ── chrome ──────────────────────────────────────────────────────────────────
    A classic 8-bit bevel: hard outer keyline, light top/left, dark bottom/right.
-   No radius, no blur — the depth is 3 flat steps, exactly like a sprite. */
+   No radius, no blur - the depth is 3 flat steps, exactly like a sprite. */
 .panel{position:relative;background:var(--mid);
   box-shadow:
     0 0 0 var(--u) var(--pit),                          /* outer keyline */
@@ -66,14 +66,14 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
     inset var(--u) var(--u) 0 0 var(--lift),
     inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--deep)}
 
-/* a well — content sunk INTO the surface (used around video panes) */
+/* a well - content sunk INTO the surface (used around video panes) */
 .well{position:relative;
   box-shadow:
     inset var(--u) var(--u) 0 0 var(--pit),
     inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--lift),
     0 0 0 var(--u) var(--pit)}
 
-/* dithered shading band — this is how we fake a gradient */
+/* dithered shading band - this is how we fake a gradient */
 .dither{position:absolute;inset:0;pointer-events:none;
   background-image:var(--dither50);background-size:var(--u) var(--u)}
 .dither.q{background-image:var(--dither25);background-size:calc(var(--u) * 2) calc(var(--u) * 2)}
@@ -98,14 +98,14 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 /* ── CREW · 460x421 · live ───────────────────────────────────────────────────
    THIS FILE MUST BE SERVED FROM THE DASHBOARD (:7788/static/live-crew.html).
    The API sends no Access-Control-Allow-Origin, so a file:// copy of this page
-   cannot fetch it — same-origin is the whole reason it lives in bgate_ui/static
+   cannot fetch it - same-origin is the whole reason it lives in bgate_ui/static
    next to agent-feed / agent-ticker / agent-stage.
 
    Data:  /api/agents          -> {agents:[{state,item_id}]}
           /api/queue/<item_id> -> {seat,title}
    Names: /static/agent-names.js (window.AGENT_NAMES / agentName)
 
-   Add ?demo=1 to the URL to render a fake busy shop — useful for dressing the
+   Add ?demo=1 to the URL to render a fake busy shop - useful for dressing the
    layout when no agents are actually running.
 */
 html,body{background:var(--ink)}
@@ -125,7 +125,7 @@ body{position:relative;padding:14px 14px 12px;display:flex;flex-direction:column
   justify-content:space-around}
 .crew{position:relative;width:106px;display:flex;flex-direction:column;align-items:center;gap:4px}
 .cell{position:relative;width:56px;height:70px;overflow:hidden}
-/* The sprite strip translates in whole frames — transform only, never
+/* The sprite strip translates in whole frames - transform only, never
    background-position, which would repaint the layer every frame.
    Sheets: _walk = 8 frames of 128x160, _talk = 4 frames of 128x128.
    Both scale by 0.4375 so a frame lands exactly 56px wide; the idle sheet is
@@ -134,7 +134,7 @@ body{position:relative;padding:14px 14px 12px;display:flex;flex-direction:column
   background-repeat:no-repeat}
 /* THE _walk SHEET IS TWO DIRECTIONS: frames 0-3 walk LEFT, frames 4-7 are the
    mirrored walk RIGHT. Animating all 8 snapped the character between facings
-   twice a second. Play ONE direction only — frames 0-3, facing left. The strip
+   twice a second. Play ONE direction only - frames 0-3, facing left. The strip
    stays the full 8 frames wide; the keyframes walk the first half (4*56=224).
    To face the other way, shift both keyframes by 224px. */
 .cell i.walk{top:0;height:70px;width:448px;background-size:448px 70px;
@@ -284,7 +284,7 @@ window.PX = (function () {
     return { w: (n * GW + (n - 1) * GAP) * s, h: GH * s };
   }
 
-  /* Live data carries typographic punctuation the 5x7 face has no glyph for —
+  /* Live data carries typographic punctuation the 5x7 face has no glyph for -
      an em dash in a ticket title rendered as a tofu box on stream. Fold the
      common ones down to ASCII before drawing rather than adding glyphs for
      every dash and quote variant. */
@@ -483,7 +483,7 @@ window.PX = (function () {
   }
 
   tick();
-  setInterval(tick, POLL);   /* polling, not rAF — nothing animates from JS */
+  setInterval(tick, POLL);   /* polling, not rAF - nothing animates from JS */
 })();
 </script>
 </body>

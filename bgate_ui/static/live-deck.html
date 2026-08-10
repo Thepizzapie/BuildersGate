@@ -7,7 +7,7 @@
 --><html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Builders Gate — Deck</title>
+<title>Builders Gate - Deck</title>
 <style>
 /* ── Builders Gate · pixel build-shop ─────────────────────────────────────────
    Hard rules for this system. Break one and it stops reading as pixel art:
@@ -16,7 +16,7 @@
      · no blur, no soft shadows, no smooth gradients
      · shading is DITHERED (checkerboard/bayer), never a gradient ramp
      · every dimension is a multiple of U (4px) so nothing lands off-grid
-     · animation uses steps() only — 2 to 8 frames, never smooth easing
+     · animation uses steps() only - 2 to 8 frames, never smooth easing
      · colour comes from the ramp below and nowhere else
 
    The palette is built around the mascot so the cat belongs here instead of
@@ -31,14 +31,14 @@
   --mid:#2a3142;                 /* panel face */
   --line:#46506b;               /* borders, rules */
   --lift:#6b789c;                /* top/left bevel highlight */
-  --bone:#e8e0d0;                /* body text — matches the cat's cream */
+  --bone:#e8e0d0;                /* body text - matches the cat's cream */
   --white:#fffdf8;
   --orange:#ff7a3d;              /* primary accent */
   --ember:#c1441a;               /* accent shade / bevel-dark */
   --blue:#7ea0ff;                /* secondary accent */
   --deep:#3d5aa8;                /* blue shade */
 
-  /* dither tiles — 2px checker and a lighter 25% fill */
+  /* dither tiles - 2px checker and a lighter 25% fill */
   --dither50:repeating-conic-gradient(from 0deg,currentColor 0% 25%,transparent 0% 50%);
   --dither25:repeating-conic-gradient(from 0deg,currentColor 0% 12.5%,transparent 0% 50%);
 }
@@ -49,12 +49,12 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;
   font-family:"Cascadia Mono",ui-monospace,monospace;   /* fallback only */
   -webkit-font-smoothing:none;font-smooth:never}
 
-/* canvases carry all real type — keep them hard */
+/* canvases carry all real type - keep them hard */
 canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 
 /* ── chrome ──────────────────────────────────────────────────────────────────
    A classic 8-bit bevel: hard outer keyline, light top/left, dark bottom/right.
-   No radius, no blur — the depth is 3 flat steps, exactly like a sprite. */
+   No radius, no blur - the depth is 3 flat steps, exactly like a sprite. */
 .panel{position:relative;background:var(--mid);
   box-shadow:
     0 0 0 var(--u) var(--pit),                          /* outer keyline */
@@ -66,14 +66,14 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
     inset var(--u) var(--u) 0 0 var(--lift),
     inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--deep)}
 
-/* a well — content sunk INTO the surface (used around video panes) */
+/* a well - content sunk INTO the surface (used around video panes) */
 .well{position:relative;
   box-shadow:
     inset var(--u) var(--u) 0 0 var(--pit),
     inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--lift),
     0 0 0 var(--u) var(--pit)}
 
-/* dithered shading band — this is how we fake a gradient */
+/* dithered shading band - this is how we fake a gradient */
 .dither{position:absolute;inset:0;pointer-events:none;
   background-image:var(--dither50);background-size:var(--u) var(--u)}
 .dither.q{background-image:var(--dither25);background-size:calc(var(--u) * 2) calc(var(--u) * 2)}
@@ -100,7 +100,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
    that rotates through the boards instead of several sources fighting over the
    same rectangle.
 
-   MUST BE SERVED FROM THE DASHBOARD (:7788/static/live-deck.html) — the API
+   MUST BE SERVED FROM THE DASHBOARD (:7788/static/live-deck.html) - the API
    sends no Access-Control-Allow-Origin, so a file:// copy cannot read it.
 
    Boards:
@@ -109,7 +109,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
      CRITIQUE  /api/critique                   newest artwork and its verdict
      FEED      /api/activity                   what just happened
 
-   agent-feed.html is NOT touched — it is a tracked app file with uncommitted
+   agent-feed.html is NOT touched - it is a tracked app file with uncommitted
    work on it. The FEED board reads the same endpoint independently.
 
    Add ?demo=1 to dress every board. ?board=crew|looking|critique|feed pins one.
@@ -122,7 +122,7 @@ body{position:relative;padding:12px 12px 10px;display:flex;flex-direction:column
 
 .head{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding-bottom:9px}
 .head .sp{flex:1 1 auto}
-/* position pips — which board of how many */
+/* position pips - which board of how many */
 .pips{display:flex;gap:4px}
 .pips i{width:10px;height:10px;background:var(--dusk);box-shadow:inset 2px 2px 0 0 var(--line)}
 .pips i.on{background:var(--orange);box-shadow:inset 2px 2px 0 0 #ffb089}
@@ -139,11 +139,11 @@ body{position:relative;padding:12px 12px 10px;display:flex;flex-direction:column
 .crew{position:relative;width:104px;display:flex;flex-direction:column;align-items:center;gap:4px}
 .cell{position:relative;width:52px;height:64px;overflow:hidden}
 .cell i{position:absolute;left:0;display:block;background-repeat:no-repeat;image-rendering:pixelated}
-/* Whole-frame translation only — never background-position.
+/* Whole-frame translation only - never background-position.
    THE _walk SHEET IS TWO DIRECTIONS, NOT ONE CYCLE: 1024x160 is 8 frames of
    128x160, but frames 0-3 walk LEFT and frames 4-7 are the mirrored walk
    RIGHT. Animating all 8 made the character snap between facings twice a
-   second. Play ONE direction only — frames 0-3, facing left.
+   second. Play ONE direction only - frames 0-3, facing left.
    Strip stays the full 8 frames wide so the background maths is unchanged;
    the keyframes just walk the first half (4 * 52px = 208px).
    To face the other way instead, shift both keyframes by 208px:
@@ -326,7 +326,7 @@ window.PX = (function () {
     return { w: (n * GW + (n - 1) * GAP) * s, h: GH * s };
   }
 
-  /* Live data carries typographic punctuation the 5x7 face has no glyph for —
+  /* Live data carries typographic punctuation the 5x7 face has no glyph for -
      an em dash in a ticket title rendered as a tofu box on stream. Fold the
      common ones down to ASCII before drawing rather than adding glyphs for
      every dash and quote variant. */
@@ -399,7 +399,7 @@ window.PX = (function () {
      working board, and it gets SLOWER under load. Polling it on the 4s tick
      stacked overlapping requests onto the backend mid-stream. It is a
      "what is on screen now" readout, not an event feed, so a slow tick is
-     fine — and SLOW_INFLIGHT guarantees only one is ever outstanding. */
+     fine - and SLOW_INFLIGHT guarantees only one is ever outstanding. */
   var SLOW_POLL = 20000;
   var slowInflight = false, slowLast = 0;
   var SHEETS = "/static/img/agents/";
@@ -417,7 +417,7 @@ window.PX = (function () {
 
   /* A board can opt out of the rotation when it has nothing true to say.
      CRITIQUE reads the artifact table, which in this project only receives
-     image_generate output — agents that write files directly or take
+     image_generate output - agents that write files directly or take
      screenshots never register. Left in unconditionally it parks a six-day-old
      texture on screen under a heading that implies it is current. */
   var STALE_MS = 6 * 3600 * 1000;
@@ -528,7 +528,7 @@ window.PX = (function () {
     }
     /* Badge off `status`, with `verdict` as the richer overlay when it exists.
        verdict is written only by an art-QA agent calling art_qa_verdict, which
-       is discretionary — it is empty on every row in this project. status is
+       is discretionary - it is empty on every row in this project. status is
        the field that actually moves (approved / rejected / candidate), so
        leading on verdict left a blank where the headline should be.
        verdict still wins when present: it is the stronger statement, and a
@@ -537,12 +537,12 @@ window.PX = (function () {
        CAVEAT WORTH KNOWING BEFORE TRUSTING THIS ON CAMERA: with the art gate
        set to "none", register() auto-approves at insert, so a new card reads
        APPROVED within a second and NO HUMAN HAS LOOKED AT IT. We cannot tell
-       auto from hand-approved here — the card's `reviewer` is the art-QA
+       auto from hand-approved here - the card's `reviewer` is the art-QA
        reviewer (empty on every row, same cause as verdict), not the approval
        actor; `reviewed_by` is not exposed on the card. So this badge reports
        the pipeline's status truthfully and claims nothing about who decided.
        If that distinction is ever needed on stream, the endpoint has to carry
-       reviewed_by — do not try to infer it from `reviewer`. */
+       reviewed_by - do not try to infer it from `reviewer`. */
     var v = (c.verdict || "").toLowerCase();
     var s = (c.status  || "").toLowerCase();
     var badge = v === "pass" ? { t:"PASS", k:"pass" }
@@ -619,7 +619,7 @@ window.PX = (function () {
       critCursor = d.seq || critCursor;
       state.critique = d.latest || null;
       /* A genuinely new artifact INTERRUPTS the rotation. The first load does
-         not — on startup the head card is just whatever already existed, and
+         not - on startup the head card is just whatever already existed, and
          hijacking the deck for it would fire a "new artwork" beat for
          something hours old. */
       if (!firstCritique) takeover = true;
@@ -628,13 +628,13 @@ window.PX = (function () {
   }
   /* ── LOOKING AT ────────────────────────────────────────────────────────────
      What the console shows as "<seat> - LOOKING AT": images the agent examined
-     this phase. These are SCRAPED paths (phases.py), not registered artifacts —
+     this phase. These are SCRAPED paths (phases.py), not registered artifacts -
      no id, no seq, so there is no cursor and this board is a live readout
      rather than an event. That is the right shape for it: it answers "what is
      on the agent's screen now", which the artifact table can never answer.
 
      PATHS ARE NEVER RENDERED. They are used only to build /api/preview?rel=,
-     url-encoded, and any path that is not project-relative is DROPPED — some
+     url-encoded, and any path that is not project-relative is DROPPED - some
      generators emit absolute paths and /api/preview accepts either, so an
      unguarded one would put the streamer's directory tree on camera. */
   function isRelSafe(p) {
@@ -643,7 +643,7 @@ window.PX = (function () {
   function pullLooking() {
     /* Never let two of these overlap, and never run one more often than
        SLOW_POLL. A 27s response on a 4s tick means ~6 in flight at once, each
-       rebuilding a 276KB payload — the overlay would be the load. */
+       rebuilding a 276KB payload - the overlay would be the load. */
     if (slowInflight) return Promise.resolve();
     if (Date.now() - slowLast < SLOW_POLL) return Promise.resolve();
     slowInflight = true;
@@ -697,7 +697,7 @@ window.PX = (function () {
   }
 
   /* The header counts come from state, so they have to be repainted when DATA
-     lands as well as when the board turns — otherwise the first render shows
+     lands as well as when the board turns - otherwise the first render shows
      "0 WORKING" next to a job list that clearly has one. */
   function updateHeader() {
     var key = BOARDS[idx].key;
@@ -724,7 +724,7 @@ window.PX = (function () {
     var who = L.seat ? (window.agentName ? window.agentName(L.seat) : L.seat) : "AGENT";
     PX.paint(document.getElementById("lookWho"), who);
     PX.paint(document.getElementById("lookItem"), "ITEM " + L.item);
-    /* the file NAME only — never the path it came from */
+    /* the file NAME only - never the path it came from */
     var base = String(L.rel).split(/[\\/]/).pop();
     wrap(base, 40, 1).forEach(function (l) { txt(t, l, "2", "orange", "0"); });
     wrap(L.title, 44, 2).forEach(function (l) { txt(t, l, "2", "bone", "0"); });

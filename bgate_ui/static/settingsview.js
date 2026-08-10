@@ -469,7 +469,7 @@
       if (f.locked) {
         // Defence in depth: the control is already disabled. This catches the
         // enum/chip/toggle path where a click can still reach a styled div.
-        window.toast(`${key} is forced by ${this._vars(f)} — the environment wins`);
+        window.toast(`${key} is forced by ${this._vars(f)} - the environment wins`);
         return;
       }
       // A switch that WIDENS a guard asks first. `dispatch.allow_dirty` used to
@@ -511,7 +511,7 @@
       // An env var can make the stored value not the effective one. Saying
       // "saved" and showing something else is the lie this panel exists to stop.
       if (now && now.source === "env") {
-        window.toast(`${key} saved, but ${this._vars(now)} is overriding it — `
+        window.toast(`${key} saved, but ${this._vars(now)} is overriding it - `
           + `in force: ${shown}`);
       } else {
         window.toast(`${key} → ${shown}`, "ok");
@@ -621,7 +621,7 @@
       } catch (e) {
         // No clipboard permission (or no secure context). The hash is already
         // in the address bar, which is the thing being linked to.
-        window.toast(`${key} is in the address bar — copy it from there`);
+        window.toast(`${key} is in the address bar - copy it from there`);
       }
     },
 
@@ -824,7 +824,7 @@
            inside the panes. */
         + `<div class="cfg-navh">Wired up</div>`
         + item(CREDS, "Credentials", "lock", "", "",
-               "API keys for the hosted providers — on their own endpoint, and "
+               "API keys for the hosted providers - on their own endpoint, and "
                + "it never sends a key back")
         + item(LOCAL, "Local generators", "art", "", "",
                "ComfyUI and the local image-to-3D servers: what can generate on "
@@ -980,10 +980,10 @@
             ? `<span class="cfg-badge human" title="An agent is refused this write. It is a constraint ON agents, and one an agent could switch off is not a constraint.">human only</span>`
             : ""}
           ${changed
-            ? `<span class="cfg-badge changed" title="Saved for this project — not the built-in default">changed</span>`
+            ? `<span class="cfg-badge changed" title="Saved for this project - not the built-in default">changed</span>`
             : ""}
           ${f.scope === "machine"
-            ? `<span class="st-tag" title="Describes this machine or checkout, not the game — it does not travel with the project">machine</span>`
+            ? `<span class="st-tag" title="Describes this machine or checkout, not the game - it does not travel with the project">machine</span>`
             : ""}
           ${f.locked
             ? `<span class="st-tag env" title="${esc(f.env_override || "")}">${esc(this._vars(f))}</span>`

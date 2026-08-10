@@ -215,7 +215,7 @@
       const d = this._sources.q[hostId + ":data"] || this._sources.data;
       if (!d) { host.innerHTML = `<div class="wf-b-note">loading references…</div>`; return; }
       if (d.__error) {
-        host.innerHTML = `<div class="wf-warn">could not read the project's references (GET /api/refs/sources) — name one by hand below</div>`;
+        host.innerHTML = `<div class="wf-warn">could not read the project's references (GET /api/refs/sources) - name one by hand below</div>`;
         return;
       }
       const node = (this._wf && this._wf.nodes || []).find(n => n.id === nodeId);
@@ -249,12 +249,12 @@
           + `<div class="wf-refrow">${list.map(i => card(i, meta)).join("")}</div>`;
       });
       if (!html) {
-        html = `<div class="wf-b-note">nothing matched — pin a reference from the art seat, or name a path inside the project.</div>`;
+        html = `<div class="wf-b-note">nothing matched - pin a reference from the art seat, or name a path inside the project.</div>`;
       }
       const known = [].concat(d.pins || [], d.sheets || [], d.artifacts || [])
         .some(i => String(i.value || "").toLowerCase() === curKey);
       if (cur && !known && !this.refRel(cur)) {
-        html += `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact — this step would run against nothing.</div>`;
+        html += `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact - this step would run against nothing.</div>`;
       }
       host.innerHTML = html;
     },
@@ -942,7 +942,7 @@
     },
     _missing(res, endpoint) {
       return (res && res.__status === 404)
-        ? `this server has no ${endpoint} endpoint yet — the graph is saved, but nothing ran`
+        ? `this server has no ${endpoint} endpoint yet - the graph is saved, but nothing ran`
         : errMsg(res);
     },
     /* Look at a picture properly.
@@ -1015,7 +1015,7 @@
     /* Resolve a pick node. `artifactId` empty means the human rejected every
        candidate — a picker you cannot say no in is a rubber stamp. */
     async pickCandidate(nodeId, artifactId) {
-      if (!this._run) { toast("nothing has run yet — run the model nodes first", true); return null; }
+      if (!this._run) { toast("nothing has run yet - run the model nodes first", true); return null; }
       // The engine takes an artifact id, or an explicit refusal of all of them.
       const body = artifactId ? { artifact_id: Number(artifactId) } : { reject: true };
       const res = await post(
@@ -1065,7 +1065,7 @@
     async saveAsNode() {
       await this.save(true);
       this._renderPalette();
-      toast("saved — now a reusable node in the palette");
+      toast("saved - now a reusable node in the palette");
     },
 
     /* ---- run ------------------------------------------------------------ */
@@ -1238,16 +1238,16 @@
        by looking at it. A name that resolves to no pin says so. */
     body: n => {
       const ref = (n.config && n.config.ref) || "";
-      if (!ref) return WF.refCard("", "pick a reference — a pin, a sprite sheet, or an artifact");
+      if (!ref) return WF.refCard("", "pick a reference - a pin, a sprite sheet, or an artifact");
       if (!WF.refRel(ref)) return WF.refCard("", `“${ref}” does not resolve to anything in this project`);
       return WF.refCard(ref, "");
     },
-    config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference — the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`
+    config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference - the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`
       + WF.refPicker(n.id, "ref", (n.config && n.config.ref) || "") });
   WF.registerStep({ type: "control.gate", category: "control", label: "Review gate", glyph: "⏛", accent: "var(--warn)",
     kind: "gate", defaults: {}, ports: () => ({ in: [{ id: "i", label: "" }], out: [{ id: "o", label: "ok" }] }),
     body: () => `<div class="wf-b-note">blocks until a human approves</div>`,
-    config: () => `<div class="wf-insp-p">A real stop. When the run reaches this step it halts — no downstream step is queued — until a person approves or rejects it from the run bar above the canvas (or the pending-gates list). <b>Only a human can open it</b>; an agent calling the approval endpoint is refused. Rejecting fails the run.</div>` });
+    config: () => `<div class="wf-insp-p">A real stop. When the run reaches this step it halts - no downstream step is queued - until a person approves or rejects it from the run bar above the canvas (or the pending-gates list). <b>Only a human can open it</b>; an agent calling the approval endpoint is refused. Rejecting fails the run.</div>` });
 
   if (!document.getElementById("wf-style")) {
     const s = document.createElement("style"); s.id = "wf-style";

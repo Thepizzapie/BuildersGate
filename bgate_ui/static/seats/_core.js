@@ -356,7 +356,7 @@
         ${open ? `<div class="swk-detail">
           ${it.brief ? `<div class="swk-dh">brief</div><div class="swk-dt">${BGWS.esc(String(it.brief).slice(0, 4000))}</div>` : ""}
           ${it.result ? `<div class="swk-dh">result</div><div class="swk-dt">${BGWS.esc(String(it.result).slice(0, 4000))}</div>` : ""}
-          ${!body ? '<div class="swk-none">no brief or result recorded — the transcript is still there</div>' : ""}
+          ${!body ? '<div class="swk-none">no brief or result recorded - the transcript is still there</div>' : ""}
         </div>` : ""}
       </div>`;
     },
@@ -596,7 +596,7 @@
       this._rows();
       this._status(S.rows.length
         ? `${S.rows.length.toLocaleString()} lines · ${S.runCount || 1} run${(S.runCount || 1) === 1 ? "" : "s"}`
-        : "no transcript on disk for this item — it may never have been dispatched");
+        : "no transcript on disk for this item - it may never have been dispatched");
       const nav = S.back.querySelector(".slg-runnav");
       nav.hidden = S.runs.length < 2;
     },

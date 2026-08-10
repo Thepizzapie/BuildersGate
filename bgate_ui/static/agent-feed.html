@@ -20,12 +20,12 @@
   .track.rolling{animation:roll linear infinite}
   @keyframes roll{from{transform:translateY(0)}to{transform:translateY(-50%)}}
 
-  /* margin, not flex gap — gap makes the two copies unequal and the -50% wrap
+  /* margin, not flex gap - gap makes the two copies unequal and the -50% wrap
      drifts a few pixels every loop until the seam shows */
   .row{margin-bottom:13px;display:flex;align-items:flex-start;gap:11px}
 
   /* 4-cell sheet, same asset class as the mascot: 400% wide, one cell per step.
-     0% = rest, 100% = blink. steps(1,end) keeps it a flipbook — without it the
+     0% = rest, 100% = blink. steps(1,end) keeps it a flipbook - without it the
      browser tweens between cells and the face smears instead of cutting. */
   .av{flex:0 0 auto;width:44px;height:44px;image-rendering:pixelated;
     background-repeat:no-repeat;background-position:0 0;background-size:400% 100%;

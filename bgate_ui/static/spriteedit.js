@@ -54,13 +54,13 @@ window.SpriteEdit = (() => {
      was built to end. `i` is a registry name; a name the set has not drawn yet
      renders as a visible dashed placeholder rather than a blank button. */
   const TOOLS = [
-    {id:"pencil", i:"brush",      k:"b", t:"Pencil — paint pixels (B)"},
-    {id:"eraser", i:"eraser",     k:"e", t:"Eraser — clear to transparent (E)"},
-    {id:"bucket", i:"fill",       k:"g", t:"Fill — flood the contiguous colour (G)"},
-    {id:"picker", i:"eyedropper", k:"i", t:"Eyedropper — take a colour off the sheet (I)"},
+    {id:"pencil", i:"brush",      k:"b", t:"Pencil - paint pixels (B)"},
+    {id:"eraser", i:"eraser",     k:"e", t:"Eraser - clear to transparent (E)"},
+    {id:"bucket", i:"fill",       k:"g", t:"Fill - flood the contiguous colour (G)"},
+    {id:"picker", i:"eyedropper", k:"i", t:"Eyedropper - take a colour off the sheet (I)"},
     {id:"line",   i:"line",       k:"l", t:"Line (L)"},
-    {id:"rect",   i:"rect",       k:"r", t:"Rectangle — hold Shift to fill (R)"},
-    {id:"anchor", i:"anchor",     k:"a", t:"Rig anchor — mark where a slot attaches (A)"},
+    {id:"rect",   i:"rect",       k:"r", t:"Rectangle - hold Shift to fill (R)"},
+    {id:"anchor", i:"anchor",     k:"a", t:"Rig anchor - mark where a slot attaches (A)"},
   ];
 
   /* ── the hot wheel: fixed angular slots ───────────────────────────────────
@@ -362,7 +362,7 @@ window.SpriteEdit = (() => {
   async function close(silent){
     if (S && S.dirty && !silent && !(await askConfirm({
       title: "You have unsaved pixel edits. Close anyway?",
-      body: "The undo history closes with the sheet — reopening it reads the file on disk.",
+      body: "The undo history closes with the sheet - reopening it reads the file on disk.",
       ok: "close anyway", danger: true,
     }))) return;
     if (S){
@@ -466,7 +466,7 @@ window.SpriteEdit = (() => {
     const shown = _pickCat ? _pickAll.filter(s => categoryOf(s.rel) === _pickCat) : _pickAll;
     const n = document.getElementById("se-pick-n");
     if (n) n.textContent = _pickTruncated
-      ? `${_pickAll.length} of ${_pickTotal} — narrow the filter`
+      ? `${_pickAll.length} of ${_pickTotal} - narrow the filter`
       : `${shown.length} editable image${shown.length === 1 ? "" : "s"}`;
 
     const list = document.getElementById("se-pick-list");
@@ -1272,7 +1272,7 @@ window.SpriteEdit = (() => {
         const c = pal[i] || null;
         return { a:s.a, id:"swatch", colour:c, off:!c, on:!!c && !!S.color &&
                  c.toLowerCase() === String(S.color).toLowerCase(),
-                 lab: c || "—",
+                 lab: c || "-",
                  html: c ? `<span class="se-wsw" style="background:${E(c)}"></span>` : "" };
       });
     }
@@ -1301,11 +1301,11 @@ window.SpriteEdit = (() => {
     } else if (s.id === "grid"){
       o.on = !!S.showGrid;
       o.off = !multi;
-      o.lab = o.off ? "one frame — no grid" : (S.showGrid ? "grid on → off" : "grid off → on");
+      o.lab = o.off ? "one frame - no grid" : (S.showGrid ? "grid on → off" : "grid off → on");
     } else if (s.id === "onion"){
       o.on = S.onion !== "off";
       o.off = !multi;
-      o.lab = o.off ? "one frame — no onion" : `onion ${S.onion} → ${nextOnion()}`;
+      o.lab = o.off ? "one frame - no onion" : `onion ${S.onion} → ${nextOnion()}`;
     }
     return o;
   }
@@ -2024,7 +2024,7 @@ window.SpriteEdit = (() => {
     renderSide();
     const bad = S.regen.results.filter(x => x.error).length;
     say(bad ? `${S.regen.results.length - bad} of ${S.regen.results.length} frames came back`
-            : `${S.regen.results.length} frame(s) ready — accept or discard each`,
+            : `${S.regen.results.length} frame(s) ready - accept or discard each`,
         bad ? undefined : "ok");
   }
 
@@ -2061,7 +2061,7 @@ window.SpriteEdit = (() => {
     S.regen.results = S.regen.results.filter(r => r.error);
     S.dirty = true;
     refreshHistory(); renderSide(); paint(); thumbs();
-    say(`${pending.length} frame(s) applied — save the sheet to keep them`, "ok");
+    say(`${pending.length} frame(s) applied - save the sheet to keep them`, "ok");
   }
 
   function dropRegen(i){ S.regen.results.splice(i, 1); renderSide(); }
@@ -2162,6 +2162,13 @@ window.SpriteEdit = (() => {
   // Studio entry point: render into `host` instead of over the whole page.
   function embed(host, rel){
     _host = host || null;
+    // The landing card below is styled by the injected sheet, and every OTHER
+    // entry point injects it on the way in (open, pick). Landing here cold —
+    // which is exactly what opening the page does — therefore painted .se-land
+    // with no rules at all: no card, no centring, just a heading and a button
+    // in the top-left corner. audiolab.embed() has always carried this call;
+    // this one was missing it.
+    injectStyle();
     if (rel) return open(rel);
     // Landing state. Opening the tab used to fire the picker modal straight
     // away, which reads as an error dialog rather than as a workspace.

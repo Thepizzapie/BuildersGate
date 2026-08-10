@@ -274,7 +274,7 @@
     _renderPicker() {
       const bg = this._bg, el = this._els.picker;
       const active = bg.activeItem;
-      const opts = ['<option value="">— browse all assets —</option>'].concat(
+      const opts = ['<option value="">- browse all assets -</option>'].concat(
         this._queueArt.map(i =>
           `<option value="${i.id}" ${i.id === active ? "selected" : ""}>#${i.id} · ${bg.esc((i.title || "").slice(0, 60))} · ${bg.esc(i.status || "")}</option>`)
       ).join("");
@@ -396,12 +396,12 @@
       if (!host) return;
       try {
         const st = this._locks || {};
-        if (st.error) { host.innerHTML = `<div class="art-empty">locks unavailable — ${bg.esc(st.error)}</div>`; return; }
+        if (st.error) { host.innerHTML = `<div class="art-empty">locks unavailable - ${bg.esc(st.error)}</div>`; return; }
         const d = st.payload || {};
         const held = Array.isArray(d.held) ? d.held : [];
         const leases = Array.isArray(d.path_leases) ? d.path_leases : [];
         if (!held.length && !leases.length) {
-          host.innerHTML = '<div class="art-empty">nothing locked — every asset is free to edit.</div>';
+          host.innerHTML = '<div class="art-empty">nothing locked - every asset is free to edit.</div>';
           return;
         }
         const short = p => { const s = String(p || "").replace(/\\/g, "/"); const i = s.lastIndexOf("/"); return i === -1 ? s : s.slice(i + 1); };
@@ -457,7 +457,7 @@
       if (!Array.isArray(drift) || !drift.length) return "";
       return drift.map(d => this._chip(
         `ref drift: ${d.name || "?"}`, "var(--bad)",
-        d.detail || `${d.name} has been re-pinned since this was generated — this card is no longer evidence of what it claims`,
+        d.detail || `${d.name} has been re-pinned since this was generated - this card is no longer evidence of what it claims`,
         "art-cons")).join("");
     },
     _liveChips(a) {
@@ -470,17 +470,17 @@
           `${lock.path || a.path} is held by the ${lock.seat} seat` +
           (lock.owner ? ` (${lock.owner})` : "") +
           (lock.work_item_id ? ` for item #${lock.work_item_id}` : "") +
-          " — regenerating it now would collide", "art-cons"));
+          " - regenerating it now would collide", "art-cons"));
       }
       // Approval has to MOVE the file; the backend records whether it could.
       const integ = (w && w.integration) || this._meta(a).integration;
       if (integ && typeof integ === "object" && integ.ok === false) {
         out.push(this._chip("approved, NOT live", "var(--bad)",
-          `${integ.detail || "the approved revision was not installed"} — the game is still loading a different image`,
+          `${integ.detail || "the approved revision was not installed"} - the game is still loading a different image`,
           "art-cons"));
       } else if (integ && integ.promoted) {
         out.push(this._chip("live", "var(--good)",
-          `installed at ${integ.path} — this is the image the build loads`, "art-cons"));
+          `installed at ${integ.path} - this is the image the build loads`, "art-cons"));
       }
       return out.join("");
     },
@@ -682,7 +682,7 @@
       }
       if (c.auto_fail === true) {
         out.push(this._chip("AUTO-FAIL", "var(--bad)",
-          "an alpha tripwire fired — this frame must not land", "art-cons"));
+          "an alpha tripwire fired - this frame must not land", "art-cons"));
       }
       if (c.ok === false && c.error) {
         out.push(this._chip("check errored", "var(--ash2)", String(c.error), "art-cons"));
@@ -712,7 +712,7 @@
         "var(--warn)",
         `the drawn character height pops between adjacent frames of ${f.anim}` +
         (Array.isArray(f.height_range) ? ` (${f.height_range.join("–")}px)` : "") +
-        " — advisory: a human should look, not an auto-reject",
+        " - advisory: a human should look, not an auto-reject",
         "art-cons")).join("");
     },
 
@@ -780,7 +780,7 @@
       // filmstrip = every revision thumbnail; clicking picks it for compare
       const strip = g.map(a => {
         const rel = this._revRel(a);
-        return `<div class="art-frame" data-id="${a.id}" title="r${a.revision} · ${bg.esc(a.status)} — click to pick for compare">
+        return `<div class="art-frame" data-id="${a.id}" title="r${a.revision} · ${bg.esc(a.status)} - click to pick for compare">
           <img src="${bg.preview(rel)}" onerror="this.style.opacity=.15" alt="">
           <span class="art-fr-r">r${a.revision}</span>
           <span class="art-fr-c"></span>
@@ -856,7 +856,7 @@
           <button class="art-btn art-primary" id="art-cmp" disabled>Compare</button>
         </div>
         <div class="art-strip">${strip}</div>
-        <div id="art-qa-activity">${reviewerId ? '<div class="art-muted">QA reviewer dispatched — activity loading…</div>' : ""}</div>
+        <div id="art-qa-activity">${reviewerId ? '<div class="art-muted">QA reviewer dispatched - activity loading…</div>' : ""}</div>
         <div class="art-bar" id="art-bar" hidden>
           <div class="art-barrow">
             <b id="art-bar-n">0 selected</b>
@@ -877,7 +877,7 @@
             <button class="art-btn" id="art-bar-clear">clear</button>
           </div>
           <textarea class="art-ta" id="art-bar-reason" rows="2"
-            placeholder="one shared reason — applied to every selected frame (what's off-model? what should improve?)"></textarea>
+            placeholder="one shared reason - applied to every selected frame (what's off-model? what should improve?)"></textarea>
         </div>
         <div class="art-cards">${cards}</div>`;
 
@@ -1038,14 +1038,14 @@
           await this._approve([id], "");
         } else if (act === "reject") {
           const note = await this._ask(this._askHost(id), {
-            label: "Reject — what's off-model?", ok: "reject",
+            label: "Reject - what's off-model?", ok: "reject",
             placeholder: "e.g. head is a size larger than the reference; line weight thickened",
           });
           if (note == null) return;
           await this._reject([id], note);
         } else if (act === "regen") {
           const reason = await this._ask(this._askHost(id), {
-            label: "Regenerate — what should improve?", ok: "queue regenerate",
+            label: "Regenerate - what should improve?", ok: "queue regenerate",
             value: "produce a stronger candidate",
           });
           if (reason == null) return;
@@ -1114,7 +1114,7 @@
         this._styleForce = false;
         if (!d) {
           host.innerHTML = '<div class="art-empty">style training needs a newer '
-            + 'dashboard — restart <code>bgate serve</code>.</div>';
+            + 'dashboard - restart <code>bgate serve</code>.</div>';
           if (badge) badge.textContent = "";
           return;
         }
@@ -1158,7 +1158,7 @@
             ${cls === "ok" ? `data-stpick="${bg.esc(a.name)}" role="checkbox"
               aria-checked="${picked.has(a.name)}" tabindex="0"` : ""}
             title="${bg.esc(a.name || "")}${
-            a.why ? " — " + bg.esc(a.why) : cls === "ok" ? " — click to include or exclude" : ""}">
+            a.why ? " - " + bg.esc(a.why) : cls === "ok" ? " - click to include or exclude" : ""}">
             ${a.rel && /\.(png|jpe?g|gif|webp|bmp)$/i.test(a.rel)
               ? `<img src="/api/preview?rel=${encodeURIComponent(a.rel)}" alt="" loading="lazy">`
               : `<div class="art-stmissing"></div>`}
@@ -1202,7 +1202,7 @@
                 <span class="art-stlabel">generate with</span>
                 <span class="art-stseg">
                   <button class="art-stopt${lora ? "" : " on"}" data-stmode="refs"
-                          title="Send the pinned anchors as style references — how it has always worked">references</button>
+                          title="Send the pinned anchors as style references - how it has always worked">references</button>
                   <button class="art-stopt${lora ? " on" : ""}" data-stmode="lora"
                           title="Use the style trained from those anchors, freeing the reference slot for identity"
                           ${active ? "" : "disabled"}>trained style</button>
@@ -1326,7 +1326,7 @@
       const yes = await window.askConfirm({
         title: `Train “${name}” from ${chosen.length} anchors?`,
         body: "This uploads those anchors to Krea and trains a LoRA. It takes 5 "
-            + "to 15 minutes and it costs money — Krea publishes no price for "
+            + "to 15 minutes and it costs money - Krea publishes no price for "
             + "training, so it is NOT bounded by the spend ceiling the way a "
             + "generation is.\n\nIt does not change how anything generates "
             + "until you switch the toggle above.",
@@ -1336,7 +1336,7 @@
       const r = await window.mutate("/api/art/style/train",
         { body: { name, names: chosen },
           button: host.querySelector("#art-sttrain"),
-          ok: "training started — this panel updates when it lands" });
+          ok: "training started - this panel updates when it lands" });
       if (r.ok) this._reload();
     },
 
@@ -1369,7 +1369,7 @@
       const bg = this._bg;
       const { done, firstErr } = await this._react(ids, "like", note);
       if (firstErr) bg.toast(done ? `${done} approved · ${firstErr}` : firstErr, true);
-      else bg.toast(done === 1 ? "approved — installed as the live sheet" : `approved ${done}`);
+      else bg.toast(done === 1 ? "approved - installed as the live sheet" : `approved ${done}`);
       this._sel = new Set();
       this._reload();
     },
@@ -1377,7 +1377,7 @@
       const bg = this._bg;
       const { done, firstErr } = await this._react(ids, "dislike", note);
       if (firstErr) bg.toast(done ? `${done} rejected · ${firstErr}` : firstErr, true);
-      else bg.toast(done === 1 ? "rejected — the art seat keeps the reason" : `rejected ${done}`);
+      else bg.toast(done === 1 ? "rejected - the art seat keeps the reason" : `rejected ${done}`);
       this._sel = new Set();
       this._reload();
     },
@@ -1385,7 +1385,7 @@
       const bg = this._bg;
       const n = Math.max(1, Number(count) || 1);
       const brief = n > 1
-        ? `${reason || "produce a stronger candidate"} — produce ${n} fresh candidates to choose between.`
+        ? `${reason || "produce a stronger candidate"} - produce ${n} fresh candidates to choose between.`
         : (reason || "produce a stronger candidate");
       let done = 0, firstErr = null;
       for (const id of ids) {
@@ -1407,7 +1407,7 @@
       const ta = host && host.querySelector("#art-bar-reason");
       const reason = (ta && ta.value || "").trim();
       if ((act === "reject" || act === "regen") && !reason) {
-        bg.toast("a shared reason is required — say what's wrong once, it applies to all " + ids.length, true);
+        bg.toast("a shared reason is required - say what's wrong once, it applies to all " + ids.length, true);
         if (ta) ta.focus();
         return;
       }
@@ -1467,7 +1467,7 @@
           ? this._els.lab.querySelector("#art-detail")
           : this._askHost(ids[0]);
         this._ask(host, {
-          label: `Reject ${ids.length} frame${ids.length === 1 ? "" : "s"} — one shared reason`,
+          label: `Reject ${ids.length} frame${ids.length === 1 ? "" : "s"} - one shared reason`,
           ok: "reject", placeholder: "what's off-model?",
         }).then(note => { if (note != null) this._reject(ids, note); });
       } else if (e.key === " " && this._focusId) {
@@ -1695,7 +1695,7 @@
         if (!fr || !fr.length) return;
         i = i % fr.length;
         img.src = bg.preview(fr[i].rel);
-        if (lbl) lbl.textContent = `${current} — frame ${i + 1}/${fr.length}`;
+        if (lbl) lbl.textContent = `${current} - frame ${i + 1}/${fr.length}`;
       };
       const tick = () => { if (!playing) return; i++; paint(); };
       const start = () => {

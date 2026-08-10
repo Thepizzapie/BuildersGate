@@ -61,7 +61,7 @@
     ports: function () { return { in: [{ id: "i", label: "task", type: "task" }], out: [{ id: "o", label: "concept", type: "image" }] }; },
     defaults: { subject: "", style: "", quality: "medium" },
     body: function (n) {
-      return produced(n, "no concept yet — run to generate") +
+      return produced(n, "no concept yet - run to generate") +
         w.text(n, "subject", { label: "Subject", placeholder: "armored beetle" }) +
         w.text(n, "style", { label: "Style", placeholder: "stylized PBR" }) +
         w.select(n, "quality", { label: "Quality", options: ["low", "medium", "high"], value: "medium" });
@@ -69,7 +69,7 @@
     // one painted concept sheet through the image adapter — priced from its table
     imageCost: function (n) { return { images: 1, quality: qualityOf(n) }; },
     config: function () {
-      return '<div class="wf-insp-p">Concept sheet + turnaround for the 3D model — what to build and its visual language. The Blender steps downstream read the subject from here.</div>';
+      return '<div class="wf-insp-p">Concept sheet + turnaround for the 3D model - what to build and its visual language. The Blender steps downstream read the subject from here.</div>';
     },
     toBrief: function (n, wf) {
       return "Concept + turnaround for a 3D model of " + cv(n, "subject", "the subject") +
@@ -90,7 +90,7 @@
         w.toggle(n, "rigged", { label: "Rigged" });
     },
     config: function () {
-      return '<div class="wf-insp-p">Generate the model in Blender (headless bpy). Export-ready mesh at the chosen topology / tri budget — the budget here is what the artist aims at; the hard ceiling is the tri-budget step.</div>';
+      return '<div class="wf-insp-p">Generate the model in Blender (headless bpy). Export-ready mesh at the chosen topology / tri budget - the budget here is what the artist aims at; the hard ceiling is the tri-budget step.</div>';
     },
     toBrief: function (n, wf) {
       return "Model " + conceptFacet(wf, n, "subject", "the subject") + " in Blender (headless bpy), " +
@@ -108,7 +108,7 @@
     body: function (n) {
       // an export has a preview only if something rendered one; otherwise the
       // empty plate says so — Blender/Godot work spends no API money either
-      return produced(n, "exported asset — no render to show") +
+      return produced(n, "exported asset - no render to show") +
         w.select(n, "format", { label: "Format", options: ["glb", "gltf"], value: "glb" }) +
         w.number(n, "scale", { label: "Scale", min: 0, step: 0.1, value: 1 });
     },

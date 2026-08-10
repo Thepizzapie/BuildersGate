@@ -250,7 +250,7 @@
       }
       if (!this.status) {
         this.status = { available: false, websockets: false, key: false,
-          reason: "the dashboard has no voice endpoint — this build predates it, " +
+          reason: "the dashboard has no voice endpoint - this build predates it, " +
                   "or bgate_ui/routes/voice.py failed to import (see /api/routes/status)" };
       }
       return this.status;
@@ -326,7 +326,7 @@
       try { await audio.play(); } catch (e) {
         URL.revokeObjectURL(url);
         return queued ? "" :
-          "the browser blocked autoplay — click the page once, then try again";
+          "the browser blocked autoplay - click the page once, then try again";
       }
       await done;
       return "";
@@ -404,7 +404,7 @@
       this._state("off");
       this.on.error && this.on.error(
         e && e.name === "NotAllowedError"
-          ? "the browser blocked microphone access — allow it for this page and try again"
+          ? "the browser blocked microphone access - allow it for this page and try again"
           : e && e.name === "NotFoundError"
             ? "no microphone found on this machine"
             : "could not open the microphone: " + ((e && e.name) || e));
@@ -1491,7 +1491,7 @@
       label: "Narrative brainstorm",
       blurb: "what is true",
       chatSub: "thinking out loud about canon, lore and consistency",
-      deployNote: "synthesises this session into canon work — narrative seat only",
+      deployNote: "synthesises this session into canon work - narrative seat only",
       empty: "Talk through the world. When it holds together, Deploy turns it into canon updates you review before anything is filed."
     }
   };
@@ -1555,7 +1555,7 @@
   // anyway — B and I read faster than any pictogram of them.
   var NOTE_GLYPH = {
     bold: "<b>B</b>", italic: "<i>I</i>", strike: "<s>S</s>", code: "&lt;/&gt;",
-    h1: "H1", h2: "H2", h3: "H3", list: "•—", olist: "1.", check: "☑",
+    h1: "H1", h2: "H2", h3: "H3", list: "•-", olist: "1.", check: "☑",
     quote: "❝", block: "▤", link: "🔗", rule: "―"
   };
 
@@ -1819,7 +1819,7 @@
                 // opposite consequences need the difference stated in the box,
                 // not in the tab above it.
                 '<span class="bs-cheap">' + icon("spend", 13) +
-                  "<b>files nothing</b> · thinking only — no work item, no " +
+                  "<b>files nothing</b> · thinking only - no work item, no " +
                   "dispatch, until you press Deploy</span>" +
                 '<span class="bs-spacer" style="flex:1"></span>' +
                 '<span class="bs-voice-why" data-a="voicewhy"></span>' +
@@ -1833,7 +1833,7 @@
               '<span class="bs-spacer"></span>' +
               '<span class="sub" data-a="notestate"></span>' +
               '<button class="bs-btn ghost" data-a="prev" title="Preview markdown">' + icon("overview", 13) + "</button></div>" +
-            '<textarea class="bs-notes-area" data-a="notes" placeholder="notes, markdown welcome — autosaves" disabled></textarea>' +
+            '<textarea class="bs-notes-area" data-a="notes" placeholder="notes, markdown welcome - autosaves" disabled></textarea>' +
             '<div class="bs-notes-prev" hidden></div>' +
           "</section>" +
           '<div class="split" data-split="bs-notes" data-split-var="--bs-notes-w" ' +
@@ -1916,7 +1916,7 @@
     if (status.available) {
       mic.disabled = false;
       tts.disabled = false;
-      mic.title = "Talk to the " + this.seat + " — Deepgram " +
+      mic.title = "Talk to the " + this.seat + " - Deepgram " +
         (status.listen_model || "") + ", ~$" +
         ((status.usd_per_minute || 0)).toFixed(4) + "/min while the mic is live";
       why.textContent = "";
@@ -2192,7 +2192,7 @@
       ? ("A " + (t.runner || "CLI") + " session is running for this brainstorm" +
          (t.tools && t.tools.length
            ? " holding exactly: " + t.tools.join(", ") : " with no tools yet") +
-         ".\nClick to close it. Nothing you have written is lost — the next " +
+         ".\nClick to close it. Nothing you have written is lost - the next " +
          "message picks the same conversation back up.")
       : (t.resumable
          ? "No process running. Your next message resumes the same CLI session."
@@ -2209,7 +2209,7 @@
       this.renderPartner(out.thinker);
       // Said out loud rather than left to a chip changing colour: "did that
       // actually do anything" is the exact doubt this button exists to remove.
-      toast(out.stopped ? "partner closed — your session is untouched"
+      toast(out.stopped ? "partner closed - your session is untouched"
         : "no partner was running");
     } catch (e) { toast(e.message, true); el.disabled = false; }
   };
@@ -2307,7 +2307,7 @@
       mark.style.color = "var(--bad)";
       if (e.status === 409) {
         mark.textContent = "archived";
-        toast("this session is archived — reopen it before adding to it", true);
+        toast("this session is archived - reopen it before adding to it", true);
         this.session.status = "archived";
         this.paint();
         return;
@@ -2352,7 +2352,7 @@
       // answer (no API key returns 200 with reply:null) — telling them "not
       // sent" there would have them retype a message that is already saved.
       html += '<div class="bs-msg bot err"><span class="who">' +
-        (this.chatErrorKept ? "your message is saved — the model did not answer" : "not sent") +
+        (this.chatErrorKept ? "your message is saved - the model did not answer" : "not sent") +
         "</span>" + '<div class="bub">' + esc(this.chatError) + "</div></div>";
     }
     thread.innerHTML = html;
@@ -2406,7 +2406,7 @@
     } catch (e) {
       this.session.messages = (this.session.messages || []).filter(function (m) { return m.id !== "tmp"; });
       this.chatError = e.status === 409
-        ? "this session is archived — reopen it before adding to it"
+        ? "this session is archived - reopen it before adding to it"
         : e.message;
       this.chatErrorKept = false;
       // Nothing was stored on a thrown error, so give them their text back.
@@ -2464,7 +2464,7 @@
     this.sheet(
       '<div class="bs-card-h"><h3>' + icon("gate", 17) + "Reading the session…</h3>" +
       '<div class="bs-safe"><span class="bs-spin"></span>' +
-      "Synthesising a proposal. <b>Nothing is being queued</b> — this step only reads." +
+      "Synthesising a proposal. <b>Nothing is being queued</b> - this step only reads." +
       "</div></div>" +
       '<div class="bs-card-b"><div class="bs-empty">the model is reading the conversation, ' +
       "the notes pad and the drawing…</div></div>");
@@ -2515,7 +2515,7 @@
       '<div class="bs-card-h">' +
         "<h3>" + icon("gate", 17) + "Review the plan before anything is filed</h3>" +
         '<div class="bs-safe">' + icon("verify", 14) +
-          "<span><b>Nothing has been queued.</b> This is a proposal — no work item exists " +
+          "<span><b>Nothing has been queued.</b> This is a proposal - no work item exists " +
           "until you press Confirm below.</span></div>" +
       "</div>" +
       '<div class="bs-card-b">' +
@@ -2531,11 +2531,11 @@
           icon("lock", 14) + "<span>This exact plan was already filed from this session as " +
           esc((prior.items || []).map(function (i) { return "#" + i.id; }).join(", ")) +
           ". Confirming again files a second copy.</span></div>" : "") +
-        '<div><div class="bs-sec-h">work items — ' + items.length +
+        '<div><div class="bs-sec-h">work items - ' + items.length +
           (items.length === 1 ? " item" : " items") + " this will file</div>" + itemHtml + "</div>" +
         (items.length > 1 ? '<label class="bs-chain">' +
           '<input type="checkbox" data-k="chained"' + (plan.chained ? " checked" : "") + ">" +
-          "<span><b>Run as a chain</b> — each item waits for the one before it. " +
+          "<span><b>Run as a chain</b> - each item waits for the one before it. " +
           "Leave off when they are independent; priority alone will not stop two agents " +
           "starting in the same tick.</span></label>" : "") +
       "</div>" +
@@ -2543,9 +2543,9 @@
         '<span class="bs-pill">' + esc((meta.model && meta.model.model) || "") + " · ~$" +
           esc(((meta.model && meta.model.estimated_usd) || 0).toFixed(4)) + "</span>" +
         '<span class="bs-spacer"></span>' +
-        '<button class="bs-btn" data-x="close">Cancel — file nothing</button>' +
+        '<button class="bs-btn" data-x="close">Cancel - file nothing</button>' +
         '<button class="bs-btn primary" data-x="confirm"' + (items.length ? "" : " disabled") + ">" +
-          icon("run", 15) + "Confirm — file " + items.length + " item" + (items.length === 1 ? "" : "s") +
+          icon("run", 15) + "Confirm - file " + items.length + " item" + (items.length === 1 ? "" : "s") +
         "</button>" +
       "</div>");
     this.wireSheet();
@@ -2608,7 +2608,7 @@
         '<div class="bs-card-h"><h3>' + icon("verify", 17) + "Filed to the board</h3>" +
         '<div class="bs-safe done">' + icon("gate", 14) + "<span>" + filed.length +
           " work item" + (filed.length === 1 ? "" : "s") + " queued" +
-          (out.chained ? " as a chain — each waits for the one before it" : "") +
+          (out.chained ? " as a chain - each waits for the one before it" : "") +
           ". The board dispatches them.</span></div></div>" +
         '<div class="bs-card-b"><div class="bs-filed">' +
           filed.map(function (f) {
@@ -2637,7 +2637,7 @@
         this.wireSheet();
         return;
       }
-      if (btn) { btn.disabled = false; btn.textContent = "Confirm — file " + plan.items.length + " items"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Confirm - file " + plan.items.length + " items"; }
       toast(e.message, true);
     }
   };

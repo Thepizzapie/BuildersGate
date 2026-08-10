@@ -42,7 +42,7 @@ window.AudioLab = (() => {
   const say = (m, k) => { try { toast(m, k); } catch (e) { console.warn(m); } };
   const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
   const fmt = s => {
-    if (s == null || !isFinite(s)) return "—";
+    if (s == null || !isFinite(s)) return "-";
     const m = Math.floor(s / 60), r = s - m * 60;
     return m ? `${m}:${r.toFixed(2).padStart(5, "0")}` : `${r.toFixed(3)}s`;
   };
@@ -490,7 +490,7 @@ window.AudioLab = (() => {
     }
     if (wanted && buf.sampleRate !== wanted){
       say(`this browser decoded at ${buf.sampleRate}Hz, not the file's ${wanted}Hz `
-          + "— saving will resample");
+          + "- saving will resample");
     }
 
     S = {
@@ -763,7 +763,7 @@ window.AudioLab = (() => {
   function newBuild(rate, length, channels){
     try { return newCtxBuf(rate, length, channels); }
     catch (e){
-      say(`could not start that sound${e && e.message ? " — " + e.message : ""}`);
+      say(`could not start that sound${e && e.message ? " - " + e.message : ""}`);
       return null;
     }
   }
@@ -818,8 +818,8 @@ window.AudioLab = (() => {
       made.buf.getChannelData(c).set(S.buf.getChannelData(c).subarray(a, b));
     close();
     newSession(made.ctx, made.buf, saveAs, keep);
-    say(selOnly ? `${fmt((b - a) / rate)} carved out — save it as ${saveAs}`
-                : `duplicated — save it as ${saveAs}`, "ok");
+    say(selOnly ? `${fmt((b - a) / rate)} carved out - save it as ${saveAs}`
+                : `duplicated - save it as ${saveAs}`, "ok");
   }
   function newDup(){ return newFromClip(false); }
   function newFromSel(){ return newFromClip(true); }
@@ -877,7 +877,7 @@ window.AudioLab = (() => {
         <div class="ab-opt${canSel ? "" : " off"}">
           <div class="hd"><b>from the selection</b><span>${canSel
             ? E(`${fmt((S.sel.b - S.sel.a) / rate)} selected`)
-            : (can ? "no selection — drag on the waveform" : why)}</span></div>
+            : (can ? "no selection - drag on the waveform" : why)}</span></div>
           <div class="ab-note">Carve one hit out of a take: the selected span becomes
             a sound of its own and the take keeps every sample it had.</div>
           <button class="ab-btn wide"${canSel ? "" : " disabled"}
@@ -916,12 +916,12 @@ window.AudioLab = (() => {
    * has: clip / effects / instrument / patterns / mix / export.
    */
   const PANELS = [
-    { id: "clip",    icon: "waveform", label: "clip",    title: "Clip — the waveform and what it is made of" },
-    { id: "fx",      icon: "edit",     label: "fx",      title: "Effects — gain, fades, normalise, speed, repeat" },
-    { id: "synth",   icon: "audio",    label: "synth",   title: "Instrument — a sound effect out of nothing" },
-    { id: "pattern", icon: "atlas",    label: "pattern", title: "Patterns — the step sequencer" },
-    { id: "mix",     icon: "agents",   label: "mix",     title: "Mix — layers, mixdown and bounce" },
-    { id: "out",     icon: "assets",   label: "out",     title: "Export — save, and the Godot loop points" },
+    { id: "clip",    icon: "waveform", label: "clip",    title: "Clip - the waveform and what it is made of" },
+    { id: "fx",      icon: "edit",     label: "fx",      title: "Effects - gain, fades, normalise, speed, repeat" },
+    { id: "synth",   icon: "audio",    label: "synth",   title: "Instrument - a sound effect out of nothing" },
+    { id: "pattern", icon: "atlas",    label: "pattern", title: "Patterns - the step sequencer" },
+    { id: "mix",     icon: "agents",   label: "mix",     title: "Mix - layers, mixdown and bounce" },
+    { id: "out",     icon: "assets",   label: "out",     title: "Export - save, and the Godot loop points" },
   ];
   const SHEET_MIN = 132, SHEET_MAX_FRAC = 0.78;
   function ic(name, size){ return BGIcon(name, { size: size || 16 }); }
@@ -943,7 +943,7 @@ window.AudioLab = (() => {
         <button class="ab-ico" id="ab-redo" onclick="AudioLab.redo()" title="Redo (Ctrl+Shift+Z)">${ic("redo")}</button>
         <span class="ab-sep"></span>
         <button class="ab-btn sm" onclick="AudioLab.pick()">open</button>
-        <button class="ab-btn sm" title="Start another sound — empty, a duplicate of this clip, or the selection"
+        <button class="ab-btn sm" title="Start another sound - empty, a duplicate of this clip, or the selection"
                 onclick="AudioLab.newDialog()">new</button>
         <button class="ab-btn sm" title="Bring a sound in from disk as the clip"
                 onclick="document.getElementById('ab-file').click()">import</button>
@@ -1019,7 +1019,7 @@ window.AudioLab = (() => {
           <div class="ab-tr" id="ab-tr" style="position:relative">
             <span class="grp">
               <button class="ab-ico" onclick="AudioLab.toggleMute()" id="ab-mon"
-                      title="Monitor level — this is what you hear, never what gets written">${ic("mute")}</button>
+                      title="Monitor level - this is what you hear, never what gets written">${ic("mute")}</button>
               <input class="ab-vol" id="ab-vol" type="range" min="0" max="100" step="1" value="80"
                      title="Monitor level"
                      oninput="AudioLab.setMaster(this.value)">
@@ -1439,7 +1439,7 @@ window.AudioLab = (() => {
     if ($.selinfo){
       $.selinfo.textContent = S.sel
         ? `sel ${fmt(S.sel.a / rate)} → ${fmt(S.sel.b / rate)} (${fmt((S.sel.b - S.sel.a) / rate)})`
-        : "no selection — edits apply to the whole clip";
+        : "no selection - edits apply to the whole clip";
     }
   }
 
@@ -2492,7 +2492,7 @@ window.AudioLab = (() => {
     // The count guard above is on the raw track list; mute/solo can empty it
     // here, and the 0.01 s floor below then committed 10 ms of silence over the
     // clip and marked the file dirty.
-    if (!loaded.length && !includeCurrent){ say("every layer is muted — nothing to mix"); return null; }
+    if (!loaded.length && !includeCurrent){ say("every layer is muted - nothing to mix"); return null; }
     const ends = loaded.map(({t, buf}) => t.offset_s + trackSpan(t, buf).len);
     if (includeCurrent) ends.push(S.buf.duration);
     const seconds = Math.max(0.01, ...ends);
@@ -2575,7 +2575,7 @@ window.AudioLab = (() => {
     if (!r0) return;
     // The server's validate_wav refuses anything past 900 s. Catching it here
     // saves encoding tens of megabytes of base64 for a guaranteed 400.
-    if (r0.buf.duration > 900){ say("that mix is longer than 15 minutes — shorten it first"); return; }
+    if (r0.buf.duration > 900){ say("that mix is longer than 15 minutes - shorten it first"); return; }
     const wav = encodeWav(r0.buf);
     // No mtime: the target is a file this session has never read, so there is
     // nothing to be stale against — only the "already exists" 409 can fire.
@@ -2718,7 +2718,7 @@ window.AudioLab = (() => {
     // without a word — so a three-file drop in clip mode kept the third and
     // lost two in silence. Take the first and say where the others went.
     if (!asLayer && list.length > 1){
-      say(`importing ${list[0].name} — the other ${list.length - 1} need layers mode`);
+      say(`importing ${list[0].name} - the other ${list.length - 1} need layers mode`);
       list = list.slice(0, 1);
     }
     for (const f of list){
@@ -2728,7 +2728,7 @@ window.AudioLab = (() => {
       } catch (e){
         // The name AND the reason: "could not decode" alone leaves you guessing
         // between a codec this browser lacks and a file that is not audio.
-        say(`could not decode ${f.name}${e && e.message ? " — " + e.message : ""}`);
+        say(`could not decode ${f.name}${e && e.message ? " - " + e.message : ""}`);
         continue;                    // one unreadable file must not end the drop
       }
       if (!S) return;                // the pane can be closed mid-decode
@@ -2801,14 +2801,14 @@ window.AudioLab = (() => {
         !navigator.mediaDevices.getUserMedia){
       bad.push({ name: "capture api",
         reason: "this page is not allowed to reach a microphone",
-        fix: "open the dashboard on http://127.0.0.1:7788 — browsers offer the "
+        fix: "open the dashboard on http://127.0.0.1:7788 - browsers offer the "
            + "microphone to localhost or https only, never to a plain LAN address" });
       return bad;                     // nothing below can run without it
     }
     if (typeof window.MediaRecorder === "undefined")
       bad.push({ name: "mediarecorder",
         reason: "this browser has no MediaRecorder",
-        fix: "use Chrome, Edge or Firefox — or import a file instead" });
+        fix: "use Chrome, Edge or Firefox - or import a file instead" });
     try {
       const devs = await navigator.mediaDevices.enumerateDevices();
       const ins = devs.filter(d => d.kind === "audioinput");
@@ -2837,7 +2837,7 @@ window.AudioLab = (() => {
         fix: "click the padlock in the address bar, allow the microphone for this page, then try again" };
     if (n === "NotReadableError" || n === "TrackStartError" || n === "AbortError")
       return { name: "device busy", reason: msg || "the microphone is held by something else",
-        fix: "close whatever has it open — a call, OBS, a DAW — and try again" };
+        fix: "close whatever has it open - a call, OBS, a DAW - and try again" };
     return { name: "microphone", reason: msg || "the microphone could not be opened",
       fix: "check the device in the system sound settings, then try again" };
   }
@@ -2860,7 +2860,7 @@ window.AudioLab = (() => {
     const box = recWhyBox();
     if (!box){                        // nowhere to draw: say the first one and stop
       const c = checks[0];
-      say(c ? `${c.reason} — ${c.fix}` : "cannot record");
+      say(c ? `${c.reason} - ${c.fix}` : "cannot record");
       return;
     }
     box.innerHTML =
@@ -2869,7 +2869,7 @@ window.AudioLab = (() => {
       + '<ul class="ab-checks">' + checks.map(c =>
           `<li><b>${E(c.name)}</b><span class="r">${E(c.reason)}</span>`
           + `<span class="fix">→ ${E(c.fix)}</span></li>`).join("") + "</ul>"
-      + '<div class="foot">Everything else in the lab works without a microphone — '
+      + '<div class="foot">Everything else in the lab works without a microphone - '
       + 'import a file, or synthesise one.</div>';
     box.hidden = false;
   }
@@ -2904,7 +2904,7 @@ window.AudioLab = (() => {
   async function recBegin(asLayer){
     injectStyle();
     const bad = await recPreflight();
-    if (bad.length){ recWhy(bad); say("no microphone — see the panel"); return; }
+    if (bad.length){ recWhy(bad); say("no microphone - see the panel"); return; }
     // A take that replaces the clip is a bigger commitment than picking a file,
     // and it arrives minutes after the decision. Ask BEFORE the take, so a "no"
     // costs nothing; deliver() still makes the result itself undoable.
@@ -2924,7 +2924,7 @@ window.AudioLab = (() => {
         echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     } catch (e){
       if (S) recWhy([recDenied(e)]);
-      say("the microphone did not open — see the panel");
+      say("the microphone did not open - see the panel");
       return;
     }
     // The permission prompt is modal and slow; the pane can be gone by the time
@@ -2939,7 +2939,7 @@ window.AudioLab = (() => {
       try { stream.getTracks().forEach(t => t.stop()); } catch (x) {}
       recWhy([{ name: "mediarecorder",
         reason: (e && e.message) || "the recorder would not start",
-        fix: "this browser offers no capture format the lab can read — import a file instead" }]);
+        fix: "this browser offers no capture format the lab can read - import a file instead" }]);
       return;
     }
 
@@ -2961,7 +2961,7 @@ window.AudioLab = (() => {
     mr.ondataavailable = ev => { if (ev.data && ev.data.size) R.chunks.push(ev.data); };
     mr.onerror = ev => {
       const err = ev && ev.error;
-      say(`the recorder failed${err && err.message ? " — " + err.message : ""}`);
+      say(`the recorder failed${err && err.message ? " - " + err.message : ""}`);
       R.cancelled = true;
       recStop();
     };
@@ -2970,7 +2970,7 @@ window.AudioLab = (() => {
       const type = (R.mr && R.mr.mimeType) || recMime() || "audio/webm";
       recTeardown();                   // device released before anything slow happens
       if (cancelled){ say("take discarded"); return; }
-      if (!chunks.length){ say("nothing was captured — the input produced no audio"); return; }
+      if (!chunks.length){ say("nothing was captured - the input produced no audio"); return; }
       recLand(new Blob(chunks, { type }), asL);
     };
     try {
@@ -3069,8 +3069,8 @@ window.AudioLab = (() => {
     if (note){
       // A device that opens and then delivers silence looks exactly like a
       // working recorder, and that is the failure this machine actually has.
-      const msg = R.hot ? "clipping — turn the input down"
-        : (R.an && !R.heard && secs > REC_SILENT_AFTER) ? "no signal — the input is silent"
+      const msg = R.hot ? "clipping - turn the input down"
+        : (R.an && !R.heard && secs > REC_SILENT_AFTER) ? "no signal - the input is silent"
         : "";
       if (note.textContent !== msg){
         note.textContent = msg;
@@ -3088,7 +3088,7 @@ window.AudioLab = (() => {
     try { buf = await S.ctx.decodeAudioData(await blob.arrayBuffer()); }
     catch (e){
       say("the take was recorded but this browser could not decode it"
-          + (e && e.message ? " — " + e.message : ""));
+          + (e && e.message ? " - " + e.message : ""));
       return;
     }
     if (!S) return;                    // the pane can be closed mid-decode
@@ -3169,12 +3169,12 @@ window.AudioLab = (() => {
     renderSheet(); paint();
     say(r.data.created
         ? `created ${r.data.rel}${r.data.needs_godot_import
-            ? " — open the project in Godot once so it imports" : ""}`
+            ? " - open the project in Godot once so it imports" : ""}`
         : `saved · previous copy at ${r.data.backup}`, "ok");
   }
 
   async function writeLoop(enabled){
-    if (!S || !S.rel){ say("save the file first — loop points live in its .import"); return; }
+    if (!S || !S.rel){ say("save the file first - loop points live in its .import"); return; }
     const rate = S.buf.sampleRate;
     const begin = S.sel ? S.sel.a / rate : (S.loop.begin_s || 0);
     const end = S.sel ? S.sel.b / rate : S.loop.end_s;
@@ -3231,11 +3231,11 @@ window.AudioLab = (() => {
       ${knob("k" + i + "g", "vol", st.gain_db || 0, -60, 12, .5, "db",
              (isClip ? "clip:gain_db" : "track:" + (i - 1) + ":gain_db"), true)}
       <span class="btns">
-        <button class="hb${st.solo ? " on" : ""} solo" title="Solo — hear only the soloed lanes"
+        <button class="hb${st.solo ? " on" : ""} solo" title="Solo - hear only the soloed lanes"
                 onclick="event.stopPropagation();AudioLab.laneToggle(${i},'solo')">${ic("solo", 13)}</button>
         <button class="hb${st.muted ? " on" : ""}" title="Mute"
                 onclick="event.stopPropagation();AudioLab.laneToggle(${i},'muted')">${ic("mute", 13)}</button>
-        <button class="hb" title="More — trim, split, reverse, remove"
+        <button class="hb" title="More - trim, split, reverse, remove"
                 onclick="event.stopPropagation();AudioLab.laneMenu(${i})">${ic("seats", 13)}</button>
       </span>
     </div>`;
@@ -3360,7 +3360,7 @@ window.AudioLab = (() => {
     const f = (Number(value) - min) / Math.max(1e-9, max - min);
     return `<span class="ab-knob${small ? " sm" : ""}" id="${id}" data-set="${E(set)}"
         data-min="${min}" data-max="${max}" data-step="${step}" data-unit="${E(unit)}"
-        data-v="${value}" title="${E(label)} — drag up and down, double-click to reset"
+        data-v="${value}" title="${E(label)} - drag up and down, double-click to reset"
         onclick="event.stopPropagation()">
       <svg width="${small ? 30 : 40}" height="${small ? 30 : 40}" viewBox="0 0 40 40">
         <path class="trk" stroke-width="3" stroke-linecap="round" d="${knobArc(1)}"/>
@@ -3538,7 +3538,7 @@ window.AudioLab = (() => {
       <div class="ab-note">
         <b>${fmt(S.buf.duration)}</b> · ${rate} Hz ·
         ${S.buf.numberOfChannels === 2 ? "stereo" : "mono"}<br>
-        ${E(S.rel || (S.saveAs + " — not written yet"))}</div>
+        ${E(S.rel || (S.saveAs + " - not written yet"))}</div>
       <div class="ab-grid2">
         <button class="ab-btn" onclick="AudioLab.newDup()">duplicate</button>
         <button class="ab-btn" onclick="AudioLab.newFromSel()">carve out sel</button>
@@ -3682,10 +3682,10 @@ window.AudioLab = (() => {
         <div class="ab-row">
           <button class="ab-tg${S.ui.ltool === "move" ? " on" : ""}"
                   onclick="AudioLab.setLayerTool('move')"
-                  title="Drag a lane to slide it in time — Alt for the other tool">move</button>
+                  title="Drag a lane to slide it in time - Alt for the other tool">move</button>
           <button class="ab-tg${S.ui.ltool === "select" ? " on" : ""}"
                   onclick="AudioLab.setLayerTool('select')"
-                  title="Drag across a lane to select a span — Alt for the other tool">select span</button>
+                  title="Drag across a lane to select a span - Alt for the other tool">select span</button>
           <button class="ab-tg" onclick="AudioLab.layersFit()">fit the view</button>
         </div>
         <div class="ab-grid2">
@@ -3716,7 +3716,7 @@ window.AudioLab = (() => {
         </div>
         <button class="ab-btn wide" id="ab-bounce-go" onclick="AudioLab.bounce()">bounce to that file</button>
         <div class="ab-note"><b>Mix</b> replaces this clip${(S.ui && S.ui.preview !== false)
-          ? " — with an apply/cancel step, since <b>audition first</b> is on" : ""}.
+          ? " - with an apply/cancel step, since <b>audition first</b> is on" : ""}.
           <b>Bounce</b> writes the stack to the path above and leaves this clip
           exactly as it is.</div>
         <button class="ab-btn wide" onclick="AudioLab.saveSession()">save the mix session</button>
@@ -4276,7 +4276,7 @@ window.AudioLab = (() => {
     if (info && live){
       const rg = S.lrange;
       info.textContent = `range ${fmt(rg.b - rg.a)} on ${laneLabel(rg.i)}`
-        + `  ·  ${fmt(rg.a)}–${fmt(rg.b)} — a fade, a silence or a gain over a`
+        + `  ·  ${fmt(rg.a)}–${fmt(rg.b)} - a fade, a silence or a gain over a`
         + ` range is a clip edit, not something a layer can hold`;
     }
   }
@@ -4328,7 +4328,7 @@ window.AudioLab = (() => {
         const bl = laneBlock(i);
         if (!bl){
           say(i ? "that layer has not decoded yet"
-                : "the clip lane holds no range — select on the waveform in clip mode");
+                : "the clip lane holds no range - select on the waveform in clip mode");
           paintLayers();
           return;
         }
@@ -4510,12 +4510,12 @@ window.AudioLab = (() => {
     if (!S) return;
     const i = S.lsel;
     // Lane 0 is the clip and is what t=0 means here; it has no in/out to split.
-    if (!i){ say("focus a layer lane first — the clip lane cannot be split"); return; }
+    if (!i){ say("focus a layer lane first - the clip lane cannot be split"); return; }
     const t = S.tracks[i - 1];
     if (!t) return;
     // Checked at the gesture rather than at save: normalise_session rejects a
     // session past 32 tracks outright, and failing there loses the whole save.
-    if (S.tracks.length >= 32){ say("32 layers is the cap — nothing left to split into"); return; }
+    if (S.tracks.length >= 32){ say("32 layers is the cap - nothing left to split into"); return; }
     const buf = S.layerBufs[t.source];
     if (!buf){ say("that layer has not decoded yet"); return; }
     const sp = trackSpan(t, buf);
@@ -4527,16 +4527,16 @@ window.AudioLab = (() => {
       : (S.lhead || 0);
     const d = head - off;                  // how far into the block the cut is
     if (d <= 0 || d >= sp.len){
-      say("the playhead is not inside that lane — click the ruler to move it");
+      say("the playhead is not inside that lane - click the ruler to move it");
       return;
     }
     if (d < MIN_LEN || sp.len - d < MIN_LEN){
-      say(`too close to an end — each half must be at least ${Math.round(MIN_LEN * 1000)} ms`);
+      say(`too close to an end - each half must be at least ${Math.round(MIN_LEN * 1000)} ms`);
       return;
     }
     // The right half starts at the playhead, and that becomes an offset_s that
     // normalise_session validates against the same 900 s the drag clamps to.
-    if (head > 900){ say("past the 900s cap — nothing can start there"); return; }
+    if (head > 900){ say("past the 900s cap - nothing can start there"); return; }
 
     const ms = v => Math.round(v * 1000) / 1000;
     // out_s at the file's end goes back to null, the same "to the end of the
@@ -4623,7 +4623,7 @@ window.AudioLab = (() => {
     const rg = liveRange();
     if (!rg) return;
     const { bl, a, b } = rg;
-    if (a > 900){ say("past the 900s cap — nothing can start there"); return; }
+    if (a > 900){ say("past the 900s cap - nothing can start there"); return; }
     const s = rangeToSource(bl.tr, bl.sp, a, b);
     writeSpan(bl.tr, bl.buf, s.in_s, s.out_s, a);
     S.lrange = null;                     // the range IS the lane now
@@ -4641,10 +4641,10 @@ window.AudioLab = (() => {
     const tr = bl.tr, buf = bl.buf, sp = bl.sp;
     const head = a - bl.t0, tail = bl.t1 - b;   // what survives on each side
     if (head < MIN_LEN && tail < MIN_LEN){
-      say("that is the whole layer — drop it from the mixer instead"); return;
+      say("that is the whole layer - drop it from the mixer instead"); return;
     }
     if (head < MIN_LEN){                        // touches the start: a head trim
-      if (b > 900){ say("past the 900s cap — nothing can start there"); return; }
+      if (b > 900){ say("past the 900s cap - nothing can start there"); return; }
       const s = rangeToSource(tr, sp, b, bl.t1);
       writeSpan(tr, buf, s.in_s, s.out_s, b);
     } else if (tail < MIN_LEN){                 // touches the end: a tail trim
@@ -4654,8 +4654,8 @@ window.AudioLab = (() => {
       // Checked at the gesture rather than at save: normalise_session rejects a
       // session past 32 tracks outright and failing there loses the whole save.
       if (S.tracks.length >= 32){
-        say("32 layers is the cap — nothing left to split into"); return; }
-      if (b > 900){ say("past the 900s cap — nothing can start there"); return; }
+        say("32 layers is the cap - nothing left to split into"); return; }
+      if (b > 900){ say("past the 900s cap - nothing can start there"); return; }
       // The right piece is copied off the track BEFORE the track is rewritten,
       // and both spans are measured from the `sp` snapshot for the same reason.
       const right = Object.assign({}, tr, {
@@ -4861,7 +4861,7 @@ window.AudioLab = (() => {
           '<h3>Audio lab</h3>' +
           '<p>One screen: an arrangement of lanes, a context panel under it for ' +
             'whatever is selected, and a transport that never moves. Choose a ' +
-            'sound to work on, start an empty one, or bring one in from disk — ' +
+            'sound to work on, start an empty one, or bring one in from disk - ' +
             'you can drop a file straight onto this pane. Everything you open ' +
             'here saves back to the project.</p>' +
           '<div class="ab-land-btns">' +

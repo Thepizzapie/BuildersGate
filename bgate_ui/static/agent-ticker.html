@@ -15,7 +15,7 @@
 
   /* The agent currently on the ticker is one that is RUNNING, so it plays the
      talk cycle rather than idling: rest -> half -> wide -> half. Blink (cell 4)
-     is deliberately excluded — a blink every syllable reads as a twitch. */
+     is deliberately excluded - a blink every syllable reads as a twitch. */
   .av{flex:0 0 auto;width:56px;height:56px;image-rendering:pixelated;opacity:0;
     background-repeat:no-repeat;background-position:0 0;background-size:400% 100%;
     transition:opacity .28s ease;
@@ -53,7 +53,7 @@
 <script>
 (function () {
   // Served from the dashboard's own origin, so these are same-origin fetches.
-  // A file:// overlay cannot do this — the API sends no CORS headers.
+  // A file:// overlay cannot do this - the API sends no CORS headers.
   var API_AGENTS = "/api/agents";
   var API_ITEM   = "/api/queue/";
   var SHEETS     = "/static/img/agents/";

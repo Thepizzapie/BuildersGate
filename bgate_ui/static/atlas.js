@@ -84,8 +84,8 @@ window.Atlas = (() => {
     _composer(SEAT_FOR[n.kind] || "tech",
       `${verb} ${n.label}`,
       `Atlas target: ${n.id} (${n.path})\nKind: ${n.kind} · used by: ${where}` +
-      (n.orphan ? "\nStatus: DEAD — on disk but referenced by nothing." : "") +
-      (!n.exists ? "\nStatus: MISSING — referenced but not on disk." : "") +
+      (n.orphan ? "\nStatus: DEAD - on disk but referenced by nothing." : "") +
+      (!n.exists ? "\nStatus: MISSING - referenced but not on disk." : "") +
       "\n\nScope: ");
   }
 

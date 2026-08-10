@@ -7,7 +7,7 @@
 --><html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Builders Gate — Critique</title>
+<title>Builders Gate - Critique</title>
 <style>
 /* ── Builders Gate · pixel build-shop ─────────────────────────────────────────
    Hard rules for this system. Break one and it stops reading as pixel art:
@@ -16,7 +16,7 @@
      · no blur, no soft shadows, no smooth gradients
      · shading is DITHERED (checkerboard/bayer), never a gradient ramp
      · every dimension is a multiple of U (4px) so nothing lands off-grid
-     · animation uses steps() only — 2 to 8 frames, never smooth easing
+     · animation uses steps() only - 2 to 8 frames, never smooth easing
      · colour comes from the ramp below and nowhere else
 
    The palette is built around the mascot so the cat belongs here instead of
@@ -31,14 +31,14 @@
   --mid:#2a3142;                 /* panel face */
   --line:#46506b;               /* borders, rules */
   --lift:#6b789c;                /* top/left bevel highlight */
-  --bone:#e8e0d0;                /* body text — matches the cat's cream */
+  --bone:#e8e0d0;                /* body text - matches the cat's cream */
   --white:#fffdf8;
   --orange:#ff7a3d;              /* primary accent */
   --ember:#c1441a;               /* accent shade / bevel-dark */
   --blue:#7ea0ff;                /* secondary accent */
   --deep:#3d5aa8;                /* blue shade */
 
-  /* dither tiles — 2px checker and a lighter 25% fill */
+  /* dither tiles - 2px checker and a lighter 25% fill */
   --dither50:repeating-conic-gradient(from 0deg,currentColor 0% 25%,transparent 0% 50%);
   --dither25:repeating-conic-gradient(from 0deg,currentColor 0% 12.5%,transparent 0% 50%);
 }
@@ -49,12 +49,12 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;
   font-family:"Cascadia Mono",ui-monospace,monospace;   /* fallback only */
   -webkit-font-smoothing:none;font-smooth:never}
 
-/* canvases carry all real type — keep them hard */
+/* canvases carry all real type - keep them hard */
 canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 
 /* ── chrome ──────────────────────────────────────────────────────────────────
    A classic 8-bit bevel: hard outer keyline, light top/left, dark bottom/right.
-   No radius, no blur — the depth is 3 flat steps, exactly like a sprite. */
+   No radius, no blur - the depth is 3 flat steps, exactly like a sprite. */
 .panel{position:relative;background:var(--mid);
   box-shadow:
     0 0 0 var(--u) var(--pit),                          /* outer keyline */
@@ -66,14 +66,14 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
     inset var(--u) var(--u) 0 0 var(--lift),
     inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--deep)}
 
-/* a well — content sunk INTO the surface (used around video panes) */
+/* a well - content sunk INTO the surface (used around video panes) */
 .well{position:relative;
   box-shadow:
     inset var(--u) var(--u) 0 0 var(--pit),
     inset calc(var(--u) * -1) calc(var(--u) * -1) 0 0 var(--lift),
     0 0 0 var(--u) var(--pit)}
 
-/* dithered shading band — this is how we fake a gradient */
+/* dithered shading band - this is how we fake a gradient */
 .dither{position:absolute;inset:0;pointer-events:none;
   background-image:var(--dither50);background-size:var(--u) var(--u)}
 .dither.q{background-image:var(--dither25);background-size:calc(var(--u) * 2) calc(var(--u) * 2)}
@@ -98,18 +98,18 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;display:block}
 /* ── CRITIQUE TOAST · 1920x1080 transparent · live ───────────────────────────
    THIS FILE MUST BE SERVED FROM THE DASHBOARD (:7788/static/live-critique.html).
    The API sends no Access-Control-Allow-Origin, so a file:// copy cannot read
-   it. Same-origin is the only route — same reason live-crew.html lives here.
+   it. Same-origin is the only route - same reason live-crew.html lives here.
 
    Feed: GET /api/critique?since=<seq>  ->  {ok, data:{new, seq, latest, ...}}
 
    THREE RULES FROM THE ENDPOINT AUTHOR, ENFORCED HERE:
      1. Poll the CURSOR. We send the last seq we rendered and trust `data.new`.
-        We never diff payloads — doing so replays the entry animation the first
+        We never diff payloads - doing so replays the entry animation the first
         time an unrelated field changes wording.
      2. `path` IS NEVER RENDERED, and preview_url is used VERBATIM, never
         rebuilt from a path. This page is on camera; a leaked absolute path puts
         the streamer's directory tree on screen.
-     3. verdict is THREE states. "" means NOT JUDGED YET — it must not look like
+     3. verdict is THREE states. "" means NOT JUDGED YET - it must not look like
         a fail. pass / fail / unjudged are visually distinct.
 
    Add ?demo=1 to dress the layout without waiting for a real artifact.
@@ -140,7 +140,7 @@ body{position:relative;overflow:hidden}
   100%{transform:translate3d(0,72px,0);opacity:0}
 }
 
-/* header bar — colour carries the verdict */
+/* header bar - colour carries the verdict */
 .cap{position:relative;z-index:1;display:flex;align-items:center;gap:14px;
   margin:var(--u);padding:12px 18px;background:var(--ember)}
 .cap .led{width:12px;height:12px;background:var(--white)}
@@ -158,13 +158,13 @@ body{position:relative;overflow:hidden}
 .facts{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:9px}
 .rule{height:var(--u);background:var(--pit);box-shadow:0 var(--u) 0 0 #131828;margin:3px 0 7px}
 
-/* who made it — seat avatar + crew name */
+/* who made it - seat avatar + crew name */
 .maker{display:flex;align-items:center;gap:12px}
 .face{position:relative;width:44px;height:56px;overflow:hidden;flex:0 0 auto}
 .face i{position:absolute;left:0;bottom:0;display:block;width:176px;height:44px;
   background-repeat:no-repeat;background-size:176px 44px;image-rendering:pixelated}
 
-/* score meter — only drawn when a verdict exists */
+/* score meter - only drawn when a verdict exists */
 .score{display:flex;align-items:center;gap:9px}
 .bars{display:flex;gap:3px}
 .bars i{width:14px;height:14px;background:var(--dusk);box-shadow:inset 2px 2px 0 0 var(--line)}
@@ -318,7 +318,7 @@ window.PX = (function () {
     return { w: (n * GW + (n - 1) * GAP) * s, h: GH * s };
   }
 
-  /* Live data carries typographic punctuation the 5x7 face has no glyph for —
+  /* Live data carries typographic punctuation the 5x7 face has no glyph for -
      an em dash in a ticket title rendered as a tofu box on stream. Fold the
      common ones down to ASCII before drawing rather than adding glyphs for
      every dash and quote variant. */
@@ -485,7 +485,7 @@ window.PX = (function () {
     el.frames.style.height = fh + "px";
     el.frames.style.backgroundImage = "url('" + sheet + "')";
     el.frames.style.backgroundSize  = (fw * frames) + "px " + fh + "px";
-    /* whole-frame translation, steps() — never background-position.
+    /* whole-frame translation, steps() - never background-position.
        Plays only frames [from, from+count) so a two-direction sheet does not
        flip facing mid-cycle. */
     el.frames.style.animation = "none";
@@ -504,18 +504,18 @@ window.PX = (function () {
   function render(card) {
     /* Badge off `status`, with `verdict` as the richer overlay when present.
        verdict is written only by an art-QA agent calling art_qa_verdict and is
-       discretionary — empty on every row in this project — while status always
+       discretionary - empty on every row in this project - while status always
        carries approved / rejected / candidate. Leading on verdict meant the
        headline was blank on every real card. verdict still wins when set: it is
        the stronger statement, and a fail also flips status to rejected.
 
        CAVEAT: with the art gate at "none", register() auto-approves at insert,
        so a new card reads APPROVED within a second with no human involved. The
-       card cannot distinguish that from a hand-approval — `reviewer` is the
+       card cannot distinguish that from a hand-approval - `reviewer` is the
        art-QA reviewer (empty everywhere, same cause as verdict), not the
        approval actor. This badge reports status truthfully and claims nothing
        about who decided. NEEDS YOUR CALL keys off awaiting_human, which is
-       status=="candidate" — also dead while the gate is off, and correct to
+       status=="candidate" - also dead while the gate is off, and correct to
        leave alone: it lights again the moment the gate comes back. */
     var v = (card.verdict || "").toLowerCase();
     var s = (card.status  || "").toLowerCase();
@@ -600,7 +600,7 @@ window.PX = (function () {
         cursor = d.seq || card.seq || cursor;
         render(card);
       })
-      .catch(function () { /* dashboard down — leave whatever is on screen */ });
+      .catch(function () { /* dashboard down - leave whatever is on screen */ });
   }
 
   tick();

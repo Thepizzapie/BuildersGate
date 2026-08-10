@@ -217,7 +217,7 @@ window.PtNotes = (() => {
   function grabFrame() {
     if (!gameFrame()) {
       return { data: "", why: "no build is running in the dashboard. Boot the "
-                            + "current build to attach frames — or write the "
+                            + "current build to attach frames - or write the "
                             + "note without one." };
     }
     const canvas = gameCanvas();
@@ -237,7 +237,7 @@ window.PtNotes = (() => {
       // A blank readback still encodes to a valid, tiny PNG. Length is the
       // cheap tell that we got a picture rather than an empty buffer.
       if (!url || url.length < 1024) {
-        return { data: "", why: "the canvas read back empty — the build may be "
+        return { data: "", why: "the canvas read back empty - the build may be "
                               + "between frames." };
       }
       return { data: url, why: "" };
@@ -345,9 +345,9 @@ window.PtNotes = (() => {
     tab.hidden = !inPlaytests();
     tab.classList.toggle("rec", Boolean(session));
     tab.title = session
-      ? `Notepad — recording session ${session.id}. ${HOTKEY} from anywhere, `
+      ? `Notepad - recording session ${session.id}. ${HOTKEY} from anywhere, `
         + `including while the game has focus.`
-      : `Notepad — press ${HOTKEY}. Notes need a running recording to land on.`;
+      : `Notepad - press ${HOTKEY}. Notes need a running recording to land on.`;
   }
 
   /* One note. `mine` is computed server-side (an empty author means the project
@@ -431,7 +431,7 @@ window.PtNotes = (() => {
           ${frameData ? `<button class="ptn-btn" data-act="drop">${icon("delete")} drop</button>` : ""}
         </div>
       </div>
-      <textarea class="ptn-ta" placeholder="What just happened? Type it — this lands in the transcript at ${E(anchorClock || "this moment")}."></textarea>
+      <textarea class="ptn-ta" placeholder="What just happened? Type it - this lands in the transcript at ${E(anchorClock || "this moment")}."></textarea>
       <div class="ptn-row">
         <select class="ptn-kind" aria-label="Kind">
           <option value="">kind · auto</option>${options(KINDS, kind)}
@@ -495,8 +495,8 @@ window.PtNotes = (() => {
   async function save() {
     const area = pad && pad.querySelector(".ptn-ta");
     const text = area ? area.value.trim() : "";
-    if (!text) { say("nothing to save — type the note first"); return; }
-    if (!session) { say("no recording is running — a note needs a session clock"); return; }
+    if (!text) { say("nothing to save - type the note first"); return; }
+    if (!session) { say("no recording is running - a note needs a session clock"); return; }
 
     const kind = (pad.querySelector(".ptn-kind") || {}).value || "";
     const seat = (pad.querySelector(".ptn-seat") || {}).value || "";
@@ -516,18 +516,18 @@ window.PtNotes = (() => {
       if (!response.ok || body.ok === false) {
         const message = (body && body.error && body.error.message)
           || `save failed · ${response.status}`;
-        say("note not saved — " + message);
+        say("note not saved - " + message);
         return;
       }
     } catch (err) {
       // The words are still in the textarea and stay there. Losing a note to a
       // dropped request would be the one unrecoverable failure in this feature.
-      say("note not saved — the dashboard is unreachable. Your text is still here.");
+      say("note not saved - the dashboard is unreachable. Your text is still here.");
       return;
     }
 
     const saved = (body && body.data) || {};
-    if (saved.frame_error) say("note saved, but the frame was rejected — " + saved.frame_error);
+    if (saved.frame_error) say("note saved, but the frame was rejected - " + saved.frame_error);
     notes.push(saved);
     if (area) area.value = "";
     // Re-arm: the NEXT note is about a new moment, and it should carry that

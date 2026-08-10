@@ -72,7 +72,7 @@
     const known = WF.tierKinds();
     const list = known.slice();
     if (cur && list.indexOf(cur) === -1) list.push(cur);
-    return [{ value: "", label: "— what are you making? —" }]
+    return [{ value: "", label: "- what are you making? -" }]
       .concat(list.map(k => ({ value: k, label: k })));
   }
 
@@ -86,10 +86,10 @@
     if (!ladder.length) {
       const names = WF.tierNames();
       const list = names.length ? names : (cur ? [cur] : []);
-      return [{ value: "", label: "— quality —" }]
+      return [{ value: "", label: "- quality -" }]
         .concat(list.map(t => ({ value: t, label: t })));
     }
-    return [{ value: "", label: "— quality —" }].concat(ladder.map(r => ({
+    return [{ value: "", label: "- quality -" }].concat(ladder.map(r => ({
       value: r.tier,
       label: r.tier + (r.model ? " · " + r.model : "") + (r.flat ? "  (no change)" : ""),
     })));
@@ -98,7 +98,7 @@
   /* One honest line about what this card will actually call. */
   function resolvedLine(n) {
     if (!WF.tiersReady()) {
-      return `<div class="wf-warn">model ladder unavailable — ${esc(WF.tiersError() || "not loaded")}. `
+      return `<div class="wf-warn">model ladder unavailable - ${esc(WF.tiersError() || "not loaded")}. `
         + `The tier below is still stored and still sent with the run; this card cannot name the model or price it.</div>`;
     }
     const r = resolved(n);
@@ -111,9 +111,9 @@
       // The engine refuses half an override rather than guessing the provider,
       // so say that here instead of at run time.
       if (!r.provider) {
-        return `<div class="wf-warn">an explicit model needs a provider too — fill both, or clear both and use the tier</div>`;
+        return `<div class="wf-warn">an explicit model needs a provider too - fill both, or clear both and use the tier</div>`;
       }
-      return w.note(`override: ${r.provider} / ${r.model} — priced by the server, not here`);
+      return w.note(`override: ${r.provider} / ${r.model} - priced by the server, not here`);
     }
     const each = r.usd == null ? "" : ` · ${WF.fmtUsd(r.usd)} each`;
     return w.note(`${r.provider ? r.provider + " / " : ""}${r.model}${each}`)
@@ -138,7 +138,7 @@
     }
     WF.set(n.id, "prompt_before", before);
     WF.set(n.id, "prompt", out.text);
-    toast("prompt rewritten — the original is kept in the inspector");
+    toast("prompt rewritten - the original is kept in the inspector");
   }
 
   // ▶ runs THIS node. The canvas already routes [data-wact] to the step, so a
@@ -226,9 +226,9 @@
       const kind = str(n, "task_kind", "");
       const ladder = WF.tierLadder(kind);
       const flat = WF.tierFlat(kind);
-      let html = `<div class="wf-insp-p">A card whose identity is the <b>model</b>. Say what you are making and how good it has to be; the server resolves that to a provider and a model and tells this card what it costs — the name you get is on the title bar, so several of these side by side read as a comparison.</div>`
-        + `<div class="wf-insp-p">The prompt wired into the inlet wins over the one typed on the card — that wire is the point of the pattern. Put <code>{input}</code> in the card's own prompt to compose instead of choose: the wired text lands there and everything around it (a style suffix, a negative, a framing note) survives.</div>`
-        + `<div class="wf-insp-p">▶ on the card runs <b>only this node</b>. Nothing else in the graph moves, and no work is dispatched to a seat behind your back — that is what makes fan-out → look → pick a thing you can actually do.</div>`;
+      let html = `<div class="wf-insp-p">A card whose identity is the <b>model</b>. Say what you are making and how good it has to be; the server resolves that to a provider and a model and tells this card what it costs - the name you get is on the title bar, so several of these side by side read as a comparison.</div>`
+        + `<div class="wf-insp-p">The prompt wired into the inlet wins over the one typed on the card - that wire is the point of the pattern. Put <code>{input}</code> in the card's own prompt to compose instead of choose: the wired text lands there and everything around it (a style suffix, a negative, a framing note) survives.</div>`
+        + `<div class="wf-insp-p">▶ on the card runs <b>only this node</b>. Nothing else in the graph moves, and no work is dispatched to a seat behind your back - that is what makes fan-out → look → pick a thing you can actually do.</div>`;
       if (!WF.tiersReady()) {
         html += `<div class="wf-warn">The tier ladder could not be read (${esc(WF.tiersError() || "not loaded")}), so this panel cannot show which model each rung is. Your choice is still stored and still sent with the run, which resolves it server-side.</div>`;
         return html;
@@ -242,7 +242,7 @@
           + `<span>${esc(r.model)}${r.usd == null ? "" : " · " + WF.fmtUsd(r.usd)}</span></div>`;
       });
       if (flat.length) {
-        html += `<div class="wf-b-note">${esc(flat.join(", "))} resolve to the same model as the rung below — nothing better exists for this job today, so those rungs are marked rather than sold as an upgrade.</div>`;
+        html += `<div class="wf-b-note">${esc(flat.join(", "))} resolve to the same model as the rung below - nothing better exists for this job today, so those rungs are marked rather than sold as an upgrade.</div>`;
       }
       return html;
     },
@@ -274,14 +274,14 @@
     const ladder = WF.tierLadder(kind);
     if (!ladder.length) {
       toast(WF.tiersReady()
-        ? "pick what you are making first — the ladder decides what there is to compare"
+        ? "pick what you are making first - the ladder decides what there is to compare"
         : "no model ladder on this server, so there is nothing honest to fan out into", true);
       return;
     }
     const cur = str(n, "tier", "");
     const targets = ladder.filter(r => !r.flat && r.tier !== cur);
     if (!targets.length) {
-      toast(`${kind || "this job"} resolves to one model on this server — nothing to compare it against`, true);
+      toast(`${kind || "this job"} resolves to one model on this server - nothing to compare it against`, true);
       return;
     }
     let made = 0;
@@ -370,7 +370,7 @@
       const won = decided ? String(decided.artifact_id)
         : (status === "failed" ? NONE : String(cfg(n, "picked", "")));
       if (!list.length) {
-        return w.note("wire model cards in and run them — their candidates land here")
+        return w.note("wire model cards in and run them - their candidates land here")
           + w.tag("human decision");
       }
       // Look, THEN choose. The thumbnail is ~90px; picking a winner off that is
@@ -386,16 +386,16 @@
         </div>`).join("");
       const chosen = won && won !== NONE ? list.find(x => x.id === won) : null;
       const winner = won === NONE
-        ? `<div class="wf-warn">every candidate rejected — nothing goes downstream</div>`
+        ? `<div class="wf-warn">every candidate rejected - nothing goes downstream</div>`
         : (won ? w.note(`chosen: ${chosen ? chosen.label + (chosen.name ? " · " + chosen.name : "") : "artifact #" + won}`)
-               : w.note(`${list.length} candidate${list.length === 1 ? "" : "s"} — look at them, then choose`));
+               : w.note(`${list.length} candidate${list.length === 1 ? "" : "s"} - look at them, then choose`));
       return `<div class="wf-cands">${cards}</div>` + winner
         + `<div class="wf-act"><button class="nc-w wf-run1" data-wact="reject" data-wval="${esc(n.id)}"
              title="none of these are good enough">✕ reject all</button></div>`;
     },
     config() {
-      return `<div class="wf-insp-p">The comparison's verdict. Every candidate its upstream model cards registered is shown here; clicking one is the selection, and that candidate — not "whatever the last step happened to write" — is what the next step consumes.</div>`
-        + `<div class="wf-insp-p">It really blocks: the run holds here until a person decides, and only a person can decide (an agent calling the endpoint is refused). <b>Reject all</b> is a decision the picker supports and fails the node — three bad candidates should stop the run, not quietly promote the least bad one.</div>`;
+      return `<div class="wf-insp-p">The comparison's verdict. Every candidate its upstream model cards registered is shown here; clicking one is the selection, and that candidate - not "whatever the last step happened to write" - is what the next step consumes.</div>`
+        + `<div class="wf-insp-p">It really blocks: the run holds here until a person decides, and only a person can decide (an agent calling the endpoint is refused). <b>Reject all</b> is a decision the picker supports and fails the node - three bad candidates should stop the run, not quietly promote the least bad one.</div>`;
     },
     onAction(n, action, field) {
       if (action === "zoom") { WF.zoom(field); return; }
@@ -432,7 +432,7 @@
     },
     config() {
       return `<div class="wf-insp-p">Puts the design bible into a step's prompt. Leave <b>Only #</b> blank to send every section of that kind, or name one section's id to send just that.</div>`
-        + `<div class="wf-insp-p">Resolved when the run happens, not when you draw it — edit the bible and the next run says the new thing.</div>`;
+        + `<div class="wf-insp-p">Resolved when the run happens, not when you draw it - edit the bible and the next run says the new thing.</div>`;
     },
   });
 
@@ -445,11 +445,11 @@
       const slug = str(n, "entity", "");
       return w.text(n, "entity", { label: "Entity", placeholder: "a lore slug, e.g. tone-guide" })
         + w.toggle(n, "include_facts", { label: "Facts", value: true })
-        + w.note(slug ? `${slug} — summary${cfg(n, "include_facts", true) ? " + its canon facts" : ""}`
+        + w.note(slug ? `${slug} - summary${cfg(n, "include_facts", true) ? " + its canon facts" : ""}`
                       : "name a lore entity");
     },
     config() {
-      return `<div class="wf-insp-p">Sends a lore entity's summary and, optionally, its canon facts. A <b>locked</b> fact is sent as a MUST — the world has committed to it, so the step is told not to contradict it.</div>`;
+      return `<div class="wf-insp-p">Sends a lore entity's summary and, optionally, its canon facts. A <b>locked</b> fact is sent as a MUST - the world has committed to it, so the step is told not to contradict it.</div>`;
     },
   });
 

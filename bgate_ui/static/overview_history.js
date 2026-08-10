@@ -313,7 +313,7 @@ window.OverviewHistory = (() => {
     return `<div class="ovh-gate${gated ? " gated" : ""}">${icon("gate", 15)}
       <div>Approval gate right now: <b>${E(g.label || g.mode)}</b>.
       ${gated ? "New work below gets an independent check."
-              : "Nothing new below gets an independent check — a row only claims one where a QA round really ran."}
+              : "Nothing new below gets an independent check - a row only claims one where a QA round really ran."}
       ${g.env_override ? ` <b>${E(g.env_override)}</b>.` : ""}</div></div>`;
   }
 
@@ -358,7 +358,7 @@ window.OverviewHistory = (() => {
         it.attempts ? `<span class="re">reopened ${it.attempts}×</span>` : ""}</span>
       <span class="ovh-out ${out.tone}">${E(out.label)}</span>
       <span class="ovh-v">
-        <span class="ovh-vb ${tone}" title="${E(v.why || "")}">${E(v.label || "—")}</span>
+        <span class="ovh-vb ${tone}" title="${E(v.why || "")}">${E(v.label || "-")}</span>
         <span class="ovh-vw">${E(v.short || v.why || "")}</span>
       </span>
       <span class="at" title="${E(stampTitle(it.updated_at))}">${E(when(it.updated_at))}</span>
@@ -371,12 +371,12 @@ window.OverviewHistory = (() => {
     const shown = state.items.length;
     let body;
     if (state.error) {
-      body = `<div class="ovh-empty err">could not read the work history — ${E(state.error)}</div>`;
+      body = `<div class="ovh-empty err">could not read the work history - ${E(state.error)}</div>`;
     } else if (!shown && state.loading) {
       body = `<div class="ovh-empty">reading the board…</div>`;
     } else if (!shown) {
       body = `<div class="ovh-empty">nothing finished matches this filter${
-        state.q ? ` — no title or result note contains “${E(state.q)}”` : ""}.</div>`;
+        state.q ? ` - no title or result note contains “${E(state.q)}”` : ""}.</div>`;
     } else {
       body = state.items.map(row).join("");
     }
@@ -511,7 +511,7 @@ window.OverviewHistory = (() => {
     + (itemId ? `&item_id=${encodeURIComponent(itemId)}` : "");
 
   const ORIGIN = {
-    artifact:   { label: "registered", why: "registered in the artifact library — it has a review state" },
+    artifact:   { label: "registered", why: "registered in the artifact library - it has a review state" },
     harness:    { label: "observed",   why: "the harness watched this run write it; not self-reported" },
     transcript: { label: "from the log", why: "taken from the run's own transcript, then checked against the project" },
     capture:    { label: "capture",    why: "a frame this run rendered" },
@@ -529,7 +529,7 @@ window.OverviewHistory = (() => {
           ? `${entry.logical_name} r${entry.revision}${entry.status ? " · " + entry.status : ""}`
           : meta.label || "");
     return `<figure class="ovh-thumb" data-shot="${E(entry.rel)}"
-        title="${E(entry.rel)} — ${E(meta.why || "")}" tabindex="0" role="button">
+        title="${E(entry.rel)} - ${E(meta.why || "")}" tabindex="0" role="button">
       <img src="${E(previewURL(entry.rel, itemId))}" alt="${E(entry.name)}" loading="lazy">
       ${qa}
       <figcaption><b>${E(entry.name)}</b><span>${E(sub)}</span></figcaption>
@@ -711,7 +711,7 @@ window.OverviewHistory = (() => {
 
   function logSection() {
     const l = log, d = l.data;
-    if (l.error) return `<div class="ovh-empty err">could not read the log — ${E(l.error)}</div>`;
+    if (l.error) return `<div class="ovh-empty err">could not read the log - ${E(l.error)}</div>`;
     if (!d) return `<div class="ovh-empty">reading the transcript…</div>`;
     if (d.note) return `<div class="ovh-empty">${E(d.note)}</div>`;
     if (!d.total) return `<div class="ovh-empty">the log holds no readable steps.</div>`;
@@ -784,7 +784,7 @@ window.OverviewHistory = (() => {
             E(when(it.updated_at || listed.updated_at))}</span>
         </div>
         <div class="ovh-dv ${tone}">
-          <b>Verdict: ${E(v.label || "—")}</b> — ${E(v.why || "")}${
+          <b>Verdict: ${E(v.label || "-")}</b> — ${E(v.why || "")}${
             v.gate_item ? ` <span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">(QA gate run #${v.gate_item}${
               v.rounds > 1 ? `, ${v.rounds} rounds` : ""})</span>` : ""}
           ${v.detail ? `<div style="margin-top:6px;font-family:var(--mono);font-size:10.5px;color:var(--text-3);white-space:pre-wrap;word-break:break-word">${E(v.detail)}</div>` : ""}

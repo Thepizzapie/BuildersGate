@@ -645,7 +645,7 @@ window.BeatMaker = (() => {
       const names = B.patterns.map(p => p.name);
       const wanted = String(v).toUpperCase().split(/[\s,]+/).filter(Boolean);
       const bad = wanted.filter(x => !names.includes(x));
-      if (bad.length){ say(`no pattern named ${bad[0]} — have ${names.join(", ")}`); render(); return; }
+      if (bad.length){ say(`no pattern named ${bad[0]} - have ${names.join(", ")}`); render(); return; }
       B.song = wanted.slice(0, 64);
     } else if (key === "steps"){
       const n = clamp(parseInt(v, 10) || 16, 1, 64);

@@ -314,7 +314,7 @@
       const row = (r.applied || {});
       const now = (r.data.providers || []).filter(p => p.id === id)[0] || {};
       if (row.gitignore) {
-        say(`saved — and added the .env ignore rule to .gitignore first`, "ok");
+        say(`saved - and added the .env ignore rule to .gitignore first`, "ok");
       } else if (now.available) {
         say(`${now.label || id} is ready`, "ok");
       } else {

@@ -16,13 +16,13 @@
 <script>
 /* Stamp the saved ground before first paint. Doing this from the main script
    at the bottom of the body means a full frame of dark canvas renders first
-   and then flips — the flash is worse than either theme. "system" stores no
+   and then flips - the flash is worse than either theme. "system" stores no
    attribute at all, which is what lets the prefers-color-scheme block in
    app.css stay in charge.
 
    THE LIST IS THE GATE. Anything not named here falls through to the OS, so a
    ground that is added to setTheme() and not to this array is a ground that
-   flashes the wrong canvas on every load — and on orbit, whose whole premise
+   flashes the wrong canvas on every load - and on orbit, whose whole premise
    is a vanta ground, that flash is the most visible one available. */
 (function(){
   try{
@@ -107,7 +107,7 @@
           <button class="themebtn" data-theme-set="dark"   onclick="setTheme('dark')"   title="Always dark"            aria-label="Always dark"><span class="ic" data-icon="theme_dark"  data-icon-size="16"></span></button>
           <button class="themebtn" data-theme-set="light"  onclick="setTheme('light')"  title="Always light"           aria-label="Always light"><span class="ic" data-icon="theme_light" data-icon-size="16"></span></button>
           <button class="themebtn" data-theme-set="system" onclick="setTheme('system')" title="Follow the OS setting"  aria-label="Follow the OS setting"><span class="ic" data-icon="theme_auto" data-icon-size="16"></span></button>
-          <button class="themebtn" data-theme-set="orbit"  onclick="setTheme('orbit')"  title="Orbit — glass on vanta black" aria-label="Orbit — glass on vanta black"><span class="ic" data-icon="theme_orbit" data-icon-size="16"></span></button>
+          <button class="themebtn" data-theme-set="orbit"  onclick="setTheme('orbit')"  title="Orbit - glass on vanta black" aria-label="Orbit - glass on vanta black"><span class="ic" data-icon="theme_orbit" data-icon-size="16"></span></button>
         </div>
       </div>
     </div>
@@ -121,14 +121,14 @@
        width and there is no other way to see the rest of it. -->
   <div class="split" data-split="rail" data-split-var="--rail-w"
        data-split-pane=".rail" data-split-min="150" data-split-max="30%"
-       aria-label="Resize the navigation rail — arrow keys adjust, Home resets"></div>
+       aria-label="Resize the navigation rail - arrow keys adjust, Home resets"></div>
 
   <div class="stage">
     <div class="statusbar">
       <div class="crumb" id="sb-crumb">Overview</div>
       <div class="spacer"></div>
       <div class="schip" id="sb-agents" title="Agents currently executing a task."><span class="l"></span> <b>0</b> running</div>
-      <button class="schip" id="sb-vault" onclick="setWorkspace('assets',document.querySelector('.rail-item[data-view=&quot;assets&quot;]'))"><span class="l"></span> vault <b>—</b></button>
+      <button class="schip" id="sb-vault" onclick="setWorkspace('assets',document.querySelector('.rail-item[data-view=&quot;assets&quot;]'))"><span class="l"></span> vault <b>-</b></button>
       <!-- The bell. Beside the two counters because it answers the same question
            they do — "what is the floor doing" — for the things that already
            happened. notify.js fills this slot; it is EMPTY until then, and the
@@ -139,7 +139,7 @@
     <div class="stage-body">
 
       <section class="deck-view active" id="view-overview">
-        <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance — live agents, the queue, the build.</p></div>
+        <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance - live agents, the queue, the build.</p></div>
         <div class="ov-stats" id="ov-stats"></div>
         <div class="col2" style="margin-bottom:16px">
           <div class="dcard"><h3>Running now <span class="tag" id="ov-run-n"></span></h3><div id="ov-running"><div class="empty">nothing dispatched</div></div></div>
@@ -167,7 +167,7 @@
               <span class="ck-sess" id="ck-sess">this session</span>
               <span class="ck-spacer"></span>
               <button class="qbtn small ghost" id="ck-history" type="button"
-                      title="Earlier conversations — nothing is deleted, the logs are still there">history</button>
+                      title="Earlier conversations - nothing is deleted, the logs are still there">history</button>
               <button class="qbtn small ghost" id="ck-clear" type="button"
                       title="File this conversation and start a fresh one">clear</button>
             </div>
@@ -235,7 +235,7 @@
               </div>
               <form class="ck-composer" id="ck-say-form">
                 <textarea id="ck-say" rows="1" maxlength="4000"
-                  placeholder="tell the director what you want — it answers, then delegates…"></textarea>
+                  placeholder="tell the director what you want - it answers, then delegates…"></textarea>
                 <button class="qbtn" id="ck-send" type="submit">send</button>
               </form>
             </div>
@@ -331,7 +331,7 @@
                they are minutes apart. -->
           <div class="split" data-split="cockpit" data-split-var="--ck-left-w"
                data-split-pane=".ck-left" data-split-min="330" data-split-max="72%"
-               aria-label="Resize the transcript against the graph — arrow keys adjust, Home resets"></div>
+               aria-label="Resize the transcript against the graph - arrow keys adjust, Home resets"></div>
           <div class="ck-right">
             <div class="ck-bar">
               <button class="ck-toggle" id="ck-auto" type="button" aria-pressed="false"
@@ -345,11 +345,11 @@
                    whether it FINISHES without you. -->
               <span class="ck-gate" id="ck-gate" role="group" aria-label="Approval gate">
                 <button class="ck-gopt" data-gate="none" type="button"
-                        title="No gate — an agent's own word closes its item">none</button>
+                        title="No gate - an agent's own word closes its item">none</button>
                 <button class="ck-gopt" data-gate="agent" type="button"
-                        title="Agent gate — the QA seat verifies every deliverable">agent</button>
+                        title="Agent gate - the QA seat verifies every deliverable">agent</button>
                 <button class="ck-gopt" data-gate="builders" type="button"
-                        title="Builder's gate — you approve before anything counts as done">builder's</button>
+                        title="Builder's gate - you approve before anything counts as done">builder's</button>
               </span>
               <span class="ck-spacer"></span>
               <!-- The kill switch. Deliberately always visible and never behind
@@ -373,7 +373,7 @@
             <div class="split ck-dsplit" data-split="ck-detail" data-split-var="--ckd-w"
                  data-split-on=".ck-right" data-split-pane="#ck-detail"
                  data-split-edge="end" data-split-min="240" data-split-max="70%"
-                 aria-label="Resize the inspector — arrow keys adjust, Home resets"></div>
+                 aria-label="Resize the inspector - arrow keys adjust, Home resets"></div>
             <aside class="ck-detail" id="ck-detail"></aside>
           </div>
         </div>
@@ -382,16 +382,16 @@
         <div class="orch-composer">
           <div class="orch-composer-row">
             <select id="q-seat" aria-label="Seat"></select>
-            <input type="text" id="q-title" placeholder="Task title — a short imperative…" maxlength="120"
+            <input type="text" id="q-title" placeholder="Task title - a short imperative…" maxlength="120"
                    onkeydown="if(event.key==='Enter')addItem()">
             <button id="q-brief-toggle" class="qbtn ghost" onclick="toggleBrief()">＋ brief</button>
             <button id="q-go" class="qbtn" onclick="addItem()">add to queue</button>
           </div>
           <div class="orch-brief" id="q-brief-wrap" hidden>
-            <textarea id="q-brief" placeholder="Brief — scope, constraints, and what 'done' looks like. The agent acts on this with no other context, so be specific: name the exact animations/assets/files, not 'all of them'."></textarea>
+            <textarea id="q-brief" placeholder="Brief - scope, constraints, and what 'done' looks like. The agent acts on this with no other context, so be specific: name the exact animations/assets/files, not 'all of them'."></textarea>
             <div class="orch-brief-foot">
               <span>priority<select id="q-priority"><option value="0">normal</option><option value="1">high</option></select></span>
-              <span class="hint">A precise brief is what keeps scope from ballooning — item 56 crashed on an empty one.</span>
+              <span class="hint">A precise brief is what keeps scope from ballooning - item 56 crashed on an empty one.</span>
             </div>
           </div>
         </div>
@@ -409,7 +409,7 @@
         <div class="orch-foot">
           <div class="orch-seats" id="floor"></div>
           <details class="orch-activity"><summary>Live activity</summary>
-            <div class="ledger" id="ledger"><div class="empty">no activity yet — the ledger fills as seats work</div></div>
+            <div class="ledger" id="ledger"><div class="empty">no activity yet - the ledger fills as seats work</div></div>
           </details>
         </div>
         </div>
@@ -492,7 +492,7 @@
       </section>
 
       <section class="deck-view" id="view-playtests">
-        <div class="view-heading"><div><span class="eyebrow">Evidence</span><h2>Playtests</h2></div><p>Play the current build and record a session — then open a recording for video, transcript, telemetry, and the director's triage.</p></div>
+        <div class="view-heading"><div><span class="eyebrow">Evidence</span><h2>Playtests</h2></div><p>Play the current build and record a session - then open a recording for video, transcript, telemetry, and the director's triage.</p></div>
         <!-- Play &amp; record lives here, next to the recordings it produces.
              On Overview it sat under the stats and the activity ledger, so the
              control that creates the evidence was in a different view from the
@@ -512,7 +512,7 @@
           <div class="pt-why" id="pt-why" hidden></div>
           <div id="play-holder">
             <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
-            <div class="playhint" id="play-controls">Controls come from your game's own input map — F1 opens live tuning over the running build.</div>
+            <div class="playhint" id="play-controls">Controls come from your game's own input map - F1 opens live tuning over the running build.</div>
           </div>
         </div>
         <div class="orch-sec-head">Recorded sessions</div>
@@ -543,7 +543,7 @@
       </section>
 
       <section class="deck-view" id="view-world">
-        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible, hold the cut line, and keep the fiction honest. Everything here is authored by you — the pipeline reads it.</p></div>
+        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible, hold the cut line, and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
         <div class="seat-subnav" id="world-subnav"></div>
         <div id="world-root"><div class="empty">loading world…</div></div>
       </section>
@@ -602,21 +602,21 @@
         <input id="fr-name" placeholder="Ember Run" maxlength="80" autocomplete="off" oninput="frPath()">
       </label>
       <label>Pitch <span class="opt">optional</span>
-        <input id="fr-pitch" placeholder="one line — what is this game?" maxlength="200" autocomplete="off">
+        <input id="fr-pitch" placeholder="one line - what is this game?" maxlength="200" autocomplete="off">
       </label>
       <div class="fr-kinds" role="radiogroup" aria-label="Starting template">
         <button type="button" class="fr-kind on" data-kind="2d" onclick="pickKind(this)">
-          <b>2D</b><span>Side-on platformer slice — player, ground, ledge, jump/land telemetry.</span>
+          <b>2D</b><span>Side-on platformer slice - player, ground, ledge, jump/land telemetry.</span>
         </button>
         <button type="button" class="fr-kind" data-kind="3d" onclick="pickKind(this)">
-          <b>3D</b><span>First-person slice — capsule player, ground, block, jump/land telemetry.</span>
+          <b>3D</b><span>First-person slice - capsule player, ground, block, jump/land telemetry.</span>
         </button>
       </div>
       <div class="fr-where" id="fr-where"></div>
       <button class="fr-go" id="fr-go" type="submit">Create project</button>
       <div class="fr-err" id="fr-err" hidden></div>
     </form>
-    <p class="fr-alt">Same thing from a terminal: <code>bgate init &lt;name&gt; --kind 2d</code> — it prints the path it created.</p>
+    <p class="fr-alt">Same thing from a terminal: <code>bgate init &lt;name&gt; --kind 2d</code> - it prints the path it created.</p>
   </div>
 </div>
 <footer id="foot" style="display:none">builders gate · local floor · 127.0.0.1</footer>
@@ -669,12 +669,12 @@ try{
    blank for the first frame after every reload.
 
    The one thing script owns is the PIN. Pinning trades the overlay for a real
-   grid track — the stage genuinely narrows, and the drag handle appears
+   grid track - the stage genuinely narrows, and the drag handle appears
    because there is finally a width worth dragging.
 
    IT IS DROPPED, NOT FORGOTTEN, BELOW 1180px. At that width a held-open rail
    is eating the thing that ran out of room. The stored preference survives the
-   resize, so the rail re-pins itself when the window grows back — a window you
+   resize, so the rail re-pins itself when the window grows back - a window you
    dragged narrow for a minute must not cost you a setting. */
 const RAIL_PIN_KEY = "bgate-rail-pinned";
 const railNarrow = window.matchMedia("(max-width: 1180px)");
@@ -688,7 +688,7 @@ function syncRailPin(){
   const on = railPinWanted() && !railNarrow.matches;
   if (rail) rail.classList.toggle("pin", on);
   if (btn){
-    const label = on ? "Unpin — let the navigation collapse"
+    const label = on ? "Unpin - let the navigation collapse"
                      : "Keep the navigation expanded";
     btn.setAttribute("aria-pressed", on ? "true" : "false");
     btn.setAttribute("aria-label", label);
@@ -767,7 +767,7 @@ async function mutate(path, options){
     text = await response.text();
   }catch(err){
     if (btn){ btn.disabled = false; if (wasLabel != null) btn.textContent = wasLabel; }
-    const message = "backend unreachable — is the dashboard still running?";
+    const message = "backend unreachable - is the dashboard still running?";
     if (!quiet) toast(message);
     return {ok:false, data:null, error:message, code:"unreachable", status:0};
   }
@@ -860,7 +860,7 @@ function activateWorkspace(name){
 
 /* The Agents view has two readings of the same floor. CONSOLE is the cockpit:
    one conversation with the director, the cat, and a live delegation graph.
-   BOARD is the composer over the kanban lanes it grew out of — kept because
+   BOARD is the composer over the kanban lanes it grew out of - kept because
    picking the seat yourself and watching lanes is still the right tool when you
    already know exactly who does the work. The choice sticks per browser. */
 let agentsMode = (() => {
@@ -992,7 +992,7 @@ async function refreshOverview(){
     const actEl = document.getElementById("ov-activity");
     if (actEl) actEl.innerHTML = evs.length
       ? evs.map(e=>`<div class="line"><span class="who" style="color:${color(e.seat)}">${esc(e.seat||"")}</span><span class="what">${esc(e.summary||e.kind||"")}</span></div>`).join("")
-      : readError ? `<div class="empty err">could not read the studio — ${esc(readError)}</div>`
+      : readError ? `<div class="empty err">could not read the studio - ${esc(readError)}</div>`
       : `<div class="empty">quiet</div>`;
   }catch(e){}
 }
@@ -1026,7 +1026,7 @@ function renderFloor(seatsData){
     const n = load[s.role] || 0;
     const doing = s.last_activity
       ? `${s.last_activity.kind}: ${s.last_activity.summary}`
-      : "idle — no ledger entries yet";
+      : "idle - no ledger entries yet";
     return `<button class="seatpill ${working ? "on" : ""}" style="--sc:${color(s.role)}"
         onclick="dispatchToSeat('${s.role}')" title="${esc(doing)}${s.locks.length ? " · " + s.locks.length + " locked" : ""}">
       <span class="sp-glyph">${ICO(SEATS[s.role]?.g, 15)}</span>
@@ -1048,7 +1048,7 @@ function renderLedger(events, fresh){
   for (const e of events.slice().reverse()){
     const div = document.createElement("div");
     div.className = "line" + (fresh ? " fresh" : "");
-    const who = e.seat || "—";
+    const who = e.seat || "-";
     div.innerHTML = `<span class="t">${esc((e.created_at || "").slice(11,19))}</span>` +
       `<span class="who" style="color:${e.seat ? color(e.seat) : "var(--text-3)"}">${esc(who)}</span>` +
       `<span class="what"><b>${esc(e.kind)}</b> ${esc(e.summary)}</span>`;
@@ -1113,7 +1113,7 @@ function revisionPane(a,label,candidate=false){
         ${healthChip("engine import",a.engine_import)}
         ${a.used_in_current_build ? `<span class="chip health-good">in build</span>` : `<span class="chip">not in build</span>`}
       </div>
-      ${lock?.seat ? `<div>lock <strong>${esc(lock.seat)}</strong> · work ${lock.work_item_id || "—"}</div>` : ""}
+      ${lock?.seat ? `<div>lock <strong>${esc(lock.seat)}</strong> · work ${lock.work_item_id || "-"}</div>` : ""}
       ${a.work_item ? `<div>work #${a.work_item.id} · ${esc(a.work_item.status)}</div>` : ""}
     </div>
     ${candidate ? `<div class="revision-actions">
@@ -1359,11 +1359,11 @@ function renderVault(assetsData, verify){
     else if (missing.has(a.path)) state = `<span class="chip drift">missing</span>`;
     else if (pending.has(a.path)) state = `<span class="chip drift">pending</span>`;
     return `<tr><td class="path" title="${esc(a.path)}">${esc(a.path)}</td>
-      <td>${esc(a.kind)}</td><td>${a.bytes ? (a.bytes/1024).toFixed(1)+"k" : "—"}</td><td>${state}</td></tr>`;
+      <td>${esc(a.kind)}</td><td>${a.bytes ? (a.bytes/1024).toFixed(1)+"k" : "-"}</td><td>${state}</td></tr>`;
   }).join("");
   document.getElementById("vault").innerHTML =
     `<tr><th>path</th><th>kind</th><th>size</th><th>state</th></tr>` +
-    (rows || `<tr><td colspan="4" style="color:var(--text-3)">nothing tracked yet — asset_track / asset_lock</td></tr>`);
+    (rows || `<tr><td colspan="4" style="color:var(--text-3)">nothing tracked yet - asset_track / asset_lock</td></tr>`);
 }
 
 /* The World view is a WRITE surface now (bible editor, draggable cut line, lore
@@ -1419,7 +1419,7 @@ function renderSessions(sessions){
         ${(s.status === "failed" || (s.status === "processing" && s.processing_worker === "stalled")) && s.audio_path
           ? `<button class="qbtn small ghost" onclick="event.stopPropagation();retrySession(${s.id})">retry</button>` : ""}
         </div>`).join("")
-    : `<div class="empty">no playtests yet — playtest_check, then playtest_start</div>`;
+    : `<div class="empty">no playtests yet - playtest_check, then playtest_start</div>`;
 }
 async function retrySession(id){
   const r = await mutate(`/api/playtest/${id}/retry`, {ok:`session ${id} re-queued`});
@@ -1444,12 +1444,12 @@ async function openSession(id){
   body.innerHTML = `<div class="empty">loading session ${id}…</div>`;
   const d = await readJSON(`/api/playtest/${id}`, null);
   if (!d || d.__error){
-    body.innerHTML = `<div class="empty err">could not load session ${id} — `
+    body.innerHTML = `<div class="empty err">could not load session ${id} - `
       + `${esc((d && d.__error) || "no response")}</div>`;
     return;
   }
   activeReviewOffset = Number(d.session.video_offset_s ?? d.video_offset_s ?? 0) || 0;
-  document.getElementById("review-title").textContent = `Playtest ${id} — ${d.session.name}`;
+  document.getElementById("review-title").textContent = `Playtest ${id} - ${d.session.name}`;
   const telemetry = d.telemetry_backed
     ? `<span class="chip">${d.counts.events} telemetry events</span>`
     : `<span class="chip drift">no telemetry</span>`;
@@ -1485,7 +1485,7 @@ async function openSession(id){
       <h2>What the recording captured</h2>
       <div class="tele-kinds">
         ${Object.entries(T.by_kind).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
-          `<span class="chip">${esc(k)} ×${n}</span>`).join("") || `<span class="chip drift">no telemetry — this session was audio only</span>`}
+          `<span class="chip">${esc(k)} ×${n}</span>`).join("") || `<span class="chip drift">no telemetry - this session was audio only</span>`}
         ${T.fps ? `<span class="chip">fps ${T.fps.min}–${T.fps.max} · avg ${T.fps.avg}</span>` : ""}
       </div>
 
@@ -1622,7 +1622,7 @@ async function promoteFeedback(id){
       seatEl.focus();
       setTimeout(() => seatEl.classList.remove("needs-seat"), 2500);
     }
-    toast("this item is unrouted — pick the seat that owns it before promoting");
+    toast("this item is unrouted - pick the seat that owns it before promoting");
     return;
   }
   const r = await mutate(`/api/playtest/items/${id}/promote`, {
@@ -1651,7 +1651,7 @@ async function mergeFeedback(id){
   const go = await askConfirm({
     title:`Merge item #${id} into ${label}?`,
     body:`#${id} stops being actionable on its own and its text lives on `
-       + `under the target. There is no undo yet — this cannot be reversed `
+       + `under the target. There is no undo yet - this cannot be reversed `
        + `from the dashboard.`,
     ok:"merge", danger:true,
   });
@@ -1676,7 +1676,7 @@ function showOffline(reason){
   const pl = document.getElementById("projline");
   if (pl) pl.innerHTML = `<b>Offline</b> · ${esc(reason)} · ` +
     `<a href="#" onclick="pollState();return false" style="color:var(--ember)">retry</a>`;
-  setConnection(false, "offline — " + reason);
+  setConnection(false, "offline - " + reason);
   setVault(false, null);
 }
 /* ── first run ───────────────────────────────────────────────────────────
@@ -1740,7 +1740,7 @@ async function createProject(event){
   }
   // The dashboard token is minted per project and this page was served before
   // the project existed, so the fetch shim is carrying nothing. Reload.
-  go.textContent = "created — opening " + ((r.data && r.data.root) || "");
+  go.textContent = "created - opening " + ((r.data && r.data.root) || "");
   location.reload();
 }
 
@@ -1754,7 +1754,7 @@ async function pollState(){
       const body = await r.json().catch(() => null);
       const why = body ? apiError(body, r.status) : `server ${r.status}`;
       if (r.status === 404 || r.status === 503 || /no \.?bgate|no project/i.test(why)){
-        showFirstRun(/project/i.test(why) ? why : "no project here yet — name one below");
+        showFirstRun(/project/i.test(why) ? why : "no project here yet - name one below");
         return;
       }
       showOffline(why);
@@ -1796,12 +1796,12 @@ function renderControlsHint(state){
     || (state.project && state.project.controls))) || null;
   const line = Array.isArray(controls) && controls.length
     ? controls.map(c => typeof c === "string" ? c
-        : `${((c.keys || []).join("/")) || "—"} ${String(c.action || "").replace(/_/g, " ")}`)
+        : `${((c.keys || []).join("/")) || "-"} ${String(c.action || "").replace(/_/g, " ")}`)
         .join(" · ")
     : "";
   el.textContent = line
     ? `${line} · F1 opens live tuning`
-    : "Controls come from your game's own input map — F1 opens live tuning over the running build.";
+    : "Controls come from your game's own input map - F1 opens live tuning over the running build.";
 }
 
 /* ── two readouts, two facts ───────────────────────────────────────────────
@@ -1829,8 +1829,8 @@ function setVault(ok, counts){
   const b   = chip.querySelector("b");
   if (!counts){
     if (dot) dot.className = "l warn";
-    if (b) b.textContent = "—";
-    chip.title = "Vault state unknown — not connected to a project.";
+    if (b) b.textContent = "-";
+    chip.title = "Vault state unknown - not connected to a project.";
     return;
   }
   const off = (counts.modified || 0) + (counts.missing || 0) + (counts.pending || 0);
@@ -2031,7 +2031,7 @@ function _steerChips(id){
   if (!list.length) return "";
   return `<div class="ac-pending">${list.map(s => {
     const ic = s.state === "error" ? "⚠" : s.state === "applied" ? "✓" : s.state === "sending" ? "…" : "🧭";
-    const st = s.state === "sending" ? "sending" : s.state === "error" ? ("failed — " + esc(s.err || "?"))
+    const st = s.state === "sending" ? "sending" : s.state === "error" ? ("failed - " + esc(s.err || "?"))
              : s.state === "applied" ? ("applied" + (window._steerLat ? ` · ${window._steerLat}s` : ""))
              : "queued · agent reads it when its current step ends";
     return `<div class="steerchip ${s.state}"><span class="sc-ic">${ic}</span>`
@@ -2084,7 +2084,7 @@ function _lane(cls, label, laneItems, liveSet, chipActions, cap){
   cap = cap || 12;
   const shown = laneItems.slice(0, cap);
   const body = shown.map(i => _pchip(i, liveSet, chipActions ? chipActions(i) : "")).join("")
-    || `<div class="empty">—</div>`;
+    || `<div class="empty">-</div>`;
   const more = laneItems.length > cap ? `<div class="lane-more">+${laneItems.length - cap} more</div>` : "";
   return `<div class="lane ${cls}">
     <div class="lane-head"><span>${label}</span><span class="lc">${laneItems.length}</span></div>
@@ -2142,11 +2142,11 @@ const Inspector = {
       this.head(`Agent · item #${id}`, a.__error ? "unavailable"
         : (a.running?"● working":"finished")+` · ${a.step_count||0} steps`);
       if (a.__error){
-        body.innerHTML = `<div class="empty err">could not read this agent — ${esc(a.__error)}</div>`;
+        body.innerHTML = `<div class="empty err">could not read this agent - ${esc(a.__error)}</div>`;
         return;
       }
       const steer = a.running ? `<div class="steerbar" style="margin-bottom:12px">
-          <input id="steer-input" class="steerin" placeholder="steer this agent — e.g. that pose is off-model, regenerate against the ref"
+          <input id="steer-input" class="steerin" placeholder="steer this agent - e.g. that pose is off-model, regenerate against the ref"
                  onkeydown="if(event.key==='Enter')steerAgent(${id})">
           <button class="qbtn small" onclick="steerAgent(${id})">steer</button></div>` : "";
       const rows = (a.steps||[]).map(s=>{
@@ -2154,7 +2154,7 @@ const Inspector = {
         const label = s.kind==="tool"?(s.name||"tool"):s.kind;
         const txt = s.kind==="tool" ? `<b>${esc(s.name)}</b> <span style="color:var(--ash)">${esc(s.hint||"")}</span>` : esc(s.text||"");
         return `<div class="insp-step ${k}"><span class="sg">${esc(label)}</span><span class="sx">${txt}</span></div>`;
-      }).join("") || '<div class="empty">no activity yet — the agent is starting up</div>';
+      }).join("") || '<div class="empty">no activity yet - the agent is starting up</div>';
       const fin = a.final ? `<div class="insp-code" style="margin-top:12px;border-color:var(--good)">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""})\n${esc(a.final.text||"")}</div>` : "";
       const art = await renderArtRail(id, a.running);
       body.innerHTML = steer + art + `<div class="asteps" style="max-height:none">${rows}</div>` + fin;
@@ -2164,7 +2164,7 @@ const Inspector = {
       body.innerHTML = '<div class="empty">loading full log…</div>';
       const d = await readJSON(`/api/agent-log/${id}?tail=2000`, {lines:[]});
       body.innerHTML = d.__error
-        ? `<div class="empty err">could not read the log — ${esc(d.__error)}</div>`
+        ? `<div class="empty err">could not read the log - ${esc(d.__error)}</div>`
         : `<div class="insp-code">${esc((d.lines||[]).join("\n")) || "empty log"}</div>`;
     }};
     this.setTabs([activity, rawlog]);
@@ -2190,7 +2190,7 @@ async function refreshAgentView(){
     const head = `<div class="ahead">agent #${_watching} · ${a.running ? '<span class="alive">● working</span>' : 'finished'} · ${a.step_count||0} steps <button class="qbtn small ghost" onclick="watchAgent(${_watching})">close</button></div>`;
     const fin = a.final ? `<div class="afinal">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""}): ${esc(a.final.text)}</div>` : "";
     const steer = a.running ? `<div class="steerbar">
-        <input id="steer-input" class="steerin" placeholder="steer this agent — e.g. that pose is off-model, regenerate against the ref"
+        <input id="steer-input" class="steerin" placeholder="steer this agent - e.g. that pose is off-model, regenerate against the ref"
                onkeydown="if(event.key==='Enter')steerAgent(${_watching})">
         <button class="qbtn small" onclick="steerAgent(${_watching})">steer</button>
       </div>` : "";
@@ -2198,7 +2198,7 @@ async function refreshAgentView(){
     const av = document.getElementById("agentview");
     av.innerHTML =
       head + steer + art +
-      `<div class="asteps">${rows || '<div class="empty">no activity yet — the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
+      `<div class="asteps">${rows || '<div class="empty">no activity yet - the agent is starting up (first tool call in a few seconds)</div>'}</div>` + fin;
     SpriteAnim.mountAll(av);
     const box = document.querySelector(".asteps"); if (box) box.scrollTop = box.scrollHeight;
   }catch(e){}
@@ -2227,7 +2227,7 @@ async function reactArt(artId, verdict, itemId){
                            {body:{verdict, note, item_id: itemId}});
   if (!got.ok){
     window._reacted[artId].status = "failed";
-    setSt("failed — " + got.error);
+    setSt("failed - " + got.error);
     return;
   }
   const r = got.data || {};
@@ -2244,7 +2244,7 @@ async function reactArt(artId, verdict, itemId){
 }
 
 /* Sprite-sheet player: plays a horizontal N-frame sheet in place so you can SEE
-   the animation (a static strip tells you nothing). Reusable — mount any element
+   the animation (a static strip tells you nothing). Reusable - mount any element
    with class .spr-mount and data-rel / data-count / data-fps. */
 const SpriteAnim = {
   _ivs: [],
@@ -2288,7 +2288,7 @@ window.SpriteAnim = SpriteAnim;
 async function renderArtRail(itemId, running){
   const d = await readJSON("/api/artifacts", {artifacts:[]});
   if (d.__error) return `<div class="artrail"><div class="artrail-h">renders this agent produced</div>`
-    + `<div class="empty err">could not read artifacts — ${esc(d.__error)}</div></div>`;
+    + `<div class="empty err">could not read artifacts - ${esc(d.__error)}</div></div>`;
   const arts = (d.artifacts||[]).filter(x => x.work_item_id === itemId);
   if (!arts.length) return "";
   arts.sort((a,b)=> (b.id||0)-(a.id||0));
@@ -2306,7 +2306,7 @@ async function renderArtRail(itemId, running){
     // frame count for the animated preview: from the sheet's metadata if present
     const frames = (x.metadata && x.metadata.frames) || {};
     const count = Object.keys(frames).length;
-    const offmsg = `Candidate "${x.logical_name}" (rev ${x.revision}) is OFF-MODEL / off-style. Regenerate it against the pinned reference — match silhouette, palette, cel-shaded 16-bit style exactly. Do NOT self-approve; run consistency_check before accepting.`;
+    const offmsg = `Candidate "${x.logical_name}" (rev ${x.revision}) is OFF-MODEL / off-style. Regenerate it against the pinned reference - match silhouette, palette, cel-shaded 16-bit style exactly. Do NOT self-approve; run consistency_check before accepting.`;
     // Animated player if it's a multi-frame sprite sheet; static image otherwise.
     const preview = count > 1
       ? `<div class="candthumb spr-mount" data-rel="${esc(x.path)}" data-count="${count}" data-fps="8" title="${esc(x.logical_name)} · ▶ ${count}f"></div>`
@@ -2319,8 +2319,8 @@ async function renderArtRail(itemId, running){
       <div class="artmeta"><span class="artbadge s-${esc(x.status)}">${badge}</span> ${esc(x.logical_name)}${count>1?` <span class="artplay">▶ ${count}f</span>`:""} <span class="artmodel">${esc(x.producer||'')}</span></div>
       ${(() => { const rx = (window._reacted||{})[x.id];
         return `<div class="artreact ${rx?'reacted':''}">
-          <button class="rx up ${rx&&rx.verdict==='like'?'on':''}" title="like — keep as reference" onclick="reactArt(${x.id},'like',${itemId})">👍</button>
-          <button class="rx down ${rx&&rx.verdict==='dislike'?'on':''}" title="dislike — course-correct now + save preference" onclick="reactArt(${x.id},'dislike',${itemId})">👎</button>
+          <button class="rx up ${rx&&rx.verdict==='like'?'on':''}" title="like - keep as reference" onclick="reactArt(${x.id},'like',${itemId})">👍</button>
+          <button class="rx down ${rx&&rx.verdict==='dislike'?'on':''}" title="dislike - course-correct now + save preference" onclick="reactArt(${x.id},'dislike',${itemId})">👎</button>
           <input class="rx-note" id="rxnote-${x.id}" placeholder="feedback → steers + saves" onkeydown="if(event.key==='Enter')reactArt(${x.id},'dislike',${itemId})">
           <span class="rx-st">${rx?esc(rx.status||''):''}</span>
         </div>`; })()}
@@ -2337,12 +2337,12 @@ async function loadGame(){
   const st = await readJSON("/api/play/status", {});
   if (st.stale){
     holder.innerHTML = `<div class="playbtn" style="cursor:default">rebuilding current build…</div>
-      <div class="playhint">exporting the game from latest source — a few seconds</div>`;
+      <div class="playhint">exporting the game from latest source - a few seconds</div>`;
     const r = await mutate("/api/play/rebuild", {quiet:true});
     if (!r.ok){
       holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error)}</div>
         <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
-      toast("rebuild failed — " + r.error);
+      toast("rebuild failed - " + r.error);
       return;
     }
   }
@@ -2362,12 +2362,12 @@ let ptReady = false, ptRecording = false;
  * dead forever on a stock install. */
 const PT_FIXES = {
   ffmpeg: 'install ffmpeg and put it on PATH, or point BGATE_FFMPEG at the binary',
-  ffprobe: 'ffprobe ships with ffmpeg — install ffmpeg and put it on PATH',
+  ffprobe: 'ffprobe ships with ffmpeg - install ffmpeg and put it on PATH',
   transcriber: 'install the speech extras:  pip install -e ".[stt,record]"',
   whisper: 'install the speech extras:  pip install -e ".[stt]"',
-  mic: 'no usable input device — connect a microphone and enable it in the OS sound settings',
-  window: 'no game window to capture — boot the build first, then re-check; otherwise the whole desktop gets recorded',
-  native_game: 'no game/project.godot yet — scaffold the game (godot_scaffold), and set BGATE_GODOT if Godot is not on PATH',
+  mic: 'no usable input device - connect a microphone and enable it in the OS sound settings',
+  window: 'no game window to capture - boot the build first, then re-check; otherwise the whole desktop gets recorded',
+  native_game: 'no game/project.godot yet - scaffold the game (godot_scaffold), and set BGATE_GODOT if Godot is not on PATH',
   godot: 'install Godot 4 and put it on PATH, or set BGATE_GODOT',
 };
 const ptFix = name => PT_FIXES[name] || "run  bgate doctor  for the full toolchain report";
@@ -2389,7 +2389,7 @@ function renderPreflight(p){
   if (btn) btn.disabled = !ptReady && !ptRecording;
   if (!msg) return;
   if (ptReady){
-    msg.textContent = "playtest ready — record, play, talk";
+    msg.textContent = "playtest ready - record, play, talk";
     if (why){ why.hidden = true; why.innerHTML = ""; }
     return;
   }
@@ -2454,7 +2454,7 @@ async function ptPreflight(force){
   const p = await readJSON(`/api/playtest/preflight?native=${native}`, null);
   if (!p || p.__error){
     const msg = document.getElementById("pt-msg");
-    if (msg) msg.textContent = "could not check playtest gear — "
+    if (msg) msg.textContent = "could not check playtest gear - "
       + ((p && p.__error) || "no response");
     return;
   }
@@ -2472,8 +2472,8 @@ async function toggleRecord(){
       const rebuilt = await mutate("/api/play/rebuild", {quiet:true});
       if (!rebuilt.ok){
         document.getElementById("pt-msg").textContent =
-          "record blocked: current build failed — " + rebuilt.error;
-        toast("record blocked — the current build failed to export: " + rebuilt.error);
+          "record blocked: current build failed - " + rebuilt.error;
+        toast("record blocked - the current build failed to export: " + rebuilt.error);
         return;
       }
     }
@@ -2491,12 +2491,12 @@ async function toggleRecord(){
       btn.classList.add("recording");
       document.getElementById("pt-msg").textContent =
         target === "native"
-          ? `RECORDING — native Godot launched (pid ${got.native_launch?.pid || "?"})`
-          : "RECORDING — play and say what you like and what needs fixing";
+          ? `RECORDING - native Godot launched (pid ${got.native_launch?.pid || "?"})`
+          : "RECORDING - play and say what you like and what needs fixing";
     } else {
       const why = started.ok ? (got.error || "the recorder did not start") : started.error;
       document.getElementById("pt-msg").textContent = "start failed: " + why;
-      if (started.ok) toast("recording did not start — " + why);
+      if (started.ok) toast("recording did not start - " + why);
       ptPreflight(true);   // whatever broke, re-check the gear and say what
     }
   } else {
@@ -2509,9 +2509,9 @@ async function toggleRecord(){
     if (fine && document.getElementById("pt-target").value === "web") bootFrame();
     const why = stopped.ok ? (got.error || "?") : stopped.error;
     document.getElementById("pt-msg").textContent = fine
-      ? `session ${got.session_id} transcribing — a director triage item will land in the queue`
+      ? `session ${got.session_id} transcribing - a director triage item will land in the queue`
       : "stop failed: " + why;
-    if (!fine) toast("stop failed — " + why);
+    if (!fine) toast("stop failed - " + why);
   }
 }
 
@@ -2533,7 +2533,7 @@ async function ptPoll(){
       btn.textContent = "■ stop";
       btn.classList.add("recording");
       document.getElementById("pt-msg").textContent =
-        `RECORDING session ${s.recording.id} — ${s.recording.telemetry_events} telemetry events`;
+        `RECORDING session ${s.recording.id} - ${s.recording.telemetry_events} telemetry events`;
       return;
     }
     if (ptRecording){

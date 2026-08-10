@@ -20,12 +20,12 @@
   var PRESETS = {
     beat:    { title: "New beat", text: "" },
     outline: { title: "Story outline",
-               text: "Act 1 — setup:\nAct 2 — escalation:\nAct 3 — payoff:" },
+               text: "Act 1 - setup:\nAct 2 - escalation:\nAct 3 - payoff:" },
     lore:    { title: "Lore: topic",
                text: "Canon fact:\nWhy it matters to the story:" },
     note:    { title: "Note", text: "" }
   };
-  var HINT_EMPTY = "empty board — click “+ Panel” or pick a starter below";
+  var HINT_EMPTY = "empty board - click “+ Panel” or pick a starter below";
   var HINT_READY = "drag a panel header to move · scroll / drag empty canvas to pan";
 
   var LORE_KINDS = ["character", "faction", "place", "event", "item", "concept", "species"];
@@ -170,7 +170,7 @@
               '<div class="nar-empty" id="nar-empty" hidden>' +
                 '<div class="nar-empty-inner">' +
                   '<div class="nar-empty-glyph">' + BGICON("narrative") + '</div>' +
-                  "<p>No panels yet — storyboard the game's beats here.</p>" +
+                  "<p>No panels yet - storyboard the game's beats here.</p>" +
                   '<p class="nar-empty-sub">Panels are draggable cards (title + text + optional image); Link mode draws the arrows between them. Start with:</p>' +
                   '<div class="nar-presets">' +
                     '<button class="nar-btn nar-primary" data-act="add" data-kind="beat">+ Beat</button>' +
@@ -219,7 +219,7 @@
         .catch(function (e) {
           console.warn("narrative load", e);
           self._adopt({});
-          self._setStatus("offline — starting empty", true);
+          self._setStatus("offline - starting empty", true);
         });
     },
 
@@ -339,7 +339,7 @@
 
     _setLinkSrc: function (id) {
       this._linkSrc = id;
-      this._setHint(id ? "source set — click a target panel (or the source again to cancel)"
+      this._setHint(id ? "source set - click a target panel (or the source again to cancel)"
                        : "LINK MODE: click a source panel, then a target");
       this._paintLinkState();
     },
@@ -707,8 +707,8 @@
       var self = this, bg = this._bg;
       var p = this._selectedPanel();
       var text = p ? this._panelText(p) : this._boardText();
-      if (!text) { bg.toast("nothing to check — write a panel first", true); return; }
-      var overlay = this._modal(p ? "Canon check — " + (p.title || "panel") : "Canon check — whole board",
+      if (!text) { bg.toast("nothing to check - write a panel first", true); return; }
+      var overlay = this._modal(p ? "Canon check - " + (p.title || "panel") : "Canon check - whole board",
         '<div class="empty">checking against canon…</div>');
       this._bg.post("/api/canon/check", { text: text }).then(function (r) {
         var body = overlay.querySelector(".nar-modal-body");
@@ -734,7 +734,7 @@
       var self = this, bg = this._bg;
       var p = this._selectedPanel();
       if (!p) { bg.toast("select a panel first", true); return; }
-      var opts = '<option value="">— none —</option>';
+      var opts = '<option value="">- none -</option>';
       for (var i = 0; i < this._lore.length; i++) {
         var e = this._lore[i];
         opts += '<option value="' + bg.esc(e.slug) + '"' + (e.slug === p.lore ? " selected" : "") + ">" +
@@ -743,7 +743,7 @@
       var kinds = LORE_KINDS.map(function (k) {
         return '<option value="' + k + '"' + (k === "concept" && p.kind === "lore" ? " selected" : "") + ">" + k + "</option>";
       }).join("");
-      var overlay = this._modal("Lore — " + (p.title || "panel"),
+      var overlay = this._modal("Lore - " + (p.title || "panel"),
         '<div class="nar-fieldrow"><label>Bind to an existing entity</label>' +
           '<select id="nar-lore-sel">' + opts + "</select>" +
           '<button class="nar-btn" id="nar-lore-bind">bind</button></div>' +
@@ -774,7 +774,7 @@
       var kind = overlay.querySelector("#nar-lore-kind").value;
       var status = overlay.querySelector("#nar-lore-status").value;
       var name = (p.title || "").trim();
-      if (!name) { out.innerHTML = '<div class="nar-flag hard">give the panel a title first — it becomes the entity name</div>'; return; }
+      if (!name) { out.innerHTML = '<div class="nar-flag hard">give the panel a title first - it becomes the entity name</div>'; return; }
       out.innerHTML = '<div class="empty">writing…</div>';
       var body = { kind: kind, name: name, summary: (p.text || "").slice(0, 2000), status: status };
       if (override) body.override = true;
@@ -785,7 +785,7 @@
           out.innerHTML = '<div class="nar-flag hard">' + bg.esc(err) + "</div>" +
             (flags.length ? self._flagHtml(flags) : "") +
             (flags.length && !override
-              ? '<button class="nar-btn nar-danger" id="nar-lore-force">override — I am a human and this is intended</button>'
+              ? '<button class="nar-btn nar-danger" id="nar-lore-force">override - I am a human and this is intended</button>'
               : "");
           var force = out.querySelector("#nar-lore-force");
           if (force) force.addEventListener("click", function () { self._createLore(p, overlay, out, true); });
@@ -859,7 +859,7 @@
         (p.lore ? "\n\nCanon entity: " + p.lore : "") +
         (p.img ? "\n\nReference image: " + p.img : "") +
         "\n\n(from the narrative storyboard, panel " + p.id + ")";
-      var overlay = this._modal("Queue work — " + (p.title || "panel"),
+      var overlay = this._modal("Queue work - " + (p.title || "panel"),
         '<div class="nar-fieldrow"><label>seat</label><select id="nar-w-seat">' + seats + "</select>" +
           '<label>priority</label><input id="nar-w-pri" type="number" min="0" max="5" value="2" style="width:64px"></div>' +
         '<div class="nar-fieldrow" style="flex-direction:column;align-items:stretch"><label>title</label>' +

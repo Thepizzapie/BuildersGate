@@ -192,7 +192,7 @@
     handle.setAttribute("tabindex", "0");
     handle.setAttribute("aria-orientation", dir === "y" ? "horizontal" : "vertical");
     if (!handle.getAttribute("aria-label")) {
-      handle.setAttribute("aria-label", "Resize panel — arrow keys adjust, Home resets");
+      handle.setAttribute("aria-label", "Resize panel - arrow keys adjust, Home resets");
     }
 
     // RESTORE LAST, AND ONLY IF IT STILL FITS. A width saved on a 2560px

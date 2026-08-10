@@ -56,7 +56,7 @@
             <h3 class="aud-h">${BGICON("audio")} Sound library <span class="aud-sub" id="aud-lib-count"></span>
               <span class="aud-actions">
                 <button class="aud-btn aud-primary" id="aud-open-studio"
-                        title="Trim, layer, synthesise and mix — the audio lab, in this seat">
+                        title="Trim, layer, synthesise and mix - the audio lab, in this seat">
                   ${BGICON("edit")} open the audio lab
                 </button>
               </span>
@@ -270,7 +270,7 @@
 
     _soundOptions(selected) {
       const bg = this._bg;
-      const opts = ['<option value="">— pick a sound —</option>'];
+      const opts = ['<option value="">- pick a sound -</option>'];
       const rels = new Set();
       this._sounds.forEach(s => rels.add(s.rel));
       this._arts.forEach(a => { if (/\.(wav|ogg|mp3)$/i.test(a.path || "")) rels.add(a.path); });
@@ -288,7 +288,7 @@
       const body = this._root.querySelector("#aud-cue-body");
       if (!body) return;
       if (!this._cues.length) {
-        body.innerHTML = '<div class="aud-empty">no cues yet — hit '
+        body.innerHTML = '<div class="aud-empty">no cues yet - hit '
           + '<b>+ row</b> to map a game event (e.g. <code>jab_hit</code>) to a sound, '
           + 'then <b>save</b>.</div>';
         return;
@@ -299,7 +299,7 @@
         <td><input class="aud-in aud-nt" value="${bg.esc(c.note || "")}" placeholder="note"></td>
         <td class="aud-prev">${(c.sound && /\.(wav|ogg|mp3)$/i.test(c.sound))
           ? `<audio controls preload="none" src="/api/audio/file?rel=${encodeURIComponent(c.sound)}"></audio>`
-          : '<span class="aud-muted">—</span>'}</td>
+          : '<span class="aud-muted">-</span>'}</td>
         <td><button class="aud-btn aud-del" data-i="${i}">✕</button></td>
       </tr>`).join("");
       body.innerHTML = `<table class="aud-tbl">
@@ -317,7 +317,7 @@
           const rel = sel.value;
           prev.innerHTML = (rel && /\.(wav|ogg|mp3)$/i.test(rel))
             ? `<audio controls preload="none" src="/api/audio/file?rel=${encodeURIComponent(rel)}"></audio>`
-            : '<span class="aud-muted">—</span>';
+            : '<span class="aud-muted">-</span>';
         };
       });
     },
@@ -404,7 +404,7 @@
         host.innerHTML = '<div class="aud-card"><div class="aud-empty">loading…</div></div>';
         const got = await this._bg.get("/api/music/options").catch(() => null);
         this._mOpts = (got && got.data) || { available: false,
-          reason: "the music API did not answer — restart bgate serve so the "
+          reason: "the music API did not answer - restart bgate serve so the "
                 + "dashboard picks up the music routes" };
       }
       if (!this._mPainted) { this._paintMusic(); this._mPainted = true; }
@@ -479,7 +479,7 @@
             </label>
             <label class="aud-f narrow">
               <span class="aud-fl">duration (s)</span>
-              <input class="aud-in" id="aud-dur" type="number" placeholder="—">
+              <input class="aud-in" id="aud-dur" type="number" placeholder="-">
             </label>
           </div>
 
@@ -603,7 +603,7 @@
       const hint = host.querySelector("#aud-hint");
       if (hint) {
         hint.textContent = over
-          ? `${used - cap} over the ${model} limit — kie would refuse this`
+          ? `${used - cap} over the ${model} limit - kie would refuse this`
           : (custom ? `${model} · your lyrics` : `${model} · Suno writes it`)
             + (used ? " · ctrl+enter to generate" : "");
         hint.classList.toggle("bad", over);
@@ -635,7 +635,7 @@
       const r = await bg.post("/api/music/generate", body);
       const d = (r && r.data) || {};
       if (!d.job_id) { bg.toast(this._errText(r) || "generate failed", true); return; }
-      bg.toast("generating — watch the job below");
+      bg.toast("generating - watch the job below");
       await this._loadJobs();
       const strip = host.querySelector("#aud-jobs");
       if (strip) strip.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -671,7 +671,7 @@
           bg.toast(`${n} take${n === 1 ? "" : "s"} ready — “${
             String(r.prompt || "").slice(0, 40)}”`);
         } else if (r.cancelled) {
-          bg.toast("generation cancelled" + (r.task_id ? " — recoverable" : ""), true);
+          bg.toast("generation cancelled" + (r.task_id ? " - recoverable" : ""), true);
         } else {
           bg.toast(r.error || job.error || "generation failed", true);
         }
@@ -753,7 +753,7 @@
       if (j.orphaned) {
         tone = "stale";
         head = "orphaned by a dashboard restart";
-        foot = "the thread running this died with the previous dashboard — it "
+        foot = "the thread running this died with the previous dashboard - it "
              + "will never finish. If it had reached Suno the batch was charged "
              + "for and can still be collected.";
         actions = `<button class="aud-btn" data-jact="dismiss" data-job="${j.id}">
@@ -762,7 +762,7 @@
                data-job="${j.id}">${BGICON("export")} recover the takes</button>` : "");
       } else if (!j.terminal) {
         foot = "Suno renders in one to three minutes. The takes download and file "
-             + "themselves the moment it finishes — you can leave this tab.";
+             + "themselves the moment it finishes - you can leave this tab.";
         actions = `<button class="aud-btn aud-danger" data-jact="cancel" data-job="${j.id}">
             ${BGICON("stop")} cancel</button>`;
       } else if (j.state === "done" && r.ok) {
@@ -817,7 +817,7 @@
           const r = await bg.post(`/api/jobs/${id}/cancel`, {});
           const d = (r && r.data) || {};
           bg.toast(d.stopped ? "cancelled" :
-            "cancel requested — it stops at the next poll; Suno was already "
+            "cancel requested - it stops at the next poll; Suno was already "
             + "asked, so the batch is charged for and recoverable", !d.stopped);
         } else if (act === "dismiss") {
           const r = await bg.post(`/api/music/jobs/${id}/dismiss`, {});
@@ -826,7 +826,7 @@
         } else if (act === "recover") {
           const job = (this._mJobs || []).find(j => String(j.id) === String(id));
           const task = job && job.task_id;
-          if (!task) { bg.toast("this job never reached Suno — nothing to recover", true); return; }
+          if (!task) { bg.toast("this job never reached Suno - nothing to recover", true); return; }
           bg.toast("collecting the takes kie is holding…");
           const r = await bg.post("/api/music/recover", { task_id: task });
           const err = this._errText(r);
@@ -834,7 +834,7 @@
           else {
             const d = r.data || {};
             bg.toast(d.count
-              ? `recovered ${d.count} take(s) — no new charge`
+              ? `recovered ${d.count} take(s) - no new charge`
               : (d.note || "nothing new to recover"));
             await this._loadCandidates();
           }
@@ -852,13 +852,13 @@
     _cost(r) {
       if (r && r.estimated_usd) {
         return `$${Number(r.estimated_usd).toFixed(4)}`
-          + (r.accounted ? " — filed to the project ledger" : " — not filed");
+          + (r.accounted ? " - filed to the project ledger" : " - not filed");
       }
       if (r && r.credits_consumed) {
         return `${r.credits_consumed} credits used · no dollar rate set, so `
           + "nothing was filed to the ledger";
       }
-      return "cost not recorded — kie publishes no price for Suno";
+      return "cost not recorded - kie publishes no price for Suno";
     },
 
     _renderCandidates() {
@@ -874,7 +874,7 @@
       const card = (c, keptRow) => {
         const cost = c.estimated_usd ? `$${Number(c.estimated_usd).toFixed(4)}`
           : (c.credits_consumed ? `${c.credits_consumed} cr` : "unpriced");
-        const secs = c.duration_s ? bg.fmtTime(c.duration_s) : "—";
+        const secs = c.duration_s ? bg.fmtTime(c.duration_s) : "-";
         const inst = c.install || null;
         return `<div class="aud-take${keptRow ? " kept" : ""}${
             c.installed ? " live" : ""}${this._mNew[c.artifact_id] ? " fresh" : ""}">
@@ -910,7 +910,7 @@
       const kept = this._mKept.map(c => card(c, true)).join("");
       body.innerHTML = (pending || kept)
         ? `${pending}${kept ? `<div class="aud-kepth">approved takes</div>${kept}` : ""}`
-        : '<div class="aud-empty">no generated tracks yet. Write a prompt above — '
+        : '<div class="aud-empty">no generated tracks yet. Write a prompt above - '
           + 'a request comes back as several takes, you keep one, and keeping is '
           + 'what copies it into the engine project.</div>';
     },
@@ -1001,7 +1001,7 @@
         const row = this._mKept.find(c => c.artifact_id === id);
         const rel = row && row.installed && row.install && row.install.path;
         if (rel) this.openSound(rel);
-        else bg.toast("install it first — the lab edits the file in the game, "
+        else bg.toast("install it first - the lab edits the file in the game, "
                       + "not the scratch take", true);
         return;
       }
@@ -1036,7 +1036,7 @@
         if (err) { bg.toast(err, true); btn.disabled = false; }
         else if (act === "keep") {
           const inst = ((r.data || {}).install) || {};
-          bg.toast("kept — installed at " + (inst.path || "the project"));
+          bg.toast("kept - installed at " + (inst.path || "the project"));
         } else bg.toast("discarded");
         delete this._mNew[id];
       } catch (e) {
@@ -1108,7 +1108,7 @@
       const steps = (act && act.steps) || [];
       if (!steps.length && !(act && act.final)) {
         feed.innerHTML = '<div class="aud-empty">'
-          + ((act && act.running) ? "agent running — waiting for first step…" : "no activity recorded.")
+          + ((act && act.running) ? "agent running - waiting for first step…" : "no activity recorded.")
           + '</div>';
         return;
       }

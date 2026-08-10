@@ -228,7 +228,7 @@ window.ChatLive = (() => {
         <p>The channel is written to <code>${E(p.channel_env)}</code> in this
            project's <code>.env</code>, which is gitignored${
              state && state.env_gitignored === false
-               ? ` — <b>except it is not, in this project. Fix that before saving.</b>`
+               ? ` - <b>except it is not, in this project. Fix that before saving.</b>`
                : ""}. Nothing about your channel is stored in the Builders Gate
            repository.</p>
       </div>`;

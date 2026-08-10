@@ -187,13 +187,13 @@ func _init():
       <button class="gp-btn alt" id="gp-dispatch">Dispatch</button>
       <button class="gp-btn alt" id="gp-diff" title="what this run actually changed, per file, since its base commit">Diff</button>
       <button class="gp-btn alt" id="gp-reopen" title="send a done/failed/cancelled item back to the queue with a reason">Reopen</button>
-      <button class="gp-btn danger" id="gp-cancel" title="call the work off — a live agent is stopped first">Cancel</button>
+      <button class="gp-btn danger" id="gp-cancel" title="call the work off - a live agent is stopped first">Cancel</button>
       <button class="gp-btn danger" id="gp-stop" disabled title="no live agent to stop">Stop</button>
     </div>
     <div class="gp-out" id="gp-diff-out" style="display:none"></div>
     <div class="gp-feed" id="gp-feed"><div class="gp-empty">pick a gameplay work item</div></div>
     <div class="gp-row">
-      <input class="gp-in" id="gp-steer" placeholder="no live agent — dispatch one to steer it" style="flex:1;min-width:220px" disabled>
+      <input class="gp-in" id="gp-steer" placeholder="no live agent - dispatch one to steer it" style="flex:1;min-width:220px" disabled>
       <button class="gp-btn" id="gp-steer-btn" disabled title="no live agent to steer">Steer</button>
     </div>
   </div>
@@ -244,7 +244,7 @@ func _init():
       st.textContent = `Godot ${ver} · ${S.godot.path || ""} · project ${proj}`;
     } else {
       if (lamp) lamp.classList.remove("ok");
-      st.textContent = "Godot unavailable — " + esc(S.godot.reason || "not found on PATH");
+      st.textContent = "Godot unavailable - " + esc(S.godot.reason || "not found on PATH");
     }
   }
 
@@ -257,7 +257,7 @@ func _init():
     catch (e) {
       // Unknown, not absent: don't claim F1 is missing because a fetch failed.
       S.hasTuner = null; renderPlayHint();
-      if (host) host.innerHTML = `<div class="gp-empty">could not list scripts — ${esc(e && e.message)}</div>`;
+      if (host) host.innerHTML = `<div class="gp-empty">could not list scripts - ${esc(e && e.message)}</div>`;
       return;
     }
     S.tree = (data && data.tree) || [];
@@ -296,7 +296,7 @@ func _init():
     if (view) { view.style.display = "block"; view.innerHTML = '<div class="gp-empty" style="padding:12px">loading…</div>'; }
     let f;
     try { f = await S.bg.get("/api/godot/file?rel=" + encodeURIComponent(rel)); }
-    catch (e) { if (view) view.innerHTML = `<div class="gp-empty" style="padding:12px">could not read — ${esc(e && e.message)}</div>`; return; }
+    catch (e) { if (view) view.innerHTML = `<div class="gp-empty" style="padding:12px">could not read - ${esc(e && e.message)}</div>`; return; }
     if (!view) return;
     const text = (f && f.text) || "";
     const lines = text.split("\n");
@@ -308,7 +308,7 @@ func _init():
   /* ---- runner + build check -------------------------------------------- */
   function guardEngine(out) {
     if (S.godot && S.godot.available === false) {
-      showOut(out, "Godot is unavailable — connect the engine to run scripts.", true);
+      showOut(out, "Godot is unavailable - connect the engine to run scripts.", true);
       return false;
     }
     return true;
@@ -331,7 +331,7 @@ func _init():
     if (S.running) return;
     if (!guardEngine(out)) return;
     const script = (q("gp-script") || {}).value || "";
-    if (!script.trim()) { showOut(out, "nothing to run — write a GDScript first.", true); return; }
+    if (!script.trim()) { showOut(out, "nothing to run - write a GDScript first.", true); return; }
     S.running = true;
     const btn = q("gp-run"); if (btn) { btn.disabled = true; btn.textContent = "running…"; }
     showOut(out, "running…", false);
@@ -387,7 +387,7 @@ func _init():
     if (r && r.ok && r.rel) {
       host.innerHTML = `<img src="${S.bg.preview(r.rel)}?t=${Date.now()}" alt="scene screenshot" onerror="this.parentNode.innerHTML='<div class=&quot;gp-empty&quot;>image failed to load</div>'">`;
     } else {
-      host.innerHTML = `<div class="gp-empty">no image — ${esc((r && (r.error || (r.errors && r.errors.join(", ")))) || "capture failed")}</div>`;
+      host.innerHTML = `<div class="gp-empty">no image - ${esc((r && (r.error || (r.errors && r.errors.join(", ")))) || "capture failed")}</div>`;
     }
   }
 
@@ -416,14 +416,14 @@ func _init():
     const el = q("gp-play-hint");
     if (!el) return;
     if (S.hasTuner === true) {
-      el.innerHTML = "Live build — <b>F1</b> opens the live tuning overlay: " +
+      el.innerHTML = "Live build - <b>F1</b> opens the live tuning overlay: " +
                      "every <code>@export</code> in the scene, applied as you drag, " +
                      "and kept for the next boot.";
     } else if (S.hasTuner === false) {
-      el.textContent = "Live build — no tuning overlay in this project " +
+      el.textContent = "Live build - no tuning overlay in this project " +
                        "(addons/bgate/bgate_tuner.gd is missing; rescaffold to get it).";
     } else {
-      el.textContent = "Live build — checking for the tuning overlay…";
+      el.textContent = "Live build - checking for the tuning overlay…";
     }
   }
 
@@ -444,7 +444,7 @@ func _init():
     if (inp) {
       inp.disabled = !on;
       inp.placeholder = on ? "steer the agent (course-correct, no restart)…"
-                           : "no live agent — dispatch one to steer it";
+                           : "no live agent - dispatch one to steer it";
       if (!on) inp.value = "";
     }
   }
@@ -491,7 +491,7 @@ func _init():
       if (live) { badge.className = "gp-badge live"; badge.textContent = `● live · pid ${live.pid}`; }
       else if (item && item.status === "dispatched") { badge.className = "gp-badge"; badge.textContent = "dispatched"; }
       else if (item) { badge.className = "gp-badge"; badge.textContent = item.status; }
-      else { badge.className = "gp-badge"; badge.textContent = "—"; }
+      else { badge.className = "gp-badge"; badge.textContent = "-"; }
     }
 
     let act;
@@ -513,7 +513,7 @@ func _init():
 
     if (!steps.length && !act.final) {
       const item = (S.items || []).find(i => i.id === S.selItem);
-      feed.innerHTML = `<div class="gp-empty">${item ? "no agent activity yet — dispatch to start" : "pick a gameplay work item"}</div>`;
+      feed.innerHTML = `<div class="gp-empty">${item ? "no agent activity yet - dispatch to start" : "pick a gameplay work item"}</div>`;
       return;
     }
     let html = steps.map(s => {
@@ -586,7 +586,7 @@ func _init():
     if (!S.selItem) { S.bg.toast("no work item selected", true); return; }
     // null is "backed out"; "" is a confirmed empty reason, which reopen accepts.
     const reason = await S.bg.askText({
-      title: `Reopen #${S.selItem} — what still has to be fixed?`,
+      title: `Reopen #${S.selItem} - what still has to be fixed?`,
       body: "The reason is appended to the brief the next agent reads.",
       label: "reason", ok: "reopen" });
     if (reason == null) return;

@@ -276,7 +276,7 @@ window.SceneBuild = (() => {
     if (sceneId) scene = sceneId;
     if (!scene) scene = bestScene();
     if (!scene){
-      host.innerHTML = `<div class="empty" style="padding:40px">no scene to build — Atlas found no .tscn</div>`;
+      host.innerHTML = `<div class="empty" style="padding:40px">no scene to build - Atlas found no .tscn</div>`;
       return;
     }
     if (!types) types = await readJSON("/api/scene/node/types", {groups:[]});
@@ -405,7 +405,7 @@ window.SceneBuild = (() => {
       <span class="nm" title="${E(n.path)}">${hl(label, q)}</span>
       <span class="ty">${E(n.type === "(instance)" ? "instance" : (n.type || ""))}</span>
       <button class="eye" data-eye="${E(n.path)}" tabindex="-1"
-        title="${vis ? "Hide" : "Show"} ${E(label)} in the game — staged, like every other edit"
+        title="${vis ? "Hide" : "Show"} ${E(label)} in the game - staged, like every other edit"
         aria-label="${vis ? "Hide" : "Show"} ${E(label)}">${
         I(vis ? "visible" : "hidden", 12)}</button>
     </div>`;
@@ -495,14 +495,14 @@ window.SceneBuild = (() => {
     const label = el.querySelector(".nm");
     const name = label ? label.textContent : path;
     b.innerHTML = I(vis ? "visible" : "hidden", 12);
-    b.title = `${vis ? "Hide" : "Show"} ${name} in the game — staged, like `
+    b.title = `${vis ? "Hide" : "Show"} ${name} in the game - staged, like `
             + "every other edit";
     b.setAttribute("aria-label", `${vis ? "Hide" : "Show"} ${name}`);
   }
 
   /* Bring a node into view, opening whatever is hiding it. Called when the
      selection arrives from the viewport, which is the case the tree exists to
-     answer: "I clicked that thing — where does it live?" */
+     answer: "I clicked that thing - where does it live?" */
   function revealTree(path){
     if (!path || !byPath.has(path)) return;
     let grew = false;
@@ -700,7 +700,7 @@ window.SceneBuild = (() => {
         <div class="sb-tree" id="sb-tree" role="tree" aria-label="Scene tree">
           <div class="sb-thd">
             <input id="sb-tq" type="search" value="${E(treeQ)}"
-                   placeholder="filter nodes — Ctrl+F"
+                   placeholder="filter nodes - Ctrl+F"
                    aria-label="Filter the scene tree"
                    oninput="SceneBuild.treeFilter(this.value)">
             <button class="sb-tb" onclick="SceneBuild.treeCollapseAll()"
@@ -713,7 +713,7 @@ window.SceneBuild = (() => {
         <div class="split sb-tsplit" data-split="sb-tree" data-split-var="--sb-tree-w"
              data-split-on=".sb-wrap" data-split-pane="#sb-tree" data-split-edge="start"
              data-split-min="170" data-split-max="46%"
-             aria-label="Resize the scene tree — arrow keys adjust, Home resets"></div>
+             aria-label="Resize the scene tree - arrow keys adjust, Home resets"></div>
         <div class="sb-view" id="sb-view" ${surface==='viewport'?'':'hidden'}></div>
         <div class="sb-canvas" id="sb-canvas" ${surface==='graph'?'':'hidden'}></div>
         <!-- The inspector's edge. 308px was chosen for the property rows, but
@@ -723,7 +723,7 @@ window.SceneBuild = (() => {
         <div class="split sb-split" data-split="sb-side" data-split-var="--sb-side-w"
              data-split-on=".sb-wrap" data-split-pane="#sb-side" data-split-edge="end"
              data-split-min="220" data-split-max="60%"
-             aria-label="Resize the inspector — arrow keys adjust, Home resets"></div>
+             aria-label="Resize the inspector - arrow keys adjust, Home resets"></div>
         <div class="sb-side" id="sb-side"></div>
       </div>`;
 
@@ -920,7 +920,7 @@ window.SceneBuild = (() => {
             E(f.script.split("/").pop())}</b>${f.on === n.path ? ""
             : ` on <b>${E(f.on === "." ? (data.root || "the root") : f.on)}</b>`
           } builds its contents with add_child when the game runs, so anything `
-          + `you set on it is what the script starts from — not what you see `
+          + `you set on it is what the script starts from - not what you see `
           + `in play.`
         : `<b>${E(n.name)}</b> has no children in this file and no script here `
           + `or above it says what fills it. Whatever appears inside it comes `
@@ -1039,7 +1039,7 @@ window.SceneBuild = (() => {
 
       <div class="sb-h">script</div>
       <div class="sb-note">${n.script
-        ? `<b>${E(n.script)}</b>` : `<span class="sb-warn">no script — this node does nothing on its own</span>`}
+        ? `<b>${E(n.script)}</b>` : `<span class="sb-warn">no script - this node does nothing on its own</span>`}
         <div style="margin-top:5px"><button class="sb-b"
           onclick="SceneBuild.swapMenu('${E(n.path)}','script')">${n.script ? "swap script…" : "attach a script…"}</button></div>
       </div>
@@ -1076,15 +1076,15 @@ window.SceneBuild = (() => {
   };
   // Types whose content is data, not children.
   const LEAFY = {
-    TileMapLayer: "Tiles live in this layer's own data, not as child nodes — a " +
+    TileMapLayer: "Tiles live in this layer's own data, not as child nodes - a " +
       "node you add here will NOT become a tile. Put objects in a Node2D " +
       "container beside this layer, so each one can be selected and named.",
-    TileMap: "Tiles live in this node's own data, not as child nodes — a node " +
+    TileMap: "Tiles live in this node's own data, not as child nodes - a node " +
       "you add here will NOT become a tile. Put objects in a Node2D container " +
       "beside it.",
-    CollisionShape2D: "A collision shape is a leaf — its shape is a resource, " +
+    CollisionShape2D: "A collision shape is a leaf - its shape is a resource, " +
       "not a child. Add siblings under the body instead.",
-    CollisionPolygon2D: "A collision polygon is a leaf — add siblings under " +
+    CollisionPolygon2D: "A collision polygon is a leaf - add siblings under " +
       "the body instead.",
   };
 
@@ -1155,7 +1155,7 @@ window.SceneBuild = (() => {
   async function step(path, body, title){
     if (busy) return;
     if (window.SceneView && SceneView.hasPending && SceneView.hasPending()){
-      say(`${SceneView.pending} viewport change(s) are still staged — apply or `
+      say(`${SceneView.pending} viewport change(s) are still staged - apply or `
           + "discard them before changing the scene's structure");
       return;
     }
@@ -1369,7 +1369,7 @@ window.SceneBuild = (() => {
     const picked = (paths || []).map(p => byPath.get(p)).filter(Boolean);
     if (!picked.length) return { error: "select a node first" };
     if (picked.some(n => n.path === "."))
-      return { error: "the root node cannot be duplicated — duplicate what is "
+      return { error: "the root node cannot be duplicated - duplicate what is "
                       + "under it, or copy the scene file" };
     // A node whose ancestor is also selected comes along inside it. Cloning
     // both would put a second copy inside the first.
@@ -1427,10 +1427,10 @@ window.SceneBuild = (() => {
     }
     if (broken.length)
       return { error: `${broken[0]} is an instanced scene whose source this `
-        + "file does not name — there is nothing to make a second copy of. "
+        + "file does not name - there is nothing to make a second copy of. "
         + "Nothing was staged." };
     if (total > CLONE_MAX)
-      return { error: `that is ${total} node(s) — copying it would be ${total} `
+      return { error: `that is ${total} node(s) - copying it would be ${total} `
         + `separate writes to the file. Duplicate ${CLONE_MAX} nodes or fewer, `
         + "or instance a .tscn with `place` instead." };
     return { clones };
@@ -1440,7 +1440,7 @@ window.SceneBuild = (() => {
      from the layer strip's eyes, which are a view filter and write nothing. */
   function setSelectionVisible(want){
     if (surface !== "viewport" || !window.SceneView || !SceneView.list){
-      say("that stages a change, which the viewport surface owns — switch to it");
+      say("that stages a change, which the viewport surface owns - switch to it");
       return;
     }
     SceneView.setVisibleBatch([...selection], want);
@@ -1461,9 +1461,9 @@ window.SceneBuild = (() => {
      where you are pointing, and pasting a chair beside the chair you selected
      rather than into the room you selected is the wrong half of the time. */
   function pasteClipboard(){
-    if (!clipboard){ say("nothing copied yet — Ctrl+C first"); return; }
+    if (!clipboard){ say("nothing copied yet - Ctrl+C first"); return; }
     if (surface !== "viewport"){
-      say("paste stages a change, which the viewport surface owns — switch to it");
+      say("paste stages a change, which the viewport surface owns - switch to it");
       return;
     }
     if (!window.SceneView || !SceneView.list){ say("the viewport is not open"); return; }
@@ -1502,7 +1502,7 @@ window.SceneBuild = (() => {
 
   const stageOnly = () => {
     if (surface === "viewport" && window.SceneView && SceneView.list) return true;
-    say("that stages a change, which the viewport surface owns — switch to it");
+    say("that stages a change, which the viewport surface owns - switch to it");
     return false;
   };
 
@@ -1541,7 +1541,7 @@ window.SceneBuild = (() => {
         SceneView.removeSelected();
       else if (selection.size > 1)
         say(`${selection.size} nodes are selected and the graph surface writes `
-            + "one edit at a time — switch to the viewport to delete a batch");
+            + "one edit at a time - switch to the viewport to delete a batch");
       else remove();
       return;
     }

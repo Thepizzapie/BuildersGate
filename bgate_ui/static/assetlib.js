@@ -196,7 +196,7 @@ window.AssetLib = (() => {
                value="${E(view.search)}" oninput="AssetLib.setSearch(this.value)">
         ${chip(view.status === "used", "good", "AssetLib.setStatus('used')",
                `in use <b>${st.in_use || 0}</b>`,
-               "Reached by a scene or script — including paths the game builds at runtime.")}
+               "Reached by a scene or script - including paths the game builds at runtime.")}
         ${chip(view.status === "unused", "warn", "AssetLib.setStatus('unused')",
                `unused <b>${st.unused || 0}</b>`,
                "On disk, reached by nothing. Approved is not the same as shipping.")}
@@ -204,9 +204,9 @@ window.AssetLib = (() => {
                `needs review`, "Has a candidate revision waiting on a decision.")}
         ${chip(view.status === "rigged", "", "AssetLib.setStatus('rigged')",
                `rigged <b>${st.rigged || 0}</b>`,
-               "Carries a rig sidecar — labelled slots the gear pipeline can read.")}
+               "Carries a rig sidecar - labelled slots the gear pipeline can read.")}
         ${chip(view.status === "unrigged", "", "AssetLib.setStatus('unrigged')",
-               `no rig`, "Image families with no rig sidecar — the gear pipeline has to guess.")}
+               `no rig`, "Image families with no rig sidecar - the gear pipeline has to guess.")}
         <span class="al-sum">${shown.length} of ${
           view.working ? (st.working || 0)
                        : (st.in_use || 0) + (st.unused || 0)} families ·
@@ -223,7 +223,7 @@ window.AssetLib = (() => {
         ${chip(view.dense, "", "AssetLib.toggleDense()", "compact")}
         ${st.working ? chip(view.working, "", "AssetLib.toggleWorking()",
           `working files <b>${st.working}</b>`,
-          "Files outside res://assets/** — the art seat's scratch renders, tmp/, "
+          "Files outside res://assets/** - the art seat's scratch renders, tmp/, "
           + "test fixtures. The engine cannot load any of them, so they are all "
           + "'unused' and none of that is a defect.") : ""}
         ${chip(false, "", "AssetLib.refresh()", "rescan")}
@@ -307,7 +307,7 @@ window.AssetLib = (() => {
     openKey = key;
     let fam = (data && data.families || []).find(f => f.key === key);
     if (!fam) fam = await readJSON(`/api/assets/family?key=${encodeURIComponent(key)}`, null);
-    if (!fam || fam.__error){ say("that family is gone — rescan"); return; }
+    if (!fam || fam.__error){ say("that family is gone - rescan"); return; }
 
     let scrim = document.getElementById("al-scrim");
     if (!scrim){

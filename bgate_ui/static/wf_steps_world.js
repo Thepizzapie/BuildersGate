@@ -43,7 +43,7 @@
       w.text(n, "style", { label: "Style", placeholder: "painterly pixel" }) +
       w.select(n, "mood", { label: "Mood", options: ["day", "dusk", "night"], value: "dusk" }) +
       w.select(n, "quality", { label: "Quality", options: QUALITY, value: "medium" }),
-    config: () => `<div class="wf-insp-p">The stage background / environment plate this workflow paints. Scene, style, mood and quality are set on the node — the mood drives the lighting the art seat paints to, and the quality tier is what the node's price estimate is drawn at.</div>`,
+    config: () => `<div class="wf-insp-p">The stage background / environment plate this workflow paints. Scene, style, mood and quality are set on the node - the mood drives the lighting the art seat paints to, and the quality tier is what the node's price estimate is drawn at.</div>`,
     imageCost: (n) => ({ images: 1, quality: qualityOf(n) }),
     toBrief: (n) => `Generate the ${cfg(n, "scene", "stage")} background in ${cfg(n, "style", "the house")} style, ` +
       `${cfg(n, "mood", "dusk")} lighting, at ${qualityOf(n)} quality, for: ${cfg(n, "scene", "the stage")}.`,
@@ -77,7 +77,7 @@
       w.number(n, "tileCount", { label: "Tiles", min: 4, max: 64, value: 12 }),
     // 64 tiles is real money — the node says so before the run, not after
     imageCost: (n) => ({ images: +cfg(n, "tileCount", 12) || 0, quality: qualityOf(n) }),
-    config: () => `<div class="wf-insp-p">A set of repeatable environment tiles / props for the stage floor and walls. Every piece has to tile seamlessly with its neighbours — that is the whole job.</div>`,
+    config: () => `<div class="wf-insp-p">A set of repeatable environment tiles / props for the stage floor and walls. Every piece has to tile seamlessly with its neighbours - that is the whole job.</div>`,
     toBrief: (n) => `Generate a ${cfg(n, "theme", "stage")} tileset of ~${cfg(n, "tileCount", 12)} ` +
       `repeatable, seamlessly-tiling pieces (floor, walls, edge caps).`,
   });
@@ -92,7 +92,7 @@
       w.select(n, "kind", { label: "Kind", options: ["crowd", "banners", "hazards", "foliage"], value: "crowd" }) +
       w.number(n, "count", { label: "Count", min: 1, max: 32, value: 6 }),
     imageCost: (n) => ({ images: +cfg(n, "count", 6) || 0, quality: qualityOf(n) }),
-    config: () => `<div class="wf-insp-p">Foreground / background props — crowd, banners, hazards — that dress the stage. They inherit the background's palette and mood, so wire this after the background.</div>`,
+    config: () => `<div class="wf-insp-p">Foreground / background props - crowd, banners, hazards - that dress the stage. They inherit the background's palette and mood, so wire this after the background.</div>`,
     toBrief: (n) => `Generate a set of ${cfg(n, "count", 6)} ${cfg(n, "kind", "prop")} pieces ` +
       `(fore/background dressing) matched to the stage palette and mood.`,
   });

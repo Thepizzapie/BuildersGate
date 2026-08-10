@@ -214,7 +214,7 @@
     } else if (f.source === "env_file") {
       note = `saved in this project's <code>.env</code>`;
     } else if (f.using_default) {
-      note = `not set — using the default <code>${esc(f.default)}</code>`;
+      note = `not set - using the default <code>${esc(f.default)}</code>`;
     } else {
       note = `not set`;
     }
@@ -728,7 +728,7 @@
       const now = (r.data.runtimes || []).filter(x => x.id === runtime)[0] || {};
       if (!value.trim()) say("cleared", "ok");
       else if (now.stage === "ready") say(`${now.label} is ready`, "ok");
-      else say(`saved — ${now.reason || now.stage_label || "still not ready"}`);
+      else say(`saved - ${now.reason || now.stage_label || "still not ready"}`);
     },
 
     async clear(id, where, button) {
@@ -779,7 +779,7 @@
       if (!r.ok) { this.said(id, r.error, "warn"); say(r.error); return; }
       this.agents = r.data; this._aread = Date.now();
       this.paint("agents");
-      say("registered — restart that CLI before the tools appear", "ok");
+      say("registered - restart that CLI before the tools appear", "ok");
       this.said(id, "registered. A CLI already running will not see it until "
                   + "you restart it.", "good");
     },
@@ -807,7 +807,7 @@
       this._busy = "";
       if (!r.ok) { this.said(id, r.error, "warn"); return; }
       const d = r.data || {};
-      this.said(id, d.ok ? d.detail : `${d.error || "it could not"} — ${d.output || ""}`,
+      this.said(id, d.ok ? d.detail : `${d.error || "it could not"} - ${d.output || ""}`,
                 d.ok ? "good" : "warn");
     },
 
@@ -818,7 +818,7 @@
       try {
         navigator.clipboard.writeText(line);
         say("command copied", "ok");
-      } catch (e) { say("could not reach the clipboard — select it by hand"); }
+      } catch (e) { say("could not reach the clipboard - select it by hand"); }
     },
   };
 
