@@ -216,16 +216,17 @@ def safe_error(exc: BaseException) -> str:
         # An empty scrub means no scrubber; the type alone is thin but safe.
         return scrubbed or type(exc).__name__
 
-    # Foreign. Log what it actually said — an operator at the terminal is not
-    # the untrusted reader, and an error nobody can diagnose is its own problem.
-    try:
-        print(f"[api] unexpected {type(exc).__module__}.{type(exc).__name__}: "
-              f"{scrub(str(exc)) or '<unprintable>'}")
-    except Exception:                                            # noqa: BLE001
-        pass
-    return (f"{type(exc).__name__} — unexpected failure, details are in the "
-            "server log rather than here because the message came from outside "
-            "this project")
+    # FOREIGN, AND DELIBERATELY NOT LOGGED HERE. An earlier version of this
+    # printed the scrubbed message so an operator could still diagnose it, and
+    # that traded one finding for a worse one: writing a possibly-secret-bearing
+    # string to stdout is clear-text logging of sensitive information, which is
+    # a HIGH, where the thing it was helping with is a MEDIUM. The exception is
+    # not swallowed — it still propagates to whatever raised it and to the
+    # server's own stderr through normal traceback handling; this function's job
+    # is only to decide what goes in the RESPONSE.
+    return (f"{type(exc).__name__} — unexpected failure. The message is not "
+            "shown here because it came from outside this project and may name "
+            "paths or values that are not ours to repeat.")
 
 
 def error_body(status: int, message: str, *, code: Optional[str] = None,
