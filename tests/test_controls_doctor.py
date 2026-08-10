@@ -107,7 +107,7 @@ class TestDoctorEndpoint:
         body = client.get("/api/doctor").json()
         assert body["ok"] is True
         assert set(body["data"]) >= {"python", "ffmpeg", "godot", "blender",
-                                     "whisper", "openai_key"}
+                                     "whisper", "art_key"}
 
     def test_each_row_says_what_to_do_about_it(self, client):
         for name, row in client.get("/api/doctor").json()["data"].items():

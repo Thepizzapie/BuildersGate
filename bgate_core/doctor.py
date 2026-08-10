@@ -47,8 +47,20 @@ from typing import Callable, Optional
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # The order is the report order — cheap/local first, subprocess-spawning last.
-CHECKS = ("python", "openai_key", "ffmpeg", "ffprobe", "blender", "godot",
-          "godot_web_templates", "whisper", "imageto3d", "local_image")
+#
+# `art_key` REPLACED `openai_key`, and the rename is the fix rather than a
+# tidy-up. The old row probed OPENAI_API_KEY and nothing else, so a project
+# whose only credential was KREA_API_KEY — a key `.env.example` and the setup
+# docs both tell people to set, and which every art tool will happily use — got
+# `MISS openai_key` and a NON-ZERO EXIT while its setup was completely fine.
+# That was documented as a known wart in CLAUDE.md and in three doc pages, which
+# is what a wrong health check costs: everybody downstream writes a paragraph
+# explaining when to ignore it. The row now asks bgate_core.providers, so it is
+# green when ANY registered provider has a key and a third provider needs no
+# edit here.
+CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
+          "ffprobe", "blender", "godot", "godot_web_templates", "whisper",
+          "imageto3d", "local_image")
 
 # What the code in this repo actually assumes, not aspirational floors.
 # blender: the default warmup engine is BLENDER_EEVEE_NEXT, which is 4.2+.
@@ -56,7 +68,22 @@ CHECKS = ("python", "openai_key", "ffmpeg", "ffprobe", "blender", "godot",
 # whisper: faster-whisper's segment API (word confidences) settled at 0.10.
 MIN_REQUIRED = {
     "python": "3.10",
-    "openai_key": "",
+    "art_key": "",
+    # Next to art_key on purpose: the two answer one question between them —
+    # "can this project generate anything" — from the two directions it can be
+    # answered from. art_key asks whether something is rented; this asks whether
+    # something is running here. A project needs one of them, not both, and a
+    # red row here is not a fault on a machine that never wanted local
+    # generation.
+    "local_runtimes": "",
+    # No floor, but the least optional of the optional rows: the failure it
+    # catches is a coding-agent CLI that is installed and registered and STILL
+    # cannot reach the tools, because the registration names an interpreter
+    # without Builders Gate in it. CLAUDE.md calls that the single most common
+    # Windows failure, `claude mcp list` cannot see it, and the CLI's own error
+    # ("failed to connect") points nowhere near the cause. Nothing else in this
+    # report would go red for it.
+    "agent_cli": "",
     "ffmpeg": "",
     "ffprobe": "",
     "blender": "4.2",
@@ -160,16 +187,42 @@ def _probe_python() -> dict:
                    f"{platform.python_version()} ({platform.python_implementation()})")
 
 
-def _probe_openai_key() -> dict:
-    """Presence only. Never print, hash, or validate the key against the API —
-    a health check that spends money is a health check nobody runs."""
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not key:
-        return _missing("openai_key",
-                        "OPENAI_API_KEY not set — put it in the project's .env "
-                        "(it is loaded from the project root) or the environment")
-    return _row(available=True, path="OPENAI_API_KEY",
-                version=f"set ({len(key)} chars)", min_required="")
+def _probe_art_key() -> dict:
+    """Is ANY art-generation provider configured?
+
+    Presence only. Never print, hash, or validate a key against the API — a
+    health check that spends money is a health check nobody runs, and one that
+    prints the thing it is checking is worse than not having it.
+
+    The provider list comes from the registry, so this row is green for a
+    Krea-only project (it used to be red, and the exit code with it) and a third
+    provider will not need a line here.
+
+    IT IS ``art_providers()``, NOT ``PROVIDERS``, and the difference arrived
+    with the first credential that generates nothing. Deepgram does speech in
+    and out; counting it here would print a green art row for a project that
+    cannot produce one image, which is the same lie in the other direction as
+    the openai-only probe this function was written to replace.
+    """
+    try:
+        from bgate_core import providers
+    except Exception as exc:  # noqa: BLE001 - registry unimportable is its own red row
+        return _missing("art_key", f"provider registry unavailable: {exc}")
+    art = providers.art_providers()
+    have = [one.env for one in art if (os.environ.get(one.env) or "").strip()]
+    if not have:
+        names = [one.env for one in art]
+        listed = (" or ".join(names) if len(names) < 3
+                  else ", ".join(names[:-1]) + " or " + names[-1])
+        return _missing(
+            "art_key",
+            f"no art-generation key set — put one of {listed} in the project's "
+            ".env (it is loaded from the project root) or the environment; "
+            "local generation still works without any of them")
+    # The NAMES of the configured variables, never their values or lengths.
+    return _row(available=True, path=", ".join(have),
+                version=f"{len(have)} of {len(art)} providers",
+                min_required="")
 
 
 def _probe_ffmpeg() -> dict:
@@ -298,9 +351,60 @@ def _probe_local_image() -> dict:
                 reason="" if ok else row.get("detail", ""))
 
 
+def _probe_local_runtimes() -> dict:
+    """Which generators on THIS machine could run right now.
+
+    Sits beside art_key because between them they answer "can this project make
+    anything at all", from the two directions it can be answered from. A red row
+    here means every local generator is either unset or not running; the hosted
+    paths are untouched, which is why the reason says so.
+
+    Root is not passed — like every probe here it reads the environment
+    ``check()`` has already loaded the project's .env into.
+    """
+    try:
+        from bgate_core import localruntimes
+    except Exception as exc:                                     # noqa: BLE001
+        return _missing("local_runtimes", f"registry unavailable: {exc}")
+    row = localruntimes.doctor_row()
+    ok = bool(row.get("available"))
+    # `path` is what IS there, never what is missing — same rule as
+    # _probe_local_image, for the same reason.
+    return _row(available=ok, path=row.get("detail", "") if ok else "",
+                min_required=MIN_REQUIRED["local_runtimes"],
+                reason="" if ok else row.get("detail", ""))
+
+
+def _probe_agent_cli() -> dict:
+    """Is a coding-agent CLI installed AND actually wired to this interpreter.
+
+    "Installed" was never the whole question and was the only half anything
+    checked. A registration pointing at the wrong Python looks identical to a
+    working one in ``claude mcp list``, fails at the first tool call, and
+    reports "failed to connect".
+
+    ``bgate_ui.agentcli`` lives on the UI side because it reads
+    ``bgate_ui.runners``, which is where "which CLIs exist" is answered. The
+    import is lazy and guarded — the same shape ``brainstorm`` and
+    ``workflows`` already use to reach the UI layer from core, and neither that
+    module nor ``runners`` pulls in FastAPI, so this costs a doctor run nothing.
+    """
+    try:
+        from bgate_ui import agentcli
+    except Exception as exc:                                     # noqa: BLE001
+        return _missing("agent_cli", f"wiring registry unavailable: {exc}")
+    row = agentcli.doctor_row()
+    ok = bool(row.get("available"))
+    return _row(available=ok, path=row.get("detail", "") if ok else "",
+                min_required=MIN_REQUIRED["agent_cli"],
+                reason="" if ok else row.get("detail", ""))
+
+
 _PROBES: dict[str, Callable[[], dict]] = {
     "python": _probe_python,
-    "openai_key": _probe_openai_key,
+    "art_key": _probe_art_key,
+    "local_runtimes": _probe_local_runtimes,
+    "agent_cli": _probe_agent_cli,
     "ffmpeg": _probe_ffmpeg,
     "ffprobe": _probe_ffprobe,
     "blender": _probe_blender,

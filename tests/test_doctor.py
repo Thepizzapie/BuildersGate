@@ -92,7 +92,13 @@ def nothing_present(monkeypatch):
                         lambda: {"name": "local_image", "available": False,
                                  "detail": "BGATE_COMFY_T2I_WORKFLOW is not set",
                                  "optional": True})
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # DERIVED FROM THE PROVIDER REGISTRY, for the same reason this module's
+    # other list is derived from doctor.CHECKS: this line named OPENAI_API_KEY
+    # alone, so the moment `art_key` started counting every provider, a machine
+    # with a Krea key made "a bare machine" report art as available.
+    from bgate_core import providers
+    for var in providers.env_vars():
+        monkeypatch.delenv(var, raising=False)
 
 
 # ---------------------------------------------------------------------------
