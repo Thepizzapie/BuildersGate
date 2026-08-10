@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 # path -> the (mtime_ns, size) we last loaded. Keyed on the STAMP, not just
 # "seen it", because the miss this fixes is the common one: the server says
@@ -27,9 +28,69 @@ from pathlib import Path
 _stamps: dict[str, tuple[int, int]] = {}
 
 
+def global_dir() -> Path:
+    """The user-scoped Builders Gate directory that holds the machine-wide .env.
+
+    Same directory the project registry and the active-project pointer already
+    live in (``~/.bgate``, or ``BGATE_HOME``), and for the same reason: it is
+    the one place on the machine that belongs to this product rather than to any
+    one game. Its own docstring promises nothing game-shaped ever lands there,
+    which a credential satisfies — a key belongs to the person, not the project.
+
+    Imported lazily so this module keeps its "no bgate imports" shape; the
+    fallback matters on the path where ``project`` cannot be imported at all,
+    because a key store that silently moves is worse than one that is missing.
+    """
+    try:
+        from bgate_core import project
+
+        return project.user_dir()
+    except Exception:
+        override = os.environ.get("BGATE_HOME")
+        return Path(override).expanduser() if override else Path.home() / ".bgate"
+
+
+def global_path() -> Path:
+    """``~/.bgate/.env`` — the machine-wide key file."""
+    return global_dir() / ".env"
+
+
+def load_env(root: Optional[str | os.PathLike[str]] = None) -> dict[str, list[str]]:
+    """Load the project's .env and then the machine-wide one. Keys, never values.
+
+    ORDER IS THE PRECEDENCE, and it is the only thing here that is load-bearing.
+    :func:`load_project_env` refuses to overwrite a name already in
+    ``os.environ``, so whatever is loaded FIRST wins:
+
+        shell environment  >  project .env  >  ~/.bgate/.env
+
+    Most specific first, which is the rule every layer of this product already
+    follows. A shell export still beats both — that was already true and is why
+    the status panel has a ``shadowed`` state. The project beats the global
+    because standing in a project is a statement about which credentials you
+    mean, exactly as ``require_root`` treats standing in a project as beating
+    the remembered active one.
+
+    Returns ``{"project": [...], "global": [...]}`` so a caller can say which
+    layer supplied what. ``root=None`` loads the global layer alone, which is
+    the whole point of there being one: a tool that needs a key and not a game
+    should not have to invent a project to hold it.
+    """
+    loaded = {"project": [], "global": []}
+    if root:
+        loaded["project"] = load_project_env(root)
+    loaded["global"] = load_project_env(global_dir())
+    return loaded
+
+
 def load_project_env(root: str | os.PathLike[str]) -> list[str]:
     """Load <root>/.env into os.environ, re-reading it whenever the file has
-    changed since the last load. Returns loaded KEYS only — never values."""
+    changed since the last load. Returns loaded KEYS only — never values.
+
+    ``root`` is any directory holding a ``.env``; :func:`global_dir` is passed
+    here too, which is what makes the machine-wide store the same code path as a
+    project's rather than a second parser to keep in step.
+    """
     path = Path(root) / ".env"
     key = str(path.resolve())
     try:

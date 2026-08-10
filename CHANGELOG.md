@@ -19,6 +19,25 @@ measurements and with what was deliberately not built, in
 
 ### Added
 
+- **Machine-wide API keys (`~/.bgate/.env`), and `bgate key` to manage them.**
+  A credential belongs to the person, not to one game, and it used to be
+  reachable only through a project root — so the tool you would reach for to
+  diagnose a missing key was the one tool you could not run without a project.
+  Keys now resolve through three layers, most specific first: a shell variable
+  beats the project `.env`, which beats the machine-wide one. `bgate key` prints
+  which layer is actually in force per provider, which is the question worth
+  asking when a key is set and nothing works. Clearing a project key *uncovers*
+  the machine-wide one rather than leaving the provider unset until a restart.
+
+  `bgate key set <provider> [--global]` prompts with echo off and takes no key
+  argument at all — the project's own rule has been "never put one on a command
+  line" since a key was committed once, and a convenience flag would be that
+  rule with an exception carved into it. The dashboard's Generators panel has
+  the same choice as a tick box. There is deliberately **no MCP tool** that
+  writes a key: an agent that can write credentials can hand itself a provider
+  nobody paid for. `~/.bgate/.env` is written `0600`, and `~/.bgate` is not a
+  repository, so it has nothing to leak into.
+
 - **The anchor is a model sheet now (`anchor_views`, default 3).** The largest
   single lever found, and it is a reference policy rather than a mechanism. Every
   reference a sprite run carried was the *same view* of the character — one
