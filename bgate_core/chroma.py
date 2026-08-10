@@ -781,7 +781,12 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
             # have been competing for one array.
             trained = _trained_styles(root)
             result = krea.generate(prompt, str(out_path),
-                                   model=model or krea.DEFAULT_MODEL, size=size,
+                                   # Kind-aware, not one default for everything:
+                                   # character work needs a model that EDITS a
+                                   # reference, and the general default only
+                                   # STYLES from one. See krea.model_for.
+                                   model=model or krea.model_for(task_kind),
+                                   size=size,
                                    seed=seed, style_refs=refs or None,
                                    styles=trained or None,
                                    quality=quality, task_kind=task_kind,

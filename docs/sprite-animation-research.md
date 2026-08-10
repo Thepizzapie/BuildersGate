@@ -46,6 +46,26 @@ is two generations per character against a run that pays one per pose plus up to
 one more per re-roll — a twelve-pose set goes from 13 calls to 15 before it has
 prevented a single re-roll. `anchor_views=1` restores the old behaviour.
 
+**The model matters as much as the references.** On Krea, character work is now
+pinned to `nano-banana-2` rather than the provider's general default. The
+catalogue already draws the line that matters: `krea-2-large` and `krea-2-medium`
+condition on a reference as **style** — they follow a look and owe nothing to a
+pose — while a second group takes references as **edit** inputs. The measurement
+is recorded in the adapter itself: on the party idles, krea-2-medium drew a
+**face** in seven of eight frames when four of them were specified as back views.
+A style reference cannot be asked to hold a subject through a pose change,
+because holding the subject is not what it does. `nano-banana-2` uses the same
+`image_urls` edit contract as `nano-banana-pro` at a quarter of the price, keeps
+`styles` so a trained LoRA still rides alongside, and at a flat $0.06 is
+marginally cheaper than krea-2-large's $0.065-with-references. Scoped to the
+`anchor` and `animation` kinds only — an item, a prop, a decal or a VFX key frame
+has no pose continuity to preserve.
+
+That pin exposed a second thing worth fixing: `image_sprites` priced every run
+off the gpt-image quality table whichever provider was named, so the spend gate
+under-quoted every Krea run. Krea prices per model and payload rather than per
+quality, and the gate reads its numbers now.
+
 Related, and free: `ideogram-3` is the only model in the Krea catalogue with a
 dedicated `character_reference_images` field rather than a style slot doing two
 jobs — which is exactly the split the art brief's rule 4 says cannot share a

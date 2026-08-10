@@ -166,6 +166,105 @@ async def test_the_extra_views_are_priced_before_anything_is_bought(root, calls)
     assert calls == [], "the gate must refuse BEFORE the first call"
 
 
+class TestTheCharacterModelPin:
+    """Character work on Krea goes to an EDIT model, not a STYLE one.
+
+    The distinction is the catalogue's own, and so is the evidence: a style
+    reference follows a look and owes nothing to a pose, and krea-2-medium drew
+    a face in seven of eight frames when four were specified as back views.
+    """
+
+    def test_character_kinds_get_the_edit_model(self):
+        from bgate_adapters import krea
+
+        assert krea.model_for("anchor") == "nano-banana-2"
+        assert krea.model_for("animation") == "nano-banana-2"
+        assert krea.CHARACTER_MODEL in krea.MODELS
+
+    def test_the_pinned_model_actually_edits_rather_than_styles(self):
+        """The pin is only worth anything if the model it names takes its
+        references as edit inputs. If this ever flips, the pin is a no-op that
+        reads like a fix."""
+        from bgate_adapters import krea
+
+        spec = krea.MODELS[krea.CHARACTER_MODEL]
+        assert spec["ref_field"] == "image_urls"
+        assert spec["ref_plain"] is True
+        # A trained LoRA must still be able to ride alongside — that is the
+        # whole point of training one: the style rides the LoRA so the
+        # reference slot is free to carry identity.
+        assert "styles" in spec["supports"]
+
+    def test_it_is_not_a_cost_regression(self):
+        from bgate_adapters import krea
+
+        anchored_default = krea.price_for(krea.DEFAULT_MODEL, style_refs=3)
+        anchored_pinned = krea.price_for(krea.CHARACTER_MODEL, style_refs=3)
+        assert anchored_pinned <= anchored_default
+
+    def test_everything_else_keeps_the_general_default(self):
+        """Narrow on purpose. An item, a prop, a decal or a VFX key frame has no
+        pose continuity to preserve, and none of them should change provider
+        behaviour because this constant exists."""
+        from bgate_adapters import krea
+
+        for kind in ("item", "prop", "decal", "vfx", "background", "tile", ""):
+            assert krea.model_for(kind) == krea.DEFAULT_MODEL
+
+    def test_an_explicit_model_still_wins(self, monkeypatch, tmp_path):
+        """The pin is a default, not a lock."""
+        from bgate_core import chroma
+
+        seen = {}
+
+        def fake_krea_generate(prompt, out_path, **kw):
+            seen["model"] = kw.get("model")
+            return {"ok": False, "error": "stopped after routing"}
+
+        monkeypatch.setattr("bgate_adapters.krea.generate", fake_krea_generate)
+        chroma.generate("x", str(tmp_path / "o.png"), provider="krea",
+                        task_kind="animation", model="krea-2-medium")
+        assert seen["model"] == "krea-2-medium"
+
+    def test_the_route_is_taken_for_real(self, monkeypatch, tmp_path):
+        from bgate_core import chroma
+
+        seen = {}
+
+        def fake_krea_generate(prompt, out_path, **kw):
+            seen["model"] = kw.get("model")
+            return {"ok": False, "error": "stopped after routing"}
+
+        monkeypatch.setattr("bgate_adapters.krea.generate", fake_krea_generate)
+        chroma.generate("x", str(tmp_path / "o.png"), provider="krea",
+                        task_kind="animation")
+        assert seen["model"] == "nano-banana-2"
+
+        chroma.generate("x", str(tmp_path / "o.png"), provider="krea",
+                        task_kind="background")
+        assert seen["model"] == "krea-2-large"
+
+
+@pytest.mark.anyio
+async def test_krea_runs_are_priced_on_kreas_own_numbers(root, calls,
+                                                         monkeypatch):
+    """The spend gate is a cap, not an invoice — and it used to read the
+    gpt-image price table whichever provider was named, which under-quoted
+    every Krea run."""
+    from bgate_adapters import krea
+
+    unit = krea.price_for(krea.CHARACTER_MODEL, style_refs=1)
+    # 1 anchor + 2 model-sheet views + 2 poses, all at Krea's flat per-request
+    # price rather than gpt-image's quality tiers.
+    expected = round(unit * 5, 4)
+
+    got = await call("image_sprites", character_prompt="a boxer", poses=POSES,
+                     name="boxer", provider="krea",
+                     max_cost_usd=expected - 0.01, project_dir=str(root))
+    assert got.get("ok") is False and got["stage"] == "spend_gate"
+    assert got["estimated_usd"] == pytest.approx(expected, abs=0.001)
+
+
 @pytest.mark.anyio
 async def test_a_view_that_fails_is_dropped_not_fatal(root, calls, monkeypatch):
     """An auxiliary view improves the anchor; it is not part of it. Failing the
