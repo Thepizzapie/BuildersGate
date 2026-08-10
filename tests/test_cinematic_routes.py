@@ -118,3 +118,47 @@ class TestGuards:
     def test_recover_needs_a_sequence(self, client):
         assert client.post("/api/cinematic/recover",
                            json={"idx": 1}).status_code == 400
+
+
+class TestPostProductionEndpoints:
+    def test_transitions_are_served_with_their_costs(self, client):
+        got = data(client.get("/api/cinematic/transitions"))
+        assert got["default"] == "cut"
+        assert set(got["transitions"]) >= {"cut", "fade", "dissolve"}
+        assert all(t["note"] for t in got["transitions"].values())
+
+    def test_a_plan_accepts_the_sound_and_transition_fields(self, client):
+        got = data(client.post("/api/cinematic/plan", json={
+            "name": "scored", "audio_track": "game/assets/audio/music/x.mp3",
+            "audio_gain_db": -6, "fade_in": 0.5, "fade_out": 1.0,
+            "shots": [{"action": "a", "duration": 5},
+                      {"action": "b", "duration": 5,
+                       "transition": "dissolve", "transition_s": 1.0,
+                       "dialogue": "a line"}]}))
+        assert got["audio_track"].endswith("x.mp3")
+        assert got["fade_in"] == 0.5
+        assert [s["transition"] for s in got["shots"]] == ["cut", "dissolve"]
+
+    def test_an_impossible_transition_is_a_400(self, client):
+        r = client.post("/api/cinematic/plan", json={
+            "name": "bad", "shots": [{"action": "a", "duration": 5},
+                                     {"action": "b", "duration": 5,
+                                      "transition": "fade",
+                                      "transition_s": 5}]})
+        assert r.status_code == 400
+        assert "as long as the shot" in r.text
+
+    def test_deliver_needs_a_sequence(self, client):
+        assert client.post("/api/cinematic/deliver",
+                           json={}).status_code == 400
+
+    def test_delivering_an_unassembled_sequence_is_a_400_that_explains(
+            self, client):
+        client.post("/api/cinematic/plan", json={
+            "name": "raw", "shots": [{"action": "a", "duration": 5}]})
+        r = client.post("/api/cinematic/deliver", json={"name": "raw"})
+        assert r.status_code == 400 and "assembled" in r.text
+
+    def test_continuity_needs_a_sequence(self, client):
+        assert client.post("/api/cinematic/continuity",
+                           json={}).status_code == 400

@@ -126,6 +126,7 @@ NOT_TOOLS = {
     "ref_images", "ref_strength", "task_kind", "tileable", "unweighted_verts",
     "use_pinned", "source_ref", "work_item_id",
     "first_frame", "last_frame", "style_note", "style_refs",
+    "audio_track", "transition_s",
     # not ours
     "add_child", "one_of",
 }

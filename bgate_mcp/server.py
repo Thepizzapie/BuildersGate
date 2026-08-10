@@ -7115,7 +7115,9 @@ def cinematic_options() -> dict:
 def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
                    style_note: str = "", style_refs: Optional[list] = None,
                    model: str = "", aspect_ratio: str = "16:9",
-                   resolution: str = "720p") -> dict:
+                   resolution: str = "720p", audio_track: str = "",
+                   audio_gain_db: float = 0.0, fade_in: float = 0.0,
+                   fade_out: float = 0.0) -> dict:
     """Write a cutscene's shot list. SPENDS NOTHING — do this first, always.
 
     `shots` is a list of objects, in cut order. Each takes:
@@ -7126,6 +7128,23 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
       first_frame  a repo-relative path to an APPROVED still to open on
       last_frame   a still to land on. For a deliberate match cut ONLY.
       refs         repo-relative paths to reference stills for identity
+      transition   how the PREVIOUS shot becomes this one: cut (default, free),
+                   fade, dissolve, wipe. cinematic_transitions explains each.
+      transition_s the handle, default 0.5s. A transition overlaps both shots,
+                   so the cut is SHORTER than the sum of its durations.
+      vo           a voice-over clip for this shot
+
+    SOUND. audio_track is a repo-relative path to the bed laid under the whole
+    cutscene — a track the audio seat kept, or a hand mix. Without it the cut is
+    SILENT: models generate audio baked into the picture, which cannot be
+    separated, ducked or localised, so this pipeline keeps the picture clean and
+    scores it here. audio_gain_db trims the bed under dialogue (-6 is a usual
+    starting point); fade_in/fade_out fade both picture and sound.
+
+    DIALOGUE BECOMES SUBTITLES automatically. Timing is derived from the shot
+    durations and the transitions between them at assemble time, and written as
+    both .srt (what a translator opens) and .json (what the delivered scene
+    reads). Nothing stores caption timing, so it cannot drift from the shot list.
 
     STYLE — "cutscenes in whatever style" — has three levers, weakest first,
     and all three are applied to EVERY shot automatically:
@@ -7170,6 +7189,9 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
                           style=style, style_note=style_note,
                           style_refs=list(style_refs or []), model=model,
                           aspect_ratio=aspect_ratio, resolution=resolution,
+                          audio_track=audio_track,
+                          audio_gain_db=float(audio_gain_db),
+                          fade_in=float(fade_in), fade_out=float(fade_out),
                           work_item_id=_work_item_id())
     except Exception as exc:
         return _fail(exc)
@@ -7273,25 +7295,35 @@ def cinematic_candidates(logical_name: str = "", limit: int = 100) -> dict:
 
 
 @_tool
-def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6) -> dict:
-    """TRANSCODE a clip into the engine project and approve the revision.
+def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6,
+                   install_to_engine: Optional[bool] = None) -> dict:
+    """Approve a take, and put it in the engine project if the engine loads it.
 
-    Not a copy — a conversion, and that is the whole reason this tool is not
-    music_keep with a different noun. Godot plays Ogg Theora and only Ogg
-    Theora; the .mp4 every model returns is not merely unsupported but produces
-    NO IMPORT ERROR, so copying one in leaves a scene that runs perfectly with a
-    blank rectangle where the cutscene was. This writes .ogv with the engine
-    documentation's own settings (-q:v 6, keyframe interval 64).
+    WHAT GETS INSTALLED DEPENDS ON WHAT IT IS. An assembled CUT is transcoded to
+    Ogg Theora and copied into the game — that is the asset the game plays. A
+    SHOT is approved and stays in .bgate_out, because nothing references it: the
+    game loads the cut, and cinematic_assemble reads the candidates directly.
+    Installing every shot meant a Theora encode each and, at 1080p, tens of
+    megabytes of files nobody asked for.
 
-    quality is 1-10, 6 is the documented baseline; drop to 5 for 1440p+ sources.
-    The transcode happens BEFORE the approval, so a failed conversion can never
-    leave a row saying approved over a game with no file.
+    THE TRANSCODE IS NOT A COPY, and that is why this is not music_keep with a
+    different noun. Godot plays Ogg Theora and only Ogg Theora; the .mp4 every
+    model returns produces NO IMPORT ERROR, so copying one in leaves a scene
+    that runs perfectly with a blank rectangle where the cutscene was. The
+    engine documentation's own settings are used (-q:v 6, keyframe interval 64),
+    and the conversion happens BEFORE the approval so a failure can never leave
+    a row saying approved over a game with no file.
+
+    quality is 1-10, 6 is the documented baseline; drop to 5 for 1440p+.
+    install_to_engine overrides the default either way — pass true for a single
+    clip used on its own, as an attract-mode loop or a sting with no cut.
     """
     try:
         from bgate_core import cinematic as _cine
 
         return _cine.keep(_root(), int(artifact_id), note=note,
-                          quality=int(quality))
+                          quality=int(quality),
+                          install_to_engine=install_to_engine)
     except Exception as exc:
         return _fail(exc)
 
@@ -7436,6 +7468,91 @@ def cinematic_recover_shot(name: str, idx: int, task_id: str = "") -> dict:
 
         return _cine.recover_shot(_root(), name, int(idx), task_id,
                                   work_item_id=_work_item_id())
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_transitions() -> dict:
+    """How two shots may be joined, and what each one costs. Free to read.
+
+    `cut` is the default and needs no filter graph at all, so a sequence of
+    cuts is joined with one decode and one encode. Anything else decodes every
+    shot in full — which is a real cost on a long sequence and the reason the
+    cheap path is the default rather than an option.
+
+    A transition OVERLAPS both shots, so a cut is shorter than the sum of its
+    shot durations, and caption timing is computed from that rather than from
+    the naive sum.
+    """
+    try:
+        from bgate_core import cinecut as _cut
+
+        return {"ok": True, "transitions": _cut.TRANSITIONS,
+                "default": _cut.DEFAULT_TRANSITION}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_continuity(name: str) -> dict:
+    """Do this sequence's shots actually CUT TOGETHER? Costs nothing but time.
+
+    The measured half of the seat's "watch it twice" rule. It extracts the real
+    frames either side of every join and compares overall brightness and colour
+    palette — on the pixels, never on the prompts, because the whole reason a
+    cut fails is that the model did something other than what was asked.
+
+    IT CANNOT TELL YOU THE CUTSCENE IS GOOD and does not try. A cut from a
+    cellar to a snowfield SHOULD jump in brightness. Every finding says what it
+    measured and leaves the verdict to a human.
+
+    Run it BEFORE assembling: the fix for a real mismatch is re-generating a
+    shot, which is a decision to make before paying for the assembly — or
+    softening the join with a dissolve, which is what a dissolve is for.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.check_continuity(_root(), name)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_deliver(name: str, force: bool = False) -> dict:
+    """Build the Godot scene that PLAYS this cutscene. The last mile.
+
+    Keeping a cut installs an .ogv and prints a res:// path, and that is where
+    this pipeline used to stop — leaving a designer to hand-author a
+    VideoStreamPlayer, wire a skip input, drive the captions and work out how to
+    hand control back to gameplay. This writes all four.
+
+    What you get, beside the .ogv in the engine project:
+      <name>.tscn   a CanvasLayer at layer 100, so it draws over whatever is
+                    already rendering — 2D, 3D or the HUD
+      <name>.gd     plays, draws captions off the video's own clock, skips on
+                    ui_cancel/ui_accept, and emits `finished(skipped: bool)`
+      <name>.srt    the caption file a translator opens
+      <name>_captions.json  what the script reads at runtime
+
+    The contract is ONE signal. `finished` fires whether the video ended or the
+    player skipped, because every caller wants the same thing next and branching
+    on which is how a skipped cutscene leaves a game on a black screen.
+
+    Gameplay calls it with three lines:
+        var cut := preload("res://.../<name>.tscn").instantiate()
+        add_child(cut)
+        await cut.finished
+
+    IT WILL NOT OVERWRITE A SCRIPT YOU HAVE EDITED. The .gd is meant to be
+    changed — a project will want its own skip input or a letterbox — so
+    delivery detects a hand-edited file and keeps it. Pass force to replace it.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.deliver(_root(), name, force=bool(force))
     except Exception as exc:
         return _fail(exc)
 

@@ -16,11 +16,14 @@ hypothetical — and is exactly what ffmpeg_status() exists to report.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import shutil
 import subprocess
 
 import pytest
+
+from pathlib import Path
 
 from bgate_core import artifacts, cinematic, seats
 
@@ -149,7 +152,12 @@ def _register_fake(root, seq, idx, *, size="320x240", suffix=".mp4", take=1):
 
 
 class TestKeepingTranscodes:
-    """The single most important behaviour in the module."""
+    """The single most important behaviour in the module.
+
+    Exercised through `install_to_engine=True` because a SHOT is not what the
+    game loads — see TestWhatReachesTheEngineProject. The transcode is the same
+    code either way; what differs is which revisions get it by default.
+    """
 
     @needs_theora
     def test_keeping_writes_ogv_not_mp4(self, root):
@@ -157,7 +165,8 @@ class TestKeepingTranscodes:
         seq = cinematic.sequence(root, "seq")
         art = _register_fake(root, seq, 1)
 
-        out = cinematic.keep(root, art["id"], actor="human")
+        out = cinematic.keep(root, art["id"], actor="human",
+                             install_to_engine=True)
         installed = out["install"]["path"]
         assert installed.endswith(".ogv"), installed
         assert out["install"]["transcoded"] is True
@@ -171,7 +180,8 @@ class TestKeepingTranscodes:
         cinematic.plan(root, "seq", _shots(1))
         seq = cinematic.sequence(root, "seq")
         art = _register_fake(root, seq, 1)
-        out = cinematic.keep(root, art["id"], actor="human")
+        out = cinematic.keep(root, art["id"], actor="human",
+                             install_to_engine=True)
 
         probe = subprocess.run(
             [shutil.which("ffprobe"), "-v", "error", "-select_streams", "v:0",
@@ -197,9 +207,9 @@ class TestKeepingTranscodes:
         cinematic.plan(root, "seq", _shots(1))
         seq = cinematic.sequence(root, "seq")
         first = _register_fake(root, seq, 1, take=1)
-        cinematic.keep(root, first["id"], actor="human")
+        cinematic.keep(root, first["id"], actor="human", install_to_engine=True)
         second = _register_fake(root, seq, 1, take=2)
-        cinematic.keep(root, second["id"], actor="human")
+        cinematic.keep(root, second["id"], actor="human", install_to_engine=True)
 
         by_id = {c["artifact_id"]: c for c in cinematic.kept(root)}
         assert by_id[second["id"]]["installed"] is True
@@ -770,3 +780,273 @@ class TestProvenance:
         out = cinematic.generate_shot(root, "seq", 1)
         meta = artifacts.get(root, out["artifact_id"])["metadata"]
         assert meta["sequence"] == "seq" and meta["shot_idx"] == 1
+
+
+class TestPostProduction:
+    """The five things that turn a folder of clips into a cutscene, wired into
+    the sequence rather than tested standalone (that is test_cinecut.py)."""
+
+    def _bed(self, root, seconds=8):
+        path = root / "game" / "assets" / "audio" / "music" / "theme.mp3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [shutil.which("ffmpeg"), "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", f"sine=frequency=220:duration={seconds}", str(path)],
+            check=True, capture_output=True)
+        return "game/assets/audio/music/theme.mp3"
+
+    def _generated(self, root, monkeypatch, **plan):
+        TestGeneratingAShot()._stub(monkeypatch)
+        seq = cinematic.plan(root, "seq", **plan)
+        for shot in seq["shots"]:
+            out = cinematic.generate_shot(root, "seq", shot["idx"])
+            cinematic.keep(root, out["artifact_id"], actor="human")
+        return cinematic.sequence(root, "seq")
+
+    def test_a_transition_is_stored_and_validated(self, root):
+        seq = cinematic.plan(root, "seq", [
+            {"action": "a", "duration": 5},
+            {"action": "b", "duration": 5, "transition": "dissolve",
+             "transition_s": 1.0}])
+        assert [s["transition"] for s in seq["shots"]] == ["cut", "dissolve"]
+
+    def test_an_unknown_transition_is_refused_at_plan_time(self, root):
+        with pytest.raises(cinematic.CinematicError, match="swirl"):
+            cinematic.plan(root, "seq", [{"action": "a", "duration": 5,
+                                          "transition": "swirl"}])
+
+    def test_a_handle_longer_than_its_shot_is_refused(self, root):
+        """xfade's offset goes negative and ffmpeg still exits 0, having
+        dropped a beat."""
+        with pytest.raises(cinematic.CinematicError, match="cannot be as long"):
+            cinematic.plan(root, "seq", [
+                {"action": "a", "duration": 5},
+                {"action": "b", "duration": 4, "transition": "fade",
+                 "transition_s": 4}])
+
+    @needs_theora
+    def test_a_cut_with_no_bed_says_it_is_silent(self, root, monkeypatch):
+        """Three documents described "the audio seat scores it over the top"
+        while every assembled cut shipped mute. Never silent about silence."""
+        self._generated(root, monkeypatch, shots=_shots(1))
+        out = cinematic.assemble(root, "seq")
+        assert "silent" in out["audio"]["note"].lower()
+
+    @needs_theora
+    def test_a_bed_is_laid_under_the_picture(self, root, monkeypatch):
+        bed = self._bed(root)
+        self._generated(root, monkeypatch, shots=_shots(1), audio_track=bed,
+                        audio_gain_db=-6)
+        out = cinematic.assemble(root, "seq")
+        assert out["audio"]["track"] == bed
+        probe = subprocess.run(
+            [shutil.which("ffprobe"), "-v", "error", "-show_entries",
+             "stream=codec_name", "-of", "csv=p=0", str(root / out["path"])],
+            capture_output=True, text=True, check=True)
+        assert "vorbis" in probe.stdout and "theora" in probe.stdout
+
+    @needs_theora
+    def test_a_bed_that_is_not_on_disk_refuses_rather_than_shipping_mute(
+            self, root, monkeypatch):
+        self._generated(root, monkeypatch, shots=_shots(1),
+                        audio_track="game/assets/audio/music/ghost.mp3")
+        with pytest.raises(cinematic.CinematicError, match="not on disk"):
+            cinematic.assemble(root, "seq")
+
+    @needs_theora
+    def test_dialogue_becomes_caption_files(self, root, monkeypatch):
+        self._generated(root, monkeypatch, shots=[
+            {"action": "a", "duration": 5, "dialogue": "We are the first."},
+            {"action": "b", "duration": 5, "dialogue": "Nobody has been here."}])
+        out = cinematic.assemble(root, "seq")
+        assert out["captions"]["lines"] == 2
+        srt = (root / out["captions"]["srt"]).read_text(encoding="utf-8")
+        assert "We are the first." in srt
+        data = json.loads((root / out["captions"]["json"]).read_text())
+        assert data[0]["end"] <= data[1]["start"]      # never stacked
+
+    @needs_theora
+    def test_the_recorded_runtime_is_measured_not_summed(self, root,
+                                                         monkeypatch):
+        """A transition overlaps both shots, so the sum of the durations is
+        longer than the cut."""
+        self._generated(root, monkeypatch, shots=[
+            {"action": "a", "duration": 5},
+            {"action": "b", "duration": 5, "transition": "dissolve",
+             "transition_s": 1.0}])
+        out = cinematic.assemble(root, "seq")
+        art = artifacts.get(root, out["artifact_id"])
+        assert art["metadata"]["planned_runtime_s"] == 9.0
+        assert art["metadata"]["transitions"] == ["dissolve"]
+
+    @needs_theora
+    def test_continuity_needs_two_shots_and_then_measures(self, root,
+                                                          monkeypatch):
+        one = cinematic.plan(root, "seq", _shots(1))
+        assert "no join to check" in cinematic.check_continuity(root, "seq")["note"]
+        self._generated(root, monkeypatch, shots=_shots(2))
+        got = cinematic.check_continuity(root, "seq")
+        assert len(got["joins"]) == 1
+        assert "luma_delta" in got["joins"][0]
+
+
+class TestDelivery:
+    """An .ogv in the project is a file. A cutscene is a scene, a script and a
+    contract with the caller."""
+
+    def _assembled(self, root, monkeypatch, **plan):
+        TestGeneratingAShot()._stub(monkeypatch)
+        seq = cinematic.plan(root, "seq", **plan)
+        for shot in seq["shots"]:
+            out = cinematic.generate_shot(root, "seq", shot["idx"])
+            cinematic.keep(root, out["artifact_id"], actor="human")
+        cut = cinematic.assemble(root, "seq")
+        cinematic.keep(root, cut["artifact_id"], actor="human")
+        return cut
+
+    def test_delivery_before_assembly_says_so(self, root):
+        cinematic.plan(root, "seq", _shots(1))
+        with pytest.raises(cinematic.CinematicError, match="not been assembled"):
+            cinematic.deliver(root, "seq")
+
+    @needs_theora
+    def test_delivery_before_keeping_says_so(self, root, monkeypatch):
+        """A scene pointing at a file that is not in the project would not load."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1))
+        out = cinematic.generate_shot(root, "seq", 1)
+        cinematic.keep(root, out["artifact_id"], actor="human")
+        cinematic.assemble(root, "seq")
+        with pytest.raises(cinematic.CinematicError, match="has not been kept"):
+            cinematic.deliver(root, "seq")
+
+    @needs_theora
+    def test_the_scene_script_and_captions_land_in_the_project(
+            self, root, monkeypatch):
+        self._assembled(root, monkeypatch, shots=[
+            {"action": "a", "duration": 5, "dialogue": "hello"}])
+        got = cinematic.deliver(root, "seq", actor="human")
+        for key in ("scene", "script", "captions", "video"):
+            assert (root / got[key]).is_file(), (key, got[key])
+        # The translator's file travels too — left in a gitignored scratch dir
+        # is how localisation finds out the captions were never versioned.
+        assert (root / got["scene"]).with_suffix(".srt").is_file()
+
+    @needs_theora
+    def test_the_scene_points_at_the_real_installed_video(self, root,
+                                                          monkeypatch):
+        self._assembled(root, monkeypatch, shots=_shots(1))
+        got = cinematic.deliver(root, "seq")
+        text = (root / got["scene"]).read_text(encoding="utf-8")
+        assert got["video"].endswith(".ogv")
+        assert Path(got["video"]).name in text
+
+    @needs_theora
+    def test_it_hands_gameplay_three_lines_that_name_the_real_scene(
+            self, root, monkeypatch):
+        self._assembled(root, monkeypatch, shots=_shots(1))
+        got = cinematic.deliver(root, "seq")
+        assert got["scene_res"] in got["usage"]
+        assert "await cut.finished" in got["usage"]
+
+    @needs_theora
+    def test_a_hand_edited_script_is_not_overwritten(self, root, monkeypatch):
+        """The .gd is meant to be edited. A second delivery silently reverting
+        those edits would be this product destroying a user's work."""
+        self._assembled(root, monkeypatch, shots=_shots(1))
+        got = cinematic.deliver(root, "seq")
+        script = root / got["script"]
+        script.write_text("# MINE\nextends CanvasLayer\n", encoding="utf-8")
+
+        again = cinematic.deliver(root, "seq")
+        assert again["script_kept"] is True
+        assert script.read_text(encoding="utf-8").startswith("# MINE")
+
+        forced = cinematic.deliver(root, "seq", force=True)
+        assert forced["script_kept"] is False
+        assert cinematic.GENERATED_MARK in script.read_text(encoding="utf-8")
+
+    @needs_theora
+    def test_a_generated_script_is_refreshed_without_force(self, root,
+                                                           monkeypatch):
+        """Only HAND edits are protected — an untouched generated file must
+        pick up a corrected path."""
+        self._assembled(root, monkeypatch, shots=_shots(1))
+        cinematic.deliver(root, "seq")
+        again = cinematic.deliver(root, "seq")
+        assert again["script_kept"] is False
+
+    @needs_theora
+    def test_the_node_name_is_a_legal_godot_identifier(self, root, monkeypatch):
+        """Godot node names take no dots, slashes or colons, and a slug has
+        hyphens."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "The Long Fall", _shots(1))
+        out = cinematic.generate_shot(root, "The Long Fall", 1)
+        cinematic.keep(root, out["artifact_id"], actor="human")
+        cut = cinematic.assemble(root, "The Long Fall")
+        cinematic.keep(root, cut["artifact_id"], actor="human")
+        got = cinematic.deliver(root, "The Long Fall")
+        text = (root / got["scene"]).read_text(encoding="utf-8")
+        assert '[node name="TheLongFall" type="CanvasLayer"]' in text
+
+
+class TestWhatReachesTheEngineProject:
+    """The first build transcoded EVERY kept shot into the game. Nothing
+    references those — the game loads the assembled cut, and assemble() reads
+    the .mp4 candidates directly — so it was a Theora encode per shot and, at
+    1080p, tens of megabytes each of files nobody asked for."""
+
+    @needs_theora
+    def test_a_kept_shot_stays_out_of_the_engine_project(self, root,
+                                                         monkeypatch):
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1))
+        out = cinematic.generate_shot(root, "seq", 1)
+        kept = cinematic.keep(root, out["artifact_id"], actor="human")
+
+        assert kept["installed_to_engine"] is False
+        assert kept["install"] == {}
+        installed = root / "game" / "assets" / "cinematics"
+        assert not installed.exists() or not list(installed.glob("*.ogv"))
+
+    @needs_theora
+    def test_the_assembled_cut_does_reach_the_engine_project(self, root,
+                                                             monkeypatch):
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(2))
+        for idx in (1, 2):
+            out = cinematic.generate_shot(root, "seq", idx)
+            cinematic.keep(root, out["artifact_id"], actor="human")
+        cut = cinematic.assemble(root, "seq")
+        kept = cinematic.keep(root, cut["artifact_id"], actor="human")
+
+        assert kept["installed_to_engine"] is True
+        assert kept["install"]["path"].endswith(".ogv")
+        # Exactly one .ogv in the project: the cutscene, not the intermediates.
+        found = sorted((root / "game" / "assets" / "cinematics").glob("*.ogv"))
+        assert [f.name for f in found] == ["seq.ogv"], found
+
+    @needs_theora
+    def test_a_shot_can_still_be_installed_deliberately(self, root,
+                                                        monkeypatch):
+        """One real case: a single clip used alone as an attract loop or a
+        sting, with no cut around it."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1))
+        out = cinematic.generate_shot(root, "seq", 1)
+        kept = cinematic.keep(root, out["artifact_id"], actor="human",
+                              install_to_engine=True)
+        assert kept["installed_to_engine"] is True
+        assert (root / kept["install"]["path"]).is_file()
+
+    @needs_theora
+    def test_a_shot_is_still_approved_and_assemblable(self, root, monkeypatch):
+        """Not installing must not mean not kept — assemble refuses on any
+        shot that is not kept."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1))
+        out = cinematic.generate_shot(root, "seq", 1)
+        cinematic.keep(root, out["artifact_id"], actor="human")
+        assert cinematic.sequence(root, "seq")["shots"][0]["status"] == "kept"
+        assert cinematic.assemble(root, "seq")["ok"] is True

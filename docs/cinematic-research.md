@@ -274,16 +274,121 @@ One useful negative finding: **Veo 3.1 is not a market `createTask` model at
 all** on kie — it has its own `/api/v1/veo/generate` endpoint, so it needs an
 adapter path rather than a table entry.
 
-## 8. What got built
+## 8. Post-production, or: where "basic video generation" ends
+
+Everything above acquires shots. None of it makes a cutscene. The gap was real
+and one piece of it was worse than a gap — the module docstring, the seat brief
+and this document all said generated audio is off because "the audio seat scores
+it over the top", and **no path existed for that to happen**. Every assembled cut
+shipped silent while three documents described a mechanism. A sentence that reads
+as a design decision and is actually an unbuilt feature is worse than an admitted
+hole, because nobody goes looking for it.
+
+`bgate_core/cinecut.py` is the second half. Five pieces, in dependency order.
+
+### Captions are derived, never stored
+
+Timing comes from the shot durations and the transitions between them. Storing it
+would be a second answer to a question the shot list already answers, and the two
+would disagree the first time anyone changed a duration — with no reason for that
+person to think they had broken the subtitles.
+
+**A transition eats time from both shots.** A 1s dissolve is not 1s of extra
+runtime; both shots are on screen at once, so the cut is a second *shorter* than
+the sum of its parts. Timing captions off the naive sum drifts later and later
+through a sequence — the classic subtitle bug, invisible until the last line of a
+long scene lands over the fade to black.
+
+Two files come out: `.srt` (what a translator opens, and the reason captions are a
+file rather than baked pixels) and `.json` (what the generated scene reads,
+because GDScript parses JSON in one call).
+
+### Transitions, and only paying for them when used
+
+`cut` (default), `fade`, `dissolve`, `wipe`. Cuts with no fades take the concat
+demuxer — one decode, one encode. Anything else needs `xfade`, which decodes every
+shot in full, so a project that wants none never pays for it.
+
+`xfade` chains pairwise and its `offset` is measured on the *output built so far*,
+not the input being added. Get it wrong and ffmpeg still exits 0, having produced
+a cut with a shot missing or a frozen frame at the join.
+
+### Sound, which is a mux and not a re-encode
+
+The picture has already been through Theora once; a second pass to attach an audio
+stream would be generation loss for nothing. `-c:v copy` with a new Vorbis stream
+is the whole operation.
+
+**The video length is authoritative.** `-shortest` would be correct for a
+three-minute track under a forty-second cut and catastrophic for a thirty-second
+track under a forty-second one — it would silently truncate *the cutscene*. So the
+bed is padded with silence and the shortfall is reported.
+
+### Continuity, measured on the pixels
+
+The cut-level twin of the art seat's consistency checks, and it inherits their
+humility: it cannot tell you the cutscene is good. It extracts the real frames
+either side of every join and compares mean luma (Rec. 601 weighted — the eye is
+~6× more sensitive to green than blue, so an unweighted mean misses jumps a viewer
+sees) and palette distance. It reads the *frames*, not the prompts, because the
+whole reason a cut fails is that the model did something other than what was
+asked. Thresholds are deliberately loose: a detector that fires on every join gets
+switched off, which is the art seat's rule 8, already paid for once.
+
+### Delivery, because a file is not a cutscene
+
+Keeping a cut installs an `.ogv` and prints a `res://` path — and that is where
+the pipeline used to stop, leaving a designer to hand-author a
+`VideoStreamPlayer`, wire a skip, drive captions and work out how to hand control
+back. `deliver()` writes all four:
+
+- `<name>.tscn` — a **CanvasLayer at layer 100**, not a Control. A cutscene has to
+  draw over whatever is rendering (2D, 3D, the HUD); a Control would inherit its
+  parent's transform and land wherever that happened to be.
+- `<name>.gd` — plays, draws captions off `stream_position` (a separate timer
+  drifts the moment the video stalls), skips on `ui_cancel`/`ui_accept` with
+  `set_input_as_handled` so the same press does not reach the game underneath,
+  and emits **one** signal.
+- `<name>.srt` and `<name>_captions.json`.
+
+The contract is `finished(skipped: bool)`, fired whether the video ended or the
+player skipped, because every caller wants the same thing next — and branching on
+which is how a skipped cutscene leaves a game stuck on a black screen. Three lines
+call it:
+
+```gdscript
+var cut := preload("res://.../prologue.tscn").instantiate()
+add_child(cut)
+await cut.finished
+```
+
+Delivery **refuses to overwrite a hand-edited script**. The `.gd` is meant to be
+changed — a project will want its own skip input or a letterbox — so a second
+delivery silently reverting those edits would be this product destroying a user's
+work. A generated marker comment distinguishes the two; `force` overrides.
+
+### And what stopped shipping into the game
+
+Keeping a *shot* used to transcode it to Theora and copy it into the project.
+Nothing references those: the game loads the cut, and `assemble()` reads the
+`.mp4` candidates directly. So it was a Theora encode per shot and, at 1080p, tens
+of megabytes each of unreferenced files. Now a cut installs and a shot does not,
+with `install_to_engine` for the one real case — a single clip used alone as an
+attract loop or a sting. A three-shot demo went from 8 files in the project to 5,
+all of them referenced.
+
+## 9. What got built
 
 | Piece | Where |
 |---|---|
+| Captions, transitions, audio mux, continuity, scene generation | `bgate_core/cinecut.py` |
+| Sound / transitions / VO on the shot list | `bgate_core/db.py` migration 0028 |
 | kie file-upload API (`upload_file`), auto-upload of local anchors | `bgate_adapters/kie.py` |
 | The intent layer (`video_input`, `video_capabilities`, `register_video_model`) | `bgate_adapters/kie.py` |
 | Shot lists + style + model (`cine_sequence`, `cine_shot`) | `bgate_core/db.py` migration 0027 |
 | Styles, plan / generate / keep / assemble / transcode / recover | `bgate_core/cinematic.py` |
 | The seat, its lane, its workflow and its trap | `bgate_core/seats.py` |
-| Thirteen MCP tools (`cinematic_*`) | `bgate_mcp/server.py` |
+| Sixteen MCP tools (`cinematic_*`) | `bgate_mcp/server.py` |
 | Dashboard endpoints | `bgate_ui/routes/cinematic.py` |
 | The seat workspace | `bgate_ui/static/seats/cinematic.js` |
 | `video` asset kinds (`.mp4`, `.ogv`, `.webm`, `.mov`) | `bgate_core/assets.py` |
@@ -294,9 +399,11 @@ The working loop:
 ```
 cinematic_plan          # free. the only point a sequence can be argued with cheaply
 cinematic_generate_shot # one shot per call, deliberately. watch it. re-roll or keep
-cinematic_keep          # TRANSCODES to .ogv into the engine project, then approves
-cinematic_assemble      # joins the kept shots into one .ogv
-cinematic_keep          # the cut itself
+cinematic_keep          # approves the shot (stays out of the engine project)
+cinematic_continuity    # do these shots cut together? free, and before you assemble
+cinematic_assemble      # joins with transitions, lays the score under, times captions
+cinematic_keep          # the cut — THIS one transcodes into the engine project
+cinematic_deliver       # the .tscn, the script, the skip, the finished signal
 ```
 
 **The shot list is a table, not metadata**, and that is the one place this

@@ -71,12 +71,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
-from . import activity, artifacts, assets, db
+from . import activity, artifacts, assets, cinecut, db
 from .util import rows, slugify
 
 # Where shots land. Under .bgate_out because a generated shot is scratch until a
@@ -410,6 +411,8 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
          logline: str = "", style: str = "", style_note: str = "",
          style_refs: Optional[list] = None, model: str = "",
          aspect_ratio: str = "16:9", resolution: str = "720p",
+         audio_track: str = "", audio_gain_db: float = 0.0,
+         fade_in: float = 0.0, fade_out: float = 0.0,
          work_item_id: Optional[int] = None) -> dict:
     """Write (or rewrite) a sequence's shot list. Costs nothing, spends nothing.
 
@@ -480,8 +483,9 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
             """
             INSERT INTO cine_sequence (name, logline, style, style_note,
                                        style_refs_json, model, aspect_ratio,
-                                       resolution, work_item_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       resolution, audio_track, audio_gain_db,
+                                       fade_in, fade_out, work_item_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET
                 logline = excluded.logline, style = excluded.style,
                 style_note = excluded.style_note,
@@ -489,11 +493,15 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
                 model = excluded.model,
                 aspect_ratio = excluded.aspect_ratio,
                 resolution = excluded.resolution,
+                audio_track = excluded.audio_track,
+                audio_gain_db = excluded.audio_gain_db,
+                fade_in = excluded.fade_in, fade_out = excluded.fade_out,
                 updated_at = datetime('now')
             """,
             (stem, logline.strip(), style.strip(), style_note.strip(),
              json.dumps(refs_out), chosen, aspect_ratio, resolution,
-             work_item_id))
+             audio_track.strip(), float(audio_gain_db), float(fade_in),
+             float(fade_out), work_item_id))
         seq_id = int(conn.execute(
             "SELECT id FROM cine_sequence WHERE name = ?", (stem,)).fetchone()[0])
 
@@ -518,13 +526,15 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
                 """
                 INSERT INTO cine_shot (sequence_id, idx, slug, action, camera,
                                        dialogue, duration, first_frame,
-                                       last_frame, refs_json, artifact_id,
+                                       last_frame, refs_json, transition,
+                                       transition_s, vo, artifact_id,
                                        task_id, status, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (seq_id, index, shot["slug"], shot["action"], shot["camera"],
                  shot["dialogue"], shot["duration"], shot["first_frame"],
                  shot["last_frame"], json.dumps(shot["refs"]),
+                 shot["transition"], shot["transition_s"], shot["vo"],
                  carried["artifact_id"] if carried else None,
                  carried["task_id"] if carried else "",
                  carried["status"] if carried else "planned",
@@ -582,9 +592,27 @@ def _clean_shots(shots: list) -> tuple[list[dict], list[str]]:
                 "past that expect drift in whatever the shot is holding still. "
                 "Generated anyway.")
         refs = [str(r) for r in (raw.get("refs") or []) if str(r).strip()]
+        transition = str(raw.get("transition")
+                         or cinecut.DEFAULT_TRANSITION).strip().lower()
+        if transition not in cinecut.TRANSITIONS:
+            raise CinematicError(
+                f"shot {index} asks for a {transition!r} transition; known: "
+                f"{sorted(cinecut.TRANSITIONS)}")
+        # A HANDLE LONGER THAN THE SHOT EATS THE SHOT. xfade's offset goes
+        # negative and ffmpeg still exits 0, having dropped a beat — so this is
+        # clamped here rather than discovered by watching the cut.
+        hold = float(raw.get("transition_s") or 0.5)
+        if transition != "cut" and hold >= duration:
+            raise CinematicError(
+                f"shot {index} is {duration}s with a {hold}s {transition} — a "
+                "transition cannot be as long as the shot it joins. Shorten the "
+                "handle or lengthen the shot.")
         cleaned.append({
             "slug": _unique_slug(raw.get("slug"), index, used),
             "action": action,
+            "transition": transition,
+            "transition_s": hold if transition != "cut" else 0.0,
+            "vo": str(raw.get("vo") or "").strip(),
             "camera": str(raw.get("camera") or "").strip(),
             "dialogue": str(raw.get("dialogue") or "").strip(),
             "duration": duration,
@@ -1193,35 +1221,79 @@ def keyframes_for(root: str | os.PathLike[str], shot: dict,
 # ---------------------------------------------------------------------------
 
 def keep(root: str | os.PathLike[str], artifact_id: int, *, note: str = "",
-         quality: int = DEFAULT_QUALITY,
+         quality: int = DEFAULT_QUALITY, install_to_engine: Optional[bool] = None,
          actor: Optional[str] = None) -> dict:
-    """Transcode a shot into the engine project, then approve the revision.
+    """Approve a take, and put it in the engine project if the engine loads it.
 
-    THE ORDER IS THE POINT, exactly as it is in music.keep: approving first would
-    leave an approval that means nothing when the conversion fails — the database
-    saying 'approved' while the game has no file. So the transcode happens first
-    and its failure is RAISED. The recoverable direction to fail in is a file in
-    the project whose revision is still a candidate.
+    WHAT GETS INSTALLED IS KIND-DEPENDENT, and this was wrong in the first
+    build. Every kept SHOT was transcoded to Ogg Theora and copied into the game
+    — which is a Theora encode per shot and, at 1080p, tens of megabytes each of
+    files that NOTHING REFERENCES. The game loads the assembled cut;
+    :func:`assemble` builds it from the source .mp4 candidates, not from the
+    installed .ogv, so the per-shot transcode was work nobody used and clutter
+    nobody asked for. Measured on a three-shot demo: three .ogv intermediates
+    beside the one cutscene, invisible until somebody listed the directory.
+
+    So:
+      * a CUTSCENE (an assembled cut) is transcoded and installed — that is the
+        asset the game plays;
+      * a SHOT is approved and stays in .bgate_out, where the gallery previews
+        it and assemble reads it.
+
+    ``install_to_engine`` overrides the default in either direction, for the one
+    real case it exists for: a single generated clip used on its own, as an
+    attract-mode loop or a sting, with no cut around it.
+
+    THE ORDER IS THE POINT when there IS an install, exactly as in music.keep:
+    approving first would leave an approval that means nothing when the
+    conversion fails — the database saying 'approved' while the game has no
+    file. So the transcode happens first and its failure is RAISED.
 
     :func:`artifacts.review` is what enforces 'only a human may approve'. This
     inherits that gate rather than re-implementing it.
     """
     root = str(root)
     art = artifacts.get(root, int(artifact_id))
-    install = _install_file(root, art, quality=quality)
-    _stamp(root, int(artifact_id), "install", install)
+    wants = (bool(install_to_engine) if install_to_engine is not None
+             else _is_deliverable(art))
+
+    install = {}
+    if wants:
+        install = _install_file(root, art, quality=quality)
+        _stamp(root, int(artifact_id), "install", install)
 
     reviewed = artifacts.review(
         root, int(artifact_id), "approved",
-        note=note or "kept from the cinematic shot gallery and transcoded to "
-                     "Ogg Theora for the engine",
+        note=note or ("kept and transcoded to Ogg Theora for the engine"
+                      if wants else
+                      "kept as a shot — it stays in .bgate_out until the cut is "
+                      "assembled, which is what the game loads"),
         actor=actor)
     _mark_kept(root, int(artifact_id))
     activity.log(root, "cinematic",
-                 f"kept {art['logical_name']} r{art['revision']} -> "
-                 f"{install['path']}",
+                 f"kept {art['logical_name']} r{art['revision']}"
+                 + (f" -> {install['path']}" if install else " (shot)"),
                  seat="cinematic", ref=str(artifact_id), actor=actor or "")
-    return {"ok": True, "artifact": _view(root, reviewed), "install": install}
+    return {"ok": True, "artifact": _view(root, reviewed), "install": install,
+            "installed_to_engine": bool(install),
+            "note": "" if install else
+                    "approved. Shots are not copied into the engine project — "
+                    "the cut is what the game loads, and assemble() reads the "
+                    "candidates directly. Pass install_to_engine to override."}
+
+
+def _is_deliverable(art: dict) -> bool:
+    """Is this revision the thing the GAME loads, or an intermediate?
+
+    Reads the artifact's own metadata rather than guessing from the filename,
+    because `<seq>.ogv` and `<seq>_shot01.mp4` are only distinguishable by
+    convention and a convention is what breaks when somebody renames a shot.
+    A revision with no kind recorded is treated as deliverable: that is the
+    old behaviour, and for anything registered before this distinction existed
+    it is the safe direction to be wrong in.
+    """
+    kind = str((art.get("metadata") or {}).get("kind") or "").strip()
+    return kind != "shot"
 
 
 def install(root: str | os.PathLike[str], artifact_id: int, *,
@@ -1368,7 +1440,43 @@ def assemble(root: str | os.PathLike[str], name: str, *,
     revision = 1 + len(artifacts.list_revisions(root, logical_name=seq["name"],
                                                 limit=500))
     out_path = out_dir / f"{seq['name']}_r{revision}{ENGINE_SUFFIX}"
-    _concat(sources, out_path, quality=quality)
+
+    # 1. THE PICTURE, with whatever transitions the shots ask for. A sequence of
+    # hard cuts still takes the cheap concat path — see cinecut.picture_plan.
+    picture = cinecut.build_picture(
+        sources, usable, out_path, fade_in=float(seq.get("fade_in") or 0),
+        fade_out=float(seq.get("fade_out") or 0), quality=quality,
+        gop=THEORA_GOP)
+
+    # 2. THE SOUND. Off by default is a real decision (a generated bed is baked
+    # in and cannot be separated), but "the audio seat scores it over the top"
+    # was documented for months with no path to do it — every cut shipped
+    # silent. This is that path: a kept track, or a hand mix, laid under the
+    # picture and muxed into the Ogg the engine reads.
+    audio: dict = {}
+    bed = str(seq.get("audio_track") or "").strip()
+    if bed:
+        source = Path(root) / bed
+        if not source.is_file():
+            raise CinematicError(
+                f"{seq['name']} names an audio bed at {bed} which is not on "
+                "disk. Keep a track in the audio seat first, or clear the bed "
+                "— assembling silently without it is how a cutscene ships mute.")
+        mixed = out_dir / f"{seq['name']}_r{revision}_scored{ENGINE_SUFFIX}"
+        audio = cinecut.mix_audio(
+            out_path, mixed, bed=str(source),
+            gain_db=float(seq.get("audio_gain_db") or 0),
+            fade_in=float(seq.get("fade_in") or 0),
+            fade_out=float(seq.get("fade_out") or 0), quality=quality)
+        out_path.unlink(missing_ok=True)
+        mixed.replace(out_path)
+        audio["track"] = bed
+
+    # 3. THE CAPTIONS, timed off the shot list and the transitions between the
+    # shots — never stored, because the shot list already answers that question.
+    lines = cinecut.captions(usable)
+    caption_files = (cinecut.write_captions(root, out_dir, seq["name"], lines)
+                     if lines else {})
 
     artifact = artifacts.register(
         root, seq["name"], out_path, producer=PRODUCER,
@@ -1379,12 +1487,22 @@ def assemble(root: str | os.PathLike[str], name: str, *,
             "kind": "cutscene",
             "assembled_from": [{"idx": s["idx"], "slug": s["slug"],
                                 "artifact_id": s["artifact_id"],
-                                "duration": s["duration"]} for s in usable],
-            "runtime_s": sum(s["duration"] for s in usable),
+                                "duration": s["duration"],
+                                "transition": s.get("transition", "cut")}
+                               for s in usable],
+            # MEASURED, not summed. Transitions overlap, so the sum of the shots
+            # is longer than the cut, and the arithmetic is what caption timing
+            # is built from — recording both is what makes a drift findable.
+            "runtime_s": picture.get("measured_s") or picture["planned_s"],
+            "planned_runtime_s": picture["planned_s"],
+            "transitions": picture["transitions"],
+            "filtered": picture["filtered"],
             "aspect_ratio": seq["aspect_ratio"],
             "resolution": seq["resolution"],
             "quality": int(quality),
             "gop": int(THEORA_GOP),
+            "audio": audio,
+            "captions": caption_files,
             "preview": assets.normalize_path(root, out_path),
         })
     with db.tx(root) as conn:
@@ -1396,54 +1514,227 @@ def assemble(root: str | os.PathLike[str], name: str, *,
                  f"assembled {seq['name']}: {len(usable)} shot(s), "
                  f"{sum(s['duration'] for s in usable)}s -> r{artifact['revision']}",
                  seat="cinematic", ref=str(artifact["id"]), actor=actor or "")
-    return {"ok": True, "sequence": seq["name"],
-            "artifact_id": artifact["id"], "revision": artifact["revision"],
-            "path": artifacts.get(root, artifact["id"])["path"],
-            "shots": len(usable),
-            "runtime_s": sum(s["duration"] for s in usable),
-            "consumes": "WATCH THE WHOLE CUT, then cinematic_keep it — the "
-                        "individual shots were judged alone and a cut is judged "
-                        "as a cut. Keeping installs it under the engine project."}
+    out = {"ok": True, "sequence": seq["name"],
+           "artifact_id": artifact["id"], "revision": artifact["revision"],
+           "path": artifacts.get(root, artifact["id"])["path"],
+           "shots": len(usable),
+           "runtime_s": picture.get("measured_s") or picture["planned_s"],
+           "transitions": picture["transitions"],
+           "audio": audio or {"note": "NO AUDIO BED — this cut is silent. Pass "
+                                      "audio_track on the plan with a kept "
+                                      "track from the audio seat."},
+           "captions": caption_files or {"lines": 0},
+           "consumes": "WATCH THE WHOLE CUT, then cinematic_keep it — the "
+                       "individual shots were judged alone and a cut is judged "
+                       "as a cut. Keeping installs it under the engine project, "
+                       "and cinematic_deliver builds the scene that plays it."}
+    for key in ("timing_warning",):
+        if picture.get(key):
+            out[key] = picture[key]
+    if audio.get("note"):
+        out["audio_warning"] = audio["note"]
+    short = [c for c in lines if c.get("short")]
+    if short:
+        out["caption_warning"] = (
+            f"{len(short)} line(s) are on screen for under "
+            f"{cinecut.CAPTION_MIN_S}s and cannot be read at speed — shots "
+            f"{[c['idx'] for c in short]} are too short for their dialogue.")
+    return out
 
 
-def _concat(sources: list, out_path: Path, *, quality: int) -> None:
-    """Join clips through ffmpeg's concat demuxer, encoding Theora in one pass.
+def check_continuity(root: str | os.PathLike[str], name: str) -> dict:
+    """Does this sequence actually cut together? Costs nothing but time.
 
-    ONE PASS, NOT N TRANSCODES AND A JOIN. Converting each shot to .ogv and then
-    concatenating the results would put the sequence through Theora twice — the
-    generation loss of a lossy codec applied to its own output — and the demuxer
-    is fussier about joining Ogg streams than about reading the .mp4s we already
-    have. So the .mp4 shots go in and one .ogv comes out.
+    THE CHECK THE SEAT WAS TOLD TO DO BY EYE. Its brief says "watch it twice —
+    once as a shot, once in the cut", which is correct and unenforceable; the art
+    seat has real detectors for a frame and a cut had nothing. This measures the
+    two things that are objectively comparable across a join — overall brightness
+    and the colour palette — on the ACTUAL FRAMES either side of it.
 
-    -safe 0 because the list holds absolute paths, which is what a project root
-    on Windows produces and what the demuxer refuses by default.
+    It cannot tell you the cutscene is good, and it does not try. A cut from a
+    cellar to a snowfield SHOULD jump in brightness; whether a flag is a mistake
+    or the point is a human's call, so every finding says what it measured
+    rather than passing a verdict.
+
+    Runs on the generated shots, not on the assembled cut, because by the time
+    the cut exists a dissolve may already have hidden the join — and the fix for
+    a real mismatch is to re-generate a shot, which is a decision to make before
+    paying for the assembly.
     """
-    encoder = ffmpeg_status()
-    if not encoder["ok"]:
-        raise CinematicError(encoder["reason"])
-    listing = out_path.parent / f"{out_path.stem}_concat.txt"
-    # The demuxer's own quoting rule: single quotes, and an embedded one is
-    # escaped by closing, escaping, reopening. Paths with an apostrophe exist.
-    listing.write_text(
-        "".join("file '{}'\n".format(str(p).replace("'", r"'\''"))
-                for p in sources),
-        encoding="utf-8")
-    cmd = [encoder["ffmpeg"], "-y", "-loglevel", "error",
-           "-f", "concat", "-safe", "0", "-i", str(listing),
-           "-codec:v", "libtheora", "-q:v", str(int(quality)),
-           "-g:v", THEORA_GOP,
-           "-codec:a", "libvorbis", "-q:a", str(int(quality)),
-           str(out_path)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
-                              stdin=subprocess.DEVNULL)
-    finally:
-        listing.unlink(missing_ok=True)
-    if proc.returncode != 0 or not out_path.is_file():
+    root = str(root)
+    seq = sequence(root, name)
+    usable = [s for s in seq["shots"] if s["status"] != "cut"]
+    clips = []
+    for shot in usable:
+        if not shot.get("artifact_id"):
+            continue
+        art = artifacts.get(root, int(shot["artifact_id"]))
+        source = Path(root) / art["path"]
+        if source.is_file():
+            clips.append(source)
+    if len(clips) < 2:
+        return {"ok": True, "sequence": seq["name"], "joins": [],
+                "note": "fewer than two generated shots — there is no join to "
+                        "check yet"}
+
+    work = Path(root) / CANDIDATE_DIR / seq["name"] / "continuity"
+    joins = cinecut.continuity(clips, work_dir=work)
+    flagged = [j for j in joins if j.get("flags")]
+    return {
+        "ok": not flagged,
+        "sequence": seq["name"],
+        "joins": joins,
+        "flagged": len(flagged),
+        "note": ("every join is within tolerance on brightness and palette — "
+                 "which is not the same as saying the cut is good, only that "
+                 "nothing measurable jumps" if not flagged else
+                 f"{len(flagged)} join(s) jump. Re-generate the odd shot, or "
+                 "soften it with a dissolve — that is what a dissolve is for."),
+    }
+
+
+def deliver(root: str | os.PathLike[str], name: str, *,
+            actor: Optional[str] = None, force: bool = False) -> dict:
+    """Build the Godot scene that plays this cutscene. The last mile.
+
+    WHY THIS HAS TO EXIST. Keeping a cut installs an .ogv under the engine
+    project and prints a res:// path, and that is where this pipeline used to
+    stop — which left a designer to hand-author a VideoStreamPlayer, wire a skip
+    input, drive the captions, and work out how to hand control back to
+    gameplay. Four jobs, each easy to get subtly wrong, on top of an asset that
+    already cost real money. music.py gets away with stopping at the file
+    because Godot auto-imports audio and an AudioStreamPlayer is one node; a
+    cutscene is a scene, a script and a contract with the caller.
+
+    THE CONTRACT IS ONE SIGNAL. `finished(skipped: bool)` fires whether the
+    video ended or the player skipped it, because every caller wants the same
+    thing next and branching on which is how a skipped cutscene leaves a game
+    stuck on a black screen.
+
+    IT REFUSES TO OVERWRITE AN EDITED SCRIPT. The generated .gd is meant to be
+    edited — a project will want its own skip input or a letterbox — so a second
+    delivery that silently reverted those edits would be this product destroying
+    a user's work. `force` is the explicit override, and the scene file is
+    rewritten either way because it is derived from paths this module owns.
+    """
+    root = str(root)
+    seq = sequence(root, name)
+    art_id = seq.get("assembled_artifact_id")
+    if not art_id:
         raise CinematicError(
-            "ffmpeg could not assemble the cut: "
-            + ((proc.stderr or "").strip()[-300:] or
-               f"exit {proc.returncode} and no output file"))
+            f"{seq['name']} has not been assembled yet — cinematic_assemble "
+            "joins the kept shots into the file this scene would play.")
+    art = artifacts.get(root, int(art_id))
+    install = (art.get("metadata") or {}).get("install") or {}
+    if not install.get("path"):
+        raise CinematicError(
+            f"the cut for {seq['name']} has not been kept, so it is not in the "
+            "engine project and a scene pointing at it would not load. "
+            "cinematic_keep transcodes and installs it first.")
+
+    video_rel = install["path"]
+    engine_dir = Path(video_rel).parent
+    stem = seq["name"]
+    scene_rel = (engine_dir / f"{stem}.tscn").as_posix()
+    script_rel = (engine_dir / f"{stem}.gd").as_posix()
+
+    # The captions travel with the cut into the engine project. They live in
+    # .bgate_out beside the candidate until now, which is outside the project
+    # and unreadable by the game.
+    caption_rel = ""
+    meta_caps = (art.get("metadata") or {}).get("captions") or {}
+    if meta_caps.get("json"):
+        source = Path(root) / meta_caps["json"]
+        if source.is_file():
+            target = Path(root) / engine_dir / f"{stem}_captions.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            caption_rel = assets.normalize_path(root, target)
+            # The .srt goes too — it is the file a translator opens, and leaving
+            # it in a gitignored scratch directory is how localisation finds out
+            # the captions were never versioned.
+            srt = Path(root) / meta_caps.get("srt", "")
+            if meta_caps.get("srt") and srt.is_file():
+                shutil.copy2(srt, Path(root) / engine_dir / f"{stem}.srt")
+
+    video_res = f"res://{_engine_relative(root, video_rel)}"
+    script_res = f"res://{_engine_relative(root, script_rel)}"
+    captions_res = (f"res://{_engine_relative(root, caption_rel)}"
+                    if caption_rel else "")
+
+    script_path = Path(root) / script_rel
+    wrote_script = True
+    if script_path.is_file() and not force:
+        if not _is_generated(script_path):
+            wrote_script = False
+        else:
+            script_path.write_text(_script_text(scene_rel, captions_res),
+                                   encoding="utf-8")
+    else:
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(_script_text(scene_rel, captions_res),
+                               encoding="utf-8")
+
+    scene_path = Path(root) / scene_rel
+    scene_path.write_text(
+        cinecut.cutscene_scene_text(video_res, script_res,
+                                    node_name=_node_name(stem)),
+        encoding="utf-8")
+
+    for rel in (scene_rel, script_rel):
+        try:
+            assets.track(root, rel)
+        except Exception:                                        # noqa: BLE001
+            pass
+
+    activity.log(root, "cinematic",
+                 f"delivered {seq['name']} -> {scene_rel}",
+                 seat="cinematic", ref=str(art_id), actor=actor or "")
+    return {
+        "ok": True,
+        "sequence": seq["name"],
+        "scene": scene_rel,
+        "script": script_rel,
+        "captions": caption_rel,
+        "video": video_rel,
+        "scene_res": f"res://{_engine_relative(root, scene_rel)}",
+        "script_kept": not wrote_script,
+        "usage": (
+            "var cut := preload(\"res://"
+            f"{_engine_relative(root, scene_rel)}\").instantiate()\n"
+            "add_child(cut)\n"
+            "await cut.finished"),
+        "note": ("the existing script was edited by hand and was NOT "
+                 "overwritten — pass force to replace it" if not wrote_script
+                 else "the scene and its script were written; edit the .gd "
+                      "freely, delivery will not overwrite your changes"),
+    }
+
+
+# The marker that tells a re-delivery whether a human has touched the script.
+# A comment rather than a hash sidecar: it survives being copied, it is visible
+# to the person deciding whether to edit, and deleting it is a clear way to say
+# "this is mine now".
+GENERATED_MARK = "# bgate:generated cutscene script"
+
+
+def _is_generated(path: Path) -> bool:
+    try:
+        return GENERATED_MARK in path.read_text(encoding="utf-8")[:400]
+    except OSError:
+        return False
+
+
+def _script_text(scene_rel: str, captions_res: str) -> str:
+    body = cinecut.CUTSCENE_GD.format(
+        scene_res=scene_rel, captions_res=captions_res)
+    return f"{GENERATED_MARK}\n{body}"
+
+
+def _node_name(stem: str) -> str:
+    """A .tscn node name out of a slug: Godot wants no dots, slashes or colons."""
+    parts = [p for p in re.split(r"[^A-Za-z0-9]+", stem) if p]
+    return "".join(p[:1].upper() + p[1:] for p in parts) or "Cutscene"
 
 
 def _geometry_mismatch(sources: list) -> str:

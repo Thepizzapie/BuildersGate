@@ -32,6 +32,7 @@ router = APIRouter()
 GENERATE_JOB = "cinematic_shot"
 ASSEMBLE_JOB = "cinematic_assemble"
 KEEP_JOB = "cinematic_keep"
+CONTINUITY_JOB = "cinematic_continuity"
 
 # Same reason routes/music.py records it: a job row lives in the database and
 # the thread advancing it lives in this process, so a non-terminal job created
@@ -85,7 +86,11 @@ def cinematic_plan(payload: dict) -> dict:
             style_refs=list(body.get("style_refs") or []),
             model=str(body.get("model") or ""),
             aspect_ratio=str(body.get("aspect_ratio") or "16:9"),
-            resolution=str(body.get("resolution") or "720p")))
+            resolution=str(body.get("resolution") or "720p"),
+            audio_track=str(body.get("audio_track") or ""),
+            audio_gain_db=float(body.get("audio_gain_db") or 0),
+            fade_in=float(body.get("fade_in") or 0),
+            fade_out=float(body.get("fade_out") or 0)))
     except _cine.CinematicError as exc:
         raise api.bad_request(str(exc)) from exc
 
@@ -178,6 +183,66 @@ def cinematic_assemble(payload: dict, request: Request) -> dict:
                               request=request))
 
 
+@router.get("/api/cinematic/transitions")
+def cinematic_transitions() -> dict:
+    """How two shots may be joined, and what each costs."""
+    from bgate_core import cinecut as _cut
+
+    return api.ok({"transitions": _cut.TRANSITIONS,
+                   "default": _cut.DEFAULT_TRANSITION})
+
+
+@router.post("/api/cinematic/continuity")
+def cinematic_continuity(payload: dict, request: Request) -> dict:
+    """Measure whether the shots cut together. 202 + {job_id}.
+
+    A job because it extracts and compares frames across every join, which on a
+    ten-shot sequence is twenty ffmpeg invocations — fast each, slow together,
+    and slow enough that a synchronous call looks like a hung panel.
+    """
+    body = payload or {}
+    project = str(root())
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise api.bad_request("which sequence?")
+
+    def work(job_id: int) -> dict:
+        try:
+            result = _cine.check_continuity(project, name)
+        except Exception as exc:                                 # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if job_id:
+            _core_jobs.progress(project, job_id, fraction=1.0, stage="done")
+        return result
+
+    if str(body.get("async", "")).strip().lower() in {"0", "false", "no"}:
+        return api.ok(work(0))
+    return api.ok(_jobs.start(CONTINUITY_JOB, work,
+                              request_body={"sequence": name},
+                              request=request))
+
+
+@router.post("/api/cinematic/deliver")
+def cinematic_deliver(payload: dict, request: Request) -> dict:
+    """Write the .tscn, the script and the captions into the engine project.
+
+    Synchronous: this writes four small text files and measures nothing. It is
+    also the only endpoint here that can refuse for a reason a human will want
+    to argue with — a hand-edited script it will not overwrite — so it answers
+    in the same request rather than through a job the panel has to poll.
+    """
+    body = payload or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise api.bad_request("which sequence?")
+    try:
+        return api.ok(_cine.deliver(root(), name,
+                                    actor=api.current_actor(request),
+                                    force=bool(body.get("force"))))
+    except _cine.CinematicError as exc:
+        raise api.bad_request(str(exc)) from exc
+
+
 @router.get("/api/cinematic/candidates")
 def cinematic_candidates(logical_name: str = "", limit: int = 100) -> dict:
     """Clips awaiting a decision, plus what has been kept and installed."""
@@ -209,11 +274,13 @@ def cinematic_keep(payload: dict, request: Request) -> dict:
     note = str(body.get("note") or "")
     quality = int(body.get("quality") or _cine.DEFAULT_QUALITY)
     actor = api.current_actor(request)
+    to_engine = body.get("install_to_engine")
 
     def work(job_id: int) -> dict:
         try:
             result = _cine.keep(project, artifact_id, note=note,
-                                quality=quality, actor=actor)
+                                quality=quality, actor=actor,
+                                install_to_engine=to_engine)
         except Exception as exc:                                 # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         if job_id:
@@ -300,7 +367,7 @@ def cinematic_jobs(limit: int = 12) -> dict:
     project = root()
     cap = max(1, min(int(limit), 50))
     out = []
-    for kind in (GENERATE_JOB, ASSEMBLE_JOB, KEEP_JOB):
+    for kind in (GENERATE_JOB, ASSEMBLE_JOB, KEEP_JOB, CONTINUITY_JOB):
         for row in _core_jobs.list_jobs(project, kind=kind, limit=cap):
             job = _core_jobs.get(project, int(row["id"])) or row
             view = _jobs.view(project, job)

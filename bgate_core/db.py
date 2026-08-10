@@ -1298,6 +1298,47 @@ _MIGRATIONS: list = [
     );
     CREATE INDEX idx_cine_shot_seq ON cine_shot(sequence_id, idx);
     """,
+    # 0028 — THE POST-PRODUCTION HALF. 0027 could plan and buy shots; everything
+    # that turns a folder of clips into a CUTSCENE was missing, and the gap was
+    # not visible from inside the module because each piece looked like somebody
+    # else's job.
+    #
+    # SOUND IS THE ONE THAT WAS ACTIVELY MIS-DESCRIBED. cinematic.py's docstring,
+    # the seat brief and the research note all said generated audio is off
+    # because "the audio seat scores the cutscene over the top". No path existed
+    # for that to happen — no bed, no mix, no mux — so every assembled cut
+    # shipped SILENT while three documents described a mechanism. A sentence that
+    # reads as a design decision and is actually an unbuilt feature is worse than
+    # an admitted gap, because nobody goes looking for it.
+    #
+    # `audio_track` is a project path, not an artifact id, on purpose: the bed
+    # may be a kept Suno track (music.py installs those under
+    # game/assets/audio/music/) or a hand-made .wav the audio seat mixed, and
+    # those have no id in common. Per-shot `vo` is separate from the bed because
+    # dialogue is cut against the picture and music is laid under the whole
+    # thing; one column would make it impossible to re-time one without the
+    # other.
+    #
+    # TRANSITIONS ARE PER SHOT because a transition belongs to the JOIN, and the
+    # join is a property of the shot that starts it. Stored on the incoming shot
+    # (shot N's `transition` is how shot N-1 becomes shot N) so that re-ordering
+    # a shot carries its handle with it. Default 'cut' keeps the fast concat path
+    # for a sequence that wants none — nothing pays for a filter graph it does
+    # not use.
+    #
+    # THERE IS NO `captions` COLUMN. Caption timing is DERIVED from each shot's
+    # duration and the transitions between them, so storing it would be storing
+    # a second answer to a question the shot list already answers — and the two
+    # would disagree the first time anyone changed a duration.
+    """
+    ALTER TABLE cine_sequence ADD COLUMN audio_track TEXT NOT NULL DEFAULT '';
+    ALTER TABLE cine_sequence ADD COLUMN audio_gain_db REAL NOT NULL DEFAULT 0;
+    ALTER TABLE cine_sequence ADD COLUMN fade_in REAL NOT NULL DEFAULT 0;
+    ALTER TABLE cine_sequence ADD COLUMN fade_out REAL NOT NULL DEFAULT 0;
+    ALTER TABLE cine_shot ADD COLUMN transition TEXT NOT NULL DEFAULT 'cut';
+    ALTER TABLE cine_shot ADD COLUMN transition_s REAL NOT NULL DEFAULT 0.5;
+    ALTER TABLE cine_shot ADD COLUMN vo TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

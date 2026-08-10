@@ -58,6 +58,37 @@ repository at first publication. There is no earlier release history to record.
   can all fail while the provider holds a finished clip. Pressing generate again
   pays twice.
 
+- **Post-production, which is what makes it a cutscene rather than a video.**
+  Transitions (cut, fade, dissolve, wipe) at the join, with the cheap concat path
+  kept for a sequence of hard cuts. A music bed laid under the picture and muxed
+  into the Ogg — the picture is copied, not re-encoded, because it has been
+  through Theora once already. Dialogue timed into `.srt` and `.json` captions
+  off the shot list, so nothing can drift from it. A continuity check that
+  extracts the real frames either side of every join and measures brightness and
+  palette jumps. And `cinematic_deliver`, which writes the `.tscn`, the script,
+  the skip and a `finished(skipped)` signal, so gameplay plays a cutscene in
+  three lines instead of hand-authoring a video player.
+
+### Fixed
+
+- **Assembled cutscenes shipped silent while three documents said otherwise.**
+  The module docstring, the seat brief and the research note all explained that
+  generated audio is off because "the audio seat scores the cutscene over the
+  top". There was no bed, no mix and no mux — a sentence that read as a design
+  decision and was an unbuilt feature, which is worse than an admitted gap
+  because nobody goes looking for it.
+
+- **Every kept shot was transcoded into the game.** Nothing referenced them: the
+  game loads the assembled cut, and assembly reads the `.mp4` candidates
+  directly. It was a Theora encode per shot and, at 1080p, tens of megabytes each
+  of unreferenced files. A cut installs; a shot does not, with an override for
+  the one real case — a single clip used alone as an attract loop or a sting.
+
+- **Captions could stack when a transition overlapped two shots.** A dissolve
+  pulls the incoming shot back while the outgoing line still owns its own shot's
+  full length, so two subtitles were on screen at once and the player showed the
+  previous line over the new shot.
+
 ### Changed
 
 - `bgate doctor`'s ffmpeg row now says when the build has no libtheora. It stays
