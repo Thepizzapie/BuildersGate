@@ -173,9 +173,28 @@ def _art_out(root, filename: str):
     return out
 
 
+def _keys(root: Optional[str] = None) -> None:
+    """Make credentials live: the project's .env, then ~/.bgate/.env.
+
+    Split out of :func:`_root` because the two questions came apart. "Which
+    project is this call about" can legitimately have no answer; "does this
+    machine have an OpenAI key" always does, and it used to be reachable only
+    through a project root — so a tool that needs a key and not a game could not
+    be reached at all without inventing a project to hold the credential.
+
+    Order is the precedence and is documented at envfile.load_env: shell beats
+    both files, and the project beats the machine-wide store.
+    """
+    try:
+        from bgate_core import envfile
+        envfile.load_env(root)
+    except Exception:
+        pass
+
+
 def _root() -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
-    Also loads the project's .env (once) so secrets live with the project."""
+    Also loads the project's .env and the machine-wide one, in that order."""
     override = _root_hint()
     if override:
         root = override
@@ -189,12 +208,14 @@ def _root() -> str:
                 f"{exc} Pass project_dir=<absolute path to the project root> on "
                 "this call, or export BGATE_ROOT, or run project_init to create "
                 "one here.") from None
-    try:
-        from bgate_core import envfile
-        envfile.load_project_env(root)
-    except Exception:
-        pass
+    _keys(root)
     return root
+
+
+# The machine-wide keys are live from the moment the server starts, so a tool
+# that needs a credential and not a project — provider_status, doctor — answers
+# correctly in a session that never names one.
+_keys()
 
 
 # Keys a tool might have used to say WHY, in the order they are believed. The
@@ -2274,7 +2295,16 @@ def image_status() -> dict:
     that decides whether the output can ship in a game you sell.
     """
     try:
-        root = _root()  # triggers .env load
+        # NO PROJECT IS NOT AN ERROR FOR THIS QUESTION. "Can this machine make
+        # an image" is about credentials and installed packages, and both have
+        # an answer before any game exists — this used to raise LookupError
+        # outside a project, which made the one tool you would reach for to
+        # diagnose a key the one tool you could not run.
+        try:
+            root = _root()          # loads project .env, then the global one
+        except LookupError:
+            root = None
+            _keys()                 # the machine-wide layer, standalone
         from bgate_adapters import imagegen
 
         legs = {}
@@ -2313,9 +2343,18 @@ def image_status() -> dict:
             "providers": usable,
             "auto_picks": (usable[0] if usable else ""),
             "legs": legs,
+            "project": root or "",
+            # Setting a key is HUMAN-ONLY and there is deliberately no tool here
+            # that does it — an agent that can write credentials can hand itself
+            # a provider nobody paid for. So the fix names what the human runs,
+            # not something to call.
             "reason": "" if usable else
-                      "no image provider is configured — set OPENAI_API_KEY or "
-                      "KREA_API_KEY in the project's .env, or configure a local "
+                      "no image provider is configured. A human can fix it with "
+                      "`bgate key set openai --global` (stores it in "
+                      "~/.bgate/.env, which every project on this machine "
+                      "inherits and which works with no project at all), or "
+                      "without --global to keep it to one game, or in the "
+                      "dashboard's provider panel — or configure a local "
                       "ComfyUI (see the local leg's `how`)",
         }
     except Exception as exc:

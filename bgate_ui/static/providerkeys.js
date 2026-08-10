@@ -95,6 +95,8 @@
       ".pv-btn:hover:not(:disabled){border-color:var(--accent);color:var(--text)}",
       ".pv-btn:disabled{opacity:.5;cursor:default}",
       ".pv-btn.go{border-color:var(--accent);color:var(--accent)}",
+      ".pv-scope{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--text-3);cursor:pointer}",
+      ".pv-scope input{margin:0;cursor:pointer}",
       ".pv-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;font-family:var(--mono);font-size:10px;color:var(--text-3)}",
       ".pv-fp{color:var(--text-2)}",
       ".pv-link{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}",
@@ -137,10 +139,17 @@
                spellcheck="false" aria-label="${esc(row.label)} API key"
                placeholder="${row.configured ? "paste a new key to replace it" : "paste " + esc(row.env)}">
         <button class="pv-btn go" data-pv-act="save" data-pv-id="${esc(row.id)}">save</button>
-        ${row.in_env_file
+        ${row.in_env_file || row.in_global_file
           ? `<button class="pv-btn" data-pv-act="clear" data-pv-id="${esc(row.id)}">clear</button>`
           : ""}
       </div>
+      <label class="pv-scope" title="Writes ~/.bgate/.env instead of this game's.
+Every project on this machine inherits it, and it is the only store that exists
+when you are not in a project at all. A project's own key still wins over it.">
+        <input type="checkbox" data-pv-global="${esc(row.id)}"
+               ${row.scope === "global" && !row.in_env_file ? "checked" : ""}>
+        <span>save for every project on this machine</span>
+      </label>
       <div class="pv-foot">
         <span>${esc(row.env)}</span>
         ${fp}${src ? `<span>· ${src}</span>` : ""}
@@ -155,11 +164,18 @@
      fact that it is ignored rather than leaving either to be assumed. */
   function storageNote(data) {
     const bad = data.env_gitignored === false;
-    return `<p class="pv-note">Keys are written to <code>.env</code> at the game
-      project root — never into the database, the board, or this dashboard's own
-      files — and take effect immediately, with no restart. Nothing here ever
-      reads a key back: a saved key shows as a state and its last four
-      characters, and that is all the server will send.</p>`
+    return `<p class="pv-note">Keys are written to a <code>.env</code> file —
+      never into the database, the board, or this dashboard's own files — and
+      take effect immediately, with no restart. Nothing here ever reads a key
+      back: a saved key shows as a state and its last four characters, and that
+      is all the server will send.</p>
+      <p class="pv-note">There are two places to put one. This game's own
+      <code>.env</code> keeps it to this project. Ticking <b>save for every
+      project on this machine</b> writes
+      <code>${esc(data.global_env || "~/.bgate/.env")}</code> instead, which
+      every project inherits and which is the only store that exists when you
+      are not in a project at all. A project's own key wins over it, and a
+      variable exported in your shell wins over both.</p>`
       + (bad ? `<div class="pv-warn"><span>${icon("gate", 15)}</span><span>
           <b>This project's <code>.env</code> is not gitignored.</b> Saving a key
           will add the ignore rule first — but check <code>git status</code>
@@ -295,14 +311,24 @@
       return host ? host.querySelector(`[data-pv-in="${CSS.escape(id)}"]`) : null;
     },
 
+    /* Which store this card is pointed at. Read from the DOM at write time
+       rather than tracked in state: the checkbox IS the setting, and a mirror
+       of it is one more thing that can disagree with what the user can see. */
+    scopeOf(id, where) {
+      const host = this.hosts[where];
+      const box = host && host.querySelector(`[data-pv-global="${CSS.escape(id)}"]`);
+      return box && box.checked ? "global" : "project";
+    },
+
     async save(id, where, button) {
       if (this._busy) return;
       const field = this.input(id, where);
       const value = field ? field.value : "";
       if (!value.trim()) { say("paste the key first"); if (field) field.focus(); return; }
+      const scope = this.scopeOf(id, where);
       this._busy = id;
       const r = await window.mutate(`/api/providers/${encodeURIComponent(id)}/key`,
-        { method: "POST", body: { key: value }, button, quiet: true });
+        { method: "POST", body: { key: value, scope }, button, quiet: true });
       /* CLEARED WHETHER OR NOT IT WORKED, and before anything else runs. A key
          left sitting in a focused input survives a screen share, a screenshot
          and the browser's own form restore on reload. */
@@ -315,8 +341,16 @@
       const now = (r.data.providers || []).filter(p => p.id === id)[0] || {};
       if (row.gitignore) {
         say(`saved - and added the .env ignore rule to .gitignore first`, "ok");
+      } else if (now.available && scope === "global" && now.source === "env_file") {
+        /* The write landed and something else is still winning. Silence here
+           reads as "it did not work", and the next thing anyone does is paste
+           it again into the same box. */
+        say(`saved for every project - but THIS project's own .env still supplies `
+            + `${now.label || id}, so the global key applies everywhere else`, "ok");
       } else if (now.available) {
-        say(`${now.label || id} is ready`, "ok");
+        say(scope === "global"
+            ? `${now.label || id} is ready, for every project on this machine`
+            : `${now.label || id} is ready`, "ok");
       } else {
         /* Saved but still not usable. Saying "saved" alone here is the lie this
            panel exists to avoid — the reason is the actionable half. */
@@ -327,25 +361,41 @@
     async clear(id, where, button) {
       if (this._busy) return;
       const row = ((this.data || {}).providers || []).filter(p => p.id === id)[0] || {};
+      /* Clear the store the key is ACTUALLY IN, not whatever the save toggle
+         happens to be set to — "clear" means "make this stop being in force",
+         and deleting from the empty store would report success and change
+         nothing. */
+      const scope = row.scope || "project";
+      const file = scope === "global"
+        ? ((this.data || {}).global_env || "~/.bgate/.env")
+        : "the project's .env";
+      const alsoGlobal = scope === "project" && row.in_global_file;
       if (typeof window.askConfirm === "function") {
         const yes = await window.askConfirm({
           title: `Forget the ${row.label || id} key?`,
-          body: `${row.env || ""} is removed from the project's .env and from this
-                 running dashboard. Anything that generates with ${row.label || id}
-                 stops until you paste it again — and this cannot be undone from
-                 here, because nothing here ever held a copy.`,
+          body: `${row.env || ""} is removed from ${file} and from this running
+                 dashboard. ${alsoGlobal
+                   ? `Your machine-wide key stays, and takes over here — this
+                      only removes this project's override.`
+                   : `Anything that generates with ${row.label || id} stops until
+                      you paste it again — and this cannot be undone from here,
+                      because nothing here ever held a copy.`}`,
           ok: "clear it", cancel: "keep it", danger: true,
         });
         if (!yes) return;
       }
       this._busy = id;
-      const r = await window.mutate(`/api/providers/${encodeURIComponent(id)}/key`,
+      const r = await window.mutate(
+        `/api/providers/${encodeURIComponent(id)}/key?scope=${encodeURIComponent(scope)}`,
         { method: "DELETE", button, quiet: true });
       this._busy = "";
       if (!r.ok) { say(r.error); return; }
       this.data = r.data; this._read = Date.now();
       Object.keys(this.hosts).forEach(w => this.paint(w));
-      say(`${row.label || id} key cleared`, "ok");
+      const now = (r.data.providers || []).filter(p => p.id === id)[0] || {};
+      say(now.configured
+          ? `${row.label || id} override cleared - the machine-wide key applies here now`
+          : `${row.label || id} key cleared`, "ok");
     },
   };
 
