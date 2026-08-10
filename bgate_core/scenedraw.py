@@ -30,6 +30,7 @@ project on disk, which is the only way the transform maths gets pinned properly.
 """
 from __future__ import annotations
 
+import copy
 import math
 import re
 from typing import Callable, Optional
@@ -136,6 +137,46 @@ def first_frame(tres_text: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Transforms
 # ---------------------------------------------------------------------------
+# What a light with no readable cookie falls back to: opaque at the centre,
+# gone at the edge. Not a guess at the artist's ramp — a stand-in that is
+# obviously a light, so a fixture is never invisible just because its texture
+# is a format nothing here can read.
+_DEFAULT_FALLOFF = [[0.0, 1.0], [0.55, 0.45], [1.0, 0.0]]
+
+_GRADIENT_OFFSETS_RE = re.compile(r"offsets\s*=\s*PackedFloat32Array\(([^)]*)\)")
+_GRADIENT_COLORS_RE = re.compile(r"colors\s*=\s*PackedColorArray\(([^)]*)\)")
+
+
+def gradient_texture(tres_text: str) -> dict:
+    """A GradientTexture2D .tres as stops the canvas can rebuild.
+
+    Only the ALPHA ramp is carried, not the stop colours: a light cookie is a
+    shape, and its colour comes from the light's own `color` property. Keeping
+    the ramp's own white would tint every light white and throw away the one
+    thing the level design is saying with them.
+    """
+    if "GradientTexture2D" not in tres_text:
+        return {}
+    offs = _GRADIENT_OFFSETS_RE.search(tres_text)
+    cols = _GRADIENT_COLORS_RE.search(tres_text)
+    if not offs or not cols:
+        return {}
+    try:
+        points = [float(v) for v in offs.group(1).split(",") if v.strip()]
+        channels = [float(v) for v in cols.group(1).split(",") if v.strip()]
+    except ValueError:
+        return {}
+    # PackedColorArray is flat rgba, so a stop's alpha is every fourth value.
+    alphas = channels[3::4]
+    if not points or len(alphas) != len(points):
+        return {}
+    w = re.search(r"^width\s*=\s*(\d+)", tres_text, re.M)
+    h = re.search(r"^height\s*=\s*(\d+)", tres_text, re.M)
+    return {"gradient": [[p, a] for p, a in zip(points, alphas)],
+            "size": [int(w.group(1)) if w else 256,
+                     int(h.group(1)) if h else 256]}
+
+
 def _compose(parent: dict, local: dict) -> dict:
     """Child transform in world space. Godot's Transform2D, spelled out.
 
@@ -185,7 +226,8 @@ def draw_list(scene_text: str, *,
               read: Callable[[str], Optional[str]],
               size_of: Callable[[str], Optional[tuple]],
               rel_of: Callable[[str], Optional[str]],
-              viewport: tuple[int, int] = DEFAULT_VIEWPORT) -> dict:
+              viewport: tuple[int, int] = DEFAULT_VIEWPORT,
+              scale: float = 1.0) -> dict:
     """Every node as a positioned, ordered, drawable entry.
 
     `read` returns the text of a res:// resource (for SpriteFrames), `size_of`
@@ -193,18 +235,152 @@ def draw_list(scene_text: str, *,
     path the browser can fetch it by. All three are injected so the geometry can
     be tested without a project on disk.
     """
+    # One parse of each instanced scene per request, not one per instance. A
+    # dressed floor is 233 props over three distinct .tscn files; re-reading and
+    # re-parsing prop.tscn 233 times turned panning — which this endpoint exists
+    # to keep off the network — into a second of server CPU.
     items = _walk(scene_text, read=read, size_of=size_of, rel_of=rel_of,
-                  stack=())
-    # Paint order: z_index first, then declaration order, exactly as Godot does
-    # for siblings at the same z. Sorting by z alone would shuffle everything
-    # that shares the default 0 into whatever order the sort felt like.
-    items.sort(key=lambda i: (i["z"], i["order"]))
-    return {"viewport": list(viewport), "items": items}
+                  stack=(), cache={})
+    # Paint order: z_index first, then the order the tree paints in — which on
+    # a y-sorted scene is NOT declaration order. See paint_order().
+    paint_order(items)
+    items.sort(key=lambda i: (i["z"], i["paint"]))
+    return {"viewport": list(viewport), "items": items,
+            "tint": _canvas_tint(items),
+            # What the PLAYER sees one world pixel as. See content_scale().
+            "scale": float(scale or 1.0)}
+
+
+# ---------------------------------------------------------------------------
+# Y-sort
+# ---------------------------------------------------------------------------
+# WHY A DRESSED ISOMETRIC ROOM LOOKED SCRAMBLED EVEN WHEN EVERY NODE WAS IN THE
+# RIGHT PLACE.
+#
+# This module used to paint by (z_index, declaration order). Godot paints a
+# y-sorted parent's children by their GLOBAL Y, and floor_tut sets
+# `y_sort_enabled` on five nodes. Declaration order there is prop_id order — map
+# reading order — which has nothing to do with screen depth, so any two props
+# whose file order disagreed with their depth drew the wrong way round: a desk
+# over the chair tucked under it, a plant through the partition in front of it.
+# On an isometric plate that is not an edge case, it is most pairs.
+#
+# THE KEY IS THE NODE'S OWN ORIGIN, NEVER ITS PICTURE. prop.tscn splits the two
+# deliberately: `position` on the root Node2D is where the prop STANDS (the sort
+# key) and `Art.offset` on the child sprite is how the art sits on the cell (the
+# registration). Sorting by the drawn rectangle would fold the registration back
+# into the depth and reintroduce exactly the bug that split exists to prevent —
+# the same reason the cutaway shader reads MODEL_MATRIX's origin.
+#
+# WHAT IS MODELLED, and what is approximated:
+#   * y_sort_enabled is read from the scene file per node, not assumed.
+#   * The engine FLATTENS: a non-y-sorted child of a y-sorted node does not form
+#     a group — it and its whole subtree join the ancestor's one sorted list,
+#     each at its own origin. That is why a prop instance (Node2D root, not
+#     y-sorted) and its Art sprite both land in Characters' list.
+#   * A y-sorted child participates in its parent's list as a BLOCK and sorts
+#     its own contents. So Ground/Props/Walls/Characters, all at y = 0 under a
+#     y-sorted root, keep their file order and cannot interleave — which is the
+#     engine's answer too, and is why this project fades walls with a shader
+#     rather than expecting a prop to sort behind one.
+#   * Ties break on declaration order, as the engine's `ysort_index` does, so
+#     the picture is stable between repaints.
+#   * NOT modelled: `y_sort_origin` on TileData (nothing in these projects sets
+#     it), and z_index's interaction with y-sort beyond "z still wins", which is
+#     the rule the panel already used.
+def paint_order(items: list[dict]) -> None:
+    """Stamp every item with `paint`, the index the engine would draw it at."""
+    by_path = {i["path"]: i for i in items}
+    kids: dict[str, list[dict]] = {}
+    for i in items:
+        path = i["path"]
+        if path == ".":
+            continue
+        parent = path.rsplit("/", 1)[0] if "/" in path else "."
+        # An instance's insides are named under the host, so the host is their
+        # parent even though they come from another file. That is also what the
+        # engine sees once the scene is instantiated.
+        while parent and parent not in by_path and "/" in parent:
+            parent = parent.rsplit("/", 1)[0]
+        kids.setdefault(parent if parent in by_path else ".", []).append(i)
+
+    def sorts(item: Optional[dict]) -> bool:
+        return bool(item and item.get("ysort"))
+
+    def members(host: dict) -> list[dict]:
+        """Everything in ``host``'s one sorted list — its subtree, flattened
+        through descendants that do not sort for themselves."""
+        out: list[dict] = []
+        stack = list(kids.get(host["path"], []))
+        while stack:
+            child = stack.pop(0)
+            out.append(child)
+            if not sorts(child):
+                stack = kids.get(child["path"], []) + stack
+        return out
+
+    seq = 0
+
+    def stamp(item: dict) -> None:
+        nonlocal seq
+        item["paint"] = seq
+        seq += 1
+
+    def block(item: dict) -> None:
+        """An entry of some enclosing sorted list: itself, then its own list if
+        it sorts. If it does not sort, its subtree is already in that list."""
+        stamp(item)
+        if sorts(item):
+            for m in sorted(members(item),
+                            key=lambda i: (round(i["y"], 4), i["order"])):
+                block(m)
+
+    def walk(item: dict) -> None:
+        stamp(item)
+        if sorts(item):
+            for m in sorted(members(item),
+                            key=lambda i: (round(i["y"], 4), i["order"])):
+                block(m)
+        else:
+            for c in kids.get(item["path"], []):
+                walk(c)
+
+    root = by_path.get(".")
+    if root is not None:
+        walk(root)
+    # Anything the walk could not reach (a malformed path) still needs a key,
+    # and its declaration order is the honest one.
+    for i in items:
+        i.setdefault("paint", seq + i["order"])
+
+
+def _canvas_tint(items: list[dict]) -> Optional[list[float]]:
+    """The scene's CanvasModulate, if it has one.
+
+    A whole floor lit warm in the engine and flat grey in the viewport is
+    mostly this one node: CanvasModulate multiplies everything drawn on the
+    canvas, and a preview that ignores it is a preview of a different scene.
+    It is a property of the CANVAS, not of any node's own rectangle, so it
+    rides on the payload rather than in the draw list — the client applies it
+    over the frame once, after the items and before the lights, which is the
+    order the engine composites in.
+    """
+    for item in items:
+        if item["type"] == "CanvasModulate" and item["visible"]:
+            return item["draw"].get("color")
+    return None
 
 
 def _walk(scene_text: str, *, read, size_of, rel_of,
-          stack: tuple[str, ...] = ()) -> list[dict]:
-    nodes = scenewire.outline(scene_text)
+          stack: tuple[str, ...] = (),
+          patch: Optional[dict] = None,
+          cache: Optional[dict] = None,
+          nodes: Optional[list] = None) -> list[dict]:
+    if nodes is None:
+        nodes = scenewire.outline(scene_text)
+    if patch:
+        _apply_overrides(nodes, patch)
+    overrides, skip = _collect_overrides(nodes)
     by_path = {n["path"]: n for n in nodes}
     world: dict[str, dict] = {}
     items = []
@@ -213,13 +389,20 @@ def _walk(scene_text: str, *, read, size_of, rel_of,
     # single most common "why can I not edit this" — the answer is that a script
     # fills it at run time — and that is only knowable with the whole tree in
     # hand, so it is counted here and handed to the per-node resolver.
+    # An override is not a child, so it is not counted as one: doing so made
+    # every dressed prop look like a container with contents.
     kids: dict[str, int] = {}
     for node in nodes:
         parent = node["parent"]
-        if parent is not None:
+        if parent is not None and node["path"] not in skip:
             kids[parent] = kids.get(parent, 0) + 1
 
     for order, node in enumerate(nodes):
+        # An override block is a PATCH, not a node — it has already been folded
+        # into the instanced scene it belongs to. Emitting it as well produced a
+        # second, typeless item on the same path that drew nothing.
+        if node["path"] in skip:
+            continue
         props = node["properties"]
         parent = node["parent"]
         base = world.get(parent if parent != "." else ".", IDENTITY) \
@@ -247,6 +430,10 @@ def _walk(scene_text: str, *, read, size_of, rel_of,
             "rot": round(tf["rot"], 5),
             "sx": round(tf["sx"], 4), "sy": round(tf["sy"], 4),
             "z": int(_num(props.get("z_index", 0))),
+            # Whether this node sorts ITS CHILDREN by y. Read, never assumed:
+            # the flag is what decides whether declaration order or depth wins,
+            # and guessing it wrong reorders a whole room. See paint_order().
+            "ysort": _bool(props.get("y_sort_enabled", "false"), False),
             "visible": visible,
             "modulate": list(_color(props.get("modulate", ""))),
             "draw": draw,
@@ -254,9 +441,81 @@ def _walk(scene_text: str, *, read, size_of, rel_of,
         if node["instance"]:
             items.extend(_open_instance(
                 items[-1], node, tf, order,
-                read=read, size_of=size_of, rel_of=rel_of, stack=stack))
+                read=read, size_of=size_of, rel_of=rel_of, stack=stack,
+                patch=overrides.get(node["path"]), cache=cache))
 
     return items
+
+
+# ---------------------------------------------------------------------------
+# Overrides on nodes that live inside an instance
+# ---------------------------------------------------------------------------
+# THIS IS WHY A DRESSED FLOOR RENDERED AS FIVE HUNDRED CROSSES.
+#
+# Opening the instanced scene was never the missing piece — `_open_instance`
+# has always done that. The missing piece is that in these projects the
+# instanced scene is a BLANK: prop.tscn is a Node2D with an empty Sprite2D
+# called Art, and which picture that Art wears is decided by the HOST file, as
+# a Godot override block:
+#
+#   [node name="FilingCabinetSE_000" parent="Characters" instance=ExtResource("bp_scene")]
+#   [node name="Art" parent="Characters/FilingCabinetSE_000" index="0"]
+#   texture = ExtResource("bp_prop_filing_cabinet_se")
+#
+# The second block has no `type=` because it is not declaring a node — it is
+# re-setting a property on one that prop.tscn already declares. Reading the two
+# files separately, both are correct and neither draws: the instance says "ask
+# prop.tscn", prop.tscn says "no texture assigned", and the endpoint reported
+# `instance of prop.tscn — nothing in it draws in the file`, which was true and
+# useless. Godot composes them. So do we.
+def _override_host(path: str, instances: set[str]) -> Optional[str]:
+    """The nearest ancestor of ``path`` that is an instanced scene, if any."""
+    parts = path.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        candidate = "/".join(parts[:i])
+        if candidate in instances:
+            return candidate
+    return None
+
+
+def _collect_overrides(nodes: list[dict]) -> tuple[dict, set[str]]:
+    """Split the outline into real nodes and patches onto instanced scenes.
+
+    Returns ``({instance path: {relative path: node}}, {paths to skip})``.
+    A block under an instance that DOES carry a type is a genuinely new node
+    added beside the instance's own contents, and stays a node.
+    """
+    instances = {n["path"] for n in nodes if n["instance"]}
+    if not instances:
+        return {}, set()
+    out: dict[str, dict[str, dict]] = {}
+    skip: set[str] = set()
+    for node in nodes:
+        if node["type"]:
+            continue
+        host = _override_host(node["path"], instances)
+        if host is None:
+            continue
+        out.setdefault(host, {})[node["path"][len(host) + 1:]] = node
+        skip.add(node["path"])
+    return out, skip
+
+
+def _apply_overrides(nodes: list[dict], patch: dict) -> None:
+    """Fold the host's overrides into the instanced scene's own nodes."""
+    for node in nodes:
+        over = patch.get(node["path"])
+        if not over:
+            continue
+        node["properties"] = {**node["properties"], **over["properties"]}
+        # A resource named by the override REPLACES the scene's own — that is
+        # the entire point of `texture = ExtResource(...)` on an Art node whose
+        # scene deliberately ships without one. Merge by property so an
+        # override of `texture` does not drop an untouched `material`.
+        merged = {r["property"]: r for r in node["resources"]}
+        for res in over["resources"]:
+            merged[res["property"]] = res
+        node["resources"] = list(merged.values())
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +530,15 @@ def _walk(scene_text: str, *, read, size_of, rel_of,
 # shows but does not let you edit. Godot selects the instance, not its insides.
 _MAX_INSTANCE_DEPTH = 3
 
+# Everything that puts something on the canvas, as opposed to a cross with a
+# reason next to it.
+_PICTURE_KINDS = ("image", "rect", "tiles", "light", "tint")
+
 
 def _open_instance(host: dict, node: dict, tf: dict, order: int, *,
-                   read, size_of, rel_of, stack: tuple[str, ...]) -> list[dict]:
+                   read, size_of, rel_of, stack: tuple[str, ...],
+                   patch: Optional[dict] = None,
+                   cache: Optional[dict] = None) -> list[dict]:
     """Give ``host`` the instanced scene's picture; return its nodes as items."""
     res_path = next((r["path"] for r in node["resources"]
                      if r["property"] == "instance"), "")
@@ -291,8 +556,18 @@ def _open_instance(host: dict, node: dict, tf: dict, order: int, *,
                         "reason": f"instance of {name} — nested too deep to draw"}
         return []
     try:
-        sub = _walk(read(res_path) or "", read=read, size_of=size_of,
-                    rel_of=rel_of, stack=stack + (res_path,))
+        # The outline is the parse; the patch is per-instance, so the cached
+        # copy has to be deep — _apply_overrides writes into these dicts and a
+        # shared one would leak the first prop's texture onto all 233.
+        if cache is None:
+            parsed = scenewire.outline(read(res_path) or "")
+        else:
+            if res_path not in cache:
+                cache[res_path] = scenewire.outline(read(res_path) or "")
+            parsed = copy.deepcopy(cache[res_path])
+        sub = _walk("", read=read, size_of=size_of, rel_of=rel_of,
+                    stack=stack + (res_path,), patch=patch, cache=cache,
+                    nodes=parsed)
     except (scenewire.WireError, ValueError):
         sub = []
     if not sub:
@@ -305,8 +580,31 @@ def _open_instance(host: dict, node: dict, tf: dict, order: int, *,
     picture = (root or {}).get("draw") or {}
     host["draw"] = picture if picture.get("kind") != "marker" else {
         "kind": "marker", "reason": f"instance of {name}"}
+    # THE INSTANCED ROOT'S OWN TRANSFORM, carried on the PICTURE rather than
+    # folded into the host node.
+    #
+    # light_fluoro_panel.tscn sets scale = Vector2(1, 0.5) on its root, and its
+    # own comment says why: the cookie is a circle, the floor is a 64x32
+    # isometric diamond, and an unsquashed pool reads as a sphere hovering in
+    # the air. Dropping that scale drew 44 circles over an isometric room.
+    #
+    # It must NOT be composed into host x/y/sx/sy: those are what a drag reads
+    # and what `apply` writes back as this node's `position`, and a host
+    # carrying its instance's internal scale would write that scale into the
+    # parent file the first time anyone nudged it.
+    if root is not None and host["draw"].get("kind") != "marker":
+        local = {"x": root["x"], "y": root["y"], "rot": root["rot"],
+                 "sx": root["sx"], "sy": root["sy"]}
+        if local != {"x": 0.0, "y": 0.0, "rot": 0.0, "sx": 1.0, "sy": 1.0}:
+            host["draw"] = {**host["draw"], "local": local}
     host["children"] = sum(1 for i in sub
                            if i["path"] != "." and "/" not in i["path"])
+    # The instanced ROOT's y-sort flag belongs to the host, which is the node
+    # that node now IS — a y-sorted container shipped as its own scene sorts
+    # its contents wherever it is placed. A host that sets the flag itself as
+    # an override keeps it.
+    if root is not None and root.get("ysort"):
+        host["ysort"] = True
 
     out = []
     for k, entry in enumerate(sub):
@@ -335,8 +633,12 @@ def _open_instance(host: dict, node: dict, tf: dict, order: int, *,
     # projects, and it is a very different thing from one that failed to load —
     # so it says which, and the viewport keeps reporting it as blank-with-a-
     # reason instead of quietly drawing nothing.
+    # "light" and "tint" count as drawing. Every ceiling fitting in these
+    # projects is an instance of a one-node light scene, so leaving them out
+    # of this tally overwrote 44 correctly-resolved lights with
+    # "nothing in it draws in the file" a line after resolving them.
     host["drawn"] = sum(1 for i in [host, *out]
-                        if i["draw"].get("kind") in ("image", "rect", "tiles"))
+                        if i["draw"].get("kind") in _PICTURE_KINDS)
     if not host["drawn"]:
         host["draw"] = {"kind": "marker", "reason":
                         f"instance of {name} — nothing in it draws in the file"}
@@ -359,8 +661,9 @@ def _draw_for(node: dict, props: dict, *, read, size_of, rel_of,
             return {"kind": "marker", "reason":
                     "no TileSet assigned" if not tres else "no tiles placed"}
         try:
-            layer = tilemap.layer_draw(m.group(1),
-                                       tilemap.parse_tileset(read(tres) or ""))
+            layer = tilemap.layer_draw(
+                m.group(1), tilemap.parse_tileset(read(tres) or ""),
+                y_sort=_bool(props.get("y_sort_enabled", "false"), False))
         except tilemap.TileError as exc:
             return {"kind": "marker", "reason": str(exc)}
         if not layer["cells"]:
@@ -385,9 +688,14 @@ def _draw_for(node: dict, props: dict, *, read, size_of, rel_of,
                 "shape": layer["shape"], "layout": layer["layout"],
                 "sources": sources, "cells": cells,
                 "dropped_sources": dropped,
-                "bounds": tilemap.bounds(cells, shape=layer["shape"],
-                                         layout=layer["layout"],
-                                         tile_size=layer["tile_size"])}
+                # Bounded by what the layer DRAWS, not by the cells it fills.
+                # A 100px wall tile reaches 68px above its own 64x32 cell, and
+                # a bound that stopped at the cell framed the opening view on a
+                # rectangle with the tops of every wall outside it.
+                "bounds": tilemap.bounds(
+                    cells, shape=layer["shape"], layout=layer["layout"],
+                    tile_size=layer["tile_size"],
+                    sources={int(sid): src for sid, src in sources.items()})}
 
     if ntype == "AnimatedSprite2D":
         tres = textures.get("sprite_frames")
@@ -443,6 +751,48 @@ def _draw_for(node: dict, props: dict, *, read, size_of, rel_of,
     if ntype in ("Camera2D", "Camera3D"):
         return {"kind": "camera"}
 
+    # LIGHTS. The rooms in these projects are lit per area — warm over the
+    # bullpen, cold over the server aisle — and a viewport that draws only the
+    # albedo shows one evenly grey floor and nothing that says which room you
+    # are in. A PointLight2D is its texture, multiplied by colour and energy
+    # and added to what is under it, which is cheap enough to be worth doing
+    # and close enough to be recognisably the same scene.
+    #
+    # Deliberately NOT modelled: LightOccluder2D and shadow casting. That is
+    # a per-light visibility solve against 66 occluder polygons, and it buys
+    # edges on shadows in a panel whose job is "is the hat on his head".
+    if ntype == "CanvasModulate":
+        return {"kind": "tint",
+                "color": list(_color(props.get("color", "")))}
+
+    if ntype in ("PointLight2D", "Light2D", "DirectionalLight2D"):
+        path = textures.get("texture")
+        rel = rel_of(path) if path else None
+        size = size_of(path) if path else None
+        cookie: dict = {}
+        if rel and size:
+            cookie = {"rel": rel, "size": [size[0], size[1]]}
+        else:
+            # A light's cookie is usually NOT a png. Every fixture in these
+            # projects points at a GradientTexture2D .tres — a radial ramp
+            # authored in the editor, with no file for the browser to fetch —
+            # so `rel_of` came back empty and 44 lit rooms reported "no light
+            # texture assigned". The ramp is three lines of text; send it and
+            # let the canvas build the same falloff natively.
+            cookie = gradient_texture(read(path) or "") if path else {}
+            if not cookie:
+                cookie = {"gradient": _DEFAULT_FALLOFF, "size": [256, 256]}
+        return {"kind": "light", **cookie,
+                "color": list(_color(props.get("color", ""))),
+                "energy": _num(props.get("energy", 1.0), 1.0),
+                "scale": _num(props.get("texture_scale", 1.0), 1.0),
+                "offset": list(_vec2(props.get("offset", ""))),
+                # 0 = ADD, 1 = SUB, 2 = MIX. Only the default is drawn as light;
+                # the other two are rare and guessing at them would be worse
+                # than saying the light is there and leaving it out of the mix.
+                "blend": int(_num(props.get("blend_mode", 0))),
+                "source": path}
+
     if ntype in ("CollisionShape2D", "CollisionPolygon2D", "Area2D",
                  "StaticBody2D", "CharacterBody2D", "RigidBody2D"):
         return {"kind": "body"}
@@ -456,6 +806,50 @@ def _draw_for(node: dict, props: dict, *, read, size_of, rel_of,
         return {"kind": "marker", "reason": "no children in the file"}
 
     return {"kind": "marker", "reason": ""}
+
+
+def content_scale(project_godot_text: str) -> float:
+    """How many screen pixels the game puts on one world pixel.
+
+    THE ANSWER TO "props are not scaled right in Atlas", and it is not a prop
+    bug. Measured against the engine's own frame of floor_tut by template
+    matching the source art: `floor_carpet.png` (64x32) matches at scale 2.00
+    with a score of 0.979, and `prop_office_chair_se.png` (30x41) matches at
+    scale 2.00 as well. Tile and prop move together, so their RATIO — the thing
+    that would show a per-node scale bug — is exactly what this module already
+    produced. What differs is a single global factor.
+
+    It comes from `window/stretch`: this project authors at 640x360 and
+    presents at 1280x720, so every canvas item is drawn at 2x, uniformly.
+    The viewport draws in WORLD units, where 100% means one world pixel per
+    css pixel — which is the Godot editor's 100% and half of what the player
+    sees. Reporting the factor lets the panel say which of the two a given zoom
+    is, and offer the game's own scale in one click, instead of leaving the
+    operator to conclude the art is wrong.
+
+    Only `canvas_items` (and its old alias `2d`) scales the drawing; `viewport`
+    mode renders small and blits, and `disabled` does nothing — neither changes
+    the size of a canvas item relative to the window.
+    """
+    text = project_godot_text or ""
+    mode = re.search(r'window/stretch/mode\s*=\s*"([^"]*)"', text)
+    if not mode or mode.group(1) not in ("canvas_items", "2d"):
+        return 1.0
+    base = viewport_of(text)
+
+    def override(key: str, fallback: int) -> int:
+        m = re.search(rf"window/size/{key}\s*=\s*(\d+)", text)
+        return int(m.group(1)) if m and int(m.group(1)) > 0 else fallback
+
+    win_w = override("window_width_override", base[0])
+    win_h = override("window_height_override", base[1])
+    if not base[0] or not base[1]:
+        return 1.0
+    scale = min(win_w / base[0], win_h / base[1])
+    integer = re.search(r'window/stretch/scale_mode\s*=\s*"([^"]*)"', text)
+    if integer and integer.group(1) == "integer":
+        scale = float(max(1, int(scale)))
+    return round(scale, 4) if scale > 0 else 1.0
 
 
 def viewport_of(project_godot_text: str) -> tuple[int, int]:

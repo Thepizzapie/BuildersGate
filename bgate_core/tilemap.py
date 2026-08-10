@@ -231,25 +231,63 @@ def cell_center(x: int, y: int, *, shape: int, layout: int,
     Godot's ``map_to_local``. Square is the multiply everyone expects;
     isometric is a diamond projection, and rendering an isometric map with the
     square formula produces a neat grid that is confidently wrong.
+
+    THE HALF-CELL TERM IS NOT OPTIONAL, and leaving it off the isometric
+    branches is why the viewport's floor never lined up with the things
+    standing on it. `map_to_local` returns a cell's CENTRE — which is what the
+    square branch has always done with its ``+ w/2, + h/2`` — and the diamond
+    branches were returning the diamond's top corner instead. Every tile
+    therefore drew exactly (w/2, h/2) up and left of where the engine puts it.
+
+    Nothing on the tile side could reveal that: ``bounds`` is derived from this
+    same function, so the layer stayed perfectly self-consistent and only
+    disagreed with the NODES, whose positions come out of the .tscn already in
+    engine coordinates. Measured on downsizing's floor_tut (233 props carrying
+    both a ``cell`` and the ``position`` the game bakes from it): with the term,
+    232 of 233 sit within one authored wall-hug offset of their own cell and the
+    residual straddles zero (dy -6.4..13.0); without it, only 200 do and every
+    single residual is positive (dy 9.6..29.0) — a constant shift, not noise.
+    That project's own scripts/bake_prop_nodes.py documents the same formula and
+    records it as verified against Godot 4.7's map_to_local.
     """
     w, h = tile_size[0], tile_size[1]
     if shape == ISOMETRIC:
         if layout == DIAMOND_DOWN:
-            return ((x - y) * w / 2.0, (x + y) * h / 2.0)
+            return ((x - y) * w / 2.0 + w / 2.0, (x + y) * h / 2.0 + h / 2.0)
         # DIAMOND_RIGHT and anything unrecognised: the other diagonal.
-        return ((x + y) * w / 2.0, (y - x) * h / 2.0)
+        return ((x + y) * w / 2.0 + w / 2.0, (y - x) * h / 2.0 + h / 2.0)
     return (x * w + w / 2.0, y * h + h / 2.0)
 
 
-def layer_draw(packed: str, tileset: dict) -> dict:
+def layer_draw(packed: str, tileset: dict, *, y_sort: bool = False) -> dict:
     """One TileMapLayer as a compact draw payload.
 
     The cells are sent as a flat list and the CLIENT computes positions from
     the shared tileset block — a level here is ~560 cells across three layers,
     and expanding every one into its own rectangle server-side would triple the
     payload for arithmetic the canvas has to do anyway.
+
+    ``y_sort`` reorders them, and on a wall layer it is not cosmetic. Godot
+    stores ``tile_map_data`` in CELL (y, x) order, which on an isometric map is
+    not screen order at all: screen y runs with ``x + y``, so every row wraps
+    back above the one before it — 48 times on this project's floor. A 100px
+    wall tile overlaps the two cells behind it, so drawn in file order the
+    wall behind is painted over the wall in front. A y-sorted TileMapLayer in
+    the engine gives every cell its own canvas item ordered by ``map_to_local``,
+    which is what this reproduces. A layer that is NOT y-sorted keeps the
+    file's order, because that is what the engine draws then.
     """
     cells = decode_cells(packed)
+    if y_sort:
+        shape, layout = tileset["shape"], tileset["layout"]
+        size = tileset["tile_size"]
+
+        def key(c):
+            cx, cy = cell_center(c["x"], c["y"], shape=shape, layout=layout,
+                                 tile_size=size)
+            return (cy, cx)
+
+        cells.sort(key=key)
     used = sorted({c["source"] for c in cells})
     # `tiles` stays out: the canvas draws the cells it is given and never needs
     # the list of every tile the atlas defines. That list is for the generator.
@@ -267,14 +305,53 @@ def layer_draw(packed: str, tileset: dict) -> dict:
     }
 
 
-def bounds(cells: list, *, shape: int, layout: int,
-           tile_size: list[int]) -> Optional[tuple[float, float, float, float]]:
-    """The area a layer covers, for framing the view on it."""
+def tile_rect(cx: float, cy: float, region: list[int],
+              origin: list[int]) -> tuple[float, float, float, float]:
+    """Where one tile's ART lands, given its cell CENTRE. Godot's ``draw_tile``.
+
+    ``dest.position = centre - size/2 - texture_origin``. THE MINUS IS NOT A
+    TYPO and it is the difference between a wall standing on its cell and a
+    wall sunk into it. This project states the same rule from the other end
+    (docs/SCALE.md, floor_layout.gd): ``texture_origin.y = h/2 - 16`` puts a
+    texture's BOTTOM EDGE on the diamond's bottom vertex, i.e. at
+    ``centre + 16``. Only the minus gives that:
+
+        top    = cy - h/2 - (h/2 - 16) = cy - h + 16
+        bottom = top + h               = cy + 16
+
+    Adding it instead lands the bottom at ``cy - 16 + h``, which is ``h - 32``
+    px too low — nothing at all for a 32px floor tile (origin 0), 38px for a
+    70px cubicle and 68px for a 100px wall panel. That is why the floor grid
+    always looked right while the furniture never sat on the walls.
+    """
+    return (cx - region[0] / 2.0 - origin[0],
+            cy - region[1] / 2.0 - origin[1],
+            region[0], region[1])
+
+
+def bounds(cells: list, *, shape: int, layout: int, tile_size: list[int],
+           sources: Optional[dict] = None
+           ) -> Optional[tuple[float, float, float, float]]:
+    """The area a layer covers, for framing the view on it.
+
+    With ``sources``, the area a layer DRAWS — a 100px wall tile on a 64x32
+    cell reaches 68px above the cell it stands on, and a bound that stops at
+    the cell missed all of it. Without them, the cell footprint alone, which is
+    what a caller that only has coordinates can honestly say.
+    """
     if not cells:
         return None
-    pts = [cell_center(c[0], c[1], shape=shape, layout=layout,
-                       tile_size=tile_size) for c in cells]
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
     w, h = tile_size[0] / 2.0, tile_size[1] / 2.0
-    return (min(xs) - w, min(ys) - h, max(xs) + w, max(ys) + h)
+    x0 = y0 = float("inf")
+    x1 = y1 = float("-inf")
+    for c in cells:
+        cx, cy = cell_center(c[0], c[1], shape=shape, layout=layout,
+                             tile_size=tile_size)
+        src = (sources or {}).get(c[2]) if len(c) > 2 else None
+        if src:
+            rx, ry, rw, rh = tile_rect(cx, cy, src["region"], src["origin"])
+        else:
+            rx, ry, rw, rh = cx - w, cy - h, tile_size[0], tile_size[1]
+        x0, y0 = min(x0, rx), min(y0, ry)
+        x1, y1 = max(x1, rx + rw), max(y1, ry + rh)
+    return (x0, y0, x1, y1)

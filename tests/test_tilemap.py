@@ -183,17 +183,35 @@ def test_an_isometric_diamond_down_map_is_a_diamond():
     """The square formula here renders a tidy grid that is confidently wrong."""
     kw = dict(shape=tilemap.ISOMETRIC, layout=tilemap.DIAMOND_DOWN,
               tile_size=[64, 32])
-    assert tilemap.cell_center(0, 0, **kw) == (0.0, 0.0)
-    assert tilemap.cell_center(1, 0, **kw) == (32.0, 16.0)
-    assert tilemap.cell_center(0, 1, **kw) == (-32.0, 16.0)
-    assert tilemap.cell_center(1, 1, **kw) == (0.0, 32.0)
+    assert tilemap.cell_center(0, 0, **kw) == (32.0, 16.0)
+    assert tilemap.cell_center(1, 0, **kw) == (64.0, 32.0)
+    assert tilemap.cell_center(0, 1, **kw) == (0.0, 32.0)
+    assert tilemap.cell_center(1, 1, **kw) == (32.0, 48.0)
+
+
+def test_the_isometric_origin_is_the_diamonds_centre_not_its_corner():
+    """The half-cell term, pinned. Dropping it is invisible on the tile side.
+
+    `bounds` is derived from cell_center, so a layer missing the term stays
+    perfectly self-consistent and only disagrees with the NODES standing on it
+    — whose positions come out of the .tscn already in engine coordinates. The
+    symptom was "the editor is off positioning-wise": every floor tile drew
+    half a diamond up and left of the desks on it. Cell (0,0) of a 64x32 iso
+    tileset is centred at (32, 16), exactly as cell (0,0) of a square one is
+    centred at (w/2, h/2).
+    """
+    iso = tilemap.cell_center(0, 0, shape=tilemap.ISOMETRIC,
+                              layout=tilemap.DIAMOND_DOWN, tile_size=[64, 32])
+    square = tilemap.cell_center(0, 0, shape=tilemap.SQUARE,
+                                 layout=tilemap.DIAMOND_DOWN, tile_size=[64, 32])
+    assert iso == square == (32.0, 16.0)
 
 
 def test_diamond_right_runs_the_other_diagonal():
     kw = dict(shape=tilemap.ISOMETRIC, layout=tilemap.DIAMOND_RIGHT,
               tile_size=[64, 32])
-    assert tilemap.cell_center(1, 0, **kw) == (32.0, -16.0)
-    assert tilemap.cell_center(0, 1, **kw) == (32.0, 16.0)
+    assert tilemap.cell_center(1, 0, **kw) == (64.0, 0.0)
+    assert tilemap.cell_center(0, 1, **kw) == (64.0, 32.0)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +237,10 @@ def test_bounds_cover_the_whole_placed_area():
     out = tilemap.layer_draw(_packed([(0, 0, 0, 0, 0, 0), (4, 4, 0, 0, 0, 0)]), ts)
     b = tilemap.bounds(out["cells"], shape=out["shape"], layout=out["layout"],
                        tile_size=out["tile_size"])
-    assert b == (-32.0, -16.0, 32.0, 144.0)
+    # Shifted by the half-cell the isometric projection was missing: a layer's
+    # area starts at the top corner of cell (0,0), which is (0, 0) when the
+    # cell's CENTRE is at (w/2, h/2).
+    assert b == (0.0, 0.0, 64.0, 160.0)
 
 
 def test_bounds_of_nothing_is_none():
@@ -270,5 +291,7 @@ def test_the_client_projection_matches_the_server_one():
     js = (Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
           / "sceneview.js").read_text(encoding="utf-8")
     assert "function cellCenter(" in js
-    assert "(x - y) * w / 2" in js and "(x + y) * h / 2" in js   # diamond down
-    assert "(x + y) * w / 2" in js and "(y - x) * h / 2" in js   # diamond right
+    # The half-cell term has to be on BOTH sides or the tiles land somewhere the
+    # bounds do not cover — and, worse, somewhere the props do not stand.
+    assert "(x - y) * w / 2 + w / 2" in js and "(x + y) * h / 2 + h / 2" in js
+    assert "(x + y) * w / 2 + w / 2" in js and "(y - x) * h / 2 + h / 2" in js
