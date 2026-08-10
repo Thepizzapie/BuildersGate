@@ -29,11 +29,11 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
-from bgate_adapters import imagegen, krea
+from bgate_adapters import imagegen, kie, krea
 from . import chroma
 from bgate_core import activity, artifacts as _artifacts, spend as _spend, tiers as _tiers
 
-PROVIDERS = ("krea", "openai", "local")
+PROVIDERS = ("krea", "openai", "kie", "local")
 
 # "local" is a real provider and not a special case: it goes through the same
 # chroma door, returns the same result shape, and prices at a genuine 0.0 rather
@@ -116,6 +116,29 @@ def plan(config: dict, *, style_refs: int = 0) -> dict:
         if provider == "krea":
             unit = krea.price_for(model, style_refs=style_refs)
             note = (krea.MODELS.get(model) or {}).get("note", "")
+        elif provider == "kie":
+            if model not in kie.IMAGE_MODELS:
+                raise GenerateRefused(
+                    f"kie has no image model {model!r} — known: "
+                    f"{sorted(kie.IMAGE_MODELS)}")
+            # UNPRICED, AND THAT REFUSES THE NODE RATHER THAN COSTING IT ZERO.
+            # kie publishes no per-model price, and plan()'s unit price feeds
+            # spend.check — a 0.0 here would let a six-candidate fan-out through
+            # a ceiling that exists precisely to stop one. The same reasoning as
+            # krea.generate_3d's confirm_unpriced gate, applied at plan time
+            # because that is where this engine decides.
+            if kie.usd_per_credit() is None:
+                raise GenerateRefused(
+                    "kie publishes no per-generation price, so this node cannot "
+                    "be quoted before it runs and the spend ceiling would read "
+                    "it as free. Set BGATE_KIE_USD_PER_CREDIT to your account's "
+                    "credit rate, or use a provider with a published price. "
+                    + kie.PRICE_NOTE)
+            # Still not a quote — it is the ceiling for the largest image job
+            # kie's own quickstart describes ("typically 10-50 credits"), which
+            # is the honest thing to charge a budget check with.
+            unit = kie.cost_usd(50) or 0.0
+            note = (kie.MODELS.get(model) or {}).get("note", "")
         elif provider == "local":
             # FREE, AND SAYING SO IS THE ANSWER. The spend gate reads a number
             # as permission, and 0.0 is the correct number for a generation

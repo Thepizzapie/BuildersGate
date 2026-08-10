@@ -703,7 +703,7 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     evidence) and ``alpha`` (the audit). ``ok=False`` with an ``error`` when the
     provider failed OR when the audit rejected the cut.
     """
-    from bgate_adapters import imagegen, krea, localgen
+    from bgate_adapters import imagegen, kie, krea, localgen
     from bgate_core import artdirection
 
     provider = str(provider or "").strip().lower()
@@ -835,10 +835,32 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                                            work_item_id=work_item_id,
                                            task_kind=task_kind,
                                            tileable=tileable)
+        elif provider == "kie":
+            # kie WALKS THROUGH THIS DOOR TOO, but it is the first provider that
+            # cannot take the anchors with it. Every image field kie documents
+            # is a URI and its reference says nothing about base64 data URIs, so
+            # a pinned ref on disk has nowhere to go — the adapter refuses one
+            # rather than encoding it on a guess. Refusing HERE, before the
+            # generation, is the difference between "kie cannot do anchored
+            # work, use krea" and an unanchored image that was paid for and
+            # looks nothing like the character.
+            if ref_paths:
+                return {"ok": False, "provider": provider, "model": model,
+                        "error": "kie cannot condition on the pinned refs — its "
+                                 "image fields take public URLs only, and every "
+                                 "anchor here is a local file. Use provider "
+                                 "'krea' for anchored work, or drop the refs."}
+            result = kie.generate_image(prompt, str(out_path),
+                                        model=model or kie.DEFAULT_IMAGE_MODEL,
+                                        size=size, seed=seed,
+                                        task_kind=task_kind, tileable=tileable,
+                                        timeout=timeout, root=root,
+                                        logical_name=logical_name,
+                                        work_item_id=work_item_id)
         else:
             return {"ok": False, "provider": provider, "model": model,
                     "error": f"unknown provider {provider!r} — "
-                             "'krea', 'openai' or 'local'"}
+                             "'krea', 'openai', 'kie' or 'local'"}
     except Exception as exc:  # adapters raise on bad shapes; a caller must not
         return {"ok": False, "provider": provider, "model": model,
                 "error": f"{type(exc).__name__}: {exc}"}
