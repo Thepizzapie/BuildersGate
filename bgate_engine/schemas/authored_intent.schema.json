@@ -20,7 +20,7 @@
       "examples": [{ "peak_height_px": [130, 152], "air_time_s": [1.5, 1.75] }]
     },
     "priority":    { "type": "string", "enum": ["ship","should","nice"], "description": "ship = blocks release." },
-    "owner":       { "type": "string", "enum": ["director","gameplay","art","tech","audio","narrative","qa"] },
+    "owner":       { "type": "string", "enum": ["director","gameplay","art","tech","audio","cinematic","narrative","qa"] },
     "verified_by": { "type": "array", "items": { "type": "string" }, "description": "Test ids that assert this requirement against a run." }
   },
   "examples": [

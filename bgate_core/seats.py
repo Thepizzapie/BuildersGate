@@ -1,4 +1,4 @@
-"""The seat model — seven stable game-dev roles, write lanes, and a blackboard.
+"""The seat model — eight stable game-dev roles, write lanes, and a blackboard.
 
 A seat is an IDENTITY a working agent adopts, not a spawned process and not a
 per-task registration (the agent-spam rule). Everything a seat needs to start
@@ -141,7 +141,7 @@ def _kind_note(role: str, dimension: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The seven seats. Lanes assume the scaffold layout (<root>/game, <root>/design).
+# The eight seats. Lanes assume the scaffold layout (<root>/game, <root>/design).
 # ---------------------------------------------------------------------------
 DEFAULT_SEATS: dict[str, dict] = {
     "director": {
@@ -379,6 +379,136 @@ DEFAULT_SEATS: dict[str, dict] = {
         "mission": "Own SFX and music hooks. Same lock discipline as art — "
                    "audio binaries don't merge either.",
         "write_globs": ["game/assets/audio/**", "audio/**"],
+    },
+    # THE EIGHTH SEAT, AND THE FIRST ONE ADDED SINCE THE TABLE WAS WRITTEN. The
+    # bar for a new seat is a body of work that has its OWN failure modes, its
+    # own binaries, and a lane nobody else should be writing in — not merely a
+    # new tool. Cutscenes clear it on all three, and the argument for not simply
+    # widening `art` is the argument the lanes exist for:
+    #
+    #   * DIFFERENT BINARIES, SAME LOCK PROBLEM. A .ogv does not merge any more
+    #     than a .blend does, and it is fifty times the size. Art's lane is
+    #     game/assets/** — a cutscene landing there would have the art seat
+    #     locking video it did not make and cannot judge.
+    #   * DIFFERENT UNIT OF WORK. Art's rules count FRAMES of one subject and its
+    #     whole discipline is derive-don't-generate (rule 1). A cutscene cannot
+    #     be derived from anything: every shot is a separate paid generation with
+    #     a hard 15-second ceiling, and the skill is writing a shot list and
+    #     judging a cut, which is a different job from judging a sprite sheet.
+    #   * DIFFERENT MONEY. A sequence is the most expensive thing this product
+    #     buys in one sitting — eight-plus generations, minutes each, at video
+    #     prices. A seat whose brief does not open with that spends it.
+    #
+    # NOT `video`, `cutscene` OR `film`. `video` is the CAPABILITY (see
+    # providers.CAPABILITIES) and naming a seat after a capability invites every
+    # future video-adjacent tool into its lane; `cutscene` is one deliverable of
+    # several (a trailer, an attract-mode loop and a cinematic are the same
+    # craft); `film` claims a scope this cannot deliver.
+    "cinematic": {
+        "title": "Cinematic",
+        "mission": "Own cutscenes, trailers and attract-mode video. WRITE THE "
+                   "SHOT LIST BEFORE BUYING A FRAME: cinematic_plan costs "
+                   "nothing and is the only point at which a sequence can be "
+                   "argued with for free. Every shot anchors on an approved "
+                   "still, never on the previous shot's output. Nothing ships "
+                   "as .mp4 — Godot plays Ogg Theora and only Ogg Theora, so a "
+                   "clip is not delivered until it is transcoded and a human "
+                   "has watched the assembled cut.",
+        "write_globs": ["game/assets/cinematics/**", "cinematics/**",
+                        "design/cinematics/**"],
+        "workflow": (
+            "A CUTSCENE IS A SEQUENCE OF SHOTS, AND EVERY SHOT IS A SEPARATE "
+            "PURCHASE. No model wired here generates past 15 seconds and none "
+            "holds together well past about 10, so a 90-second scene is ten "
+            "paid generations that have to be planned, judged and joined. Order "
+            "and cost are the two things this seat exists to keep honest.\n"
+            "\n"
+            "SEVEN RULES.\n"
+            "1. PLAN FIRST, IN ONE CALL. cinematic_plan(name, shots) writes the "
+            "whole shot list and spends nothing. It survives your death — a "
+            "successor reads the list and knows both what was bought and what "
+            "was next, which a folder of .mp4s cannot tell anyone. Get the list "
+            "approved before the first generation, because after it every "
+            "argument about shot 3 costs a re-generation.\n"
+            "2. NEVER CONDITION SHOT N ON SHOT N-1. This is the art seat's rule "
+            "2 with a worse decay constant: a video model's final frame is the "
+            "most drifted image it produced AND it is a lossy intermediate, so "
+            "chaining is a photocopy of a photocopy. Anchor EVERY shot on the "
+            "same approved stills (first_frame, refs). The last_frame field is "
+            "for one deliberate match cut, never for the spine of a sequence.\n"
+            "3. AN UNANCHORED SEQUENCE STARS A STRANGER. Text-only shots invent "
+            "the cast fresh each generation and no two will agree on a face. "
+            "Generate the keyframes through the art path first (image_generate "
+            "conditioned on the pinned character), get them approved, THEN buy "
+            "shots against them. cinematic_plan warns when no shot is anchored; "
+            "that warning is the most expensive one to ignore here.\n"
+            "3b. STYLE IS SET ON THE SEQUENCE, NOT PER SHOT, and it has three "
+            "levers in ascending strength: a preset (cinematic_styles lists "
+            "them with the trap in each), a style_note in the project's own "
+            "wording, and style_refs — actual frames, which beat both and are "
+            "the only lever that holds a look across eight generations. Free "
+            "prose works too; an unlisted style is not refused. NAMING NO STYLE "
+            "IS STILL A CHOICE — the model falls back to its own house look, "
+            "which differs per model and per version, so nobody chose it and "
+            "nobody can reproduce it. Changing style or model after generating "
+            "resets those shots, because a clip rendered in the old look is not "
+            "a rendering of the new one; that costs money, so decide the look "
+            "before you buy the first shot.\n"
+            "3c. THE MODEL IS A SEQUENCE-LEVEL DECISION for the same reason. "
+            "cinematic_options lists what is registered and the exact seconds/"
+            "shape/quality ranges each one accepts — they differ, and a shot "
+            "list legal on one model is illegal on another. kie serves more "
+            "models than ship here; cinematic_register_model adds one whose "
+            "reference page you have READ, which is not the same as guessing "
+            "at an id.\n"
+            "4. GODOT PLAYS OGG THEORA AND NOTHING ELSE. H.264 cannot be "
+            "shipped in the engine (patents) and WebM was removed in 4.0, so "
+            "every .mp4 a model returns is unplayable and cinematic_keep "
+            "TRANSCODES rather than copies. A cutscene copied into the project "
+            "as .mp4 is a black rectangle with a green badge. ffmpeg must be "
+            "built with libtheora — cinematic_options says whether yours is, "
+            "and it is checked before any shot is bought.\n"
+            "5. THE PICTURE IS YOURS; THE SOUND IS THE AUDIO SEAT'S — AND YOU "
+            "HAVE TO ASK THEM FOR IT. Generated audio is BAKED IN and cannot be "
+            "separated, ducked under dialogue or localised, so it stays off. "
+            "That means a cut with no audio_track IS SILENT: queue the audio "
+            "seat for a bed, naming the assembled runtime and the beats, then "
+            "re-plan with audio_track pointing at the track they kept. A "
+            "cutscene handed over mute is not finished.\n"
+            "6. DIALOGUE BECOMES SUBTITLES, SO WRITE IT IN THE SHOT. Anything "
+            "in a shot's `dialogue` is timed off the shot list at assemble time "
+            "and written as .srt and .json. Two consequences worth knowing: a "
+            "line on a shot too short to read it is flagged rather than "
+            "silently unreadable, and a translator gets a real .srt instead of "
+            "text baked into pixels.\n"
+            "7. WATCH IT, AND MEASURE IT. Twice by eye — once as a shot, once "
+            "in the cut — because a shot that reads fine alone routinely breaks "
+            "the sequence. cinematic_continuity does the half a number can do: "
+            "it compares the real frames either side of every join for "
+            "brightness and palette jumps. Run it BEFORE assembling, because "
+            "the fix is re-generating a shot or softening the join with a "
+            "dissolve, and both are decisions to make before paying for the "
+            "assembly.\n"
+            "8. IT IS NOT DELIVERED UNTIL SOMETHING PLAYS IT. An .ogv in the "
+            "project is a file, not a cutscene. cinematic_deliver writes the "
+            "scene, the script, the skip and the `finished` signal, and hands "
+            "gameplay three lines to call it with. Post those three lines to "
+            "the gameplay seat — they own where it is triggered, you own what "
+            "it is.\n"
+            "9. SAY WHAT IT COST. Report shots bought, re-rolls, and total "
+            "runtime when you hand a sequence over. This is the one seat where "
+            "a silent re-roll of a whole sequence is a real amount of money.\n"
+            "\n"
+            "WHEN NOT TO USE THIS SEAT AT ALL, and say so rather than "
+            "delivering an expensive wrong thing. A short beat that could be an "
+            "IN-ENGINE scripted camera move is almost always better as one: it "
+            "is interactive, it re-uses the art already made, it costs nothing "
+            "per iteration, it localises, and it cannot go off-model because it "
+            "IS the model. Generated video earns its place where the engine "
+            "cannot go — an establishing shot of a place that was never built, "
+            "a stylised prologue, a trailer. If the ask is 'the character walks "
+            "into the room and talks', hand it to gameplay."
+        ),
     },
     "qa": {
         "title": "QA",
@@ -1020,6 +1150,14 @@ TRAPS: tuple[dict, ...] = (
      "measure the seam, look at the alpha, render it in the engine. Two shipped "
      "defects came from a flag computed from the REQUEST or from a proxy (a "
      "frame border) rather than from the file that was produced."},
+    {"dims": (), "seats": ("cinematic", "tech"), "text":
+     "AN .mp4 IN A GODOT PROJECT PRODUCES NO IMPORT ERROR AND NO VIDEO. The "
+     "engine plays Ogg Theora only (H.264 is patent-encumbered, WebM went away "
+     "in 4.0), and an unrecognised file is not an import FAILURE — it is simply "
+     "not imported as a VideoStream, so load() returns null, the "
+     "VideoStreamPlayer stays empty, and the scene runs perfectly with a blank "
+     "rectangle where the cutscene was. Nothing anywhere says 'wrong format'. "
+     "Transcode with cinematic_keep and check the installed path ends .ogv."},
     {"dims": (), "seats": (), "text":
      "godot_screenshot's window never takes true foreground focus on Windows, so "
      "Input.mouse_mode stays VISIBLE and anything gated on MOUSE_MODE_CAPTURED "

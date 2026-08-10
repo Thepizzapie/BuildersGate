@@ -123,6 +123,81 @@ class TestGitCarriesWhatShips:
             "glob cannot include a file that is not in the checkout)")
 
 
+class TestTheShellsAssetsExist:
+    """Every local file index.html points at must actually BE there.
+
+    THE GAP THIS CLOSES, and it cost a whole feature. `_untracked` above asks
+    "is everything on disk also in git", which cannot see a file that is on
+    NEITHER — and that is exactly what happened to the 3D model viewer: a bare
+    `build/` in .gitignore matched bgate_ui/static/vendor/three/build/, so
+    three.js's library file was never committed, never on a fresh clone, and the
+    import map pointed at a 404. Eighteen sibling files were tracked, which made
+    the tree look vendored. The viewer could not load its own engine and nothing
+    said why.
+
+    Checking the REFERENCES rather than the directory is what makes this
+    catchable: a missing file is only a bug if something asks for it, and the
+    shell is where the asking is written down.
+    """
+
+    SHELL = REPO / "bgate_ui" / "static" / "index.html"
+
+    def _referenced(self) -> list[str]:
+        import json
+        import re
+
+        html = self.SHELL.read_text(encoding="utf-8")
+        out = set()
+        # <script src>, <link href>, and anything an import map maps to. All
+        # three are ways to name a file the browser will demand.
+        for pattern in (r'<script[^>]+src="(/static/[^"]+)"',
+                        r'<link[^>]+href="(/static/[^"]+)"'):
+            out.update(re.findall(pattern, html))
+        for block in re.findall(r'<script type="importmap">(.*?)</script>',
+                                html, re.S):
+            try:
+                out.update(json.loads(block).get("imports", {}).values())
+            except (ValueError, AttributeError):
+                continue
+        return sorted(one for one in out if one.startswith("/static/"))
+
+    def test_the_shell_references_something(self):
+        """A guard on the guard: a regex that matched nothing would pass this
+        whole class silently, which is the failure it exists to prevent."""
+        assert len(self._referenced()) > 10
+
+    def test_every_referenced_asset_is_on_disk(self):
+        static = REPO / "bgate_ui" / "static"
+        missing = [ref for ref in self._referenced()
+                   if not (static / ref[len("/static/"):]).is_file()]
+        assert not missing, (
+            "index.html points at files that do not exist, so the browser gets "
+            "a 404 and the feature they belong to is silently dead:\n  "
+            + "\n  ".join(missing))
+
+    def test_every_referenced_asset_is_tracked_by_git(self):
+        """On disk is not enough — a fresh clone gets only what git carries."""
+        if not (REPO / ".git").exists():
+            pytest.skip("not a git checkout")
+        import subprocess
+
+        static = REPO / "bgate_ui" / "static"
+        untracked = []
+        for ref in self._referenced():
+            path = static / ref[len("/static/"):]
+            if not path.is_file():
+                continue        # the test above owns that failure
+            found = subprocess.run(
+                ["git", "ls-files", "--error-unmatch", str(path)],
+                cwd=REPO, capture_output=True, text=True)
+            if found.returncode != 0:
+                untracked.append(ref)
+        assert not untracked, (
+            "these exist here but git does not carry them, so a fresh clone "
+            "gets a 404 (check .gitignore for a pattern that matches them, and "
+            "`git add -f` if it is deliberate):\n  " + "\n  ".join(untracked))
+
+
 class TestDeclarations:
     def test_data_only_trees_are_installed_packages(self, cfg):
         """templates/ and bgate_engine/ carry no .py, but scaffold.py resolves

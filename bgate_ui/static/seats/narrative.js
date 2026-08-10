@@ -29,7 +29,7 @@
   var HINT_READY = "drag a panel header to move · scroll / drag empty canvas to pan";
 
   var LORE_KINDS = ["character", "faction", "place", "event", "item", "concept", "species"];
-  var SEATS = ["narrative", "gameplay", "art", "audio", "tech", "qa", "director"];
+  var SEATS = ["narrative", "gameplay", "art", "audio", "cinematic", "tech", "qa", "director"];
   // What a board arrow means once it is canon. lore.link takes any rel; these
   // are the ones a storyboard actually draws.
   var LINK_RELS = ["leads_to", "involves", "located_in", "member_of", "related_to"];

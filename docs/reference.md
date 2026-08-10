@@ -9,7 +9,8 @@ made. [gotchas.md](gotchas.md) covers what went wrong on the way.
 - **Design bible + lore canon.** Pillars, scope tiers with a mechanical cut
   line, an entity graph with atomic facts, and `canon_check`, a deterministic
   lexical gate every narrative write passes through.
-- **Seven agent seats.** Director, narrative, gameplay, tech, art, audio, qa.
+- **Eight agent seats.** Director, narrative, gameplay, tech, art, audio,
+  cinematic, qa.
   Each has write lanes, one-call briefs, and a shared blackboard. A PreToolUse
   hook gives the lanes teeth.
 - **Blender adapter.** Headless bpy with structured feedback (tri counts, UV
@@ -83,8 +84,9 @@ No build step, no node, no CDN.
 
 ## Seats
 
-Seven stable game-dev identities: director, narrative, gameplay, tech, art,
-audio, qa. A seat is an identity a working agent adopts, not a spawned process.
+Eight stable game-dev identities: director, narrative, gameplay, tech, art,
+audio, cinematic, qa. A seat is an identity a working agent adopts, not a
+spawned process.
 There is never a per-task registration.
 
 ```text

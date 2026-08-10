@@ -248,7 +248,36 @@ def _probe_ffmpeg() -> dict:
                         "frame extraction and playtest recording")
     banner = _banner(exe)  # "ffmpeg version 7.1-full_build-www.gyan.dev ..."
     match = re.search(r"version\s+(\S+)", banner)
-    return _finish("ffmpeg", exe, match.group(1) if match else banner or "unknown")
+    version = match.group(1) if match else banner or "unknown"
+
+    # WHICH ffmpeg, NOT JUST WHETHER. libtheora is an OPTIONAL build flag and
+    # several distributions ship an ffmpeg without it. Such a build passes every
+    # check above, records playtests perfectly, and then fails at the one thing
+    # cutscenes need — writing the Ogg Theora that is the only format Godot
+    # plays — after a whole sequence has been generated and paid for.
+    #
+    # IT DOES NOT TURN THE ROW RED, and it does not add a column. Screen
+    # capture, frame extraction and recording are what this row has always
+    # meant and all of them work without libtheora, so a red row would tell a
+    # project that ships no cutscenes that its setup is broken. And every
+    # dependency answers in exactly _row's shape — a `theora` key here would be
+    # one row wider than the other eleven, which every consumer of this report
+    # would have to special-case. So it rides in the version string, where it is
+    # visible in the doctor table and costs nothing.
+    try:
+        from bgate_core import cinematic as _cine
+
+        encoder = _cine.ffmpeg_status()
+        # Only when the probe actually RAN. A binary that could not be executed
+        # tells us nothing about its build, and "no libtheora" is a claim, not a
+        # default — asserting it about an encoder we never reached would send a
+        # user to fix something that is not broken.
+        if encoder.get("probed") and not encoder.get("theora"):
+            version += " (no libtheora — cannot write the Ogg Theora Godot " \
+                       "plays, so generated cutscenes cannot be delivered)"
+    except Exception:                                            # noqa: BLE001
+        pass    # a probe that cannot answer must not take the doctor down
+    return _finish("ffmpeg", exe, version)
 
 
 def _probe_ffprobe() -> dict:

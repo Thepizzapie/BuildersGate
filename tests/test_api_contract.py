@@ -239,3 +239,73 @@ class TestPagination:
         got = client.get(f"/api/playtest/{sid}").json()
         assert "session" in got and isinstance(got["items"], list)
         assert got["page"]["offset"] == 0
+
+
+class TestExceptionsDoNotLeak:
+    """Nothing derived from an exception reaches a response body.
+
+    CodeQL's py/stack-trace-exposure has an abstract Sanitizer class with ZERO
+    implementations, so no amount of redaction clears it — the taint simply must
+    not reach the sink. Two earlier attempts are recorded in safe_error's
+    docstring: scrubbing (still flagged) and logging instead (a HIGH, worse).
+
+    The cost is bounded on purpose. Only UNEXPECTED failures lose their text;
+    every deliberate refusal raises ApiError with a message written as a literal
+    in our source and is untouched.
+    """
+
+    @pytest.mark.parametrize("exc", [
+        OSError(2, "No such file", "/home/marta/private/notes.txt"),
+        RuntimeError("rejected sk-live-NOTREAL-abcdefghijklmnop"),
+        ValueError("nothing on disk at game/assets/cinematics/intro.ogv"),
+    ])
+    def test_no_part_of_the_exception_survives(self, exc):
+        from bgate_ui import api
+
+        out = api.safe_error(exc)
+        assert "marta" not in out and "NOTREAL" not in out
+        # Not even the type name: an attribute read on a caught exception is
+        # still a read of the exception.
+        assert type(exc).__name__ not in out
+
+    def test_it_is_the_same_string_every_time(self):
+        """A constant, which is what makes it untainted rather than sanitised."""
+        from bgate_ui import api
+
+        assert api.safe_error(ValueError("a")) == api.safe_error(OSError("b"))
+
+    def test_it_still_says_something_a_person_can_act_on(self):
+        """A blank panel is what api.py exists to prevent. The message has to
+        explain that detail was withheld and where to find it."""
+        from bgate_ui import api
+
+        out = api.safe_error(ValueError("x"))
+        assert "traceback" in out.lower() and len(out) > 40
+
+    def test_deliberate_refusals_keep_their_message(self, client):
+        """The 95% of errors a user actually hits. These raise ApiError with a
+        literal we wrote, never touch safe_error, and must not be collateral."""
+        got = client.post("/api/cinematic/plan", json={"name": "x", "shots": []})
+        assert got.status_code == 400
+        assert "not a plan" in got.text
+
+    def test_a_traversal_refusal_still_explains_itself(self, client):
+        got = client.post("/api/cinematic/plan", json={
+            "name": "x", "shots": [{"action": "a", "duration": 5,
+                                    "first_frame": "../../../etc/passwd"}]})
+        assert got.status_code == 400
+        assert "outside the project" in got.text
+
+    def test_the_unhandled_handler_says_nothing_either(self, client,
+                                                       monkeypatch):
+        """The widest sink in the product."""
+        import bgate_ui.app as app_module
+
+        @app_module.app.get("/api/_boom_for_test")
+        def _boom():
+            raise RuntimeError("leaked /home/marta/secret sk-live-NOTREAL-xyz")
+
+        got = TestClient(app_module.app, raise_server_exceptions=False).get(
+            "/api/_boom_for_test")
+        assert got.status_code == 500
+        assert "marta" not in got.text and "NOTREAL" not in got.text

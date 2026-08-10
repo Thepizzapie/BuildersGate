@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bgate_cli import main as cli
-from bgate_core import db, project
+from bgate_core import db, project, seats
 from bgate_ui.app import app
 from bgate_ui.routes import project as project_routes
 
@@ -114,7 +114,7 @@ class TestCreateOverHttp:
         state = client.get("/api/state").json()
         assert state["project"]["name"] == "Ember Run"
         assert state["root"] == str(root)
-        assert len(state["seats"]) == 7
+        assert len(state["seats"]) == len(seats.ROLES)
 
     def test_3d_template_sets_the_dimension(self, client, monkeypatch):
         monkeypatch.delenv("BGATE_ROOT")

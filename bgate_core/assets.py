@@ -41,6 +41,19 @@ _SUFFIX_KINDS = {
     ".png": "texture", ".jpg": "texture", ".jpeg": "texture", ".webp": "texture",
     ".svg": "vector", ".wav": "audio", ".ogg": "audio", ".mp3": "audio",
     ".tscn": "scene", ".tres": "resource", ".gd": "script",
+    # VIDEO, AND .ogv IS NOT .ogg. Ogg is a container: the same extension family
+    # carries Vorbis audio and Theora video, and the engine treats them as
+    # completely different resources — .ogg imports as an AudioStream, .ogv as a
+    # VideoStream. Mapping .ogv to "audio" by family resemblance would file every
+    # shipped cutscene as a sound effect in the registry, in the audio seat's
+    # listings, and in every kind-filtered query downstream.
+    #
+    # .mp4 is here even though Godot cannot play one (see bgate_core.cinematic):
+    # it is what every video model returns, so it is what a candidate revision is
+    # before a human keeps it. A generated clip awaiting a decision is a real
+    # tracked asset with a real hash; "unknown" would have hidden the whole
+    # candidate pool from asset_verify.
+    ".mp4": "video", ".ogv": "video", ".webm": "video", ".mov": "video",
 }
 
 _CHUNK = 1 << 20  # 1 MiB
@@ -78,9 +91,31 @@ def lease_seconds(operation: str = "", lease_s: Optional[int] = None) -> int:
 
 def normalize_path(root: str | os.PathLike[str],
                    path: str | os.PathLike[str]) -> str:
-    """Registry key: repo-root-relative, forward slashes — stable across OSes."""
+    """Registry key: repo-root-relative, forward slashes — stable across OSes.
+
+    SEPARATORS ARE NORMALISED BEFORE THE CONTAINMENT CHECK, NOT AFTER, and the
+    order is a security property rather than tidiness.
+
+    This used to resolve the path as given, verify it sat inside the project,
+    and THEN rewrite backslashes to forward slashes on the way out. On Windows
+    that is harmless — both characters are separators, so `resolve()` already
+    saw the traversal. On POSIX a backslash is an ORDINARY FILENAME CHARACTER,
+    so `..\\..\\outside\\secret.png` is one legal filename, resolves to a
+    non-existent child of the project, passes containment — and is then handed
+    back as `../../outside/secret.png`, which every caller joins to the root and
+    follows straight out of the project.
+
+    MEASURED against the cutscene pipeline, where the consequence is worst: a
+    conditioning frame is uploaded to a third-party generation provider, so the
+    escaped path is not read locally, it is POSTed off the machine. Nine
+    traversal shapes were contained and this one was not.
+
+    Rewriting first means containment is checked against the SAME
+    interpretation the caller gets back, which is the only version of this
+    function that can be reasoned about.
+    """
     project = Path(root).resolve()
-    supplied = Path(path)
+    supplied = Path(str(path).replace("\\", "/"))
     absolute = supplied.resolve() if supplied.is_absolute() else (project / supplied).resolve()
     try:
         relative = absolute.relative_to(project)

@@ -62,7 +62,7 @@ window.PtNotes = (() => {
   const POLL_MS = 4000;
   const KINDS = ["like", "fix", "add", "change", "question", "note"];
   const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio",
-                 "qa", "unassigned"];
+                 "cinematic", "qa", "unassigned"];
   /* Downscale only what is genuinely huge. A 4K canvas as lossless PNG is
      ~8 MB, which is a slow POST and a slow write for no extra evidence; at or
      under this width the frame is sent untouched, so a pixel-art bug is still

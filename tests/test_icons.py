@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from bgate_core import seats as _seats
+
 STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
 ICONS = STATIC / "icons.js"
 INDEX = STATIC / "index.html"
@@ -67,8 +69,11 @@ class TestIconSet:
         src = ICONS.read_text(encoding="utf-8")
         assert "bgi-missing" in src and "stroke-dasharray" in src
 
-    @pytest.mark.parametrize("seat", ["director", "narrative", "gameplay", "tech",
-                                      "art", "audio", "qa"])
+    # DERIVED FROM THE SEAT TABLE, NOT RETYPED. This list was a literal, so
+    # adding the eighth seat left it green while the rail drew a dashed
+    # bgi-missing box — the exact "silently blank slot" the test above exists to
+    # catch, passing because the parametrize list had never heard of the seat.
+    @pytest.mark.parametrize("seat", sorted(_seats.ROLES))
     def test_every_seat_has_an_icon(self, seat):
         assert seat in icon_names()
 

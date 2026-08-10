@@ -45,7 +45,7 @@
   const POLL_LIVE_MS = cfg("poll_live_ms", 3000, 500, 60000);
   const POLL_IDLE_MS = cfg("poll_idle_ms", 12000, 1000, 300000);
 
-  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"];
+  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa"];
   // A seat name lands inside var(--c-…). esc() stops an attribute escape but not
   // a CSS one, and the value is agent-authored — so it is whitelisted, never
   // interpolated raw.

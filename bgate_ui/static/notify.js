@@ -37,7 +37,7 @@
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const trunc = (s, n) => { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
-  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"];
+  const SEATS = ["director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa"];
   // A seat name lands inside var(--c-…): whitelisted, never interpolated raw —
   // esc() stops an attribute escape but not a CSS one, and the value is written
   // by an agent.

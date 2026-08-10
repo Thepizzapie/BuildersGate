@@ -14,7 +14,6 @@ into the developer's own machine-wide store.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 

@@ -2492,7 +2492,7 @@
     var items = plan.items || [];
     var seats = (this.seat === "narrative")
       ? ["narrative"]
-      : ["director", "narrative", "gameplay", "tech", "art", "audio", "qa"];
+      : ["director", "narrative", "gameplay", "tech", "art", "audio", "cinematic", "qa"];
     var meta = this.synthMeta || {};
     var prior = meta.already_filed;
 

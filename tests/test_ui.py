@@ -23,7 +23,7 @@ class TestState:
 
         got = client.get("/api/state").json()
         assert got["project"]["name"] == "Test Game"
-        assert len(got["seats"]) == 7
+        assert len(got["seats"]) == len(seats.ROLES)
 
         art = next(s for s in got["seats"] if s["role"] == "art")
         assert art["locks"][0]["path"] == "game/assets/shard.blend"

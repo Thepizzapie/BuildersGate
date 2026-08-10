@@ -104,6 +104,43 @@ def ok(data: Any = None, **extra: Any) -> dict:
     return body
 
 
+# ---------------------------------------------------------------------------
+# Turning an exception into something safe to put in a response
+# ---------------------------------------------------------------------------
+#
+# WHY safe_error IS A CONSTANT — see its docstring. The scrubbing that used to
+# live here (bgate_core.streamer, via a cached Redactor) is gone with it: it
+# could not clear the finding, and every response it protected now carries no
+# exception text to protect. The streamer-mode middleware in bgate_ui.redact is
+# untouched and is still the filter that runs when a camera is on the screen.
+def safe_error(exc: BaseException) -> str:
+    """A constant. Nothing derived from the exception goes into a response.
+
+    THE REASON IT IS A CONSTANT AND NOT A SCRUBBED MESSAGE. CodeQL's
+    py/stack-trace-exposure query has an abstract Sanitizer class with ZERO
+    implementations — read it: python/ql/lib/semmle/python/security/dataflow/
+    StackTraceExposureCustomizations.qll. There is no sanitizer, so no amount of
+    redaction clears the finding; the only thing that does is the taint not
+    reaching an HTTP response body at all. Earlier attempts here scrubbed the
+    message (still flagged) and then logged it instead (a HIGH for clear-text
+    logging, worse than the MEDIUM it replaced).
+
+    WHAT THIS DOES NOT COST, WHICH IS THE POINT. It is only reached from an
+    `except` block wrapping an unexpected failure. Every DELIBERATE refusal in
+    the product raises ApiError with a message written as a literal in our
+    source — "a sequence needs a name", "first_frame ... resolves outside the
+    project" — and those never touch this function, never carried taint, and are
+    unchanged. What is lost is the text of failures nobody anticipated, which
+    are the ones whose message was never read by a human anyway.
+
+    A developer diagnosing one still has the traceback: the exception is not
+    swallowed here, only excluded from the response.
+    """
+    return ("the operation failed unexpectedly — the message is withheld "
+            "because an unanticipated exception can name paths or values that "
+            "are not ours to repeat. The traceback is on the server.")
+
+
 def error_body(status: int, message: str, *, code: Optional[str] = None,
                detail: Optional[dict] = None) -> dict:
     return {
@@ -159,9 +196,12 @@ def install_error_handlers(app) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception):
+        # THE WIDEST EXPOSURE IN THE PRODUCT, because it catches what nobody
+        # anticipated — and an unanticipated exception is exactly the one whose
+        # message was never read by a human. See safe_error.
         return JSONResponse(
             status_code=500,
-            content=error_body(500, f"{type(exc).__name__}: {exc}"),
+            content=error_body(500, safe_error(exc)),
         )
 
 

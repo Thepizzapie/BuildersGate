@@ -170,3 +170,63 @@ class TestDriftDetection:
         assert got["ok"] is False
         assert got["untracked_hash"] == ["assets/candidate.png"]
         assert got["counts"]["pending"] == 1
+
+
+class TestNormalizePathContainment:
+    """normalize_path is the containment check the whole product relies on —
+    every registry key, every artifact path, and every caller-supplied frame in
+    the cutscene pipeline goes through it. These are the shapes an attacker
+    actually tries, and one of them used to get through.
+    """
+
+    @pytest.mark.parametrize("attack", [
+        "../outside/secret.png",
+        "../../../../../../../etc/passwd",
+        "/etc/passwd",
+        "art/../../outside/secret.png",
+        "art/../../outside/./secret.png",
+        "..//outside//secret.png",
+        # WINDOWS SEPARATORS ON POSIX, and this is the one that got through. A
+        # backslash is an ordinary filename character here, so this resolved to
+        # one harmless non-existent child, passed containment, and was then
+        # rewritten to "../../outside/secret.png" on the way out — which every
+        # caller joins to the root and follows out of the project. In the
+        # cutscene pipeline the escaped path is UPLOADED to a third party, so it
+        # leaves the machine rather than merely being read.
+        "..\\..\\outside\\secret.png",
+        "art\\..\\..\\outside\\secret.png",
+    ])
+    def test_a_traversal_is_refused(self, root, attack):
+        with pytest.raises(ValueError, match="outside the project"):
+            assets.normalize_path(root, attack)
+
+    def test_a_symlink_out_of_the_project_is_refused(self, root,
+                                                     tmp_path_factory):
+        """The classic bypass of a naive `..` check: no traversal in the string
+        at all. resolve() has to run BEFORE the comparison, and it does.
+
+        tmp_path_factory, NOT tmp_path: the `root` fixture IS tmp_path, so a
+        file made there is INSIDE the project and the symlink would correctly
+        be allowed — a test that passes while proving nothing."""
+        elsewhere = tmp_path_factory.mktemp("elsewhere")
+        outside = elsewhere / "outside.png"
+        outside.write_bytes(b"\x89PNG")
+        (root / "art").mkdir(parents=True, exist_ok=True)
+        link = root / "art" / "innocent.png"
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("this platform/user cannot create symlinks")
+        with pytest.raises(ValueError, match="outside the project"):
+            assets.normalize_path(root, "art/innocent.png")
+
+    def test_ordinary_paths_are_unchanged(self, root):
+        """Containment must not cost the normal case."""
+        assert assets.normalize_path(root, "art/hero.png") == "art/hero.png"
+        assert assets.normalize_path(root, "game/../art/hero.png") == "art/hero.png"
+        assert assets.normalize_path(root, root / "art" / "hero.png") == "art/hero.png"
+
+    def test_windows_separators_still_normalise_when_they_stay_inside(self, root):
+        """The fix normalises separators rather than banning them — a Windows
+        client posting `art\\hero.png` still gets the right registry key."""
+        assert assets.normalize_path(root, "art\\hero.png") == "art/hero.png"

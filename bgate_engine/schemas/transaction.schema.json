@@ -9,7 +9,7 @@
     "id":            { "type": "string", "pattern": "^tx_[a-z]+_[0-9]+$", "examples": ["tx_gameplay_51"] },
     "base_revision": { "type": "integer", "description": "World revision this change set forked from." },
     "actor":         { "type": "string", "description": "Agent or human identity that owns the change set." },
-    "seat":          { "type": "string", "enum": ["director","gameplay","art","tech","audio","narrative","qa"] },
+    "seat":          { "type": "string", "enum": ["director","gameplay","art","tech","audio","cinematic","narrative","qa"] },
     "work_item":     { "type": ["integer","null"], "description": "Builders Gate queue item this transaction serves." },
     "operations": {
       "type": "array",

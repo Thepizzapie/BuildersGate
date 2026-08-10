@@ -167,8 +167,17 @@ class TestNoLauncher:
         command is unknowable, the failures are all on the far side of it, and
         an orphan holding 8 GB of VRAM is worse than a sentence telling somebody
         to start it themselves."""
-        paths = [r.path for r in app.routes if hasattr(r, "path")
-                 and r.path.startswith("/api/local")]
+        # WALKED, NOT SCANNED FLAT. Starlette 1.0 stopped flattening
+        # include_router into app.routes — an included router sits there as one
+        # opaque object with the real routes behind it — so the flat scan this
+        # used to do found NOTHING and blamed the import, which was not what was
+        # wrong. test_routes_smoke hit the same wall and documented it; this
+        # borrows its walker rather than keeping a second copy that can rot
+        # differently.
+        from test_routes_smoke import _walk
+
+        paths = [r.path for r in _walk(app.routes)
+                 if r.path.startswith("/api/local")]
         # A bare `assert paths` reported an empty list and nothing else, which
         # is the least useful thing it could say: no /api/local routes means the
         # module did not IMPORT, and routes/__init__ already records why. Name
