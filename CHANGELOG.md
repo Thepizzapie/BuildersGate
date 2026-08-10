@@ -9,6 +9,78 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+Sprite sheets. The painted path could already prove a sheet was **the same
+character**; it had almost nothing that could prove the sheet was **a character
+moving**. Those fail in different ways, and the second one is what a player sees.
+Written up in full, with the measurements, in
+[docs/sprite-animation-research.md](docs/sprite-animation-research.md).
+
+### Added
+
+- **`sprite_plan`, and archetypes for `image_sprites`.** The key poses for ten
+  standard actions, with their timing — a walk as contact / down / passing / up
+  once per leg, an attack as anticipation / contact / follow-through / recover
+  with the impact frame held and the wind-up rushed. `sprite_plan` costs nothing
+  and returns the poses and the price; `archetypes=["idle","walk4","attack"]`
+  runs exactly that plan. The failure this exists to stop is not a broken sheet:
+  it is four frames named `walk/0`…`walk/3` described as "walking", which
+  assembles perfectly, passes the identity gate, holds its palette, and animates
+  like a character sliding along the floor. Nothing rejected it, because nothing
+  was wrong with any single frame.
+
+- **Per-frame timing in the emitted resource.** Godot 4's `SpriteFrames` has
+  carried a relative per-frame `duration` all along and this project wrote a
+  literal `1.0` for every frame it ever produced. A uniform hold is the flattest
+  reading of any action, and it is why a generated punch read as four pictures of
+  a punch. Loop and fps are now per-animation too — a 6fps idle and a 12fps
+  attack on one sheet is normal, and one sheet-wide speed was a compromise
+  between two right answers.
+
+- **Ping-pong cycles.** Three drawings played 0, 1, 2, 1 are a four-step cycle
+  that costs three generations and *cannot* have a loop seam, which is what a
+  breathing idle or a hovering pickup wants. Godot has no ping-pong loop mode, so
+  it is baked into the frame list — which is where the plan belongs anyway.
+
+- **Palette locking (`palette_lock`, default `"auto"`).** The existing gate
+  detects palette drift and pays for a re-roll. Quantising each frame to the
+  reference's own palette makes drift *unrepresentable* instead. It is a
+  posteriser, so `"auto"` measures the reference and switches on only for flat,
+  cel and limited-palette art, where it is free; painterly art is left alone.
+
+- **A motion report on every assembled sheet.** Four faults the identity judge
+  structurally cannot see, because all four are perfectly on-model: two frames
+  that are the same drawing, two adjacent frames sharing almost no silhouette, a
+  cycle whose last frame does not flow into its first, and a figure in more than
+  one piece. Advisory, and surfaced as chips on the art card — a duplicate frame
+  is fixed by a different pose description, not by re-rolling the same one.
+
+### Fixed
+
+- **Sprite frames were registered on their bounding box, so a punch moved the
+  fighter sideways.** An outstretched limb widens the box on one side, which
+  slides the body the other way to compensate. Measured on a synthetic with an
+  identical torso in both frames: the torso moved 44.5px under box-centring, 6.0px
+  under the textbook alpha-weighted centroid, and 1.0px under the shipped anchor
+  — the median of the *core* columns, which drops the limbs from the vote and
+  leaves the torso, which is what an animator means by a centre line.
+
+- **The set's fit scale used the widest bounding box, which quietly undid the
+  registration.** Under anchor registration a pose needs twice its reach *from
+  the anchor*, not its box width, so a wide pose could not sit where its anchor
+  said and the placement clamp dragged the body off centre.
+
+- **A sheet longer than the safe texture width was a texture that would not
+  upload.** No warning: the sprite simply draws as nothing, and a thirty-frame
+  character at 160px is already past the 4096px that mobile and web commonly cap
+  at. Long sheets now wrap into a padded grid. Short ones are still a plain
+  strip, so nothing existing re-imports.
+
+- **The art brief's rule 2 said "never condition frame N on frame N-1" while
+  `image_sprites` had deliberately done so, on top of the anchor, since
+  anchor+rolling landed.** It now says the true thing: the pin is in every call,
+  which is what stops the decay, and the previous frame must never be the *only*
+  reference.
+
 ## [0.1.35] - 2026-08-09
 
 Twenty-two commits. The tool count went from 78 to 144, which is the shape of

@@ -30,4 +30,6 @@ New here, or never run an MCP server before? Read these three, in order.
 
 | Document | What it is |
 |---|---|
+| [sprite-animation-research.md](sprite-animation-research.md) | Why sheets that passed every gate still animated badly. The registration bug (bounding boxes are not bodies), palette locking versus palette detection, per-frame timing Godot had all along, and the four cross-frame faults an identity judge structurally cannot see. Measured, with what was deliberately not built. |
+| [visual-taste-research.md](visual-taste-research.md) | What the research literature says is computable about art, rigging and animation quality, what is judge-territory, and what is unsolved. Notes, not a build plan. |
 | [history/](history) | Archived agent-to-owner handoff notes. Historical only, see each file's header. |
