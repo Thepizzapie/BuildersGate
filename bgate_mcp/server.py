@@ -83,6 +83,8 @@ from bgate_core import iterations as _iterations
 from bgate_core import items as _items
 from bgate_core import project as _project
 from bgate_core import search as _search
+from bgate_core import animspec as _animspec
+from bgate_core import spritekit as _spritekit
 from bgate_core import vfx as _vfx
 
 # THE ONE CHANNEL THAT CANNOT BE DROPPED BY CHANGING DIRECTORY.
@@ -3140,6 +3142,78 @@ _chroma_key = _chroma.key
 
 
 @_tool
+def sprite_plan(archetypes: Optional[list[str]] = None, view: str = "",
+                quality: str = "medium") -> dict:
+    """The key poses and timing for standard animations. FREE — spends nothing.
+
+    Call this BEFORE image_sprites. With no arguments it returns the catalogue:
+    every archetype, how many frames it generates, how many steps it plays, and
+    one line on why it is built that way. With `archetypes=["idle","walk4",
+    "attack"]` it returns the exact pose list and timing that run would use, plus
+    what it would cost — so the plan can be read, edited and priced before any of
+    it is bought.
+
+    WHY THIS EXISTS. image_sprites will animate whatever poses it is handed, and
+    the expensive failure is not a broken sheet — it is a sheet that assembles
+    perfectly, passes the identity gate, holds its palette, and animates like
+    nothing alive. Four frames named walk/0..walk/3 and described as "walking,
+    left foot forward" / "walking" / "walking, right foot forward" / "walking"
+    is a legal, costly, useless animation and not one existing gate rejects it.
+
+    Animation has had the answer since the 1930s. A walk is CONTACT, DOWN,
+    PASSING, UP, once per leg — the body rises and falls twice per cycle and that
+    bob is what a walk IS; four frames with no height change is a character
+    sliding along the floor. An attack is ANTICIPATION, CONTACT, FOLLOW-THROUGH,
+    RECOVER, and its impact frame is HELD while its wind-up is rushed, because
+    that contrast is the feeling of a hit landing. Godot 4 has carried per-frame
+    durations all along and this pipeline emitted a flat 1.0 for every frame ever
+    made, which is why generated attacks read as a slideshow of an attack.
+
+    `view` ("side view, facing right") is prepended to every description, so the
+    camera convention is stated once rather than drifting between eight prose
+    strings. Feed the returned `poses` and `archetypes` straight to
+    image_sprites, or edit them first — this is a starting point with reasons
+    attached, not a rule.
+    """
+    try:
+        if not archetypes:
+            return {"ok": True, "catalog": _animspec.catalog(),
+                    "note": "pass archetypes=[...] for the pose list and price of "
+                            "a specific run. `generated` is what you pay for; "
+                            "`steps` is how many frames actually play — they "
+                            "differ where ping-pong is doing its job."}
+        built = _animspec.plans(list(archetypes), view=view)
+        from bgate_adapters import imagegen as _ig
+
+        per = _ig.price_per_image(quality)
+        details = []
+        for entry in archetypes:
+            key = _animspec.resolve(entry)
+            if key:
+                spec = _animspec.ARCHETYPES[key]
+                details.append({"asked": entry, "archetype": key,
+                                "why": spec["why"], "loop": spec["loop"],
+                                "pingpong": spec["pingpong"], "fps": spec["fps"]})
+        return {
+            "ok": True,
+            "animations": built["animations"],
+            "poses": built["poses"],
+            "timing": built["timing"],
+            "generated": built["generated"],
+            "steps": built["steps"],
+            "estimated_usd": round(per * built["generated"] + per, 4),
+            "detail": details,
+            "note": f"{built['generated']} images to generate, {built['steps']} "
+                    f"frames of playback (the difference is ping-pong), plus one "
+                    f"reference. Pass archetypes={list(archetypes)!r} to "
+                    "image_sprites to run exactly this, or edit `poses` and pass "
+                    "those instead.",
+        }
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_image: Optional[str] = None, frame_width: int = 160,
                   frame_height: int = 240, quality: str = "medium",
@@ -3147,7 +3221,10 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   res_dir: str = "assets/sprites", max_retries: int = 1,
                   max_cost_usd: float = 0.0, timeout: int = 300,
                   max_seconds: int = 1800, provider: str = "openai",
-                  model: str = "", ref_strength: float = 0.6) -> dict:
+                  model: str = "", ref_strength: float = 0.6,
+                  archetypes: Optional[list[str]] = None, view: str = "",
+                  palette_lock: str = "auto", palette_colors: int = 64,
+                  sheet_padding: int = 0) -> dict:
     """PAINTED sprite set — REFERENCE-FIRST for consistency.
 
     provider: "openai" (gpt-image, default) or "krea". They condition on the
@@ -3165,8 +3242,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     one — reusing the ref is also how you REGENERATE a single pose later without
     changing the fighter); (2) each pose is an EDIT conditioned on that
     reference — same character, new stance; (3) frames are alpha-trimmed,
-    bottom-centered, stitched into <name>_sheet.png + <name>_frames.tres (one
-    animation per pose) — drop-in for AnimatedSprite2D.
+    registered on the body's mass, stitched into <name>_sheet.png +
+    <name>_frames.tres — drop-in for AnimatedSprite2D.
 
     character_prompt: the character + art style (full body, single character —
     framing/transparency contracts are appended automatically).
@@ -3175,6 +3252,32 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     stance. LOOK at the reference preview before the poses run wild, and at the
     sheet preview before importing. Cost: 1 ref + 1 edit per pose (~$0.04-0.25
     each by quality). Failed poses are listed, never silently shipped.
+
+    ARCHETYPES ARE THE BETTER WAY TO ORDER AN ANIMATION, and they cost nothing
+    extra. Pass `archetypes=["idle", "walk", "attack"]` INSTEAD of `poses` and
+    the key poses come from bgate_core.animspec: a walk built from contact /
+    down / passing / up rather than four frames described as "walking", an
+    attack whose impact frame HOLDS while its wind-up is quick, an idle that
+    ping-pongs so its loop cannot seam. Call sprite_plan first to see exactly
+    what will be generated and what it will cost. `view` ("side view, facing
+    right") is prepended to every pose description so the camera convention is
+    stated once instead of drifting between eight prose strings. Hand-written
+    `poses` still work and are still right for anything the catalogue does not
+    cover.
+
+    palette_lock: "auto" (default), "on" or "off". Locking quantises every frame
+    to the reference's own palette, which makes colour drift UNREPRESENTABLE
+    rather than merely detectable — the existing palette gate finds drift and
+    pays for a re-roll; this leaves nowhere for the drift to be stored. It is a
+    posteriser, so "auto" measures the reference and turns it on only for flat,
+    cel or limited-palette art, where it is free. Painterly art with real
+    gradients is left alone.
+
+    sheet_padding: transparent gutter between cells, in pixels. 0 is a plain
+    strip. Raise it to 1-2 if the game draws sprites at a non-integer scale with
+    linear filtering, where sampling at a region edge otherwise pulls in the
+    neighbouring frame. Sheets long enough to exceed the safe texture width wrap
+    into a padded grid automatically whatever this says.
 
     THIS IS THE MOST EXPENSIVE TOOL HERE and it is capped like it. The plan is
     priced before anything is bought and REFUSED if it exceeds max_cost_usd (or,
@@ -3186,11 +3289,31 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     is still assembled, because half a sheet plus a reason beats a hung call.
 
     Returns the assembled sheet result, or {ok: false, stage, error} when the
-    spend gate, the reference gate or every pose fails.
+    spend gate, the reference gate or every pose fails. The result carries a
+    `motion` block — duplicated frames, popped poses, cycles that do not close,
+    figures in more than one piece — which is the half of quality the identity
+    judge cannot see, because every one of those faults is perfectly on-model.
     """
     try:
+        timing: dict = {}
+        if archetypes:
+            # The catalogue REPLACES a hand-written pose list rather than
+            # merging with one: two sources for the same animation's frames is a
+            # way to get walk/0 twice with different descriptions, and the
+            # emitter would happily ship it.
+            if poses:
+                return {"ok": False, "stage": "plan", "name": name,
+                        "error": "pass EITHER archetypes OR poses, not both — "
+                                 "the catalogue writes the whole pose list "
+                                 "including its frame numbering, and merging it "
+                                 "with hand-written poses duplicates frames. "
+                                 "Call sprite_plan(archetypes) to see the poses "
+                                 "it would generate, then edit those if you want "
+                                 "to hand-tune them."}
+            built = _animspec.plans(list(archetypes), view=view)
+            poses, timing = built["poses"], built["timing"]
         if not poses:
-            raise ValueError("poses list is empty")
+            raise ValueError("poses list is empty (and no archetypes given)")
         for p in poses:
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
@@ -3451,14 +3574,34 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     refs.append(prev)
             return refs
 
+        # PALETTE LOCK: "auto" asks the reference what kind of art it is. Flat,
+        # cel and limited-palette work is quantised to the reference's own
+        # colours, which costs nothing visible and makes drift unrepresentable;
+        # painterly work with real gradients is left alone, because locking it
+        # would band the shading and that is a downgrade nobody ordered.
+        lock_mode = str(palette_lock or "auto").strip().lower()
+        if lock_mode in ("auto", ""):
+            do_lock = _spritekit.looks_limited_palette(ref_path)
+            lock_why = ("the reference reads as flat / limited-palette art, "
+                        "where locking is free" if do_lock else
+                        "the reference reads as painterly (many near-identical "
+                        "shades), where locking would band the shading — left off")
+        else:
+            do_lock = lock_mode in ("on", "true", "yes", "1")
+            lock_why = f"palette_lock={palette_lock!r}, set explicitly"
+
         def _assemble_and_gate():
             asm = _sp.from_pose_images(
                 [(p, pose_path[p]) for p in pose_order],
                 out_dir=str(root / ".bgate_out" / "sprites"), name=name,
                 frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
-                ref_path=ref_path)
+                ref_path=ref_path, timing=timing or None,
+                palette_lock=do_lock, palette_colors=palette_colors,
+                pad=max(0, int(sheet_padding)))
             asm.setdefault("failed", [])
             asm["failed"].extend(pose_errors)
+            asm.setdefault("palette", {})["mode"] = lock_mode
+            asm["palette"]["why"] = lock_why
             cons = {"ok": False}
             if asm.get("ok"):
                 fm = asm.get("frames", {})
@@ -3536,6 +3679,9 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                           "preview": archived or "",
                           "consistency": consistency,
                           "sequence": assembled.get("sequence"),
+                          "motion": assembled.get("motion"),
+                          "palette": assembled.get("palette"),
+                          "timing": timing or None,
                           "fps": fps,
                           "animations": assembled.get("animations", {}),
                           "seconds": round(tally["seconds"], 2),
@@ -3581,12 +3727,22 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "detail, or lower the floor if this is as good as the model gets.")
 
             seq = assembled.get("sequence") or {}
-            seq_note = (f", motion-jitter in {seq['flagged']}"
+            seq_note = (f", height-jitter in {seq['flagged']}"
                         if seq.get("flagged") else "")
+            # The motion report is what the identity judge structurally cannot
+            # see: a duplicated frame, a popped pose, a cycle that does not
+            # close and a figure in two pieces are all perfectly on-model, so
+            # every score above the floor is compatible with every one of them.
+            motion = assembled.get("motion") or {}
+            kinds = sorted({f["kind"]
+                            for anim in (motion.get("animations") or {}).values()
+                            for f in anim.get("findings", [])})
+            motion_note = (f", MOTION {'/'.join(kinds)} in {motion['flagged']}"
+                           if motion.get("flagged") else "")
             _log("sprites", f"painted sprite set {name!r} (reference-first): "
                             f"{len(frame_map)}/{len(poses)} poses"
                             + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else "")
-                            + cons_note + seq_note,
+                            + cons_note + seq_note + motion_note,
                  ref=assembled["sheet"])
         return assembled
     except Exception as exc:
