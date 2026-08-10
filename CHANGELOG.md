@@ -24,8 +24,12 @@ repository at first publication. There is no earlier release history to record.
   and a 3D character does not maintain two vocabularies for "where the sword
   goes." The mesh's bytes are never rewritten, only a JSON sidecar next to it
   — a browser cannot safely re-export a `.glb`, so this surface is look, label,
-  never repaint. three.js is vendored under `bgate_ui/static/vendor/three/`,
-  self-contained like the CodeMirror build beside it.
+  never repaint. Reads Draco-compressed geometry and KTX2/Basis-compressed
+  textures too — Blender's glTF exporter offers Draco as a one-click option,
+  and a loader that only handles the uncompressed case would fail on exactly
+  the models that used it. three.js is vendored under
+  `bgate_ui/static/vendor/three/`, self-contained like the CodeMirror build
+  beside it.
 
 ## [0.1.35] - 2026-08-09
 

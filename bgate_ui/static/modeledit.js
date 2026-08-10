@@ -35,9 +35,24 @@ import * as THREE from "three";
 import { GLTFLoader } from "/static/vendor/three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "/static/vendor/three/examples/jsm/loaders/OBJLoader.js";
 import { MTLLoader } from "/static/vendor/three/examples/jsm/loaders/MTLLoader.js";
+import { DRACOLoader } from "/static/vendor/three/examples/jsm/loaders/DRACOLoader.js";
+import { KTX2Loader } from "/static/vendor/three/examples/jsm/loaders/KTX2Loader.js";
 import { OrbitControls } from "/static/vendor/three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "/static/vendor/three/examples/jsm/controls/TransformControls.js";
 import { RoomEnvironment } from "/static/vendor/three/examples/jsm/environments/RoomEnvironment.js";
+
+// Shared across every load — a DRACOLoader/KTX2Loader owns a worker pool and
+// a transcoder fetch, and creating a fresh one per model would mean paying
+// that setup cost (and spinning up new workers) every time someone opens a
+// different file. Blender's glTF exporter offers Draco compression as a
+// one-click option and plenty of people click it; without these, GLTFLoader
+// throws "No DRACOLoader instance provided" on exactly the models that
+// enabled it, and KTX2 (KHR_texture_basisu) is the same story for textures.
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath("/static/vendor/three/examples/jsm/libs/draco/gltf/");
+const ktx2Loader = new KTX2Loader();
+ktx2Loader.setTranscoderPath("/static/vendor/three/examples/jsm/libs/basis/");
+let ktx2Ready = false;
 
 window.ModelEdit = (() => {
   // Same story as the sprite editor: built as a fullscreen overlay, needed as
@@ -617,6 +632,13 @@ window.ModelEdit = (() => {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     hostEl.appendChild(renderer.domElement);
 
+    // KTX2Loader needs one real WebGL context to ask what compressed texture
+    // formats the GPU actually supports before it can transcode anything;
+    // detectSupport() is idempotent-ish but there is no reason to call it
+    // more than once per page, so it is gated on the shared loader instead
+    // of the per-model S.three block above it.
+    if (!ktx2Ready) { ktx2Loader.detectSupport(renderer); ktx2Ready = true; }
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x14161b);
 
@@ -908,7 +930,10 @@ window.ModelEdit = (() => {
         new OBJLoader().setMaterials(mats).load(url, onLoaded, undefined, () => loadObjBare(url));
       }, undefined, () => loadObjBare(url));
     } else {
-      new GLTFLoader().load(url, gltf => onLoaded(gltf.scene, gltf.animations), undefined, onLoadError);
+      new GLTFLoader()
+        .setDRACOLoader(dracoLoader)
+        .setKTX2Loader(ktx2Loader)
+        .load(url, gltf => onLoaded(gltf.scene, gltf.animations), undefined, onLoadError);
     }
   }
   function loadObjBare(url){
