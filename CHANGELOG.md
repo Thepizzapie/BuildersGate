@@ -9,13 +9,30 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
-Sprite sheets. The painted path could already prove a sheet was **the same
-character**; it had almost nothing that could prove the sheet was **a character
-moving**. Those fail in different ways, and the second one is what a player sees.
-Written up in full, with the measurements, in
+Sprite sheets, in two halves. On the **generation** side, the anchor was the
+weakest reference configuration available and is a model sheet now. On the
+**assembly** side, the painted path could already prove a sheet was *the same
+character*; it had almost nothing that could prove the sheet was *a character
+moving*, and those fail in different ways. Written up in full, with the
+measurements and with what was deliberately not built, in
 [docs/sprite-animation-research.md](docs/sprite-animation-research.md).
 
 ### Added
+
+- **The anchor is a model sheet now (`anchor_views`, default 3).** The largest
+  single lever found, and it is a reference policy rather than a mechanism. Every
+  reference a sprite run carried was the *same view* of the character — one
+  front-facing idle, plus previous frames that are near-copies of it — which is
+  the weak configuration: two to three images from *distinct angles* carry far
+  more identity than more of the same angle, which is why a model sheet exists
+  and why animators keep the profile and three-quarter views on the desk. It
+  bites hardest in the ordinary case, a side-view game asking for side-view poses
+  against a front-view anchor: the model re-invents the profile on every call and
+  re-invents it differently each time, and a re-roll cannot fix that because it
+  buys another guess at information the anchor never carried. A three-quarter and
+  a profile view are now generated off the approved anchor once and passed on
+  every pose call. Two extra generations per character against one per pose plus
+  one per re-roll; priced into the spend gate before anything is bought.
 
 - **`sprite_plan`, and archetypes for `image_sprites`.** The key poses for ten
   standard actions, with their timing — a walk as contact / down / passing / up
