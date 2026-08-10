@@ -61,7 +61,7 @@ class TestTheHeartbeatCarriesCandidates:
         """Without this a consumer's pending list only grows, and it keeps
         telling the human they owe a decision they already made."""
         art = _register(root)
-        artifacts.review(root, art["id"], "approved", actor="Adrian")
+        artifacts.review(root, art["id"], "approved", actor="Sam")
         line = _notify_lines(root)[-1]
         assert line["kind"] == "artifact.reviewed"
         assert line["status"] in ("approved", "integrated")
@@ -156,5 +156,5 @@ class TestPendingDecisions:
     def test_an_answered_candidate_drops_off(self, root, call):
         art = _register(root)
         assert call()["total"] == 1
-        artifacts.review(root, art["id"], "approved", actor="Adrian")
+        artifacts.review(root, art["id"], "approved", actor="Sam")
         assert call()["total"] == 0
