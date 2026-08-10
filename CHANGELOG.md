@@ -9,7 +9,118 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+Sprite sheets, in two halves. On the **generation** side, the anchor was the
+weakest reference configuration available and is a model sheet now. On the
+**assembly** side, the painted path could already prove a sheet was *the same
+character*; it had almost nothing that could prove the sheet was *a character
+moving*, and those fail in different ways. Written up in full, with the
+measurements and with what was deliberately not built, in
+[docs/sprite-animation-research.md](docs/sprite-animation-research.md).
+
 ### Added
+
+- **Machine-wide API keys (`~/.bgate/.env`), and `bgate key` to manage them.**
+  A credential belongs to the person, not to one game, and it used to be
+  reachable only through a project root — so the tool you would reach for to
+  diagnose a missing key was the one tool you could not run without a project.
+  Keys now resolve through three layers, most specific first: a shell variable
+  beats the project `.env`, which beats the machine-wide one. `bgate key` prints
+  which layer is actually in force per provider, which is the question worth
+  asking when a key is set and nothing works. Clearing a project key *uncovers*
+  the machine-wide one rather than leaving the provider unset until a restart.
+
+  `bgate key set <provider> [--global]` prompts with echo off and takes no key
+  argument at all — the project's own rule has been "never put one on a command
+  line" since a key was committed once, and a convenience flag would be that
+  rule with an exception carved into it. The dashboard's Generators panel has
+  the same choice as a tick box. There is deliberately **no MCP tool** that
+  writes a key: an agent that can write credentials can hand itself a provider
+  nobody paid for. `~/.bgate/.env` is written `0600`, and `~/.bgate` is not a
+  repository, so it has nothing to leak into.
+
+- **A scratch project at `~/.bgate/scratch`, for generations that belong to no
+  game.** The other half of the same problem: a key you can set without a
+  project is only useful if something can then *use* it without one.
+  `image_generate`, `image_edit`, `image_sprites` and `image_talkhead` fall back
+  here when there is nowhere else, and `project_dir="scratch"` asks for it
+  explicitly from inside a project you would rather not touch.
+
+  It is a real project, not an output folder, because everything downstream of a
+  generation needs one — the artifact registry, the spend ledger, `.bgate_out` —
+  and the first question anyone asks of a loose file is what it cost. It carries
+  no game: a tool that needs an engine still says so in its own words. It is
+  created on demand, so a user who never generates outside a project never gets
+  a directory they did not ask for, and it sits at the BOTTOM of the discovery
+  chain, below the remembered active project — so anyone who has run `bgate
+  init`, `adopt` or `use` keeps landing in their own work, and a mistyped
+  directory keeps failing loudly instead of quietly filling a folder nobody
+  looks in. Tools that edit game files, run Godot or take locks are unchanged
+  and still refuse. `project_status` says when the scratch project is the one
+  in use.
+
+- **The anchor is a model sheet now (`anchor_views`, default 3).** The largest
+  single lever found, and it is a reference policy rather than a mechanism. Every
+  reference a sprite run carried was the *same view* of the character — one
+  front-facing idle, plus previous frames that are near-copies of it — which is
+  the weak configuration: two to three images from *distinct angles* carry far
+  more identity than more of the same angle, which is why a model sheet exists
+  and why animators keep the profile and three-quarter views on the desk. It
+  bites hardest in the ordinary case, a side-view game asking for side-view poses
+  against a front-view anchor: the model re-invents the profile on every call and
+  re-invents it differently each time, and a re-roll cannot fix that because it
+  buys another guess at information the anchor never carried. A three-quarter and
+  a profile view are now generated off the approved anchor once and passed on
+  every pose call. Two extra generations per character against one per pose plus
+  one per re-roll; priced into the spend gate before anything is bought.
+
+- **Character work on Krea is pinned to `nano-banana-2`.** The provider's general
+  default, `krea-2-large`, conditions on a reference as *style*, and a style
+  reference cannot be asked to hold a subject through a pose change because
+  holding the subject is not what it does — the adapter already records the
+  measurement, krea-2-medium drawing a face in seven of eight frames when four
+  were specified as back views. `nano-banana-2` takes its references as edit
+  inputs, keeps `styles` so a trained LoRA still rides alongside, and bills a
+  flat $0.06 against krea-2-large's $0.065-with-references, so it is not a cost
+  regression. Scoped to the `anchor` and `animation` kinds: an item, a prop, a
+  decal or a VFX key frame has no pose continuity to preserve. Naming `model`
+  still wins.
+
+- **`sprite_plan`, and archetypes for `image_sprites`.** The key poses for ten
+  standard actions, with their timing — a walk as contact / down / passing / up
+  once per leg, an attack as anticipation / contact / follow-through / recover
+  with the impact frame held and the wind-up rushed. `sprite_plan` costs nothing
+  and returns the poses and the price; `archetypes=["idle","walk4","attack"]`
+  runs exactly that plan. The failure this exists to stop is not a broken sheet:
+  it is four frames named `walk/0`…`walk/3` described as "walking", which
+  assembles perfectly, passes the identity gate, holds its palette, and animates
+  like a character sliding along the floor. Nothing rejected it, because nothing
+  was wrong with any single frame.
+
+- **Per-frame timing in the emitted resource.** Godot 4's `SpriteFrames` has
+  carried a relative per-frame `duration` all along and this project wrote a
+  literal `1.0` for every frame it ever produced. A uniform hold is the flattest
+  reading of any action, and it is why a generated punch read as four pictures of
+  a punch. Loop and fps are now per-animation too — a 6fps idle and a 12fps
+  attack on one sheet is normal, and one sheet-wide speed was a compromise
+  between two right answers.
+
+- **Ping-pong cycles.** Three drawings played 0, 1, 2, 1 are a four-step cycle
+  that costs three generations and *cannot* have a loop seam, which is what a
+  breathing idle or a hovering pickup wants. Godot has no ping-pong loop mode, so
+  it is baked into the frame list — which is where the plan belongs anyway.
+
+- **Palette locking (`palette_lock`, default `"auto"`).** The existing gate
+  detects palette drift and pays for a re-roll. Quantising each frame to the
+  reference's own palette makes drift *unrepresentable* instead. It is a
+  posteriser, so `"auto"` measures the reference and switches on only for flat,
+  cel and limited-palette art, where it is free; painterly art is left alone.
+
+- **A motion report on every assembled sheet.** Four faults the identity judge
+  structurally cannot see, because all four are perfectly on-model: two frames
+  that are the same drawing, two adjacent frames sharing almost no silhouette, a
+  cycle whose last frame does not flow into its first, and a figure in more than
+  one piece. Advisory, and surfaced as chips on the art card — a duplicate frame
+  is fixed by a different pose description, not by re-rolling the same one.
 
 - **A 3D model viewer and editor**, the third page beside the sprite editor and
   audio lab. The Blender/image-to-3D pipeline has generated `.glb` files for a
@@ -30,6 +141,37 @@ repository at first publication. There is no earlier release history to record.
   the models that used it. three.js is vendored under
   `bgate_ui/static/vendor/three/`, self-contained like the CodeMirror build
   beside it.
+
+### Fixed
+
+- **Sprite frames were registered on their bounding box, so a punch moved the
+  fighter sideways.** An outstretched limb widens the box on one side, which
+  slides the body the other way to compensate. Measured on a synthetic with an
+  identical torso in both frames: the torso moved 44.5px under box-centring, 6.0px
+  under the textbook alpha-weighted centroid, and 1.0px under the shipped anchor
+  — the median of the *core* columns, which drops the limbs from the vote and
+  leaves the torso, which is what an animator means by a centre line.
+
+- **The set's fit scale used the widest bounding box, which quietly undid the
+  registration.** Under anchor registration a pose needs twice its reach *from
+  the anchor*, not its box width, so a wide pose could not sit where its anchor
+  said and the placement clamp dragged the body off centre.
+
+- **A sheet longer than the safe texture width was a texture that would not
+  upload.** No warning: the sprite simply draws as nothing, and a thirty-frame
+  character at 160px is already past the 4096px that mobile and web commonly cap
+  at. Long sheets now wrap into a padded grid. Short ones are still a plain
+  strip, so nothing existing re-imports.
+
+- **The spend gate priced every run off the gpt-image table whichever provider
+  was named**, which under-quoted every Krea run. A cap fed the wrong provider's
+  prices is the failure the cap exists to rule out.
+
+- **The art brief's rule 2 said "never condition frame N on frame N-1" while
+  `image_sprites` had deliberately done so, on top of the anchor, since
+  anchor+rolling landed.** It now says the true thing: the pin is in every call,
+  which is what stops the decay, and the previous frame must never be the *only*
+  reference.
 
 ## [0.1.35] - 2026-08-09
 

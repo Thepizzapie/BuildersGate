@@ -452,12 +452,14 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
     Returns {name: {available, path, version, min_required, reason}} for every
     name in CHECKS. Never raises. Never opens the microphone.
     """
-    if root:
-        try:
-            from bgate_core import envfile
-            envfile.load_project_env(root)
-        except Exception:
-            pass
+    # Both layers, and the machine-wide one even with no project: "does this
+    # machine have an art provider" is the question the art_key row asks, and it
+    # had a right answer long before any particular game existed.
+    try:
+        from bgate_core import envfile
+        envfile.load_env(root)
+    except Exception:
+        pass
 
     key = str(root or "")
     now = time.monotonic()

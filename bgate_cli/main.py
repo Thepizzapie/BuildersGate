@@ -13,6 +13,14 @@
                                 (needs: pip install "builders-gate[desktop]")
     bgate publish [--out DIR]   build the arcade: every game, as a static site
     bgate doctor [DIR] [--json] check every external dependency in one pass
+    bgate key [--json]          show every provider key and which layer supplies it
+    bgate key set PROVIDER [--global]
+                                store a key. Prompted, never taken as an argument.
+                                --global writes ~/.bgate/.env, which every project
+                                on this machine inherits and which works with no
+                                project at all; without it, this project only.
+    bgate key clear PROVIDER [--global]
+                                forget a key from that store
     bgate panic [DIR] [--json]  EMERGENCY STOP: kill every agent on a project,
                                 reap orphans, and turn auto-deploy off.
                                 Works even when the dashboard is gone or wedged.
@@ -705,6 +713,113 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
     return 0 if all(row["available"] for row in report.values()) else 1
 
 
+def _key_root(project_dir: str = "") -> str:
+    """The project this key command is about, or "" when there is none.
+
+    Not being in a project is a normal state here and not an error: the whole
+    point of the machine-wide store is that a credential can be set and read
+    with no game in sight.
+    """
+    root = project_dir or os.environ.get("BGATE_ROOT") or ""
+    if root:
+        return root
+    try:
+        from bgate_core import project
+        return str(project.require_root())
+    except Exception:
+        return ""
+
+
+def keys(action: str = "", provider_id: str = "", project_dir: str = "",
+         use_global: bool = False, as_json: bool = False) -> int:
+    """Show, set or clear provider credentials.
+
+    THE KEY IS NEVER AN ARGUMENT. It is prompted for and read with echo off, so
+    it does not land in shell history, in a process list, or in the scrollback
+    of whoever is watching the screen. The project's own setup notes have said
+    "never put one on a command line" since a key was committed once; a
+    convenience flag here would be that rule with an exception carved into it.
+    """
+    from bgate_core import providers as _providers
+
+    root = _key_root(project_dir)
+    scope = "global" if use_global else "project"
+    action = (action or "list").strip().lower()
+
+    if action in ("", "list", "status", "show"):
+        rows = _providers.status(root or None)
+        if as_json:
+            print(json.dumps({"project": root, "global_env":
+                              str(_providers.envfile.global_path()),
+                              "providers": rows}, indent=2))
+            return 0
+        width = max(len(row["id"]) for row in rows)
+        # `source` is the column that answers the only hard question here —
+        # which of three layers is actually supplying the value — so it is
+        # spelled out rather than abbreviated to a tick.
+        where = {"env_file": "project .env", "global_file": "~/.bgate/.env",
+                 "environment": "shell", "shadowed": "SHADOWED", "unset": "-"}
+        for row in rows:
+            mark = "ok  " if row["available"] else ("set " if row["configured"]
+                                                    else "MISS")
+            tail = f"...{row['last4']}" if row["last4"] else ""
+            note = "" if row["available"] else f"  {row['reason']}"
+            print(f"{mark}  {row['id'].ljust(width)}  "
+                  f"{where.get(row['source'], row['source']).ljust(14)} "
+                  f"{tail}{note}")
+        print()
+        print(f"project: {root or '(none — the machine-wide store still applies)'}")
+        print(f"global:  {_providers.envfile.global_path()}")
+        return 0
+
+    if action not in ("set", "clear"):
+        print(f"unknown key action {action!r} — set, clear, or list")
+        return 2
+    if not provider_id:
+        print("which provider? one of: " + ", ".join(_providers.ids()))
+        return 2
+
+    try:
+        if action == "clear":
+            row = _providers.clear_key(root or None, provider_id, scope=scope,
+                                       actor="cli")
+        else:
+            import getpass
+
+            one = _providers.by_id(provider_id)
+            print(f"{one.label} — {one.key_url}")
+            value = getpass.getpass(f"paste {one.env} (input hidden): ").strip()
+            if not value:
+                print("nothing pasted; no change")
+                return 2
+            row = _providers.set_key(root or None, provider_id, value,
+                                     scope=scope, actor="cli")
+    except _providers.ProviderError as exc:
+        print(str(exc))
+        return 2
+    except OSError as exc:
+        print(f"could not write the {scope} .env: {type(exc).__name__}: {exc}")
+        return 1
+
+    if as_json:
+        print(json.dumps(row, indent=2))
+        return 0
+    target = (_providers.envfile.global_path() if scope == "global"
+              else Path(root) / ".env")
+    print(f"{row['write']}  {row['env']}  in {target}")
+    if row.get("gitignore"):
+        print(f"  .gitignore: {row['gitignore']}")
+    if not row["available"] and row["reason"]:
+        print(f"  still unusable: {row['reason']}")
+    elif row["configured"] and row["source"] == "env_file" and use_global:
+        # The write landed and something else is still winning. Saying so here
+        # is the difference between "it did not work" and "it worked, and this
+        # project overrides it".
+        print("  note: this project's own .env still supplies this key, so the "
+              "global one applies everywhere else")
+    return 0
+
+
 def _writable_console() -> None:
     """Stop the Windows console mangling our own prose.
 
@@ -832,6 +947,22 @@ def main() -> int:
     if cmd == "doctor":
         positional = [a for a in args[1:] if not a.startswith("-")]
         return doctor(positional[0] if positional else "", as_json="--json" in args)
+
+    if cmd in ("key", "keys"):
+        rest = args[1:]
+        positional = [a for a in rest if not a.startswith("-")]
+        action = positional[0] if positional else "list"
+        # `bgate key openai` reads as a request about that provider, not as a
+        # bad verb — accept it as a listing rather than a usage error.
+        if action not in ("list", "status", "show", "set", "clear"):
+            action, provider_id = "list", ""
+            directory = ""
+        else:
+            provider_id = positional[1] if len(positional) > 1 else ""
+            directory = positional[2] if len(positional) > 2 else ""
+        return keys(action, provider_id, directory,
+                    use_global=("--global" in rest or "-g" in rest),
+                    as_json="--json" in rest)
 
     if cmd in ("panic", "stop-all", "killswitch"):
         positional = [a for a in args[1:] if not a.startswith("-")]
