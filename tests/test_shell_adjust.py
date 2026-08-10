@@ -36,8 +36,16 @@ def page(client) -> str:
 
 
 def scripts(page: str) -> list[str]:
-    """Inline <script> bodies only — the /static/*.js modules are separate."""
-    return re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page, re.S)
+    """Inline <script> bodies that are actually JAVASCRIPT.
+
+    The /static/*.js modules are separate (excluded via the src= check). An
+    import map (``type="importmap"``) is excluded too — it is JSON by spec,
+    never JS, and handing its body to ``node --check`` fails for the same
+    reason handing it a stylesheet would.
+    """
+    return [b for tag, b in
+            re.findall(r"<script([^>]*)>(.*?)</script>", page, re.S)
+            if "src=" not in tag and 'type="importmap"' not in tag]
 
 
 def styles(page: str) -> list[str]:
