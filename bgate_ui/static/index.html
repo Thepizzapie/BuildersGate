@@ -18,55 +18,110 @@
    at the bottom of the body means a full frame of dark canvas renders first
    and then flips — the flash is worse than either theme. "system" stores no
    attribute at all, which is what lets the prefers-color-scheme block in
-   app.css stay in charge. */
+   app.css stay in charge.
+
+   THE LIST IS THE GATE. Anything not named here falls through to the OS, so a
+   ground that is added to setTheme() and not to this array is a ground that
+   flashes the wrong canvas on every load — and on orbit, whose whole premise
+   is a vanta ground, that flash is the most visible one available. */
 (function(){
   try{
     var t = localStorage.getItem("bgate-theme");
-    if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+    if (["light", "dark", "orbit"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
   }catch(e){}
 })();
 </script>
 </head>
 <body>
 <div class="deck">
+  <!-- THE RAIL IS AN ICON RAIL AT REST AND EXPANDS OVER THE STAGE, NOT INTO IT.
+       <nav> holds a fixed 64px grid track; everything visible lives in
+       .rail-inner, which is absolutely positioned inside it and only grows its
+       own width. That is the whole reason for the extra element: animating the
+       grid track instead would re-lay-out the stage on every hover, and the
+       stage is full of canvases, iframes and charts that re-measure when it
+       does. Pinning (see toggleRailPin) swaps the overlay for a real track. -->
   <nav class="rail" aria-label="Primary navigation">
-    <div class="rail-brand">
-      <span class="mark" data-icon="logo" data-icon-size="26"></span>
-      <div style="min-width:0">
-        <div class="bn">Builders Gate</div>
-        <div class="bp" id="projline">connecting…</div>
+    <div class="rail-inner">
+      <div class="rail-brand">
+        <span class="mark" data-icon="logo" data-icon-size="26"></span>
+        <div class="rail-brandtext">
+          <div class="bn">Builders Gate</div>
+          <div class="bp" id="projline">connecting…</div>
+        </div>
+        <!-- Clipped rather than display:none when the rail is closed. A control
+             that leaves the tab order while it is out of sight is one keyboard
+             users can only reach by tabbing backwards past it; focusing this
+             opens the rail, which is exactly what reveals it. -->
+        <button class="rail-pin" id="rail-pin" type="button" aria-pressed="false"
+                onclick="toggleRailPin()" title="Keep the navigation expanded"
+                aria-label="Keep the navigation expanded"><span class="ic" data-icon="pin"></span></button>
       </div>
-    </div>
-    <div class="rail-nav" id="rail-nav">
-      <div class="rail-group">Command</div>
-      <button class="rail-item" data-view="overview" onclick="setWorkspace('overview',this)"><span class="ic" data-icon="overview"></span> Overview</button>
-      <button class="rail-item" data-view="agents" onclick="setWorkspace('agents',this)"><span class="ic" data-icon="agents"></span> Agents<span class="ct" id="rc-agents">0</span></button>
-      <!-- Settings sits under Command with Overview and Agents because that is
-           what it is: the switches that decide how much of the floor runs
-           without you. -->
-      <button class="rail-item" data-view="settings" onclick="setWorkspace('settings',this)"><span class="ic" data-icon="settings"></span> Settings</button>
-      <div class="rail-group">Build</div>
-      <button class="rail-item" data-view="studio" onclick="setWorkspace('studio',this)"><span class="ic" data-icon="studio"></span> Studio</button>
-      <button class="rail-item" data-view="seats" onclick="setWorkspace('seats',this)"><span class="ic" data-icon="seats"></span> Seat workspaces</button>
-      <button class="rail-item" data-view="playtests" onclick="setWorkspace('playtests',this)"><span class="ic" data-icon="playtests"></span> Playtests<span class="ct" id="rc-pt">0</span></button>
-      <div class="rail-group">Library</div>
-      <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic" data-icon="assets"></span> Assets</button>
-      <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic" data-icon="atlas"></span> Atlas<span class="ct warn" id="rc-atlas" style="display:none">0</span></button>
-      <button class="rail-item" data-view="world" onclick="setWorkspace('world',this)"><span class="ic" data-icon="world"></span> World bible</button>
-      <button class="rail-item" data-view="timeline" onclick="setWorkspace('timeline',this)"><span class="ic" data-icon="timeline"></span> Timeline</button>
-    </div>
-    <div class="rail-foot">
-      <div class="vrow"><span class="vlamp waiting" id="lamp"></span> <span id="lamptext">connecting…</span></div>
-      <!-- Words, not pictographs. tests/test_icons.py bans the unicode icon set
-           this file used to be built from, and a three-way toggle of unlabelled
-           symbols is a guessing game even where it is allowed. -->
-      <div class="themerow" role="group" aria-label="Colour theme">
-        <button class="themebtn" data-theme-set="dark"   onclick="setTheme('dark')"   title="Always dark">dark</button>
-        <button class="themebtn" data-theme-set="light"  onclick="setTheme('light')"  title="Always light">light</button>
-        <button class="themebtn" data-theme-set="system" onclick="setTheme('system')" title="Follow the OS setting">auto</button>
+      <div class="rail-nav" id="rail-nav">
+        <div class="rail-group">Command</div>
+        <button class="rail-item" data-view="overview" onclick="setWorkspace('overview',this)"><span class="ic" data-icon="overview"></span><span class="lb">Overview</span></button>
+        <button class="rail-item" data-view="agents" onclick="setWorkspace('agents',this)"><span class="ic" data-icon="agents"></span><span class="lb">Agents</span><span class="ct" id="rc-agents">0</span></button>
+        <!-- Settings sits under Command with Overview and Agents because that is
+             what it is: the switches that decide how much of the floor runs
+             without you. -->
+        <button class="rail-item" data-view="settings" onclick="setWorkspace('settings',this)"><span class="ic" data-icon="settings"></span><span class="lb">Settings</span></button>
+        <div class="rail-group">Build</div>
+        <button class="rail-item" data-view="studio" onclick="setWorkspace('studio',this)"><span class="ic" data-icon="studio"></span><span class="lb">Studio</span></button>
+        <button class="rail-item" data-view="seats" onclick="setWorkspace('seats',this)"><span class="ic" data-icon="seats"></span><span class="lb">Seat workspaces</span></button>
+        <button class="rail-item" data-view="playtests" onclick="setWorkspace('playtests',this)"><span class="ic" data-icon="playtests"></span><span class="lb">Playtests</span><span class="ct" id="rc-pt">0</span></button>
+        <!-- THE TWO EDITORS ARE PAGES, NOT PANELS IN SOMEONE ELSE'S WORKSPACE.
+             They were folded into the art and audio seats, which reads well on
+             a diagram and badly in use: both are full-bleed direct-manipulation
+             tools that want the whole stage, and reaching one meant picking a
+             seat first and then a mode inside it. Two clicks and a mental model
+             to open a paint program. They own rail items again.
+
+             The seats keep their queue, review and generation work. What left
+             is only the editing surface. -->
+        <div class="rail-group">Edit</div>
+        <button class="rail-item" data-view="spriteedit" onclick="setWorkspace('spriteedit',this)"><span class="ic" data-icon="brush"></span><span class="lb">Sprite editor</span></button>
+        <button class="rail-item" data-view="audiolab" onclick="setWorkspace('audiolab',this)"><span class="ic" data-icon="audio"></span><span class="lb">Audio lab</span></button>
+        <div class="rail-group">Library</div>
+        <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic" data-icon="assets"></span><span class="lb">Assets</span></button>
+        <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic" data-icon="atlas"></span><span class="lb">Atlas</span></button>
+        <button class="rail-item" data-view="world" onclick="setWorkspace('world',this)"><span class="ic" data-icon="world"></span><span class="lb">World bible</span></button>
+        <button class="rail-item" data-view="timeline" onclick="setWorkspace('timeline',this)"><span class="ic" data-icon="timeline"></span><span class="lb">Timeline</span></button>
+      </div>
+      <div class="rail-foot">
+        <div class="vrow"><span class="vlamp waiting" id="lamp"></span> <span id="lamptext">connecting…</span></div>
+        <!-- GEOMETRY, NOT PICTOGRAPHS. These were the words "dark/light/auto"
+             because what they replaced was the unicode symbol set tests/
+             test_icons.py bans — glyphs resolved through whatever fallback font
+             the OS has, drifting in weight and baseline per machine. Real paths
+             from the registry are what that ban steers TOWARD, so they are back
+             as icons: same 24px grid, same 1.75 stroke, same currentColor as
+             every other icon in the shell. The words move to title and
+             aria-label, which is where a four-way toggle needs them anyway.
+
+             ORBIT sits last because it is the opinionated one — dark, light and
+             the OS are the answers to "which ground", and orbit is the answer to
+             a different question. The row only exists while the rail is open
+             (.themerow is display:none until then), so four buttons never have
+             to survive the 64px collapsed state; open, they are ~52px each. -->
+        <div class="themerow" role="group" aria-label="Colour theme">
+          <button class="themebtn" data-theme-set="dark"   onclick="setTheme('dark')"   title="Always dark"            aria-label="Always dark"><span class="ic" data-icon="theme_dark"  data-icon-size="16"></span></button>
+          <button class="themebtn" data-theme-set="light"  onclick="setTheme('light')"  title="Always light"           aria-label="Always light"><span class="ic" data-icon="theme_light" data-icon-size="16"></span></button>
+          <button class="themebtn" data-theme-set="system" onclick="setTheme('system')" title="Follow the OS setting"  aria-label="Follow the OS setting"><span class="ic" data-icon="theme_auto" data-icon-size="16"></span></button>
+          <button class="themebtn" data-theme-set="orbit"  onclick="setTheme('orbit')"  title="Orbit — glass on vanta black" aria-label="Orbit — glass on vanta black"><span class="ic" data-icon="theme_orbit" data-icon-size="16"></span></button>
+        </div>
       </div>
     </div>
   </nav>
+
+  <!-- The rail's edge. Only in the layout while the rail is PINNED — an
+       unpinned rail's width is dictated by the stylesheet, so there is nothing
+       here to size and a handle that writes onto a track nobody reads is a
+       value waiting to bite. Long nav labels and long project names are why it
+       exists at all: "Corporate Quest: Dungeon of…" is truncated at the default
+       width and there is no other way to see the rest of it. -->
+  <div class="split" data-split="rail" data-split-var="--rail-w"
+       data-split-pane=".rail" data-split-min="150" data-split-max="30%"
+       aria-label="Resize the navigation rail — arrow keys adjust, Home resets"></div>
 
   <div class="stage">
     <div class="statusbar">
@@ -101,6 +156,7 @@
           </div>
         </div>
 
+
         <!-- The cockpit. Left: one conversation with the director, the cat, and
              what every other seat has just said. Right: the same work as a live
              delegation graph. Both read one payload (/api/console/state) polled
@@ -115,7 +171,26 @@
               <button class="qbtn small ghost" id="ck-clear" type="button"
                       title="File this conversation and start a fresh one">clear</button>
             </div>
-            <div class="ck-chat" id="ck-chat"><div class="empty">waking the console…</div></div>
+            <!-- ONE ROOM: the transcript scrolls, the cat is pinned to the
+                 floor of it. The cat used to be its own bordered box UNDER the
+                 composer, which put the thing doing the talking outside the
+                 conversation and below the place you type — so the reply and
+                 the speaker were two panels apart with an input between them.
+                 Now the messages flow ABOVE it and it sits where a person sits
+                 in a chat: at the bottom, always visible, never scrolled away. -->
+            <div class="ck-convo">
+              <div class="ck-chat" id="ck-chat"><div class="empty">waking the console…</div></div>
+              <!-- NO BUBBLE. Once the cat moved into the conversation it was
+                   sitting directly beneath the director's answer repeating the
+                   first sentence of it — the same words twice, six lines apart,
+                   with the copy being the louder one. The cat stays as a
+                   REACTION: it mouths while the director is actually speaking
+                   and plays a beat when something lands, fails or needs you.
+                   Motion is the signal; the transcript is the text. -->
+              <div class="ck-mascot" id="ck-mascot" data-mood="idle">
+                <div class="ck-cat" id="ck-cat"></div>
+              </div>
+            </div>
             <!-- The composer talks to the director by default. Aimed at a
                  running agent (from the graph, or by typing "@41 …") the same
                  box steers that agent instead. -->
@@ -123,56 +198,140 @@
               <span class="ck-target-l"></span>
               <button class="ck-target-x" id="ck-target-x" type="button" aria-label="Talk to the director again">×</button>
             </div>
-            <form class="ck-composer" id="ck-say-form">
-              <textarea id="ck-say" rows="1" maxlength="4000"
-                placeholder="tell the director what you want — it answers, then delegates…"></textarea>
-              <button class="qbtn" id="ck-send" type="submit">send</button>
-            </form>
-            <div class="ck-mascot" id="ck-mascot" data-mood="idle">
-              <div class="ck-cat" id="ck-cat"></div>
-              <div class="ck-bubble" id="ck-bubble">saddling up…</div>
-            </div>
-            <!-- Staging. The director queues work here; nothing reaches the
-                 graph until you deploy it, so the canvas only ever shows work
-                 that is actually happening. -->
-            <div class="ck-repwrap">
-              <div class="ck-sec">Queue <span class="n" id="ck-queue-n">0</span>
-                <span class="ck-spacer"></span>
-                <button class="qbtn small ghost" id="ck-clear-queue" type="button"
-                        title="Discard every waiting ticket">clear</button>
-                <button class="qbtn small ghost" id="ck-deploy-all" type="button">deploy all</button>
+            <!-- WHAT TALKING DOES. Not a second UI — the same composer, the
+                 same transcript, a different backend behind them:
+
+                   dispatch    /api/console/say. Files a work item and spawns
+                               an agent for the sentence you just typed.
+                   brainstorm  /api/brainstorm/{id}/message. A conversation.
+                               Files nothing. Deploy is the only thing that
+                               queues, and it shows the plan first.
+
+                 The two have OPPOSITE consequences on an identical-looking box,
+                 so the mode is stated three ways: this control, the composer's
+                 placeholder, and a line under it that only exists in brainstorm
+                 mode. Three is not redundancy here; one of them is always the
+                 one somebody happens to be looking at. -->
+            <!-- ONE CONTROL: the mode, the box, and what sending does. They
+                 are wrapped together and share a border because they are one
+                 decision — a mode pill floating above a composer with a second
+                 footer bolted under it reads as three widgets, which is exactly
+                 what "not a separate UI" was supposed to avoid.
+
+                 THE BRAINSTORM STRIP IS NOT IN THIS MARKUP. agents_console.js
+                 CREATES it on entering brainstorm mode and REMOVES it on
+                 leaving — not hidden, removed. It was `hidden` here first and
+                 shipped visible in dispatch mode, because an author `display`
+                 in the injected sheet beats the `hidden` attribute; the same
+                 trap is recorded at atlas_code.js:103 and audiolab.js:341 and
+                 it has now cost this codebase three separate bugs in one day.
+                 It matters more here than anywhere else: the strip promises
+                 "no work item, no dispatch" directly beneath a composer that,
+                 in dispatch mode, files work and spawns an agent. -->
+            <div class="ck-say-wrap" id="ck-say-wrap">
+              <div class="ck-mode" id="ck-mode" role="group" aria-label="What sending does">
+                <button type="button" data-cmode="dispatch" class="on">dispatch</button>
+                <button type="button" data-cmode="brainstorm">brainstorm</button>
               </div>
-              <div class="ck-replies" id="ck-queue"></div>
+              <form class="ck-composer" id="ck-say-form">
+                <textarea id="ck-say" rows="1" maxlength="4000"
+                  placeholder="tell the director what you want — it answers, then delegates…"></textarea>
+                <button class="qbtn" id="ck-send" type="submit">send</button>
+              </form>
             </div>
-            <!-- A seat asked YOU something and is waiting on a sentence. Above
-                 the approval drain because this is the only thing on the page
-                 that has an agent stopped on it, and hidden when empty for the
-                 same reason that list is: a panel that is always there and
-                 always empty is a panel people stop reading. The bell shows the
-                 same questions when you are in another view. -->
-            <div class="ck-repwrap ask" id="ck-askwrap" hidden>
-              <div class="ck-sec">Asked you <span class="n" id="ck-ask-n">0</span>
+            <!-- THE ONE LINE A STREAM VIEWER CAN ALWAYS READ. Who is working,
+                 for how long, and what it has cost — always in the same place,
+                 whatever page the deck is on and whatever the graph is showing.
+                 Elapsed ticks client-side between polls so the number MOVES: a
+                 counter that jumps three seconds at a time reads as a stutter,
+                 and on a stream the only thing worse than no motion is motion
+                 that looks broken. -->
+            <div class="ck-live" id="ck-live" hidden>
+              <span class="ck-live-dot"></span>
+              <span class="ck-live-what" id="ck-live-what"></span>
+              <span class="ck-spacer"></span>
+              <span class="ck-live-t" id="ck-live-t"></span>
+              <span class="ck-live-c" id="ck-live-c"></span>
+            </div>
+            <!-- A picture appearing that did not exist a minute ago is the most
+                 watchable thing this product does, and it used to happen
+                 entirely off screen — visible only in Assets or behind a click
+                 on a graph node. This slides it in for a few seconds as it
+                 lands. Click to open it full size. -->
+            <div class="ck-reveal" id="ck-reveal" hidden></div>
+            <!-- ONE DECK, FOUR PAGES. These were four stacked panels, each with
+                 its own header and its own scrollbar, and on an ordinary board
+                 three of them are empty — so the rail was mostly chrome around
+                 nothing while the conversation above it fought for height.
+                 Hiding the empty ones (which two of them did) is worse, not
+                 better: the panel moves, so you cannot learn where anything is.
+                 One frame, fixed position, pages rotate through it. The deck
+                 jumps to whatever is BLOCKING and holds there; everything else
+                 is a slow rotation you can take over with the dots or arrows.
+                 See AgentsConsole.deck in agents_console.js. -->
+            <div class="ck-deck" id="ck-deck">
+              <div class="ck-deck-head">
+                <button class="ck-deck-nav" id="ck-deck-prev" type="button"
+                        aria-label="Previous panel">‹</button>
+                <div class="ck-deck-tabs" id="ck-deck-tabs" role="tablist"></div>
                 <span class="ck-spacer"></span>
-                <span class="ck-hint">goes back to the agent that asked</span>
+                <button class="ck-deck-nav" id="ck-deck-next" type="button"
+                        aria-label="Next panel">›</button>
               </div>
-              <div class="ck-replies" id="ck-ask"></div>
-            </div>
-            <!-- The builder's gate drain list. Only rendered when something is
-                 actually waiting on the owner: an always-visible empty panel
-                 trains people to stop looking at the place approvals appear. -->
-            <div class="ck-repwrap" id="ck-reviewwrap" hidden>
-              <div class="ck-sec">Waiting on you <span class="n" id="ck-review-n">0</span>
-                <span class="ck-spacer"></span>
-                <span class="ck-hint">approve to release the chain</span>
+              <div class="ck-deck-body">
+                <!-- Staging. The director queues work here; nothing reaches the
+                     graph until you deploy it, so the canvas only ever shows
+                     work that is actually happening.
+                     The two buttons sit UNDER the list, not in the deck header:
+                     four tabs, two arrows and two buttons do not fit a rail this
+                     width, and the tab that got clipped was the one nothing else
+                     announces. A page's own actions belong to the page. -->
+                <section class="ck-page" data-page="queue">
+                  <div class="ck-replies" id="ck-queue"></div>
+                  <div class="ck-page-foot">
+                    <button class="qbtn small ghost" id="ck-clear-queue" type="button"
+                            title="Discard every waiting ticket">clear</button>
+                    <button class="qbtn small ghost" id="ck-deploy-all" type="button">deploy all</button>
+                  </div>
+                </section>
+                <!-- A seat asked YOU something and is waiting on a sentence.
+                     The only thing on the page with an agent STOPPED on it,
+                     which is why the deck prioritises it. -->
+                <section class="ck-page" data-page="ask">
+                  <div class="ck-replies" id="ck-ask"></div>
+                </section>
+                <!-- The builder's gate drain list. -->
+                <section class="ck-page" data-page="review">
+                  <div class="ck-replies" id="ck-review"></div>
+                </section>
+                <section class="ck-page" data-page="replies">
+                  <div class="ck-replies" id="ck-replies"></div>
+                </section>
+                <!-- Live stream chat, and the start/stop of a feedback session.
+                     Owned entirely by chatlive.js, which mounts itself into this
+                     slot the first time the page is shown and injects its own
+                     styles. Everything it draws came from strangers on the
+                     internet and is escaped there; see that file's header. -->
+                <section class="ck-page" data-page="chat">
+                  <div id="ck-chat"></div>
+                </section>
               </div>
-              <div class="ck-replies" id="ck-review"></div>
+              <!-- How long until it moves on. A rotation with no visible clock
+                   reads as random, and the viewer of a stream cannot ask. -->
+              <div class="ck-deck-rail"><i id="ck-deck-fill"></i></div>
             </div>
-            <div class="ck-repwrap">
-              <div class="ck-sec">Agent responses <span class="n" id="ck-replies-n">0</span>
-                <span class="ck-spacer"></span><span class="ck-hint">live only</span></div>
-              <div class="ck-replies" id="ck-replies"></div>
-            </div>
+            <!-- Counts the deck tabs read. Kept in the DOM because the existing
+                 render functions write them; the deck mirrors them into badges
+                 rather than every panel growing its own header again. -->
+            <span hidden><span id="ck-queue-n">0</span><span id="ck-ask-n">0</span
+              ><span id="ck-review-n">0</span><span id="ck-replies-n">0</span></span>
           </div>
+          <!-- The boundary that actually matters on this page: reading what the
+               director said and following the graph want opposite splits, and
+               they are minutes apart. -->
+          <div class="split" data-split="cockpit" data-split-var="--ck-left-w"
+               data-split-pane=".ck-left" data-split-min="330" data-split-max="72%"
+               aria-label="Resize the transcript against the graph — arrow keys adjust, Home resets"></div>
           <div class="ck-right">
             <div class="ck-bar">
               <button class="ck-toggle" id="ck-auto" type="button" aria-pressed="false"
@@ -205,6 +364,16 @@
               <button class="qbtn small ghost" id="ck-relayout" type="button">re-lay out</button>
             </div>
             <div class="ck-canvas" id="ck-canvas"></div>
+            <!-- OUTSIDE #ck-detail deliberately: agents_graph rewrites that
+                 element's innerHTML on every selection change and would eat a
+                 handle placed inside it. --ckd-w is therefore written on
+                 .ck-right, the common ancestor — the drawer reads it as its
+                 width and the handle reads it as its offset, and a variable set
+                 on the drawer would never reach its own sibling. -->
+            <div class="split ck-dsplit" data-split="ck-detail" data-split-var="--ckd-w"
+                 data-split-on=".ck-right" data-split-pane="#ck-detail"
+                 data-split-edge="end" data-split-min="240" data-split-max="70%"
+                 aria-label="Resize the inspector — arrow keys adjust, Home resets"></div>
             <aside class="ck-detail" id="ck-detail"></aside>
           </div>
         </div>
@@ -254,6 +423,40 @@
            anything added here survives its innerHTML. -->
       <section class="deck-view" id="view-settings">
         <div id="st-host"><div class="empty">loading settings…</div></div>
+        <!-- API keys are NOT settings and deliberately do not live in #st-host.
+             /api/settings returns every field's value verbatim — that is what
+             lets a new switch render with no JS change — so a secret in that
+             registry would be one missed exception away from being printed.
+             providerkeys.js owns this host and its own endpoint.
+
+             IT IS DECLARED HERE AND MOVED, NOT CREATED BY EITHER MODULE.
+             settingsview.js relocates this exact element into its Credentials
+             pane on every repaint (appendChild, so the node, its listeners and
+             providerkeys' reference to it all survive) and parks it back here,
+             hidden, whenever another pane is showing. Do not "fix" the empty
+             div by deleting it and do not have anything build a replacement: a
+             freshly created host with the same id looks identical and is dead.
+             tests/test_settings_ui.py holds both halves of that. -->
+        <!-- pv-, not pk-: app.css already owns the whole `.pk-*` namespace for
+             the peek overlay, whose .pk-wrap is position:fixed. This panel
+             shipped under that prefix and inherited the fixed positioning, so
+             it floated over the entire dashboard instead of sitting in
+             Settings. Prefixes are global; check before claiming one. -->
+        <div id="pv-host"></div>
+        <!-- Same contract as #pv-host above, two panes along: declared here,
+             MOVED into their own panes by settingsview.js, parked back here
+             hidden when another pane is showing. Both owned by localsetup.js.
+
+             TWO HOSTS, NOT ONE, because they are two destinations. A local
+             generator answers "can this machine make art right now"; an agent
+             CLI answers "is Builders Gate registered with Claude Code, against
+             which interpreter". Those are read at different moments for
+             different reasons and share nothing but the word "local". They
+             shipped as one pane called "Local & agents" — the "and" was the
+             tell. Neither is a setting the registry could describe, and neither
+             is a secret. -->
+        <div id="lc-host"></div>
+        <div id="ag-host"></div>
       </section>
 
       <section class="deck-view" id="view-studio">
@@ -269,6 +472,23 @@
         <div class="view-heading"><div><span class="eyebrow">Purpose-built workspaces</span><h2>Seat workspaces</h2></div><p>Each seat gets a workspace tuned to its craft.</p></div>
         <div class="seat-subnav" id="seat-subnav"></div>
         <div id="seat-body"><div class="empty">pick a seat</div></div>
+      </section>
+
+      <!-- Both editors mount themselves into these hosts. The host is EMPTY in
+           the markup on purpose: the modules own every pixel inside it, and a
+           placeholder here would be painted over on the first mount and shown
+           again on close, which looks like a flash of broken layout.
+
+           `visible(_host)` in both modules keys off the host having boxes, and
+           a non-active .deck-view has none. That is what lets open() from the
+           asset library or the scene builder still raise the overlay when you
+           are on some other page, instead of painting into a hidden div. -->
+      <section class="deck-view" id="view-spriteedit">
+        <div id="se-page" class="editor-page"></div>
+      </section>
+
+      <section class="deck-view" id="view-audiolab">
+        <div id="ab-page" class="editor-page"></div>
       </section>
 
       <section class="deck-view" id="view-playtests">
@@ -329,20 +549,12 @@
       </section>
 
       <section class="deck-view" id="view-atlas">
-        <div class="view-heading"><div><span class="eyebrow">Project map</span><h2>Atlas</h2></div><p>Every screen wired to every asset it uses — derived live from the scenes, scripts, and SpriteFrames. The list deploys tasks; the graph wires assets into scenes for real.</p></div>
+        <div class="view-heading"><div><span class="eyebrow">Project map</span><h2>Atlas</h2></div><p>Build the scene and edit the code behind it, against a live scan of the project's scenes, scripts, and SpriteFrames.</p></div>
         <div class="atlas-modes" id="atlas-modes">
-          <button class="atlas-mode active" data-m="list" onclick="setAtlasMode('list')">list</button>
-          <button class="atlas-mode" data-m="graph" onclick="setAtlasMode('graph')">graph · wire it</button>
-          <button class="atlas-mode" data-m="scene" onclick="setAtlasMode('scene')">scene · build it</button>
+          <button class="atlas-mode active" data-m="scene" onclick="setAtlasMode('scene')">scene · build it</button>
           <button class="atlas-mode" data-m="code" onclick="setAtlasMode('code')">code · edit it</button>
         </div>
-        <div id="atlas-list-mode">
-          <div class="atlas-stats" id="atlas-stats"></div>
-          <div class="atlas-grid" id="atlas-grid"><div class="empty">scanning…</div></div>
-          <div class="atlas-rails" id="atlas-rails"></div>
-        </div>
-        <div id="atlas-graph" hidden></div>
-        <div id="atlas-scene" hidden></div>
+        <div id="atlas-scene"></div>
         <div id="atlas-code" hidden></div>
       </section>
 
@@ -450,6 +662,48 @@ try{
     window.dispatchEvent(new CustomEvent("bgate:theme", { detail:{ mode:"system" } }));
   });
 }catch(e){}
+
+/* ── the navigation rail ──────────────────────────────────────────────────
+   Closed to 64px at rest; hover and focus-within open it, and both of those
+   are pure CSS because a nav that needs script to be readable is a nav that is
+   blank for the first frame after every reload.
+
+   The one thing script owns is the PIN. Pinning trades the overlay for a real
+   grid track — the stage genuinely narrows, and the drag handle appears
+   because there is finally a width worth dragging.
+
+   IT IS DROPPED, NOT FORGOTTEN, BELOW 1180px. At that width a held-open rail
+   is eating the thing that ran out of room. The stored preference survives the
+   resize, so the rail re-pins itself when the window grows back — a window you
+   dragged narrow for a minute must not cost you a setting. */
+const RAIL_PIN_KEY = "bgate-rail-pinned";
+const railNarrow = window.matchMedia("(max-width: 1180px)");
+
+function railPinWanted(){
+  try { return localStorage.getItem(RAIL_PIN_KEY) === "1"; } catch (e) { return false; }
+}
+function syncRailPin(){
+  const rail = document.querySelector(".rail");
+  const btn = document.getElementById("rail-pin");
+  const on = railPinWanted() && !railNarrow.matches;
+  if (rail) rail.classList.toggle("pin", on);
+  if (btn){
+    const label = on ? "Unpin — let the navigation collapse"
+                     : "Keep the navigation expanded";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+  }
+  // Pinning changes the width of the stage, and anything that measured itself
+  // once (canvases, the node graphs, the game frame) has to hear about it.
+  window.dispatchEvent(new Event("resize"));
+}
+function toggleRailPin(){
+  try { localStorage.setItem(RAIL_PIN_KEY, railPinWanted() ? "0" : "1"); } catch (e) {}
+  syncRailPin();
+}
+railNarrow.addEventListener("change", syncRailPin);
+syncRailPin();
 
 function syncThemeButtons(){
   let saved = "system";
@@ -579,6 +833,7 @@ const DECK_CRUMB = {
   overview:"Overview", agents:"Agents", settings:"Settings", studio:"Studio",
   seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
   world:"World bible", timeline:"Timeline",
+  spriteedit:"Sprite editor", audiolab:"Audio lab",
 };
 /* Hand the view to whichever module owns it.
  *
@@ -591,7 +846,8 @@ const DECK_CRUMB = {
 function activateWorkspace(name){
   const owners = { seats: "SeatShell", studio: "Studio", atlas: "Atlas",
                    world: "World", assets: "AssetLib", agents: "AgentsConsole",
-                   settings: "SettingsView" };
+                   settings: "SettingsView",
+                   spriteedit: "SpriteEdit", audiolab: "AudioLab" };
   if (name === "atlas") return setAtlasMode(atlasMode);
   // RETURN, like atlas: setAgentsMode already activates the console, and
   // falling through to the owners map below activated it a second time —
@@ -610,8 +866,16 @@ function activateWorkspace(name){
 let agentsMode = (() => {
   try { return localStorage.getItem("bgate-agents-mode") || "console"; } catch(e){ return "console"; }
 })();
+/* A WHITELIST, not a two-way coercion — the same fix setAtlasMode needed and
+ * for the same reason: a stored preference naming a mode that was later removed
+ * must not resolve to a tab that no longer exists. "brainstorm" WAS a mode here
+ * for an afternoon and is deliberately absent: it swapped in a second chat UI,
+ * where what was wanted was for the console's own composer to change which
+ * backend it talks to. A browser holding that stale preference lands on
+ * console. */
+const AGENTS_MODES = ["console", "board"];
 function setAgentsMode(mode){
-  agentsMode = mode === "board" ? "board" : "console";
+  agentsMode = AGENTS_MODES.includes(mode) ? mode : "console";
   try{ localStorage.setItem("bgate-agents-mode", agentsMode); }catch(e){}
   document.querySelectorAll("#agents-modes .atlas-mode").forEach(b =>
     b.classList.toggle("active", b.dataset.m === agentsMode));
@@ -624,16 +888,25 @@ function setAgentsMode(mode){
   return true;
 }
 
-/* Atlas has two readings of one scan: the LIST (grouped by screen, every node a
- * task target) and the GRAPH (the same edges, wirable). They share the cached
- * screenmap, so flipping between them costs nothing. The choice sticks, because
- * whichever one you think in is the one you want back on reload. */
+/* Atlas is two editors over one scan: SCENE (build the tree) and CODE (edit the
+ * scripts behind it). They share the cached screenmap, so flipping between them
+ * costs nothing. The choice sticks, because whichever one you were in is the
+ * one you want back on reload.
+ *
+ * `list` and `graph` were removed. A stored preference naming either of them
+ * still exists in the localStorage of every browser that ever opened the old
+ * build, and it must not resolve to a mode that no longer has a tab — hence the
+ * whitelist rather than a bare read. */
+const ATLAS_MODES = ["scene", "code"];
 let atlasMode = (() => {
-  try { return localStorage.getItem("bgate-atlas-mode") || "list"; } catch(e){ return "list"; }
+  try {
+    const saved = localStorage.getItem("bgate-atlas-mode");
+    return ATLAS_MODES.includes(saved) ? saved : "scene";
+  } catch(e){ return "scene"; }
 })();
 function setAtlasMode(mode){
   // Leaving the code mode with unsaved buffers is the one switch that can lose
-  // work: the other three read from disk on activate, so nothing they hold is
+  // work: the scene builder reads from disk on activate, so nothing it holds is
   // unique. Ask before the tab is hidden, not after.
   if (atlasMode === "code" && mode !== "code" && window.AtlasCode && AtlasCode.dirty()
       && !confirm("You have unsaved edits open in the code editor. Leave anyway?"))
@@ -644,26 +917,23 @@ function setAtlasMode(mode){
   // still a running game with an audio context.
   if (atlasMode === "scene" && mode !== "scene" && window.SceneBuild
       && typeof SceneBuild.deactivate === "function") SceneBuild.deactivate();
-  atlasMode = ["graph", "scene", "code"].includes(mode) ? mode : "list";
+  atlasMode = ATLAS_MODES.includes(mode) ? mode : "scene";
   try{ localStorage.setItem("bgate-atlas-mode", atlasMode); }catch(e){}
   document.querySelectorAll("#atlas-modes .atlas-mode").forEach(b =>
     b.classList.toggle("active", b.dataset.m === atlasMode));
-  ["list-mode", "graph", "scene", "code"].forEach(id => {
-    const el = document.getElementById(id === "list-mode" ? "atlas-list-mode" : "atlas-" + id);
-    if (el) el.hidden = atlasMode !== (id === "list-mode" ? "list" : id);
+  ATLAS_MODES.forEach(id => {
+    const el = document.getElementById("atlas-" + id);
+    if (el) el.hidden = atlasMode !== id;
   });
-  const mod = { graph: window.AtlasGraph, scene: window.SceneBuild,
-                code: window.AtlasCode }[atlasMode]
-    || window.Atlas;
-  // The scene builder and the code editor both name their scenes from the
-  // Atlas scan, so make sure that scan exists before they ask — otherwise the
-  // picker opens with one entry.
-  if ((atlasMode === "scene" || atlasMode === "code")
-      && window.Atlas && typeof Atlas.ensure === "function"){
-    Atlas.ensure().then(() => { if (mod) mod.activate(); }).catch(() => { if (mod) mod.activate(); });
+  const mod = { scene: window.SceneBuild, code: window.AtlasCode }[atlasMode];
+  if (!mod) return false;
+  // Both modes name their scenes from the Atlas scan, so make sure that scan
+  // exists before they ask — otherwise the picker opens with one entry.
+  if (window.Atlas && typeof Atlas.ensure === "function"){
+    Atlas.ensure().then(() => mod.activate()).catch(() => mod.activate());
     return true;
   }
-  if (mod && typeof mod.activate === "function"){ mod.activate(); return true; }
+  if (typeof mod.activate === "function"){ mod.activate(); return true; }
   return false;
 }
 
@@ -1247,6 +1517,7 @@ async function openSession(id){
         <div class="feedback-main">
           <div class="feedback-text">${esc(item.text)}</div>
           <div class="feedback-confidence">
+            ${item.source === "typed" ? `<span class="chip">typed note · not transcribed</span>` : ""}
             <span class="chip">director recommends ${esc(item.director_recommendation || "review")}</span>
             <span class="chip">classifier ${Math.round(Number(item.classification?.confidence || 0) * 100)}% · ${esc(item.classification?.kind || item.kind)}</span>
             ${item.transcript_confidence != null
@@ -1300,6 +1571,7 @@ async function openSession(id){
     <div><h2 style="margin-top:4px">Transcript</h2>
       <div class="transcript" id="review-transcript">${(d.transcript||[]).map((s,index) =>
         `<div class="transcript-line" id="transcript-${index}" data-start="${Number(s.t_start)}" data-end="${Number(s.t_end)}" onclick="seekReview(${Number(s.t_start)})"><span style="color:var(--text-3)">${Number(s.t_start).toFixed(1)}s</span> ${esc(s.text)}
+          ${s.source === "typed" ? `<span class="chip">typed</span>` : ""}
           ${s.confidence != null ? `<span class="chip">confidence ${Number(s.confidence).toFixed(2)}</span>` : ""}</div>`).join("")
         || "no transcript"}</div>
     </div>`;
@@ -2318,10 +2590,16 @@ setInterval(pollQueue, 3500);
 <script src="/static/nodecanvas.js"></script>
 <script src="/static/flows.js"></script>
 <script src="/static/icons.js"></script>
+<script src="/static/split.js"></script>
 <script src="/static/bgselect.js"></script>
 <!-- Both were written, finished, and never given a script tag — so nothing
      registered them and the Studio showed two flows instead of four. -->
 <script src="/static/agents_graph.js"></script>
+<!-- BEFORE the console, which mounts it into the deck's chat page on first
+     draw. Self-registering as window.ChatLive and self-styling; the console
+     guards on its absence anyway, so a load failure costs the chat page and
+     nothing else. -->
+<script src="/static/chatlive.js"></script>
 <script src="/static/agents_console.js"></script>
 <!-- The header bell and the Settings view. Below the console for one reason:
      notify.js hands a click on an event row to AgentsGraph.select, and both
@@ -2335,12 +2613,26 @@ setInterval(pollQueue, 3500);
      workspace, not behind a panel. -->
 <script src="/static/streamer.js"></script>
 <script src="/static/settingsview.js"></script>
+<!-- After settingsview.js (it wraps SettingsView.activate) and after flows.js
+     (it registers a Studio flow). Needs no line in activateWorkspace's owners
+     map or in the Studio tab list — both entry points are self-registering. -->
+<script src="/static/providerkeys.js"></script>
+<!-- AFTER providerkeys.js, which it wraps twice: it appends the local half of
+     "what can generate right now" under the hosted half in the Studio tab, and
+     rides SettingsView.activate for its own pane. Same self-registering
+     contract — no line in activateWorkspace and none in the Studio tab list. -->
+<script src="/static/localsetup.js"></script>
 <script src="/static/wf.js"></script>
 <script src="/static/wf_steps_asset.js"></script>
 <script src="/static/wf_steps_model.js"></script>
 <script src="/static/wf_steps_world.js"></script>
 <script src="/static/wf_steps_3d.js"></script>
 <script src="/static/wf_steps_agent.js"></script>
+<!-- The brainstorm workspace (chat + writing pad + drawing pad + a two-step
+     Deploy). Above the seat modules because the director and narrative seats
+     mount it with Brainstorm.mount(el, {seat}); it registers window.Brainstorm
+     and mounts nothing by itself. -->
+<script src="/static/brainstorm.js"></script>
 <script src="/static/seats/_core.js"></script>
 <script src="/static/seats/director.js"></script>
 <script src="/static/seats/gameplay.js"></script>
@@ -2350,7 +2642,6 @@ setInterval(pollQueue, 3500);
 <script src="/static/seats/qa.js"></script>
 <script src="/static/seats/narrative.js"></script>
 <script src="/static/atlas.js"></script>
-<script src="/static/atlas_graph.js"></script>
 <script src="/static/sceneview.js"></script>
 <script src="/static/scenebuild.js"></script>
 <!-- The editor's engine, then its modes. simple.js must precede
@@ -2373,7 +2664,15 @@ setInterval(pollQueue, 3500);
 <script src="/static/audiolab.js"></script>
 <script src="/static/beatmaker.js"></script>
 <script src="/static/assetlib.js"></script>
+<!-- The playtest notepad + live frame grab. Self-contained: injects its own
+     style, mounts its own slide-out, and installs its hotkey INTO the game
+     iframe (a parent-document listener never fires while the build has focus). -->
+<script src="/static/ptnotes.js"></script>
 <script src="/static/world.js"></script>
+<!-- The Work history panel. Self-contained: it injects its own style and
+     mounts itself into #view-overview, so nothing above needs to know it
+     exists. -->
+<script src="/static/overview_history.js"></script>
 <script>
   // If the dashboard restored the seats view on load, build its sub-nav once
   // modules have registered.

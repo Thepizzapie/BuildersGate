@@ -68,7 +68,7 @@
         this._focusId = null;
         try { this._logical = localStorage.getItem("art-logical") || null; } catch (e) {}
         container.innerHTML = STYLE + `
-          <div class="art-root">
+          <div class="art-root" id="art-review">
             <div class="art-pick" id="art-picker"></div>
             <div class="art-cols">
               <div class="art-side">
@@ -106,6 +106,7 @@
           lightbox: container.querySelector("#art-lightbox"),
           style: container.querySelector("#art-style"),
           stmode: container.querySelector("#art-stmode"),
+          review: container.querySelector("#art-review"),
         };
         // fix the stray glyph typo in a way that can't break: overwrite header text
         const labH = this._els.lab.querySelector(".art-h");
@@ -135,9 +136,26 @@
     refresh() {
       try {
         if (!this._bg || !this._els) return;
+        // The editor half owns a canvas, an undo stack and unsaved pixels.
+        // Repolling six endpoints to repaint panels nobody can see is pure
+        // cost, and re-rendering under a live edit is worse than pointless.
         this._loadAll(false);
         this._pollReviewer();
       } catch (e) { console.error("[art] refresh", e); }
+    },
+
+    /* --- the sprite editor is a PAGE, not a mode in here -------------------
+     * It was a Studio tab, then briefly a second mode inside this seat. Both
+     * were wrong in the same way: a full-bleed paint tool does not want to
+     * live inside a review workspace, and reaching it meant picking a seat and
+     * then a mode. It has its own rail item now.
+     *
+     * This seat keeps what it is actually for — reviewing frames, iterating,
+     * rejecting. openSheet() is the bridge: go to the page, open the sheet.
+     */
+    openSheet(rel) {
+      if (typeof setWorkspace === "function") setWorkspace("spriteedit");
+      try { if (window.SpriteEdit) SpriteEdit.open(rel); } catch (e) {}
     },
 
     // --- response shape helpers ------------------------------------------
@@ -175,7 +193,16 @@
         bg.get("/api/art/style").catch(() => null),
       ]);
       this._style = this._data(style);
-      this._arts = (arts && arts.artifacts) || [];
+      /* IMAGES ONLY. /api/artifacts answers every artifact the project has,
+         and since music generation landed that includes .mp3 takes. This seat
+         renders each one as an <img src="/api/preview">, and /api/preview
+         answers 415 for anything that is not an image — so every poll fired a
+         pair of failing requests and painted two dead thumbnails in the art
+         seat. Filtering here rather than at each <img> because an audio take
+         is not art-seat work in the first place; it belongs to the audio seat,
+         which already lists it properly through /api/audio/file. */
+      this._arts = ((arts && arts.artifacts) || []).filter(
+        a => !a || !a.rel || /\.(png|jpe?g|gif|webp|bmp)$/i.test(a.rel));
       this._groups = (ws && ws.groups) || [];
       this._queueArt = ((queue && queue.items) || []).filter(i => i && i.seat === "art");
       const c = this._data(cost);
@@ -1132,7 +1159,7 @@
               aria-checked="${picked.has(a.name)}" tabindex="0"` : ""}
             title="${bg.esc(a.name || "")}${
             a.why ? " — " + bg.esc(a.why) : cls === "ok" ? " — click to include or exclude" : ""}">
-            ${a.rel
+            ${a.rel && /\.(png|jpe?g|gif|webp|bmp)$/i.test(a.rel)
               ? `<img src="/api/preview?rel=${encodeURIComponent(a.rel)}" alt="" loading="lazy">`
               : `<div class="art-stmissing"></div>`}
             <figcaption>${bg.esc(a.name || "")}</figcaption>
@@ -1693,6 +1720,10 @@
   };
 
   const STYLE = `<style>
+    /* The seat's two halves. Review is the filmstrip and the gates; Pixels is
+       the sprite editor, mounted here rather than in Studio — see _setMode. */
+      border:1px solid var(--line);border-radius:8px;color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}
+    .art-editor{min-height:620px;height:calc(100vh - 300px)}
     .art-root{color:var(--bone);font-size:13px}
     .art-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6);margin-bottom:var(--s-6)}
     .art-h{display:flex;align-items:center;gap:var(--s-4);margin:0 0 var(--s-5);font-size:var(--fs-2xs);font-weight:var(--fw-bold);text-transform:uppercase;letter-spacing:var(--track-label);color:var(--text-3)}

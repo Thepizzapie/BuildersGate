@@ -24,7 +24,7 @@
     _cues: [],     // [{event,sound,note}] persisted at workspace/audio/cues
     _activeItem: null,
     _agentItems: [],
-    _mode: "library",   // "library" (sounds + cues) | "music" (Suno) | "lab"
+    _mode: "library",   // "library" (sounds + cues) | "music" (Suno takes)
 
     // --- music generation state (see the block comment above _loadMusic) ---
     _mOpts: null,       // /api/music/options — models, limits, availability
@@ -43,15 +43,13 @@
       this._mPainted = false;
       try {
         const saved = localStorage.getItem("aud-mode");
-        this._mode = (saved === "lab" || saved === "music") ? saved : "library";
+        this._mode = saved === "music" ? "music" : "library";
       } catch (e) {}
       container.innerHTML = this._style() + `
         <div class="aud-modes">
           <button class="aud-mode" data-m="library">${BGICON("audio")} Library &amp; cues</button>
           <button class="aud-mode" data-m="music">${BGICON("waveform")} Music</button>
-          <button class="aud-mode" data-m="lab">${BGICON("edit")} Audio lab</button>
         </div>
-        <div class="aud-editor" id="aud-editor" hidden></div>
         <div class="aud-wrap" id="aud-music" hidden></div>
         <div class="aud-wrap" id="aud-main">
           <div class="aud-card" id="aud-lib">
@@ -87,10 +85,12 @@
       if (saveBtn) saveBtn.onclick = () => this._saveCues();
 
       // The lab used to be a Studio tab and this button used to leave the seat
-      // for it — the one surface that can actually change a sound was two
-      // workspaces away from the seat that owns sound. It mounts here now.
+      // The lab is its own page. This button is the shortcut to it from the
+      // seat that owns sound, which is the trip that used to take two picks.
       const labBtn = container.querySelector("#aud-open-studio");
-      if (labBtn) labBtn.onclick = () => this._setMode("lab");
+      if (labBtn) labBtn.onclick = () => {
+        if (typeof setWorkspace === "function") setWorkspace("audiolab");
+      };
       container.querySelectorAll(".aud-mode").forEach(b =>
         b.addEventListener("click", () => this._setMode(b.dataset.m)));
       const body = container.querySelector("#aud-lib-body");
@@ -103,14 +103,18 @@
       this._loadAll();
     },
 
-    /* --- the audio lab lives here now -------------------------------------
-     * AudioLab.embed() is unchanged; only where it mounts and how it is reached
-     * moved. Everything else that hands off to it (the asset library's "open in
-     * audio lab") still gets the fullscreen overlay, because AudioLab only
-     * embeds into a host that is genuinely on screen.
+    /* --- the audio lab is a PAGE, not a mode in here -----------------------
+     * Same move as the sprite editor, for the same reason: a full-bleed editing
+     * surface does not belong inside a library workspace, and reaching it cost
+     * a seat pick plus a mode pick. It has its own rail item.
+     *
+     * This seat keeps the library, the cues and the music generation. Only the
+     * editing surface left. openSound() is the bridge, and both callers go
+     * through it: this seat's own cards and the music panel's "open in audio
+     * lab" on a generated take.
      */
     _setMode(mode) {
-      const next = (mode === "lab" || mode === "music") ? mode : "library";
+      const next = mode === "music" ? "music" : "library";
       if (next === this._mode) return;
       this._mode = next;
       try { localStorage.setItem("aud-mode", next); } catch (e) {}
@@ -121,43 +125,27 @@
       const root = this._root;
       if (!root) return;
       const mode = this._mode;
-      const lab = mode === "lab";
       const main = root.querySelector("#aud-main");
       const music = root.querySelector("#aud-music");
-      const host = root.querySelector("#aud-editor");
       if (main) main.hidden = mode !== "library";
       if (music) music.hidden = mode !== "music";
-      if (host) host.hidden = !lab;
       root.querySelectorAll(".aud-mode").forEach(b =>
         b.classList.toggle("on", b.dataset.m === mode));
       if (mode === "music") this._loadMusic();
-      if (!lab) { this._unembed(); return; }
-      if (!window.AudioLab || !AudioLab.embed) {
-        if (host) host.innerHTML = `<div class="aud-empty">the audio lab did not load</div>`;
-        return;
-      }
-      if (host && !host.firstChild) AudioLab.embed(host);
     },
 
-    // Public: open a specific sound in this seat's lab.
+    // Public: open a sound on the Audio lab page.
     openSound(rel) {
-      this._setMode("lab");
-      try { if (window.AudioLab) AudioLab.embed(this._root.querySelector("#aud-editor"), rel); }
-      catch (e) {}
-    },
-
-    _unembed() {
-      try { if (window.AudioLab && AudioLab.unembed) AudioLab.unembed(); } catch (e) {}
-      const host = this._root && this._root.querySelector("#aud-editor");
-      if (host) host.innerHTML = "";
+      if (typeof setWorkspace === "function") setWorkspace("audiolab");
+      try { if (window.AudioLab) AudioLab.open(rel); } catch (e) {}
     },
 
     // Called by SeatShell before this seat's container is discarded. The lab
-    // holds an AudioContext, a capture-phase key binding and possibly a playing
-    // transport; leaving the seat has to end all three. The music panel holds a
-    // 1s interval for the elapsed clock — a seat that leaves a timer behind is
-    // a seat that ticks forever against DOM that has been thrown away.
-    unmount() { this._stopPulse(); this._unembed(); },
+    // used to be torn down here too; it owns its own page now and must SURVIVE
+    // leaving this seat. What is still ours is the music panel's 1s interval
+    // for the elapsed clock — a seat that leaves a timer behind is a seat that
+    // ticks forever against DOM that has been thrown away.
+    unmount() { this._stopPulse(); },
 
     // Called ~every 3s by the shell. Only refresh the (cheap, non-destructive)
     // live-agent panel — never rebuild the library or clobber unsaved cue edits.
@@ -1180,7 +1168,6 @@
           border:1px solid var(--line);border-radius:8px;color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}
         .aud-mode:hover{border-color:var(--accent);color:var(--text-2)}
         .aud-mode.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
-        .aud-editor{min-height:620px;height:calc(100vh - 300px)}
         .aud-wrap{display:flex;flex-direction:column;gap:14px;color:var(--text);font-size:13px}
         .aud-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
         .aud-h{font-size:13px;font-weight:var(--fw-semi);color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:12px}

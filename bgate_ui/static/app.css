@@ -38,7 +38,11 @@
    a later block can no longer quietly outrank an earlier one by accident.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-@layer tokens, base, layout, components, views, responsive;
+/* `theme` is last so the one ground that needs structural rules — orbit, whose
+   iridescent rim is a masked pseudo-element and cannot be expressed as a token
+   — can reach past every earlier layer without an !important or a specificity
+   arms race. Nothing but ground-conditional rules belongs in it. */
+@layer tokens, base, layout, components, views, responsive, theme;
 
 /* ═══ TOKENS ══════════════════════════════════════════════════════════════ */
 @layer tokens {
@@ -159,6 +163,224 @@
     --grid-dot:rgba(28,27,24,.07);
   }
 
+  /* ── ground: orbit ─────────────────────────────────────────────────────────
+     A THIRD GROUND, NOT A VARIANT OF DARK. Absolute black, glass panels that
+     exist because of their edges rather than their fill, and one iridescent
+     band travelling along every one of those edges.
+
+     Four decisions. Change any of them and you are designing a different
+     theme, not tuning this one.
+
+     1. --bg IS #000000. Not near-black, not black with a cast — zero. That is
+        the whole premise, and it is what makes every other value here different
+        from the dark ground's. On charcoal you can raise a panel by making it a
+        lighter grey; on zero, a grey fill reads as a grey plastic rectangle
+        lying on black. So:
+
+     2. THE SURFACE RAMP IS AN ALPHA LADDER, NOT A LIGHTNESS LADDER. --surface-N
+        are white at 2.6%..11%. Over the page they compute to #070707..#1c1c1c,
+        but they are declared as alpha on purpose: they compound correctly when
+        panels nest, they stay honest over the glass chrome, and they are what
+        lets a panel be defined by its EDGE. Do not replace them with hexes.
+
+     3. THE EDGE IS ONE GRADIENT, DECLARED ONCE. --iris is the whole
+        iridescence: gold → pink → blue → white at a fixed 255deg. It is fixed
+        because iridescence is a hue that TRAVELS across a surface, and a
+        per-component angle destroys the illusion that one light source is
+        moving over one material. It is drawn as a 1px masked ring
+        (see @layer theme), because box-shadow cannot shift hue along an edge
+        and border-image cannot follow a border-radius.
+
+        Two strengths, both derived from the one gradient by opacity alone:
+        --iris-rim for large panels, --iris-edge for small edges and live
+        state. The white stop is the specular highlight — the brightest point
+        on the rim, not a wash. If the band reads as neon or as a rainbow,
+        lower the opacity; do not re-pick the colours.
+
+     4. NO FLAT EMBER. Orange is the two older grounds' accent and it is gone
+        here. Where a gradient can be a fill it is one — the primary button,
+        the active rail marker, every panel rim. Where the platform will only
+        take a colour — an SVG stroke, a 1px hairline, an outline, an 8px lamp
+        — the fallback is a STOP OF THAT SAME GRADIENT, so the solid still
+        belongs to the material. --accent is the blue stop for exactly that
+        reason; it is consumed as `color:` and `border-color:` in ~100 places
+        that cannot take a gradient.
+
+     Contrast was solved against #1c1c1c — surface-4 nested inside surface-2,
+     the lightest composite the app can actually produce — not against the
+     page, which is the mistake that kills dim text on a black ground. */
+  :root[data-theme="orbit"]{
+    color-scheme:dark;
+
+    /* THE one sheen. Everything iridescent in this theme is this token at a
+       different opacity — no component writes its own gradient, and none of
+       them picks its own angle, because a light source that moves from panel
+       to panel is not a light source.
+
+       Gold → blue → white at 255deg. There was a pink stop at 30% and it is
+       gone; the blue came back from 65% to 45% to take up the slack. Two
+       reasons for landing there rather than at the midpoint the removal left
+       behind: a stop tuned around a neighbour that no longer exists leaves a
+       flat run of olive where the transition used to be, and gold is by far
+       the most saturated of the three — give it half the axis and a wide
+       panel reads as "amber outline", which is the orange this ground was
+       explicitly told to drop.
+
+       255deg is very nearly horizontal, pointing left: gold enters at the
+       RIGHT edge of a box and white leaves at the left. That is why the angle
+       is a constant and not a per-component choice — every panel is lit from
+       the same side, which is the only thing that makes it read as one
+       material catching one light rather than as decoration. */
+    --iris:linear-gradient(255deg, rgb(250,203,14), rgb(120,186,230) 45%,
+                                   rgb(255,255,255));
+    /* THE RIM IS THE THEME, so it is not whispered. At .55 a panel's gold
+       corner composites to about #9e7e0d and its blue edge to #4c748e — the
+       hue travel is unmistakable at arm's length, which is the whole brief.
+       The discipline that keeps it out of neon is not the alpha, it is that
+       this only ever paints a 1.5px ring: no wash across the surface, no
+       large-radius bloom onto the page. */
+    --iris-rim:.55;        /* every panel, card and pane of chrome */
+    --iris-edge:1;         /* primary button, active marker, live state */
+
+    --bg:#000000;          /* vanta. zero. */
+    --surface-1:rgba(255,255,255,.026);
+    --surface-2:rgba(255,255,255,.045);
+    --surface-3:rgba(255,255,255,.075);
+    --surface-4:rgba(255,255,255,.11);
+
+    /* This started at .09, on the reasoning that the --iris ring one pixel
+       inside is the edge you actually read and a strong border under it
+       renders as a doubled line. That was true while EVERYTHING had a ring.
+       Now the rim is reserved for containment boundaries (see @layer theme),
+       and the hairline is the only edge a settings row, a queue row or a
+       transcript line has — so it has to carry them on its own. .13 is where
+       a row separates from its panel on #000 without competing with the rim
+       above it. */
+    --line:rgba(255,255,255,.13);
+    --line-soft:rgba(255,255,255,.07);
+    --line-strong:rgba(255,255,255,.24);
+
+    /* ONE HUE FOR TEXT, AND IT IS THE BLUE. The three tiers are the same
+       rgb(120,186,230) at three lightnesses, not three colours — a caption
+       that drifts to a different hue than the paragraph above it is the thing
+       that made this ground look like it was sampling the gradient for copy.
+       Nothing in this theme puts pink or gold in running text. */
+    --text:#e3f0fa;        /* 13.0:1 on the lightest composite (#1c1c1c) */
+    --text-2:#a9c6dc;      /*  8.4:1 */
+    --text-3:#86a4bb;      /*  5.8:1 there, 7.5:1 on a plain panel */
+    --text-dim:#5d7688;    /*  3.2:1 — NON-TEXT ONLY */
+
+    /* THE MARK IS NOT A THEMEABLE ACCENT. Both halves are the dark ground's
+       own values, unchanged: violet posts, and BGIcon paints the chevron from
+       --brand-chevron, which is pinned to real ember here rather than
+       following --ember into this theme's accent. Orbit drops the orange
+       everywhere EXCEPT the logo, because the logo is artwork. */
+    --brand-post:#8f7cff;
+    --brand-chevron:#ff6a3d;
+
+    /* The blue stop, rgb(120,186,230). 9.3:1 on a panel, and the single
+       colour every accent button in the app wears — see .qbtn. */
+    --accent:#78bae6;
+    --accent-hover:#9bcef0;
+    --accent-press:#589fd0;
+    --accent-fg:#02090f;   /*  8.9:1 on the accent fill */
+    --accent-soft:rgba(120,186,230,.15);
+    --accent-wash:rgba(120,186,230,.07);
+    --accent-line:rgba(120,186,230,.45);
+    /* --spark is a TEXT role — eyebrows, lane heads, inline code — so it is
+       the accent, not the gradient's pink stop. That pink was the "blue and
+       pink text" this ground was rejected for. */
+    --spark:#78bae6;
+
+    /* Semantics keep their hues because a status colour that stops meaning
+       what it means is not a theme change, it is a bug. They are pulled
+       toward the band where the band has a stop to offer: warn is the gold.
+       Bad is a plain red — it was an orange-red on the other grounds and
+       spent one revision as a rose, which put pink back into a theme that
+       had just had it taken out. */
+    --good:#4ee0b8; --good-line:rgba(78,224,184,.36); --good-soft:rgba(78,224,184,.12);
+    --warn:#f5d24a; --warn-line:rgba(245,210,74,.36); --warn-soft:rgba(245,210,74,.12);
+    --bad:#ff5a5a;  --bad-line:rgba(255,90,90,.38);   --bad-soft:rgba(255,90,90,.12);
+    --info:#a9b6ff; --info-line:rgba(169,182,255,.36); --info-soft:rgba(169,182,255,.12);
+
+    /* Seven hues, no pink and no orange left in the wheel to spend, so the
+       two purples split by lightness rather than by saturation and `bad` is
+       a clean red instead of the rose it briefly was. */
+    --c-director:#facb0e; --c-narrative:#8f9bff; --c-gameplay:#ff7d7d;
+    --c-tech:#78bae6; --c-art:#cf9bff; --c-audio:#4ee0b8; --c-qa:#b2ea62;
+
+    /* A drop shadow cast onto #000 is invisible — there is nothing left to
+       darken. The outer blur is kept only for the floaters that sit over
+       CONTENT rather than over the page; what actually gives a raised thing
+       its footing here is the white top-edge catch and the --iris ring. */
+    --shadow-1:0 1px 2px rgba(0,0,0,.9);
+    --shadow-2:0 6px 20px rgba(0,0,0,.9),  inset 0 1px 0 rgba(255,255,255,.05);
+    --shadow-3:0 18px 46px rgba(0,0,0,.95), inset 0 1px 0 rgba(255,255,255,.07);
+    --shadow-4:0 30px 84px rgba(0,0,0,.98), inset 0 1px 0 rgba(255,255,255,.09);
+    /* Heavier than the other grounds'. Every overlay in this theme is opaque
+       now, so the scrim's only job is to push the page back far enough that
+       nothing behind a drawer competes with what is on it. */
+    --scrim:rgba(0,0,0,.84);
+    --overlay:rgba(0,0,0,.93);
+
+    /* Must stay DARKER than the tile it sits in, and the tile is now 4.5%
+       white — so the checker goes to zero and one step above it. */
+    --checker-a:#000000; --checker-b:#080808;
+    --grid-dot:rgba(255,255,255,.055);
+
+    /* ── glass ──────────────────────────────────────────────────────────────
+       TRANSPARENCY IS ONLY LEGAL WHERE A BLUR IS ACTUALLY RENDERING BEHIND IT.
+       There is no third option, and getting this wrong is not a subtle bug:
+       a translucent drawer with no working blur is a transparent box, and the
+       list underneath prints straight through the transcript you are trying
+       to read. Two rules came out of that:
+
+         · glass goes on CHROME — the rail and the status bar. Things you
+           navigate with, not things you read in.
+         · anything whose job is to be READ is opaque. Drawers, inspectors,
+           modals, pickers, toasts, popovers, logs, diffs. They take --solid-N
+           below and they keep the --iris rim, which is what still makes them
+           look like this theme. The edge carries the theme, the fill carries
+           the text.
+
+       --glass-N therefore has exactly two consumers left. If you are about to
+       add a third, check first whether anyone will read words on it. */
+    --glass-1:rgba(10,10,12,.72);
+    --glass-2:rgba(15,15,18,.76);
+    --glass-3:rgba(22,22,26,.8);
+    --glass-filter:blur(18px) saturate(130%);
+
+    /* Opaque, and the same values the alpha ladder composites to over #000 —
+       so a drawer is the exact tone of the panels behind it, just solid.
+       Aliased to the surface ramp on dark and light, where these are what
+       those rules already resolved to. */
+    --solid-1:#070707;
+    --solid-2:#0c0c0c;
+    --solid-3:#131313;
+
+    /* Neutral, not coloured. The hue is the ring's job; this is just the
+       highlight along the top edge where a pane of glass catches the room. */
+    --sheen:inset 0 1px 0 rgba(255,255,255,.055);
+    --sheen-strong:inset 0 1px 0 rgba(255,255,255,.11);
+    /* OFF, ON PURPOSE, AND DO NOT PUT IT BACK. This was a two-stop bloom at a
+       22px and a 34px radius, and on a #000 page that is not a glow on a
+       button — it is a soft grey blob lifting the ground for 30px in every
+       direction around every one of them. Absolute black has no tolerance for
+       ambient light: the moment anything spills off an edge, the page stops
+       reading as black. The rim is the only place the sheen is allowed. */
+    --glow:0 0 #0000;
+  }
+
+  /* Opaque fallback. Both of these are people telling the compositor to stop —
+     one about layered translucency, one about work per frame — and a blurred
+     backdrop is both. The ground keeps its colours and loses only the glass. */
+  @media (prefers-reduced-transparency:reduce), (prefers-reduced-motion:reduce){
+    :root[data-theme="orbit"]{
+      --glass-1:#0a0a0c; --glass-2:#0f0f12; --glass-3:#16161a;
+      --glass-filter:none;
+    }
+  }
+
   /* Follow the OS unless the user has picked a ground. setTheme() in index.html
      stamps data-theme on <html> and persists it; until then this decides. */
   @media(prefers-color-scheme:light){
@@ -261,7 +483,11 @@
        asked from inside one of them has to be reachable. */
     --z-ask:9000;
 
-    --rail-w:236px; --insp-w:480px; --bar-h:60px;
+    /* Two rail widths, because the rail has two states. --rail-c is what it
+       occupies at rest and is the only one the grid track ever sees unless the
+       rail is pinned; --rail-w is what it expands TO, and is the one the drag
+       handle writes. 64px is an icon plus breathing room on both sides. */
+    --rail-w:236px; --rail-c:64px; --insp-w:480px; --bar-h:60px;
 
     /* ── legacy aliases ────────────────────────────────────────────────────
        ~1800 var(--…) references across 29 JS files point at the old names.
@@ -281,12 +507,50 @@
     --ember-dim:var(--accent-soft);
     --ember-soft:var(--accent-soft);
 
+    /* The logo's chevron, split out of --ember for one reason: the mark is
+       ARTWORK, not an accent surface. On the two original grounds it follows
+       the accent exactly as it always did, so nothing changes. On orbit,
+       where the accent is no longer ember, this stays ember — a theme is
+       allowed to restyle the interface and is not allowed to restyle the
+       logo. BGIcon.logo is the only consumer. */
+    --brand-chevron:var(--ember);
+
     /* --nc-a (node canvas) and --accent-3 (asset flow) were referenced but
        never defined, so both ran on their inline fallback forever — one ember,
        one a blue from an unrelated palette, which is part of why the node
        editors and the shell disagreed. Defined here, they follow the accent. */
     --nc-a:var(--accent);
     --accent-3:var(--accent);
+
+    /* ── glass, defaulted off ──────────────────────────────────────────────
+       The orbit ground is the only one that fills these in. Every value here
+       is the no-op: the --glass-N tokens alias the solid surface they stand in
+       for, --glass-filter is `none` (which is backdrop-filter's initial value,
+       so no compositing layer is created and nothing is repainted), and the
+       three shadow-ish tokens are a fully transparent zero-size shadow, which
+       is legal inside a comma list where `none` is not.
+
+       They live at :root and not in each ground on purpose — a component asks
+       for glass unconditionally, and dark and light answer with exactly what
+       they rendered before. That is what keeps them pixel-identical. */
+    --glass-1:var(--surface-1);
+    --glass-2:var(--surface-2);
+    --glass-3:var(--surface-3);
+    --glass-filter:none;
+    /* Reading surfaces. On these two grounds the surface ramp is already
+       opaque hex, so this is the same paint it always was. */
+    --solid-1:var(--surface-1);
+    --solid-2:var(--surface-2);
+    --solid-3:var(--surface-3);
+    --sheen:0 0 #0000;
+    --sheen-strong:0 0 #0000;
+    --glow:0 0 #0000;
+    /* The iridescent band. `none` is a legal background-image, and the two
+       opacities are zero, so the ring in @layer theme is invisible even if a
+       selector there ever escapes its [data-theme="orbit"] guard. */
+    --iris:none;
+    --iris-rim:0;
+    --iris-edge:0;
   }
 }
 
@@ -350,86 +614,259 @@
 
 /* ═══ LAYOUT ══════════════════════════════════════════════════════════════ */
 @layer layout {
-  .deck{
-    display:grid; grid-template-columns:var(--rail-w) 1fr;
-    height:100vh; overflow:hidden;
-  }
+  /* ── draggable boundaries ───────────────────────────────────────────────
+     THE GRIP IS WIDER THAN THE LINE IT DRAWS. A 1px border is an honest
+     boundary and a terrible target; every one of these is a ~9px hit area
+     that paints a hairline down its middle, so it looks like the seam it
+     replaces and behaves like something you can actually catch. The extra
+     width is stolen from the gap that was already there rather than added to
+     the layout, so turning a seam into a handle does not move anything.
 
-  /* ── command rail ──────────────────────────────────────────────────────── */
-  .rail{
-    background:var(--surface-1); border-right:1px solid var(--line);
-    display:flex; flex-direction:column; min-height:0; user-select:none;
+     Nothing here paints until you approach it. A page full of visible
+     drag furniture reads as a tool that wants to be configured; this one
+     should read as a layout that happens to give way when you push it. */
+  .split{
+    position:relative; z-index:5; border:0; padding:0; background:transparent;
+    touch-action:none; align-self:stretch; justify-self:stretch;
+    cursor:col-resize;
   }
+  .split[aria-orientation="horizontal"]{cursor:row-resize}
+  .split::after{
+    content:""; position:absolute; inset:0; margin:auto;
+    background:var(--accent); opacity:0; border-radius:2px;
+    transition:opacity var(--dur) var(--ease-out);
+  }
+  .split[aria-orientation="vertical"]::after{width:2px}
+  .split[aria-orientation="horizontal"]::after{height:2px}
+  .split:hover::after,.split.dragging::after{opacity:.55}
+  .split:focus-visible{outline:none}
+  .split:focus-visible::after{opacity:.85; box-shadow:0 0 0 1px var(--accent)}
+  /* WHILE DRAGGING, THE WHOLE PAGE IS THE HANDLE. Without this the cursor
+     flickers back to a text caret every time it crosses a label, and a stray
+     selection gets dragged along behind the boundary. */
+  body.splitting,body.splitting *{cursor:col-resize !important; user-select:none !important}
+  body.splitting-y,body.splitting-y *{cursor:row-resize !important; user-select:none !important}
+
+  /* AT REST THE RAIL IS A 64px GUTTER. Two tracks, not three: the boundary
+     handle is only in the layout while the rail is pinned, and a track left
+     behind for an element that is display:none does not leave a gap — it
+     leaves the STAGE sitting in it. Track count follows item count. */
+  .deck{display:grid; grid-template-columns:var(--rail-c) 1fr; height:100vh; overflow:hidden}
+  .deck > .split[data-split="rail"]{display:none}
+  /* PINNED, THE RAIL BUYS A REAL TRACK. This is the one state where the stage
+     is genuinely narrower, which is also the only state where a drag handle
+     has anything to say — so both appear together. */
+  .deck:has(.rail.pin){grid-template-columns:var(--rail-w) var(--split-w,5px) 1fr}
+  .deck:has(.rail.pin) > .split[data-split="rail"]{display:block}
+
+  /* ── command rail ────────────────────────────────────────────────────────
+     <nav class="rail"> is a fixed-width shell that never moves. Everything you
+     can see is .rail-inner, absolutely positioned inside it, and expanding is
+     that one box growing its own width — it floats OVER the stage rather than
+     pushing it. Animating the grid track instead would re-lay-out the whole
+     workspace on every hover, and the workspace is full of canvases, iframes
+     and charts that re-measure whenever it does; a nav that costs a relayout
+     to brush past is a nav people learn to avoid.
+
+     THE GEOMETRY IS BUILT SO NOTHING MOVES BUT THE EDGE. Every icon sits in a
+     30px box whose centre lands on 31px — half of 64 minus the 1px seam — in
+     BOTH states, so opening the rail reveals labels instead of nudging the
+     icons sideways. Change --rail-c and the three paddings below have to move
+     with it. */
+  .rail{position:relative; min-width:0; z-index:20}
+  .rail-inner{
+    position:absolute; top:0; left:0; bottom:0; width:var(--rail-c);
+    display:flex; flex-direction:column; user-select:none;
+    /* Glass, but only because this box genuinely floats: expanded, it is over
+       the stage and its canvases. --glass-1 IS --surface-1 and --glass-filter
+       IS `none` on every ground but orbit, so this is the same rail it was. */
+    background:var(--glass-1); backdrop-filter:var(--glass-filter);
+    border-right:1px solid var(--line);
+    /* clip, not hidden: `hidden` makes this a scroll container, and the
+       browser scrolls a focused child into view inside one — focusing the pin
+       while the rail is closed would shove all of the content leftwards and
+       never put it back. `clip` cannot scroll at all. */
+    overflow:clip;
+    transition:width var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  /* Hover AND focus-within. A rail that only opens for a pointer is a rail
+     half the people using this cannot read. */
+  :is(.rail:hover,.rail:focus-within) .rail-inner{
+    width:var(--rail-w); box-shadow:var(--shadow-3);
+  }
+  /* Pinned it fills its own track, so it is not floating over anything and has
+     no business casting a shadow. */
+  .rail.pin .rail-inner{width:var(--rail-w); box-shadow:none}
+
+  /* Same height as the status bar next to it, so the two seams line up across
+     the whole top of the window. */
   .rail-brand{
-    display:flex; align-items:center; gap:var(--s-5);
-    padding:var(--s-6) var(--s-6) var(--s-5);
+    display:flex; align-items:center; gap:var(--s-5); flex:none;
+    height:var(--bar-h); padding:0 var(--s-5) 0 var(--s-6);
     border-bottom:1px solid var(--line);
   }
   /* The mark is two-tone: BGIcon.logo paints the chevron with --ember and
      leaves the gate posts on currentColor. Setting colour to --accent here made
      both the same orange, which flattened the gate and the chevron into one
      shape. --brand-post carries the logo's blue. */
-  .rail-brand .mark{display:flex; align-items:center; color:var(--brand-post); line-height:0}
+  .rail-brand .mark{
+    display:flex; align-items:center; justify-content:center; flex:none;
+    width:30px; color:var(--brand-post); line-height:0;
+  }
+  .rail-brandtext{
+    min-width:0; flex:1; opacity:0;
+    transition:opacity var(--dur) var(--ease);
+  }
   .rail-brand .bn{
     font-size:var(--fs-sm); font-weight:var(--fw-bold);
     letter-spacing:var(--track-label); text-transform:uppercase; color:var(--text);
+    white-space:nowrap;
   }
   .rail-brand .bp{
     font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-3);
     margin-top:var(--s-1); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
-
-  .rail-nav{flex:1; overflow-y:auto; padding:var(--s-5) var(--s-4); min-height:0}
-  .rail-group{
-    font-family:var(--mono); font-size:var(--fs-3xs); letter-spacing:var(--track-wide);
-    color:var(--text-3); text-transform:uppercase;
-    padding:var(--s-5) var(--s-4) var(--s-3);
+  .rail-pin{
+    flex:none; display:flex; align-items:center; justify-content:center;
+    width:26px; height:26px; border-radius:var(--r-sm); color:var(--text-3);
+    opacity:0;
+    transition:opacity var(--dur) var(--ease), background var(--dur-fast) var(--ease),
+               color var(--dur-fast) var(--ease);
   }
+  .rail-pin:hover{background:var(--surface-3); color:var(--text)}
+  .rail-pin[aria-pressed="true"]{background:var(--accent-soft); color:var(--accent)}
+  /* Monochrome until it is holding something, same as the rail does with the
+     nav icons: the ember on this one has to mean "pinned", not "here I am". */
+  .rail-pin .bgi .e{stroke:currentColor}
+
+  .rail-nav{
+    flex:1; min-height:0; display:flex; flex-direction:column; gap:var(--s-2);
+    padding:var(--s-5) var(--s-4);
+    /* clip on the cross axis for the same reason .rail-inner uses it: an auto
+       overflow-y silently forces overflow-x to auto too, and that scroller
+       would chase focus sideways behind a closed rail. */
+    overflow-y:auto; overflow-x:clip;
+  }
+  /* A heading nobody can read is noise, so when the rail is closed the group
+     label becomes the seam it was already acting as. (It used to render a
+     literal "···", which is three more marks than a divider needs.) */
+  .rail-group{
+    position:relative; flex:none; font-family:var(--mono); font-size:var(--fs-3xs);
+    letter-spacing:var(--track-wide); text-transform:uppercase; white-space:nowrap;
+    padding:var(--s-6) var(--s-4) var(--s-3);
+    color:transparent; transition:color var(--dur) var(--ease);
+  }
+  .rail-group::before{
+    content:""; position:absolute; left:var(--s-4); right:var(--s-4); top:50%;
+    height:1px; background:var(--line); transition:opacity var(--dur) var(--ease);
+  }
+  /* The first group already has the brand's seam directly above it. */
+  .rail-nav > .rail-group:first-child{padding-top:var(--s-3)}
+  .rail-nav > .rail-group:first-child::before{opacity:0}
+
   .rail-item{
     display:flex; align-items:center; gap:var(--s-5); width:100%; text-align:left;
-    padding:var(--s-4) var(--s-5); border-radius:var(--r-md);
+    padding:var(--s-4); border-radius:var(--r-md); flex:none;
     color:var(--text-2); font-size:var(--fs-md); position:relative;
     transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   }
   .rail-item:hover{background:var(--surface-2); color:var(--text)}
   /* The active state was rgba(128,82,255,.13) — violet, from a theme that was
-     reverted everywhere except here. */
-  .rail-item.active{background:var(--accent-soft); color:var(--text)}
+     reverted everywhere except here. Closed, the item IS the pill: 47px wide,
+     --r-md, wrapped round one icon. */
+  .rail-item.active{background:var(--accent-soft); color:var(--text); box-shadow:var(--glow)}
   .rail-item.active::before{
     content:""; position:absolute; left:calc(var(--s-4) * -1); top:var(--s-4); bottom:var(--s-4);
     width:3px; border-radius:0 3px 3px 0; background:var(--accent);
   }
-  .rail-item .ic{display:flex; align-items:center; justify-content:center; width:18px; flex:none}
-  .rail-item.active .ic{color:var(--accent)}
-  .rail-item .ct{
-    margin-left:auto; font-family:var(--mono); font-size:var(--fs-2xs);
-    color:var(--text-3); background:var(--surface-3); border:1px solid var(--line);
-    border-radius:var(--r-full); padding:var(--s-1) var(--s-3);
-    min-width:20px; text-align:center; font-variant-numeric:tabular-nums;
+  .rail-item .ic{
+    display:flex; align-items:center; justify-content:center;
+    width:30px; height:22px; flex:none;
   }
-  .rail-item.active .ct{border-color:var(--accent-line); color:var(--text-2)}
+  .rail-item.active .ic{color:var(--accent)}
+  .rail-item .lb{
+    flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    opacity:0; transition:opacity var(--dur) var(--ease);
+  }
+  /* THE COUNTS ARE LIVE STATE AND MAY NOT VANISH WITH THE LABELS. Closed they
+     ride the icon's top-right corner; open they are the pill they always were.
+     The pill is pushed right by margin:auto, so it travels out with the rail
+     rather than appearing at the far edge. */
+  .rail-item .ct{
+    position:absolute; top:var(--s-2); left:26px; z-index:1;
+    font-family:var(--mono); font-size:var(--fs-3xs); line-height:1.6;
+    color:var(--accent); background:var(--surface-1);
+    border:1px solid var(--accent-line); border-radius:var(--r-full);
+    padding:0 var(--s-2); min-width:16px;
+    text-align:center; font-variant-numeric:tabular-nums;
+  }
   .rail-item .ct.warn{color:var(--warn); border-color:var(--warn-line)}
   .rail-item .dot{
-    margin-left:auto; width:7px; height:7px; border-radius:50%;
+    position:absolute; top:var(--s-3); left:30px;
+    width:7px; height:7px; border-radius:50%;
     background:var(--accent); box-shadow:0 0 8px var(--accent);
     animation:deckthrob 1.4s infinite;
   }
 
+  /* ── the open state ──────────────────────────────────────────────────────
+     One selector list, three triggers, and every difference between closed and
+     open is in this block. Hover and focus-within expand as an overlay; .pin
+     is the stored preference, written by toggleRailPin() in index.html. */
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-brandtext,
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-pin,
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-item .lb,
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-foot .vrow span:last-child{
+    opacity:1;
+  }
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-group{color:var(--text-3)}
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-group::before{opacity:0}
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-item .ct{
+    position:static; margin-left:auto; font-size:var(--fs-2xs);
+    line-height:var(--lh); padding:var(--s-1) var(--s-3); min-width:20px;
+    color:var(--text-3); background:var(--surface-3); border-color:var(--line);
+  }
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-item.active .ct{
+    border-color:var(--accent-line); color:var(--text-2);
+  }
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-item .ct.warn{
+    color:var(--warn); border-color:var(--warn-line);
+  }
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .rail-item .dot{
+    position:static; margin-left:auto;
+  }
+  :is(.rail:hover,.rail:focus-within,.rail.pin) .themerow{display:flex}
+
   .rail-foot{
-    border-top:1px solid var(--line); padding:var(--s-5) var(--s-6);
+    flex:none; border-top:1px solid var(--line); padding:var(--s-5) var(--s-4);
     font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-3);
   }
-  .rail-foot .vrow{display:flex; align-items:center; gap:var(--s-4); line-height:var(--lh-loose)}
-  .themerow{display:flex; gap:var(--s-1); margin-top:var(--s-4)}
+  /* The lamp lands on the same 31px centre line as every icon above it, which
+     is what the 11px cheeks are for — it is 8px wide where they are 30. */
+  .rail-foot .vrow{
+    display:flex; align-items:center; gap:var(--s-5);
+    padding-left:var(--s-4); line-height:var(--lh-loose);
+  }
+  .rail-foot .vrow span:last-child{
+    opacity:0; white-space:nowrap; overflow:hidden;
+    transition:opacity var(--dur) var(--ease);
+  }
+  .themerow{display:none; gap:var(--s-1); margin-top:var(--s-4)}
   .themebtn{
-    flex:1; padding:var(--s-2) 0; border:1px solid var(--line); border-radius:var(--r-xs);
-    background:transparent; color:var(--text-3); font-size:var(--fs-xs); line-height:1.4;
+    flex:1; display:flex; align-items:center; justify-content:center;
+    padding:var(--s-3) 0; border:1px solid var(--line); border-radius:var(--r-xs);
+    background:transparent; color:var(--text-3);
     transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
                border-color var(--dur-fast) var(--ease);
   }
   .themebtn:hover{color:var(--text); border-color:var(--line-strong)}
   .themebtn.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+  /* Monochrome here, same as the rail does with its own icons: three ember
+     accents burning side by side would say "all three are on". The selected
+     one is the only ember on the row, and it gets there through the button's
+     own colour rather than through the icon. */
+  .themebtn .bgi .e{stroke:currentColor}
   .rail-foot .vlamp{width:8px; height:8px; border-radius:50%; flex:none;
+    margin:0 11px;
     background:var(--good); box-shadow:0 0 7px var(--good)}
   .rail-foot .vlamp.bad{background:var(--bad); box-shadow:0 0 8px var(--bad)}
   .rail-foot .vlamp.waiting{background:var(--warn); box-shadow:0 0 7px var(--warn)}
@@ -438,7 +875,8 @@
   .stage{display:flex; flex-direction:column; min-width:0; min-height:0}
   .statusbar{
     height:var(--bar-h); flex:none; display:flex; align-items:center; gap:var(--s-5);
-    padding:0 var(--s-8); border-bottom:1px solid var(--line); background:var(--surface-1);
+    padding:0 var(--s-8); border-bottom:1px solid var(--line);
+    background:var(--glass-1); backdrop-filter:var(--glass-filter);
   }
   .statusbar .crumb{
     font-size:var(--fs-lg); font-weight:var(--fw-medium); color:var(--text);
@@ -487,10 +925,14 @@
   section h2::after{content:""; flex:1; height:1px; background:var(--line)}
   .view-heading h2::after{display:none}
 
-  /* ── surfaces ──────────────────────────────────────────────────────────── */
+  /* ── surfaces ────────────────────────────────────────────────────────────
+     The three container primitives cast no shadow, so --sheen is where they
+     pick up the orbit ground's rim — a cyan hairline along the top edge, a
+     violet one along the bottom. It resolves to a transparent zero-size shadow
+     on dark and light, where these boxes had no box-shadow at all. */
   .dcard{
     background:var(--surface-2); border:1px solid var(--line);
-    border-radius:var(--r-lg); padding:var(--s-7);
+    border-radius:var(--r-lg); padding:var(--s-7); box-shadow:var(--sheen);
   }
   .dcard > h3{
     font-size:var(--fs-md); font-weight:var(--fw-medium); color:var(--text);
@@ -501,15 +943,40 @@
   }
   .panel{
     background:var(--surface-2); border:1px solid var(--line);
-    border-radius:var(--r-lg); overflow:hidden;
+    border-radius:var(--r-lg); overflow:hidden; box-shadow:var(--sheen);
   }
   .panel .inner{padding:var(--s-6); display:grid; gap:var(--s-4)}
   .ws-cols{display:grid; grid-template-columns:1fr 1fr; gap:var(--s-6)}
   .ws-card{
     background:var(--surface-2); border:1px solid var(--line);
-    border-radius:var(--r-lg); padding:var(--s-6);
+    border-radius:var(--r-lg); padding:var(--s-6); box-shadow:var(--sheen);
   }
   .ws-card h3{margin:0 0 var(--s-5); font-size:var(--fs-md); color:var(--text)}
+
+  /* ── the rim, for containers that are not one of the three primitives ────
+     ONE RULE, NOT SIXTY. The three boxes above are the vocabulary, but half
+     the app predates them and rolls its own container — .ov-tile, .ac-card,
+     .ck-rep, .cg-step and the rest are all "a surface, a hairline and a
+     radius" spelled locally. Giving each of them --sheen at its own
+     declaration is the per-component patch this design is supposed to avoid,
+     so they collect it here instead.
+
+     Placed at the TOP of the components layer on purpose: anything that
+     declares its own box-shadow later — every floating thing, which gets the
+     rim from --shadow-N anyway — outranks this and keeps what it had.
+
+     Chips, pills, counters, switches and scrollbar thumbs are deliberately
+     NOT in the list. A rim reads as "this is a pane of glass"; on a 16px
+     badge it reads as a rendering artefact. */
+  :is(.ledger,.shot,#agentview,.orch-composer,.ac-card,.lane,.orch-activity,
+      .asset-vault,.artrail,.playpanel,.artifact,.feedback-card,.transcript,
+      .telemetry-chart,.marker-track,.moment-track,.ask-inline,.ck-right,
+      .ck-canvas,.ck-convo,.ck-reveal,.ck-deck,.ck-repwrap,.ck-rep,.ck-q,.ck-gate,
+      .ck-crit-img,.cg-answer,.cg-row,.cg-step,.cg-shot,.cg-shot-in,.cg-mini,
+      .cg-file,.cg-thumb,.ov-tile,.st-row,.asset-lib,.asset-tile,
+      .iteration-card,.tele-panel,.tuning-row,.pk-img){
+    box-shadow:var(--sheen);
+  }
 
   /* ── buttons ───────────────────────────────────────────────────────────── */
   .qbtn{
@@ -518,6 +985,10 @@
     font-family:var(--mono); font-size:var(--fs-2xs); font-weight:var(--fw-semi);
     letter-spacing:.1em; text-transform:uppercase;
     padding:var(--s-4) var(--s-6); border-radius:var(--r-full); white-space:nowrap;
+    /* Transparent and zero-size on dark and light — the ember bloom is the
+       orbit ground's only warm glow, and it is on the one control that is
+       supposed to be the brightest thing in its region. */
+    box-shadow:var(--glow);
     transition:background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
                color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
   }
@@ -580,7 +1051,7 @@
   .bgs-pop{
     position:fixed; z-index:var(--z-toast); display:flex; flex-direction:column;
     max-width:min(560px,92vw); overflow:hidden;
-    background:var(--surface-2); border:1px solid var(--line-strong);
+    background:var(--solid-2); border:1px solid var(--line-strong);
     border-radius:var(--r-md); box-shadow:var(--shadow-3);
     animation:bgs-in var(--dur-fast) var(--ease-out);
     /* Explicit, and not negotiable. This element is only ever in the DOM while
@@ -694,7 +1165,7 @@
   .nt-badge.hidden{display:none}
   .nt-drawer{
     position:absolute; top:calc(100% + var(--s-3)); right:0; width:400px; max-width:92vw;
-    background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r-lg);
+    background:var(--solid-2); border:1px solid var(--line); border-radius:var(--r-lg);
     box-shadow:var(--shadow-3); z-index:var(--z-drawer); overflow:hidden;
     font-size:var(--fs-sm); color:var(--text); text-align:left;
   }
@@ -1275,7 +1746,12 @@
     z-index:var(--z-overlay); display:none; padding:3vh 4vw;
   }
   .review-shell{
-    height:94vh; background:var(--surface-1); border:1px solid var(--line);
+    /* NO backdrop-filter, deliberately. .review-overlay behind it already
+       blurs the whole viewport, and this shell is 94vh by 1400px — a second
+       full-screen blur region stacked on the first is the one place in this
+       app where the glass treatment actually costs a frame. It stays opaque
+       and takes its depth from --shadow-4's rim instead. */
+    height:94vh; background:var(--solid-1); border:1px solid var(--line);
     border-radius:var(--r-lg); overflow:hidden; box-shadow:var(--shadow-4);
     display:grid; grid-template-rows:auto 1fr; max-width:1400px; margin:auto;
   }
@@ -1369,7 +1845,7 @@
   .insp-scrim.open{opacity:1; pointer-events:auto}
   .inspector{
     position:fixed; top:0; right:0; height:100vh; width:min(var(--insp-w),94vw);
-    background:var(--surface-1); border-left:1px solid var(--line-strong);
+    background:var(--solid-1); border-left:1px solid var(--line-strong);
     z-index:calc(var(--z-drawer) + 1);
     transform:translateX(100%); transition:transform var(--dur-slow) var(--ease);
     display:flex; flex-direction:column; box-shadow:var(--shadow-4);
@@ -1439,7 +1915,7 @@
   .toast{
     display:flex; align-items:flex-start; gap:var(--s-5); padding:var(--s-5);
     border:1px solid var(--line-strong); border-radius:var(--r-md);
-    background:var(--surface-3); box-shadow:var(--shadow-3);
+    background:var(--solid-3); box-shadow:var(--shadow-3);
     font-size:var(--fs-sm); line-height:var(--lh-snug); color:var(--text);
     animation:toastin var(--dur-fast) var(--ease-out);
   }
@@ -1466,7 +1942,7 @@
   .ask{display:grid; gap:var(--s-5)}
   .ask-card{
     width:min(520px,100%); max-height:90vh; overflow:auto; padding:var(--s-7);
-    background:var(--surface-2); border:1px solid var(--line-strong);
+    background:var(--solid-2); border:1px solid var(--line-strong);
     border-radius:var(--r-lg); box-shadow:var(--shadow-4);
   }
   .ask-card.ask-danger{border-color:var(--bad-line)}
@@ -1513,7 +1989,7 @@
   /* ── ask: picker ───────────────────────────────────────────────────────── */
   .ask-pickbox{
     width:min(760px,100%); max-height:82vh; gap:0; overflow:hidden;
-    background:var(--surface-1); border:1px solid var(--line-strong);
+    background:var(--solid-1); border:1px solid var(--line-strong);
     border-radius:var(--r-lg); box-shadow:var(--shadow-4);
     grid-template-rows:auto 1fr;
   }
@@ -1566,8 +2042,14 @@
      left, the same work as a live delegation graph on the right. The whole
      thing is height-bound rather than page-scrolled — a graph inside a
      scrolling page is a graph you cannot pan. */
+  /* THE GAP IS THE GRIP. The boundary used to be 16px of nothing between two
+     tracks; it is now 16px of splitter between two tracks, so the spacing is
+     unchanged and the seam became draggable without costing a pixel.
+     --ck-left-w is unset until somebody drags, which is why the default is
+     still the fr ratio the layout was designed around. */
   .cockpit{
-    display:grid; grid-template-columns:minmax(330px,.9fr) 1.6fr; gap:var(--s-6);
+    display:grid;
+    grid-template-columns:var(--ck-left-w,minmax(330px,.9fr)) var(--s-6) minmax(0,1.6fr);
     height:calc(100vh - 200px); min-height:520px;
   }
   .cockpit[hidden]{display:none}
@@ -1591,9 +2073,18 @@
     background:var(--warn-soft); color:var(--warn); font-size:var(--fs-xs);
   }
   .ck-arch{color:var(--text-3); margin-left:auto}
+  /* THE CONVERSATION IS ONE ROOM. The box owns the border; the transcript
+     scrolls inside it and the cat is the floor of it. Previously the cat was a
+     separate bordered panel BELOW the composer, which put the speaker outside
+     the conversation and underneath the input — reply and replier two panels
+     apart with a textarea between them. */
+  .ck-convo{
+    flex:1; min-height:200px; display:flex; flex-direction:column; min-width:0;
+    border:1px solid var(--line); border-radius:var(--r-lg);
+    background:var(--surface-2); overflow:hidden;
+  }
   .ck-chat{
-    flex:1; min-height:160px; overflow-y:auto; padding:var(--s-6);
-    border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
+    flex:1; min-height:0; overflow-y:auto; padding:var(--s-6);
     display:flex; flex-direction:column; gap:var(--s-6);
   }
   .ck-welcome{color:var(--text-3); font-size:var(--fs-sm); line-height:var(--lh)}
@@ -1617,6 +2108,57 @@
   .ck-dots i:nth-child(2){animation-delay:.15s}
   .ck-dots i:nth-child(3){animation-delay:.3s}
   @keyframes ckdot{0%,60%,100%{opacity:.25} 30%{opacity:1}}
+
+  /* THE DIRECTOR'S STEPS — a CLI session's shape, not a progress number.
+     Monospace and left-ruled on purpose: this is the part of the panel that is
+     a TRANSCRIPT, and it has to read as a different kind of object from the
+     prose above and below it or the whole message turns into soup. */
+  .ck-steps-live,.ck-steps-fold{
+    margin:var(--s-3) 0; padding-left:var(--s-3);
+    border-left:1px solid var(--accent-line);
+  }
+  .ck-steps-fold > summary{
+    cursor:pointer; font-family:var(--mono); font-size:var(--fs-3xs);
+    color:var(--text-3); letter-spacing:.04em; list-style:none;
+  }
+  .ck-steps-fold > summary::-webkit-details-marker{display:none}
+  .ck-steps-fold > summary::before{content:"▸ "; color:var(--accent)}
+  .ck-steps-fold[open] > summary::before{content:"▾ "}
+  .ck-steps-fold > summary:hover{color:var(--text-2)}
+  .ck-step{
+    display:flex; gap:var(--s-2); align-items:baseline;
+    font-family:var(--mono); font-size:var(--fs-3xs); line-height:1.55;
+    color:var(--text-3); padding:1px 0;
+  }
+  .ck-stepi{flex:0 0 auto; color:var(--text-4); font-style:normal}
+  .ck-stepb{min-width:0; overflow-wrap:anywhere}
+  .ck-step.k-tool .ck-stepi{color:var(--accent)}
+  .ck-step.k-steer .ck-stepi{color:var(--warn)}
+  .ck-tool{color:var(--text); font-weight:600}
+  /* The real tool name, kept beside the friendly verb rather than replacing it.
+     A UI that renames what ran is a UI you cannot debug from. */
+  .ck-toolraw{margin-left:var(--s-2); color:var(--text-4); opacity:.75}
+  .ck-hintx{margin-left:var(--s-2); color:var(--text-3)}
+  .ck-step-more{
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-4);
+    padding-bottom:2px;
+  }
+  .ck-fchips{display:flex; flex-wrap:wrap; gap:4px; margin:3px 0 2px}
+  .ck-fchip{
+    font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-2);
+    background:var(--surface-3); border:1px solid var(--line);
+    border-radius:var(--r-sm); padding:1px 5px; cursor:pointer;
+    max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .ck-fchip:hover{border-color:var(--accent-line); color:var(--text)}
+  /* Each new live step arrives rather than appearing. At 3s polling several can
+     land at once, and a block that changes height with no motion reads as a
+     glitch — especially on a stream, where the viewer did not cause it. */
+  .ck-steps-live .ck-step{animation:ckstep var(--dur-slow) var(--ease-out)}
+  @keyframes ckstep{from{opacity:0; transform:translateX(-4px)} to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion:reduce){
+    .ck-steps-live .ck-step{animation:none}
+  }
 
   /* composer */
   .ck-target{
@@ -1647,20 +2189,35 @@
   .ck-composer .qbtn{border-radius:var(--r-full); padding:var(--s-4) var(--s-6)}
 
   /* the cat */
+  /* NOT A SECTION. The cat simply sits at the bottom of the conversation — no
+     rule above it, no ground of its own, nothing that draws a box round it.
+     It had both, which turned a mascot standing in the room into a labelled
+     compartment at the foot of it: two horizontal lines and a colour change to
+     announce one 72px sprite that says nothing. It shares the transcript's
+     surface and is separated by space alone. */
   .ck-mascot{
-    display:flex; align-items:center; gap:var(--s-5); padding:var(--s-5);
-    border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
+    flex:none; display:flex; align-items:center; gap:var(--s-5);
+    padding:0 var(--s-5) var(--s-3);
+    background:transparent;
   }
-  .ck-cat{flex:none; width:112px; height:112px; display:flex; align-items:flex-end; justify-content:center}
-  .ck-cat .ck-sprite{max-width:112px; max-height:112px; image-rendering:pixelated}
+  /* Sized to the sprite, not to the old panel. This box stayed 112px after the
+     sprite shrank, which is why the sill read as an empty band with a cat in
+     the corner of it — 40px of nothing, held open by a container nobody had
+     resized. */
+  .ck-cat{flex:none; width:72px; height:72px; display:flex; align-items:flex-end; justify-content:center}
+  .ck-cat .ck-sprite{max-width:72px; max-height:72px; image-rendering:pixelated}
 
   /* THE SPRITE. One 512x128 sheet, four 128px cells: rest, half, wide, blink.
      background-size:400% means one cell fills the box; background-position-x
      picks the cell, at 0% / 33.333% / 66.667% / 100%. steps(1,end) on every
      keyframe is what keeps it a FLIPBOOK -- without it the browser tweens
      between cells and the face slides instead of cutting. */
+  /* 72, down from 112. Inside the conversation it is an avatar on a sill, not a
+     panel of its own, and with the speech bubble gone there is nothing beside it
+     to balance — so the only thing extra height buys is transcript it takes
+     away from the messages it exists to react to. */
   .cat-sprite{
-    width:112px; height:112px;
+    width:72px; height:72px;
     background:url("img/mascot_talk.png") no-repeat 0 0/400% 100%;
     image-rendering:pixelated;
     animation:catidle 6.4s steps(1,end) infinite, catbob 3.4s var(--ease) infinite;
@@ -1698,25 +2255,238 @@
   .ck-mascot[data-mood="gate"] .cat-sprite{animation-duration:3.2s, 3.4s}
   .ck-mascot[data-mood="done"] .cat-sprite{animation-duration:8s, 5s}
   @keyframes catshake{0%,100%{transform:translateX(0)} 25%{transform:translateX(-1.5px)} 75%{transform:translateX(1.5px)}}
-  .ck-bubble{
-    position:relative; flex:1; min-width:0; padding:var(--s-5) var(--s-6);
-    background:var(--surface-3); border:1px solid var(--line); border-radius:var(--r-lg);
-    font-size:var(--fs-sm); line-height:var(--lh-snug); color:var(--text);
+  /* REACTION BEATS — one-off motion for a thing that just happened.
+     Deliberately louder than the idle bob and deliberately SHORT: the mood
+     animations describe a state and loop, these describe an event and stop.
+     `data-react` outranks the mood rules below it, which is why it is declared
+     after them in source order rather than with an !important. */
+  .ck-mascot[data-react] .cat-sprite{animation-iteration-count:1}
+  .ck-mascot[data-react="wants"] .cat-sprite{
+    animation:cattalk .3s steps(1,end) 4, catnudge .45s var(--ease) 3;
   }
-  .ck-bubble::before{
-    content:""; position:absolute; left:-7px; top:50%; margin-top:-6px;
-    width:12px; height:12px; background:var(--surface-3);
-    border-left:1px solid var(--line); border-bottom:1px solid var(--line);
-    transform:rotate(45deg);
+  .ck-mascot[data-react="oops"] .cat-sprite{
+    animation:catidle 6.4s steps(1,end) infinite, catrecoil .5s var(--ease-out) 1;
   }
-  .ck-bubble.pop{animation:ckpop var(--dur-slow) var(--ease-out)}
-  @keyframes ckpop{from{opacity:0; transform:translateY(3px)} to{opacity:1; transform:none}}
-  .ck-mascot[data-mood="broken"] .ck-bubble{border-color:var(--bad-line); color:var(--bad)}
-  .ck-mascot[data-mood="gate"] .ck-bubble{border-color:var(--warn-line)}
+  .ck-mascot[data-react="landed"] .cat-sprite,
+  .ck-mascot[data-react="released"] .cat-sprite{
+    animation:cattalk .3s steps(1,end) 3, cathop .42s var(--ease-out) 2;
+  }
+  .ck-mascot[data-react="dispatch"] .cat-sprite{
+    animation:catidle 6.4s steps(1,end) infinite, catnudge .4s var(--ease) 1;
+  }
+  @keyframes cathop{
+    0%,100%{transform:translateY(0)}
+    35%{transform:translateY(-9px) scaleY(1.04)}
+    70%{transform:translateY(0) scaleY(.97)}
+  }
+  @keyframes catrecoil{
+    0%{transform:translate(0,0) rotate(0)}
+    30%{transform:translate(-5px,2px) rotate(-5deg)}
+    60%{transform:translate(3px,1px) rotate(3deg)}
+    100%{transform:translate(0,0) rotate(0)}
+  }
+  @keyframes catnudge{
+    0%,100%{transform:translateX(0)}
+    50%{transform:translateX(4px)}
+  }
+  @keyframes ckbeat{from{transform:scale(.97); opacity:.6} to{transform:none; opacity:1}}
+  @media (prefers-reduced-motion:reduce){
+    .ck-mascot[data-react] .cat-sprite{animation:none}
+  }
+
+  /* A BEAT NEEDS A GROUND TO READ AGAINST. With no bubble the sill is the only
+     surface the event can colour, and a cat animating over an unchanged strip
+     is easy to miss at streaming bitrates. Tinted for the duration of the beat
+     and eased back, so it registers as a flash of state rather than a flicker.
+     BELOW the mood rules deliberately: identical specificity, so source order
+     decides, and an event has to outrank the state it happened inside —
+     otherwise a "landed" beat on a board that still holds a failure elsewhere
+     would paint itself red. */
+  .ck-mascot{transition:background var(--dur-slow) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out)}
+  .ck-mascot[data-react="oops"]{background:var(--bad-soft); box-shadow:inset 3px 0 0 var(--bad)}
+  .ck-mascot[data-react="wants"]{background:var(--warn-soft); box-shadow:inset 3px 0 0 var(--warn)}
+  .ck-mascot[data-react="landed"],
+  .ck-mascot[data-react="released"]{box-shadow:inset 3px 0 0 var(--good)}
+  .ck-mascot[data-react="dispatch"]{box-shadow:inset 3px 0 0 var(--accent)}
+  /* Relaying a real voice, as opposed to idling. The cat's own animation says
+     "a mouth is moving"; this says whose floor it is. */
+  .ck-mascot[data-relaying]{box-shadow:inset 3px 0 0 var(--accent-line)}
+
+  /* THE LIVE STRIP — the one line that is always true and always in the same
+     place. Sized and spaced to be readable at streaming bitrates, where a
+     10px label turns to mush: this is deliberately a step up in size from the
+     panel chrome around it. */
+  .ck-live{
+    flex:0 0 auto; display:flex; align-items:center; gap:var(--s-3);
+    padding:var(--s-3) var(--s-4);
+    border:1px solid var(--accent-line); border-radius:var(--r-md);
+    background:var(--accent-wash);
+    font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-2);
+  }
+  /* display:flex on the class outranks the UA sheet's [hidden]{display:none},
+     so without this the strip stays on screen — empty, pulsing — the whole time
+     nothing is running. Every other hideable block here pairs the two the same
+     way; see .ck-target[hidden] and .cockpit[hidden]. */
+  .ck-live[hidden]{display:none}
+  .ck-live-dot{
+    flex:none; width:7px; height:7px; border-radius:50%; background:var(--accent);
+    box-shadow:0 0 0 0 var(--accent); animation:cklive 1.8s ease-out infinite;
+  }
+  @keyframes cklive{
+    0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent)}
+    70%{box-shadow:0 0 0 7px transparent}
+    100%{box-shadow:0 0 0 0 transparent}
+  }
+  .ck-live-what{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .ck-live-n{margin-left:var(--s-2); color:var(--text-4)}
+  .ck-live-t{flex:none; color:var(--text); font-variant-numeric:tabular-nums}
+  .ck-live-c{flex:none; color:var(--text-3); font-variant-numeric:tabular-nums}
+  @media (prefers-reduced-motion:reduce){ .ck-live-dot{animation:none} }
+
+  /* THE CRITIQUE WINDOW — what a seat made or is looking at, and what it said
+     about it. Shaped like a small gallery card rather than a toast: the image
+     is the subject, the words are the caption, and the verdict is the wall
+     label. A notification strip would have said "a file appeared", which is the
+     least interesting true thing about it. */
+  .ck-reveal{
+    flex:0 0 auto; display:flex; flex-direction:column; cursor:zoom-in;
+    border:1px solid var(--accent-line); border-radius:var(--r-md);
+    background:var(--surface-2); overflow:hidden;
+    animation:ckreveal var(--dur-slow) var(--ease-out);
+  }
+  .ck-reveal[hidden]{display:none}
+  .ck-crit-head{
+    display:flex; align-items:center; gap:var(--s-3);
+    padding:var(--s-2) var(--s-3); border-bottom:1px solid var(--line);
+    background:var(--surface-1);
+    font-family:var(--mono); font-size:var(--fs-3xs);
+    text-transform:uppercase; letter-spacing:.06em;
+  }
+  /* A separator, because "ART MADE" and "TECH LOOKING AT" read as one string
+     when both halves are uppercase mono at the same size — the gap alone is
+     not enough to say these are two different facts. */
+  .ck-crit-mode{color:var(--text-4)}
+  .ck-crit-mode::before{content:"· "; color:var(--text-4)}
+  .ck-crit-v{padding:1px 6px; border-radius:999px; font-weight:600}
+  .ck-crit-v.ok{color:var(--good); border:1px solid var(--good)}
+  .ck-crit-v.no{color:var(--bad); border:1px solid var(--bad-line)}
+  .ck-crit-body{display:flex; gap:var(--s-4); padding:var(--s-3); min-width:0}
+  /* CONTAIN, not cover. A cropped preview of an asset whose complaint is that
+     it is cropped would be its own small joke — and a 3D turnaround or a
+     screenshot is the wrong shape for a square crop in the first place. */
+  .ck-crit-img{
+    flex:none; width:112px; height:84px; object-fit:contain;
+    border-radius:var(--r-sm); background:var(--surface-1);
+    border:1px solid var(--line);
+  }
+  .ck-crit-m{display:flex; flex-direction:column; gap:3px; min-width:0; justify-content:center}
+  .ck-crit-m b{
+    font-size:var(--fs-2xs); color:var(--text);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .ck-crit-meta{font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-4)}
+  .ck-crit-note{
+    margin:0; padding-left:var(--s-3); border-left:2px solid var(--line-strong);
+    font-size:var(--fs-3xs); line-height:1.5; color:var(--text-2); font-style:italic;
+  }
+  /* A machine verdict is ABOUT this image; narration merely happened near it,
+     and the two must not read as equally authoritative. The rule takes the
+     verdict's own colour rather than the house accent, so the quote agrees with
+     the chip above it instead of painting a pass in warning orange. */
+  .ck-crit-note.verdict{border-left-color:var(--accent); color:var(--text); font-style:normal}
+  .ck-reveal:has(.ck-crit-v.ok) .ck-crit-note.verdict{border-left-color:var(--good)}
+  .ck-reveal:has(.ck-crit-v.no) .ck-crit-note.verdict{border-left-color:var(--bad)}
+  /* Slides in from the side rather than fading: a fade at streaming bitrates
+     is a few frames of mush, a slide survives the encoder. */
+  @keyframes ckreveal{
+    from{opacity:0; transform:translateX(-12px)}
+    to{opacity:1; transform:none}
+  }
+  @media (prefers-reduced-motion:reduce){ .ck-reveal{animation:none} }
+
+  /* THE DECK — one frame, four pages, fixed height.
+     This replaces four stacked panels. The height is FIXED rather than
+     content-sized on purpose: the whole point is that the rail below the
+     conversation stops moving, so a page with two rows and a page with twenty
+     occupy exactly the same space and the transcript above never reflows. */
+  .ck-deck{
+    flex:0 0 auto; height:210px; display:flex; flex-direction:column;
+    border:1px solid var(--line); border-radius:var(--r-lg);
+    background:var(--surface-2); overflow:hidden; position:relative;
+  }
+  .ck-deck-head{
+    flex:none; display:flex; align-items:center; gap:var(--s-2);
+    padding:var(--s-3) var(--s-3) var(--s-3) var(--s-2);
+    border-bottom:1px solid var(--line);
+  }
+  .ck-deck-nav{
+    flex:none; width:20px; height:20px; line-height:1; padding:0;
+    background:none; border:none; color:var(--text-4); cursor:pointer;
+    font-size:15px; border-radius:var(--r-sm);
+  }
+  .ck-deck-nav:hover{color:var(--text); background:var(--surface-3)}
+  /* The tabs get the slack. Scrolls rather than clips if a label ever grows:
+     a clipped tab is a page with no way in and nothing saying so. */
+  .ck-deck-tabs{
+    display:flex; gap:2px; min-width:0; flex:1 1 auto;
+    overflow-x:auto; scrollbar-width:none;
+  }
+  .ck-deck-tabs::-webkit-scrollbar{display:none}
+  .ck-tab{
+    display:inline-flex; align-items:center; gap:4px; flex:none;
+    padding:2px var(--s-3); border:1px solid transparent; border-radius:999px;
+    background:none; color:var(--text-4); cursor:pointer;
+    font-family:var(--mono); font-size:var(--fs-3xs); letter-spacing:.05em;
+    text-transform:uppercase; transition:color var(--dur) var(--ease-out),
+      border-color var(--dur) var(--ease-out), background var(--dur) var(--ease-out);
+  }
+  .ck-tab:hover{color:var(--text-2)}
+  .ck-tab.has{color:var(--text-2)}
+  .ck-tab.on{color:var(--text); border-color:var(--line-strong); background:var(--surface-3)}
+  .ck-tab-n{
+    font-variant-numeric:tabular-nums; color:var(--text);
+    background:var(--surface-1); border-radius:999px; padding:0 4px; min-width:14px;
+    text-align:center;
+  }
+  /* Something is STOPPED on this page. The pulse is the one piece of motion in
+     the header, so it cannot be confused with the rotation. */
+  .ck-tab.urgent{color:var(--warn); border-color:var(--warn-line)}
+  .ck-tab.urgent .ck-tab-n{background:var(--warn); color:var(--surface-1)}
+  .ck-tab.urgent.on{background:var(--warn-soft)}
+  .ck-tab.urgent::before{
+    content:""; width:5px; height:5px; border-radius:50%; background:var(--warn);
+    animation:ckurg 1.4s ease-in-out infinite;
+  }
+  @keyframes ckurg{0%,100%{opacity:1} 50%{opacity:.25}}
+  /* A page's own actions, under its own list. */
+  .ck-page-foot{
+    flex:none; display:flex; justify-content:flex-end; gap:var(--s-2);
+    padding:var(--s-2) var(--s-3); border-top:1px solid var(--line);
+  }
+  .ck-deck-body{flex:1; min-height:0; position:relative}
+  .ck-page{
+    position:absolute; inset:0; display:none; flex-direction:column;
+  }
+  .ck-page.on{display:flex; animation:ckpage var(--dur-slow) var(--ease-out)}
+  /* The page SLIDES rather than swapping. On a stream the viewer did not press
+     anything, so an instantaneous content change reads as a glitch or a cut;
+     20ms of travel is enough to say "that moved" without being a transition
+     anybody has to wait through. */
+  @keyframes ckpage{from{opacity:0; transform:translateX(6px)} to{opacity:1; transform:none}}
+  .ck-deck-rail{
+    position:absolute; left:0; right:0; bottom:0; height:2px;
+    background:transparent; pointer-events:none;
+  }
+  .ck-deck-rail i{display:block; height:100%; width:0; background:var(--accent); opacity:.5}
+  @keyframes ckdeck{from{width:0} to{width:100%}}
+  @media (prefers-reduced-motion:reduce){
+    .ck-page.on{animation:none}
+    .ck-tab.urgent::before{animation:none}
+    .ck-deck-rail{display:none}
+  }
 
   /* agent responses */
-  /* Two of these stack under the cat (queue, then live responses), so they are
-     capped and scroll internally — the transcript is what gets the slack. */
   .ck-repwrap{
     flex:0 0 auto; min-height:96px; max-height:180px; display:flex; flex-direction:column;
     border:1px solid var(--line); border-radius:var(--r-lg); background:var(--surface-2);
@@ -1823,7 +2593,15 @@
     background:var(--surface-1);
   }
   .ck-spacer{flex:1}
+  /* flex:none and nowrap, or the pill LOSES ITS SHAPE. It is a flex item in a
+     fixed-height 44px bar next to a message that can be a whole sentence
+     ("held: 401 uncommitted change(s) — commit or stash first"), so with the
+     default flex:0 1 auto it shrank, wrapped "auto-deploy on" onto three lines,
+     and burst out of a bar that cannot grow. The label is two words; the
+     sentence beside it is what should be truncated, and .ck-why already knows
+     how — it just needed to be the thing that gives way. */
   .ck-toggle{
+    flex:none; white-space:nowrap;
     display:inline-flex; align-items:center; gap:var(--s-4); padding:var(--s-3) var(--s-5);
     border:1px solid var(--line); border-radius:var(--r-full); background:var(--surface-2);
     color:var(--text-2); font:inherit; font-size:var(--fs-xs); cursor:pointer;
@@ -1849,7 +2627,14 @@
   }
   .ck-panic:hover{background:var(--bad); color:var(--bg); border-color:var(--bad)}
   .ck-panic:disabled{opacity:.5; cursor:default}
-  .ck-why{font-size:var(--fs-xs); color:var(--text-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  /* min-width:0 is what makes the ellipsis actually fire: a flex item's default
+     min-width is auto, so it refuses to shrink below its text and pushes its
+     neighbours out of shape instead of truncating itself. */
+  .ck-why{
+    flex:1 1 auto; min-width:0;
+    font-size:var(--fs-xs); color:var(--text-3);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
   .ck-why.warn{color:var(--warn)}
   /* The approval gate: none / agent / builder's. A segmented control rather than
      a second switch, because these are three states of one question and two
@@ -1875,12 +2660,32 @@
   /* the canvas + its detail rail */
   .ck-canvas{flex:1; position:relative; min-height:0}
   .ck-detail{
-    position:absolute; top:44px; right:0; bottom:0; width:302px; z-index:6;
+    position:absolute; top:44px; right:0; bottom:0; width:var(--ckd-w,302px); z-index:6;
     background:var(--surface-1); border-left:1px solid var(--line);
     padding:var(--s-6); overflow-y:auto;
     transform:translateX(102%); transition:transform var(--dur) var(--ease-out);
   }
   .ck-detail.open{transform:none}
+  /* THE INSPECTOR'S HANDLE IS A SIBLING, NOT A CHILD, AND THAT IS LOAD-BEARING.
+     agents_graph replaces #ck-detail's innerHTML on every render, so a handle
+     inside it would be destroyed and silently stop working the first time the
+     selection changed. It rides on --ckd-w instead, which keeps it welded to
+     the drawer's edge without living in the markup that gets rebuilt.
+
+     It also only exists while the drawer is open — a resize handle floating
+     over the graph with nothing behind it is a control for a panel that is not
+     there. The transition matches the drawer's own so the two arrive together
+     rather than the handle snapping into place ahead of it. */
+  .ck-dsplit{
+    position:absolute; top:44px; bottom:0; right:var(--ckd-w,302px);
+    width:11px; margin-right:-5px; z-index:7;
+    opacity:0; pointer-events:none;
+    transition:opacity var(--dur) var(--ease-out), right var(--dur) var(--ease-out);
+  }
+  .ck-right:has(.ck-detail.open) .ck-dsplit{opacity:1; pointer-events:auto}
+  /* Only the drawer animates its arrival; a handle mid-drag must track the
+     pointer exactly, not ease toward it a frame behind. */
+  .ck-dsplit.dragging{transition:none}
   .cg-dhead{display:flex; align-items:flex-start; gap:var(--s-4); margin-bottom:var(--s-5)}
   .cg-de{
     font-family:var(--mono); font-size:var(--fs-3xs); text-transform:uppercase;
@@ -2236,6 +3041,16 @@
   #seat-body{min-height:300px}
   .studio-body{height:calc(100vh - 240px); min-height:480px; position:relative}
 
+  /* The sprite editor and the audio lab as PAGES. Taller than .studio-body
+     because they carry no view heading and no subnav above them: the tool is
+     the whole view, so the only thing above it is the status bar. Both mount a
+     single child that has to fill the box, and both were built to be told a
+     height rather than to grow — a percentage on a parent with no resolved
+     height collapses them to nothing. */
+  .editor-page{height:calc(100vh - var(--bar-h) - 32px); min-height:520px;
+               position:relative; display:flex; flex-direction:column}
+  .editor-page > *{flex:1 1 auto; min-height:0}
+
   /* ── asset library ─────────────────────────────────────────────────────── */
   .asset-lib{
     border:1px solid var(--line); border-radius:var(--r-lg);
@@ -2328,7 +3143,7 @@
   .asset-drawer{
     position:fixed; top:0; right:0; bottom:0; width:min(560px,94vw);
     z-index:calc(var(--z-drawer) + 1);
-    background:var(--surface-1); border-left:1px solid var(--line-strong);
+    background:var(--solid-1); border-left:1px solid var(--line-strong);
     box-shadow:var(--shadow-4); display:flex; flex-direction:column;
     transform:translateX(100%); transition:transform var(--dur-slow) var(--ease);
   }
@@ -2416,6 +3231,10 @@
   .asset-feedback-item{padding:var(--s-3) 0; border-top:1px solid var(--line-soft)}
 
   /* ── atlas ─────────────────────────────────────────────────────────────── */
+  /* Mode tabs only. The list view's grid, screen cards, node rows and
+     dead/missing rails were removed with the mode; the scene builder and the
+     code editor both inject their own styles. `.atlas-mode` stays because the
+     agents view reuses these tabs for its own console/board switch. */
   .atlas-modes{display:flex; gap:var(--s-3); margin-bottom:var(--s-5)}
   .atlas-mode{
     font-family:var(--mono); font-size:var(--fs-3xs); letter-spacing:.12em;
@@ -2427,69 +3246,6 @@
   }
   .atlas-mode:hover{border-color:var(--accent-line); color:var(--text)}
   .atlas-mode.active{background:var(--accent-soft); border-color:var(--accent); color:var(--text)}
-  .atlas-stats{display:flex; gap:var(--s-4); flex-wrap:wrap; margin-bottom:var(--s-5);
-    font-family:var(--mono); font-size:var(--fs-2xs)}
-  .atlas-stats .chip{padding:var(--s-3) var(--s-5)}
-  .atlas-stats .chip b{color:var(--text); margin-right:var(--s-2)}
-  .atlas-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
-    gap:var(--s-5); align-items:start}
-  .atlas-screen{
-    border:1px solid var(--line); background:var(--surface-2);
-    border-radius:var(--r-md); overflow:hidden;
-  }
-  .atlas-screen > header{
-    display:flex; align-items:center; gap:var(--s-4);
-    padding:var(--s-5); border-bottom:1px solid var(--line);
-  }
-  .atlas-screen > header .nm{
-    font-family:var(--mono); font-size:var(--fs-sm); letter-spacing:.12em;
-    text-transform:uppercase; color:var(--text);
-  }
-  .atlas-screen > header .ct{margin-left:auto; font-family:var(--mono);
-    font-size:var(--fs-3xs); color:var(--text-3)}
-  .atlas-kind{
-    padding:var(--s-4) var(--s-5) var(--s-1); font-family:var(--mono);
-    font-size:var(--fs-3xs); letter-spacing:var(--track-label);
-    text-transform:uppercase; color:var(--text-3);
-  }
-  .atlas-node{
-    display:flex; align-items:center; gap:var(--s-4); padding:var(--s-2) var(--s-5);
-    cursor:pointer; border-left:2px solid transparent;
-    transition:background var(--dur-fast) var(--ease);
-  }
-  .atlas-node:hover{background:var(--surface-3); border-left-color:var(--accent)}
-  .atlas-node .thumb{
-    width:26px; height:26px; flex:none; border-radius:var(--r-xs);
-    background:var(--bg); border:1px solid var(--line); object-fit:contain;
-    image-rendering:pixelated; display:grid; place-items:center;
-    font-size:var(--fs-xs); color:var(--text-3);
-  }
-  .atlas-node .lb{
-    flex:1; min-width:0; font-family:var(--mono); font-size:var(--fs-xs);
-    color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  }
-  .atlas-node .bg{flex:none; font-family:var(--mono); font-size:var(--fs-3xs); color:var(--text-3)}
-  .atlas-node .bg.shared{color:var(--accent)}
-  .atlas-node.missing .lb{color:var(--bad)}
-  .atlas-node .sheets{display:flex; gap:3px; flex:none}
-  .atlas-node .sheets img{
-    width:18px; height:18px; border-radius:3px; border:1px solid var(--line);
-    object-fit:cover; image-rendering:pixelated;
-  }
-  .atlas-rails{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
-    gap:var(--s-5); margin-top:var(--s-5)}
-  .atlas-rail{border:1px solid var(--line); background:var(--surface-2); border-radius:var(--r-md)}
-  .atlas-rail.dead{border-color:var(--warn-line)}
-  .atlas-rail.miss{border-color:var(--bad-line)}
-  .atlas-rail > header{
-    padding:var(--s-4) var(--s-5); border-bottom:1px solid var(--line);
-    font-family:var(--mono); font-size:var(--fs-2xs); letter-spacing:.12em;
-    text-transform:uppercase; color:var(--text-3);
-    display:flex; gap:var(--s-4); align-items:center;
-  }
-  .atlas-rail > header .qbtn{margin-left:auto}
-  .atlas-empty{padding:var(--s-5); font-family:var(--mono); font-size:var(--fs-2xs); color:var(--text-3)}
-  .atlas-screen .pad-b{padding-bottom:var(--s-4)}
 
   /* ── iteration timeline ────────────────────────────────────────────────── */
   .iteration-list{display:grid; gap:var(--s-6)}
@@ -2567,7 +3323,7 @@
   }
   .firstrun[hidden]{display:none}
   .fr-card{
-    width:min(560px,100%); background:var(--surface-2); border:1px solid var(--line);
+    width:min(560px,100%); background:var(--solid-2); border:1px solid var(--line);
     border-radius:var(--r-xl); padding:var(--s-9); box-shadow:var(--shadow-4);
   }
   /* Same two-tone mark as the rail — see .rail-brand .mark. */
@@ -2706,7 +3462,10 @@
   .pk-wrap[hidden]{display:none}
   .pk-card{
     display:flex; flex-direction:column; width:min(1100px, 100%);
-    max-height:min(860px, 92vh); background:var(--surface-2);
+    /* --solid-2, not --surface-2: this sits over the page behind a scrim, and
+       on the orbit ground the surface ramp is translucent white. A reader you
+       can see the file list through is not a reader. */
+    max-height:min(860px, 92vh); background:var(--solid-2);
     border:1px solid var(--line-strong); border-radius:var(--r-lg);
     box-shadow:0 24px 64px rgba(0,0,0,.5); overflow:hidden;
   }
@@ -2802,25 +3561,43 @@
   /* The cockpit's two panes stop being two panes before either becomes
      unusable: a 300px-wide node graph is not a node graph. Stacked, the chat
      keeps its height and the graph gets a fixed slab under it. */
+  /* A SPLITTER DIES WITH THE SPLIT IT DIVIDED. Once these collapse to one
+     column the panes are stacked, so a vertical boundary between them is not
+     just useless — it is a drag target that would write a width onto a track
+     that no longer exists, and the value would be waiting to bite when the
+     window widened again. display:none takes it out of the layout AND out of
+     the tab order, which the opacity trick above deliberately does not. */
   @media(max-width:1150px){
     .cockpit{grid-template-columns:1fr; height:auto; min-height:0}
+    .cockpit > .split{display:none}
     .ck-left{min-height:520px}
     .ck-right{height:min(62vh,620px)}
-    .ck-detail{width:min(302px,86%)}
+    .ck-detail{width:min(var(--ckd-w,302px),86%)}
+    .ck-dsplit{display:none}
   }
 
   @media(max-width:1180px){
-    /* Collapse the rail to icons rather than letting the stage disappear. */
-    .deck{grid-template-columns:64px 1fr}
-    .rail-brand{padding:var(--s-6) 0 var(--s-5); justify-content:center}
-    .rail-brand > div,.rail-item .ct,.rail-item .dot,
-    .rail-foot .vrow span:last-child{display:none}
-    .rail-nav{padding:var(--s-5) var(--s-3)}
-    .rail-group{padding:var(--s-5) 0 var(--s-2); text-align:center; font-size:0}
-    .rail-group::after{content:"···"; font-size:var(--fs-3xs); letter-spacing:.2em}
-    .rail-item{justify-content:center; padding:var(--s-5) 0; gap:0; font-size:0}
-    .rail-item.active::before{left:calc(var(--s-3) * -1)}
-    .rail-foot{padding:var(--s-5) 0; text-align:center}
+    /* THE PIN DOES NOT SURVIVE A NARROW WINDOW. The rail is an icon rail by
+       default now, so there is nothing left here to collapse — the only thing
+       this width has to undo is the pin, which would otherwise hold a 236px
+       track open at exactly the point where the STAGE is the thing running out
+       of room. syncRailPin() in index.html drops the class (keeping the stored
+       preference, so it returns when the window does); these are the braces to
+       that belt, for the case where the script never ran.
+
+       TWO TRACKS, BECAUSE THE HANDLE IS NOT A GRID ITEM HERE. Leaving the
+       splitter's track in the template while removing the element does not
+       leave a gap — it leaves the STAGE sitting in the 0px track the handle
+       vacated. Track count must follow item count. */
+    .deck{grid-template-columns:var(--rail-c) 1fr}
+    .deck > .split{display:none}
+    .rail.pin .rail-inner{width:var(--rail-c); box-shadow:none}
+    /* It still opens on hover and focus — as an overlay, which costs the stage
+       nothing. Only the held-open state is withdrawn. */
+    .rail.pin:is(:hover,:focus-within) .rail-inner{
+      width:var(--rail-w); box-shadow:var(--shadow-3);
+    }
+    .rail-pin{display:none}
     .stage-body{padding:var(--s-7) var(--s-6) 56px}
   }
 
@@ -2837,14 +3614,47 @@
 
   @media(max-width:820px){
     .deck{grid-template-columns:1fr; height:auto; min-height:100vh; overflow:visible}
-    .rail{
-      flex-direction:row; align-items:center; overflow-x:auto;
+    .deck > .split{display:none}
+    /* THE RAIL STOPS BEING A RAIL. One horizontal strip above the stage, so
+       the whole overlay mechanism is switched off: .rail-inner goes back to
+       being an ordinary flow box that fills its row, and none of the three
+       open-state triggers may resize it. Everything is "open" here — there is
+       no second state to expand into. */
+    .rail{position:static; z-index:auto}
+    .rail-inner,.rail.pin .rail-inner,
+    .rail:hover .rail-inner,.rail:focus-within .rail-inner{
+      position:static; width:auto; box-shadow:none; overflow:visible;
+      flex-direction:row; align-items:center;
       border-right:0; border-bottom:1px solid var(--line);
     }
-    .rail-brand{border-bottom:0; border-right:1px solid var(--line); flex:none}
-    .rail-nav{display:flex; gap:var(--s-2); padding:var(--s-4); overflow-x:auto; overflow-y:hidden}
+    /* THE BRAND MAY NOT EAT THE ROW. flex:none sizes it to max-content, and
+       max-content for a project line reading
+       "Corporate Quest: Dungeon of Deliverables" is 570px of a 760px strip —
+       the nav it shares the row with was left with 185px and eleven items.
+       text-overflow does not enter into intrinsic sizing, so the cap has to be
+       explicit. */
+    .rail-brand{
+      border-bottom:0; border-right:1px solid var(--line);
+      flex:0 1 auto; min-width:0; max-width:44%;
+    }
+    .rail-brandtext{opacity:1; min-width:0}
+    .rail-brand .bn{overflow:hidden; text-overflow:ellipsis}
+    .rail-pin{display:none}
+    .rail-nav{
+      flex:1 1 auto; min-width:0;
+      flex-direction:row; gap:var(--s-2); padding:var(--s-4);
+      overflow-x:auto; overflow-y:hidden;
+    }
     .rail-group{display:none}
     .rail-item{width:auto; flex:0 0 auto}
+    .rail-item .lb{opacity:1}
+    /* Back to a pill: there is no closed icon to hang a corner badge on. */
+    .rail-item .ct{
+      position:static; margin-left:var(--s-3); font-size:var(--fs-2xs);
+      line-height:var(--lh); padding:var(--s-1) var(--s-3); min-width:20px;
+      color:var(--text-3); background:var(--surface-3); border-color:var(--line);
+    }
+    .rail-item .dot{position:static; margin-left:var(--s-3)}
     .rail-foot{display:none}
     .stage{overflow:visible}
     .stage-body{overflow:visible; padding:var(--s-7) var(--s-6) 48px}
@@ -2899,7 +3709,223 @@
     .feedback-card img{width:100%; height:200px}
   }
 
+  /* THE SPOTLIGHT — a node that has JUST started work.
+     The dim is on the world rather than on each sibling so it costs one
+     repaint, not one per node, on a canvas that can hold forty. Both halves
+     are transitioned so the board eases back rather than snapping, which is
+     what stops it reading as a flash. */
+  .nc-spotting .nc-world > .nc-node{opacity:.28; filter:saturate(.4)}
+  .nc-world > .nc-node{transition:opacity var(--dur-slow) var(--ease-out),
+    filter var(--dur-slow) var(--ease-out)}
+  .nc-spotting .nc-world > .nc-node.nc-spot{
+    opacity:1; filter:none;
+    animation:ncspot 1.8s var(--ease-out);
+  }
+  @keyframes ncspot{
+    0%{box-shadow:0 0 0 0 var(--accent), 0 0 0 0 transparent}
+    18%{box-shadow:0 0 0 3px var(--accent), 0 0 22px 6px color-mix(in srgb, var(--accent) 45%, transparent)}
+    100%{box-shadow:0 0 0 0 transparent, 0 0 0 0 transparent}
+  }
   @media(prefers-reduced-motion:reduce){
+    .nc-spotting .nc-world > .nc-node{opacity:1; filter:none}
     *,*::before,*::after{animation:none!important; transition:none!important}
+  }
+}
+
+/* ═══ THEME ══════════════════════════════════════════════════════════════════
+   The one layer allowed to know which ground is live, and the only thing in
+   it is orbit's iridescent rim.
+
+   WHY THIS IS NOT A TOKEN. Iridescence is a hue that TRAVELS along an edge.
+   box-shadow takes a colour, not a gradient - it can put one hue on the top
+   edge and another on the bottom but never a transition between them, which
+   reads as two coloured lines. border-image takes a gradient but ignores
+   border-radius, so every rounded panel would grow square corners. What is
+   left is a gradient painted into a pseudo-element and masked down to a
+   1.5px ring: it follows the radius, and the hue moves from gold through
+   blue to the white specular as your eye travels around the box. The mask is
+   the standard two-layer exclude - paint the border box, punch out the
+   content box, keep the ring. -webkit- first, for the WebView2 build.
+
+   ── THE RIM MARKS A CONTAINMENT BOUNDARY, NOT A SURFACE ──────────────────
+
+   THIS IS THE RULE THE FIRST VERSION GOT WRONG, and it is worth knowing what
+   it looked like. The list below was generated by scanning app.css and nine
+   JS modules for any rule painting `background: var(--surface-N | --glass-N |
+   --solid-N | --plate | --iron)`. That finds every panel - and also every
+   ROW inside every panel. Settings came out with 39 rimmed rows stacked
+   vertically inside a rimmed panel beside a rimmed nav. Thirty-nine correct
+   applications of a good effect add up to a wall of gold outlines, and the
+   whole illusion - light catching the edge of a pane of glass - dies the
+   moment there are forty edges.
+
+   So the surface scan is the CANDIDATE set, not the answer. Three tests
+   decide what survives, and the first is enforced in CSS rather than in the
+   list so a new component cannot regress it:
+
+     1. ONE RIM PER NESTING LEVEL, OUTERMOST WINS. See the suppression rule
+        below: any rimmed element inside another rimmed element loses its
+        own. A card in a panel in a view shows ONE edge.
+
+     2. REPEATED SIBLINGS NEVER GET THEIR OWN. If N structurally identical
+        elements sit in a list or a grid, the CONTAINER is the object and the
+        children are its contents. This was applied empirically, not by
+        guessing at names: with the old list live, every view was walked and
+        every class with two or more identically-rimmed siblings was struck.
+        That is what removed .st-row, .ov-tile, .asset-tile, .wl-card,
+        .wl-sec, .seat-tab, .iteration-card, .ck-q, .shot and .aud-card.
+        Re-run that walk rather than re-deriving it by eye.
+
+     3. ROWS AND LIST ITEMS ARE NOT OBJECTS. A settings row, a queue row, a
+        transcript line, a track lane, a tree node, a toolbar, a section
+        header, a message bubble, a thumbnail. They are content inside a
+        panel and they get at most a --line hairline.
+
+   What is left is what a user would point at and call "a panel": the views,
+   the workspace panes, the modals, the drawers, the popovers. The rail and
+   the status bar are not in here at all - they are the two glass surfaces,
+   and their own seam is their edge.
+
+   Everything here is behind [data-theme="orbit"]. Dark and light match none
+   of it and render exactly as they did before this layer existed. */
+@layer theme {
+
+  /* The ring is absolutely positioned, so it needs its host to be a
+     containing block. This is the rim list MINUS the ones already
+     fixed/absolute/sticky in their own rules. */
+  :root[data-theme="orbit"] :is(
+      .dcard,.panel,.ws-card,[id="agentview"],.ck-deck,.ck-right,.ck-convo,
+      .ck-canvas,.swk,.st-wrap,.st-insp,.st-palette,.st-game,.playpanel,
+      .telemetry-chart,.tele-panel,.orch-activity,.asset-vault,.asset-lib,
+      .transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,.bs-pane,
+      .dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,.rm-card,
+      .tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .review-shell,.wl-modal-card,.bs-drawer){
+    position:relative;
+  }
+
+  /* [id="agentview"] rather than #agentview: an id anywhere inside :is()
+     raises the WHOLE list to id specificity, and the suppression and
+     live-state rules below - which are only one class heavier - would then
+     silently lose to it. */
+  :root[data-theme="orbit"] :is(
+      .dcard,.panel,.ws-card,[id="agentview"],.ck-deck,.ck-right,.ck-convo,
+      .ck-canvas,.ck-detail,.swk,.st-wrap,.st-insp,.st-palette,.st-game,
+      .playpanel,.telemetry-chart,.tele-panel,.orch-activity,.asset-vault,
+      .asset-lib,.transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,
+      .bs-pane,.dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,
+      .rm-card,.tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .review-shell,.wl-modal-card,.inspector,.asset-drawer,.nt-drawer,
+      .bgs-pop,.bs-drawer,.bs-drawer-h,.wl-toc)::after{
+    content:""; position:absolute; inset:0; border-radius:inherit;
+    /* 1.5px, not 1px. At one device pixel the band has nowhere to travel and
+       reads as a tinted hairline rather than a lit edge. */
+    padding:1.5px; background:var(--iris); opacity:var(--iris-rim);
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;
+            mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask-composite:exclude;
+    pointer-events:none;
+  }
+
+  /* RULE 1, IN CSS. A rimmed element inside a rimmed element drops its own,
+     at any depth - the descendant combinator is doing the work, so this
+     holds for pairs nobody anticipated and for panes that only nest in one
+     layout. It is one class heavier than the rule above, so it wins.
+
+     display:none rather than opacity:0 on purpose: it removes the composited
+     layer as well as the paint, and on a view like Atlas that is dozens of
+     layers the compositor never has to allocate. */
+  :root[data-theme="orbit"] :is(
+      .dcard,.panel,.ws-card,[id="agentview"],.ck-deck,.ck-right,.ck-convo,
+      .ck-canvas,.ck-detail,.swk,.st-wrap,.st-insp,.st-palette,.st-game,
+      .playpanel,.telemetry-chart,.tele-panel,.orch-activity,.asset-vault,
+      .asset-lib,.transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,
+      .bs-pane,.dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,
+      .rm-card,.tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .review-shell,.wl-modal-card,.inspector,.asset-drawer,.nt-drawer,
+      .bgs-pop,.bs-drawer,.bs-drawer-h,.wl-toc) :is(
+      .dcard,.panel,.ws-card,[id="agentview"],.ck-deck,.ck-right,.ck-convo,
+      .ck-canvas,.ck-detail,.swk,.st-wrap,.st-insp,.st-palette,.st-game,
+      .playpanel,.telemetry-chart,.tele-panel,.orch-activity,.asset-vault,
+      .asset-lib,.transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,
+      .bs-pane,.dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,
+      .rm-card,.tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .review-shell,.wl-modal-card,.inspector,.asset-drawer,.nt-drawer,
+      .bgs-pop,.bs-drawer,.bs-drawer-h,.wl-toc)::after{
+    display:none;
+  }
+
+  /* ── the live edge ──────────────────────────────────────────────────────────────
+     Orbit has no ember, so the states that used to mean "paint it orange"
+     are the same ring at full strength. These are deliberately OUTSIDE the
+     ambient list, which is what exempts them from the suppression rule
+     above: a primary button is always inside a panel, and the whole point of
+     it is to be the one edge that does not defer to its container.
+
+     This is also why thinning the ambient rims mattered. When forty things
+     glowed, the button glowed slightly more; now it is the only lit control
+     in its region and the state reads on its own.
+
+     :not(.ghost) is load-bearing. A ghost is the QUIET half of the button
+     pair - no fill, --line border, secondary text - and there are seven to
+     nine of them on the agents console alone. Lighting those reproduced the
+     wall of outlines one level down: it is the same mistake as rimming every
+     row, just wearing a button. A ghost gets its hairline and nothing
+     else. */
+  :root[data-theme="orbit"] :is(
+      .qbtn:not(.ghost),.themebtn.on){
+    position:relative;
+  }
+  :root[data-theme="orbit"] :is(
+      .qbtn:not(.ghost),.themebtn.on)::after{
+    content:""; position:absolute; inset:0; border-radius:inherit;
+    padding:1.5px; background:var(--iris); opacity:var(--iris-edge);
+    -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;
+            mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask-composite:exclude;
+    pointer-events:none;
+  }
+
+  /* Cards light up under the pointer, but only part way: the primary button
+     has to stay the brightest edge on the page, or the hierarchy inverts
+     every time the mouse crosses a card. */
+  :root[data-theme="orbit"] :is(
+      .dcard,.panel,.ws-card,.ac-card,.lane,.art-card,.gp-card,.qa-card,
+      .rm-card,.tech-card,.dir-sec)::after{
+    transition:opacity var(--dur) var(--ease);
+  }
+  :root[data-theme="orbit"] :is(
+      .dcard,.panel,.ws-card,.ac-card,.lane,.art-card,.gp-card,.qa-card,
+      .rm-card,.tech-card,.dir-sec):hover::after{
+    opacity:calc(var(--iris-rim) * 1.5);
+  }
+
+  /* The selected nav item. .rail-inner carries no rim - it is glass, its
+     seam is its edge - so the active marker is the rail's only piece of the
+     band, and at 3px by 30px it is tall enough for the hue to travel down
+     it. With the ambient rims thinned this is once again the brightest thing
+     in the rail, which is the entire job of a selected state. */
+  :root[data-theme="orbit"] .rail-item.active::before{
+    background:var(--iris);
+  }
+
+  /* ── opaque fallback ────────────────────────────────────────────────────────────
+     Someone asking for less transparency is asking for edges they can read,
+     not for a decorative haze. The ring goes off at the TOKEN - not with a
+     blanket *::after{opacity:0}, which would also take out the disclosure
+     carets, the section rules and .ledger:empty's message - and the
+     hairlines come back up to carry the panels on their own.
+
+     Reduced MOTION is deliberately not in this query. The ring does not
+     move; the token block already drops the blur for it, which is the part
+     that costs a frame. */
+  @media (prefers-reduced-transparency:reduce){
+    :root[data-theme="orbit"]{
+      --iris:none; --iris-rim:0; --iris-edge:0;
+      --line:rgba(255,255,255,.26);
+      --line-soft:rgba(255,255,255,.14);
+    }
   }
 }
