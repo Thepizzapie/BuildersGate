@@ -1244,7 +1244,24 @@ _MIGRATIONS: list = [
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
         name         TEXT NOT NULL UNIQUE,
         logline      TEXT NOT NULL DEFAULT '',
+        -- STYLE IS THREE COLUMNS BECAUSE IT IS THREE DIFFERENT THINGS, and the
+        -- first draft of this table had one called `style` that nothing ever
+        -- read — a sequence could be given a look and every shot was generated
+        -- without it.
+        --   style      the preset KEY ('anime', 'noir', ...) or '' for free prose
+        --   style_note the project's own wording, always applied
+        --   style_refs images that carry the look, which beat any prose
+        -- They are separate because they are edited separately and because the
+        -- refs are paths that have to survive a re-plan, and folded into one
+        -- string none of that is recoverable.
         style        TEXT NOT NULL DEFAULT '',
+        style_note   TEXT NOT NULL DEFAULT '',
+        style_refs_json TEXT NOT NULL DEFAULT '[]',
+        -- WHICH MODEL THIS SEQUENCE IS BOUGHT FROM. On the sequence rather than
+        -- passed per call, because a cutscene generated half on one model and
+        -- half on another does not cut together — the grain, the motion and the
+        -- colour response are all different, and the seam lands mid-scene.
+        model        TEXT NOT NULL DEFAULT '',
         aspect_ratio TEXT NOT NULL DEFAULT '16:9',
         resolution   TEXT NOT NULL DEFAULT '720p',
         status       TEXT NOT NULL DEFAULT 'planned'

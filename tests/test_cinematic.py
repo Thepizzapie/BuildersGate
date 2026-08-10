@@ -325,12 +325,16 @@ class TestOptions:
         assert "baked into the clip" in opts["audio_note"]
 
     def test_the_shot_ceiling_comes_from_the_adapter(self, root):
-        """A form that retypes '4 to 15 seconds' lies the day kie changes it."""
+        """A form that retypes '4 to 15 seconds' lies the day kie changes it.
+
+        Read in INTENT terms — `seconds`, not `duration` — because that is what
+        a caller planning a sequence needs and the field name behind it differs
+        per model."""
         from bgate_adapters import kie
 
         opts = cinematic.options(root)
-        assert (opts["models"]["seedance-2"]["ranges"]["duration"]
-                == kie.MODELS["seedance-2"]["ranges"]["duration"])
+        lo, hi = kie.MODELS["seedance-2"]["ranges"]["duration"]
+        assert opts["models"]["seedance-2"]["options"]["seconds"] == [lo, hi]
 
 
 class TestAnchors:
@@ -399,7 +403,9 @@ class TestGeneratingAShot:
         assert art["metadata"]["shot_idx"] == 1
         # Provenance, not a location — stamped so nothing refetches it later.
         assert art["metadata"]["source_url"] == "https://kie.test/v/1.mp4"
-        assert calls[0]["duration"] == 5
+        # Intent names, not Seedance's — the pipeline must not speak one
+        # model's dialect or it can never drive a second.
+        assert calls[0]["seconds"] == 5
         assert calls[0]["prompt"].startswith("slow push in.")
 
     @needs_theora
@@ -408,10 +414,12 @@ class TestGeneratingAShot:
         calls = self._stub(monkeypatch)
         cinematic.plan(root, "seq", _shots(1))
         cinematic.generate_shot(root, "seq", 1)
-        assert calls[0]["generate_audio"] is False
+        # SENT EXPLICITLY, not omitted: Seedance's generate_audio defaults to
+        # TRUE upstream, so "off" is a thing that has to be said.
+        assert calls[0]["audio"] is False
 
         cinematic.generate_shot(root, "seq", 1, generate_audio=True)
-        assert calls[1]["generate_audio"] is True
+        assert calls[1]["audio"] is True
 
     @needs_theora
     def test_two_shots_do_not_share_a_file(self, root, monkeypatch):
@@ -463,3 +471,302 @@ class TestGeneratingAShot:
         cinematic.plan(root, "seq", _shots(2))
         with pytest.raises(cinematic.CinematicError, match=r"\[1, 2\]"):
             cinematic.generate_shot(root, "seq", 7)
+
+
+class TestStyle:
+    """"Cutscenes in whatever style" — three levers, and the one that matters
+    most is that ALL of them reach EVERY shot without anyone remembering to."""
+
+    def test_the_style_is_actually_in_the_prompt(self, root):
+        """The first cut of this module stored a `style` column that nothing
+        read: a sequence could be given a look and every shot was generated
+        without it. This is the test that would have caught that."""
+        cinematic.plan(root, "seq", _shots(2), style="noir")
+        for shot in cinematic.sequence(root, "seq")["shots"]:
+            assert "film noir" in shot["prompt"]
+
+    def test_style_trails_the_prompt_rather_than_leading_it(self, root):
+        """Trailing style applies to the whole prompt. Leading it styles only
+        the noun it sits next to — "a cel-shaded knight in a ruined hall"
+        returns a cel-shaded knight in a photoreal hall."""
+        text = cinematic.prompt_for({"action": "she turns", "camera": "wide"},
+                                    "watercolour and ink wash")
+        assert text.index("she turns") < text.index("watercolour")
+
+    def test_free_prose_is_a_style(self, root):
+        """An unlisted word is not refused — whatever style means whatever."""
+        look = cinematic.resolve_style("like a rain-soaked 90s music video")
+        assert look["is_preset"] is False
+        assert "rain-soaked" in look["text"]
+        seq = cinematic.plan(root, "seq", _shots(1),
+                             style="like a rain-soaked 90s music video")
+        assert "rain-soaked" in seq["shots"][0]["prompt"]
+
+    def test_a_style_note_is_appended_to_the_preset(self, root):
+        look = cinematic.resolve_style("anime", "faded seaside palette")
+        assert "anime" in look["text"] and "faded seaside" in look["text"]
+
+    def test_naming_no_style_is_a_reported_choice(self, root):
+        """A model with no stylistic instruction uses its own house look, which
+        differs per model and per version — so an unstyled sequence is one
+        nobody chose and nobody can reproduce."""
+        seq = cinematic.plan(root, "seq", _shots(1))
+        assert any("NO STYLE WAS NAMED" in w for w in seq["warnings"])
+        assert seq["style_resolved"]["matched"] == cinematic.STYLE_FALLBACK
+
+    def test_each_preset_carries_its_trap(self, root):
+        """A preset table without the caveats is a list of nice words. `pixel`
+        in particular is the WEAKEST fit for generated video."""
+        table = cinematic.styles()
+        assert all(spec["note"] for spec in table.values())
+        assert "pixel art" in table["pixel"]["note"].lower()
+        seq = cinematic.plan(root, "seq", _shots(1), style="pixel")
+        assert any("shimmer" in w for w in seq["warnings"])
+
+    def test_style_refs_ride_behind_identity_refs(self, root):
+        """A model weights the front of a reference array more heavily, and
+        identity is the thing that must not drift."""
+        (root / "art").mkdir(exist_ok=True)
+        for n in ("hero.png", "look.png"):
+            (root / "art" / n).write_bytes(b"\x89PNG")
+        frames = cinematic.keyframes_for(
+            root, {"refs": ["art/hero.png"]}, style_refs=["art/look.png"])
+        assert frames["refs"][0].endswith("hero.png")
+        assert frames["refs"][1].endswith("look.png")
+
+    def test_mixing_style_and_identity_refs_is_warned_about(self, root):
+        """The art seat's rule 4: at equal strength the style ref transfers the
+        SUBJECT and the whole cast comes back as one person."""
+        (root / "art").mkdir(exist_ok=True)
+        (root / "art" / "look.png").write_bytes(b"\x89PNG")
+        seq = cinematic.plan(root, "seq", _shots(1, refs=["art/hero.png"]),
+                             style="anime", style_refs=["art/look.png"])
+        assert any("CANNOT SHARE A WEIGHT" in w for w in seq["warnings"])
+
+    def test_a_style_ref_that_is_not_on_disk_is_reported_not_raised(self, root):
+        """plan() must stay free and non-refusing — writing a shot list before
+        the keyframes exist is the normal order of work."""
+        seq = cinematic.plan(root, "seq", _shots(1), style_refs=["art/ghost.png"])
+        assert any("not on disk" in w for w in seq["warnings"])
+        assert seq["style_refs"] == []
+
+    @needs_theora
+    def test_changing_the_style_resets_generated_shots(self, root, monkeypatch):
+        """A clip bought under the old look is not a rendering of the new one.
+        Carrying it would leave a sequence half noir and half anime, with the
+        seam findable only by watching the whole cut."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1), style="noir")
+        cinematic.generate_shot(root, "seq", 1)
+        assert cinematic.sequence(root, "seq")["shots"][0]["status"] == "generated"
+
+        again = cinematic.plan(root, "seq", _shots(1), style="anime")
+        assert again["shots"][0]["status"] == "planned"
+        assert again["restyled"]["shots"] == 1
+
+    @needs_theora
+    def test_an_unchanged_style_keeps_the_shots(self, root, monkeypatch):
+        """The reset must not fire on every replan, or fixing a logline throws
+        away everything already paid for."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1), style="noir")
+        cinematic.generate_shot(root, "seq", 1)
+        again = cinematic.plan(root, "seq", _shots(1), style="noir",
+                               logline="a new logline")
+        assert again["shots"][0]["status"] == "generated"
+        assert "restyled" not in again
+
+
+class TestMultipleModels:
+    """The pipeline must not speak one model's dialect. kie's own catalogue
+    disagrees with itself: Sora 2 counts `n_frames` and spells its shape
+    "landscape" where Seedance takes `duration` and "16:9"."""
+
+    @pytest.fixture(autouse=True)
+    def _no_leak(self):
+        """register_video_model mutates a module-level table for the life of the
+        process. Left alone, a model registered in one test is visible in every
+        later one — which under random ordering is a failure that reproduces
+        only sometimes, and blames the wrong test when it does."""
+        from bgate_adapters import kie
+
+        before = dict(kie.MODELS)
+        yield
+        kie.MODELS.clear()
+        kie.MODELS.update(before)
+        kie._refresh_model_kinds()
+
+    def _sora_like(self):
+        from bgate_adapters import kie
+
+        return kie.register_video_model("sora-like", {
+            "model": "sora-2-text-to-video",
+            "label": "Sora-shaped model",
+            "intent": {"seconds": "n_frames", "shape": "aspect_ratio"},
+            "enums": {"aspect_ratio": ("landscape", "portrait")},
+            "ranges": {"n_frames": (40, 300)},
+            "intent_values": {"shape": {"16:9": "landscape",
+                                        "9:16": "portrait"}},
+            "intent_scale": {"seconds": 20},
+        })
+
+    def test_one_intent_becomes_two_different_payloads(self, root):
+        from bgate_adapters import kie
+
+        self._sora_like()
+        assert kie.video_input("seedance-2", seconds=6, shape="16:9") == {
+            "duration": 6, "aspect_ratio": "16:9"}
+        assert kie.video_input("sora-like", seconds=6, shape="16:9") == {
+            "n_frames": 120, "aspect_ratio": "landscape"}
+
+    def test_an_intent_a_model_cannot_do_is_refused_not_dropped(self, root):
+        """A silently dropped parameter still bills you and hands back the
+        default, with nothing saying why the setting did not apply."""
+        from bgate_adapters import kie
+
+        self._sora_like()
+        with pytest.raises(kie.KieError, match="no parameter for 'audio'"):
+            kie.video_input("sora-like", audio=False)
+
+    def test_a_registered_model_is_stamped_as_such(self, root):
+        """Nothing may confuse a user's entry for a verified one."""
+        assert self._sora_like()["source"] == "registered"
+        from bgate_adapters import kie
+        assert kie.video_capabilities("seedance-2")["source"] == "built-in"
+
+    def test_a_spec_without_an_intent_map_is_refused(self, root):
+        from bgate_adapters import kie
+
+        with pytest.raises(kie.KieError, match="without intent"):
+            kie.register_video_model("guess", {"model": "who/knows"})
+
+    def test_the_model_lives_on_the_sequence(self, root):
+        """A cutscene generated half on one model does not cut together."""
+        self._sora_like()
+        seq = cinematic.plan(root, "seq", _shots(1), model="sora-like")
+        assert seq["model"] == "sora-like"
+
+    def test_an_unregistered_model_is_refused_at_plan_time(self, root):
+        """Before money moves, and naming the ones that exist."""
+        with pytest.raises(cinematic.CinematicError, match="not a registered"):
+            cinematic.plan(root, "seq", _shots(1), model="veo-9")
+
+    def test_a_shot_the_model_cannot_generate_is_refused_before_spending(
+            self, root, monkeypatch):
+        """Seedance does 4-15s. A sora-like model at 20fps with a 40-frame
+        floor cannot do 1 second, and that must surface before the upload."""
+        self._sora_like()
+        cinematic.plan(root, "seq", [{"action": "x", "duration": 15}],
+                       model="sora-like")
+        # 15s * 20fps = 300 frames, the ceiling — legal.
+        from bgate_adapters import kie
+        assert kie.video_input("sora-like", seconds=15)["n_frames"] == 300
+        with pytest.raises(kie.KieError, match="must be 40"):
+            kie.build_input("sora-like", prompt="a long enough prompt",
+                            **kie.video_input("sora-like", seconds=1))
+
+
+class TestRecovery:
+    """A generation is charged at SUBMIT. Everything after — the poll loop, the
+    download, this process surviving ten minutes — can fail while the provider
+    holds a finished clip that has already been billed."""
+
+    def test_a_shot_with_no_task_id_says_so_rather_than_guessing(self, root):
+        cinematic.plan(root, "seq", _shots(1))
+        with pytest.raises(cinematic.CinematicError, match="no task id"):
+            cinematic.recover_shot(root, "seq", 1)
+
+    @needs_theora
+    def test_recovery_registers_the_clip_without_claiming_a_cost(
+            self, root, monkeypatch):
+        from bgate_adapters import kie
+
+        cinematic.plan(root, "seq", _shots(1))
+        seq = cinematic.sequence(root, "seq")
+        cinematic._set_shot(root, seq["shots"][0]["id"], status="failed",
+                            task_id="task-7")
+
+        monkeypatch.setattr(kie, "poll", lambda *a, **k: {"state": "success"})
+        monkeypatch.setattr(kie, "result_urls",
+                            lambda rec: ["https://kie.test/v/7.mp4"])
+        monkeypatch.setattr(kie, "download",
+                            lambda url, out, **k: _clip(pathlib.Path(out)).stat().st_size)
+
+        out = cinematic.recover_shot(root, "seq", 1)
+        assert out["ok"] is True and out["task_id"] == "task-7"
+        art = artifacts.get(root, out["artifact_id"])
+        # No cost is claimed: the charge happened at submit, so a delta measured
+        # now would be meaningless.
+        assert art["metadata"]["credits_consumed"] is None
+        assert cinematic.sequence(root, "seq")["shots"][0]["status"] == "generated"
+
+
+class TestAudioAcrossModels:
+    """Asking a model to turn OFF something it cannot do is not an error, and
+    getting that wrong made every picture-only model unusable the moment audio
+    defaulted to off. Caught end to end, not by a unit test."""
+
+    @pytest.fixture(autouse=True)
+    def _no_leak(self):
+        from bgate_adapters import kie
+
+        before = dict(kie.MODELS)
+        yield
+        kie.MODELS.clear()
+        kie.MODELS.update(before)
+        kie._refresh_model_kinds()
+
+    def _mute_model(self):
+        from bgate_adapters import kie
+
+        return kie.register_video_model("mute", {
+            "model": "vendor/mute-video",
+            "intent": {"seconds": "duration"},
+            "ranges": {"duration": (4, 10)},
+        })
+
+    @needs_theora
+    def test_audio_off_is_satisfied_by_a_model_that_makes_none(
+            self, root, monkeypatch):
+        calls = TestGeneratingAShot()._stub(monkeypatch)
+        self._mute_model()
+        cinematic.plan(root, "seq", _shots(1), model="mute")
+        out = cinematic.generate_shot(root, "seq", 1)
+        assert out["ok"] is True, out.get("error")
+        # Not sent at all — there is no field, and "do not make audio" is
+        # already true of a model that makes none.
+        assert "audio" not in calls[0]
+        # Advisory settings this model cannot express are dropped and REPORTED,
+        # never silently swallowed.
+        assert set(out["unsupported"]["dropped"]) == {"quality", "shape"}
+
+    def test_asking_FOR_audio_a_model_cannot_make_is_refused(self, root):
+        """The asymmetry: this IS something the caller wanted and will not get."""
+        self._mute_model()
+        cinematic.plan(root, "seq", _shots(1), model="mute")
+        out = cinematic.generate_shot(root, "seq", 1, generate_audio=True)
+        assert out["ok"] is False and out["stage"] == "model"
+        assert "cannot generate audio" in out["error"]
+        assert "Nothing has been charged" in out["error"]
+
+
+class TestProvenance:
+    @needs_theora
+    def test_the_recorded_prompt_is_the_one_that_was_sent(self, root,
+                                                          monkeypatch):
+        """A revision whose stored prompt does not reproduce the clip beside it
+        is a lie, and the prompt is the only record of what was asked for."""
+        calls = TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1), style="noir")
+        out = cinematic.generate_shot(root, "seq", 1)
+        art = artifacts.get(root, out["artifact_id"])
+        assert art["prompt"] == calls[0]["prompt"]
+        assert "film noir" in art["prompt"]
+
+    @needs_theora
+    def test_the_style_and_model_are_on_the_revision(self, root, monkeypatch):
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1), style="vhs")
+        out = cinematic.generate_shot(root, "seq", 1)
+        meta = artifacts.get(root, out["artifact_id"])["metadata"]
+        assert meta["sequence"] == "seq" and meta["shot_idx"] == 1

@@ -9,6 +9,63 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+
+- **A cinematic seat, and generated cutscenes that the engine can actually
+  play.** The eighth seat, and the first added since the table was written. It
+  owns cutscenes, trailers and attract-mode video: write a shot list for free,
+  buy one shot at a time, watch each one, keep the ones that work, and assemble
+  them into a cut. `kie.generate_video` could already buy a clip; nothing could
+  receive one, and the `video` capability had been listed with no provider behind
+  it since the column was added.
+
+  **Keeping a shot transcodes it, and that is the whole point.** Godot plays Ogg
+  Theora and nothing else in core — H.264 is patent-encumbered and WebM went away
+  in 4.0 — while every video model returns an `.mp4`. An `.mp4` in a Godot project
+  produces *no import error*: it is simply never loaded, so the scene runs
+  perfectly with a blank rectangle where the cutscene was. A pipeline that copied
+  its output in, which is exactly what music correctly does for `.mp3`, would put
+  a green badge over an unplayable file.
+
+- **Style, applied to every shot rather than remembered per shot.** Eleven
+  presets (anime, noir, comic, painterly, pixel, stop-motion, CG, watercolour,
+  VHS, silhouette, live action), each carrying the trap it comes with; a style
+  note in the project's own wording; and style reference frames, which beat both.
+  Free prose is a first-class style — an unlisted word is treated as prose, not
+  refused. Naming no style is reported as the silent choice it is, because a
+  model given no instruction uses its own house look, which differs per model and
+  per version. Changing the style resets already-generated shots and says so,
+  since a clip rendered in the old look is not a rendering of the new one.
+
+- **More than one video model, without guessing at any of them.** The pipeline
+  speaks intent — seconds, shape, quality, first/last frame, refs, audio — and
+  each model's table entry says what it calls those. kie's own catalogue does not
+  agree with itself: Sora 2 counts `n_frames` and spells its shape "landscape"
+  where Seedance takes `duration` and "16:9". `cinematic_register_model` adds a
+  model from a reference page a human has read, stamped as registered so nothing
+  confuses it for a verified entry.
+
+- **Anchored generation through kie, which the adapter had declared
+  impossible.** Its docstring said flatly that a local pinned ref cannot reach a
+  kie model. True of the generation endpoints, false of kie: there is a file
+  upload API on another host that takes base64 and returns a URL those endpoints
+  accept. One missing call, not a missing capability — and it matters far more
+  for video than for images, because an anchored still can fall back to Krea and
+  an anchored *shot* has nowhere to go.
+
+- **Recovering a shot that was already paid for.** A generation is charged at
+  submit, and the poll loop, the download and the process surviving ten minutes
+  can all fail while the provider holds a finished clip. Pressing generate again
+  pays twice.
+
+### Changed
+
+- `bgate doctor`'s ffmpeg row now says when the build has no libtheora. It stays
+  green — recording and frame extraction work fine without it — but such a build
+  cannot write the one format Godot plays, and finding that out after a whole
+  sequence has been generated is expensive. The cinematic seat refuses to spend
+  anything until the encoder passes.
+
 ## [0.1.35] - 2026-08-09
 
 Twenty-two commits. The tool count went from 78 to 144, which is the shape of

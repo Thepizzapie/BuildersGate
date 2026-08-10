@@ -181,16 +181,113 @@ shot of a place that was never built, a stylised prologue, a trailer. The seat's
 brief says so explicitly, because the failure of handing "the character walks
 in and talks" to this seat is expensive and silent.
 
-## 6. What got built
+## 6. Style, which is where "in whatever style" actually lives
+
+A style is not a string appended to a prompt when someone remembers. The first
+cut of this module had a `style` column that **nothing read** — a sequence could
+be given a look and every shot was generated without it. The fix is not "remember
+to append it"; it is that style is applied in ONE place (`prompt_for`), to EVERY
+shot, automatically, or the sequence drifts between beats.
+
+Three levers, ascending in strength. The ordering is this repo's own art rule 3
+("the approved frame is the style guide, not your prose"), not an opinion:
+
+1. **A preset** — 11 of them (`live_action`, `anime`, `comic`, `painterly`,
+   `noir`, `pixel`, `stop_motion`, `cg_animated`, `watercolor`, `vhs`,
+   `silhouette`). Each describes medium, light and motion, and carries a `note`
+   naming its trap. None names a studio, film or living artist: that fragment is
+   both legally fraught and unreliable, and a description of the look is what
+   actually steers.
+2. **A style note** — the project's own wording, appended to the preset.
+3. **Style reference images** — actual frames. These beat both and are the only
+   lever that holds a look across eight generations.
+
+Free prose is a first-class style: an unlisted word is treated as prose, not
+refused. "Whatever style" has to mean whatever style.
+
+Two presets are worth their notes here. `pixel` is the **weakest** fit for
+generated video — models produce pixel-*looking* output on a non-integer grid,
+which shimmers next to real pixel art, so a pixel-art game almost always wants an
+in-engine cutscene instead. `silhouette` is the one style that survives being
+unanchored, because no faces means no identity drift.
+
+**Naming no style is itself a choice, and a silent one.** A model given no
+stylistic instruction uses its own house look, which differs per model and per
+version — so an unstyled sequence is one whose appearance nobody chose and nobody
+can reproduce. `plan()` says so rather than letting it pass.
+
+**Changing the style resets generated shots.** A clip bought under the old look
+is not a rendering of the new one; carrying it forward leaves a sequence half
+noir and half anime with the seam findable only by watching the whole cut. The
+reset is reported with a count, because it means real money has to be spent
+again.
+
+The fourth lever deliberately does not exist here: the art seat can *train* a
+style (a Krea LoRA, `bgate_core/styles.py`), and no video provider wired here
+trains anything. The honest way a trained look reaches a cutscene is by
+generating that sequence's keyframes through the art path and anchoring every
+shot on them.
+
+## 7. Driving more than one model, without guessing
+
+The initial build called `generate_video(duration=…, aspect_ratio=…,
+first_frame_url=…)`. Those are not "the video parameters" — they are **Seedance's**
+parameters, and a pipeline that speaks them has exactly one model in it forever.
+
+kie's own catalogue does not agree with itself: **Sora 2 takes `n_frames` where
+Seedance takes `duration`, and spells its aspect ratio `"landscape"` where
+Seedance wants `"16:9"`.** Same vendor, same API family, three incompatible
+spellings. So the pipeline now speaks **intent** — `seconds`, `shape`, `quality`,
+`first_frame`, `last_frame`, `refs`, `audio` — and each model's table entry says
+what it calls those, with declarative value maps and scales for the rest.
+
+Which intents a model may lack is a real decision:
+
+- **Advisory** (`quality`, `shape`) — the shot is still the shot without them.
+  Dropped, and **reported** on the result, never silently swallowed.
+- **Essential** (`seconds`, the frame/ref fields, an explicit `audio=True`) —
+  losing them changes the deliverable, so they refuse *before* the spend.
+
+The asymmetry on audio is deliberate: `audio=False` on a model that makes no
+audio is already true, so it is dropped; `audio=True` is a missing deliverable,
+so it refuses. Getting this wrong made every model simpler than Seedance
+unusable — caught end to end, not by a unit test.
+
+### What is NOT in the model table, and why
+
+This environment's egress policy blocks `docs.kie.ai` and `api.kie.ai`, so the
+reference pages for Kling 3.0, Sora 2 and Veo 3.1 could not be read. This repo's
+rule is explicit — *"only models whose id and schema were read off their own
+reference page are here… a guessed id is a 404 after a round trip"* — and writing
+table entries from search snippets would break it. What search **did** establish
+is that the spellings genuinely differ per model, which is the argument for the
+intent layer rather than a reason to guess at three more.
+
+So the ceiling moved instead of being lowered: **`cinematic_register_model`**
+adds a model from a reference page *a human has read*. It refuses a spec without
+an id and an intent map, and stamps every entry `source: "registered"` so no
+surface confuses a user's entry for a verified one. The rule was never "few
+models" — it was "nothing here is a guess", and the person with the page open
+knows more than this table does.
+
+One useful negative finding: **Veo 3.1 is not a market `createTask` model at
+all** on kie — it has its own `/api/v1/veo/generate` endpoint, so it needs an
+adapter path rather than a table entry.
+
+## 8. What got built
 
 | Piece | Where |
 |---|---|
-| kie file-upload API (`upload_file`, `upload_all`), auto-upload of local anchors in `generate_video` | `bgate_adapters/kie.py` |
-| Shot lists (`cine_sequence`, `cine_shot`) | `bgate_core/db.py` migration 0027 |
-| Plan / generate / keep / assemble / transcode | `bgate_core/cinematic.py` |
+| kie file-upload API (`upload_file`), auto-upload of local anchors | `bgate_adapters/kie.py` |
+| The intent layer (`video_input`, `video_capabilities`, `register_video_model`) | `bgate_adapters/kie.py` |
+| Shot lists + style + model (`cine_sequence`, `cine_shot`) | `bgate_core/db.py` migration 0027 |
+| Styles, plan / generate / keep / assemble / transcode / recover | `bgate_core/cinematic.py` |
 | The seat, its lane, its workflow and its trap | `bgate_core/seats.py` |
-| Eight MCP tools (`cinematic_*`) | `bgate_mcp/server.py` |
+| Thirteen MCP tools (`cinematic_*`) | `bgate_mcp/server.py` |
+| Dashboard endpoints | `bgate_ui/routes/cinematic.py` |
+| The seat workspace | `bgate_ui/static/seats/cinematic.js` |
 | `video` asset kinds (`.mp4`, `.ogv`, `.webm`, `.mov`) | `bgate_core/assets.py` |
+| libtheora reported on the ffmpeg row | `bgate_core/doctor.py` |
 
 The working loop:
 
@@ -225,7 +322,18 @@ to prevent, and a `.jsonl` checkpoint is the wrong shape because a shot list is
    destination named for the logical asset and the game loads one file, so
    without a measured check two cards both claim to be the clip in the game.
 
-### One bug the tests caught during the build
+### Recovering what was already paid for
+
+A generation is charged at **submit**. The poll loop, the download, and this
+process surviving the ten minutes it takes can all fail while the provider sits
+on a finished clip that has already been billed — and a seat whose only option is
+to press generate again pays twice. `cinematic_shot_status` looks;
+`cinematic_recover_shot` collects. The task id is read off the shot row, which is
+why it is stored there: an agent that died mid-generation left it behind, so its
+successor needs no archaeology. No cost is claimed on recovery, because a balance
+delta measured after the fact is meaningless.
+
+### Bugs the tests caught during the build
 
 `slugify("")` returns `"unnamed"`, which is **truthy** — so
 `slugify(x) or f"shot{i}"` gave every unnamed shot in a sequence the same slug.
@@ -234,6 +342,13 @@ overwriting the clip shot 1 had just been paid for. Nothing errored; the
 sequence simply came back with every beat looking like the last one generated.
 It surfaced because the mismatched-size test could not find two different sizes
 — there was only ever one file.
+
+And two the end-to-end run caught that no unit test would have: `audio=False`
+being *refused* by a model with no audio parameter (making every picture-only
+model unusable the moment audio defaulted to off), and then — fixing that too
+eagerly — `audio=False` being *omitted* rather than sent, which would have
+shipped Seedance clips with a baked-in audio bed, because its `generate_audio`
+defaults to **true** upstream.
 
 ## Sources
 

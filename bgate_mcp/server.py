@@ -7017,25 +7017,28 @@ def music_discard(artifact_id: int, note: str = "") -> dict:
 
 
 @_tool
-def kie_video_generate(prompt: str, filename: str, duration: Optional[int] = None,
-                       resolution: str = "", aspect_ratio: str = "",
-                       first_frame_url: str = "", generate_audio: Optional[bool] = None,
+def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None,
+                       quality: str = "", shape: str = "",
+                       first_frame: str = "", audio: Optional[bool] = None,
                        model: str = "", timeout: float = 1800.0) -> dict:
-    """Generate a VIDEO CLIP with Seedance through kie.ai. Costs real credits,
-    and video is the most expensive thing this product can buy — kie's own docs
-    put video at 100-500 credits against an image's 10-50.
+    """Generate a VIDEO CLIP through kie.ai. Costs real credits, and video is the
+    most expensive thing this product can buy — kie's own docs put video at
+    100-500 credits against an image's 10-50.
 
-    The first video generation in this product. Seedance 2.0 takes a prompt
-    (3-20,000 chars), an optional first/last frame and reference clips, and
-    generates its own audio unless generate_audio=False.
+    THE ARGUMENTS ARE INTENT, NOT ONE MODEL'S FIELD NAMES, so this drives any
+    registered video model rather than only Seedance. kie's own catalogue does
+    not agree with itself on spelling — Sora 2 counts `n_frames` where Seedance
+    takes `duration`, and calls its shape "landscape" where Seedance wants
+    "16:9" — so the model's table entry translates. cinematic_options lists
+    every registered model with the exact ranges each one accepts.
 
-      duration      4-15 seconds (default 5)
-      resolution    480p | 720p | 1080p | 4k (default 720p)
-      aspect_ratio  1:1 | 4:3 | 3:4 | 16:9 | 9:16 | 21:9 | adaptive
+      seconds     how long. Seedance does 4-15; ranges move per model.
+      quality     480p | 720p | 1080p | 4k on Seedance
+      shape       16:9 | 9:16 | 1:1 | 4:3 | 3:4 | 21:9 | adaptive on Seedance
+      audio       generated audio is BAKED IN and cannot be removed later
 
-    first_frame_url may be a public URL OR a local path — a local one is
-    uploaded to kie's file store first and the minted URL (which dies in 3 days)
-    is used for the generation.
+    first_frame may be a public URL OR a local path — a local one is uploaded to
+    kie's file store first and the minted URL (which dies in 3 days) is used.
 
     Runs in MINUTES, not seconds; the default timeout is half an hour.
     filename lands under .bgate_out/video/.
@@ -7062,8 +7065,8 @@ def kie_video_generate(prompt: str, filename: str, duration: Optional[int] = Non
                              f"refusing {filename!r}"}
         result = kie.generate_video(
             prompt, str(out), model=model or kie.DEFAULT_VIDEO_MODEL,
-            duration=duration, resolution=resolution, aspect_ratio=aspect_ratio,
-            first_frame_url=first_frame_url, generate_audio=generate_audio,
+            seconds=seconds, quality=quality, shape=shape,
+            first_frame=first_frame, audio=audio,
             root=str(root), logical_name=out.stem,
             work_item_id=_work_item_id(), timeout=float(timeout))
         if result.get("ok"):
@@ -7110,7 +7113,9 @@ def cinematic_options() -> dict:
 
 @_tool
 def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
-                   aspect_ratio: str = "16:9", resolution: str = "720p") -> dict:
+                   style_note: str = "", style_refs: Optional[list] = None,
+                   model: str = "", aspect_ratio: str = "16:9",
+                   resolution: str = "720p") -> dict:
     """Write a cutscene's shot list. SPENDS NOTHING — do this first, always.
 
     `shots` is a list of objects, in cut order. Each takes:
@@ -7121,6 +7126,28 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
       first_frame  a repo-relative path to an APPROVED still to open on
       last_frame   a still to land on. For a deliberate match cut ONLY.
       refs         repo-relative paths to reference stills for identity
+
+    STYLE — "cutscenes in whatever style" — has three levers, weakest first,
+    and all three are applied to EVERY shot automatically:
+      style       a preset KEY (cinematic_options lists them: anime, noir,
+                  comic, painterly, pixel, stop_motion, cg_animated, watercolor,
+                  vhs, silhouette, live_action) OR free prose. An unlisted word
+                  is treated as prose rather than refused — whatever style means
+                  whatever style.
+      style_note  the project's own wording, appended to the preset
+      style_refs  repo-relative paths to frames carrying the look. These BEAT
+                  prose and are the only lever that holds across eight
+                  generations.
+    Naming no style is itself a choice, and a silent one: the model falls back
+    to its own house look, which differs per model and per version. plan() says
+    so rather than letting it pass.
+
+    model picks which video model buys this sequence (cinematic_options lists
+    what is registered and the exact ranges each accepts). It lives on the
+    SEQUENCE because a cutscene generated half on one model does not cut
+    together. Changing style or model resets already-generated shots — a clip
+    rendered in the old look is not a rendering of the new one — and that is
+    reported, because it means spending money again.
 
     ANCHOR EVERY SHOT. A text-only sequence invents the cast fresh each
     generation and no two shots agree on a face. Generate the keyframes through
@@ -7140,8 +7167,10 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
         from bgate_core import cinematic as _cine
 
         return _cine.plan(_root(), name, list(shots or []), logline=logline,
-                          style=style, aspect_ratio=aspect_ratio,
-                          resolution=resolution, work_item_id=_work_item_id())
+                          style=style, style_note=style_note,
+                          style_refs=list(style_refs or []), model=model,
+                          aspect_ratio=aspect_ratio, resolution=resolution,
+                          work_item_id=_work_item_id())
     except Exception as exc:
         return _fail(exc)
 
@@ -7299,6 +7328,114 @@ def cinematic_discard(artifact_id: int, note: str = "") -> dict:
         from bgate_core import cinematic as _cine
 
         return _cine.discard(_root(), int(artifact_id), note=note)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_register_model(name: str, model: str, intent: dict,
+                             label: str = "", note: str = "",
+                             enums: Optional[dict] = None,
+                             ranges: Optional[dict] = None,
+                             caps: Optional[dict] = None,
+                             intent_values: Optional[dict] = None,
+                             intent_scale: Optional[dict] = None) -> dict:
+    """Add a video model from a reference page you have READ. Spends nothing.
+
+    kie's market carries dozens of video models; this product ships only the
+    ones whose id and schema were verified against their own documentation,
+    because a guessed id is a 404 after a round trip and a guessed parameter
+    name is a setting you paid for and did not get. That rule is not relaxed
+    here — what this changes is WHO does the reading, so a user with the Kling
+    or Sora page open is not blocked on a release.
+
+      name    what to call it here, e.g. "kling-3"
+      model   the LITERAL id kie wants in the top-level `model` field
+      intent  what this model calls each of: seconds, shape, quality,
+              first_frame, last_frame, refs, audio. Omit any it cannot do —
+              asking for one it has no field for is then refused before the
+              spend instead of being silently dropped.
+
+    Optional, and worth filling in because they are checked before money moves:
+      enums / ranges / caps   this model's own limits, keyed by ITS field names
+      intent_values           {intent: {canonical: this model's spelling}} —
+                              e.g. shape 16:9 -> "landscape"
+      intent_scale            {intent: multiplier} — e.g. seconds -> n_frames
+
+    Registered models are stamped source="registered" everywhere they are
+    listed, so nothing confuses your entry for a verified one. The registration
+    lives for the life of this server process.
+    """
+    try:
+        from bgate_adapters import kie
+
+        return {"ok": True, **kie.register_video_model(name, {
+            "model": model, "intent": dict(intent or {}), "label": label,
+            "note": note, "enums": enums or {}, "ranges": ranges or {},
+            "caps": caps or {}, "intent_values": intent_values or {},
+            "intent_scale": intent_scale or {}})}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_styles() -> dict:
+    """Every built-in style preset, with what each is good and bad at.
+
+    Read this before planning rather than guessing at prose: each entry carries
+    a `note` naming the trap. Two worth knowing up front — `pixel` is the
+    WEAKEST fit for generated video (models produce pixel-looking output on a
+    non-integer grid, which shimmers next to real pixel art), and `silhouette`
+    is the one style that survives being unanchored, because no faces means no
+    identity drift.
+
+    A style that is not in this table is not refused: free prose works, and so
+    do style_refs, which beat prose.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return {"ok": True, "styles": _cine.styles(),
+                "fallback": _cine.STYLE_FALLBACK}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_shot_status(task_id: str) -> dict:
+    """Where a submitted generation got to at the provider. Costs nothing.
+
+    This only LOOKS. When it says `recoverable`, cinematic_recover_shot is what
+    puts the clip on disk — do NOT re-run cinematic_generate_shot to get a file
+    for a task that has already been charged.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.shot_status(_root(), task_id)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_recover_shot(name: str, idx: int, task_id: str = "") -> dict:
+    """Download a shot that was ALREADY PAID FOR and register it. Repair verb.
+
+    A generation is charged at SUBMIT, and everything after that — the poll
+    loop, the download, this process surviving the ten minutes it takes — can
+    fail while the provider sits on a finished clip you have been billed for.
+    Pressing generate again pays twice.
+
+    The task id is read off the shot row when omitted, which is why it is stored
+    there: an agent that died mid-generation left the id behind, so its
+    successor needs no archaeology. No cost is recorded against this call —
+    the charge happened at submit, possibly days ago.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return _cine.recover_shot(_root(), name, int(idx), task_id,
+                                  work_item_id=_work_item_id())
     except Exception as exc:
         return _fail(exc)
 

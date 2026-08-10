@@ -119,6 +119,178 @@ class CinematicError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# STYLE — "cutscenes in whatever style", and the three levers that deliver it
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS NOT JUST A STRING ON THE PROMPT. The first cut of this module had
+# a `style` column that nothing read: a sequence could be given a look and every
+# shot was generated without it. That is worth naming as the failure mode
+# because the fix is not "remember to append it" — it is that style has to be
+# applied in ONE place, to EVERY shot, automatically, or the sequence drifts
+# between beats and the drift is the exact thing a cutscene cannot survive.
+#
+# THREE LEVERS, IN ASCENDING ORDER OF STRENGTH, and the ordering is the art
+# seat's rule 3 rather than an opinion: "THE APPROVED FRAME IS THE STYLE GUIDE,
+# NOT YOUR PROSE. 'Detailed pixel art' describes two different drawings."
+#
+#   1. A PRESET (this table). Vocabulary that is known to move a video model —
+#      medium, lighting, lens, grain, motion character. Cheap, coarse, and the
+#      right starting point when there is nothing approved yet.
+#   2. A STYLE NOTE. The project's own wording, appended to the preset. This is
+#      where a game's specific look lives ("faded seaside palette, everything a
+#      little sun-bleached") and it is per sequence, not per shot.
+#   3. STYLE REFERENCE IMAGES. Actual frames. These beat both of the above and
+#      are the only lever that holds a look across eight generations.
+#
+# THE FOURTH LEVER IS NOT HERE AND SHOULD NOT BE. The art seat can TRAIN a style
+# (bgate_core.styles, a Krea LoRA) which moves the look into the model itself.
+# No video provider wired here trains anything, so a trained style cannot reach
+# a shot — but it CAN generate the keyframes a shot is anchored on, which is the
+# honest way a project's trained look reaches its cutscenes today. `style_hint`
+# below says so rather than leaving the seat to wonder.
+#
+# WHAT THE PRESETS DELIBERATELY DO NOT DO is name a studio, a film or a living
+# artist. "In the style of <studio>" is the one prompt fragment that is both
+# legally fraught and unreliable — models have been tuned away from it — and a
+# description of the LOOK is what actually steers. So each entry describes
+# medium, light and motion.
+STYLES: dict[str, dict] = {
+    "live_action": {
+        "label": "Live action",
+        "prompt": "photoreal live-action cinematography, anamorphic lens, "
+                  "natural depth of field, motivated practical lighting, "
+                  "subtle film grain, believable weight and inertia in all "
+                  "motion",
+        "note": "The default a video model is strongest at. Hardest to match to "
+                "a stylised game — a photoreal cutscene next to pixel-art "
+                "gameplay reads as a different product.",
+    },
+    "anime": {
+        "label": "Anime / cel",
+        "prompt": "2D anime cel animation, clean ink linework, flat cel shading "
+                  "with hard shadow terminators, painted background art, "
+                  "limited-animation timing with held frames and deliberate "
+                  "smears",
+        "note": "The most reliable stylised look across models. Ask for held "
+                "frames explicitly or you get uncanny smooth interpolation.",
+    },
+    "comic": {
+        "label": "Comic / graphic novel",
+        "prompt": "inked graphic-novel panel art, heavy black spotting, "
+                  "halftone and cross-hatch texture, limited spot-colour "
+                  "palette, high-contrast dramatic staging",
+        "note": "Hides model artefacts well because the medium is already "
+                "high-contrast and textured. Good for prologues and epilogues.",
+    },
+    "painterly": {
+        "label": "Painterly / storybook",
+        "prompt": "hand-painted storybook illustration in motion, visible "
+                  "brushwork and canvas tooth, soft edges, warm layered "
+                  "glazes, gentle parallax rather than literal animation",
+        "note": "Forgiving of drift because brushwork is expected to vary. "
+                "Pairs well with slow camera moves and badly with fast action.",
+    },
+    "noir": {
+        "label": "Film noir",
+        "prompt": "high-contrast black and white film noir, hard single-source "
+                  "key light, deep crushed blacks, venetian-blind shadow "
+                  "patterns, heavy atmospheric haze, slow deliberate camera",
+        "note": "Monochrome removes colour drift between shots entirely, which "
+                "makes this the most forgiving style for a long sequence.",
+    },
+    "pixel": {
+        "label": "Pixel art",
+        "prompt": "retro pixel art animation, strict limited palette, visible "
+                  "square pixels with no anti-aliasing, chunky low-resolution "
+                  "sprites, stepped frame-by-frame motion",
+        "note": "THE WEAKEST FIT FOR GENERATED VIDEO, and worth saying plainly: "
+                "models produce pixel-LOOKING output on a non-integer grid, so "
+                "it shimmers next to real pixel art. If the game is pixel art, "
+                "an in-engine cutscene is almost always the better answer.",
+    },
+    "stop_motion": {
+        "label": "Stop motion / claymation",
+        "prompt": "stop-motion animation with visible handmade materials, clay "
+                  "and felt surfaces with fingerprints and seams, shallow "
+                  "macro depth of field, slightly stepped frame timing",
+        "note": "The stepped timing is what sells it; without it you get smooth "
+                "CG that happens to look like clay.",
+    },
+    "cg_animated": {
+        "label": "CG animated feature",
+        "prompt": "polished 3D animated feature film look, appealing stylised "
+                  "character proportions, soft global illumination, shallow "
+                  "depth of field, saturated art-directed colour script",
+        "note": "Closest to what a 3D game's own engine renders, so it cuts "
+                "into 3D gameplay with the least seam.",
+    },
+    "watercolor": {
+        "label": "Watercolour / ink wash",
+        "prompt": "watercolour and ink wash animation, bleeding pigment edges, "
+                  "visible paper grain, generous negative space, colour "
+                  "pooling at the edges of forms",
+        "note": "Very forgiving of frame-to-frame variation — the medium moves "
+                "on its own. Poor at fine detail and text.",
+    },
+    "vhs": {
+        "label": "VHS / found footage",
+        "prompt": "degraded VHS videotape footage, chromatic bleed, scanlines "
+                  "and tracking distortion, blown highlights, timestamp "
+                  "overlay, handheld camera drift",
+        "note": "The degradation hides model artefacts almost completely, which "
+                "makes it the cheapest convincing style available.",
+    },
+    "silhouette": {
+        "label": "Silhouette",
+        "prompt": "pure silhouette staging, black featureless foreground forms "
+                  "against a luminous graded backdrop, volumetric haze, "
+                  "readable poses carrying all the storytelling",
+        "note": "No faces means no identity drift, so this is the one style "
+                "that survives being unanchored. Excellent for a prologue.",
+    },
+}
+
+# What the prompt says when a sequence names no style at all. NOT an empty
+# string: a model with no stylistic instruction defaults to its own house look,
+# which differs per model and per version, so an unstyled sequence is one whose
+# appearance nobody chose and nobody can reproduce.
+STYLE_FALLBACK = "live_action"
+
+
+def styles() -> dict:
+    """The preset table as data, for a form, a tool description or an agent."""
+    return {key: {"key": key, **spec} for key, spec in STYLES.items()}
+
+
+def resolve_style(style: str = "", note: str = "") -> dict:
+    """One sequence's look, as the text every shot of it will carry.
+
+    ``style`` is a preset key OR free prose — "whatever style" has to mean
+    whatever style, and refusing an unlisted word would make the preset table a
+    cage rather than a shortcut. A key that is not in the table is therefore
+    treated as prose, and ``matched`` says which happened so a caller can tell a
+    typo ('anmie') from a deliberate description.
+    """
+    key = str(style or "").strip().lower().replace("-", "_").replace(" ", "_")
+    preset = STYLES.get(key)
+    parts, matched = [], ""
+    if preset:
+        matched = key
+        parts.append(preset["prompt"])
+    elif str(style or "").strip():
+        parts.append(str(style).strip())
+    if str(note or "").strip():
+        parts.append(str(note).strip())
+    if not parts:
+        matched = STYLE_FALLBACK
+        parts.append(STYLES[STYLE_FALLBACK]["prompt"])
+    return {"matched": matched, "text": ". ".join(parts),
+            "is_preset": bool(preset),
+            "label": preset["label"] if preset else "custom",
+            "note": preset["note"] if preset else ""}
+
+
+# ---------------------------------------------------------------------------
 # What can be asked for
 # ---------------------------------------------------------------------------
 
@@ -136,10 +308,33 @@ def options(root: str | os.PathLike[str]) -> dict:
         "available": bool(got.get("available")) and bool(encoder["ok"]),
         "provider_available": bool(got.get("available")),
         "reason": got.get("reason", "") or ("" if encoder["ok"] else encoder["reason"]),
-        "provider": "kie/seedance",
-        "models": {name: spec for name, spec in kie.MODELS.items()
-                   if spec["kind"] == "video"},
+        "provider": "kie",
+        # IN INTENT TERMS, not each model's own field names — a caller planning a
+        # sequence needs to know how many seconds it may ask for, and that is a
+        # different question from what this model calls the parameter.
+        "models": {name: kie.video_capabilities(name)
+                   for name in kie.VIDEO_MODELS},
+        "raw_models": {name: spec for name, spec in kie.MODELS.items()
+                       if spec["kind"] == "video"},
+        "intent": list(kie.VIDEO_INTENT),
         "default_model": kie.DEFAULT_VIDEO_MODEL,
+        # THE STYLE SURFACE, served as data for the same reason the model limits
+        # are: a form or a brief that retypes the preset list is one that drifts
+        # from the table the generation actually uses.
+        "styles": styles(),
+        "style_fallback": STYLE_FALLBACK,
+        "style_levers": [
+            "preset — cinematic.STYLES, coarse and cheap",
+            "style_note — the project's own wording, appended to the preset",
+            "style_refs — actual frames, which beat both and are the only lever "
+            "that holds a look across eight generations",
+        ],
+        "style_hint":
+            "No video provider here can be TRAINED on a project's look the way "
+            "the art seat trains a Krea style. The way a trained style reaches "
+            "a cutscene is by generating this sequence's keyframes through the "
+            "art path first, then anchoring every shot on those approved "
+            "frames.",
         "install_dir": _install_dir(root, create=False).as_posix(),
         "candidate_dir": CANDIDATE_DIR.as_posix(),
         "shot_seconds": list(SHOT_SECONDS),
@@ -173,7 +368,7 @@ def ffmpeg_status() -> dict:
     """
     exe = shutil.which("ffmpeg")
     if not exe:
-        return {"ok": False, "ffmpeg": "", "theora": False,
+        return {"ok": False, "ffmpeg": "", "theora": False, "probed": True,
                 "reason": "ffmpeg not found on PATH — it is what converts a "
                           "generated .mp4 into the Ogg Theora the engine can "
                           "play, so shots can be generated and none can be kept"}
@@ -183,13 +378,21 @@ def ffmpeg_status() -> dict:
                               stdin=subprocess.DEVNULL)
         listed = (proc.stdout or "") + (proc.stderr or "")
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"ok": False, "ffmpeg": exe, "theora": False,
+        # `probed: False` IS THE POINT, and it is not the same fact as
+        # theora: False. "This ffmpeg has no libtheora" and "I could not ask
+        # this ffmpeg anything" are different states, and a caller that folds
+        # them together tells a user with a perfectly good encoder that their
+        # build cannot ship cutscenes. Callers that report to a human must say
+        # "unknown" here; keep() still refuses, because an encoder that will not
+        # run cannot encode either way.
+        return {"ok": False, "ffmpeg": exe, "theora": False, "probed": False,
                 "reason": f"ffmpeg found at {exe} but would not run: {exc}"}
     theora = "libtheora" in listed
     return {
         "ok": theora,
         "ffmpeg": exe,
         "theora": theora,
+        "probed": True,
         "vorbis": "libvorbis" in listed,
         "reason": "" if theora else
                   f"the ffmpeg at {exe} was built without libtheora, so it "
@@ -204,8 +407,10 @@ def ffmpeg_status() -> dict:
 # ---------------------------------------------------------------------------
 
 def plan(root: str | os.PathLike[str], name: str, shots: list, *,
-         logline: str = "", style: str = "", aspect_ratio: str = "16:9",
-         resolution: str = "720p", work_item_id: Optional[int] = None) -> dict:
+         logline: str = "", style: str = "", style_note: str = "",
+         style_refs: Optional[list] = None, model: str = "",
+         aspect_ratio: str = "16:9", resolution: str = "720p",
+         work_item_id: Optional[int] = None) -> dict:
     """Write (or rewrite) a sequence's shot list. Costs nothing, spends nothing.
 
     ``shots`` is a list of dicts: ``action`` is required, and ``camera``,
@@ -219,11 +424,27 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     before they are bought and costs a generation afterwards. So the director
     reads a shot list, not a folder of clips.
 
+    ``style`` is a preset key (cinematic.STYLES — anime, noir, pixel, vhs, …) OR
+    free prose, because "whatever style" has to mean whatever style. ``style_note``
+    is the project's own wording appended to it, and ``style_refs`` are frames
+    that carry the look, which beat both. All three are applied to EVERY shot,
+    automatically, in :func:`prompt_for` — the one place, because a style applied
+    per shot by hand is a style that goes missing on shot 6 and a sequence that
+    changes look halfway through.
+
     REPLANNING PRESERVES WHAT WAS ALREADY BOUGHT. A shot whose action text is
     unchanged keeps its artifact, its status and its task id, so re-running plan()
     to fix a typo in shot 7 does not throw away the five shots already generated
     and paid for. A shot whose action CHANGED is reset to planned, because the
     clip on disk is no longer a rendering of what the list now says.
+
+    CHANGING THE STYLE OR THE MODEL RESETS EVERY GENERATED SHOT, and that is not
+    over-caution — it is the same rule one level up. A clip bought under the old
+    look is not a rendering of the new one, so carrying it forward would leave a
+    sequence that is half noir and half anime with nothing saying so, and the
+    seam would only be found by watching the assembled cut. The reset is reported
+    in ``restyled`` with the count, because it means real money has to be spent
+    again and that must never be silent.
     """
     root = str(root)
     stem = slugify(name)
@@ -234,19 +455,44 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
 
     cleaned, warnings = _clean_shots(shots)
 
+    # The model is validated here, at planning time, because the shot list is
+    # written against ITS limits — a 15-second shot is legal on one model and
+    # not on another, and discovering that at the first generation means the
+    # whole list has to be rewritten after money has already moved.
+    chosen = _resolve_model(model)
+    look = resolve_style(style, style_note)
+    refs_out, missing_refs = _style_refs(root, style_refs or [])
+    warnings.extend(_style_warnings(look, refs_out, missing_refs, cleaned))
+
     with db.tx(root) as conn:
+        # WHAT THE OLD SEQUENCE LOOKED LIKE, read BEFORE the upsert overwrites
+        # it. A clip bought under a different look or a different model is not a
+        # rendering of what this list now says, so it cannot be carried.
+        prior = conn.execute(
+            "SELECT style, style_note, style_refs_json, model "
+            "FROM cine_sequence WHERE name = ?", (stem,)).fetchone()
+        restyled = bool(prior) and (
+            resolve_style(prior["style"], prior["style_note"])["text"] != look["text"]
+            or json.loads(prior["style_refs_json"] or "[]") != refs_out
+            or (prior["model"] or "") != chosen)
+
         conn.execute(
             """
-            INSERT INTO cine_sequence (name, logline, style, aspect_ratio,
+            INSERT INTO cine_sequence (name, logline, style, style_note,
+                                       style_refs_json, model, aspect_ratio,
                                        resolution, work_item_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (name) DO UPDATE SET
                 logline = excluded.logline, style = excluded.style,
+                style_note = excluded.style_note,
+                style_refs_json = excluded.style_refs_json,
+                model = excluded.model,
                 aspect_ratio = excluded.aspect_ratio,
                 resolution = excluded.resolution,
                 updated_at = datetime('now')
             """,
-            (stem, logline.strip(), style.strip(), aspect_ratio, resolution,
+            (stem, logline.strip(), style.strip(), style_note.strip(),
+             json.dumps(refs_out), chosen, aspect_ratio, resolution,
              work_item_id))
         seq_id = int(conn.execute(
             "SELECT id FROM cine_sequence WHERE name = ?", (stem,)).fetchone()[0])
@@ -258,9 +504,14 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
             previous[(row["action"] or "").strip()] = dict(row)
         conn.execute("DELETE FROM cine_shot WHERE sequence_id = ?", (seq_id,))
 
-        kept_rows = 0
+        kept_rows, dropped = 0, 0
         for index, shot in enumerate(cleaned, start=1):
             carried = previous.get(shot["action"])
+            if carried and restyled:
+                # The text matches; the look it was rendered in does not.
+                if carried["status"] in ("generated", "kept"):
+                    dropped += 1
+                carried = None
             if carried:
                 kept_rows += 1
             conn.execute(
@@ -286,6 +537,15 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     out = sequence(root, stem)
     if warnings:
         out["warnings"] = warnings
+    if dropped:
+        # NEVER SILENT. This means shots that were paid for have to be bought
+        # again, which is the one consequence of a re-plan that costs money.
+        out["restyled"] = {
+            "shots": dropped,
+            "note": f"the style or model changed, so {dropped} already-generated "
+                    "shot(s) were reset to planned — a clip rendered in the old "
+                    "look is not a rendering of the new one. Re-generating them "
+                    "costs money again."}
     if kept_rows:
         out["carried"] = {
             "shots": kept_rows,
@@ -341,6 +601,86 @@ def _clean_shots(shots: list) -> tuple[list[dict], list[str]]:
     return cleaned, warnings
 
 
+def _resolve_model(model: str = "") -> str:
+    """A registered video model name, or a refusal that lists the real ones.
+
+    Validated at PLAN time as well as at generate time, because the shot list is
+    written against this model's limits: seconds ranges differ per model, so a
+    list that is legal on one is illegal on another, and finding that out at the
+    first generation means rewriting the list after money has moved.
+    """
+    from bgate_adapters import kie
+
+    chosen = str(model or "").strip() or kie.DEFAULT_VIDEO_MODEL
+    if chosen not in kie.VIDEO_MODELS:
+        raise CinematicError(
+            f"{chosen!r} is not a registered video model — known: "
+            f"{sorted(kie.VIDEO_MODELS)}. kie serves more than these; a model "
+            "whose reference page you have read can be added with "
+            "cinematic_register_model without waiting for a release.")
+    return chosen
+
+
+def _style_refs(root: str | os.PathLike[str], given: list) -> tuple[list, list]:
+    """Style reference paths, split into the ones on disk and the ones missing.
+
+    Missing ones are REPORTED rather than raised, because plan() must stay free
+    and non-refusing: a shot list written before the keyframes exist is the
+    normal order of work, and refusing it would force a human to generate art
+    before they are allowed to write down what the scene is.
+    """
+    base = Path(root)
+    good, missing = [], []
+    for one in given:
+        text = str(one or "").strip()
+        if not text:
+            continue
+        if text.startswith(("http://", "https://")) or (base / text).is_file():
+            good.append(text)
+        else:
+            missing.append(text)
+    return good, missing
+
+
+def _style_warnings(look: dict, refs: list, missing: list,
+                    shots: list) -> list[str]:
+    """Everything true and unwise about this sequence's look, said once.
+
+    These are warnings and not refusals throughout. A style is a judgement call
+    and the seat is allowed to make it — what it is not allowed to do is make it
+    without being told what this table knows.
+    """
+    out = []
+    if missing:
+        out.append(
+            f"style reference(s) not on disk and therefore not applied: "
+            f"{missing}. The sequence will be generated on prose alone, which "
+            "is the weakest of the three levers.")
+    if look["note"]:
+        out.append(f"{look['label']}: {look['note']}")
+    if not look["is_preset"] and look["matched"] == STYLE_FALLBACK:
+        out.append(
+            "NO STYLE WAS NAMED, so this sequence falls back to "
+            f"{STYLES[STYLE_FALLBACK]['label'].lower()}. That is a real choice "
+            "being made by default — a model given no stylistic instruction "
+            "uses its own house look, which differs per model and per version, "
+            "so an unstyled sequence is one whose appearance nobody chose and "
+            "nobody can reproduce.")
+    if refs:
+        # The art seat's rule 4, and it bites harder here: a video model gets
+        # ONE reference array, and every frame in it competes.
+        identity = sum(len(s.get("refs") or []) for s in shots)
+        if identity:
+            out.append(
+                f"this sequence mixes {len(refs)} style reference(s) with "
+                f"{identity} identity reference(s) in one array. A STYLE "
+                "REFERENCE AND AN IDENTITY REFERENCE CANNOT SHARE A WEIGHT — at "
+                "equal strength the style ref transfers the SUBJECT and the "
+                "whole cast comes back as one person. If faces start "
+                "converging, drop the style refs and carry the look in prose.")
+    return out
+
+
 def _unique_slug(given: Any, index: int, used: set) -> str:
     """A slug that is unique within the sequence. It names a FILE, so a
     collision is not cosmetic — it is a shot overwriting another shot's clip.
@@ -381,7 +721,14 @@ def sequence(root: str | os.PathLike[str], name: str) -> dict:
                              + (f" — known: {known}" if known else
                                 " — cinematic_plan writes one"))
     out = dict(row)
-    out["shots"] = [_shot_view(root, dict(s)) for s in conn.execute(
+    # The look, resolved once and handed to every shot, so a card and a
+    # generation cannot disagree about what this sequence is being rendered in.
+    out["style_refs"] = json.loads(out.pop("style_refs_json", "") or "[]")
+    look = resolve_style(out.get("style", ""), out.get("style_note", ""))
+    out["style_resolved"] = look
+    out["model"] = out.get("model") or ""
+    out["shots"] = [_shot_view(root, dict(s), look["text"])
+                    for s in conn.execute(
         "SELECT * FROM cine_shot WHERE sequence_id = ? ORDER BY idx",
         (out["id"],))]
     out["runtime_s"] = sum(s["duration"] for s in out["shots"])
@@ -407,17 +754,27 @@ def sequences(root: str | os.PathLike[str], limit: int = 100) -> list[dict]:
             "SELECT COUNT(*) AS n, "
             "SUM(status = 'kept') AS kept, SUM(duration) AS secs "
             "FROM cine_shot WHERE sequence_id = ?", (row["id"],)).fetchone()
+        row["style_refs"] = json.loads(row.pop("style_refs_json", "") or "[]")
+        row["style_label"] = resolve_style(row.get("style", ""),
+                                           row.get("style_note", ""))["label"]
         out.append({**row, "shot_count": counts["n"] or 0,
                     "kept": counts["kept"] or 0,
                     "runtime_s": counts["secs"] or 0})
     return out
 
 
-def _shot_view(root: str | os.PathLike[str], shot: dict) -> dict:
-    """One shot row, plus whatever is true of the clip it points at."""
+def _shot_view(root: str | os.PathLike[str], shot: dict,
+               style: str = "") -> dict:
+    """One shot row, plus whatever is true of the clip it points at.
+
+    ``prompt`` is the FULL text this shot would be generated with, style
+    included — not the action alone. A card that shows a prompt shorter than the
+    one that gets sent is a card that hides where the look comes from, and the
+    review of a shot list is the only cheap review there is.
+    """
     shot["refs"] = json.loads(shot.get("refs_json") or "[]")
     shot.pop("refs_json", None)
-    shot["prompt"] = prompt_for(shot)
+    shot["prompt"] = prompt_for(shot, style)
     art_id = shot.get("artifact_id")
     if art_id:
         try:
@@ -439,22 +796,35 @@ def _shot_view(root: str | os.PathLike[str], shot: dict) -> dict:
     return shot
 
 
-def prompt_for(shot: dict) -> str:
-    """The three stored fields joined into what the model is actually sent.
+def prompt_for(shot: dict, style: str = "") -> str:
+    """The stored fields joined into what the model is actually sent.
 
     ONE PLACE, so that a re-generation cannot drift from the original by
-    assembling the parts in a different order. Camera leads because a video model
-    reads the opening of a prompt as the framing and the rest as the content, and
-    a camera instruction buried after two sentences of action gets averaged away.
+    assembling the parts in a different order — and so that STYLE cannot be
+    forgotten on a shot. Every caller that builds a prompt for a shot comes
+    through here; there is deliberately no second path.
+
+    THE ORDER IS LOAD-BEARING, and it is not the order a human would write.
+      * CAMERA FIRST. A video model reads the opening of a prompt as the framing
+        and the rest as content; a camera instruction buried after two sentences
+        of action gets averaged away.
+      * ACTION SECOND. The thing that happens.
+      * DIALOGUE QUOTED. An unquoted line reads as narration and comes back as a
+        character silently doing the thing the line says.
+      * STYLE LAST, AND ALWAYS. Trailing style text applies to the whole prompt
+        rather than modifying the noun it happens to sit next to — "a cel-shaded
+        knight in a ruined hall" styles the knight, and the hall comes back
+        photoreal. It also means the style is a constant across every shot of a
+        sequence, in the same position, which is what keeps the beats matching.
     """
     parts = []
     if shot.get("camera"):
         parts.append(str(shot["camera"]).strip().rstrip("."))
     parts.append(str(shot.get("action") or "").strip())
     if shot.get("dialogue"):
-        # Quoted rather than described: an unquoted line reads as narration and
-        # comes back as a character silently doing the thing the line says.
         parts.append(f'The character says: "{str(shot["dialogue"]).strip()}"')
+    if str(style or "").strip():
+        parts.append(str(style).strip())
     return ". ".join(p for p in parts if p)
 
 
@@ -474,6 +844,12 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
     the thing a human must do between shots — LOOK at the clip — is exactly what
     a loop is built to skip. Callers that want the whole sequence iterate and
     judge, which is the pace the work actually goes at.
+
+    THE MODEL AND THE LOOK COME FROM THE SEQUENCE, not from this call. ``model``
+    is an override for a deliberate one-shot experiment and it is recorded on the
+    revision, but the default is what the sequence was planned with — a cutscene
+    generated half on one model or in half a style does not cut together, and the
+    seam lands mid-scene where only a full watch would find it.
 
     The conditioning frames are uploaded to the provider by the adapter and the
     minted URLs are recorded as provenance with the day they die.
@@ -501,12 +877,42 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
                          "Fix the encoder first; nothing has been charged.",
                 "encoder": encoder, "sequence": seq["name"], "idx": idx}
 
-    frames = keyframes_for(root, shot)
+    frames = keyframes_for(root, shot, style_refs=seq.get("style_refs"))
     if frames["missing"]:
         return {"ok": False, "stage": "anchors",
                 "error": "conditioning frames named by this shot are not on "
                          f"disk: {frames['missing']}. Nothing has been charged.",
                 "sequence": seq["name"], "idx": idx}
+
+    # Intent is checked against THIS model before anything is submitted, so a
+    # sequence planned at 12 seconds against a model that caps at 8 is refused
+    # here rather than at the provider, after the upload and before the refund
+    # that does not exist.
+    chosen = str(model or "").strip() or seq["model"] or kie.DEFAULT_VIDEO_MODEL
+    wanted = {
+        "seconds": int(shot["duration"]),
+        "quality": seq["resolution"],
+        "shape": seq["aspect_ratio"],
+        "first_frame": frames["first"] or None,
+        "last_frame": frames["last"] or None,
+        "refs": frames["refs"] or None,
+        # BOOL, NOT None-WHEN-FALSE. Seedance's `generate_audio` defaults to
+        # TRUE upstream, so "off" is a thing that has to be SAID; omitting it
+        # would hand back a clip with a baked-in audio bed this module
+        # documents as being off by default.
+        "audio": bool(generate_audio),
+    }
+    intent, dropped, refusal = _fit_intent(chosen, wanted)
+    if refusal:
+        return {"ok": False, "stage": "model", "model": chosen,
+                "sequence": seq["name"], "idx": idx, "error": refusal}
+    try:
+        kie.video_input(chosen, **intent)
+    except Exception as exc:                                     # noqa: BLE001
+        return {"ok": False, "stage": "model",
+                "error": f"{chosen} cannot generate this shot as planned: "
+                         f"{exc}. Nothing has been charged.",
+                "model": chosen, "sequence": seq["name"], "idx": idx}
 
     stem = f"{seq['name']}_{shot['slug']}"
     out_dir = Path(root) / CANDIDATE_DIR / seq["name"]
@@ -520,15 +926,9 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
         on_progress(0.05, f"generating shot {idx} of {len(seq['shots'])}", "")
 
     result = kie.generate_video(
-        prompt_for(shot), str(out_path),
-        model=model or kie.DEFAULT_VIDEO_MODEL,
-        duration=int(shot["duration"]),
-        resolution=seq["resolution"], aspect_ratio=seq["aspect_ratio"],
-        first_frame_url=frames["first"], last_frame_url=frames["last"],
-        reference_image_urls=frames["refs"],
-        generate_audio=bool(generate_audio),
-        root=root, logical_name=stem, work_item_id=work_item_id,
-        timeout=float(timeout))
+        prompt_for(shot, seq["style_resolved"]["text"]), str(out_path),
+        model=chosen, root=root, logical_name=stem,
+        work_item_id=work_item_id, timeout=float(timeout), **intent)
 
     if not result.get("ok"):
         _set_shot(root, shot["id"], status="failed",
@@ -547,22 +947,214 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
                  seat="cinematic", ref=str(artifact["id"]))
     if on_progress:
         on_progress(1.0, "shot generated — watch it before keeping it", "")
-    return {"ok": True, "sequence": seq["name"], "idx": idx,
-            "artifact_id": artifact["id"], "path": artifact["path"],
-            "revision": artifact["revision"],
-            "uploads": result.get("uploads") or [],
-            "credits_consumed": result.get("credits_consumed"),
-            "seconds": result.get("seconds"),
-            "consumes": "WATCH IT. Then cinematic_keep to transcode it into the "
-                        "engine project, or re-generate this shot — a shot "
-                        "nobody looked at is a shot nobody judged."}
+    out = {"ok": True, "sequence": seq["name"], "idx": idx, "model": chosen,
+           "artifact_id": artifact["id"], "path": artifact["path"],
+           "revision": artifact["revision"],
+           "uploads": result.get("uploads") or [],
+           "credits_consumed": result.get("credits_consumed"),
+           "seconds": result.get("seconds"),
+           "consumes": "WATCH IT. Then cinematic_keep to transcode it into the "
+                       "engine project, or re-generate this shot — a shot "
+                       "nobody looked at is a shot nobody judged."}
+    if dropped:
+        # NEVER SILENT. This model has no knob for these, so the clip arrives
+        # framed or sharpened in a way nobody chose — which is worth knowing
+        # before it is cut against seven shots that were controlled.
+        out["unsupported"] = {
+            "dropped": dropped,
+            "note": f"{chosen} has no parameter for {', '.join(dropped)}, so "
+                    "the sequence's setting could not be applied and the model "
+                    "used its own. The clip is still usable; check it matches "
+                    "the other shots before keeping it."}
+    return out
 
 
-def keyframes_for(root: str | os.PathLike[str], shot: dict) -> dict:
+# WHICH INTENTS A MODEL IS ALLOWED TO LACK, and this split is a real decision
+# rather than a convenience — getting it wrong in either direction is expensive.
+#
+# `video_input` refuses any intent a model has no field for, and that rule is
+# right at ITS layer: a parameter silently dropped is one you paid for and did
+# not get. But this layer sends SEVEN intents on every shot, most of them carried
+# from the sequence's defaults rather than asked for, and refusing all seven made
+# any model simpler than Seedance unusable. Measured end to end: a second model
+# registered, planned and prompted correctly, and every generation died because
+# it had no `quality` knob.
+#
+# So the question is not "did the model have the field" but "does losing it
+# change what the caller GETS".
+#
+#   ADVISORY — the shot is still the shot without it. A model with no quality or
+#   shape parameter renders at its own; the picture arrives, framed and sharp in
+#   a way nobody chose. Dropped, and REPORTED on the result so it is not silent.
+#
+#   ESSENTIAL — losing it changes the deliverable, so it refuses BEFORE the
+#   spend. `seconds` because the shot list's runtime becomes a lie and the cut
+#   will not assemble to the planned length. `first_frame`/`last_frame`/`refs`
+#   because an unanchored shot stars a stranger, which is the single most
+#   expensive failure in this module. `audio` because a caller who asked for
+#   sound and gets silence has a missing deliverable, not a different one.
+#
+# Note the asymmetry on audio: audio=None (the default — do not generate any) is
+# ALREADY TRUE of a model that makes none, so it is simply not sent. Only an
+# explicit request refuses.
+ADVISORY_INTENT = frozenset({"quality", "shape"})
+
+
+def _fit_intent(model: str, wanted: dict) -> tuple[dict, list, str]:
+    """Trim a shot's intent to what this model can express.
+
+    Returns ``(intent, dropped, refusal)``. A non-empty ``refusal`` means do not
+    spend; ``dropped`` names advisory settings this model cannot be told, which
+    the caller reports rather than swallows.
+    """
+    from bgate_adapters import kie
+
+    spec = kie.MODELS.get(model) or {}
+    supports = set(spec.get("intent") or {})
+    intent, dropped = {}, []
+    for name, value in wanted.items():
+        if value is None or value == "" or value == []:
+            continue
+        if name in supports:
+            intent[name] = value
+            continue
+        if name in ADVISORY_INTENT:
+            dropped.append(name)
+            continue
+        if name == "audio":
+            # The asymmetry: asking a model to turn OFF audio it cannot make is
+            # already satisfied, so it is dropped. Asking it FOR audio it cannot
+            # make is a missing deliverable, so it refuses.
+            if not value:
+                continue
+            return {}, dropped, (
+                f"{model} cannot generate audio, and this shot asked for it. "
+                "Generate the picture here and let the audio seat score it, or "
+                "pick a model that makes its own. Nothing has been charged.")
+        if name in ("first_frame", "last_frame", "refs"):
+            return {}, dropped, (
+                f"{model} has no parameter for {name}, so this shot would be "
+                "generated with nothing to hold onto — an unanchored shot "
+                "invents the cast fresh and will not match the others. Pick a "
+                "model that takes reference frames. Nothing has been charged.")
+        return {}, dropped, (
+            f"{model} has no parameter for {name}, and the shot list is written "
+            "against it — generating anyway would give a clip whose length is "
+            "not the one the cut was planned around. Nothing has been charged.")
+    return intent, dropped, ""
+
+
+def shot_status(root: str | os.PathLike[str], task_id: str) -> dict:
+    """Where a submitted generation got to, at the provider. Costs nothing.
+
+    Reports; :func:`recover_shot` acts. The pair exists here for the same reason
+    music has it, and the money at stake is larger: a video job runs for minutes,
+    so a dropped connection, a too-short timeout or a killed agent between submit
+    and download is not a rare event — and the charge happened at submit.
+    """
+    from bgate_adapters import kie
+
+    ident = str(task_id or "").strip()
+    if not ident:
+        raise CinematicError("a task id is needed to check a generation")
+    # record(), not poll(): this must LOOK and return, never block. poll() waits
+    # for a terminal state and raises on a failed job, which is right for the
+    # generation path and wrong for a status call a dashboard hits every few
+    # seconds.
+    rec = kie.record(ident, root=str(root))
+    state = str(rec.get("state") or "").lower()
+    urls = kie.result_urls(rec)
+    return {
+        "ok": True, "task_id": ident, "status": state,
+        "done": state == kie.JOB_DONE,
+        "running": state in kie.JOB_RUNNING,
+        "failed": state in kie.JOB_DEAD,
+        "urls": urls,
+        "recoverable": bool(urls),
+        "note": ("kie is holding a finished clip for this task — recover_shot "
+                 "puts it on disk without paying again" if urls else
+                 "kie has no finished clip for this task yet"),
+    }
+
+
+def recover_shot(root: str | os.PathLike[str], name: str, idx: int,
+                 task_id: str = "", *,
+                 work_item_id: Optional[int] = None) -> dict:
+    """Download a clip that was already paid for and register it. The repair door.
+
+    THE DOOR THAT HAD TO EXIST, and video needs it more than music did. A
+    generation is charged at SUBMIT. Everything after that — the poll loop, the
+    download, this process staying alive for the ten minutes it takes — can fail
+    while the provider sits on a finished clip that has already been billed. A
+    seat whose only option is to press generate again pays twice.
+
+    The task id is read off the shot row when not supplied, which is the whole
+    reason it is stored there: an agent that died mid-generation left the id
+    behind, and its successor needs no archaeology to find it.
+
+    NO COST IS CLAIMED. The charge happened at submit; a balance delta measured
+    now would be meaningless, so credits are reported as unmeasurable rather
+    than as zero.
+    """
+    from bgate_adapters import kie
+
+    root = str(root)
+    seq = sequence(root, name)
+    shot = _shot_at(seq, idx)
+    ident = str(task_id or shot.get("task_id") or "").strip()
+    if not ident:
+        raise CinematicError(
+            f"shot {idx} of {seq['name']} has no task id recorded, so there is "
+            "nothing to recover — it was never submitted, or it failed before "
+            "the provider accepted it.")
+
+    rec = kie.poll(ident, root=root, timeout=60.0, interval=5.0)
+    urls = kie.result_urls(rec)
+    if not urls:
+        return {"ok": False, "task_id": ident, "sequence": seq["name"],
+                "idx": idx,
+                "error": f"the provider is holding no finished clip for task "
+                         f"{ident}"}
+
+    stem = f"{seq['name']}_{shot['slug']}"
+    out_dir = Path(root) / CANDIDATE_DIR / seq["name"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    revision = 1 + len(artifacts.list_revisions(root, logical_name=stem,
+                                                limit=500))
+    out_path = out_dir / f"{stem}_r{revision}_recovered.mp4"
+    kie.download(urls[0], out_path, accept="video/*", timeout=600.0)
+
+    artifact = _register(
+        root, stem, shot, seq,
+        {"path": str(out_path), "model": seq["model"], "task_id": ident,
+         "url": urls[0], "uploads": [], "credits_consumed": None,
+         "credits_source": "not_measurable_after_the_fact", "accounted": False},
+        work_item_id=work_item_id)
+    _set_shot(root, shot["id"], status="generated", artifact_id=artifact["id"],
+              task_id=ident, note="")
+    activity.log(root, "cinematic",
+                 f"recovered {seq['name']} shot {idx} from task {ident}",
+                 seat="cinematic", ref=str(artifact["id"]))
+    return {"ok": True, "recovered": True, "sequence": seq["name"], "idx": idx,
+            "task_id": ident, "artifact_id": artifact["id"],
+            "path": artifact["path"],
+            "note": "this clip was charged when the job was submitted, so no "
+                    "cost is recorded against this call."}
+
+
+def keyframes_for(root: str | os.PathLike[str], shot: dict,
+                  style_refs: Optional[list] = None) -> dict:
     """This shot's conditioning frames as things the adapter can send.
 
     Returns ``{first, last, refs, missing}`` — local paths are handed through as
     paths and the adapter uploads them; anything already a URL passes untouched.
+
+    THE SEQUENCE'S STYLE REFS RIDE IN `refs` ALONGSIDE THE SHOT'S OWN, and they
+    go in LAST deliberately. A model reads a reference array in order and weights
+    the front of it more heavily; identity is the thing that must not drift, so
+    the character frames lead and the look frames follow. This is the mitigation
+    for the weight-sharing problem plan() warns about — it does not solve it, and
+    nothing at this layer can, which is why the warning exists.
 
     WHAT THIS DOES NOT DO IS THE POINT. It never reaches into the previous shot's
     video for a frame. See the module docstring: that is the chain the art seat
@@ -582,7 +1174,7 @@ def keyframes_for(root: str | os.PathLike[str], shot: dict) -> dict:
             continue
         out[field] = str(base / value)
     refs = []
-    for one in (shot.get("refs") or []):
+    for one in list(shot.get("refs") or []) + list(style_refs or []):
         text = str(one).strip()
         if not text:
             continue
@@ -941,7 +1533,13 @@ def _register(root: str, stem: str, shot: dict, seq: dict, result: dict, *,
     """One generated clip -> one immutable candidate revision."""
     return artifacts.register(
         root, stem, result["path"], producer=PRODUCER,
-        model=str(result.get("model") or ""), prompt=prompt_for(shot),
+        model=str(result.get("model") or ""),
+        # THE PROMPT THAT WAS ACTUALLY SENT, style included. Recording the shot
+        # text alone would mean a revision whose stored prompt does not
+        # reproduce the clip beside it — and the whole reason artifacts carry a
+        # prompt is that six months later it is the only record of what was
+        # asked for.
+        prompt=prompt_for(shot, (seq.get("style_resolved") or {}).get("text", "")),
         refs=list(shot.get("refs") or []), work_item_id=work_item_id,
         metadata={
             "provider": "kie",

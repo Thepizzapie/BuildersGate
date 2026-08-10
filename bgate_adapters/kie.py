@@ -337,8 +337,206 @@ MODELS: dict[str, dict] = {
         "credits": None,
         "note": "Text-to-video with optional first/last frame and reference "
                 "clips. Generates its own audio unless told not to.",
+        # THE INTENT MAP — see VIDEO_INTENT below for why this exists.
+        "intent": {
+            "seconds": "duration",
+            "shape": "aspect_ratio",
+            "quality": "resolution",
+            "first_frame": "first_frame_url",
+            "last_frame": "last_frame_url",
+            "refs": "reference_image_urls",
+            "audio": "generate_audio",
+        },
     },
 }
+
+# ---------------------------------------------------------------------------
+# THE INTENT VOCABULARY, and why a second video model made it necessary.
+#
+# bgate_core.cinematic used to call generate_video(duration=..., resolution=...,
+# aspect_ratio=..., first_frame_url=...). Those are not "the video parameters" —
+# they are SEEDANCE'S parameters, and a pipeline that speaks them is a pipeline
+# with exactly one model in it forever.
+#
+# MEASURED AGAINST kie's OWN CATALOGUE: Sora 2's market entry takes `n_frames`
+# where Seedance takes `duration`, and its aspect ratio is the WORD "landscape"
+# where Seedance wants the ratio "16:9". Same capability, same API family, same
+# vendor — three incompatible spellings. A caller passing Seedance's names to it
+# gets `build_input`'s unknown-key refusal at best and a silently ignored setting
+# it was charged for at worst.
+#
+# So the pipeline speaks INTENT — how long, what shape, how sharp, what to open
+# on — and each model's table entry says what it calls those. Adding a model is
+# still a table entry; it is now a table entry that the rest of the product
+# needs no knowledge of.
+#
+# WHAT IS DELIBERATELY NOT HERE: any model whose reference page has not been
+# read. That rule predates this map and this map does not weaken it — the ids
+# and the spellings above ARE the thing that has to be verified, and inventing
+# an intent map is inventing the model. `register_video_model` is the door for a
+# model a USER has read the page for; see it for why that is not the same thing
+# as guessing.
+VIDEO_INTENT = ("seconds", "shape", "quality", "first_frame", "last_frame",
+                "refs", "audio")
+
+# Canonical shape names, so a caller never has to know whether a model wants a
+# ratio or a word. A model that wants words declares `intent_values`.
+SHAPE_WORDS = {"16:9": "landscape", "9:16": "portrait", "1:1": "square"}
+
+
+def video_input(model: str, **intent: Any) -> dict:
+    """Translate intent into one model's own field names and value vocabulary.
+
+    Unknown intent keys are refused rather than dropped, for the reason
+    build_input already gives about unsupported inputs: a silently ignored
+    setting still bills you and leaves nothing saying why it did not apply. An
+    intent this model has NO field for is also refused, and that is the honest
+    answer — "this model cannot be told how long to be" is information the caller
+    needs before it spends, not after.
+
+    Three declarative transforms, each earned by a real difference in kie's own
+    catalogue rather than invented for symmetry:
+      * ``intent``        name -> the model's field name
+      * ``intent_values`` name -> {canonical value: this model's spelling}
+      * ``intent_scale``  name -> multiplier (seconds -> frame counts)
+    """
+    spec = _spec(model)
+    if spec["kind"] != "video":
+        raise KieError(f"{model!r} is not a video model — "
+                       f"known: {sorted(VIDEO_MODELS)}")
+    table = spec.get("intent") or {}
+    if not table:
+        raise KieError(
+            f"{model!r} is registered without an intent map, so nothing can "
+            "tell what it calls duration or aspect ratio. Re-register it with "
+            "`intent` filled in from its reference page.")
+
+    unknown = sorted(set(intent) - set(VIDEO_INTENT))
+    if unknown:
+        raise KieError(f"unknown intent {', '.join(unknown)} — the vocabulary "
+                       f"is {', '.join(VIDEO_INTENT)}")
+
+    out: dict[str, Any] = {}
+    for name, value in intent.items():
+        if value is None or value == "" or value == []:
+            continue
+        field = table.get(name)
+        if not field:
+            raise KieError(
+                f"{model} has no parameter for {name!r} — it accepts "
+                f"{', '.join(sorted(table))}. Asking for it anyway would be a "
+                "setting you paid for and did not get.")
+        if name in spec.get("intent_scale", {}):
+            value = int(round(float(value) * spec["intent_scale"][name]))
+        mapped = (spec.get("intent_values") or {}).get(name)
+        if mapped:
+            if str(value) not in mapped:
+                raise KieError(
+                    f"{model} cannot do {name}={value!r} — it offers "
+                    f"{sorted(mapped)}")
+            value = mapped[str(value)]
+        out[field] = value
+    return out
+
+
+def video_capabilities(model: str) -> dict:
+    """What one video model can be asked for, in intent terms.
+
+    A form or an agent choosing a model needs this BEFORE it plans a sequence:
+    the seconds range is what decides how many shots a 90-second cutscene is,
+    and it moves per model.
+    """
+    spec = _spec(model)
+    table = spec.get("intent") or {}
+    values, ranges = spec.get("intent_values") or {}, {}
+    for name, field in table.items():
+        if name in values:
+            ranges[name] = sorted(values[name])
+        elif field in spec.get("enums", {}):
+            ranges[name] = list(spec["enums"][field])
+        elif field in spec.get("ranges", {}):
+            lo, hi = spec["ranges"][field]
+            scale = (spec.get("intent_scale") or {}).get(name)
+            ranges[name] = [lo / scale, hi / scale] if scale else [lo, hi]
+    return {
+        "model": model,
+        "label": spec.get("label", model),
+        "id": spec["model"],
+        "supports": sorted(table),
+        "options": ranges,
+        "max_refs": (spec.get("caps") or {}).get(table.get("refs", ""), 0),
+        "note": spec.get("note", ""),
+        "source": spec.get("source", "built-in"),
+    }
+
+
+def register_video_model(name: str, spec: dict) -> dict:
+    """Add a video model at RUNTIME, from a reference page a human has read.
+
+    WHY THIS EXISTS, AND WHY IT IS NOT A HOLE IN THE NO-GUESSING RULE. kie's
+    market carries dozens of video models and this file can only carry the ones
+    whose reference page was actually read. Before this, that ceiling was the
+    PRODUCT's ceiling: a user looking at the Kling page in another tab, with the
+    exact ids and enums in front of them, still could not use it without a
+    release.
+
+    The rule was never "few models". It was "nothing in here is a guess", and
+    that rule is kept, not bent: this refuses a spec that does not carry its own
+    ids, ranges and intent map, and every model registered through it is stamped
+    `source: "registered"` so no surface can confuse a user's entry for a
+    verified one. What it moves is WHO does the reading — which was always the
+    honest answer, because the person with the page open knows more than this
+    table does.
+    """
+    key = str(name or "").strip()
+    if not key:
+        raise KieError("a model needs a name")
+    required = ("model", "intent")
+    missing = [f for f in required if not spec.get(f)]
+    if missing:
+        raise KieError(
+            f"cannot register {key!r} without {', '.join(missing)} — "
+            "`model` is the literal id kie wants and `intent` says what this "
+            "model calls seconds/shape/quality/first_frame/last_frame/refs/"
+            "audio. Both come off the model's reference page; guessing either "
+            "buys a 404 or a setting that silently did not apply.")
+    bad = sorted(set(spec["intent"]) - set(VIDEO_INTENT))
+    if bad:
+        raise KieError(f"{key}: unknown intent name(s) {bad} — the vocabulary "
+                       f"is {', '.join(VIDEO_INTENT)}")
+    entry = {
+        "model": str(spec["model"]),
+        "kind": "video",
+        "label": str(spec.get("label") or key),
+        "required": tuple(spec.get("required") or ("prompt",)),
+        "supports": set(spec.get("supports")
+                        or ({"prompt"} | set(spec["intent"].values()))),
+        "enums": {k: tuple(v) for k, v in (spec.get("enums") or {}).items()},
+        "ranges": {k: tuple(v) for k, v in (spec.get("ranges") or {}).items()},
+        "caps": dict(spec.get("caps") or {}),
+        "images": str(spec.get("images") or spec["intent"].get("refs", "")),
+        "images_list": bool(spec.get("images_list", True)),
+        "credits": None,
+        "note": str(spec.get("note") or ""),
+        "intent": dict(spec["intent"]),
+        "intent_values": {k: dict(v) for k, v
+                          in (spec.get("intent_values") or {}).items()},
+        "intent_scale": dict(spec.get("intent_scale") or {}),
+        # The stamp that keeps this honest on every surface that lists models.
+        "source": "registered",
+    }
+    MODELS[key] = entry
+    _refresh_model_kinds()
+    return video_capabilities(key)
+
+
+def _refresh_model_kinds() -> None:
+    """Rebuild the kind tuples after MODELS changes. They are module-level
+    caches of a derived fact, and a registration that left them stale would add
+    a model that `video_models` cannot see."""
+    global IMAGE_MODELS, VIDEO_MODELS
+    IMAGE_MODELS = tuple(k for k, v in MODELS.items() if v["kind"] == "image")
+    VIDEO_MODELS = tuple(k for k, v in MODELS.items() if v["kind"] == "video")
 
 DEFAULT_IMAGE_MODEL = "nano-banana"
 DEFAULT_VIDEO_MODEL = "seedance-2"
@@ -1146,15 +1344,22 @@ def _as_url(value: str, root: Any, uploads: list) -> str:
 
 
 def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
-                   model: str = DEFAULT_VIDEO_MODEL, duration: Optional[int] = None,
-                   resolution: str = "", aspect_ratio: str = "",
-                   first_frame_url: str = "", last_frame_url: str = "",
-                   reference_image_urls: Optional[list] = None,
-                   generate_audio: Optional[bool] = None,
+                   model: str = "", seconds: Optional[float] = None,
+                   quality: str = "", shape: str = "",
+                   first_frame: str = "", last_frame: str = "",
+                   refs: Optional[list] = None,
+                   audio: Optional[bool] = None,
                    root: Any = None, logical_name: str = "",
                    work_item_id: Optional[int] = None,
                    timeout: float = 1800.0, **extra: Any) -> dict:
     """Submit, wait, download one clip. The video twin of :func:`generate_image`.
+
+    THE ARGUMENTS ARE INTENT, NOT ONE MODEL'S FIELD NAMES. They used to be
+    Seedance's — ``duration``, ``aspect_ratio``, ``first_frame_url`` — which made
+    every caller a Seedance caller and this function unable to drive a second
+    model even though kie serves several behind the same key. Sora 2 counts
+    `n_frames` and spells its shape "landscape"; Seedance takes `duration` and
+    "16:9". :func:`video_input` translates, per model, from its own table entry.
 
     THE TIMEOUT DEFAULTS TO HALF AN HOUR because a video job runs in minutes
     where an image runs in seconds, and kie's own guidance is to stop polling at
@@ -1176,6 +1381,7 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
     awaiting a decision, not as something to copy into the engine project.
     """
     started = time.monotonic()
+    model = model or DEFAULT_VIDEO_MODEL
     spec = MODELS.get(model)
     base = {"ok": False, "provider": "kie", "model": model, "kind": "video",
             "estimated_usd": None}
@@ -1188,31 +1394,27 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
     # to be conditioned on has a URL kie will accept.
     uploads: list[dict] = []
     try:
-        first_frame_url = _as_url(first_frame_url, root, uploads)
-        last_frame_url = _as_url(last_frame_url, root, uploads)
-        reference_image_urls = [_as_url(one, root, uploads)
-                                for one in (reference_image_urls or [])]
+        first_frame = _as_url(first_frame, root, uploads)
+        last_frame = _as_url(last_frame, root, uploads)
+        refs = [_as_url(one, root, uploads) for one in (refs or [])]
     except KieError as exc:
         return {**base, "error": f"conditioning frame could not be uploaded: "
                                  f"{exc}", "uploads": uploads,
                 "seconds": round(time.monotonic() - started, 2)}
 
-    fields: dict[str, Any] = dict(extra)
+    # Intent -> this model's own spelling. Refuses BEFORE the spend when the
+    # model has no parameter for something that was asked for, rather than
+    # dropping it and billing for a setting that did not apply.
+    try:
+        fields: dict[str, Any] = dict(extra)
+        fields.update(video_input(model, seconds=seconds, quality=quality,
+                                  shape=shape, first_frame=first_frame,
+                                  last_frame=last_frame, refs=refs,
+                                  audio=audio))
+    except KieError as exc:
+        return {**base, "error": str(exc), "uploads": uploads,
+                "seconds": round(time.monotonic() - started, 2)}
     fields["prompt"] = prompt
-    if duration is not None:
-        fields["duration"] = int(duration)
-    if resolution:
-        fields["resolution"] = resolution
-    if aspect_ratio:
-        fields["aspect_ratio"] = aspect_ratio
-    if first_frame_url:
-        fields["first_frame_url"] = first_frame_url
-    if last_frame_url:
-        fields["last_frame_url"] = last_frame_url
-    if reference_image_urls:
-        fields["reference_image_urls"] = list(reference_image_urls)
-    if generate_audio is not None:
-        fields["generate_audio"] = bool(generate_audio)
 
     task_id = ""
     try:
