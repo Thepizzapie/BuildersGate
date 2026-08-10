@@ -18,9 +18,20 @@ import pytest
 from bgate_adapters import _blender_kit as kit
 from bgate_adapters import blender
 
-requires_blender = pytest.mark.skipif(
+_no_blender = pytest.mark.skipif(
     not blender.available()["available"], reason="Blender not installed"
 )
+
+
+def requires_blender(obj):
+    """SLOW as well as skipped-when-missing. See test_blender.py's docstring.
+
+    Composed rather than set as a module-level ``pytestmark`` because a handful
+    of tests here assert on the generated script without ever running it, and
+    marking those slow would take real coverage out of the default run to no
+    purpose.
+    """
+    return pytest.mark.slow(_no_blender(obj))
 
 
 def _run(tmp_path, script):

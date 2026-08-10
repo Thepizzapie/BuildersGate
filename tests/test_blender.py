@@ -4,6 +4,13 @@ Mocking the subprocess here would test nothing worth testing — the whole risk 
 this adapter is the boundary: does bpy actually run, do stats come back, does a
 broken script report its traceback instead of vanishing. Skipped when Blender
 isn't installed rather than faked.
+
+MARKED SLOW, which it always was and never said. pyproject defines that marker
+as "hits real Blender/whisper", ci.yml's own comment assumes these carry it, and
+CONTRIBUTING tells people to run `-m "not slow"` — but the mark was never on
+them, so the documented fast run drove a real Blender for two minutes on every
+machine that had one. It changes nothing on CI, where no runner has Blender and
+the skipif already took these out.
 """
 from __future__ import annotations
 
@@ -11,9 +18,11 @@ import pytest
 
 from bgate_adapters import blender
 
-pytestmark = pytest.mark.skipif(
-    not blender.available()["available"], reason="Blender not installed"
-)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not blender.available()["available"],
+                       reason="Blender not installed"),
+]
 
 CUBE = """
 import bpy

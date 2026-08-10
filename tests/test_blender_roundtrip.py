@@ -37,8 +37,13 @@ import pytest
 
 from bgate_adapters import blender
 
-pytestmark = pytest.mark.skipif(
-    not blender.available()["available"], reason="Blender not installed")
+# slow as well as skipif: every test here drives a real Blender, which is what
+# pyproject's `slow` marker is defined to mean. See test_blender.py's docstring.
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(not blender.available()["available"],
+                       reason="Blender not installed"),
+]
 
 needs_pil = pytest.mark.skipif(
     importlib.util.find_spec("PIL") is None, reason="Pillow not installed")

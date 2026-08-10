@@ -27,9 +27,20 @@ import pytest
 
 from bgate_adapters import blender
 
-requires_blender = pytest.mark.skipif(
+_no_blender = pytest.mark.skipif(
     not shutil.which("blender") and not blender.available().get("available"),
     reason="needs a real Blender")
+
+
+def requires_blender(obj):
+    """SLOW as well as skipped-when-missing. See test_blender.py's docstring.
+
+    Every test here happens to need it today, so this could be a module-level
+    ``pytestmark``. It is a decorator because that is what the file already used
+    and what its sibling blender suites use — a test added tomorrow that only
+    reads the generated script should not inherit `slow` by sitting in this file.
+    """
+    return pytest.mark.slow(_no_blender(obj))
 
 
 def run(body: str) -> dict:

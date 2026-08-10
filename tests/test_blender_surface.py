@@ -22,8 +22,20 @@ import pytest
 
 from bgate_adapters import blender
 
-needs_blender = pytest.mark.skipif(
+_no_blender = pytest.mark.skipif(
     not blender.available()["available"], reason="Blender not installed")
+
+
+def needs_blender(obj):
+    """SLOW as well as skipped-when-missing. See test_blender.py's docstring.
+
+    Composed rather than set as a module-level ``pytestmark`` because this file
+    also holds pure-Python tests over the glTF it reads back, and marking those
+    slow would take real coverage out of the default run to no purpose.
+    """
+    return pytest.mark.slow(_no_blender(obj))
+
+
 needs_pil = pytest.mark.skipif(
     importlib.util.find_spec("PIL") is None, reason="Pillow not installed")
 
