@@ -49,8 +49,7 @@ window.AtlasCode = (() => {
   };
   const modeFor = name => MODE[String(name).split(".").pop().toLowerCase()] || null;
 
-  const atlasMap = () => (window.Atlas && Atlas.map)
-    || (window.AtlasGraph && AtlasGraph.map) || null;
+  const atlasMap = () => (window.Atlas && Atlas.map) || null;
 
   let host = null, cm = null, built = false;
   let scene = null, data = null, mainScene = null;
