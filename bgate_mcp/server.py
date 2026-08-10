@@ -3230,10 +3230,19 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     provider: "openai" (gpt-image, default) or "krea". They condition on the
     reference in genuinely different ways, and it changes what you get:
     gpt-image EDITS the reference image, which holds identity hard but drags
-    the reference's own lighting along; krea takes it as a STYLE REFERENCE at
-    `ref_strength`, which follows an art style more faithfully and holds a
-    specific face less. Pick per job; `model` names the exact model within the
-    provider (see bgate_adapters.krea.MODELS) or defaults per provider.
+    the reference's own lighting along; a STYLE REFERENCE at `ref_strength`
+    follows an art style more faithfully and holds a specific face less.
+
+    On krea this tool takes nano-banana-2 unless `model` says otherwise, and
+    that pin is the same distinction: krea-2-large (the provider's general
+    default) conditions on a reference as STYLE, and a style reference cannot be
+    asked to hold a subject through a pose change, because holding the subject
+    is not what it does — measured on the party idles, krea-2-medium drew a FACE
+    in seven of eight frames when four of them were specified as back views.
+    nano-banana-2 takes its references as edit inputs, keeps `styles` so a
+    trained LoRA still rides alongside, and bills a flat $0.06 against
+    krea-2-large's $0.065-with-references. Name `model` to override; every
+    entry in bgate_adapters.krea.MODELS is available.
 
 
     How it works (and why): a fresh generation invents a new character every
@@ -3340,15 +3349,35 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # bounded per pose and caught by the running check below; pricing the
         # worst case up front would refuse healthy runs.
         ceiling = _run_ceiling(str(root), max_cost_usd)
-        per_pose = imagegen.price_per_image(quality)
+
+        def _unit(q: str) -> float:
+            """What ONE call of this run costs, on the provider it will run on.
+
+            This used to read the gpt-image price table whichever provider was
+            named, which quietly under-quoted every Krea run — and the spend gate
+            is described as a cap rather than an invoice, so a gate fed the wrong
+            provider's prices is the failure that description exists to rule out.
+            Krea prices per model and payload rather than per quality, so `q` is
+            simply not part of its answer.
+            """
+            if provider == "krea":
+                from bgate_adapters import krea as _krea
+
+                return _krea.price_for(model or _krea.model_for("animation"),
+                                       style_refs=1)
+            if provider in ("local", "comfy", "localgen"):
+                return 0.0        # the user's own GPU, and the ledger says so
+            return imagegen.price_per_image(q)
+
+        per_pose = _unit(quality)
         # The model-sheet views are priced in. They are bought whether or not the
         # anchor was passed in — a supplied ref_image is one approved drawing,
         # and the extra angles are derived FROM it — so they are not conditional
         # on the anchor being generated here.
         extra_views = max(0, min(2, int(anchor_views) - 1))
         projected = round(
-            (0.0 if ref_image else imagegen.price_per_image(ref_quality))
-            + imagegen.price_per_image(ref_quality) * extra_views
+            (0.0 if ref_image else _unit(ref_quality))
+            + _unit(ref_quality) * extra_views
             + per_pose * len(poses), 4)
         refused = _spend_gate(
             str(root), projected,

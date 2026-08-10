@@ -34,6 +34,18 @@ measurements and with what was deliberately not built, in
   every pose call. Two extra generations per character against one per pose plus
   one per re-roll; priced into the spend gate before anything is bought.
 
+- **Character work on Krea is pinned to `nano-banana-2`.** The provider's general
+  default, `krea-2-large`, conditions on a reference as *style*, and a style
+  reference cannot be asked to hold a subject through a pose change because
+  holding the subject is not what it does — the adapter already records the
+  measurement, krea-2-medium drawing a face in seven of eight frames when four
+  were specified as back views. `nano-banana-2` takes its references as edit
+  inputs, keeps `styles` so a trained LoRA still rides alongside, and bills a
+  flat $0.06 against krea-2-large's $0.065-with-references, so it is not a cost
+  regression. Scoped to the `anchor` and `animation` kinds: an item, a prop, a
+  decal or a VFX key frame has no pose continuity to preserve. Naming `model`
+  still wins.
+
 - **`sprite_plan`, and archetypes for `image_sprites`.** The key poses for ten
   standard actions, with their timing — a walk as contact / down / passing / up
   once per leg, an attack as anticipation / contact / follow-through / recover
@@ -91,6 +103,10 @@ measurements and with what was deliberately not built, in
   character at 160px is already past the 4096px that mobile and web commonly cap
   at. Long sheets now wrap into a padded grid. Short ones are still a plain
   strip, so nothing existing re-imports.
+
+- **The spend gate priced every run off the gpt-image table whichever provider
+  was named**, which under-quoted every Krea run. A cap fed the wrong provider's
+  prices is the failure the cap exists to rule out.
 
 - **The art brief's rule 2 said "never condition frame N on frame N-1" while
   `image_sprites` had deliberately done so, on top of the anchor, since
