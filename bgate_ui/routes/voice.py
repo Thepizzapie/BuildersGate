@@ -147,7 +147,12 @@ def voice_speak(payload: dict) -> Response:
     if not text.strip():
         raise api.bad_request('send {"text": "..."} — the words to speak')
 
-    verdict = _dg.available()
+    # can_speak, not available: TTS is one HTTPS POST and needs the key only.
+    # available() also demands the `websockets` package, which nothing on this
+    # path imports, so a clean install refused working text-to-speech and told
+    # the user to install something it does not use. The listen relay below
+    # still asks available(), because that one genuinely needs a socket.
+    verdict = _dg.can_speak()
     if not verdict["available"]:
         raise api.unavailable(verdict["reason"], provider="deepgram")
 

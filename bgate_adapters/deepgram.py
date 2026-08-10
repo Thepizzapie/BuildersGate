@@ -198,8 +198,44 @@ def available(root: Any = None) -> dict:
             "speak_model": DEFAULT_SPEAK_MODEL}
 
 
+def can_speak() -> dict:
+    """Can we do TEXT TO SPEECH, which is a different question from ``available``.
+
+    ``speak`` is one synchronous HTTPS POST through urllib. It does not open a
+    socket, it does not import ``websockets``, and it works perfectly on a
+    machine that has never heard of that package. Only the realtime LISTEN relay
+    needs it, in both directions: a client to reach Deepgram and a server
+    implementation before FastAPI can accept the browser's connection.
+
+    Gating /api/voice/speak on ``available()`` therefore refused a feature that
+    was working. On a clean ``pip install -e .`` — which resolves no websocket
+    support at all, as pyproject's `voice` extra explains — the whole of TTS
+    answered 503 with a message telling the user to install a package it does
+    not use.
+    """
+    if not _key():
+        return {"available": False, "key": False,
+                "reason": f"{ENV} is not set — paste a key from {KEY_URL} into "
+                          "the project's .env through the settings panel"}
+    return {"available": True, "key": True, "reason": "",
+            "speak_model": DEFAULT_SPEAK_MODEL}
+
+
 def _require() -> str:
-    verdict = available()
+    """The KEY, and only the key.
+
+    This asked ``available()``, which is a stricter question: it also requires
+    the `websockets` package. Since ``auth_header`` goes through here, that made
+    every authenticated call depend on websockets — including ``speak``, which
+    is one synchronous urllib POST that never opens a socket. On a clean install
+    (pyproject's `voice` extra exists precisely because nothing pins websockets)
+    text-to-speech refused itself with a message telling the user to install a
+    package it does not use.
+
+    The socket requirement belongs to the listen relay and is enforced there,
+    where a missing implementation is a real blocker rather than a guess.
+    """
+    verdict = can_speak()
     if not verdict["available"]:
         raise DeepgramError(verdict["reason"])
     return _key()

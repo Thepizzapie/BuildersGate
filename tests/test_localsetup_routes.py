@@ -169,7 +169,20 @@ class TestNoLauncher:
         to start it themselves."""
         paths = [r.path for r in app.routes if hasattr(r, "path")
                  and r.path.startswith("/api/local")]
-        assert paths
+        # A bare `assert paths` reported an empty list and nothing else, which
+        # is the least useful thing it could say: no /api/local routes means the
+        # module did not IMPORT, and routes/__init__ already records why. Name
+        # the reason rather than making the next person go find it.
+        if not paths:
+            from bgate_ui import routes as _routes
+
+            why = [f["module"] + ": " + f["error"] for f in _routes.FAILURES
+                   if "localsetup" in str(f.get("module", ""))]
+            raise AssertionError(
+                "no /api/local routes are registered, so routes/localsetup.py "
+                "failed to import. " + ("Reason: " + "; ".join(why) if why else
+                "routes.FAILURES records nothing for it, so it was never "
+                "discovered at all — check the package scan."))
         for path in paths:
             assert not path.endswith("/start")
             assert not path.endswith("/stop")
