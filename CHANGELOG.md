@@ -38,6 +38,26 @@ measurements and with what was deliberately not built, in
   nobody paid for. `~/.bgate/.env` is written `0600`, and `~/.bgate` is not a
   repository, so it has nothing to leak into.
 
+- **A scratch project at `~/.bgate/scratch`, for generations that belong to no
+  game.** The other half of the same problem: a key you can set without a
+  project is only useful if something can then *use* it without one.
+  `image_generate`, `image_edit`, `image_sprites` and `image_talkhead` fall back
+  here when there is nowhere else, and `project_dir="scratch"` asks for it
+  explicitly from inside a project you would rather not touch.
+
+  It is a real project, not an output folder, because everything downstream of a
+  generation needs one — the artifact registry, the spend ledger, `.bgate_out` —
+  and the first question anyone asks of a loose file is what it cost. It carries
+  no game: a tool that needs an engine still says so in its own words. It is
+  created on demand, so a user who never generates outside a project never gets
+  a directory they did not ask for, and it sits at the BOTTOM of the discovery
+  chain, below the remembered active project — so anyone who has run `bgate
+  init`, `adopt` or `use` keeps landing in their own work, and a mistyped
+  directory keeps failing loudly instead of quietly filling a folder nobody
+  looks in. Tools that edit game files, run Godot or take locks are unchanged
+  and still refuse. `project_status` says when the scratch project is the one
+  in use.
+
 - **The anchor is a model sheet now (`anchor_views`, default 3).** The largest
   single lever found, and it is a reference policy rather than a mechanism. Every
   reference a sprite run carried was the *same view* of the character — one

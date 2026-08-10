@@ -58,6 +58,25 @@ project, so `bgate doctor` and `image_status` answer correctly with no game in
 sight. Copying [`.env.example`](../.env.example) to a project `.env` by hand
 still works and is unchanged.
 
+### Using a tool with no project open
+
+A key you can set without a project is only useful if something can then use it
+without one. The image tools — `image_generate`, `image_edit`, `image_sprites`,
+`image_talkhead` — fall back to a **scratch project** at `~/.bgate/scratch` when
+there is nowhere else to put the result, and `project_dir="scratch"` asks for it
+explicitly from inside a project you would rather not touch.
+
+It is a real project rather than a loose output folder, because everything
+downstream of a generation needs one: the artifact registry, the spend ledger,
+`.bgate_out`, the review queue. It carries no game, so a tool that needs an
+engine still says so. It is created the first time something needs it.
+
+It is the **last** resort, below the remembered active project — so if you have
+ever run `bgate init`, `bgate adopt` or `bgate use`, your own project keeps
+winning and a mistyped path keeps failing loudly. Tools that edit game files,
+run Godot or take locks do not fall back at all. `project_status` tells you when
+the scratch project is the one in use.
+
 `.env` and `.env.*` are gitignored here and in every project `bgate init` stamps
 out. They were not, for a while, which is how following these instructions
 committed a key. `~/.bgate` is not a repository, so the machine-wide store has

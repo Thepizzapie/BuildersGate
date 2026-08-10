@@ -209,8 +209,79 @@ def game_dir(root: str | os.PathLike[str]) -> Optional[Path]:
     return None
 
 
-def require_root(start: Optional[str | os.PathLike[str]] = None) -> Path:
-    """Find the enclosing project or explain how to make one."""
+# ---------------------------------------------------------------------------
+# The scratch project — somewhere for work that belongs to no game
+# ---------------------------------------------------------------------------
+# The names a caller can use to ASK for it, rather than falling into it. Passing
+# `project_dir="scratch"` is how you say "this one is not about any of my games"
+# without leaving the directory you happen to be standing in.
+SCRATCH_ALIASES = frozenset({"scratch", "global", "-"})
+SCRATCH_DIRNAME = "scratch"
+SCRATCH_LABEL = "Scratch"
+
+
+def scratch_root(create: bool = True) -> Path:
+    """``~/.bgate/scratch`` — the drop point for generations with no game.
+
+    WHY A REAL PROJECT AND NOT A LOOSE DIRECTORY. Everything downstream of a
+    generation needs a root that is a project: the artifact registry, the spend
+    ledger, the activity log, ``.bgate_out``. A bare output folder would mean a
+    second, thinner code path for "generations that are not part of anything",
+    and the first thing anyone would ask of one is what it cost — which is a
+    question only the ledger can answer. So the scratch drop point is an
+    ordinary project that happens to live in the user-scoped directory, and
+    every tool that writes into it does so through the code it already uses.
+
+    It carries no game. ``init`` creates the database and nothing else — no
+    Godot project, no scaffold — because this is a place to put an image, not a
+    place to build. A tool that needs an engine will say so in its own words.
+
+    Created on demand rather than at install time: a user who never generates
+    outside a project never gets a directory they did not ask for.
+    """
+    root = user_dir() / SCRATCH_DIRNAME
+    if not create:
+        return root
+    if not (root / db.DB_DIRNAME / db.DB_FILENAME).exists():
+        init(root, SCRATCH_LABEL,
+             pitch="Generations that do not belong to any one game. Created "
+                   "automatically the first time a tool needed somewhere to "
+                   "put its output.")
+    return root
+
+
+def is_scratch(root: Optional[str | os.PathLike[str]]) -> bool:
+    """Is this the scratch project? Asked by anything that should SAY so."""
+    if not root:
+        return False
+    try:
+        return Path(root).resolve() == scratch_root(create=False).resolve()
+    except Exception:
+        return False
+
+
+def resolve_alias(token: str) -> Optional[Path]:
+    """``"scratch"`` / ``"global"`` -> the scratch root. None for anything else.
+
+    Kept here so every surface spells the alias the same way; a second place
+    that understood "scratch" would be a second place to forget it.
+    """
+    return (scratch_root() if str(token or "").strip().lower() in SCRATCH_ALIASES
+            else None)
+
+
+def require_root(start: Optional[str | os.PathLike[str]] = None, *,
+                 scratch: bool = False) -> Path:
+    """Find the enclosing project or explain how to make one.
+
+    ``scratch=True`` puts the scratch project at the BOTTOM of the chain instead
+    of raising — for callers whose work has somewhere to go even when no game
+    does. It is deliberately last, below the remembered active project, so it
+    only ever catches someone who has no project at all: anyone who has run
+    `bgate init`, `bgate adopt` or `bgate use` keeps landing in their own work,
+    and a mistyped directory keeps failing loudly instead of quietly filling a
+    folder nobody looks in.
+    """
     root = db.resolve_root(start)
     if root is not None:
         return root
@@ -223,6 +294,9 @@ def require_root(start: Optional[str | os.PathLike[str]] = None) -> Path:
     remembered = active_root()
     if remembered is not None:
         return remembered
+
+    if scratch:
+        return scratch_root()
 
     known = known_projects()
     hint = (f" Known projects (`bgate projects`; select with `bgate use <name>`): "

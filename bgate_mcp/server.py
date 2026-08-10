@@ -192,24 +192,54 @@ def _keys(root: Optional[str] = None) -> None:
         pass
 
 
-def _root() -> str:
+def _root(scratch: bool = False) -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
-    Also loads the project's .env and the machine-wide one, in that order."""
+    Also loads the project's .env and the machine-wide one, in that order.
+
+    ``project_dir="scratch"`` (or "global") resolves to ``~/.bgate/scratch``,
+    which is how a caller says "this one is not about any of my games" without
+    leaving the directory it is standing in.
+
+    ``scratch=True`` additionally puts that project at the BOTTOM of the
+    discovery chain rather than raising. Passed by the tools whose output has
+    somewhere to go even when no game does — see :func:`_scratch_root`.
+    """
     override = _root_hint()
     if override:
-        root = override
+        # An alias is checked before the path: nobody has a project directory
+        # literally called "scratch" relative to nothing, and resolving it as
+        # one would silently create it in the cwd.
+        aliased = _project.resolve_alias(override)
+        root = str(aliased) if aliased else override
     else:
         try:
-            root = str(_project.require_root())
+            root = str(_project.require_root(scratch=scratch))
         except LookupError as exc:
             # core's own hint still points at project_select, which no longer
             # switches anything. Restate it in terms of what actually works now.
             raise LookupError(
                 f"{exc} Pass project_dir=<absolute path to the project root> on "
-                "this call, or export BGATE_ROOT, or run project_init to create "
-                "one here.") from None
+                "this call, or project_dir='scratch' to use ~/.bgate/scratch, "
+                "or export BGATE_ROOT, or run project_init to create one "
+                "here.") from None
     _keys(root)
     return root
+
+
+def _scratch_root() -> str:
+    """The root for a tool whose output does not need a game to belong to.
+
+    Generation is the case: an image, a sheet, a track — all of them need a
+    project for the artifact registry, the spend ledger and `.bgate_out`, and
+    none of them need an engine. Falling back here rather than refusing is what
+    makes "just use one tool for something" possible without inventing a game to
+    hold the result.
+
+    Not the default for every tool. `godot_run` against an empty scratch project
+    is a confusing failure a long way from its cause, and a tool that edits game
+    files has nothing to edit — those keep refusing, which is the useful answer.
+    """
+    return _root(scratch=True)
 
 
 # The machine-wide keys are live from the moment the server starts, so a tool
@@ -719,7 +749,12 @@ def project_status() -> dict:
             "facts": conn.execute("SELECT count(*) FROM canon_fact").fetchone()[0],
             "links": conn.execute("SELECT count(*) FROM lore_link").fetchone()[0],
         }
-        return {"project": _project.get(root), "root": root, "counts": counts}
+        return {"project": _project.get(root), "root": root, "counts": counts,
+                # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
+                # sprite sheet go" has an answer nothing on any surface states,
+                # and the honest one — a directory under ~/.bgate that was
+                # created for you — is not a place anyone would think to look.
+                "scratch": _project.is_scratch(root)}
     except Exception as exc:
         return _fail(exc)
 
@@ -2546,7 +2581,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     into the game with godot_import_asset.
     """
     try:
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         named = [str(r) for r in (ref_images or []) if str(r).strip()]
@@ -2641,7 +2676,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     the API's background=transparent, which does not reliably return alpha.
     """
     try:
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
@@ -3378,7 +3413,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         for p in poses:
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
@@ -3957,7 +3992,7 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
     try:
         from bgate_core import talkhead as _th
 
-        root = _Path(_root())
+        root = _Path(_scratch_root())
         limit = float(drift_limit or _th.DRIFT_LIMIT)
         stage = root / ".bgate_out" / "art" / "talkheads" / name
         stage.mkdir(parents=True, exist_ok=True)

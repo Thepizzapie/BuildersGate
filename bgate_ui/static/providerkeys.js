@@ -95,6 +95,7 @@
       ".pv-btn:hover:not(:disabled){border-color:var(--accent);color:var(--text)}",
       ".pv-btn:disabled{opacity:.5;cursor:default}",
       ".pv-btn.go{border-color:var(--accent);color:var(--accent)}",
+      ".pv-drop code{font-family:var(--mono);font-size:10.5px;word-break:break-all}",
       ".pv-scope{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--text-3);cursor:pointer}",
       ".pv-scope input{margin:0;cursor:pointer}",
       ".pv-foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px;font-family:var(--mono);font-size:10px;color:var(--text-3)}",
@@ -175,7 +176,14 @@ when you are not in a project at all. A project's own key still wins over it.">
       <code>${esc(data.global_env || "~/.bgate/.env")}</code> instead, which
       every project inherits and which is the only store that exists when you
       are not in a project at all. A project's own key wins over it, and a
-      variable exported in your shell wins over both.</p>`
+      variable exported in your shell wins over both.</p>
+      ${data.scratch_root ? `<p class="pv-note pv-drop">Generations made with no
+      project open land in
+      <code>${esc(data.scratch_root)}</code>${data.scratch_exists ? "" :
+      " (created the first time something needs it)"} — a real project, so they
+      get the same artifact registry, spend ledger and review queue as anything
+      else.${data.scratch_active ? " <b>This dashboard is looking at it right"
+      + " now.</b>" : ""}</p>` : ""}`
       + (bad ? `<div class="pv-warn"><span>${icon("gate", 15)}</span><span>
           <b>This project's <code>.env</code> is not gitignored.</b> Saving a key
           will add the ignore rule first — but check <code>git status</code>
