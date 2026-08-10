@@ -882,7 +882,7 @@ class TestPostProduction:
     @needs_theora
     def test_continuity_needs_two_shots_and_then_measures(self, root,
                                                           monkeypatch):
-        one = cinematic.plan(root, "seq", _shots(1))
+        cinematic.plan(root, "seq", _shots(1))
         assert "no join to check" in cinematic.check_continuity(root, "seq")["note"]
         self._generated(root, monkeypatch, shots=_shots(2))
         got = cinematic.check_continuity(root, "seq")

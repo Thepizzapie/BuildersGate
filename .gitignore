@@ -1,8 +1,16 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
-dist/
+# ROOT-ANCHORED, and the leading slash is the whole point. As a bare `build/`
+# this matched a build directory at ANY depth, which silently swallowed
+# bgate_ui/static/vendor/three/build/ — three.js's actual library file. The
+# feature shipped with 18 vendored files tracked and the one the import map
+# points at missing, so a fresh clone got a 3D viewer that could not load its
+# own engine, and tests/test_modeledit_api caught it only after the fact.
+# Python's build output is at the repository root; nothing else here wants a
+# `build/` ignored.
+/build/
+/dist/
 .venv/
 venv/
 

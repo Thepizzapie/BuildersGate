@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from bgate_core import db, project
+from bgate_core import project
 from bgate_mcp import server
 
 

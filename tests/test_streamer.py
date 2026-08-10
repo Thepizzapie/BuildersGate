@@ -297,6 +297,13 @@ class TestTheSuiteIsNotTheLeak:
         home = streamer._home()
         if not home:
             pytest.skip("no home directory to look for")
+        # Same guard the account-name test below has, for the same reason. A
+        # home directory shared by every machine of its kind is not evidence:
+        # in a container running as root, home is `/root`, and Godot's scene
+        # tree is rooted at `/root/` — so this indicted three files for a leak
+        # that is a node path.
+        if not streamer.home_is_attributable(home):
+            pytest.skip(f"{home!r} is too generic to attribute to anyone")
         for spelling in {home, home.replace("\\", "/"),
                          home.replace("\\", "\\\\")}:
             hits = self._tracked_hits(spelling)

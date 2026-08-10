@@ -64,6 +64,34 @@ _UNSAFE_BARE = {
 }
 _MIN_BARE_LEN = 4
 
+# THE SAME PROBLEM ONE LEVEL UP: a home DIRECTORY generic enough that finding it
+# in a file is not evidence of anything. `_UNSAFE_BARE` already says a username
+# can be too common to attribute to a person; a path can be too, and the failure
+# is louder because a path match needs no word boundary.
+#
+# `/root` is the one that bites, and not rarely — it is the home directory of
+# every container that runs as root, which is most of them. Godot's scene tree
+# is rooted at `/root/`, so `get_node("/root/BGateTelemetry")` and a tuner doc
+# describing `"/root/Main/Player"` both match, and a developer in a container is
+# told the repo leaks their home directory by three files that leak nothing.
+#
+# Kept here rather than in the test for the same reason `_UNSAFE_BARE` is: the
+# redactor and the guard have to agree about what is too generic to act on, and
+# two lists would drift.
+_UNSAFE_HOME = {"/", "/root", "/home", "/tmp", "/usr", "/var", "/opt",
+                "c:\\", "c:\\users"}
+
+
+def home_is_attributable(home: str) -> bool:
+    """Is finding this path in a file evidence that somebody's home leaked?
+
+    False for a path shared by every machine of its kind. Used by the redactor's
+    own guard test; the REDACTION itself is unaffected and still rewrites
+    whatever the home directory actually is, because rewriting `/root` in a
+    stream overlay costs nothing and missing a real home costs a lot.
+    """
+    return (home or "").strip().rstrip("/\\").lower() not in _UNSAFE_HOME
+
 
 def enabled(default: bool = False) -> bool:
     """Is the filter on right now?
