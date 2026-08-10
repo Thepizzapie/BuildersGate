@@ -160,21 +160,72 @@ def _redactor() -> Any:
     return built
 
 
-def safe_error(exc: BaseException) -> str:
-    """``"TypeName: message"`` with secrets and this machine's identity removed.
+# WHOSE MESSAGE IS IT. Our own exception types carry messages a person in this
+# repo WROTE, reviewed, and kept repo-relative on purpose — "nothing on disk at
+# game/assets/cinematics/intro.ogv" is the whole value of the error and there is
+# nothing in it to leak. A foreign exception's message is not ours: an OSError
+# names the absolute path that failed, a provider error carries that vendor's
+# response body, and a library's ValueError carries whatever it was holding.
+#
+# Scrubbing helps and is not sufficient, because the scrubber can only remove
+# what it can RECOGNISE — this machine's identity and secret-shaped strings. It
+# cannot know that some third party's error text is quoting a filename from
+# somewhere else. So a foreign message does not go out at all; it is logged
+# where an operator can read it and replaced with its type, which is the part
+# that is diagnostic and carries nothing.
+_OURS = ("bgate_core", "bgate_adapters", "bgate_ui", "bgate_mcp", "builtins")
 
-    The one way a route should put an exception into a response body.
+
+def _is_ours(exc: BaseException) -> bool:
+    # OSError IS THE EXCEPTION TO THE EXCEPTION, and it is not a nicety: its
+    # whole contract is to name the FILE that failed, so `strerror: filename` is
+    # an absolute path by construction — which is the single thing this function
+    # exists to keep out of a response. Caught here rather than trusted to the
+    # scrubber, which substitutes the home directory it recognises and leaves
+    # the rest of the tree standing ("/home/<user>/private/notes.txt" still
+    # says `private/notes.txt`).
+    if isinstance(exc, OSError):
+        return False
+    module = (type(exc).__module__ or "").split(".")[0]
+    # `builtins` otherwise counts as ours, for ValueError/KeyError raised BY our
+    # own code with our own message — the common case for a deliberate refusal.
+    # The cost is passing a builtin raised by a library; those messages are
+    # short and rarely carry paths, and excluding them would blank out most of
+    # the useful refusals in the product.
+    return module in _OURS
+
+
+def safe_error(exc: BaseException) -> str:
+    """What a route may put in a response body for this exception.
+
+    Ours: the message, scrubbed of secrets and this machine's identity.
+    Anything else: the type, with the detail logged rather than served.
     """
-    raw = f"{type(exc).__name__}: {exc}"
     filt = _redactor()
-    if filt is None:
-        # No scrubber. The type alone is still useful and carries nothing —
-        # better a thin error than an unfiltered one.
-        return type(exc).__name__
+
+    def scrub(text: str) -> str:
+        if filt is None:
+            return ""
+        try:
+            return filt.text(text)
+        except Exception:                                        # noqa: BLE001
+            return ""
+
+    if _is_ours(exc):
+        scrubbed = scrub(f"{type(exc).__name__}: {exc}")
+        # An empty scrub means no scrubber; the type alone is thin but safe.
+        return scrubbed or type(exc).__name__
+
+    # Foreign. Log what it actually said — an operator at the terminal is not
+    # the untrusted reader, and an error nobody can diagnose is its own problem.
     try:
-        return filt.text(raw)
+        print(f"[api] unexpected {type(exc).__module__}.{type(exc).__name__}: "
+              f"{scrub(str(exc)) or '<unprintable>'}")
     except Exception:                                            # noqa: BLE001
-        return type(exc).__name__
+        pass
+    return (f"{type(exc).__name__} — unexpected failure, details are in the "
+            "server log rather than here because the message came from outside "
+            "this project")
 
 
 def error_body(status: int, message: str, *, code: Optional[str] = None,

@@ -462,13 +462,17 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     if not shots:
         raise CinematicError("a sequence with no shots is not a plan")
 
-    cleaned, warnings = _clean_shots(shots)
+    cleaned, warnings = _clean_shots(root, shots)
 
     # The model is validated here, at planning time, because the shot list is
     # written against ITS limits — a 15-second shot is legal on one model and
     # not on another, and discovering that at the first generation means the
     # whole list has to be rewritten after money has already moved.
     chosen = _resolve_model(model)
+    # The bed is contained at plan time for the same reason the shot paths are:
+    # earliest refusal, and the shot list is what gets reviewed. assemble()
+    # checks again because that is the last gate before ffmpeg reads it.
+    audio_track = project_path(root, audio_track, what="audio bed")
     look = resolve_style(style, style_note)
     refs_out, missing_refs = _style_refs(root, style_refs or [])
     warnings.extend(_style_warnings(look, refs_out, missing_refs, cleaned))
@@ -506,7 +510,7 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
             """,
             (stem, logline.strip(), style.strip(), style_note.strip(),
              json.dumps(refs_out), chosen, aspect_ratio, resolution,
-             audio_track.strip(), float(audio_gain_db), float(fade_in),
+             audio_track, float(audio_gain_db), float(fade_in),
              float(fade_out), work_item_id))
         seq_id = int(conn.execute(
             "SELECT id FROM cine_sequence WHERE name = ?", (stem,)).fetchone()[0])
@@ -571,7 +575,8 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     return out
 
 
-def _clean_shots(shots: list) -> tuple[list[dict], list[str]]:
+def _clean_shots(root: str | os.PathLike[str],
+                 shots: list) -> tuple[list[dict], list[str]]:
     """Validate a shot list, and say what is unwise rather than refusing it."""
     from bgate_adapters import kie
 
@@ -597,7 +602,14 @@ def _clean_shots(shots: list) -> tuple[list[dict], list[str]]:
                 f"{hi}s and hold TOGETHER WELL to about {SHOT_SECONDS[1]}s — "
                 "past that expect drift in whatever the shot is holding still. "
                 "Generated anyway.")
-        refs = [str(r) for r in (raw.get("refs") or []) if str(r).strip()]
+        # EVERY PATH ON A SHOT IS CONTAINED AT PLAN TIME, not at generation.
+        # keyframes_for checks again — it is the last gate before an upload and
+        # a shot row can be written by something other than plan() — but the
+        # earliest refusal is the useful one: the shot list is what a human
+        # reviews, and a path that cannot ever work should not survive review
+        # looking legitimate.
+        refs = [project_path(root, r, what="reference")
+                for r in (raw.get("refs") or []) if str(r).strip()]
         transition = str(raw.get("transition")
                          or cinecut.DEFAULT_TRANSITION).strip().lower()
         if transition not in cinecut.TRANSITIONS:
@@ -618,12 +630,14 @@ def _clean_shots(shots: list) -> tuple[list[dict], list[str]]:
             "action": action,
             "transition": transition,
             "transition_s": hold if transition != "cut" else 0.0,
-            "vo": str(raw.get("vo") or "").strip(),
+            "vo": project_path(root, raw.get("vo"), what="voice-over"),
             "camera": str(raw.get("camera") or "").strip(),
             "dialogue": str(raw.get("dialogue") or "").strip(),
             "duration": duration,
-            "first_frame": str(raw.get("first_frame") or "").strip(),
-            "last_frame": str(raw.get("last_frame") or "").strip(),
+            "first_frame": project_path(root, raw.get("first_frame"),
+                                        what="first_frame"),
+            "last_frame": project_path(root, raw.get("last_frame"),
+                                       what="last_frame"),
             "refs": refs,
         })
     if not any(s["first_frame"] or s["refs"] for s in cleaned):
@@ -655,6 +669,45 @@ def _resolve_model(model: str = "") -> str:
     return chosen
 
 
+def project_path(root: str | os.PathLike[str], value: str, *,
+                 what: str = "path") -> str:
+    """A caller-supplied path, proven to be INSIDE the project. Or a refusal.
+
+    THE ONE GATE EVERY PATH IN THIS MODULE GOES THROUGH, and it exists because
+    the paths here do not merely get read — they get UPLOADED. A conditioning
+    frame is handed to :func:`bgate_adapters.kie.upload_file`, which reads the
+    bytes and POSTs them to a third party, so a path that escapes the project
+    root is not a local file-disclosure bug, it is exfiltration off the machine.
+    Measured before the fix: a shot list naming
+    ``../../../../../../tmp/secret/private.png`` was accepted by plan() and the
+    absolute escaped path was handed to the uploader.
+
+    WHO SUPPLIES THESE. The dashboard body of /api/cinematic/plan, and the
+    `first_frame` / `refs` / `style_refs` / `audio_track` arguments of the MCP
+    tools — which means an AGENT, and constraining what an agent may reach is
+    the entire premise of the seat and lane system. A traversal here would walk
+    straight around it.
+
+    URLs PASS THROUGH. A conditioning frame may legitimately be a hosted image
+    the caller already has; that is not a path and there is nothing to contain.
+
+    ``assets.normalize_path`` does the actual resolve-and-compare — reused
+    rather than reimplemented, because a second containment check is a second
+    chance to get containment subtly wrong.
+    """
+    text = str(value or "").strip()
+    if not text or text.startswith(("http://", "https://")):
+        return text
+    try:
+        return assets.normalize_path(root, text)
+    except ValueError as exc:
+        raise CinematicError(
+            f"{what} {text!r} resolves outside the project. Every frame, "
+            "reference and audio bed has to live inside the game — these are "
+            "uploaded to the generation provider, so a path that escapes the "
+            "project would send a file off this machine.") from exc
+
+
 def _style_refs(root: str | os.PathLike[str], given: list) -> tuple[list, list]:
     """Style reference paths, split into the ones on disk and the ones missing.
 
@@ -666,7 +719,10 @@ def _style_refs(root: str | os.PathLike[str], given: list) -> tuple[list, list]:
     base = Path(root)
     good, missing = [], []
     for one in given:
-        text = str(one or "").strip()
+        # CONTAINED FIRST, existence second. An escaping path is REFUSED rather
+        # than reported missing: "not yet made" is a normal state for a
+        # keyframe and "not yours to read" is not the same thing at all.
+        text = project_path(root, one, what="style reference")
         if not text:
             continue
         if text.startswith(("http://", "https://")) or (base / text).is_file():
@@ -1198,7 +1254,9 @@ def keyframes_for(root: str | os.PathLike[str], shot: dict,
     base = Path(root)
     missing, out = [], {}
     for field in ("first_frame", "last_frame"):
-        value = str(shot.get(field) or "").strip()
+        # project_path RAISES on an escaping path. These are handed to the
+        # uploader, so containment is checked before anything is read.
+        value = project_path(root, shot.get(field), what=field)
         if not value or value.startswith(("http://", "https://")):
             out[field] = value
             continue
@@ -1209,7 +1267,7 @@ def keyframes_for(root: str | os.PathLike[str], shot: dict,
         out[field] = str(base / value)
     refs = []
     for one in list(shot.get("refs") or []) + list(style_refs or []):
-        text = str(one).strip()
+        text = project_path(root, one, what="reference")
         if not text:
             continue
         if text.startswith(("http://", "https://")):
@@ -1467,7 +1525,7 @@ def assemble(root: str | os.PathLike[str], name: str, *,
     # silent. This is that path: a kept track, or a hand mix, laid under the
     # picture and muxed into the Ogg the engine reads.
     audio: dict = {}
-    bed = str(seq.get("audio_track") or "").strip()
+    bed = project_path(root, seq.get("audio_track"), what="audio bed")
     if bed:
         source = Path(root) / bed
         if not source.is_file():

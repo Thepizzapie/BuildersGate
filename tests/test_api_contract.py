@@ -329,3 +329,36 @@ class TestExceptionsDoNotLeak:
             "/api/_boom_for_test")
         assert got.status_code == 500
         assert "NOTREAL" not in got.text
+
+    def test_a_foreign_exceptions_message_never_reaches_the_response(self):
+        """Scrubbing helps and is not sufficient: it removes what it can
+        RECOGNISE — this machine's identity and secret shapes — and cannot know
+        that a third party's error text is quoting a filename from somewhere
+        else. So a foreign message is logged, not served."""
+        from bgate_ui import api
+
+        out = api.safe_error(
+            __import__("json").JSONDecodeError("bad", '{"k":"/srv/other"}', 0))
+        assert "/srv/other" not in out
+        assert "JSONDecodeError" in out, "the type is still diagnostic"
+
+    def test_an_oserror_is_foreign_however_builtin_it_is(self):
+        """OSError's whole contract is to name the FILE that failed, so its
+        message is an absolute path by construction — the one thing this is for.
+        The scrubber alone would substitute the home directory it recognises and
+        leave the rest of the tree standing."""
+        from bgate_ui import api
+
+        out = api.safe_error(
+            FileNotFoundError(2, "No such file", "/srv/elsewhere/secret.key"))
+        assert "elsewhere" not in out and "secret.key" not in out
+        assert "FileNotFoundError" in out
+
+    def test_our_own_builtin_refusals_still_speak(self):
+        """A ValueError raised BY our own code with our own message is the
+        common shape of a deliberate refusal, and blanking those would make
+        most of the product's useful errors unreadable."""
+        from bgate_ui import api
+
+        message = "a sequence with no shots is not a plan"
+        assert message in api.safe_error(ValueError(message))

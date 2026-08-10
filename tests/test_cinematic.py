@@ -25,7 +25,7 @@ import pytest
 
 from pathlib import Path
 
-from bgate_core import artifacts, cinematic, seats
+from bgate_core import artifacts, cinematic, db, seats
 
 pytestmark = pytest.mark.usefixtures("root")
 
@@ -1065,3 +1065,88 @@ class TestWhatReachesTheEngineProject:
         cinematic.keep(root, out["artifact_id"], actor="human")
         assert cinematic.sequence(root, "seq")["shots"][0]["status"] == "kept"
         assert cinematic.assemble(root, "seq")["ok"] is True
+
+
+class TestPathContainment:
+    """CodeQL called this "uncontrolled data used in path expression", HIGH, and
+    it was right — but the severity is worse than the label suggests.
+
+    These paths are not merely READ. A conditioning frame is handed to
+    kie.upload_file, which reads the bytes and POSTs them to a third party, so a
+    path escaping the project root is exfiltration off the machine rather than
+    local file disclosure. And the callers are the dashboard body and the MCP
+    tool arguments — which means an AGENT, and constraining what an agent can
+    reach is the whole premise of the seat and lane system.
+    """
+
+    ESCAPE = "../../../../../../etc/passwd"
+
+    def test_a_traversal_in_a_style_ref_is_refused(self, root):
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.plan(root, "leak", _shots(1), style_refs=[self.ESCAPE])
+
+    @pytest.mark.parametrize("field", ["first_frame", "last_frame", "vo"])
+    def test_a_traversal_on_a_shot_is_refused_at_plan_time(self, root, field):
+        """The earliest refusal is the useful one — the shot list is what a
+        human reviews, and a path that can never work should not survive review
+        looking legitimate."""
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.plan(root, "leak",
+                           [{"action": "a", "duration": 5, field: self.ESCAPE}])
+
+    def test_a_traversal_in_refs_is_refused(self, root):
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.plan(root, "leak",
+                           [{"action": "a", "duration": 5,
+                             "refs": [self.ESCAPE]}])
+
+    def test_an_absolute_path_is_refused(self, root):
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.project_path(root, "/etc/passwd")
+
+    def test_keyframes_for_refuses_too_as_the_last_gate(self, root):
+        """A shot row can be written by something other than plan(), and this is
+        the last gate before an upload."""
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.keyframes_for(root, {"first_frame": self.ESCAPE,
+                                           "refs": []})
+
+    def test_an_escaping_audio_bed_is_refused_at_plan_time(self, root):
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.plan(root, "seq", _shots(1), audio_track=self.ESCAPE)
+
+    @needs_theora
+    def test_an_escaping_audio_bed_is_refused_at_assembly_too(self, root,
+                                                              monkeypatch):
+        """The last gate before ffmpeg reads it — a sequence row can be written
+        by something other than plan()."""
+        TestGeneratingAShot()._stub(monkeypatch)
+        cinematic.plan(root, "seq", _shots(1))
+        out = cinematic.generate_shot(root, "seq", 1)
+        cinematic.keep(root, out["artifact_id"], actor="human")
+        with db.tx(root) as conn:
+            conn.execute("UPDATE cine_sequence SET audio_track = ?",
+                         (self.ESCAPE,))
+        with pytest.raises(cinematic.CinematicError, match="outside the project"):
+            cinematic.assemble(root, "seq")
+
+    def test_legitimate_paths_still_work(self, root):
+        """The point is containment, not refusing everything with a slash."""
+        (root / "art").mkdir(exist_ok=True)
+        (root / "art" / "hero.png").write_bytes(b"\x89PNG")
+        assert cinematic.project_path(root, "art/hero.png") == "art/hero.png"
+        assert cinematic.project_path(
+            root, "https://x.test/a.png") == "https://x.test/a.png"
+        assert cinematic.project_path(root, "") == ""
+        seq = cinematic.plan(root, "fine", _shots(1, refs=["art/hero.png"]))
+        assert seq["shots"][0]["refs"] == ["art/hero.png"]
+
+    def test_a_path_that_merely_looks_like_a_traversal_but_stays_inside_is_kept(
+            self, root):
+        """`game/../art/x.png` resolves inside the project and is legal — a
+        check that refused on the presence of `..` would be refusing shape
+        rather than destination."""
+        (root / "art").mkdir(exist_ok=True)
+        (root / "art" / "hero.png").write_bytes(b"\x89PNG")
+        assert cinematic.project_path(
+            root, "game/../art/hero.png") == "art/hero.png"
