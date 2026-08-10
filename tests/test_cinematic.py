@@ -35,7 +35,12 @@ needs_theora = pytest.mark.skipif(
 
 
 def _clip(path, *, seconds=1, size="320x240"):
-    """A real, tiny H.264 .mp4 — what a video model hands back, in miniature."""
+    """A real, tiny H.264 .mp4 — what a video model hands back, in miniature.
+
+    SKIPS rather than crashes with no ffmpeg — see the twin in test_cinecut.py.
+    """
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is not on PATH, so there is no clip to make")
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [shutil.which("ffmpeg"), "-y", "-loglevel", "error",
@@ -368,7 +373,14 @@ class TestAnchors:
         assert frames["first"] == str(plate)
         assert not frames["missing"]
 
-    def test_generation_refuses_a_missing_anchor_before_spending(self, root):
+    def test_generation_refuses_a_missing_anchor_before_spending(self, root,
+                                                                 monkeypatch):
+        # The encoder gate legitimately runs BEFORE this one — it is the check
+        # that stops a machine with no libtheora buying a sequence it could
+        # never deliver. Stubbed so this test measures the anchor gate on any
+        # machine rather than passing only where ffmpeg happens to be.
+        monkeypatch.setattr(cinematic, "ffmpeg_status",
+                            lambda: {"ok": True, "reason": "", "probed": True})
         cinematic.plan(root, "seq", [{"action": "x", "duration": 5,
                                       "first_frame": "art/ghost.png"}])
         out = cinematic.generate_shot(root, "seq", 1)
@@ -750,8 +762,11 @@ class TestAudioAcrossModels:
         # never silently swallowed.
         assert set(out["unsupported"]["dropped"]) == {"quality", "shape"}
 
-    def test_asking_FOR_audio_a_model_cannot_make_is_refused(self, root):
+    def test_asking_FOR_audio_a_model_cannot_make_is_refused(self, root,
+                                                             monkeypatch):
         """The asymmetry: this IS something the caller wanted and will not get."""
+        monkeypatch.setattr(cinematic, "ffmpeg_status",
+                            lambda: {"ok": True, "reason": "", "probed": True})
         self._mute_model()
         cinematic.plan(root, "seq", _shots(1), model="mute")
         out = cinematic.generate_shot(root, "seq", 1, generate_audio=True)

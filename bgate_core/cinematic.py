@@ -74,11 +74,16 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
 from . import activity, artifacts, assets, cinecut, db
 from .util import rows, slugify
+
+# Windows: never flash a console window out of a probe or an encode. The same
+# constant five other modules here carry, for the same reason.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # Where shots land. Under .bgate_out because a generated shot is scratch until a
 # human keeps it — gitignored, and no rejected take reaches the engine project.
@@ -376,7 +381,8 @@ def ffmpeg_status() -> dict:
     try:
         proc = subprocess.run([exe, "-hide_banner", "-encoders"],
                               capture_output=True, text=True, timeout=30,
-                              stdin=subprocess.DEVNULL)
+                              stdin=subprocess.DEVNULL,
+                              creationflags=_NO_WINDOW)
         listed = (proc.stdout or "") + (proc.stderr or "")
     except (OSError, subprocess.SubprocessError) as exc:
         # `probed: False` IS THE POINT, and it is not the same fact as
@@ -1356,12 +1362,18 @@ def transcode(source: str | os.PathLike[str], destination: str | os.PathLike[str
     leave the caller unable to distinguish "converted" from "wrote nothing", which
     is the difference between a cutscene and a black rectangle.
     """
-    encoder = ffmpeg_status()
-    if not encoder["ok"]:
-        raise CinematicError(encoder["reason"])
+    # THE SOURCE IS CHECKED FIRST, and the order is the diagnostic. Nothing is
+    # spent in here, so there is no "fail before the money moves" argument for
+    # leading with the encoder — and when the real problem is a missing file,
+    # "this ffmpeg has no libtheora" sends the reader to install software they
+    # already have. generate_shot still checks the encoder up front, because
+    # that one DOES spend.
     src, dst = Path(source), Path(destination)
     if not src.is_file():
         raise CinematicError(f"nothing on disk at {src}")
+    encoder = ffmpeg_status()
+    if not encoder["ok"]:
+        raise CinematicError(encoder["reason"])
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [encoder["ffmpeg"], "-y", "-loglevel", "error", "-i", str(src)]
@@ -1375,7 +1387,8 @@ def transcode(source: str | os.PathLike[str], destination: str | os.PathLike[str
     cmd += ["-codec:a", "libvorbis", "-q:a", str(int(quality)), str(dst)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=timeout, stdin=subprocess.DEVNULL)
+                              timeout=timeout, stdin=subprocess.DEVNULL,
+                              creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
         raise CinematicError(
             f"ffmpeg did not finish converting {src.name} within "

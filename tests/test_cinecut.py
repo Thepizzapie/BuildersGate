@@ -8,6 +8,7 @@ assembled cut shipped silent. These tests exist so that cannot recur quietly.
 from __future__ import annotations
 
 import json
+import pathlib
 import shutil
 import subprocess
 
@@ -28,7 +29,15 @@ def _clip(path, *, seconds=1, size="320x240", source="testsrc", args=""):
     lavfi separates a filter's FIRST argument with `=` and every one after it
     with `:`, so `args` carries any leading options ("c=black:") rather than
     being pasted on with another `=`, which parses as a filter nobody has.
+
+    SKIPS rather than crashes when there is no ffmpeg. `needs_theora` guards the
+    tests that ENCODE, but a few only need a file to exist, and on a runner with
+    no ffmpeg those died with a TypeError from `subprocess.run(None, ...)` — a
+    red CI reporting the wrong problem. Guarding the helper covers every test
+    that uses it, including the ones nobody has written yet.
     """
+    if not FF:
+        pytest.skip("ffmpeg is not on PATH, so there is no clip to make")
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [FF, "-y", "-loglevel", "error", "-f", "lavfi",
@@ -38,6 +47,8 @@ def _clip(path, *, seconds=1, size="320x240", source="testsrc", args=""):
 
 
 def _tone(path, *, seconds=4, freq=220):
+    if not FF:
+        pytest.skip("ffmpeg is not on PATH, so there is no tone to make")
     path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [FF, "-y", "-loglevel", "error", "-f", "lavfi",
@@ -303,3 +314,64 @@ class TestWrittenCaptionFiles:
         assert data[0]["text"] == "hello there"
         # The engine file carries only what the player needs.
         assert set(data[0]) == {"start", "end", "text"}
+
+
+class TestWindowsSafety:
+    """Windows is the supported platform (CLAUDE.md), and the two hazards here
+    are both invisible on Linux, which is where this was written."""
+
+    def test_the_concat_list_uses_forward_slashes(self, tmp_path):
+        """Inside a quoted concat entry the demuxer treats `\\` as an ESCAPE
+        character. A project at C:\\Users\\nina\\new-game feeds it `\\n`, and the
+        entry silently becomes a filename with a newline in it."""
+        clips = [_clip(tmp_path / "a.mp4"), _clip(tmp_path / "b.mp4")]
+        out = tmp_path / "cut.ogv"
+        listing_text = {}
+
+        real_run = subprocess.run
+
+        def spy(cmd, *a, **kw):
+            for i, part in enumerate(cmd):
+                if part == "-i" and str(cmd[i + 1]).endswith("_concat.txt"):
+                    listing_text["body"] = pathlib.Path(cmd[i + 1]).read_text(
+                        encoding="utf-8")
+            return real_run(cmd, *a, **kw)
+
+        import bgate_core.cinecut as mod
+        mod.subprocess.run = spy
+        try:
+            mod.build_picture(clips, _shots((1, "cut", 0, ""), (1, "cut", 0, "")),
+                              out)
+        finally:
+            mod.subprocess.run = real_run
+
+        body = listing_text.get("body", "")
+        assert body, "the concat list was never written"
+        assert "\\" not in body, body
+
+    def test_every_subprocess_call_suppresses_the_console_window(self):
+        """Five other modules carry _NO_WINDOW; this one spawns MORE binaries
+        than any of them — one per shot for continuity, one per join, one per
+        mix — and under a stdio MCP server each one would flash a window."""
+        import ast
+        import inspect
+
+        for module in ("bgate_core.cinecut", "bgate_core.cinematic"):
+            mod = __import__(module, fromlist=["x"])
+            tree = ast.parse(inspect.getsource(mod))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = getattr(func, "attr", None)
+                if name != "run":
+                    continue
+                if getattr(getattr(func, "value", None), "id", "") != "subprocess":
+                    continue
+                kwargs = {k.arg for k in node.keywords}
+                assert "creationflags" in kwargs, (
+                    f"{module}: a subprocess.run at line {node.lineno} does not "
+                    "pass creationflags=_NO_WINDOW")
+                assert "stdin" in kwargs, (
+                    f"{module}: a subprocess.run at line {node.lineno} does not "
+                    "close stdin — see docs/gotchas.md on stdio MCP servers")

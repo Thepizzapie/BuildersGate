@@ -96,13 +96,39 @@ def installed_root() -> Path:
 
 
 def bgate_script() -> Path:
-    """The installed console script, which is itself part of what ships."""
-    bindir = Path(sys.executable).resolve().parent
-    for name in ("bgate.exe", "bgate"):
-        cand = bindir / name
-        if cand.is_file():
-            return cand
-    sys.exit(f"[project.scripts] did not install a bgate entry point into {bindir}")
+    """The installed console script, which is itself part of what ships.
+
+    NOT `.resolve()`, and the difference is the whole reason this could not be
+    run outside Windows. A POSIX venv's `bin/python` is a SYMLINK to the base
+    interpreter, so resolving it walks out of the venv and lands in /usr/bin —
+    where the entry point this script exists to check has, correctly, not been
+    installed. Windows venvs COPY python.exe instead, so the same line is
+    harmless there, and CI runs this job on Windows: the bug could only ever
+    surface for a contributor reproducing a packaging failure locally, which is
+    exactly when a broken tool costs the most.
+
+    sysconfig is asked first because it is the interpreter's own answer to
+    "where do console scripts go", and it stays right for a layout neither of
+    those two guesses covers.
+    """
+    candidates = []
+    try:
+        import sysconfig
+
+        scripts = sysconfig.get_path("scripts")
+        if scripts:
+            candidates.append(Path(scripts))
+    except Exception:                                            # noqa: BLE001
+        pass
+    candidates.append(Path(sys.executable).parent)
+
+    for bindir in candidates:
+        for name in ("bgate.exe", "bgate"):
+            cand = bindir / name
+            if cand.is_file():
+                return cand
+    sys.exit("[project.scripts] did not install a bgate entry point into "
+             + " or ".join(str(c) for c in candidates))
 
 
 def main() -> int:

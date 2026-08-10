@@ -44,10 +44,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
 from . import assets
+
+# Windows: never flash a console window out of an ffmpeg call. Every other
+# module in this product that spawns a binary does this (doctor, gitwork,
+# playtest, blender, godot) and the cutscene pipeline spawns MORE of them than
+# any of them — one per shot for continuity, one per join, one per mix.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 # How two shots may be joined. `cut` is the default and is free — it needs no
 # filter graph, so a sequence that wants none keeps the fast concat path.
@@ -349,8 +356,17 @@ def build_picture(sources: list, shots: list, out_path: str | os.PathLike[str],
         listing = dst.parent / f"{dst.stem}_concat.txt"
         # The demuxer's own quoting rule: single quotes, and an embedded one is
         # escaped by closing, escaping, reopening. Paths with an apostrophe exist.
+        #
+        # FORWARD SLASHES, WHICH ON WINDOWS IS A CORRECTNESS FIX AND NOT A STYLE
+        # ONE. Inside a quoted concat entry the demuxer treats `\` as an ESCAPE
+        # character, so a native Windows path is read as escape sequences: a
+        # project at C:\Users\nina\new-game feeds it `\n`, and the entry silently
+        # becomes a filename with a newline in it that ffmpeg then cannot open.
+        # ffmpeg accepts forward slashes on Windows everywhere, so as_posix() is
+        # the spelling that is right on both platforms — and Windows is the
+        # supported one here, so this is the platform that matters.
         listing.write_text(
-            "".join("file '{}'\n".format(str(p).replace("'", r"'\''"))
+            "".join("file '{}'\n".format(Path(p).as_posix().replace("'", r"'\''"))
                     for p in sources), encoding="utf-8")
         cmd = [exe, "-y", "-loglevel", "error",
                "-f", "concat", "-safe", "0", "-i", str(listing),
@@ -368,7 +384,8 @@ def build_picture(sources: list, shots: list, out_path: str | os.PathLike[str],
                 *encode[:6], str(dst)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=timeout, stdin=subprocess.DEVNULL)
+                              timeout=timeout, stdin=subprocess.DEVNULL,
+                              creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
         raise CutError(f"ffmpeg did not finish joining within "
                        f"{timeout:.0f}s") from exc
@@ -452,7 +469,8 @@ def mix_audio(video: str | os.PathLike[str], out_path: str | os.PathLike[str],
            str(dst)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=timeout, stdin=subprocess.DEVNULL)
+                              timeout=timeout, stdin=subprocess.DEVNULL,
+                              creationflags=_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
         raise CutError(f"ffmpeg did not finish mixing within "
                        f"{timeout:.0f}s") from exc
@@ -490,7 +508,7 @@ def duration_of(path: Optional[Path], *, ffmpeg: str = "") -> float:
             [probe, "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=60,
-            stdin=subprocess.DEVNULL)
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
         return round(float((proc.stdout or "0").strip() or 0), 3)
     except (OSError, ValueError, subprocess.SubprocessError):
         return 0.0
@@ -585,7 +603,7 @@ def _frame(exe: str, video: Path, at: float, out_path: Path) -> bool:
            "-i", str(video), "-frames:v", "1", str(out_path)]
     try:
         subprocess.run(cmd, capture_output=True, text=True, timeout=120,
-                       stdin=subprocess.DEVNULL)
+                       stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return False
     return out_path.is_file()
