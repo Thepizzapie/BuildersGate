@@ -23,6 +23,11 @@ from bgate_core import envfile, project, providers
 ENV = "OPENAI_API_KEY"
 
 
+@pytest.fixture()
+def anyio_backend():
+    return "asyncio"
+
+
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     """A fake home and a clean environment, for every test in this file."""
@@ -184,6 +189,111 @@ class TestWhatTheStatusRowSays:
         into — the gitignore guard answers that correctly rather than being
         skipped for the global path."""
         assert providers.env_is_ignored(envfile.global_dir()) is True
+
+
+class TestTheScratchDropPoint:
+    """Where a generation goes when it belongs to no game.
+
+    A real project, because everything downstream of a generation needs one —
+    the artifact registry, the spend ledger, `.bgate_out`. A bare output folder
+    would be a second, thinner path for "work that is not part of anything", and
+    the first question anyone asks of one is what it cost.
+    """
+
+    def test_it_is_not_created_until_something_needs_it(self):
+        """A user who never generates outside a project never gets a directory
+        they did not ask for."""
+        assert not (project.scratch_root(create=False) / ".bgate").exists()
+
+    def test_creating_it_makes_a_real_project(self):
+        root = project.scratch_root()
+        assert (root / ".bgate" / "game.db").exists()
+        assert project.get(root)["name"] == project.SCRATCH_LABEL
+        assert project.is_scratch(root)
+
+    def test_creating_it_twice_is_the_same_project(self):
+        """Idempotent, and NOT re-initialised: re-running init would rewrite the
+        name and pitch, so a second generation must not quietly reset a database
+        the first one has already put artifacts in."""
+        first = project.scratch_root()
+        marker = project.set_dimension(first, "3d")["dimension"]
+        second = project.scratch_root()
+        assert first == second
+        assert project.get(second)["dimension"] == marker
+
+    def test_it_carries_no_game(self):
+        """A drop point for images, not a place to build. A tool that needs an
+        engine should say so in its own words rather than find a stub."""
+        root = project.scratch_root()
+        assert project.game_dir(root) is None
+
+    def test_it_is_the_bottom_of_the_chain_not_the_top(self, game, tmp_path):
+        """Anyone who has a project keeps landing in it. Scratch only ever
+        catches someone who has none — otherwise a mistyped directory quietly
+        fills a folder nobody looks in."""
+        assert str(project.require_root(game, scratch=True)) == game
+
+        project.set_active(game)
+        try:
+            got = project.require_root(str(tmp_path / "nowhere"), scratch=True)
+            assert str(got) == game, "the remembered project must still win"
+        finally:
+            project.clear_active()
+
+    def test_without_the_flag_it_still_refuses(self, tmp_path):
+        """The default is unchanged: a caller that has no business inventing a
+        destination still gets the error it always got."""
+        with pytest.raises(LookupError):
+            project.require_root(str(tmp_path / "nowhere"))
+
+    def test_the_alias_is_how_you_ASK_for_it(self):
+        for token in ("scratch", "global", "SCRATCH", " global "):
+            assert project.resolve_alias(token) == project.scratch_root()
+        assert project.resolve_alias("my-game") is None
+        assert project.resolve_alias("") is None
+
+
+class TestTheScratchDropPointOnTheMcpSurface:
+    def test_generation_tools_fall_back_and_others_do_not(self, tmp_path,
+                                                          monkeypatch):
+        from bgate_mcp import server
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("BGATE_ROOT", raising=False)
+        # _root() is what every non-generation tool calls, and it must keep
+        # refusing: godot_run against an empty scratch project is a confusing
+        # failure a long way from its cause.
+        with pytest.raises(LookupError):
+            server._root()
+        assert str(project.scratch_root(create=False)) == \
+            server._scratch_root()
+
+    def test_the_alias_works_as_project_dir(self, tmp_path, monkeypatch):
+        from bgate_mcp import server
+
+        monkeypatch.chdir(tmp_path)
+        token = server._CALL_ROOT.set("scratch")
+        try:
+            assert server._root() == str(project.scratch_root())
+        finally:
+            server._CALL_ROOT.reset(token)
+
+    @pytest.mark.anyio
+    async def test_project_status_says_when_it_is_the_scratch_one(self,
+                                                                  monkeypatch):
+        """Otherwise "where did my sprite sheet go" has an answer nothing on any
+        surface states, and the honest one is a directory under ~/.bgate that
+        was created for you."""
+        import json
+
+        from bgate_mcp import server
+
+        monkeypatch.setenv("BGATE_ROOT", str(project.scratch_root()))
+        result = await server.mcp.call_tool("project_status", {})
+        content = result[0] if isinstance(result, tuple) else result
+        got = json.loads(content[0].text)
+        assert got["scratch"] is True
+        assert got["project"]["name"] == project.SCRATCH_LABEL
 
 
 class TestTheCli:

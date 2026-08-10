@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from bgate_core import project as _project
 from bgate_core import providers as _providers
 from bgate_ui import api
 from bgate_ui.deps import root
@@ -52,6 +53,16 @@ def _payload(rows: list[dict]) -> dict:
         # you can see it is a file on your own disk.
         "scopes": list(_providers.SCOPES),
         "global_env": str(_providers.envfile.global_path()),
+        # WHERE MACHINE-WIDE WORK LANDS, beside where machine-wide keys live.
+        # The two facts belong together: a key that is not tied to a project
+        # implies generations that are not either, and the first question anyone
+        # asks after "it worked" is where the file went. Reported without
+        # creating anything — a directory nobody has generated into yet should
+        # not be conjured by opening a settings page.
+        "scratch_root": str(_project.scratch_root(create=False)),
+        "scratch_exists": (_project.scratch_root(create=False)
+                           / ".bgate" / "game.db").exists(),
+        "scratch_active": _project.is_scratch(root()),
     }
 
 
