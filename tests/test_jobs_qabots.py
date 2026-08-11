@@ -1,11 +1,21 @@
-"""Two audit findings: engine calls that block a request, and gates that cannot fail.
+"""Three audit findings: blocking engine calls, gates that cannot fail, and a
+probe that only worked on one game.
 
 The Godot endpoints took their timeout straight from the request body and held
-the HTTP request open for it, so the first half of this file pins the clamp and
+the HTTP request open for it, so the first part of this file pins the clamp and
 the job model that replaced the blocking wait. The QA bot runner always
-"succeeded" — it produced samples and no verdict — so the second half pins the
+"succeeded" — it produced samples and no verdict — so the second part pins the
 expectation engine, and in particular that a bot asserting nothing reports
 ``unknown`` rather than a green pass.
+
+The third part pins the probe CONTRACT. The probe used to be hardcoded to a 2D
+fighter: it demanded a scene with nodes named Player and Opponent and sampled
+player_hp / opponent_hp / player_stamina, so every other project got an inert
+bot. What matters now in both directions — that the fighting shape still derives
+to exactly those key names (stored baselines and saved expectations address
+them), and that a project which is not that fighter derives something real,
+says what it could not work out, and never reports green for a run that sampled
+nothing.
 """
 from __future__ import annotations
 
@@ -17,7 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bgate_adapters import godot as _real_godot
-from bgate_core import db, jobs
+from bgate_core import db, jobs, qaprobe
 from bgate_ui import api
 from bgate_ui.app import app
 from bgate_ui.routes import godot_ws, jobs as jobs_api, qa_bots
@@ -458,3 +468,244 @@ class TestBaselines:
         got = client.get("/api/qa-bots/baseline?bot=nobody")
         assert got.status_code == 404
         assert got.json()["error"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# The probe contract
+# ---------------------------------------------------------------------------
+
+_FIGHT_SCENE = '''[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/fight.gd" id="1_fight"]
+[ext_resource type="Script" path="res://scripts/boxer.gd" id="2_boxer"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_fight")
+
+[node name="Player" type="Node2D" parent="."]
+script = ExtResource("2_boxer")
+
+[node name="Opponent" type="Node2D" parent="."]
+script = ExtResource("2_boxer")
+'''
+
+_ROAMER_SCENE = '''[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/hero.gd" id="1_hero"]
+
+[node name="World" type="Node2D"]
+
+[node name="Hero" type="CharacterBody2D" parent="."]
+script = ExtResource("1_hero")
+'''
+
+
+def _write_game(root, *, main_scene: str, scenes: dict, scripts: dict):
+    game = root / "game"
+    (game / "scenes").mkdir(parents=True, exist_ok=True)
+    (game / "scripts").mkdir(parents=True, exist_ok=True)
+    (game / "project.godot").write_text(
+        f'[application]\nrun/main_scene="{main_scene}"\n\n[input]\n'
+        'move_right={"deadzone": 0.5}\nui_accept={"deadzone": 0.5}\n',
+        encoding="utf-8")
+    for name, text in scenes.items():
+        (game / "scenes" / name).write_text(text, encoding="utf-8")
+    for name, text in scripts.items():
+        (game / "scripts" / name).write_text(text, encoding="utf-8")
+    return game
+
+
+@pytest.fixture()
+def fighter(root):
+    """The game the old hardcoded probe was written for."""
+    return _write_game(
+        root, main_scene="res://scenes/title.tscn",
+        scenes={"main.tscn": _FIGHT_SCENE},
+        scripts={"fight.gd": "func sim_tick() -> void:\n\tpass\n",
+                 "boxer.gd": ("@export var jab_damage := 3.0\n"
+                              "var hp: float\nvar stamina: float\n")})
+
+
+@pytest.fixture()
+def roamer(root):
+    """A game that is not that fighter: one actor, no sim_tick, hp declared the
+    way most GDScript declares it (`var hp := MAX_HP`, no type on the line)."""
+    return _write_game(
+        root, main_scene="res://scenes/world.tscn",
+        scenes={"world.tscn": _ROAMER_SCENE},
+        scripts={"hero.gd": "const MAX_HP := 100\nvar hp := MAX_HP\n"})
+
+
+class TestContractDerivation:
+    def test_the_fighting_shape_derives_the_key_names_baselines_use(self, fighter):
+        """The six keys are load-bearing history, not an implementation detail:
+        every stored baseline and every saved expectation addresses them."""
+        c = qaprobe.derive(fighter)
+        assert c["scene"] == "res://scenes/main.tscn"
+        assert qaprobe.sample_keys(c) == [
+            "player_x", "opponent_x", "player_hp", "opponent_hp",
+            "player_stamina", "distance"]
+        assert c["tick"] == {"mode": "method", "node": "", "method": "sim_tick"}
+        assert c["issues"] == []
+
+    def test_scenes_main_tscn_still_beats_the_declared_main_scene(self, fighter):
+        # The fighter's main scene is its title screen; the old probe looked at
+        # scenes/main.tscn first and reversing that would repoint it at a menu.
+        assert qaprobe.derive(fighter)["scene"] == "res://scenes/main.tscn"
+
+    def test_a_game_that_is_not_a_fighter_gets_a_real_contract(self, roamer):
+        c = qaprobe.derive(roamer)
+        assert c["scene"] == "res://scenes/world.tscn"
+        assert [a["key"] for a in c["actors"]] == ["hero"]
+        # position AND the untyped `var hp := MAX_HP`, which is how the health
+        # of the human's actual game is declared.
+        assert qaprobe.sample_keys(c) == ["hero_x", "hero_y", "hero_hp"]
+        # No sim_tick anywhere, and saying so beats calling a method that is not
+        # there and reporting a match that never advanced.
+        assert c["tick"]["mode"] == "frames"
+
+    def test_tuning_knobs_are_not_mistaken_for_state(self, fighter):
+        # boxer.gd exports jab_damage; it never moves during a match, and a
+        # sample table of constants is a table nobody reads.
+        assert "player_jab_damage" not in qaprobe.sample_keys(qaprobe.derive(fighter))
+
+    def test_nothing_to_watch_says_exactly_what_is_missing(self, root):
+        game = _write_game(root, main_scene="", scenes={}, scripts={})
+        c = qaprobe.derive(game)
+        assert c["source"] == "none"
+        assert c["actors"] == [] and c["samples"] == []
+        joined = " ".join(c["issues"])
+        assert "main_scene" in joined
+        assert "Declare the probe contract by hand" in joined
+
+    def test_a_broken_hand_edit_is_reported_not_silently_replaced(self):
+        contract, issues = qaprobe.normalise({
+            "scene": "scenes/combat.tscn",
+            "actors": [{"key": "hero"}],
+            "samples": [{"key": "x", "actor": "ghost", "property": "position.x"}]})
+        assert contract["scene"] == "res://scenes/combat.tscn"   # normalised, not guessed
+        assert contract["actors"] == [] and contract["samples"] == []
+        assert any("neither a path nor a find name" in i for i in issues)
+        assert any("'ghost', which is not declared" in i for i in issues)
+
+    def test_the_probe_script_carries_the_contract_not_the_fighters(self, roamer):
+        script = qa_bots._build_probe(qaprobe.derive(roamer), [], 60)
+        assert "res://scenes/world.tscn" in script
+        assert "hero_hp" in script
+        # The two node names the old probe demanded of every game on earth.
+        assert '"Opponent"' not in script
+
+
+class TestContractEndpoints:
+    def test_get_derives_persists_and_the_next_read_is_the_stored_one(
+            self, client, root, roamer):
+        first = client.get("/api/qa-bots/contract").json()["data"]
+        assert first["source"] == "derived"
+        assert first["sample_keys"] == ["hero_x", "hero_y", "hero_hp"]
+        # Persisted, so the human has something to edit rather than a guess
+        # that is made again from scratch on every run.
+        assert qaprobe.stored(root)["scene"] == "res://scenes/world.tscn"
+        assert client.get("/api/qa-bots/contract").json()["data"]["scene"] \
+            == first["scene"]
+
+    def test_a_hand_edit_wins_and_keeps_its_complaints(self, client, roamer):
+        body = client.post("/api/qa-bots/contract", json={"data": {
+            "scene": "res://scenes/world.tscn",
+            "actors": [{"key": "hero", "find": "Hero"}],
+            "samples": [{"key": "hero_hp", "actor": "hero", "property": "hp"},
+                        {"key": "gold", "actor": "nobody", "property": "gold"}],
+            "tick": {"mode": "method"}}}).json()["data"]
+        assert body["source"] == "declared"
+        assert body["sample_keys"] == ["hero_hp"]
+        assert body["tick"]["mode"] == "frames"      # 'method' with no method named
+        assert any("'nobody', which is not declared" in i for i in body["issues"])
+        # And it is what the next read answers, rather than a fresh derivation.
+        assert client.get("/api/qa-bots/contract").json()["data"]["source"] == "declared"
+
+    def test_re_derive_replaces_a_stale_declaration(self, client, roamer):
+        client.post("/api/qa-bots/contract", json={"data": {
+            "scene": "res://scenes/gone.tscn",
+            "actors": [{"key": "ghost", "find": "Ghost"}],
+            "samples": [{"key": "ghost_x", "actor": "ghost", "property": "position.x"}]}})
+        again = client.post("/api/qa-bots/contract/derive").json()["data"]
+        assert again["source"] == "derived"
+        assert again["scene"] == "res://scenes/world.tscn"
+
+    def test_an_unreadable_project_offers_no_actions_rather_than_boxing_moves(
+            self, client, root):
+        # It used to answer jab/hook/duck/kick_heavy for any project it could
+        # not read — a dropdown of actions the InputMap has never heard of.
+        got = client.get("/api/qa-bots/actions").json()
+        assert got == {"actions": [], "source": "none"}
+
+
+class TestSampledNothing:
+    def test_a_run_that_sampled_nothing_is_an_error_not_a_pass(
+            self, client, roamer, monkeypatch):
+        # has_fight true, zero samples: the scene loaded and the probe watched
+        # nothing. Green here is the green-for-free this whole seat is about.
+        _stub_probe(monkeypatch, _summary([]))
+        body = client.post("/api/qa-bots/run", json={
+            "bot": "watcher", "actions": [],
+            "expect": [{"property": "has_fight", "comparator": "eq",
+                        "value": True}]}).json()
+        assert body["verdict"] == "error"
+
+    def test_verdict_of_holds_the_line_without_the_http_layer(self):
+        assert qa_bots.verdict_of([], [], True, {"samples": []}) == "error"
+        assert qa_bots.verdict_of([], [], True, {"samples": [{"tick": 0}]}) == "unknown"
+
+    def test_the_missing_property_reason_names_what_was_sampled(self):
+        results = qa_bots.evaluate(_summary(_samples({})), [
+            {"property": "gold", "comparator": "gt", "value": 0,
+             "at_tick": None, "label": "loot"}])
+        assert "player_hp" in results[0]["reason"]      # what it COULD have used
+
+
+class TestBaselineComparability:
+    def _run(self, samples, contract):
+        return {"samples": samples, "final": samples[-1] if samples else {},
+                "contract": contract}
+
+    def test_a_contract_change_is_reported_rather_than_diffed_away(self):
+        was = {"scene": "res://a.tscn", "samples": [{"key": "player_hp"}],
+               "derived": [], "tick": {"mode": "frames"}}
+        now = {"scene": "res://a.tscn", "samples": [{"key": "player_hp"},
+                                                    {"key": "gold"}],
+               "derived": [], "tick": {"mode": "frames"}}
+        baseline = {"id": 1, "verdict": "pass", "results": [],
+                    "samples": self._run([{"tick": 0, "player_hp": 90}], was)}
+        diff = qa_bots.diff_baseline(
+            baseline, self._run([{"tick": 0, "player_hp": 90, "gold": 5}], now),
+            "pass", [])
+        assert diff["contract_changed"] is True
+        assert diff["keys_added"] == ["gold"] and diff["keys_removed"] == []
+        # gold is NOT reported as having moved from nothing to 5.
+        assert diff["changed"] == []
+        assert "only the keys both runs produced" in diff["note"]
+
+    def test_no_key_in_common_is_declared_incomparable(self):
+        was = {"scene": "res://a.tscn", "samples": [{"key": "player_hp"}],
+               "derived": [], "tick": {"mode": "frames"}}
+        now = {"scene": "res://b.tscn", "samples": [{"key": "gold"}],
+               "derived": [], "tick": {"mode": "frames"}}
+        diff = qa_bots.diff_baseline(
+            {"id": 1, "verdict": "pass", "results": [],
+             "samples": self._run([{"tick": 0, "player_hp": 90}], was)},
+            self._run([{"tick": 0, "gold": 5}], now), "pass", [])
+        assert diff["comparable"] is False
+        assert diff["changed"] == []
+        assert "cannot be compared" in diff["note"]
+
+    def test_an_unchanged_contract_still_diffs_the_way_it_always_did(self):
+        c = {"scene": "res://a.tscn", "samples": [{"key": "opponent_hp"}],
+             "derived": [], "tick": {"mode": "method", "method": "sim_tick"}}
+        diff = qa_bots.diff_baseline(
+            {"id": 1, "verdict": "pass", "results": [],
+             "samples": self._run([{"tick": 0, "opponent_hp": 80}], c)},
+            self._run([{"tick": 0, "opponent_hp": 100}], c), "fail", [])
+        assert diff["comparable"] is True and diff["contract_changed"] is False
+        assert diff["note"] == ""
+        assert diff["changed"] == [{"property": "opponent_hp", "was": 80,
+                                    "now": 100, "delta": 20.0}]
+        assert diff["regressed"] is True
