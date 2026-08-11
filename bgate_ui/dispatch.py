@@ -540,16 +540,32 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         + (policy + "\n\n" if policy else "")
         + "Protocol, in order:\n"
         "1. seat_brief for your role, ONCE. It carries mission, lanes, bible, "
-        "pinned refs and notes; a second call returns the same payload and "
-        "costs what the first one did.\n"
+        "pinned refs, notes and the BOARD — what every other agent is queued "
+        "for or working on right now. Read the board before touching a file a "
+        "dispatched peer owns or duplicating queued work; a second brief call "
+        "returns the same payload and costs what the first one did.\n"
         "2. Do the work inside your lanes. The PreToolUse hook enforces them, "
         "so write and let it refuse — seat_can_write is for when you need to "
         "know BEFORE a long generation, not a checkpoint before every edit. "
         "Lock binaries before editing.\n"
+        "   OUT-OF-LANE WORK IS ROUTED, NEVER DROPPED. If this task needs a "
+        "write another seat owns, queue_add(<that seat>, title, brief) files "
+        "it for an agent that CAN write it — pass depends_on="
+        f"{item['id']} when it needs this item's output — then keep working "
+        "on what is yours. A seat note, a LEFTOVERS block or a 'blocked' "
+        "result dispatches NOBODY; only a queue row does. Handing work on IS "
+        "part of finishing yours, and a result paragraph that names the items "
+        "you filed is a finished handoff.\n"
         f"3. Verify per house norms: {_verify_rule(root)}\n"
         f"4. Mark the item: call queue_complete with item_id={item['id']} and a "
         "one-paragraph result (status 'done', or 'failed' with the honest "
         "reason). That paragraph IS the record — no separate note is owed.\n"
+        "5. KEEP THE SEAT WARM. Before queue_complete, you may call "
+        "queue_claim_next() to claim the next READY item for your seat — then "
+        "complete this item and continue with the claimed one under the same "
+        "rules. Claim FIRST: once your item completes with nothing claimed, "
+        "the harness closes this session. An empty claim means you are done — "
+        "just complete and finish.\n"
         "\n"
         "Also: seat_post_note only when another seat must know something your "
         f"result paragraph will not tell them. Append to .bgate/progress/item-"
@@ -700,6 +716,22 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                            k: v for k, v in verdict.items()
                            if k in ("scope", "spent", "ceiling")})
 
+    # THE RESERVATION — the queued->dispatched transition, taken atomically and
+    # FIRST. There are two dispatchers now (this function, and a worker's
+    # queue_claim_next in the MCP server process), and the old shape — read
+    # 'queued' here, write 'dispatched' after Popen — left a seconds-wide window
+    # in which both proceeded and one item got two agents. The UPDATE's WHERE
+    # clause means exactly one caller wins; every refusal past this point puts
+    # the item back through release(), which touches nothing but the status.
+    if not _queue.reserve(root, item_id):
+        return _refuse("not_queued",
+                       f"item {item_id} was taken by another dispatcher between "
+                       "the read and the reservation", item_id=item_id)
+
+    def _refused(code: str, message: str, **detail) -> dict:
+        _queue.release(root, item_id)
+        return _refuse(code, message, **detail)
+
     # The git boundary. A run dispatched on top of uncommitted work produces a
     # diff that cannot tell the agent's edits from the human's, so mixing them
     # has to be asked for.
@@ -707,10 +739,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         allow_dirty = _flag(root, "dispatch.allow_dirty", "BGATE_ALLOW_DIRTY")
     state = _git.dirty(root)
     if state["available"] and state["dirty"] and not allow_dirty:
-        return _refuse("dirty_tree",
-                       f"{len(state['paths'])} uncommitted change(s) in the tree — "
-                       "commit or stash first, or dispatch with allow_dirty",
-                       paths=state["paths"][:50])
+        return _refused(
+            "dirty_tree",
+            f"{len(state['paths'])} uncommitted change(s) in the tree, so the "
+            "agent's edits could not be told from yours. Commit or stash them "
+            "and the board resumes on its own. (Finished runs commit their own "
+            "files when dispatch.auto_commit is on, which it is by default — so "
+            "what is dirty here is work the harness did not do.)",
+            paths=state["paths"][:50])
     base_commit = _git.head(root) if state["available"] else ""
     branch, worktree = "", ""
     cwd = str(root)
@@ -720,7 +756,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     if base_commit and _flag(root, "dispatch.isolation", "BGATE_GIT_ISOLATION"):
         made = _git.make_worktree(root, item_id, base=base_commit)
         if not made["available"]:
-            return _refuse("worktree_failed", made["reason"])
+            return _refused("worktree_failed", made["reason"])
         branch, worktree = made["branch"], made["worktree"]
         cwd = worktree
 
@@ -733,11 +769,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     exe = _executable(runner)
     blocked = _runners.preflight(runner, cwd, exe=exe)
     if blocked:
-        return _refuse("runner_unavailable", blocked, runner=runner.name)
+        return _refused("runner_unavailable", blocked, runner=runner.name)
     native_images = _native_images(root, runner)
 
     log_dir = Path(root) / ".bgate" / "agents"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return _refused("spawn_failed", f"cannot create the agent log dir: {exc}")
     log_path = log_dir / f"item-{item_id}.log"
 
     env = {
@@ -768,7 +807,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                              model=model, cwd=cwd, native_images=native_images,
                              max_turns=_max_turns(root))
 
-    log_handle = open(log_path, "ab")
+    try:
+        log_handle = open(log_path, "ab")
+    except OSError as exc:
+        return _refused("spawn_failed", f"cannot open the agent log: {exc}")
     # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
     # view and the steer-echo scanner must only look at THIS run — the stale
     # first-run result being shown as current, and old echoes falsely marking
@@ -780,9 +822,13 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                                   "ts": _time.time()}) + "\n").encode("utf-8"))
     log_handle.flush()
     run_start_pos = log_handle.tell()
-    proc = subprocess.Popen(args, cwd=cwd, env=env,
-                            stdin=subprocess.PIPE, stdout=log_handle,
-                            stderr=log_handle, creationflags=_NO_WINDOW)
+    try:
+        proc = subprocess.Popen(args, cwd=cwd, env=env,
+                                stdin=subprocess.PIPE, stdout=log_handle,
+                                stderr=log_handle, creationflags=_NO_WINDOW)
+    except OSError as exc:
+        log_handle.close()
+        return _refused("spawn_failed", f"could not start the agent CLI: {exc}")
     # Deliver the task. A streaming runner takes it as the first user message
     # and keeps the pipe open as a steer channel; `codex exec` reads stdin ONCE
     # and acts on what it got, so the pipe has to be closed or the run never
@@ -800,6 +846,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             proc.stdin.close()
     except OSError as exc:
         proc.kill()
+        _queue.release(root, item_id)
         return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
     with _lock:
         _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
@@ -809,6 +856,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           # can be changed while this agent is mid-flight, and
                           # what it is running under is a fact about the run.
                           "runner": runner.name,
+                          # Carried for the auto-commit message: _finalize runs
+                          # after the item may already have been reopened, and
+                          # re-reading the row then would name the wrong round.
+                          "seat": item.get("seat") or "",
                           "cost_tracked": runner.cost_tracked,
                           "steerable": runner.steerable,
                           "native_images": native_images,
@@ -823,7 +874,9 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           # stop(item_id) has no root argument to be given one.
                           "root": str(root), "actor": actor,
                           "branch": branch, "worktree": worktree}
-    _queue.set_status(root, item_id, "dispatched")
+    # Status is already 'dispatched' — the reservation above wrote it before any
+    # of the slow work, which is what makes two dispatchers safe against each
+    # other. Writing it again here would wipe the item's result note for nothing.
     _queue.set_run_fields(root, item_id, base_commit=base_commit, branch=branch,
                           worktree=worktree, actor=actor or None,
                           max_cost_usd=ceiling_usd or None,
@@ -983,6 +1036,18 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
         _queue.set_status(root, item_id, "failed", result=note)
     except LookupError:
         pass
+    else:
+        # ANNOUNCE THE KILL. set_status never emits (by design — see
+        # queue.complete), and _reap skips complete() because the item is no
+        # longer 'dispatched' — so every ceiling kill was a failure with no
+        # item.failed event: no bell, no webhook, no auto-reopen, an item that
+        # just sat there. item.failed is in the default notify kinds; the most
+        # expensive failures this system has should be the loudest, not the
+        # only silent ones.
+        try:
+            _queue.emit_terminal(root, item_id)
+        except Exception:
+            pass
     _reap(root, item_id, entry, entry["proc"].poll())
 
 
@@ -1122,6 +1187,14 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         if not entry.get("stdin_closed"):
             try:
                 if _queue.get(root, item_id)["status"] in ("done", "failed"):
+                    # THE PICKUP LOOP KEEPS THE PIPE OPEN. A worker that called
+                    # queue_claim_next before completing its item is still
+                    # working — closing stdin here would kill it mid-claim,
+                    # which turns the sanctioned loop into a trap. The run's
+                    # ceilings (runtime, stall, cost) still bound the whole
+                    # session, so this is not an escape from any limit.
+                    if _open_claims(root, item_id):
+                        continue
                     try:
                         entry["stdin"].close()
                     except OSError:
@@ -1144,6 +1217,21 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             # run. Returning here left the entry in _live with a corpse in it,
             # which is exactly the stuck row this file keeps growing scars over.
             entry["eof_at"] = time.monotonic()
+
+
+def _open_claims(root: str, item_id: int) -> list[dict]:
+    """Items this run claimed via queue_claim_next and has not yet settled.
+
+    The claim stamp is the actor column (agent:item-<original id>), written by
+    queue.claim_next in the MCP server process — the DB is the only channel the
+    two processes share, which is why this is a query and not a field on the
+    _live entry. Best-effort: an unreadable DB answers 'no claims', which errs
+    toward closing a session rather than keeping a corpse alive.
+    """
+    try:
+        return _queue.claimed_open(root, f"agent:item-{item_id}")
+    except Exception:
+        return []
 
 
 def run_record_path(root: str, item_id: int) -> Path:
@@ -1202,6 +1290,53 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
                                                 scope["paths"])}
             run_record_path(root, item_id).write_text(
                 json.dumps(record), encoding="utf-8")
+    except Exception:
+        pass
+    _auto_commit(root, item_id, entry)
+
+
+def _auto_commit(root: str, item_id: int, entry: dict) -> None:
+    """Commit this run's own files, so the NEXT dispatch is not refused.
+
+    THE DEADLOCK. Nothing in this system committed anything, and dispatch
+    refuses a dirty tree by default — so the first agent to write a file
+    blocked every later dispatch, permanently, with a 20-second retry loop.
+    `dirty_tree` is a FLOOR refusal, so it stopped the whole board rather than
+    one item. Measured consequence: an overnight queue of thirty items woke up
+    with three done, twenty-six never started, and the autopilot toggle still
+    green.
+
+    ONLY THIS RUN'S PATHS (gitwork.commit_paths, never `commit -a`), so a
+    human's unrelated uncommitted work is not swept into an agent's commit —
+    and if THAT is what makes the tree dirty, it stays dirty and the next
+    dispatch is still refused, which is the rule working rather than being
+    bypassed.
+
+    Skipped for a worktree run: those already live on their own branch, which
+    is the isolation this exists to substitute for. Best effort throughout —
+    the work is on disk either way, and a failed commit must never turn a
+    finished run into a failed one.
+    """
+    if entry.get("worktree"):
+        return
+    if not _flag(root, "dispatch.auto_commit", "BGATE_AUTO_COMMIT"):
+        return
+    base = entry.get("base_commit") or ""
+    try:
+        scope = _git.touched(root, base)
+        if not scope.get("available") or not scope.get("paths"):
+            return
+        seat = str(entry.get("seat") or "")
+        made = _git.commit_paths(
+            root, scope["paths"],
+            f"bgate: item #{item_id}" + (f" [{seat}]" if seat else "")
+            + " — committed by the harness so the board keeps moving")
+        if made.get("ok"):
+            from bgate_core import activity as _act
+
+            _act.log(root, "dispatch",
+                     f"item {item_id}: committed {len(made['committed'])} "
+                     f"file(s) as {made['commit'][:8]}", ref=str(item_id))
     except Exception:
         pass
 
@@ -1272,6 +1407,18 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
                             failed=(outcome != "done"))
     except LookupError:
         pass
+    # CLAIMS DIE WITH THE RUN, BUT THE WORK DOES NOT. An item the agent claimed
+    # (queue_claim_next) and never completed goes back on the board as 'queued'
+    # rather than dying as a stranded 'dispatched' row — autodeploy re-dispatches
+    # it fresh, and nothing about it was attempted enough to call it failed.
+    try:
+        for claimed in _open_claims(root, item_id):
+            _queue.set_status(
+                root, int(claimed["id"]), "queued",
+                result=f"requeued: claimed by the agent on item {item_id}, "
+                       "which exited before starting or finishing it")
+    except Exception:
+        pass
     _finalize(root, item_id, entry)
     try:
         _unrecord_pid(root, entry["proc"].pid)
@@ -1290,6 +1437,19 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
     # the state this event is describing rather than 'dispatched'. Emitted for
     # every exit including a kill: "the agent is gone" is the fact, and the item's
     # own item.done/item.failed says whether the work landed.
+    # Tell autodeploy how this went. A runner that fails instantly on every
+    # item (an expired CLI login is the observed case) otherwise burns the whole
+    # queue to 'failed' inside ten minutes, because a dispatch that SPAWNS
+    # counts as a success and never triggers a cooldown.
+    try:
+        from bgate_ui import autodeploy as _auto
+
+        _auto.note_run_ended(
+            root, item_id, outcome,
+            float(max(0.0, time.monotonic() - float(entry["started_at"])))
+            if entry.get("started_at") else 0.0)
+    except Exception:
+        pass
     _emit(root, "agent.exited", ref=str(item_id),
           payload={"item": item_id, "outcome": outcome, "code": code,
                    "stopped_by": entry.get("stopped_by", ""),
@@ -1388,6 +1548,30 @@ def reconcile(root: str) -> dict:
         # again for everything the first had already made. Observed on #357:
         # marked failed at 02:54:07, generated another sheet at 02:54:22.
         if item_id in adopted_items:
+            continue
+        # A CLAIMED ITEM IS NOT A RUN OF ITS OWN. Its log lives under the
+        # CLAIMING item's id, so settling it against item-<id>.log below would
+        # always read "no result" and fail work that was merely queued behind a
+        # restart. If the claiming run is still alive (this server or adopted),
+        # leave the claim alone; otherwise requeue it untouched.
+        actor = str(item.get("actor") or "")
+        if actor.startswith("agent:item-"):
+            try:
+                origin = int(actor.split("agent:item-", 1)[1])
+            except ValueError:
+                origin = 0
+            with _lock:
+                origin_live = origin in _live
+            if origin and (origin_live or origin in adopted_items):
+                continue
+            try:
+                _queue.set_status(
+                    root, item_id, "queued",
+                    result="requeued: claimed by another run that did not "
+                           "survive a dashboard restart")
+                settled.append({"item_id": item_id, "status": "requeued"})
+            except Exception:
+                pass
             continue
         final = _final_event(root, item_id)
         if final.get("subtype") == "success":

@@ -1589,6 +1589,95 @@ _MIGRATIONS: list = [
     );
     CREATE INDEX idx_bible_ref_section ON bible_ref(section_id, rank);
     """,
+    # 0032 — THE CONTENT MANIFEST: what the game CONSISTS OF, enumerable.
+    #
+    # The board's only unit is the per-seat work_item, so "what remains to
+    # build" was unanswerable: an empty queue after a bad decomposition looks
+    # exactly like a finished game. plan_row is the missing organ — one row per
+    # thing the game needs (an entity, an asset, a scene, a system, a sound, a
+    # dialogue set, a level), written when the human approves a brainstorm's
+    # game plan and linked to the work item that builds it when one is filed.
+    #
+    # STATUS IS DERIVED, NOT STORED, past 'spec'. A row with no work_item_id is
+    # spec; with one, its progress IS the item's status plus the artifact link.
+    # Storing a second status column would be a cache that lies the first time
+    # a reopen moves the item and nothing moves the row.
+    #
+    # `slice` marks the vertical slice — the one playable moment built FIRST.
+    # `depends_on_names` is a JSON list of other rows' names, kept as authored:
+    # it compiles to work_item chains at deploy time, and keeping the source
+    # means a later re-compile (or the phase-5 DAG) does not have to reverse-
+    # engineer intent from chain rows.
+    #
+    # SET NULL, not CASCADE: deleting a work item un-links the row back to
+    # spec — the need for the thing survives the death of one attempt at it.
+    """
+    CREATE TABLE plan_row (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind          TEXT NOT NULL DEFAULT 'asset'
+                          CHECK (kind IN ('entity','asset','scene','system',
+                                          'sound','dialogue','level')),
+        name          TEXT NOT NULL,
+        seat          TEXT NOT NULL,
+        acceptance    TEXT NOT NULL DEFAULT '',
+        slice         INTEGER NOT NULL DEFAULT 0,
+        depends_on_names TEXT NOT NULL DEFAULT '[]',
+        session_id    INTEGER,
+        work_item_id  INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        artifact_id   INTEGER,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (name)
+    );
+    CREATE INDEX idx_plan_row_item ON plan_row(work_item_id);
+    CREATE INDEX idx_plan_row_slice ON plan_row(slice, kind);
+    """,
+    # 0033 — MULTI-PARENT DEPENDENCIES. A game is a DAG, not a line.
+    #
+    # work_item.depends_on holds ONE predecessor, so a scene that needs the
+    # sprite AND the sound AND the script could only express one of the three;
+    # the other two raced it. Chains were the workaround and they are strictly
+    # linear, cannot be appended to, and a cancelled link blocks its successors
+    # forever with no repair verb.
+    #
+    # ADDITIVE, NOT A REWRITE. `depends_on` stays exactly as it is — every
+    # chain, every query and every test that reads it keeps working — and this
+    # table carries the EXTRA parents. queue.blocker() checks both and reports
+    # whichever is not satisfied. A one-parent item never touches this table.
+    #
+    # `satisfied_by_cut` is the repair verb's record: cutting a dependency is a
+    # human decision that has to survive in the audit ("this waited on #12,
+    # which was cancelled; a person released it on this date") rather than
+    # vanishing as a deleted row.
+    """
+    CREATE TABLE work_item_dep (
+        item_id     INTEGER NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+        depends_on  INTEGER NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+        cut_by      TEXT NOT NULL DEFAULT '',
+        cut_at      TEXT,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (item_id, depends_on)
+    );
+    CREATE INDEX idx_item_dep_on ON work_item_dep(depends_on);
+    """,
+    # 0034 — WHICH SEAT SPENT IT.
+    #
+    # The ledger could answer what a project cost and what KIND of thing it was
+    # bought from, and nothing else. "Which seat is expensive" — the question
+    # anyone asks after a surprising month, and the one that decides where a
+    # budget should actually be cut — was unanswerable: there was no seat
+    # column, `record` took no seat argument, and most paid MCP paths pass no
+    # work_item_id either, so even the indirect join through the board failed.
+    #
+    # A plain column with an empty default rather than a lookup table: the seat
+    # vocabulary is eight fixed strings that live in code (seats.DEFAULT_SEATS),
+    # a row written by a human session legitimately has no seat at all, and a
+    # foreign key onto a table that does not exist would be a lie about where
+    # the truth lives. Empty means "not attributable", which is honest and is
+    # what every historical row is.
+    """
+    ALTER TABLE spend_event ADD COLUMN seat TEXT NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS idx_spend_seat ON spend_event(seat, created_at);
+    """,
 ]
 
 

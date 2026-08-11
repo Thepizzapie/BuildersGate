@@ -60,14 +60,18 @@ POLL_S = 4.0
 #     moment they are written, and the queue panel offers a deploy button for
 #     one that was refused; autopilot grabbing them is how a turn got dispatched
 #     with the placeholder brief still in it.
-HELD_SOURCES = ("qa-gate-escalation", "chat")
+#
+# DEFINED IN queue.py NOW, because a worker's queue_claim_next is a second
+# automatic dispatcher in a second process and must hold the same items back;
+# two copies of this tuple is how one of them grabs an escalation. The names
+# stay importable from here — this module is where the policy is explained.
+from bgate_core.queue import HELD_SOURCES, PLACEHOLDER_BRIEF  # noqa: E402
 
 # A row created in two statements — INSERT with a placeholder, then UPDATE with
 # the real text — is briefly dispatchable with nothing in it. Both the console
 # turn and the delegate item are built that way (the brief has to name the row's
-# own id), so autopilot skips anything still wearing the placeholder rather than
-# spending an agent on the word "(preparing)".
-PLACEHOLDER_BRIEF = "(preparing%"
+# own id), so autopilot (and claim_next) skips anything still wearing the
+# placeholder rather than spending an agent on the word "(preparing)".
 
 # How long an item that refused sits out before it is offered again.
 ITEM_COOLDOWN_S = 90.0
@@ -87,10 +91,40 @@ _lock = threading.Lock()
 _MEM: dict[str, dict] = {}
 
 
+# How many runs may die instantly, back to back, before the board stops
+# feeding the queue into whatever is broken — and how long it then waits.
+BURN_LIMIT = 3
+BURN_COOLDOWN_S = 300.0
+# A run that lasted less than this and reported nothing did not do any work.
+QUICK_FAIL_S = 45
+
+
 def _mem(root: str) -> dict:
     with _lock:
         return _MEM.setdefault(str(root), {"cool": {}, "floor_until": 0.0,
-                                           "last": None, "dispatched": 0})
+                                           "last": None, "dispatched": 0,
+                                           "quick_fails": 0})
+
+
+def note_run_ended(root, item_id: int, outcome: str, seconds: float) -> None:
+    """Told by the dispatcher how a run finished, so the loop can notice a
+    runner that is failing every time.
+
+    Counts CONSECUTIVE instant failures: any run that produced work — or that
+    merely lasted a while before failing — resets the counter, because a slow
+    failure is a real attempt at real work and a fast one is the runner
+    refusing to start.
+    """
+    mem = _mem(str(root))
+    with _lock:
+        if outcome == "done" or seconds >= QUICK_FAIL_S:
+            mem["quick_fails"] = 0
+        else:
+            mem["quick_fails"] = int(mem.get("quick_fails") or 0) + 1
+
+
+def _burning(root: str, mem: dict) -> bool:
+    return int(mem.get("quick_fails") or 0) >= BURN_LIMIT
 
 
 def enabled(root: str | os.PathLike[str]) -> bool:
@@ -190,7 +224,12 @@ def _candidates(root: str) -> list[dict]:
         "AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
         "ORDER BY i.priority DESC, i.id LIMIT 40",
         (*HELD_SOURCES, PLACEHOLDER_BRIEF)).fetchall()
-    return [dict(r) for r in rows]
+    # The join sees only the single-column parent. An item with EXTRA parents
+    # (work_item_dep) is filtered here for the same reason the chained ones are:
+    # a refusal costs the item a cooldown and fills the "last refusal" slot with
+    # a non-event when the board is simply working as designed.
+    from bgate_core import queue as _q
+    return [dict(r) for r in rows if _q.blocker(root, int(r["id"])) is None]
 
 
 def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
@@ -228,6 +267,28 @@ def tick(root: str | os.PathLike[str], *, force: bool = False) -> dict:
         item_id = int(item["id"])
         if mem["cool"].get(item_id, 0) > now:
             continue
+        # INSTANT-FAILURE BACKOFF. A dispatch that SPAWNS is a success here, so
+        # nothing rate-limited the case where every spawn dies on contact — an
+        # expired CLI login passes the PATH check, starts, exits without
+        # reporting, and is banked as failed. With no cooldown on a successful
+        # dispatch, autopilot walked the whole queue at four a tick and burned
+        # thirty items to 'failed' in about ten minutes, then idled till morning.
+        # Consecutive same-shaped failures are the signal; the fix is to stop
+        # feeding the queue into a broken runner, not to retry harder.
+        if _burning(root, mem):
+            entry = {"item_id": None, "code": "runner_failing",
+                     "message": (f"{mem.get('quick_fails', 0)} runs in a row "
+                                 "ended immediately without reporting — the "
+                                 "agent CLI is probably not able to start "
+                                 "(expired login?). Holding the board rather "
+                                 "than burning the queue; fix the CLI and it "
+                                 "resumes on its own."),
+                     "at": time.strftime("%H:%M:%S")}
+            with _lock:
+                mem["last"] = entry
+                mem["floor_until"] = now + BURN_COOLDOWN_S
+            refused.append(entry)
+            break
         result = _dispatch.dispatch(root, item_id, actor="autodeploy")
         if result.get("ok"):
             sent.append(item_id)
