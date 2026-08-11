@@ -353,7 +353,36 @@
   WF.registerTemplate({
     id: "tpl.level", name: "Level layout → scene", category: "level", glyph: "▦",
     hint: "plan → approve → TileMap scene → screenshot",
-    build: function () {
+    /* `facts` is what the project actually contains, fetched once by the
+       library. This template used to hardcode res://assets/tiles/main.tres --
+       a path no project has ever had, so the card whose entire promise is
+       "this generates a level" died on its generate node every time anyone
+       opened it. level_generate was right to refuse; the card was lying.
+
+       So: draw the first real TileSet, and take its FIRST SOURCE ID rather
+       than assuming 0. Source ids are ids, not indexes, and a tileset with one
+       source is free to call it 3. With no tileset in the project the field is
+       left empty on purpose -- an empty required field reads as "you owe me
+       this", which is true, and a fabricated one does not.
+
+       The wall layout is chosen the same way, off `draws`, which the server
+       computes against the coordinates the .tres actually defines. Defaulting
+       to blob47 is what a hand-written card does, and blob47 needs 47 tiles in
+       one row-major block: the owner's project has 55 sources and not one of
+       them can draw it, so the honest default here is whatever this atlas
+       supports. `columns` comes from the source's own extent rather than the
+       8 that happened to be the argument default. */
+    build: function (facts) {
+      var sets = (facts && facts.tilesets) || [];
+      var ts = sets[0] || null;
+      /* Richest drawable source, not the lowest id -- source 0 is very often a
+         single-tile placeholder sitting in front of the real sheets. */
+      var draws = ((ts && ts.draws) || []).filter(function (d) {
+        return d.layouts && d.layouts.length;
+      }).sort(function (a, b) { return b.tiles - a.tiles; });
+      var d = draws[0] || null;
+      var src = d ? d.source
+        : (ts && ts.sources && ts.sources.length ? ts.sources[0] : 0);
       return {
         nodes: [
           { id: "task", type: "input.task", x: X(0), y: Y,
@@ -364,8 +393,15 @@
           { id: "gate", type: "control.gate", x: X(2), y: Y },
           { id: "gen", type: "tool.level.generate", x: X(3), y: Y,
             config: { scene: "res://scenes/Level01.tscn",
-                      tileset: "res://assets/tiles/main.tres",
-                      width: 48, height: 32, seed: 7, wall_layout: "blob47",
+                      tileset: ts ? ts.res : "",
+                      floor_source: src, wall_source: src,
+                      floor_atlas_x: d ? d.atlas_x : 0,
+                      floor_atlas_y: d ? d.atlas_y : 0,
+                      wall_atlas_x: d ? d.atlas_x : 0,
+                      wall_atlas_y: d ? d.atlas_y : 0,
+                      wall_columns: d ? d.columns : 8,
+                      width: 48, height: 32, seed: 7,
+                      wall_layout: d ? d.layouts[0] : "blob47",
                       create: true, dry_run: true } },
           { id: "chk", type: "tool.godot.check", x: X(4), y: Y, config: {} },
           { id: "shot", type: "tool.godot.screenshot", x: X(5), y: Y,

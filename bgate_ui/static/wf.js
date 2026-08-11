@@ -90,6 +90,7 @@
   const WF = {
     steps: {}, templates: [], _nc: null, _wf: null, _saved: [], _api: null, _saveT: null,
     _run: null, _runNodes: null, _pollT: null, _savedError: "", _saveErr: "",
+    _facts: null,
 
     registerStep(def) { if (def && def.type) this.steps[def.type] = def; },
     registerTemplate(t) { if (t && t.id) this.templates.push(t); },
@@ -661,8 +662,28 @@
         </div>
         <div id="wf-lib-body"><div class="empty">loading…</div></div>
       </div>`;
-      await this._loadSaved();
+      await Promise.all([this._loadSaved(), this._loadFacts()]);
       this._renderLibrary();
+    },
+    /* WHAT THIS PROJECT ACTUALLY CONTAINS, so a template can prefill a real
+       path instead of a plausible one. The level template shipped
+       `res://assets/tiles/main.tres` hardcoded; that file exists in no project,
+       so the card failed at its generate node every single time it was opened.
+       A template that names a file the project does not have is worse than one
+       that names nothing, because it looks configured.
+
+       Best-effort by design: this is prefill, not validation. A project with no
+       engine, or a read that 404s, leaves `_facts` empty and every template
+       falls back to whatever it does when it is handed nothing. */
+    async _loadFacts() {
+      this._facts = { tilesets: [], scenes: [] };
+      try {
+        const [ts, sc] = await Promise.all([
+          getX("/api/scene/tilesets"), getX("/api/scene/wirable"),
+        ]);
+        if (ts && Array.isArray(ts.tilesets)) this._facts.tilesets = ts.tilesets;
+        if (sc && Array.isArray(sc.scenes)) this._facts.scenes = sc.scenes;
+      } catch (e) { /* no engine, no facts, no prefill. Not an error. */ }
     },
     /* The index is a BARE document: {seat, key, data:{list}}. `d.data.list` is
        the stored payload, not an envelope, so it is read at that depth on
@@ -706,7 +727,8 @@
     openTemplate(id) {
       const t = this.templates.find(x => x.id === id); if (!t) return;
       let built = { nodes: [], edges: [] };
-      try { built = t.build() || built; } catch (e) { console.error(e); }
+      const facts = this._facts || { tilesets: [], scenes: [] };
+      try { built = t.build(facts) || built; } catch (e) { console.error(e); }
       // STABLE id per template, not uid(). A fresh random id every open meant
       // a run started from a template was orphaned the moment you reopened it
       // or reloaded the page: _attachRun looks a run up BY workflow id, so the
