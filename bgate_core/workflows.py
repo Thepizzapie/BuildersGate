@@ -90,8 +90,22 @@ _PICK_TYPES = {"control.select", "control.pick"}
 _CONSISTENCY_TYPES = {"control.consistency"}
 # Nodes that call a provider themselves. The palette's art.* steps stay agent
 # steps (they carry a seat); these are the model-is-the-node types.
-_GENERATE_TYPES = {"model.generate", "model.image", "image.generate",
-                   "gen.image", "llm.prompt"}
+#
+# ONLY 'model.image' IS DRAWN TODAY (wf_steps_model.js is the only file that
+# emits one). The other two are kept as LEGACY names because a run stores a
+# SNAPSHOT of the graph and a saved workflow is JSON on disk: drop a type from
+# this set and a node that used to generate falls through kind_for to 'passive',
+# which paints it green without generating anything — the silent success this
+# engine exists to remove. 'model.generate' is the pre-rename name and is still
+# what this module's own tests draw with; 'llm.prompt' was a real card, removed
+# from the palette on purpose (the note in wf_steps_model.js says why) but not
+# removable from graphs already saved.
+#
+# 'image.generate' and 'gen.image' were dropped: no palette, template, test,
+# doc or fixture in this repository has ever emitted either name, so they were
+# guarding nothing. The tool-node table's 'tool.image.generate' is a different
+# type entirely and is unaffected.
+_GENERATE_TYPES = {"model.image", "model.generate", "llm.prompt"}
 # Passive inputs whose config text IS their output — the head of a prompt wire.
 _TEXT_TYPES = {"input.task", "input.text", "input.prompt"}
 # World context nodes: the bible and the lore graph, on a prompt wire.
@@ -786,6 +800,22 @@ def _passive_output(root: str | os.PathLike[str], spec: dict,
             or _ref_output(root, spec))
 
 
+# Three writers, one meaning: this passive node could not do its job. Only
+# `flow_error` was ever inspected, so a bible section that did not exist and a
+# reference that did not resolve both painted the node GREEN and sent an empty
+# wire on — and a generate node behind that wire then billed for a prompt with
+# no subject and no style anchor. The whole promise of a Reference node is the
+# anchor; failing to resolve it is not a detail to carry through.
+_PASSIVE_ERROR_KEYS = ("flow_error", "context_error", "ref_error")
+
+
+def _passive_problem(produced: dict) -> str:
+    for key in _PASSIVE_ERROR_KEYS:
+        if produced.get(key):
+            return str(produced[key])
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Generate nodes — the only thing in this engine that runs in parallel
 # ---------------------------------------------------------------------------
@@ -910,6 +940,37 @@ def _tool_paid(spec: dict) -> bool:
     """Does running this node call a provider that bills? From the registry."""
     entry = _wfnodes.spec_for(str(spec.get("type") or ""))
     return bool(entry and entry.paid)
+
+
+def _node_spends(spec: dict) -> bool:
+    """Does starting this node reach something that charges the user?
+
+    Two kinds do, and only one of them was ever asked. The paid-tool rule was
+    written for the tool table and left the generate kind out — but a generate
+    node IS an image provider call by definition (bgate_core.generate does
+    nothing else), so a canvas that opened a run to host one ▶ press was firing
+    every other model card whose inputs happened to be satisfied. One predicate,
+    both kinds, so the money gate cannot be half-applied again.
+    """
+    kind = str(spec.get("kind") or "")
+    if kind == "generate":
+        return True
+    return kind == "tool" and _tool_paid(spec)
+
+
+def spends_money(root: str | os.PathLike[str], run_id: int, node_id: str) -> bool:
+    """Would pressing ▶ on this node bill the user? For the route's human gate.
+
+    The route cannot answer this from the request — the graph lives in the run's
+    snapshot — and it must answer it BEFORE calling :func:`run_node`, because
+    "an agent may not spend money" is a 403 about the caller, not a 409 about
+    the node's state.
+    """
+    _, specs, _, _ = _graph_of(root, run_id)
+    spec = specs.get(node_id)
+    if spec is None:
+        raise LookupError(f"run {run_id} has no node {node_id!r}")
+    return _node_spends(spec)
 
 
 def _tool_worker(root: str | os.PathLike[str], run_id: int, spec: dict,
@@ -1177,6 +1238,29 @@ def advance(root: str | os.PathLike[str], run_id: int,
         kind = spec.get("kind") or "passive"
         inputs = _inputs(root, run_id, node_id, ups, node_rows)
 
+        # A NODE THAT SPENDS MONEY IS NEVER STARTED BY A TICK.
+        #
+        # The canvas opens a run just to HOST a single-node execution (wf.js
+        # `_ensureRun`, dispatch off). Without this, pressing ▶ on one card also
+        # fires every other paid node whose inputs happen to be satisfied — a
+        # video shot, a music track, a variant grid, the other two arms of a
+        # model comparison — none of which the user asked for and all of which
+        # are real money. So a paid node waits for a person to press ▶ on IT,
+        # unless the whole workflow was started with Run (dispatch on), which is
+        # the explicit "yes, do all of this" act.
+        #
+        # This used to guard tool nodes only, which left the kind that is paid
+        # BY DEFINITION — generate — starting itself on every poll.
+        if _node_spends(spec) and not dispatch:
+            waiting = True
+            if not _info(row).get("awaiting_human"):
+                node_rows[node_id] = _set_node(
+                    root, run_id, node_id, "pending",
+                    message="this step spends money — press run on this "
+                            "card when you want it, or use Run workflow",
+                    info={"awaiting_human": True})
+            continue
+
         if kind == "generate":
             if slots <= 0:
                 waiting = True  # over the concurrency cap; the next tick takes it
@@ -1189,25 +1273,6 @@ def advance(root: str | os.PathLike[str], run_id: int,
                 node_rows[node_id] = _node_rows(root, run_id)[node_id]
             continue
         if kind == "tool":
-            # A PAID TOOL NODE IS NEVER STARTED BY A TICK.
-            #
-            # The canvas opens a run just to HOST a single-node execution
-            # (wf.js `_ensureRun`, dispatch off). Without this, pressing ▶ on a
-            # free node would also fire every paid node whose inputs happened to
-            # be satisfied — a video shot, a music track, a variant grid — none
-            # of which the user asked for and all of which are real money. So a
-            # paid node waits for a person to press ▶ on IT, unless the whole
-            # workflow was started with Run (dispatch on), which is the explicit
-            # "yes, do all of this" act.
-            if _tool_paid(spec) and not dispatch:
-                waiting = True
-                if not _info(row).get("awaiting_human"):
-                    node_rows[node_id] = _set_node(
-                        root, run_id, node_id, "pending",
-                        message="this step spends money — press run on this "
-                                "card when you want it, or use Run workflow",
-                        info={"awaiting_human": True})
-                continue
             exclusive = _tool_exclusive(spec)
             if exclusive:
                 if line_held:
@@ -1229,13 +1294,14 @@ def advance(root: str | os.PathLike[str], run_id: int,
             continue
         if kind == "passive":
             produced = _passive_output(root, spec, inputs)
-            # A glue node that could not do its job FAILS the run rather than
-            # passing an empty wire on. "the filter matched nothing" arriving as
-            # a green node is how a graph silently produces nothing at the end.
-            if produced.get("flow_error"):
+            # A passive node that could not do its job FAILS the run rather than
+            # passing an empty wire on. "the filter matched nothing", "no bible
+            # section matched", "could not resolve reference" arriving as a
+            # green node is how a graph silently produces nothing at the end.
+            problem = _passive_problem(produced)
+            if problem:
                 node_rows[node_id] = _set_node(
-                    root, run_id, node_id, "failed",
-                    message=str(produced["flow_error"]))
+                    root, run_id, node_id, "failed", message=problem)
                 failed = True
                 break
             if produced:
@@ -1431,6 +1497,11 @@ def run_node(root: str | os.PathLike[str], run_id: int, node_id: str, *,
         says which parent is not, rather than starting on missing input;
       * gates and picks are not runnable: they are resolved by a person, which
         is :func:`approve` / :func:`pick`, a different verb with its own guard;
+      * a node that SPENDS is human-only, exactly like a gate or a pick. This
+        is what ``actor`` is for; it was accepted here and then never read, so
+        an agent holding the dashboard token could POST run on a paid tool node
+        or a model card and bill the account, while the same agent was refused
+        at the gate two nodes upstream;
       * an agent step still respects the single-file rule — if another queue
         item from this run is in flight, this one refuses;
       * NOTHING cascades. Downstream nodes stay pending even if this one
@@ -1459,17 +1530,31 @@ def run_node(root: str | os.PathLike[str], run_id: int, node_id: str, *,
         raise ValueError(
             f"a {kind} step is not run, it is resolved by a human — "
             f"use {'pick' if kind == 'pick' else 'approve'} on {node_id!r}")
-    if row["status"] == "running" and kind in ("generate", "tool"):
-        raise ValueError(f"{label} is already running — wait for it to finish")
+    # Guarded twice, exactly like approve() and pick(): the route calls
+    # api.require_human, and the engine refuses an agent actor itself, because
+    # the guarantee belongs to the engine and not to the transport. Asked before
+    # the status checks — whether a robot may spend is not a question about what
+    # the node happens to be doing right now.
+    if _node_spends(spec) and is_agent_actor(actor):
+        raise PermissionError(
+            f"{label} spends money, so only a human can start it — "
+            f"{actor} is an agent")
     if row["status"] != "pending":
         # Say what happened and what to do about it. "is queued, not pending"
         # is this module's vocabulary, not the user's, and it was the only
         # feedback a second click produced.
         said = {
             "queued": f"{label} is already queued and waiting to start",
-            "running": f"{label} is already running — wait for it to finish",
-            "passed": f"{label} has already run; reopen the run to do it again",
-            "failed": f"{label} already failed — reopen the run to retry it",
+            # 'running' names :func:`reconcile` because a node whose worker died
+            # with its process is ALSO 'running' and waiting for it never ends —
+            # this message used to be the last thing such a run ever said.
+            "running": f"{label} is already running — wait for it to finish, or "
+                       "reconcile the run if Builders Gate was restarted while "
+                       "it was working",
+            "passed": f"{label} has already run; start the workflow again to "
+                      "do it over",
+            "failed": f"{label} already failed — start the workflow again to "
+                      "retry it",
             "skipped": f"{label} was skipped because an earlier step failed",
         }.get(row["status"], f"{label} is {row['status']} and cannot be started")
         raise ValueError(said)
@@ -1509,11 +1594,12 @@ def run_node(root: str | os.PathLike[str], run_id: int, node_id: str, *,
         return get(root, run_id)
     if kind == "passive":
         produced = _passive_output(root, spec, inputs)
-        if produced.get("flow_error"):
+        problem = _passive_problem(produced)
+        if problem:
             # Refused rather than failed: the human is standing at the card and
-            # can fix the template/index and press run again, which is a better
-            # afternoon than a node that has to be reopened out of 'failed'.
-            raise ValueError(f"{label}: {produced['flow_error']}")
+            # can fix the template/index/ref name and press run again, which is
+            # a better afternoon than a node stuck in 'failed'.
+            raise ValueError(f"{label}: {problem}")
         if produced:
             _set_output(root, run_id, node_id, produced)
         _set_node(root, run_id, node_id, "passed",
@@ -1555,6 +1641,72 @@ def observe(root: str | os.PathLike[str], run_id: int, node_id: str, *,
               info={"observed_score": value, "observed_detail": detail[:400],
                     "observed_by": actor})
     return advance(root, run_id)
+
+
+def reconcile(root: str | os.PathLike[str],
+              run_id: Optional[int] = None) -> dict:
+    """Release nodes a dead process left at 'running'. The exit that was missing.
+
+    :data:`_INFLIGHT` is in-memory and dies with the process. A generate or tool
+    node claimed by a worker that never came back — the dashboard restarted
+    mid-generation, the machine slept, ``bgate serve`` was Ctrl-C'd — keeps the
+    row it was claimed with for ever. Nothing else in this module can move it:
+    :func:`advance` reads 'running' as work in flight and an exclusive one holds
+    the whole line behind it, :func:`_sync_items` only looks at nodes that have
+    a queue item, and :func:`run_node` answers the second press with "already
+    running — wait for it to finish". There was no wait that ended.
+
+    Only worker-owned kinds are touched. A gate or a pick sits at 'running'
+    BECAUSE it is waiting for a human; an agent or consistency step's status
+    belongs to its queue item, which :func:`_sync_items` already reconciles
+    against the queue. Failing either of those here would be this function
+    inventing an outage.
+
+    Deliberate and caller-driven, never automatic: this process cannot tell a
+    worker that died from one belonging to a second live dashboard on the same
+    project, so the honest guard is that a person asks for it. A future this
+    process still holds and has not finished is left alone regardless.
+    """
+    if run_id is None:
+        ids = [int(r["id"]) for r in rows(db.connect(root).execute(
+            "SELECT id FROM workflow_run WHERE status = 'running' ORDER BY id"))]
+    else:
+        _run_row(root, run_id)      # LookupError -> 404, like every other verb
+        ids = [int(run_id)]
+
+    released: list[dict] = []
+    for rid in ids:
+        _, specs, _, _ = _graph_of(root, rid)
+        for node_id, row in _node_rows(root, rid).items():
+            if row["status"] != "running" or row.get("work_item_id"):
+                continue
+            kind = str((specs.get(node_id) or {}).get("kind") or row["kind"])
+            if kind not in ("generate", "tool"):
+                continue
+            with _INFLIGHT_LOCK:
+                future = _INFLIGHT.get((rid, node_id))
+            if future is not None and not future.done():
+                continue
+            _set_node(root, rid, node_id, "failed",
+                      message="this step was still running when Builders Gate "
+                              "stopped, so its result can never arrive — "
+                              "nothing was recorded for it. Start the workflow "
+                              "again to retry it.",
+                      info={"reconciled": True})
+            released.append({"run_id": rid, "node_id": node_id,
+                             "label": row["label"], "kind": kind})
+    for rid in sorted({r["run_id"] for r in released}):
+        activity.log(root, "workflow",
+                     f"run {rid} reconciled: "
+                     f"{len([r for r in released if r['run_id'] == rid])} "
+                     f"step(s) released from a dead worker", ref=str(rid))
+        # A failed node is a failed run, and advance is what says so — the same
+        # path a provider failure takes. It starts nothing: it breaks at the
+        # first failed node.
+        advance(root, rid)
+
+    touched = ids if run_id is not None else sorted({r["run_id"] for r in released})
+    return {"released": released, "runs": [get(root, i) for i in touched]}
 
 
 def cancel(root: str | os.PathLike[str], run_id: int, *, actor: str = "") -> dict:
