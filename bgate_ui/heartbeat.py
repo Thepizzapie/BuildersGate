@@ -108,6 +108,19 @@ def _save(root, state: dict) -> None:
         pass
 
 
+def _due_again(mark: dict, threshold_s: int) -> bool:
+    """Has an already-reported stall gone unmentioned long enough to say again?
+
+    A mark records WHEN we last said something as well as what we said about.
+    Without the clock, "already reported" meant "never mention again", which is
+    right for the next ten minutes and wrong for the next three weeks.
+    """
+    said = float(mark.get("said_at") or 0.0)
+    if not said:
+        return False          # an old mark with no clock: stay quiet, as before
+    return (time.time() - said) >= max(int(threshold_s or 0), 3600)
+
+
 def _rows(root, sql: str, params: tuple = ()) -> list[dict]:
     try:
         return [dict(r) for r in db.connect(root).execute(sql, params).fetchall()]
@@ -224,9 +237,17 @@ def _tick(root: str | os.PathLike[str]) -> dict:
         if int(head.get("age_s") or 0) < threshold_s:
             continue                     # still inside the window
         covered.add(int(head["id"]))
-        if not moved:
+        if not moved and not _due_again(mark, threshold_s):
             # Already reported and nothing has changed since — stay quiet, but
             # keep the mark so it survives this tick's rewrite of the doc.
+            #
+            # NOT FOREVER, THOUGH. The mark is the subject's own updated_at, so
+            # a chain that stalled and then genuinely never moved kept matching
+            # its mark and was suppressed permanently — including across a
+            # three-week absence, where the stall is exactly what the person
+            # coming back needs told. _due_again re-reports a subject that is
+            # STILL stalled a full window after it was last mentioned, which
+            # bounds the repetition instead of silencing it.
             fresh_chain[chain_id] = mark
             continue
         why, held = _reason(root, head)
@@ -246,7 +267,7 @@ def _tick(root: str | os.PathLike[str]) -> dict:
         _events.emit(root, "chain.stalled", ref=chain_id, payload=payload)
         stalled.append(payload)
         fresh_chain[chain_id] = {"mark": str(head.get("updated_at") or ""),
-                                 "at": _stamp()}
+                                 "at": _stamp(), "said_at": time.time()}
 
     aging: list[dict] = []
     fresh_item: dict[str, dict] = {}
@@ -282,7 +303,7 @@ def _tick(root: str | os.PathLike[str]) -> dict:
         _events.emit(root, "item.aging", ref=str(item_id), payload=payload)
         aging.append(payload)
         fresh_item[key] = {"mark": str(row.get("updated_at") or ""),
-                           "at": _stamp()}
+                           "at": _stamp(), "said_at": time.time()}
 
     # Rewriting the doc from the marks we still believe in is what implements
     # "reset on movement": a subject that moved, closed, or dropped off the

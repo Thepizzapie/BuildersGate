@@ -209,7 +209,13 @@ OPEN_LIMIT = 20
 # How far back a scan for open questions goes. Bounded because the console polls
 # this every few seconds, and a project that has answered a thousand questions
 # must not pay for all of them to draw the two that are open.
-QUESTION_SCAN = 200
+# How many UNANSWERED question events are examined. The query already excludes
+# answered ones, so this is a cap on how many open questions a project may have
+# before the oldest stop being surfaced — and an unanswered question that falls
+# out of the scan is invisible to pending_decisions, the console AND the stale
+# reminder at once. 200 was reachable on a busy week; a question nobody can see
+# is worse than a slower query, and the rows are small.
+QUESTION_SCAN = 2000
 
 
 class AlreadyAnswered(ValueError):
