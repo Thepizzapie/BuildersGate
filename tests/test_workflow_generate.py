@@ -306,11 +306,16 @@ class TestRunOneNode:
         assert provider.calls == []
 
     def test_it_refuses_a_node_that_is_already_running(self, root, provider):
+        # The guard used to fire only for kind == "generate" and said "already
+        # generating". A tool node that was mid-run answered the second click
+        # with nothing at all, so a slow tool looked like a dead button and got
+        # clicked again. Widening it meant one wording had to cover both, and
+        # "running" is the word the status column already uses.
         run = self._ready(root)
         workflows.run_node(root, run["id"], "a")
         with pytest.raises(ValueError) as caught:
             workflows.run_node(root, run["id"], "a")
-        assert "already generating" in str(caught.value)
+        assert "already running" in str(caught.value)
 
     def test_a_gate_is_resolved_not_run(self, root, provider):
         run = workflows.start(root, fanout_graph())
