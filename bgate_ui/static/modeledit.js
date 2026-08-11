@@ -344,6 +344,8 @@ window.ModelEdit = (() => {
         (S && S.viewable ? `<button class="me-btn" onclick="ModelEdit.snapshot()">${I("export_image")} snapshot</button>` : "") +
         (S ? `<button class="me-btn" onclick="ModelEdit.resetLabels()">${I("undo")} reset labels</button>` : "") +
         (S ? `<button class="me-btn go" onclick="ModelEdit.save()" ${dirty ? "" : "disabled"}>${I("export")} save</button>` : "") +
+        (S ? '<button class="me-btn" onclick="ModelEdit.handoff()" title="Import it into the engine, ' +
+             'instance it in a scene, or hand it to an agent">' + I("gate") + " put in game</button>" : "") +
         '<button class="me-closebtn" onclick="ModelEdit.close()" title="Close">✕</button>' +
       '</div>' +
       '<div class="me-body">' +
@@ -1329,8 +1331,27 @@ window.ModelEdit = (() => {
     return true;
   }
 
+  /* THE STEP AFTER "SAVED", shared with the sprite editor and the audio lab so
+     that learning it in one teaches it in all three. A .glb cannot be wired
+     into a scene directly — Godot imports it as a PackedScene and the thing a
+     level instances is that scene — so for a model the panel's first exit is
+     two steps: deliver into the engine (local, free, godot_deliver_asset), then
+     instance the scene it wrote. The second exit files a work item that already
+     names the model, the target scene and the Atlas references. */
+  function handoff(){
+    if (!window.Handoff){ say("the handoff panel did not load", true); return; }
+    Handoff.fromEditor(S, {
+      editor: "model",
+      meta: {
+        dirty: !!(S && S.dirty),
+        sockets: (S && S.model && S.model.sockets || []).map(s => s.name).filter(Boolean),
+      },
+    });
+  }
+
   return {
     open, close, pick, pickSearch, closePick, fit, save, resetLabels, snapshot,
+    handoff,
     embed, unembed, activate,
     setTool, toggleDisplay, setDisplayMode, setBackground,
     selectNode, toggleNode, nodeColor, nodeOpacity,

@@ -50,9 +50,9 @@ SEAT = "qa"
 KEY = "probe_contract"
 
 # The legacy probe looked here first and only then at the project's main scene.
-# Kept in that order: haymaker's fight lives in scenes/main.tscn while its main
-# scene is the title screen, and reversing it would repoint that project's probe
-# at a menu.
+# Kept in that order, because a game whose gameplay lives in scenes/main.tscn
+# while its declared main scene is the title screen is common, and reversing
+# the two would silently repoint an existing project's probe at a menu.
 LEGACY_SCENE = "res://scenes/main.tscn"
 
 # What a node has to be before it is worth watching. Roles come from
@@ -75,8 +75,9 @@ _VITALS = ("hp", "health", "stamina", "energy", "shield", "armor", "ammo",
            "mana", "lives", "score", "fuel", "oxygen", "charge", "morale",
            "money", "credits", "hunger", "heat", "speed", "combo")
 
-# Names that read as tuning, not state. boxer.gd has forty of these and none of
-# them move during a match, so sampling them would fill the table with constants.
+# Names that read as tuning, not state. A fleshed-out character script carries
+# dozens of these and none of them move while the game runs, so sampling them
+# would fill the table with constants and bury the three numbers that change.
 _TUNING = ("damage", "cost", "scale", "chance", "duration", "threshold",
            "window", "telegraph", "recover", "regen", "drain", "velocity",
            "gravity", "reach", "seed", "cooldown", "fatigue", "offset",
@@ -84,17 +85,19 @@ _TUNING = ("damage", "cost", "scale", "chance", "duration", "threshold",
 
 # `var hp: float`, `var hp := 100.0`, `@export var max_hp := 150.0`, and the one
 # that matters most in practice: `var hp := MAX_HP`, where nothing on the line
-# says the type. Downsizing's player declares its health exactly that way, and a
-# stricter reading of the line derived a probe that could not see the health bar.
+# says the type. Declaring health against a constant is normal GDScript, and a
+# stricter reading of the line derived a probe that could not see the health bar
+# in a real project it was tested against.
 _VAR_LINE = re.compile(
     r"^(?P<export>@export\s+)?var\s+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*"
     r"(?P<rest>.*)$", re.MULTILINE)
 _NUMERIC_DECL = re.compile(r"^:\s*(int|float)\b|^:?=\s*-?\d")
 _TYPED_DECL = re.compile(r"^:\s*[A-Za-z]")
 
-# Scratch scenes agents leave behind. downsizing has eighty .tscn files and
-# roughly a third of them are one-shot screenshot rigs from finished work items;
-# probing one of those would be a verdict about a screenshot.
+# Scratch scenes agents leave behind. A project a few months into an agent
+# pipeline can carry eighty .tscn files with a third of them one-shot screenshot
+# rigs from finished work items; probing one of those would be a verdict about a
+# screenshot.
 _SCRATCH_RE = re.compile(r"^(_|item\d|qa\d)", re.IGNORECASE)
 
 

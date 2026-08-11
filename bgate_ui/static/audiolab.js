@@ -950,6 +950,8 @@ window.AudioLab = (() => {
         <input type="file" id="ab-file" accept="audio/*" multiple style="display:none"
                onchange="AudioLab.importPicked(event,false)">
         <button class="ab-btn sm go" id="ab-save" onclick="AudioLab.save()">save</button>
+        <button class="ab-btn sm" id="ab-handoff" onclick="AudioLab.handoff()"
+                title="Put this sound into a scene, or hand it to an agent with the scene and trigger filled in">put in game</button>
         <button class="ab-btn sm ab-closebtn" onclick="AudioLab.close()">exit</button>
       </div>
       <div class="ab-why" id="ab-why" hidden></div>
@@ -4938,8 +4940,25 @@ window.AudioLab = (() => {
     return true;
   }
 
+  /* THE STEP AFTER "SAVED", and the loudest gap in the whole app: "Audio lab I
+     have no idea how to save or wire any of that up to specific scenes or
+     triggers". Saving wrote an .ogg that no scene referenced, and there was no
+     verb here that put it in the game. handoff.js is the shared panel — an
+     AudioStreamPlayer wired into a real scene for free, or a work item that
+     already names the file, the scene, the bus and the trigger. */
+  function handoff(){
+    if (!window.Handoff){ say("the handoff panel did not load", true); return; }
+    Handoff.fromEditor(S, {
+      editor: "audio",
+      meta: {
+        dirty: !!(S && S.dirty),
+        seconds: S && S.buf ? Math.round(S.buf.duration * 10) / 10 : null,
+      },
+    });
+  }
+
   return {
-    activate,
+    activate, handoff,
     // The exported close is the one that asks; the bare teardown stays private
     // so no caller can skip the question by reaching for it.
     open, close: closeAsk, pick, pickSound, pickSearch, closePick, newSound, setMode, adopt,

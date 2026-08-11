@@ -519,6 +519,8 @@ window.SpriteEdit = (() => {
         <button class="se-btn" onclick="SpriteEdit.fit()" title="Fit to view (0)">fit</button>
         <button class="se-btn" onclick="SpriteEdit.pick()">open…</button>
         <button class="se-btn go" id="se-save" onclick="SpriteEdit.save()">save sheet</button>
+        <button class="se-btn" id="se-handoff" onclick="SpriteEdit.handoff()"
+                title="Wire this sheet into a scene, or hand it to an agent with the details filled in">put in game</button>
         <button class="se-btn se-closebtn" onclick="SpriteEdit.close()">close</button>
       </div>
       <div class="se-body">
@@ -2216,6 +2218,25 @@ window.SpriteEdit = (() => {
     say(`wrote ${r.data.written} · ${(r.data.animations||[]).join(", ")}`, "ok");
   }
 
+  /* THE STEP AFTER "SAVED". This editor could make a sheet and write it to
+     disk, and that was the end of the road — the owner's words were "i can go
+     in sprite sheet edit and create sprites and save but dont know what i can
+     do after". handoff.js is the shared answer for all three editors: pick a
+     scene and wire it here for free, or file a work item whose brief already
+     names this sheet, its animations and the scene. One line, because the
+     panel is the same one the audio lab and the 3D editor open. */
+  function handoff(){
+    if (!window.Handoff){ say("the handoff panel did not load", true); return; }
+    Handoff.fromEditor(S, {
+      editor: "sprite",
+      meta: {
+        dirty: !!(S && (S.dirty || S.rigDirty)),
+        animations: (S && S.rig && S.rig.animations || []).map(a => a.name),
+        grid: (S && S.rig && S.rig.grid) || null,
+      },
+    });
+  }
+
   function setColor(v){ if (S){ S.color = v; renderSide(); } }
   function setBrush(v){ if (S){ S.brush = clamp(parseInt(v,10)||1, 1, 16); } }
   function toggle(field, on){ if (S){ S[field] = !!on; paint(); } }
@@ -2264,6 +2285,7 @@ window.SpriteEdit = (() => {
 
   return {
     open, close, pick, pickSearch, closePick, fit, undo, redo, save, saveRig, exportFrames,
+    handoff,
     activate,
     previewToggle, previewField, setOnion,
     embed, unembed,

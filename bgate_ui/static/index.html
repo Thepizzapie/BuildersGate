@@ -2714,6 +2714,10 @@ setInterval(pollQueue, 3500);
 <script src="/static/seats/qa.js"></script>
 <script src="/static/seats/narrative.js"></script>
 <script src="/static/atlas.js"></script>
+<!-- The shared "put it in the game" panel. Loaded once, opened by the sprite
+     editor, the audio lab and the 3D model editor — after atlas.js because it
+     uses the scan as its reference picker. -->
+<script src="/static/handoff.js"></script>
 <script src="/static/sceneview.js"></script>
 <script src="/static/scenebuild.js"></script>
 <!-- The editor's engine, then its modes. simple.js must precede
