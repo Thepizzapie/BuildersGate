@@ -87,6 +87,21 @@ def client(root, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_spawn(monkeypatch):
+    """No test in this file may put a real Claude process on the machine.
+
+    Dispatch now means two things — "spawn agents" AND "you may spend on
+    providers" — so the scheduling tests below have to run with it ON, and a run
+    with dispatch on hands each agent step to bgate_ui.dispatch. The queue item
+    is still created and still walked by hand; only the process is stubbed.
+    """
+    from bgate_ui import dispatch as _dispatch
+
+    monkeypatch.setattr(_dispatch, "dispatch",
+                        lambda root, item_id, **kw: {"ok": True, "stub": True})
+
+
+@pytest.fixture(autouse=True)
 def _settle(root):
     """No worker may outlive its test — it would write into a deleted tmp dir.
 
@@ -103,6 +118,20 @@ def node(run: dict, node_id: str) -> dict:
 def finish(root, item_id: int, result: str = "done") -> None:
     queue.set_status(root, item_id, "dispatched")
     queue.set_status(root, item_id, "done", result)
+
+
+def start(root, graph: dict, **kw):
+    """Start a run the way the Run button does — dispatch ON.
+
+    A generate node calls an image provider, so `advance` only auto-starts one
+    when the run was started with dispatch on: the human's explicit "yes, do all
+    of this". Every test here is about what a REAL run does — do the three arms
+    overlap, does the cap hold, does the pick block — so they all need a run
+    that is allowed to schedule. What happens with dispatch off (nothing, until
+    a person presses ▶) is tests/test_workflow_guards.py's subject.
+    """
+    kw.setdefault("dispatch", True)
+    return workflows.start(root, graph, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +193,7 @@ def serial_agents_graph() -> dict:
 
 class TestKinds:
     def test_kinds_are_rederived_from_the_type(self, root, provider):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         assert node(run, "a")["kind"] == "generate"
         assert node(run, "pick")["kind"] == "pick"
         assert node(run, "tech")["kind"] == "agent"
@@ -176,11 +205,11 @@ class TestKinds:
         for spec in graph["nodes"]:
             if spec["id"] == "pick":
                 spec["kind"] = "passive"
-        run = workflows.start(root, graph)
+        run = start(root, graph)
         assert node(run, "pick")["kind"] == "pick"
 
     def test_a_generate_node_makes_no_queue_item(self, root, provider):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         workflows.join(run["id"])
         assert queue.list_items(root) == []
 
@@ -191,7 +220,7 @@ class TestKinds:
 
 class TestParallelism:
     def test_sibling_generate_nodes_overlap(self, root, provider):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         # all three claimed on the first tick, none of them queued as work
         assert [node(run, n)["status"] for n in ("a", "b", "c")] == \
             ["running", "running", "running"]
@@ -208,7 +237,7 @@ class TestParallelism:
         assert len({c["model"] for c in provider.calls}) == 3
 
     def test_agent_steps_still_run_one_at_a_time(self, root, provider):
-        run = workflows.start(root, serial_agents_graph())
+        run = start(root, serial_agents_graph())
         live = [n for n in run["nodes"] if n["status"] == "queued"]
         assert len(live) == 1
         for _ in range(3):
@@ -222,7 +251,7 @@ class TestParallelism:
 
     def test_the_fan_out_respects_the_concurrency_cap(self, root, provider):
         spend.set_budget(root, max_concurrent=1)
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         running = [n["node_id"] for n in run["nodes"] if n["status"] == "running"]
         assert len(running) == 1, "the budget's max_concurrent is the ceiling"
         workflows.join(run["id"])
@@ -233,7 +262,7 @@ class TestParallelism:
             ["passed", "passed", "passed"]
 
     def test_a_second_tick_does_not_generate_twice(self, root, provider):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         for _ in range(3):
             workflows.advance(root, run["id"])   # the dashboard polling
         workflows.join(run["id"])
@@ -275,7 +304,7 @@ def stepped_graph() -> dict:
 class TestRunOneNode:
     def _ready(self, root):
         """A run whose two generate nodes are ready but not yet ticked into."""
-        run = workflows.start(root, stepped_graph())
+        run = start(root, stepped_graph())
         queue.set_status(root, node(run, "writer")["work_item_id"], "dispatched")
         queue.set_status(root, node(run, "writer")["work_item_id"], "done",
                          "a weary paladin in dented plate")
@@ -299,7 +328,7 @@ class TestRunOneNode:
         assert node(workflows.get(root, run["id"]), "b")["status"] == "passed"
 
     def test_it_refuses_a_node_whose_inputs_are_not_satisfied(self, root, provider):
-        run = workflows.start(root, stepped_graph())
+        run = start(root, stepped_graph())
         with pytest.raises(ValueError) as caught:
             workflows.run_node(root, run["id"], "a")
         assert "'writer'" in str(caught.value)
@@ -311,14 +340,24 @@ class TestRunOneNode:
         # with nothing at all, so a slow tool looked like a dead button and got
         # clicked again. Widening it meant one wording had to cover both, and
         # "running" is the word the status column already uses.
+        #
+        # The widened branch was then DEAD for a commit: it raised the same
+        # sentence the status table below it already produces, so this test
+        # passed either way. It is gone, and the assertions below are what tell
+        # the two apart — the status table names the CARD and the way out.
         run = self._ready(root)
         workflows.run_node(root, run["id"], "a")
         with pytest.raises(ValueError) as caught:
             workflows.run_node(root, run["id"], "a")
-        assert "already running" in str(caught.value)
+        said = str(caught.value)
+        assert "already running" in said
+        assert "'A'" in said, "the refusal must name the card, not the node id"
+        assert "reconcile" in said, (
+            "a node whose worker died is also 'running'; the refusal has to "
+            "name the verb that ends that wait")
 
     def test_a_gate_is_resolved_not_run(self, root, provider):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         with pytest.raises(ValueError) as caught:
@@ -326,7 +365,7 @@ class TestRunOneNode:
         assert "resolved by a human" in str(caught.value)
 
     def test_agent_steps_stay_single_file_even_when_pressed_by_hand(self, root, provider):
-        run = workflows.start(root, serial_agents_graph())
+        run = start(root, serial_agents_graph())
         waiting = next(n["node_id"] for n in run["nodes"] if n["status"] == "pending"
                        and n["kind"] == "agent")
         with pytest.raises(ValueError) as caught:
@@ -360,7 +399,7 @@ class TestRunOneNode:
 
 class TestPick:
     def _to_pick(self, root):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         assert node(run, "pick")["status"] == "running"
@@ -438,7 +477,7 @@ class TestPick:
              "config": {"provider": "krea", "model": "krea-2-large",
                         "prompt": "turnaround of {input}"}})
         graph["edges"].append({"from": ["pick", "o"], "to": ["final", "i"]})
-        run = workflows.start(root, graph)
+        run = start(root, graph)
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         chosen = workflows.candidates(root, run["id"], "pick")[0]
@@ -463,7 +502,10 @@ class TestPick:
 
     def test_pick_over_http_refuses_an_agent_and_then_works(self, client, root,
                                                             provider, monkeypatch):
-        started = client.post("/api/workflows/runs", json=fanout_graph()).json()["data"]
+        # dispatch on: the models may not spend on a tick without it, and this
+        # test is about the pick surface, not about pressing three ▶ first.
+        started = client.post("/api/workflows/runs",
+                              json=dict(fanout_graph(), dispatch=True)).json()["data"]
         run_id = started["id"]
         workflows.join(run_id)
         run = client.post(f"/api/workflows/runs/{run_id}/advance").json()["data"]
@@ -517,7 +559,7 @@ class TestPromptOnAWire:
         }
 
     def test_an_upstream_text_output_becomes_the_prompt(self, root, provider):
-        run = workflows.start(root, self.prompt_graph())
+        run = start(root, self.prompt_graph())
         written = ("weary paladin in dented plate, clipboard in one hand, "
                    "16-bit pixel art, side view")
         finish(root, node(run, "writer")["work_item_id"], written)
@@ -529,14 +571,14 @@ class TestPromptOnAWire:
         assert provider.calls[-1]["prompt"] == written
 
     def test_a_template_composes_with_the_wire(self, root, provider):
-        run = workflows.start(root, self.prompt_graph("{input}, transparent background"))
+        run = start(root, self.prompt_graph("{input}, transparent background"))
         finish(root, node(run, "writer")["work_item_id"], "a weary paladin")
         run = workflows.advance(root, run["id"])
         workflows.join(run["id"])
         assert provider.calls[-1]["prompt"] == "a weary paladin, transparent background"
 
     def test_a_task_node_feeds_a_generate_node_directly(self, root, provider):
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         workflows.join(run["id"])
         assert all(c["prompt"] == "the Project Manager Paladin, idle, 16-bit"
                    for c in provider.calls)
@@ -548,7 +590,7 @@ class TestPromptOnAWire:
                        "config": {"provider": "krea", "model": "z-image"}}],
             "edges": [],
         }
-        run = workflows.start(root, graph)
+        run = start(root, graph)
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         assert node(run, "img")["status"] == "failed"
@@ -563,7 +605,7 @@ class TestPromptOnAWire:
 class TestMoneyAndFailure:
     def test_the_budget_refuses_before_anything_is_generated(self, root, provider):
         spend.set_budget(root, per_day_usd=0.001, enforced=1)
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         assert node(run, "a")["status"] == "failed"
@@ -571,7 +613,7 @@ class TestMoneyAndFailure:
         assert provider.calls == [], "money was spent after the ceiling refused it"
 
     def test_spend_is_recorded_per_candidate(self, root, provider):
-        run = workflows.start(root, fanout_graph(count=2))
+        run = start(root, fanout_graph(count=2))
         workflows.join(run["id"])
         assert len(provider.calls) == 6
         totals = spend.totals(root)
@@ -580,7 +622,7 @@ class TestMoneyAndFailure:
     def test_a_provider_failure_fails_the_node_with_the_reason(self, root, monkeypatch):
         stub = Provider(fail="Krea has no API credit — top it up at krea.ai/settings")
         monkeypatch.setattr(generate, "call_provider", stub)
-        run = workflows.start(root, fanout_graph())
+        run = start(root, fanout_graph())
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         failed = node(run, "a")
@@ -594,7 +636,7 @@ class TestMoneyAndFailure:
         for spec in graph["nodes"]:
             if spec["id"] == "c":
                 spec["config"] = {"provider": "krea", "model": "krea-9-enormous"}
-        run = workflows.start(root, graph)
+        run = start(root, graph)
         workflows.join(run["id"])
         run = workflows.advance(root, run["id"])
         assert node(run, "c")["status"] == "failed"
@@ -606,7 +648,7 @@ class TestMoneyAndFailure:
         candidate under a single logical name, which made the comparison's arms
         indistinguishable in the registry; "which model made this" is the only
         question the node exists to answer."""
-        run = workflows.start(root, fanout_graph(count=3))
+        run = start(root, fanout_graph(count=3))
         workflows.join(run["id"])
         made = [r for r in artifacts.list_revisions(root, limit=100)
                 if r["producer"] == generate.PRODUCER]
@@ -625,7 +667,7 @@ class TestMoneyAndFailure:
         for spec in graph["nodes"]:
             if spec["id"] in ("a", "b"):
                 spec["label"] = "Image model"      # the palette's default
-        run = workflows.start(root, graph)
+        run = start(root, graph)
         workflows.join(run["id"])
         names = {r["logical_name"] for r in artifacts.list_revisions(root, limit=100)
                  if r["producer"] == generate.PRODUCER}

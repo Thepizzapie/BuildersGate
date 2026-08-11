@@ -48,6 +48,22 @@ API, SUBSCRIPTION = "api", "subscription"
 BILLING = (API, SUBSCRIPTION)
 
 # Agent sessions run on the subscription; everything else buys from a vendor.
+#
+# UNCONDITIONAL, AND THAT IS THE DECISION RATHER THAN AN OVERSIGHT (2026-08-11).
+# It means agent runs never count against per_day_usd / per_project_usd, which
+# reads like a hole in the ceiling and has been reported as one. It is not:
+# every agent this harness spawns today runs on a subscription CLI, so its
+# dollar figure is the API-EQUIVALENT price of work already paid for, and
+# summing it into a budget meant an afternoon of uncharged agent work refused
+# an image generation that would have cost real money.
+#
+# WHAT WOULD CHANGE IT: a direct-API or local-model runner, which is wanted and
+# not built. When one exists, billing becomes a property of the RUNNER rather
+# than of the kind — the row is already shaped for that (spend_event.billing is
+# per row, not per kind) and `totals` already reports agent runs separately, so
+# the change is here and in the runner table, not in the schema.
+#
+# Until then this line is deliberate. Do not "fix" it.
 _BILLING_FOR_KIND = {"agent": SUBSCRIPTION}
 
 
@@ -73,7 +89,8 @@ def set_budget(root: str | os.PathLike[str], **fields) -> dict:
 
 def record(root: str | os.PathLike[str], usd: float, *, kind: str = "agent",
            work_item_id: Optional[int] = None, logical_name: str = "",
-           detail: str = "", model: str = "", tokens: Optional[dict] = None) -> None:
+           detail: str = "", model: str = "", tokens: Optional[dict] = None,
+           seat: str = "") -> None:
     """Append a spend event. Never raises — losing the ledger must not lose the
     work that produced it.
 
@@ -95,16 +112,22 @@ def record(root: str | os.PathLike[str], usd: float, *, kind: str = "agent",
     if kind not in KINDS:
         kind = "other"
     billing = _BILLING_FOR_KIND.get(kind, API)
+    # WHO SPENT IT, taken from the environment when the caller did not say.
+    # Every paid tool runs inside a seat's MCP server process (BGATE_SEAT is
+    # set by dispatch), so the attribution is available for free at the one
+    # place that writes the row — which is why nearly every call site can stay
+    # unchanged and still start answering "which seat is expensive".
+    seat = (seat or os.environ.get("BGATE_SEAT", "") or "").strip()[:32]
     try:
         with db.tx(root) as conn:
             conn.execute(
                 "INSERT INTO spend_event (kind, billing, work_item_id, "
                 "logical_name, usd, detail, model, input_tokens, output_tokens, "
-                "cache_read_tokens, cache_write_tokens) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "cache_read_tokens, cache_write_tokens, seat) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (kind, billing, work_item_id, logical_name, max(0.0, float(usd or 0)),
                  detail[:500], model[:80], counts["input"], counts["output"],
-                 counts["cache_read"], counts["cache_write"]))
+                 counts["cache_read"], counts["cache_write"], seat))
             if work_item_id and usd and usd > 0:
                 conn.execute(
                     "UPDATE work_item SET total_cost_usd = total_cost_usd + ? "
@@ -127,20 +150,57 @@ def totals(root: str | os.PathLike[str]) -> dict:
     that tracks the limit that actually bites.
     """
     conn = db.connect(root)
+    # THE WINDOWS USED TO BE LIFETIME AND TODAY, AND NOTHING ELSE — so anyone
+    # coming back after a break asked "what did last month cost" and got a
+    # today figure of $0.00, which reads as "cheap" rather than "not measured".
+    # 7 and 30 days are the two windows a person actually asks about.
     row = conn.execute("""
         SELECT
           COALESCE(SUM(CASE WHEN billing = 'api' THEN usd END), 0)     AS project_usd,
           COALESCE(SUM(CASE WHEN billing = 'api'
                              AND created_at >= date('now')
                             THEN usd END), 0)                          AS today_usd,
+          COALESCE(SUM(CASE WHEN billing = 'api'
+                             AND created_at >= date('now', '-7 day')
+                            THEN usd END), 0)                          AS week_usd,
+          COALESCE(SUM(CASE WHEN billing = 'api'
+                             AND created_at >= date('now', '-30 day')
+                            THEN usd END), 0)                          AS month_usd,
           COUNT(*)                                                     AS events
         FROM spend_event
     """).fetchone()
     out = dict(row)
+    out["week_usd"] = round(out["week_usd"], 4)
+    out["month_usd"] = round(out["month_usd"], 4)
+    # AGENT RUNS ARE NOT IN ANY OF THE ABOVE, and that surprised people: kind
+    # 'agent' is billed 'subscription' unconditionally, so the ceilings and the
+    # headline dollar figure both exclude the single biggest thing a night of
+    # fan-out consumes. Reported alongside rather than folded in — a plan user's
+    # runs genuinely are not dollars — but never again invisible.
+    agent = conn.execute(
+        "SELECT COALESCE(SUM(usd), 0) AS usd, COUNT(*) AS runs "
+        "FROM spend_event WHERE kind = 'agent'").fetchone()
+    out["agent_runs"] = {
+        "runs": int(agent["runs"] or 0),
+        "usd": round(float(agent["usd"] or 0), 4),
+        "note": "agent sessions bill as subscription, so they are NOT counted "
+                "in project_usd/today_usd or against per_day_usd — the token "
+                "figures below are what actually runs out on a plan",
+    }
     by_kind = conn.execute(
         "SELECT kind, COALESCE(SUM(usd), 0) AS usd FROM spend_event GROUP BY kind"
     ).fetchall()
     out["by_kind"] = {r["kind"]: round(r["usd"], 4) for r in by_kind}
+    # BY SEAT — the cut that decides where a budget is actually reduced. Rows
+    # with no seat (a human's own session) are grouped under '' rather than
+    # dropped: an unattributed total that silently vanishes is how a by-seat
+    # view ends up not summing to the project total.
+    by_seat = conn.execute(
+        "SELECT seat, COALESCE(SUM(usd), 0) AS usd, COUNT(*) AS events "
+        "FROM spend_event GROUP BY seat ORDER BY usd DESC").fetchall()
+    out["by_seat"] = {(r["seat"] or "(unattributed)"):
+                      {"usd": round(r["usd"], 4), "events": int(r["events"])}
+                      for r in by_seat}
     out["project_usd"] = round(out["project_usd"], 4)
     out["today_usd"] = round(out["today_usd"], 4)
     out["subscription"] = subscription_totals(root)

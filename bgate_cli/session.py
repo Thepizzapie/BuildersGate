@@ -35,6 +35,41 @@ from pathlib import Path
 # director that needs the sixth item can call queue_list; one that needs to know
 # the board is busy needs only the top of it.
 TOP_N = 5
+
+# How long a 'dispatched' row may sit untouched before it is shown as STALE
+# rather than RUNNING. Well past dispatch.HARD_RUNTIME_S (2h), so a genuinely
+# long run is never libelled — anything past this has outlived every ceiling
+# the dispatcher enforces and is almost certainly a row a dead dashboard left.
+STALE_RUN_MIN = 180
+
+
+def _age_min(stamp: str):
+    """Minutes since a SQLite `datetime('now')` stamp (UTC), or None.
+
+    Returns None rather than 0 for anything unparseable: "no age" and "just
+    now" mean opposite things to a reader deciding whether to trust a row.
+    """
+    from datetime import datetime, timezone
+
+    text = str(stamp or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            when = datetime.strptime(text[:19], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        delta = (datetime.now(timezone.utc) - when).total_seconds() / 60.0
+        return max(0.0, delta)
+    return None
+
+
+def _ago(minutes: float) -> str:
+    if minutes < 90:
+        return f"{int(minutes)}m ago"
+    if minutes < 60 * 48:
+        return f"{int(minutes // 60)}h ago"
+    return f"{int(minutes // 1440)}d ago"
 BOARD_PORT = 7788
 PROBE_TIMEOUT_S = 0.25
 # The dashboard answers this without a token and it is on loopback, so the cost
@@ -274,8 +309,24 @@ def _lines(root) -> list[str]:
     except Exception:
         pass
 
+    # AGE, BECAUSE 'dispatched' IS NOT PROOF OF LIFE. _live dies with the
+    # dashboard and only dispatch.reconcile (which runs inside `bgate serve`)
+    # un-strands the rows it left behind — so a session opened days later was
+    # told three-week-old corpses were RUNNING, with nothing to distinguish
+    # them from an agent working right now.
     for item in running[:TOP_N]:
-        out.append(f"  RUNNING #{item['id']} [{item['seat']}] {item['title'][:64]}")
+        age = _age_min(item.get("updated_at") or "")
+        stale = age is not None and age >= STALE_RUN_MIN
+        mark = "STALE  " if stale else "RUNNING"
+        when = f" ({_ago(age)})" if age is not None else ""
+        out.append(f"  {mark} #{item['id']} [{item['seat']}] "
+                   f"{item['title'][:64]}{when}")
+    if any((_age_min(i.get("updated_at") or "") or 0) >= STALE_RUN_MIN
+           for i in running[:TOP_N]):
+        out.append("  ^ STALE = marked dispatched but untouched for "
+                   f"{STALE_RUN_MIN // 60}h+. If no agent is really running, "
+                   "`bgate serve` settles these on startup; until then they "
+                   "are neither running nor finished.")
     for item in queued[:TOP_N]:
         out.append(f"  queued  #{item['id']} [{item['seat']}] p{item['priority']} "
                    f"{item['title'][:64]}")

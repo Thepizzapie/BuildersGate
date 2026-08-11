@@ -19,6 +19,10 @@ WHAT IS ACTUALLY BEING PINNED, since most of this is one call deep:
 """
 from __future__ import annotations
 
+import contextlib
+import json
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -263,6 +267,53 @@ class TestUnpricedSaysSo:
 
     def test_price_for_is_never_zero(self):
         assert kie.price_for() is None
+
+    def test_a_failed_run_says_the_cost_is_unknown_not_absent(self, root, fake,
+                                                               tmp_path):
+        # A failed run used to carry none of these keys, so a caller doing
+        # `result.get("credits_consumed", 0)` scored a charge that may well have
+        # happened as free — the same folding-to-zero estimate_usd refuses to do
+        # on the video side.
+        fake.status, fake.tracks = "SENSITIVE_WORD_ERROR", []
+        got = kie.generate_music("hum", str(tmp_path / "o"), root=root)
+        assert got["ok"] is False
+        assert got["estimated_usd"] is None
+        assert got["credits_consumed"] is None
+        assert got["credits_source"] == "unavailable"
+        assert got["accounted"] is False
+
+
+class TestTheTaskIdReachesTheCallerAtSubmit:
+    """generate_video has had this hook since it was written; generate_music
+    took no callback at all, so its callers could only learn the id from a
+    return value — which a killed process never produces."""
+
+    def test_on_submit_fires_before_the_poll(self, root, fake, tmp_path,
+                                              monkeypatch):
+        # BEFORE, not after: the poll is the minutes-long window in which dying
+        # costs money, so an id handed over on the far side of it is an id
+        # nobody ever gets.
+        order = []
+        polled = kie.poll_music
+
+        def watch(*args, **kwargs):
+            order.append("poll")
+            return polled(*args, **kwargs)
+
+        monkeypatch.setattr(kie, "poll_music", watch)
+        kie.generate_music("hum", str(tmp_path / "o"), root=root,
+                           on_submit=lambda task_id: order.append(task_id))
+        assert order == ["task-1", "poll"]
+
+    def test_a_broken_on_submit_does_not_lose_the_batch(self, root, fake,
+                                                         tmp_path):
+        # Bookkeeping must never lose the audio it was bookkeeping.
+        def boom(_task_id):
+            raise RuntimeError("the ledger is on fire")
+
+        got = kie.generate_music("hum", str(tmp_path / "o"), root=root,
+                                 on_submit=boom)
+        assert got["ok"] and got["count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -551,6 +602,249 @@ class TestStatusReportsAndRecoverActs:
         fake.status, fake.tracks = "PENDING", []
         got = music.recover(root, "task-1")
         assert got["ok"] is False and "still running" in got["error"]
+
+
+# ---------------------------------------------------------------------------
+# Charged-and-lost: the window between the submit and the download
+# ---------------------------------------------------------------------------
+class Killed(RuntimeError):
+    """The process dying mid-poll, which is the whole point of the ticket.
+
+    Deliberately NOT a KieError: generate_music catches those and hands the task
+    id back on the result, which is the path that already worked. What had never
+    been survivable is the one where nothing gets returned at all.
+    """
+
+
+def _tickets(root):
+    """Every pending ticket on disk, decoded, oldest name first."""
+    directory = root / music.PENDING_DIR
+    if not directory.is_dir():
+        return []
+    return [json.loads(p.read_text(encoding="utf-8"))
+            for p in sorted(directory.glob("*.json"))]
+
+
+def _age_tickets(root, seconds):
+    """Backdate every ticket, so a sweep sees an hour-old generation without
+    the test sleeping for one."""
+    when = (datetime.now(timezone.utc)
+            - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    for path in (root / music.PENDING_DIR).glob("*.json"):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["updated_at"] = when
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+
+@contextlib.contextmanager
+def _killed_at(where):
+    """Kill the process at one point in the generation and put it back.
+
+    NOT monkeypatch: the `fake` fixture shares this test's monkeypatch instance,
+    so a mid-test ``undo()`` would also unstub kie's HTTP seam and every
+    assertion after it would be measuring a failed network call instead of the
+    thing under test — which is exactly what it did.
+    """
+    real = getattr(kie, where)
+
+    def boom(*_a, **_k):
+        raise Killed(f"the process died at {where}")
+
+    setattr(kie, where, boom)
+    try:
+        yield
+    finally:
+        setattr(kie, where, real)
+
+
+@contextlib.contextmanager
+def _ticket_never_closed():
+    """A crash between the download and the ticket being closed."""
+    real = music._close_ticket
+    music._close_ticket = lambda *_a, **_k: None
+    try:
+        yield
+    finally:
+        music._close_ticket = real
+
+
+class TestTheTaskIdSurvivesTheProcess:
+    """THE CHARGE LANDS AT SUBMIT AND THE POLL RUNS FOR MINUTES AFTERWARDS.
+
+    The task id used to reach durable storage only inside _absorb — that is,
+    after a download that had already succeeded — so the single window in which
+    dying costs money was the only window in which nothing had been written
+    down. recover() needs a task id; a killed process took the only copy with
+    it.
+    """
+
+    def test_the_task_id_is_on_disk_before_the_poll_begins(self, root, fake):
+        with _killed_at("poll_music"), pytest.raises(Killed):
+            music.generate(root, "night chase", name="chase")
+
+        ticket = _tickets(root)
+        assert len(ticket) == 1
+        assert ticket[0]["task_id"] == "task-1", \
+            "the batch was charged for and the handle died with the process"
+        assert ticket[0]["logical_name"] == "chase"
+
+    def test_a_crash_after_submit_is_recoverable(self, root, fake):
+        # The proof that the id is worth persisting: a fresh call collects the
+        # audio kie is already holding, and pays nothing for it.
+        with _killed_at("poll_music"), pytest.raises(Killed):
+            music.generate(root, "night chase", name="chase")
+
+        task_id = _tickets(root)[0]["task_id"]
+        got = music.recover(root, task_id)
+        assert got["ok"] and got["count"] == 2
+        assert got["estimated_usd"] is None      # charged at submit, not now
+        for candidate in got["candidates"]:
+            assert (root / candidate["path"]).is_file()
+
+    def test_the_recovery_lands_under_the_name_the_human_asked_for(self, root,
+                                                                    fake):
+        # No revision was ever registered, so the artifact scan has nothing to
+        # match — before the ticket carried the name, this came back called
+        # `night-run` (Suno's title) or twelve hex characters.
+        with _killed_at("poll_music"), pytest.raises(Killed):
+            music.generate(root, "night chase", name="Chase Theme")
+
+        assert music.recover(root, "task-1")["logical_name"] == "chase-theme"
+
+    def test_collecting_the_batch_closes_the_ticket(self, root, fake):
+        with _killed_at("poll_music"), pytest.raises(Killed):
+            music.generate(root, "night chase", name="chase")
+
+        music.recover(root, "task-1")
+        assert _tickets(root) == [], "a collected batch is owed nothing"
+
+    def test_a_finished_generation_leaves_nothing_pending(self, root, fake):
+        music.generate(root, "night chase", name="chase")
+        assert _tickets(root) == []
+
+    def test_a_prompt_kie_refused_is_not_reported_as_lost_money(self, root,
+                                                                 fake):
+        # Nothing was submitted, so nothing is owed. A sweep that cried wolf
+        # over every rejected prompt is a sweep nobody reads.
+        got = music.generate(root, "x" * 600, name="toolong")
+        assert got["ok"] is False and not got.get("task_id")
+        assert _tickets(root) == []
+
+    def test_a_cancel_after_the_submit_stays_pending(self, root, fake):
+        # kie hands the id back on the result here, but the batch is still paid
+        # for and uncollected — which is precisely what the sweep is for.
+        seen = []
+
+        def stop(_f, _w, _s):
+            seen.append(1)
+            if len(seen) > 1:
+                raise kie.MusicCancelled("the human pressed cancel")
+
+        got = music.generate(root, "night chase", name="chase",
+                             on_progress=stop)
+        assert got["ok"] is False and got["task_id"] == "task-1"
+        assert _tickets(root)[0]["task_id"] == "task-1"
+
+
+class TestStuckAndPaidFor:
+    """A dead poll loop used to be unrecoverable AND invisible. recover() has
+    always been able to collect a batch — what was missing is anything that
+    NOTICES, so recovery depended on a human remembering a task id they had
+    never been shown."""
+
+    def _stranded(self, root, *, age_s=3600, at_submit=False):
+        """One generation charged for and abandoned, aged into the sweep."""
+        where = "submit_music" if at_submit else "poll_music"
+        with _killed_at(where), pytest.raises(Killed):
+            music.generate(root, "night chase", name="chase")
+        _age_tickets(root, age_s)
+
+    def test_a_generation_inside_its_window_is_not_swept(self, root, fake,
+                                                          monkeypatch):
+        """A Suno batch renders in about three minutes. Calling one of those
+        stuck is how a human pays twice for work that is running fine."""
+        self._stranded(root, age_s=60)
+        assert music.stuck_tracks(root, poll=False)["stale"] == 0
+
+    def test_a_finished_batch_nobody_collected_is_found(self, root, fake,
+                                                         monkeypatch):
+        self._stranded(root)
+        got = music.stuck_tracks(root)
+        assert got["recoverable"] == 1
+        one = got["tracks"][0]
+        assert one["state"] == "recoverable" and one["task_id"] == "task-1"
+        assert one["logical_name"] == "chase"
+        assert "pays twice" in one["note"]
+
+    def test_the_cheap_half_asks_kie_nothing(self, root, fake, monkeypatch):
+        """It rides on every dashboard refresh, so it must cost no round trip."""
+        self._stranded(root)
+
+        def never(*_a, **_k):
+            raise AssertionError("poll=False must not reach the provider")
+
+        monkeypatch.setattr(music, "status", never)
+        got = music.stuck_tracks(root, poll=False)
+        assert got["tracks"][0]["state"] == "unpolled" and got["polled"] is False
+
+    def test_a_job_still_running_is_not_reported_as_money_to_collect(
+            self, root, fake, monkeypatch):
+        self._stranded(root)
+        fake.status, fake.tracks = "FIRST_SUCCESS", []
+        got = music.stuck_tracks(root)
+        assert got["tracks"][0]["state"] == "running" and got["recoverable"] == 0
+
+    def test_a_dead_generation_is_not_offered_for_recovery(self, root, fake,
+                                                            monkeypatch):
+        self._stranded(root)
+        fake.status, fake.tracks = "SENSITIVE_WORD_ERROR", []
+        got = music.stuck_tracks(root)
+        assert got["tracks"][0]["state"] == "failed" and got["recoverable"] == 0
+
+    def test_a_provider_that_cannot_be_asked_is_unknown_not_resolved(
+            self, root, fake, monkeypatch):
+        self._stranded(root)
+
+        def boom(*_a, **_k):
+            raise kie.KieError("could not reach kie")
+
+        monkeypatch.setattr(music, "status", boom)
+        got = music.stuck_tracks(root)
+        assert got["tracks"][0]["state"] == "unknown" and got["recoverable"] == 0
+
+    def test_a_generation_with_no_task_id_is_its_own_category(self, root, fake,
+                                                               monkeypatch):
+        """The worst one: the submit left and the handle did not come back."""
+        self._stranded(root, at_submit=True)
+        got = music.stuck_tracks(root, poll=False)
+        assert got["tracks"][0]["state"] == "lost"
+        assert "no handle" in got["tracks"][0]["note"]
+
+    def test_a_batch_already_filed_is_not_reported_as_money_to_spend_again(
+            self, root, fake, monkeypatch):
+        # A crash between the download and the ticket being closed leaves one of
+        # these behind. The takes ARE registered; reporting them as collectable
+        # is how a human pays for audio they already have.
+        with _ticket_never_closed():
+            music.generate(root, "night chase", name="chase")
+        _age_tickets(root, 3600)
+
+        got = music.stuck_tracks(root)
+        assert got["tracks"][0]["state"] == "collected"
+        assert got["recoverable"] == 0
+
+    def test_recovering_clears_it_from_the_sweep(self, root, fake, monkeypatch):
+        self._stranded(root)
+        assert music.stuck_tracks(root)["recoverable"] == 1
+        music.recover(root, "task-1")
+        assert music.stuck_tracks(root)["stale"] == 0
+
+    def test_the_sweep_says_the_deadline_it_is_racing(self, root, fake,
+                                                       monkeypatch):
+        # kie holds the audio for fourteen days; a recovery offered without its
+        # expiry reads as an errand that can wait.
+        self._stranded(root)
+        assert music.stuck_tracks(root, poll=False)["retention_days"] == 14
 
 
 class TestProgressIsReported:

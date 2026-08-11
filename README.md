@@ -9,7 +9,7 @@
 Builders Gate is an MCP server for building games with Claude Code.
 **[builders-gate.com](https://builders-gate.com)**
 
-It gives Claude 144 tools scoped to one game project: a design database, a work
+It gives Claude some 180 tools scoped to one game project: a design database, a work
 queue, reference-pinned art and music generation, Godot and Blender adapters, and
 playtest capture. State lives in one SQLite file in the project.
 
@@ -156,6 +156,11 @@ Full detail, including the API key table and the platform notes:
 
 ## Install and quickstart
 
+**Before you start:** Python 3.11 or newer, installed and on `PATH` — check with
+`python --version`. A virtual environment is optional but recommended, because
+`pip install -e .` otherwise puts Builders Gate and its dependencies in your
+system Python where another project can disagree with them.
+
 ```bash
 git clone https://github.com/Thepizzapie/BuildersGate
 cd BuildersGate
@@ -169,9 +174,27 @@ cd emberfall
 bgate serve                               # dashboard on http://127.0.0.1:7788
 ```
 
-`bgate doctor` exits 1 if **anything** on its list is unavailable. That is right
-for a CI step and alarming for a human: you only need Python and Godot for the
-core loop. Read the rows, not the exit code.
+**If `bgate` is "not recognized" on Windows**, the install worked and Python's
+`Scripts\` directory is not on your `PATH`. Two ways through: run
+`python -m pip install -e .` and then call the CLI as `python -m bgate_cli.main
+doctor` (every command works that way, `bgate` is only a shortcut), or re-run the
+Python installer, choose Modify, and tick **Add Python to PATH** — then open a
+new terminal, because `PATH` is read at shell start.
+
+`bgate doctor` exits 1 if **anything** on its list is unavailable, including the
+rows nobody needs on day one. Read the rows, not the exit code:
+
+| Row | Needed for |
+|---|---|
+| `python`, `godot` | **Required.** The core loop: a project, a build, a run |
+| `blender` | Optional. The 3D leg only |
+| `ffmpeg`, `ffprobe` | Optional. Playtest capture and cutscene transcoding |
+| `whisper` | Optional. Voice transcription during playtest |
+| `art_key`, `local_image` | Optional. Generated art — a rented key or a local model |
+| everything else | Optional. Capability inventory, not a gate |
+
+A red optional row is a feature you do not have yet, not a broken install. If
+`python` and `godot` are green, keep going.
 
 `bgate init` creates a NEW directory named after the project, not whatever
 directory you were standing in. It writes `.bgate/game.db`, unpacks the Godot
@@ -181,13 +204,19 @@ first-run screen that does the same thing from the browser.
 To let agents drive it:
 
 ```bash
+python -c "import sys; print(sys.executable)"    # <abs-python>, from the env
+                                                 # where pip install -e . ran
 claude mcp add builders-gate --scope user -- <abs-python> -m bgate_mcp.server
 bgate hook-install <game-project>         # lane/lock teeth
 ```
 
-Use the ABSOLUTE python path. The claude CLI's health check resolves a bare
-`python` differently than your shell and reports "failed to connect" against a
-server that runs fine.
+**Restart Claude Code before the tools appear.** A running session does not pick
+up a newly registered MCP server; a fresh one does. If `project_status` is not in
+the tool list after restarting, the server is not connected.
+
+Use the ABSOLUTE python path, which is what the `python -c` line above prints.
+The claude CLI's health check resolves a bare `python` differently than your
+shell and reports "failed to connect" against a server that runs fine.
 
 Other entry points, covered in [`docs/setup.md`](docs/setup.md):
 

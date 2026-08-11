@@ -297,3 +297,158 @@ class TestStaleBuildGuard:
         (web / "index.pck").write_bytes(b"fresh")  # written after the source
         got = client.get("/api/play/status").json()
         assert got["stale"] is False
+
+
+class TestReservation:
+    """The atomic queued->dispatched transition — two dispatchers, one winner.
+
+    dispatch._spawn and a worker's queue_claim_next live in different
+    processes; both used to read 'queued' and proceed, which is one item with
+    two agents. The UPDATE's WHERE clause is the guarantee under test.
+    """
+
+    def test_reserve_wins_exactly_once(self, root):
+        item = queue.add(root, "tech", "wire the door")
+        assert queue.reserve(root, item["id"]) is True
+        assert queue.reserve(root, item["id"]) is False
+        assert queue.get(root, item["id"])["status"] == "dispatched"
+
+    def test_release_undoes_reserve_without_touching_the_result(self, root):
+        item = queue.add(root, "tech", "wire the door")
+        queue.set_status(root, item["id"], "failed", result="round one notes")
+        queue.reopen(root, item["id"], "fix the hinge")
+        assert queue.reserve(root, item["id"]) is True
+        assert queue.release(root, item["id"]) is True
+        after = queue.get(root, item["id"])
+        assert after["status"] == "queued"
+        # The reopened note survives — release touches status alone. set_status
+        # would have blanked it, which is why release exists.
+        assert "reopened" in (after["result"] or "")
+
+    def test_release_of_a_non_dispatched_item_is_a_no_op(self, root):
+        item = queue.add(root, "tech", "wire the door")
+        assert queue.release(root, item["id"]) is False
+        assert queue.get(root, item["id"])["status"] == "queued"
+
+
+class TestClaimNext:
+    """The worker pickup loop: claim atomically, honour every hold."""
+
+    def test_claims_the_highest_priority_ready_item_and_stamps_the_actor(self, root):
+        queue.add(root, "art", "low", priority=0)
+        high = queue.add(root, "art", "high", priority=5)
+        got = queue.claim_next(root, "art", actor="agent:item-99")
+        assert got["id"] == high["id"]
+        assert got["status"] == "dispatched"
+        assert got["actor"] == "agent:item-99"
+
+    def test_never_claims_across_seats(self, root):
+        queue.add(root, "tech", "not yours")
+        assert queue.claim_next(root, "art", actor="agent:item-1") is None
+
+    def test_honours_dependencies(self, root):
+        first = queue.add(root, "art", "paint the anchor")
+        queue.add(root, "art", "derive the poses", depends_on=first["id"])
+        # Claim the ready one, then nothing: the dependent is not ready and the
+        # first is now dispatched.
+        assert queue.claim_next(root, "art", actor="agent:item-1")["id"] == first["id"]
+        assert queue.claim_next(root, "art", actor="agent:item-1") is None
+        queue.set_status(root, first["id"], "done", result="anchor landed")
+        follow = queue.claim_next(root, "art", actor="agent:item-1")
+        assert follow is not None and follow["title"] == "derive the poses"
+
+    def test_holds_what_autodeploy_holds(self, root):
+        queue.add(root, "director", "two agents disagreed",
+                  source="qa-gate-escalation")
+        queue.add(root, "director", "a chat turn", source="chat")
+        placeholder = queue.add(root, "director", "coming", brief="x")
+        with db.tx(root) as conn:
+            conn.execute("UPDATE work_item SET brief = '(preparing #7)' "
+                         "WHERE id = ?", (placeholder["id"],))
+        assert queue.claim_next(root, "director", actor="agent:item-1") is None
+
+    def test_requires_an_execution_identity(self, root):
+        queue.add(root, "art", "x")
+        with pytest.raises(ValueError, match="identity"):
+            queue.claim_next(root, "art", actor="  ")
+
+    def test_claimed_open_sees_only_this_actors_claims(self, root):
+        mine = queue.add(root, "art", "mine")
+        queue.add(root, "art", "ordinary")
+        queue.claim_next(root, "art", actor="agent:item-7")  # takes 'mine'
+        held = queue.claimed_open(root, "agent:item-7")
+        assert [h["id"] for h in held] == [mine["id"]]
+        assert queue.claimed_open(root, "agent:item-8") == []
+
+
+class TestEmitTerminal:
+    """The watchdog's kill path finally reaches the bus."""
+
+    def test_a_failed_item_emits_item_failed(self, root):
+        from bgate_core import events
+        item = queue.add(root, "tech", "doomed")
+        queue.set_status(root, item["id"], "failed", result="killed: ceiling")
+        before = events.head(root)
+        queue.emit_terminal(root, item["id"])
+        got = [e for e in events.since(root, before)["events"]
+               if e["kind"] == "item.failed"]
+        assert len(got) == 1
+        assert got[0]["payload"]["item"] == item["id"]
+
+    def test_a_non_terminal_status_emits_nothing(self, root):
+        from bgate_core import events
+        item = queue.add(root, "tech", "still going")
+        before = events.head(root)
+        queue.emit_terminal(root, item["id"])          # status is 'queued'
+        assert events.since(root, before)["events"] == []
+
+    def test_a_deleted_item_is_silently_skipped(self, root):
+        queue.emit_terminal(root, 424242)              # must not raise
+
+
+# The MCP-surface behaviour of queue_reopen and queue_claim_next (round
+# counting, worker-only claiming) is tested in test_mcp_server.py, through the
+# registered handlers the way a client hits them.
+
+
+class TestAutoCommitBreaksTheDeadlock:
+    """Nothing ever committed, and a dirty tree refuses every dispatch — so the
+    first agent to write a file blocked the whole board forever."""
+
+    def _repo(self, root):
+        import subprocess
+        for args in (["init"], ["config", "user.email", "t@t"],
+                     ["config", "user.name", "t"]):
+            subprocess.run(["git", *args], cwd=root, capture_output=True)
+        (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "seed"], cwd=root,
+                       capture_output=True)
+
+    def test_commit_paths_takes_only_what_it_is_given(self, root):
+        from bgate_core import gitwork
+        self._repo(root)
+        (root / "agent.txt").write_text("agent wrote this\n", encoding="utf-8")
+        (root / "human.txt").write_text("human wrote this\n", encoding="utf-8")
+
+        got = gitwork.commit_paths(root, ["agent.txt"], "bgate: item #1")
+        assert got["ok"] is True and got["committed"] == ["agent.txt"]
+        # The human's file is untouched — and still dirties the tree, which is
+        # the original rule working rather than being bypassed.
+        after = gitwork.dirty(root)
+        assert after["dirty"] is True
+        assert after["paths"] == ["human.txt"]
+
+    def test_a_clean_tree_after_the_agents_own_files_are_committed(self, root):
+        from bgate_core import gitwork
+        self._repo(root)
+        (root / "a.gd").write_text("1\n", encoding="utf-8")
+        (root / "b.gd").write_text("2\n", encoding="utf-8")
+        gitwork.commit_paths(root, ["a.gd", "b.gd"], "bgate: item #2")
+        assert gitwork.dirty(root)["dirty"] is False   # the next dispatch runs
+
+    def test_nothing_to_commit_is_reported_not_raised(self, root):
+        from bgate_core import gitwork
+        self._repo(root)
+        got = gitwork.commit_paths(root, [], "bgate: item #3")
+        assert got["ok"] is False and "nothing" in got["reason"]

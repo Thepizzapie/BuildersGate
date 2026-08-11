@@ -37,13 +37,33 @@ NO URL IS EVER THE ASSET. kie serves generated files for fourteen days. The
 adapter downloads inside the polling loop; this module records the source URL in
 metadata as PROVENANCE ONLY, stamped with the date it dies, so nothing can
 mistake it for a place to fetch from later.
+
+THE TASK ID IS WRITTEN BEFORE THE WAIT, NOT AFTER IT. A Suno batch is charged
+when it is ACCEPTED and then polled for about three minutes; until this module
+kept a pending ticket, the id first reached durable storage inside
+:func:`_absorb` — i.e. only after a download that had already succeeded. So the
+one window where the process dying costs money was the only window in which
+nothing had been written down: the batch rendered, was billed, and
+:func:`recover` — which needs a task id — could not be called, because the id
+had existed solely in a local variable in a dead process. Every generation now
+opens a ticket under ``.bgate_out/audio/.pending/`` BEFORE the submit and
+stamps the id onto it the instant kie hands one over (see
+``kie.generate_music``'s ``on_submit``), and :func:`stuck_tracks` is what
+NOTICES the tickets nobody came back for. The shape and the vocabulary are
+``bgate_core.cinematic``'s ``stuck_shots`` on purpose — someone who knows one
+knows the other. No new table: a ticket is a file beside the takes it is waiting
+for, under the same gitignored scratch directory.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
 from . import activity, artifacts, assets, db
 from .util import slugify
@@ -60,6 +80,21 @@ INSTALL_SUBDIR = "music"
 
 PRODUCER = "kie_music"
 AUDIO_SUFFIXES = {".mp3", ".wav", ".ogg"}
+
+# WHERE A SUBMITTED-BUT-UNCOLLECTED GENERATION IS REMEMBERED. One JSON ticket
+# per submit, beside the candidates it is waiting for — dotted so the audio
+# seat's own listings and the candidate walk never mistake one for a take, and
+# under .bgate_out because it is scratch that is deleted the moment the batch is
+# on disk. A file rather than a column: cine_shot already existed to hold
+# cinematic's task id, music has no table of its own, and a schema migration is
+# a heavy price for a handle whose whole life is three minutes.
+PENDING_DIR = CANDIDATE_DIR / ".pending"
+
+# How long a ticket may sit uncollected before it is worth asking kie about. A
+# Suno batch renders in about three minutes and generate() gives up at fifteen,
+# so ten is past any healthy run and still inside a live call's own patience —
+# a sweep must never call a poll loop stuck before that loop has given up.
+STUCK_AFTER_S = 600
 
 
 class MusicError(RuntimeError):
@@ -114,6 +149,10 @@ def generate(root: str | os.PathLike[str], prompt: str, *, name: str = "",
     per-model price, so there is no projected figure to check against a ceiling
     — but a project that has ALREADY blown its daily budget must not be able to
     buy music, and ``spend.check`` answers that with a projection of zero.
+
+    A PENDING TICKET IS OPENED BEFORE THE SUBMIT and closed only when the takes
+    are on disk. Everything between those two points is paid-for work nobody has
+    collected, which is exactly what :func:`stuck_tracks` sweeps for.
     """
     from bgate_adapters import kie
 
@@ -129,14 +168,40 @@ def generate(root: str | os.PathLike[str], prompt: str, *, name: str = "",
                 "logical_name": stem, "candidates": []}
 
     out_dir = Path(root) / CANDIDATE_DIR / stem
-    result = kie.generate_music(text, str(out_dir), name=stem, root=root,
-                                logical_name=stem, work_item_id=work_item_id,
-                                timeout=float(timeout), on_progress=on_progress,
-                                **suno)
+    # OPENED BEFORE THE CALL, exactly as cinematic sets a shot to 'generating'
+    # before it asks kie for one. A ticket with no task id on it is the worst
+    # category and it has to be REACHABLE: it means the process died between the
+    # submit leaving and the id coming back, which is a charge with no handle.
+    # Opening it afterwards would make that case indistinguishable from a run
+    # that never happened.
+    ticket = _open_ticket(root, stem, text)
+    result = kie.generate_music(
+        text, str(out_dir), name=stem, root=root, logical_name=stem,
+        work_item_id=work_item_id, timeout=float(timeout),
+        on_progress=on_progress,
+        # THE INSTANT IT EXISTS. Not on the return: the poll that follows runs
+        # for minutes and a return value does not survive a killed process.
+        on_submit=lambda task_id: _stamp_ticket(ticket, task_id=str(task_id or "")),
+        **suno)
     if not result.get("ok"):
+        if result.get("task_id"):
+            # Suno was already asked, so this batch is paid for whatever went
+            # wrong afterwards — the download, the timeout, a human cancelling.
+            # The ticket STAYS OPEN so the sweep reports it as collectable;
+            # cinematic can afford to close its row here because a shot row is
+            # permanent and this handle is not.
+            _stamp_ticket(ticket, task_id=str(result["task_id"]),
+                          error=str(result.get("error") or "")[:400])
+        else:
+            # Nothing reached kie that we know of — a prompt the model refused,
+            # a cancel in the first second. Leaving the ticket would report a
+            # refusal as lost money, which is the sweep crying wolf.
+            _close_ticket(ticket)
         return {**result, "logical_name": stem, "candidates": []}
-    return _absorb(root, stem, text, result, work_item_id=work_item_id,
-                   suno=suno, on_progress=on_progress)
+    out = _absorb(root, stem, text, result, work_item_id=work_item_id,
+                  suno=suno, on_progress=on_progress)
+    _close_ticket(ticket)
+    return out
 
 
 def recover(root: str | os.PathLike[str], task_id: str, *, name: str = "",
@@ -188,6 +253,10 @@ def recover(root: str | os.PathLike[str], task_id: str, *, name: str = "",
     fresh = [t for t in tracks if str(t.get("id") or "") not in known]
     skipped = len(tracks) - len(fresh)
     if not fresh:
+        # Every take of this task is already filed, so whatever ticket is still
+        # open for it is describing work that HAS been collected. Closing it
+        # here is what stops the sweep reporting the same non-problem for ever.
+        _close_task_tickets(root, state["task_id"])
         return {"ok": True, "task_id": state["task_id"], "logical_name": stem,
                 "candidates": [], "count": 0, "skipped": skipped,
                 "note": f"all {skipped} take(s) from this task are already "
@@ -205,6 +274,8 @@ def recover(root: str | os.PathLike[str], task_id: str, *, name: str = "",
     out = _absorb(root, stem, f"recovered from kie task {state['task_id']}",
                   {**carrier, "tracks": written}, work_item_id=work_item_id,
                   suno={}, on_progress=on_progress)
+    # The takes are on disk and filed: this task is no longer uncollected.
+    _close_task_tickets(root, state["task_id"])
     return {**out, "ok": True, "recovered": True, "skipped": skipped,
             "task_id": state["task_id"],
             "note": f"downloaded {len(written)} take(s) kie was already holding"
@@ -246,6 +317,130 @@ def status(root: str | os.PathLike[str], task_id: str) -> dict:
                  "put the audio on disk without paying for it again"
                  if tracks else
                  "kie is holding no audio for this task yet"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Paid work nobody is watching any more
+# ---------------------------------------------------------------------------
+
+def stuck_tracks(root: str | os.PathLike[str], *,
+                 older_than_s: int = STUCK_AFTER_S, poll: bool = True,
+                 limit: int = 50) -> dict:
+    """Generations that were submitted and never collected. The music sweep.
+
+    THE FAILURE THIS SWEEPS FOR IS SILENT AND EXPENSIVE, and it is the same one
+    ``cinematic.stuck_shots`` exists for. A batch is charged at SUBMIT and then
+    polled for about three minutes; if the dashboard restarts, the agent is
+    killed or the connection drops in that window, nobody ever asks for the
+    audio again and kie holds two finished tracks, paid for, until the fourteen
+    days run out. :func:`recover` has always been able to collect one — what was
+    missing is anything that NOTICES, so recovery depended on a human
+    remembering a task id they never saw.
+
+    ``poll=False`` answers from the pending tickets alone: no network, no
+    provider call, safe on every dashboard refresh. ``poll=True`` asks kie about
+    each one, which is what turns "stale" into "finished, paid for, and one call
+    from being on disk".
+
+    A TICKET WITH NO TASK ID IS ITS OWN CATEGORY and the worst one. The submit
+    left; the handle did not come back. It is reported as ``lost`` rather than
+    folded in with the failures because the two want different things from a
+    human — one is a click, the other is kie's own dashboard.
+    """
+    root = str(root)
+    cutoff = max(0, int(older_than_s))
+    collected = _task_index(root)
+    stale = []
+    for path, record in _tickets(root):
+        age = _ticket_age_s(path, record)
+        if age < cutoff:
+            continue
+        stale.append((age, path, record))
+    stale.sort(key=lambda item: -item[0])
+    stale = stale[:max(1, int(limit))]
+
+    out = []
+    for age, path, record in stale:
+        entry = {"logical_name": record.get("logical_name") or "",
+                 "prompt": record.get("prompt") or "",
+                 "task_id": str(record.get("task_id") or ""),
+                 "ticket": Path(path).relative_to(Path(root)).as_posix(),
+                 "updated_at": record.get("updated_at") or "",
+                 "age_s": int(age), "recoverable": False}
+        if not entry["task_id"]:
+            out.append({**entry, "state": "lost",
+                        "note": "this generation was submitted with no task id "
+                                "recorded, so there is no handle to collect it "
+                                "with. If it reached kie it was charged for; "
+                                "kie's own dashboard is the only place left to "
+                                "look."})
+            continue
+        if entry["task_id"] in collected:
+            # A crash between the download and the ticket being closed leaves
+            # one of these. Reporting a batch that IS filed as money waiting to
+            # be spent again is the exact wrong answer, so the registry is asked
+            # first — one scan for the whole sweep, not one per ticket.
+            out.append({**entry, "state": "collected",
+                        "logical_name": collected[entry["task_id"]],
+                        "note": "the takes from this task are already "
+                                "registered — the ticket outlived the batch it "
+                                "was holding a place for and nothing is owed."})
+            continue
+        if not poll:
+            out.append({**entry, "state": "unpolled",
+                        "note": "stale, and not asked about — call with "
+                                "poll=True to find out whether kie is holding "
+                                "finished audio for it"})
+            continue
+        try:
+            state = status(root, entry["task_id"])
+        except Exception as exc:                                 # noqa: BLE001
+            out.append({**entry, "state": "unknown", "error": str(exc)[:300],
+                        "note": "kie could not be asked about this task, so "
+                                "whether it is running, finished or dead is "
+                                "unknown — not resolved."})
+            continue
+        if state.get("recoverable"):
+            out.append({**entry, "state": "recoverable", "recoverable": True,
+                        "provider_status": state.get("status", ""),
+                        "track_count": state.get("track_count", 0),
+                        "note": "PAID AND COLLECTABLE — kie is holding finished "
+                                "audio for this task. recover() puts it on disk "
+                                "without paying again; re-generating pays "
+                                "twice."})
+        elif state.get("failed"):
+            out.append({**entry, "state": "failed",
+                        "provider_status": state.get("status", ""),
+                        "error": state.get("error_message") or "",
+                        "note": "the generation failed at kie. It can be "
+                                "re-generated."})
+        else:
+            out.append({**entry, "state": "running",
+                        "provider_status": state.get("status", ""),
+                        "note": "still running at kie despite the age of the "
+                                "ticket — wait rather than re-generating."})
+
+    counts: dict[str, int] = {}
+    for entry in out:
+        counts[entry["state"]] = counts.get(entry["state"], 0) + 1
+    recoverable = counts.get("recoverable", 0)
+    return {
+        "ok": True,
+        "older_than_s": cutoff,
+        "polled": bool(poll),
+        "stale": len(out),
+        "counts": counts,
+        "recoverable": recoverable,
+        "retention_days": _retention_days(),
+        "tracks": out,
+        "note": (f"{recoverable} generation(s) are finished at kie, already "
+                 "charged for, and waiting to be collected with recover()"
+                 if recoverable else
+                 "no generation is sitting on a paid, uncollected batch"
+                 if poll else
+                 f"{len(out)} generation(s) are stale; kie was not asked about "
+                 "any of them, so none is resolved either way"),
     }
 
 
@@ -476,6 +671,146 @@ def _auto_installed(root: str, filed: list) -> Optional[dict]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# The pending ledger — one file per submitted generation
+# ---------------------------------------------------------------------------
+#
+# A ticket exists for exactly as long as a batch is paid for and uncollected.
+# Every write below is BEST EFFORT and silent on failure, for the rule the whole
+# module holds: bookkeeping must never lose the audio it was bookkeeping. The
+# cost of a lost ticket is a sweep that misses one batch; the cost of a raise
+# here would be a generation that dies at the paperwork.
+
+def _open_ticket(root: str, stem: str, prompt: str) -> Path:
+    """Note that a generation is about to be submitted. Returns its ticket path.
+
+    Named for the moment rather than for the task, because there IS no task id
+    yet — that is the entire point. A ticket that never receives one is what the
+    sweep reports as ``lost``.
+    """
+    directory = Path(root) / PENDING_DIR
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    path = directory / f"{stamp}-{(stem or 'track')[:40]}-{uuid4().hex[:8]}.json"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return path
+    _write_ticket(path, {"logical_name": stem, "prompt": str(prompt)[:400],
+                         "task_id": "", "created_at": _now(),
+                         "updated_at": _now()})
+    return path
+
+
+def _stamp_ticket(path: str | os.PathLike[str], **fields: Any) -> None:
+    """Merge fields into a ticket. Called from kie's on_submit hook."""
+    record = _read_ticket(path) or {"created_at": _now()}
+    record.update(fields)
+    record["updated_at"] = _now()
+    _write_ticket(Path(path), record)
+
+
+def _close_ticket(path: str | os.PathLike[str]) -> None:
+    """The batch is on disk (or was never submitted). Nothing is owed."""
+    try:
+        Path(path).unlink()
+    except OSError:
+        pass
+
+
+def _close_task_tickets(root: str, task_id: str) -> int:
+    """Close every ticket holding this task id. The door :func:`recover` uses.
+
+    By id rather than by path because recover() is called by a human with a task
+    id and no memory of which ticket — often in a different process from the one
+    that opened it, which is the case the ticket exists for.
+    """
+    ident = str(task_id or "").strip()
+    if not ident:
+        return 0
+    closed = 0
+    for path, record in _tickets(root):
+        if str(record.get("task_id") or "") == ident:
+            _close_ticket(path)
+            closed += 1
+    return closed
+
+
+def _tickets(root: str | os.PathLike[str]) -> list:
+    """Every open ticket as ``(path, record)``. Unreadable ones are skipped —
+    a half-written JSON file must not take the whole sweep down with it."""
+    directory = Path(root) / PENDING_DIR
+    if not directory.is_dir():
+        return []
+    out = []
+    for path in sorted(directory.glob("*.json")):
+        record = _read_ticket(path)
+        if isinstance(record, dict):
+            out.append((path, record))
+    return out
+
+
+def _read_ticket(path: str | os.PathLike[str]) -> Optional[dict]:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _write_ticket(path: Path, record: dict) -> None:
+    try:
+        path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _ticket_age_s(path: Path, record: dict) -> float:
+    """How long this generation has gone uncollected, in seconds.
+
+    The stamp on the record is preferred over the file's mtime because a copied
+    or restored .bgate_out would otherwise reset every ticket's age to now and
+    hide exactly the batches this sweep is for.
+    """
+    stamp = str(record.get("updated_at") or record.get("created_at") or "")
+    try:
+        when = datetime.fromisoformat(stamp)
+    except ValueError:
+        try:
+            return max(0.0, time.time() - path.stat().st_mtime)
+        except OSError:
+            return 0.0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - when).total_seconds())
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _retention_days() -> int:
+    """How long kie holds the audio a stale ticket points at — the deadline on
+    every recovery this sweep offers."""
+    from bgate_adapters import kie
+
+    return int(kie.SUNO_URL_TTL_DAYS)
+
+
+def _task_index(root: str) -> dict:
+    """Task id -> the logical name its takes were filed under. One scan.
+
+    Answers 'has this batch already been collected?' for the whole sweep and
+    for :func:`_stem_for_task`, which used to walk the same rows itself.
+    """
+    out: dict[str, str] = {}
+    for row in artifacts.list_revisions(root, limit=500):
+        if (row.get("producer") or "") != PRODUCER:
+            continue
+        ident = str((row.get("metadata") or {}).get("task_id") or "")
+        if ident:
+            out.setdefault(ident, str(row.get("logical_name") or ""))
+    return out
+
+
 def _known_suno_ids(root: str, stem: str) -> set:
     """Suno track ids already registered under this name, so a recovery does not
     download or file the same take twice."""
@@ -492,12 +827,22 @@ def _stem_for_task(root: str, task_id: str) -> str:
 
     A recovery should land beside the takes it belongs with, not under a name
     derived from a hex string — the whole point is that the batch is one batch.
+
+    THE TICKET IS ASKED SECOND AND IT IS WHAT MAKES THIS WORK AT ALL FOR THE
+    CRASH CASE. A registered revision only exists once a batch has been
+    collected, so a generation that died mid-poll — the exact case recover() is
+    reached for — had nothing here to match and came back named after twelve hex
+    characters. The pending ticket carries the name the human asked for, written
+    before the submit.
     """
-    for row in artifacts.list_revisions(root, limit=500):
-        if (row.get("producer") or "") != PRODUCER:
-            continue
-        if str((row.get("metadata") or {}).get("task_id") or "") == task_id:
-            return str(row.get("logical_name") or "")
+    filed = _task_index(root).get(str(task_id or ""))
+    if filed:
+        return filed
+    for _path, record in _tickets(root):
+        if str(record.get("task_id") or "") == str(task_id or ""):
+            name = str(record.get("logical_name") or "")
+            if name:
+                return name
     return ""
 
 

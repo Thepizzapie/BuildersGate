@@ -530,6 +530,45 @@ _SYNTH_COMMON = (
     "and say so in the summary."
 )
 
+# THE GAME-PLAN HALF, and only the director gets it.
+#
+# `items` answers "what should happen next"; a game needs an answer to "what
+# does this thing CONSIST of", and nothing produced one — so after a
+# decomposition the board was the only record and an empty queue was
+# indistinguishable from a finished game. The manifest is that second answer:
+# enumerable, seat-tagged, dependency-aware, and the thing plan_status
+# measures the build against forever after.
+#
+# ASKED FOR ONLY WHEN THE SESSION IS ABOUT A GAME OR A FEATURE, because a
+# brainstorm about a bug fix or a pipeline change has no manifest and inventing
+# one fills the coverage table with fiction that never gets built.
+_SYNTH_MANIFEST = (
+    "\n\nIF THIS SESSION DESIGNED A GAME, A FEATURE OR A CHUNK OF CONTENT, also "
+    'return "manifest": a list of everything the thing CONSISTS of — one row '
+    "per buildable piece:\n"
+    '  {"kind": "entity|asset|scene|system|sound|dialogue|level",\n'
+    '   "name": "unique_snake_case_name",\n'
+    '   "seat": "which seat builds it",\n'
+    '   "acceptance": "the test that settles whether it is done",\n'
+    '   "slice": true|false,\n'
+    '   "depends_on": ["names of rows this one needs first"]}\n'
+    "Rules for the manifest:\n"
+    "- MARK THE VERTICAL SLICE. slice:true is the smallest set that is "
+    "actually PLAYABLE — one scene, one character, one loop, end to end. Those "
+    "rows go on the board immediately; everything else is recorded and waits. "
+    "A slice of everything is not a slice.\n"
+    "- Names are unique and stable; they are how the row is matched forever.\n"
+    "- acceptance is a TEST, not a restatement of the name: 'boots headless "
+    "and the player spawns', not 'the hub room is done'.\n"
+    "- depends_on names other rows, never items or files. A scene that needs "
+    "the sprite AND the sound names both — dependencies are a graph now, not a "
+    "line.\n"
+    "- Cover the whole thing, including the parts nobody will build this week. "
+    "The manifest is what makes 'what is left' answerable; rows you leave out "
+    "are work nothing will ever notice is missing.\n"
+    "- Omit the key entirely if this session was not about building something."
+)
+
 _SYNTH_SEAT = {
     "director": (
         "You are the DIRECTOR turning a brainstorm into work for the board. "
@@ -544,7 +583,10 @@ _SYNTH_SEAT = {
 
 
 def synthesis_system(seat: str) -> str:
-    return f"{_SYNTH_SEAT.get(seat, _SYNTH_SEAT['director'])}\n\n{_SYNTH_COMMON}"
+    base = f"{_SYNTH_SEAT.get(seat, _SYNTH_SEAT['director'])}\n\n{_SYNTH_COMMON}"
+    # The narrative seat files canon, not buildable pieces; a manifest there
+    # would be a coverage table of lore entries nobody can mark 'wired'.
+    return base + (_SYNTH_MANIFEST if seat == "director" else "")
 
 
 def session_context(session: dict, msgs: list[dict]) -> str:

@@ -1025,6 +1025,135 @@ def can_write(root: str | os.PathLike[str], role: str, path: str,
     return {"allowed": True, "role": role, "path": rel, "owner": owner}
 
 
+def detect_layout(root: str | os.PathLike[str]) -> dict:
+    """Where this project's game actually lives, and whether the lanes agree.
+
+    THE DEFAULT LANES ASSUME ONE LAYOUT AND TWO ENTRYPOINTS PRODUCE ANOTHER.
+    Every glob in DEFAULT_SEATS is written against <root>/game and
+    <root>/design — but `bgate init` scaffolds the template straight into
+    <root> (project.godot, scenes/, scripts/ at the top level), and an ADOPTED
+    repo has whatever layout its author chose. Measured against the real
+    matcher on an ordinary Godot repo: src/player.gd, assets/hero.png and
+    scenes/level.tscn are owned by NO SEAT, so with the hook installed every
+    dispatched agent is refused on contact with the source tree — and the
+    refusal reads as "wrong seat" when the truth is "your lanes describe a
+    repo that does not exist here".
+
+    Returns {prefix, godot_dir, matches, top_dirs}. ``prefix`` is what the
+    lane globs should be rooted at: "game/" for the scaffold layout, "" when
+    the game is at the top level. ``matches`` is False when the default table
+    would refuse the project's own source directories, which is the condition
+    worth telling a human about.
+    """
+    from pathlib import Path
+
+    base = Path(root)
+    try:
+        from . import project as _project
+        godot = _project.game_dir(root)
+    except Exception:
+        godot = None
+    prefix = "game/"
+    if godot is not None:
+        try:
+            rel = godot.resolve().relative_to(base.resolve()).as_posix()
+        except (ValueError, OSError):
+            rel = "game"
+        prefix = "" if rel in (".", "") else rel.rstrip("/") + "/"
+    elif not (base / "game").is_dir():
+        # No engine project yet and no game/ directory: a source tree at the
+        # top level is the likelier reading than a directory nobody made.
+        prefix = ""
+    try:
+        top = sorted(p.name for p in base.iterdir()
+                     if p.is_dir() and not p.name.startswith((".", "_")))
+    except OSError:
+        top = []
+    return {"prefix": prefix, "godot_dir": str(godot) if godot else "",
+            "matches": prefix == "game/", "top_dirs": top}
+
+
+def lanes_for_layout(prefix: str) -> dict[str, list[str]]:
+    """The default lane table re-rooted at this project's actual layout.
+
+    Rewrites only the globs that START at the assumed root. A lane that is
+    already project-relative in a way the layout does not change (``blender/``,
+    ``art/``, ``tests/``, ``*.godot``) is left exactly as it is — re-rooting
+    those would move directories the seat model deliberately keeps outside the
+    engine project.
+    """
+    prefix = (prefix or "").strip()
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    out: dict[str, list[str]] = {}
+    for role, cfg in DEFAULT_SEATS.items():
+        lanes = []
+        for glob in cfg["write_globs"]:
+            if glob.startswith("game/"):
+                lanes.append(prefix + glob[len("game/"):] if prefix != "game/"
+                             else glob)
+            else:
+                lanes.append(glob)
+        # De-duplicated: with an empty prefix, game/** collapses to ** for the
+        # tech seat, which would hand it every path in the project including
+        # every other seat's. Dropping a bare ** keeps the table meaningful.
+        out[role] = [g for g in dict.fromkeys(lanes) if g not in ("**", "**/*")]
+    return out
+
+
+def apply_layout(root: str | os.PathLike[str], prefix: str = "") -> dict:
+    """Store lanes that match this project's layout. Idempotent.
+
+    Written through :func:`configure`, so the result is an ordinary per-project
+    seat override: visible in seat_list, editable by a human, and reversible.
+    Nothing here invents a seat or widens one beyond the shape the default
+    table already had — it is the same lanes, pointed at the right directory.
+    """
+    layout = detect_layout(root) if not prefix else {"prefix": prefix}
+    prefix = layout["prefix"]
+    if prefix == "game/":
+        return {"changed": False, "prefix": prefix,
+                "why": "the default lanes already match this layout"}
+    table = lanes_for_layout(prefix)
+    for role, lanes in table.items():
+        configure(root, role, write_globs=lanes)
+    return {"changed": True, "prefix": prefix, "lanes": table,
+            "why": f"lanes re-rooted at {prefix or 'the project root'} — the "
+                   "default table assumes <root>/game, which this project "
+                   "does not use"}
+
+
+def lane_owners(root: str | os.PathLike[str], path: str) -> list[str]:
+    """Which seats' lanes cover this path — the ROUTING half of a refusal.
+
+    A lane refusal that only names the wall teaches an agent to stop; naming
+    the seat on the other side turns the same refusal into an address. The
+    observed cost of not having this: fifteen LEFTOVERS blocks, four seat notes
+    asking for work that was never queued, and a 270-line integration script
+    written to route around cross-lane one-liners. The hook reads this to say
+    "that is the tech seat's file — queue_add('tech', ...)" instead of "no".
+
+    Overlap is normal (director and narrative both own design/**), so this is
+    a list — MOST SPECIFIC lane first, because tech's game/** covers nearly
+    everything under game/ and naming tech for a .png whose real owner is
+    art's game/assets/** would route every asset to the wrong seat. Longest
+    matching glob wins; table order breaks ties. Never raises: it feeds
+    refusal messages, and a routing hint must not be able to break the
+    refusal.
+    """
+    rel = str(path).replace("\\", "/").lstrip("/")
+    try:
+        table = roles_for(root)
+    except Exception:
+        return []
+    matched: list[tuple[int, int, str]] = []
+    for order, (role, cfg) in enumerate(table.items()):
+        hits = [g for g in cfg.get("write_globs", []) if _glob_re(g).match(rel)]
+        if hits:
+            matched.append((-max(len(g) for g in hits), order, role))
+    return [role for _len, _order, role in sorted(matched)]
+
+
 # ---------------------------------------------------------------------------
 # The brief — everything a seat needs, one call
 # ---------------------------------------------------------------------------
@@ -1048,6 +1177,7 @@ MAX_ARTIFACTS = 20
 MAX_CANON = 30
 MAX_FEEDBACK = 12
 MAX_LOCKS = 25
+MAX_BOARD = 15           # open work items shown — the peer-awareness slice
 MAX_SECTIONS = 14        # bible sections quoted in a brief
 BODY_CHARS = 600         # per bible section
 NOTE_CHARS = 300         # per blackboard note
@@ -1109,6 +1239,7 @@ def _fit(payload: dict) -> dict:
                                     (payload.get("approved_artifacts") or [])[:8]),
         lambda: payload.__setitem__("canon", (payload.get("canon") or [])[:12]),
         lambda: payload.__setitem__("notes", (payload.get("notes") or [])[:4]),
+        lambda: payload.__setitem__("board", (payload.get("board") or [])[:6]),
         lambda: trim_bible(120),
         lambda: trim_refs(8),
         lambda: payload.__setitem__(
@@ -1368,6 +1499,20 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         if len(body) > NOTE_CHARS:
             note["body"] = body[:NOTE_CHARS] + "…[seat_notes for the whole note]"
 
+    # THE BOARD — what every other agent is queued for or working on right now.
+    # A worker with no view of its peers duplicates work, edits files a
+    # dispatched run owns, and dead-ends at walls another seat's queued item
+    # would have explained. 'dispatched' first because a LIVE peer is the one
+    # you must not collide with; queue_list pages the rest.
+    board = rows(conn.execute(
+        "SELECT id, seat, title, status, priority, source, chain_id, "
+        "chain_pos, depends_on, actor FROM work_item "
+        "WHERE status IN ('queued', 'dispatched', 'review') "
+        "ORDER BY CASE status WHEN 'dispatched' THEN 0 WHEN 'queued' THEN 1 "
+        "ELSE 2 END, priority DESC, id LIMIT 40"))
+    for entry in board:
+        entry["title"] = str(entry.get("title") or "")[:120]
+
     return _fit({
         "role": role,
         "your_role": SEAT_IDENTITY,
@@ -1389,6 +1534,7 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
                              for a in locked if a["lock_seat"] != role],
                             MAX_LOCKS, "asset_status (others)"),
         "notes": notes,
+        "board": cap(board, MAX_BOARD, "queue_list"),
         "truncated": truncated,
         # Bugs that have already been paid for, gated to this seat and this
         # project's dimension. See TRAPS for why they are in the brief and not
@@ -1415,7 +1561,10 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
             "A NOTE IS A BULLETIN; A QUEUE ITEM IS A JOB. If another seat has "
             "to DO something because of your work, queue_add(that seat, title, "
             "brief) - that dispatches. seat_post_note is only for what nobody "
-            "has to act on. Handing the work on IS part of finishing yours.",
+            "has to act on. Handing the work on IS part of finishing yours. "
+            "Pass depends_on=<your item id> when it needs your output - two "
+            "ready items start in the same tick, and only a dependency stops "
+            "that.",
             # The kill-tax rule: agents die mid-flight constantly (interrupts are
             # normal usage). A successor must resume from ONE file read, never
             # from archaeology.

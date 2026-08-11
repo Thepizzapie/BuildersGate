@@ -33,6 +33,17 @@ STATUSES = ("queued", "dispatched", "review", "done", "failed", "cancelled")
 # of them: the whole point of the hold is that the next link waits.
 SATISFIED = ("done",)
 
+# Sources no automatic dispatcher may touch. Defined HERE because there are two
+# such dispatchers now — the dashboard's autodeploy loop and a worker's
+# claim_next — in different processes, and two copies of this tuple is how one
+# of them ends up grabbing an escalation a human was supposed to read.
+#   qa-gate-escalation — two agents could not agree and a human has to decide.
+#   chat — a message to the director; the console dispatches those itself.
+HELD_SOURCES = ("qa-gate-escalation", "chat")
+# A row created in two statements — INSERT with a placeholder, then UPDATE with
+# the real text — is briefly dispatchable with nothing in it.
+PLACEHOLDER_BRIEF = "(preparing%"
+
 # HOW MUCH OF A RESULT SURVIVES THE WRITE.
 #
 # This was 2000 characters and it was SILENTLY EATING THE DELIVERABLE. A chat
@@ -337,6 +348,30 @@ def _item_event_payload(item: dict) -> dict:
     }
 
 
+def emit_terminal(root, item_id: int) -> None:
+    """Announce an item's terminal status for a transition that BYPASSED complete().
+
+    The watchdog's ceiling kills (runtime, stall, cost, terminal CLI error) write
+    'failed' through set_status and then _reap skips complete() because the item
+    is no longer 'dispatched' — so the most expensive failures this system has
+    were the only ones that never reached the bus: no bell, no webhook, no
+    auto-reopen. This is their announcement path.
+
+    NOT wired into set_status itself, and complete()'s docstring says why:
+    set_status also moves items for reopen and for reject's parking step, and
+    emitting there would tell the router an agent crashed when a human simply
+    said no. This is called explicitly, by the one caller that knows its
+    transition is a genuine terminal outcome.
+    """
+    try:
+        item = get(root, item_id)
+    except LookupError:
+        return
+    kind = _COMPLETION_KINDS.get(item["status"])
+    if kind:
+        _emit(root, kind, ref=str(item_id), payload=_item_event_payload(item))
+
+
 def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
     """Append what the harness SAW this item write to what the agent CLAIMS.
 
@@ -416,24 +451,113 @@ def set_status(root: str | os.PathLike[str], item_id: int, status: str,
     return item
 
 
+def parents(root: str | os.PathLike[str], item_id: int) -> list[int]:
+    """Every predecessor of this item — the single column AND the extra table.
+
+    A game is a DAG: a scene can need the sprite, the sound and the script.
+    `depends_on` holds one parent (and every chain is built on it); the rest
+    live in work_item_dep. Cut dependencies are excluded — that is what
+    cutting means.
+    """
+    item = get(root, item_id)
+    out = [int(item["depends_on"])] if item.get("depends_on") else []
+    try:
+        extra = rows(db.connect(root).execute(
+            "SELECT depends_on FROM work_item_dep WHERE item_id = ? "
+            "AND cut_at IS NULL ORDER BY depends_on", (int(item_id),)))
+    except Exception:
+        extra = []             # pre-migration project: one parent is all there is
+    out.extend(int(r["depends_on"]) for r in extra
+               if int(r["depends_on"]) not in out)
+    return out
+
+
+def add_dependency(root: str | os.PathLike[str], item_id: int,
+                   depends_on: int) -> dict:
+    """Make this item wait for one MORE predecessor.
+
+    The multi-parent half of queue_add's depends_on. Refuses a dependency on
+    a fiction (an item silently waiting on nothing dispatches immediately —
+    the exact failure the wait was for) and refuses a self-loop.
+    """
+    get(root, item_id)
+    get(root, int(depends_on))
+    if int(depends_on) == int(item_id):
+        raise ValueError(f"item {item_id} cannot wait for itself")
+    with db.tx(root) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO work_item_dep (item_id, depends_on) "
+            "VALUES (?, ?)", (int(item_id), int(depends_on)))
+    activity.log(root, "queue",
+                 f"item {item_id} now also waits for #{int(depends_on)}",
+                 ref=str(item_id))
+    return {"item": int(item_id), "parents": parents(root, item_id)}
+
+
+def cut_dependency(root: str | os.PathLike[str], item_id: int,
+                   depends_on: int, by: str = "") -> dict:
+    """THE REPAIR VERB. Release an item from a predecessor that will never land.
+
+    A cancelled predecessor satisfies nothing (SATISFIED is 'done' alone), so
+    before this the successors of a cut item waited forever with no operation
+    that could free them — the board's one unreachable state. Cutting is
+    recorded rather than deleted: "#13 waited on #12, which was cancelled, and
+    a person released it" is exactly the sentence an audit needs later.
+
+    The single `depends_on` column is cleared in place; an extra parent is
+    marked cut. Either way the item becomes dispatchable if nothing else holds
+    it, and it is the CALLER's job to have decided that is right.
+    """
+    item = get(root, item_id)
+    actor = (by or activity.current_actor() or "the dashboard")[:120]
+    dep = int(depends_on)
+    if item.get("depends_on") and int(item["depends_on"]) == dep:
+        with db.tx(root) as conn:
+            conn.execute("UPDATE work_item SET depends_on = NULL WHERE id = ?",
+                         (int(item_id),))
+    else:
+        with db.tx(root) as conn:
+            cur = conn.execute(
+                "UPDATE work_item_dep SET cut_by = ?, cut_at = datetime('now') "
+                "WHERE item_id = ? AND depends_on = ? AND cut_at IS NULL",
+                (actor, int(item_id), dep))
+            if cur.rowcount != 1:
+                raise LookupError(
+                    f"item {item_id} does not wait for #{dep} (already cut?)")
+    activity.log(root, "queue",
+                 f"item {item_id} released from #{dep} by {actor}",
+                 seat=item["seat"], ref=str(item_id))
+    remaining = parents(root, item_id)
+    return {"item": int(item_id), "cut": dep, "by": actor,
+            "still_waiting_on": remaining,
+            "ready": not remaining and item["status"] == "queued"}
+
+
 def blocker(root: str | os.PathLike[str], item_id: int) -> Optional[dict]:
     """The predecessor this item is still waiting on, or None if it can run.
 
     Returns the blocking row (id/seat/title/status) rather than a bool because
     every caller that refuses a dispatch has to SAY what it is waiting for —
     "blocked" with no antecedent is the least actionable refusal there is.
+    With several parents it reports the FIRST unsatisfied one and counts the
+    rest, so a fan-in does not have to be discovered one dispatch at a time.
     """
-    item = get(root, item_id)
-    if not item.get("depends_on"):
+    unsatisfied = []
+    for parent in parents(root, item_id):
+        try:
+            dep = get(root, int(parent))
+        except LookupError:
+            continue           # deleted predecessor: unblock rather than strand
+        if dep["status"] not in SATISFIED:
+            unsatisfied.append(dep)
+    if not unsatisfied:
         return None
-    try:
-        dep = get(root, int(item["depends_on"]))
-    except LookupError:
-        return None            # deleted predecessor: unblock rather than strand
-    if dep["status"] in SATISFIED:
-        return None
-    return {"id": dep["id"], "seat": dep["seat"], "title": dep["title"],
-            "status": dep["status"]}
+    dep = unsatisfied[0]
+    out = {"id": dep["id"], "seat": dep["seat"], "title": dep["title"],
+           "status": dep["status"]}
+    if len(unsatisfied) > 1:
+        out["also_waiting_on"] = [int(d["id"]) for d in unsatisfied[1:]]
+    return out
 
 
 def chain(root: str | os.PathLike[str], chain_id: str) -> list[dict]:
@@ -699,13 +823,128 @@ def next_for(root: str | os.PathLike[str], seat: str) -> Optional[dict]:
     so it starts, finds the file it was promised missing, and either stalls or
     invents one.
     """
-    row = db.connect(root).execute(
+    candidates = rows(db.connect(root).execute(
         "SELECT i.* FROM work_item i "
         "LEFT JOIN work_item d ON d.id = i.depends_on "
         "WHERE i.status = 'queued' AND i.seat = ? "
         "  AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
-        "ORDER BY i.priority DESC, i.id LIMIT 1", (seat,)).fetchone()
-    return dict(row) if row else None
+        "ORDER BY i.priority DESC, i.id LIMIT 20", (seat,)))
+    # The SQL join can only see the single-column parent; extra parents live in
+    # work_item_dep, so readiness is settled by blocker() — the one place that
+    # knows about both. Handing an agent work whose OTHER parent has not landed
+    # is the failure this function's docstring is about.
+    for row in candidates:
+        if blocker(root, int(row["id"])) is None:
+            return dict(row)
+    return None
+
+
+def reserve(root: str | os.PathLike[str], item_id: int) -> bool:
+    """Atomically take a queued item for dispatch: queued -> dispatched.
+
+    There are two dispatchers now — the dashboard (autodeploy, buttons) and a
+    worker's claim_next — in different processes. Both used to be able to read
+    'queued' and proceed, which is two agents spawned against one item with
+    nothing to say so. The WHERE clause is the whole point: exactly one caller
+    wins the row, and the loser finds out here rather than two items later.
+
+    Deliberately touches ONLY status and updated_at. set_status also rewrites
+    the result column, and a reservation that wiped a reopened item's
+    "reopened: ..." note would destroy the one line explaining the round.
+    """
+    get(root, item_id)                       # LookupError if the item is fiction
+    with db.tx(root) as conn:
+        cur = conn.execute(
+            "UPDATE work_item SET status = 'dispatched', "
+            "updated_at = datetime('now') WHERE id = ? AND status = 'queued'",
+            (item_id,))
+        taken = cur.rowcount == 1
+    if taken:
+        item = get(root, item_id)
+        activity.log(root, "queue",
+                     f"item {item_id} -> dispatched: {item['title'][:60]}",
+                     seat=item["seat"], ref=str(item_id))
+        _notify(root, item)
+    return taken
+
+
+def release(root: str | os.PathLike[str], item_id: int) -> bool:
+    """Undo reserve(): dispatched -> queued, touching nothing else.
+
+    For a dispatch refused AFTER the reservation (dirty tree, missing runner,
+    failed worktree) — the item was never run, so it goes back exactly as it
+    was rather than through set_status, which would blank its result note.
+    """
+    with db.tx(root) as conn:
+        cur = conn.execute(
+            "UPDATE work_item SET status = 'queued', "
+            "updated_at = datetime('now') WHERE id = ? AND status = 'dispatched'",
+            (item_id,))
+        undone = cur.rowcount == 1
+    if undone:
+        activity.log(root, "queue",
+                     f"item {item_id} -> queued (dispatch refused after reserve)",
+                     ref=str(item_id))
+    return undone
+
+
+def claim_next(root: str | os.PathLike[str], seat: str,
+               actor: str) -> Optional[dict]:
+    """Atomically claim the next READY item for a seat — the worker pickup loop.
+
+    A finished worker used to have exactly one move: exit, and let autodeploy
+    pay a fresh agent's whole briefing to start the next item. This is the
+    other move: the same session claims the next item and keeps going, with
+    its context already paid for.
+
+    Readiness is next_for's rule plus autodeploy's holds (sources a human must
+    touch, placeholder briefs) — a pickup loop that could grab an escalation
+    would be an agent dispatching the item that exists because agents disagreed.
+    The claim itself is reserve(), so racing the dashboard is safe: whoever
+    loses the UPDATE simply tries the next candidate.
+
+    ``actor`` is the claiming EXECUTION (agent:item-<original id>). It is
+    stamped on the claimed row, which is what lets the dashboard keep the
+    session alive past its original item and requeue claims if the run dies.
+    """
+    if seat not in _seats.DEFAULT_SEATS:
+        raise ValueError(f"unknown seat {seat!r}; seats are {tuple(_seats.DEFAULT_SEATS)}")
+    if not str(actor or "").strip():
+        raise ValueError("claim_next needs the claiming execution's identity")
+    marks = ", ".join("?" * len(HELD_SOURCES))
+    candidates = rows(db.connect(root).execute(
+        f"SELECT i.id FROM work_item i "
+        f"LEFT JOIN work_item d ON d.id = i.depends_on "
+        f"WHERE i.status = 'queued' AND i.seat = ? "
+        f"  AND i.source NOT IN ({marks}) AND i.brief NOT LIKE ? "
+        "  AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
+        "ORDER BY i.priority DESC, i.id LIMIT 10",
+        (seat, *HELD_SOURCES, PLACEHOLDER_BRIEF)))
+    for row in candidates:
+        if blocker(root, int(row["id"])) is not None:
+            continue                      # an extra parent has not landed
+        if not reserve(root, int(row["id"])):
+            continue                      # lost the race — next candidate
+        item = set_run_fields(root, int(row["id"]), actor=str(actor).strip())
+        activity.log(root, "queue",
+                     f"item {item['id']} claimed by {actor}",
+                     seat=seat, ref=str(item["id"]))
+        return item
+    return None
+
+
+def claimed_open(root: str | os.PathLike[str], actor: str) -> list[dict]:
+    """Dispatched items owned by this execution — the claims a run still holds.
+
+    The dashboard's watchdog asks this before closing a finished worker's
+    stdin, and _reap asks it to requeue whatever a dead run claimed and never
+    settled. Matches on the actor stamp claim_next wrote; an item dispatched
+    the ordinary way carries the dispatcher's actor, not the run's, so it
+    never appears here.
+    """
+    return rows(db.connect(root).execute(
+        "SELECT * FROM work_item WHERE status = 'dispatched' AND actor = ? "
+        "ORDER BY id", (str(actor or ""),)))
 
 
 def sync_promoted(root: str | os.PathLike[str]) -> dict:

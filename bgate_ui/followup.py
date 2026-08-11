@@ -1346,6 +1346,19 @@ def tick(root: str | os.PathLike[str]) -> dict:
             _qa_gate.sweep(root)
         except Exception:
             pass
+        # THE SLICE CHECK — the only thing in the harness that reviews the GAME.
+        # On the sweep rather than a branch because it is not about any one
+        # event: it fires when the LAST slice row lands, whichever item that
+        # was, and its own due-check is idempotent (one open at a time, and
+        # never twice for an unchanged slice). A project with no game plan
+        # answers "not due" off one query.
+        try:
+            from bgate_core import gameplan as _gameplan
+
+            if _gameplan.slice_check_due(root).get("due"):
+                _gameplan.open_slice_check(root)
+        except Exception:
+            pass
     return {"seq": int(batch.get("seq") or main_seq),
             "notify_seq": int(pending.get("seq") or notify_seq),
             "actions": actions, "applied": applied,

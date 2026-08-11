@@ -65,7 +65,7 @@ This is the whole working cycle. Do it in this order.
 
 ## Seats
 
-Seven, fixed. `seat_list` for the live config, `seat_brief(role)` before you
+Eight, fixed. `seat_list` for the live config, `seat_brief(role)` before you
 work as one.
 
 | seat | owns |
@@ -76,31 +76,27 @@ work as one.
 | `tech` | engine, build, performance, project plumbing |
 | `art` | models, textures, sprites, the look |
 | `audio` | SFX, music hooks |
+| `cinematic` | cutscenes, trailers, attract-mode video |
 | `qa` | tests, repro, and the picky gate before anyone says "done" |
 
 Seats leave each other notes with `seat_post_note` / `seat_notes` — use it for
 "I changed the player collider, gameplay should re-tune the jump", not chat.
 
-### Leftovers: the integration you do not own
+### Integration you do not own: QUEUE IT
 
 You will constantly finish a system that needs one line in a file belonging to
-another seat. Do not half-land it and do not silently skip it. Write a
-**LEFTOVERS** block at the top of the file you *do* own, and put the same list
-in your spec:
+another seat. **`queue_add(that seat, title, brief)` — that is the whole
+answer.** Name the file, the call site and the exact line; pass
+`depends_on=<your item id>` if it needs your output first. Then keep working.
 
-```
-## LEFTOVERS: the integration this file deliberately does not make.
-## combat.gd is owned by another seat. Each is one line at a named site,
-## and NONE of them is written here.
-##
-##   combat.gd, the KO branch of _apply_damage():
-##     _inv.drop_all(u.id, u.pos)
-```
+A comment block, a seat note and a "blocked" result all dispatch **nobody**.
+Measured on a real board: fifteen files carried LEFTOVERS blocks, the newest
+of them was five hours newer than the last item anyone filed, and four
+generated assets were never wired in because the note asking for it was never
+a job. Handing the work on is part of finishing yours.
 
-One line, one named call site, verbatim. When somebody lands it, rewrite the
-entry in place with the date and what replaced it. Do not delete it. A
-leftover that vanishes silently teaches nobody anything, and a half-landed
-integration is indistinguishable from a bug.
+Leave a one-line comment at the call site too if it helps the next reader —
+but the queue row is the thing that makes it happen.
 
 ## Bible and lore — read before designing
 

@@ -25,6 +25,8 @@
                                 reap orphans, and turn auto-deploy off.
                                 Works even when the dashboard is gone or wedged.
     bgate hook-install [DIR]    wire lane/lock enforcement into a game project
+    bgate hook-uninstall [DIR]  remove it again, leaving your other hooks alone
+    bgate un-adopt [DIR] --yes  delete this project's .bgate store; game untouched
     bgate hook-status [DIR]     prove the hook is installed AND biting
     bgate hook                  (internal) the PreToolUse hook itself
 
@@ -108,6 +110,59 @@ def _pin(config: dict) -> dict:
         {**h, "command": h["command"].replace(
             "python -m ", f'"{sys.executable}" -m ', 1)}
         for h in config["hooks"]]}
+
+
+def uninstall_hook(project_dir: str, scope: str = "project") -> dict:
+    """Remove OUR PreToolUse entry, and nothing else.
+
+    There was no way back out. Installing wrote into a settings.json the user
+    may share with other tooling, and backing it out meant hand-editing JSON —
+    which is a poor answer to "can I cleanly remove this", and the first
+    question anyone careful asks before installing anything.
+
+    Surgical by the same rule install_hook merges by: only entries whose
+    command mentions ``bgate_cli.hook`` are dropped, an entry that ends up with
+    no hooks left is dropped with it, and a settings file we did not write into
+    is reported untouched rather than rewritten. `hooks` and `PreToolUse` keys
+    are left in place even when empty — removing structure we did not create is
+    the same overreach in the other direction.
+    """
+    if scope not in ("project", "user"):
+        return {"ok": False, "error": f"unknown scope {scope!r}; use project|user"}
+    settings_path = (Path.home() / ".claude" / "settings.json" if scope == "user"
+                     else Path(project_dir) / ".claude" / "settings.json")
+    if not settings_path.exists():
+        return {"ok": True, "removed": 0, "path": str(settings_path),
+                "note": "no settings file here — nothing was installed"}
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"ok": False,
+                "error": f"{settings_path} is not valid JSON — refusing to "
+                         "rewrite it; remove the bgate_cli.hook entry by hand"}
+    groups = (settings.get("hooks") or {}).get("PreToolUse")
+    if not isinstance(groups, list):
+        return {"ok": True, "removed": 0, "path": str(settings_path),
+                "note": "no PreToolUse hooks here — nothing to remove"}
+    removed = 0
+    kept_groups = []
+    for group in groups:
+        hooks = [h for h in (group.get("hooks") or [])
+                 if "bgate_cli.hook" not in str(h.get("command", ""))]
+        removed += len(group.get("hooks") or []) - len(hooks)
+        if hooks:
+            kept_groups.append({**group, "hooks": hooks})
+        elif not (group.get("hooks") or []):
+            kept_groups.append(group)      # somebody else's empty group
+    if not removed:
+        return {"ok": True, "removed": 0, "path": str(settings_path),
+                "note": "the bgate hook was not installed here"}
+    settings["hooks"]["PreToolUse"] = kept_groups
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n",
+                             encoding="utf-8")
+    return {"ok": True, "removed": removed, "path": str(settings_path),
+            "note": "lane and lock enforcement is OFF here now — agents can "
+                    "write anywhere their tools reach"}
 
 
 def install_hook(project_dir: str, scope: str = "project") -> dict:
@@ -270,6 +325,16 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
 
     project.init(root, name, pitch=pitch, engine="godot", dimension=kind)
+    # The scaffold writes project.godot, scenes/ and scripts/ straight into
+    # <root>, while the default seat lanes are written against <root>/game.
+    # Left alone, the gameplay seat cannot write the very scripts this command
+    # just created, and agents build a second tree under game/ that the engine
+    # does not load. Point the lanes at what was actually laid down.
+    try:
+        from bgate_core import seats as _seats
+        _seats.apply_layout(root)
+    except Exception:
+        pass
 
     print(f"created {name} ({kind}) — {len(made['files'])} files")
     # SAY WHAT WAS PROTECTED, or a careful run reads as a broken one. `force`
@@ -365,6 +430,16 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
             print(f"  !     {label}: {row['error']}")
         else:
             print(f"  {row['action'].ljust(9)} {row['path']}")
+    # THE LANES, WHEN THEY HAD TO MOVE. The default seat table is written
+    # against <root>/game; a repo laid out any other way has no seat owning its
+    # source tree, and every dispatched agent is refused on contact with it.
+    # Say so — a silent remap is a surprise the first time someone reads
+    # seat_list and finds globs they did not write.
+    lanes = report.get("lanes") or {}
+    if lanes.get("changed"):
+        print(f"  relaned   seats re-rooted at "
+              f"{lanes.get('prefix') or 'the project root'} "
+              "(the default lanes assume <root>/game)")
     print()
     if not proj.get("pitch"):
         print("no pitch recorded — the bible starts empty without one. Set it:")
@@ -691,7 +766,8 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
         # one row per dependency and a consumer that iterates it would read
         # "settings" as a missing binary.
         print(json.dumps({**report,
-                          "settings": _doctor.settings_report(root or None)},
+                          "settings": _doctor.settings_report(root or None),
+                          "project": _doctor.project_report(root or None)},
                          indent=2))
     else:
         width = max(len(name) for name in report)
@@ -704,6 +780,28 @@ def doctor(project_dir: str = "", as_json: bool = False) -> int:
             print(f"{mark}  {name.ljust(width)}  {detail}")
         print()
         print(_doctor.summary(report))
+        # WHICH ROWS ACTUALLY BLOCK YOU. This command exits 1 when anything at
+        # all is missing, including things nobody needs on day one, so the
+        # exit code has to be read alongside a sentence saying what the core
+        # loop requires.
+        core = [n for n in ("python", "godot")
+                if not report.get(n, {}).get("available")]
+        print("core loop needs python + godot" + (
+            f" — MISSING: {', '.join(core)}" if core else ": both present")
+            + ". blender (3D), ffmpeg/ffprobe (video), whisper (voice) and "
+              "an art key (image generation) are optional — a red row there "
+              "is not a blocker.")
+        # Project-level faults: lanes that match no directory here, and a hook
+        # that was never installed. Neither is a missing binary, so neither can
+        # appear above, and both stop agents dead.
+        project_rows = _doctor.project_report(root or None)
+        if project_rows:
+            print()
+            for row in project_rows:
+                mark = "ok  " if row["ok"] else "WARN"
+                print(f"{mark}  {row['name']}  {row['detail']}")
+                if row["fix"]:
+                    print(f"      fix: {row['fix']}")
         # The other half of "why is this board not doing what I told it": an env
         # var in a shell profile silently winning over what the panel shows.
         # AFTER the summary and deliberately outside the exit code — a setting
@@ -990,6 +1088,50 @@ def main() -> int:
         # `--scope user` takes no directory: it is not about a directory.
         target = "." if scope == "user" else (positional[0] if positional else ".")
         result = install_hook(target, scope=scope)
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("ok") else 1
+
+    if cmd == "un-adopt":
+        positional = [a for a in args[1:] if not a.startswith("-")]
+        target = Path(positional[0] if positional else ".").expanduser().resolve()
+        marker = target / ".bgate"
+        if not marker.is_dir():
+            print(f"{target} is not an adopted project — nothing to undo")
+            return 1
+        if "--yes" not in args:
+            print(f"This will DELETE {marker} — the board, the bible, the lore, "
+                  "the artifact ledger and the spend history for this project.")
+            print("Your game files are untouched, and so are the marked blocks "
+                  "in .gitignore and CLAUDE.md (delete those by hand if you "
+                  "want them gone — they are marker-delimited).")
+            print(f"Re-run with --yes to confirm:  bgate un-adopt {target} --yes")
+            return 1
+        import shutil
+        try:
+            from bgate_core import db as _db
+            _db.close_all()
+        except Exception:
+            pass
+        try:
+            shutil.rmtree(marker)
+        except OSError as exc:
+            print(f"error: could not remove {marker}: {exc}")
+            return 1
+        print(f"removed {marker}")
+        print("the game itself is untouched. `bgate hook-uninstall` if you also "
+              "want the lane hook out of this repo's .claude/settings.json.")
+        return 0
+
+    if cmd == "hook-uninstall":
+        rest = args[1:]
+        scope = "project"
+        if "--scope" in rest:
+            i = rest.index("--scope")
+            scope = rest[i + 1] if i + 1 < len(rest) else ""
+            rest = rest[:i] + rest[i + 2:]
+        positional = [a for a in rest if not a.startswith("-")]
+        target = "." if scope == "user" else (positional[0] if positional else ".")
+        result = uninstall_hook(target, scope=scope)
         print(json.dumps(result, indent=2))
         return 0 if result.get("ok") else 1
 

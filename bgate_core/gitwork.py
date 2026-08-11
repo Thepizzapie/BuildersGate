@@ -115,6 +115,55 @@ def dirty(root: str | os.PathLike[str]) -> dict:
     return {"available": True, "reason": "", "dirty": bool(paths), "paths": paths}
 
 
+def commit_paths(root: str | os.PathLike[str], paths: Sequence[str],
+                 message: str) -> dict:
+    """Commit EXACTLY these paths, leaving everything else uncommitted.
+
+    THE DEADLOCK THIS ENDS. Nothing in this system ever committed, and a
+    dispatch refuses a dirty tree by default — so the first agent to write a
+    file made the tree dirty and every later dispatch was refused, forever,
+    with a 20-second retry. Autopilot could not finish a second item without a
+    human running git by hand. An overnight board of thirty items woke up with
+    three done and the rest untouched.
+
+    PATHS, NOT `commit -a`, and that is the whole safety argument: the caller
+    passes the paths ITS OWN RUN touched (gitwork.touched since the run's base
+    commit), so a human's unrelated uncommitted work is never swept into an
+    agent's commit. If the human's edits are what make the tree dirty, it
+    STAYS dirty and the next dispatch is still refused — which is the original
+    rule working as intended rather than being bypassed.
+
+    Never raises: a failed commit is reported and the run stands. The commit
+    is bookkeeping on top of work that already landed on disk, and losing it
+    must not turn a successful run into a failed one.
+    """
+    state = probe(root)
+    if not state["available"]:
+        return {"ok": False, "reason": state["reason"], "committed": []}
+    wanted = [str(p).replace("\\", "/") for p in (paths or [])
+              if str(p).strip() and not _ignored(str(p).replace("\\", "/"))]
+    if not wanted:
+        return {"ok": False, "reason": "nothing to commit", "committed": []}
+    # -- ends the option list: a path that begins with a dash is a filename
+    # here, not a flag, and a generated asset legitimately can.
+    ok, _out, err = _run(root, ["add", "--", *wanted])
+    if not ok:
+        return {"ok": False, "reason": f"git add failed: {err}", "committed": []}
+    # Staged-only check: `add` on an unchanged path stages nothing, and
+    # `commit` with nothing staged is an error whose message reads like a
+    # fault. Asking first turns that into an honest "nothing changed".
+    ok, staged, _err = _run(root, ["diff", "--cached", "--name-only"])
+    if not ok or not staged.strip():
+        return {"ok": False, "reason": "nothing staged — no tracked change",
+                "committed": []}
+    ok, _out, err = _run(root, ["commit", "--no-verify", "-m", message])
+    if not ok:
+        return {"ok": False, "reason": f"git commit failed: {err}",
+                "committed": []}
+    return {"ok": True, "reason": "", "commit": head(root),
+            "committed": [p for p in staged.splitlines() if p.strip()]}
+
+
 def touched(root: str | os.PathLike[str], base: str) -> dict:
     """Every path that changed since ``base``, tracked edits AND new files.
 

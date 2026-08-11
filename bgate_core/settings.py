@@ -202,6 +202,17 @@ SETTINGS: tuple[Setting, ...] = (
              "because the resulting diff cannot tell the agent's edits from "
              "yours — which is what makes a revert safe."),
     Setting(
+        key="dispatch.auto_commit", group="Dispatch", kind=BOOL, default=True,
+        store=("registry", "dispatch.auto_commit"), scope=MACHINE,
+        env="BGATE_AUTO_COMMIT", human_only=True,
+        help="Commit each finished run's OWN files, so the next dispatch is "
+             "not refused by the dirty tree the last one made. On, because "
+             "with it off nothing ever commits and the board deadlocks after "
+             "the first item that writes anything — measured: an overnight "
+             "queue of thirty finished three. It commits only the paths that "
+             "run touched, so your own uncommitted work is never swept in "
+             "(and still, correctly, blocks the next dispatch)."),
+    Setting(
         key="dispatch.isolation", group="Dispatch", kind=BOOL, default=False,
         store=("registry", "dispatch.isolation"), scope=MACHINE,
         env="BGATE_GIT_ISOLATION",

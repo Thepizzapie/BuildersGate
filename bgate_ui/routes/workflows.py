@@ -6,8 +6,10 @@ The canvas paints itself from these. Two rules shape the surface:
     graph — repainting must not re-ship what the browser already has. The graph
     comes back exactly once, from `GET .../runs/{id}?graph=1`, when a reloaded
     page re-attaches to a run it did not start;
-  * approving a gate goes through ``api.require_human``. A gate an agent can
-    open is decoration, and decoration is what the audit found here.
+  * approving a gate goes through ``api.require_human``, and so does starting a
+    node that spends. A gate an agent can open is decoration, and decoration is
+    what the audit found here — twice: the gate, and then the ▶ two nodes down
+    that could buy a video without passing the gate at all.
 
 Advancing is a POST rather than a side effect of the GET on purpose: a tick can
 create queue items and (optionally) spawn a session, and GETs skip the token
@@ -149,18 +151,48 @@ def run_one_node(run_id: int, node_id: str, request: Request,
     """
     payload = payload or {}
     r = root()
+    actor = api.current_actor(request)
     dispatch = payload.get("dispatch")
     if dispatch is not None:
         dispatch = bool(dispatch) and api.dispatch_enabled()
     try:
-        run = _workflows.run_node(r, run_id, node_id,
-                                  actor=api.current_actor(request),
+        # ▶ ON A PAID CARD IS A SPENDING DECISION, so it carries the same guard
+        # the gate and the pick routes carry. It did not: `actor` was passed
+        # through to an engine that ignored it, and this was the only route from
+        # which an agent could start a node that bills — a video shot, a music
+        # track, a model card — while being refused at the gate beside it.
+        if _workflows.spends_money(r, run_id, node_id):
+            api.require_human(actor, "running a step that spends money")
+        run = _workflows.run_node(r, run_id, node_id, actor=actor,
                                   dispatch=dispatch)
     except LookupError as exc:
         raise api.not_found(str(exc), run_id=run_id, node_id=node_id)
+    except PermissionError as exc:
+        raise api.ApiError(403, str(exc), code="forbidden")
     except ValueError as exc:
         raise api.conflict(str(exc), run_id=run_id, node_id=node_id)
     return api.ok(run)
+
+
+@router.post("/runs/{run_id}/reconcile")
+def reconcile_run(run_id: int) -> dict:
+    """Release steps a dead process left mid-flight, so the run can end.
+
+    The engine tracks in-flight workers in memory, so a restart during a
+    generation leaves the node at 'running' with nothing left to finish it. The
+    poll then waits for ever and an exclusive step holds everything behind it.
+    This is the verb the "wait for it to finish" message points at.
+    """
+    try:
+        return api.ok(_workflows.reconcile(root(), run_id))
+    except LookupError:
+        raise api.not_found(f"no workflow run {run_id}", run_id=run_id)
+
+
+@router.post("/reconcile")
+def reconcile_all() -> dict:
+    """The same sweep across every live run — what a dashboard boot wants."""
+    return api.ok(_workflows.reconcile(root()))
 
 
 @router.get("/runs/{run_id}/nodes/{node_id}/candidates")

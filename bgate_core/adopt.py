@@ -298,6 +298,21 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
         "gitignore": stamp_gitignore(base),
         "claude_md": stamp_claude_md(base, name),
     }
+    # LANES, POINTED AT THE REPO THAT IS ACTUALLY HERE. The default seat table
+    # is written against <root>/game and <root>/design; an adopted repo has
+    # whatever layout its author chose, and against an ordinary one
+    # (src/, assets/, scenes/) NO seat owns anything. With the hook installed
+    # that means every dispatched agent is refused on contact with the source
+    # tree, and the refusal reads as "wrong seat" rather than "wrong layout".
+    # adopt already knew the layout — it computed top_dirs and threw it away.
+    try:
+        from . import seats as _seats
+        lanes = _seats.apply_layout(base)
+    except Exception as exc:                 # never fail an adopt over lanes
+        lanes = {"changed": False, "why": f"could not set lanes: {exc}"}
+    # ITS OWN KEY, not a `written` entry: that map is one row per stamped FILE
+    # and every consumer reads action/path off it. A differently-shaped row in
+    # there is a KeyError in the CLI printer, which is where this landed first.
     project.set_active(base)
 
     return {
@@ -308,8 +323,11 @@ def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
         "project": record,
         "detected": found,
         "written": written,
+        "lanes": lanes,
         "next": [
             "bgate doctor — check the toolchain (godot, blender, ...)",
+            "bgate hook-install . — make the lane rules bite (they are "
+            "advisory until you do)",
             "bgate serve — the dashboard, on this project",
             "read CLAUDE.md, then fill in the bible with bible_add",
         ],
