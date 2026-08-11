@@ -3933,3 +3933,188 @@
     }
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SEAT WORKSPACES — the shared vocabulary every seat panel writes in
+
+   THESE CLASSES HAD NO RULES AT ALL. Every seat workspace (art, audio,
+   cinematic, narrative, …) renders `.bg-btn`, `.bg-form`, `.bg-tabs`,
+   `.bg-warn` and friends, and not one of them was ever defined — so the
+   panels drew as raw HTML: run-together tab text, native grey buttons,
+   full-bleed inputs, warnings that read as body copy. It looked like a
+   half-loaded page rather than a workspace, and the fastest way to find it
+   was to add a new panel and assume the bug was in the new panel.
+
+   Deliberately plain. These are utility primitives shared by a dozen files
+   that know nothing about each other, so they lean entirely on the token
+   block above and introduce no new colours. A seat that wants a distinctive
+   surface builds it from its OWN prefixed classes (.bg-board-* below), not by
+   redefining these out from under the other eleven.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@layer views {
+  .bg-dim{ color:var(--text-3); font-size:12px; }
+  .bg-ok{ color:var(--good); }
+
+  /* A warning is a thing to ACT on, so it gets a block and a rule rather than
+     a colour — coloured text alone reads as emphasis and gets skimmed. */
+  .bg-warn{
+    color:var(--warn); background:var(--warn-soft);
+    border-left:3px solid var(--warn-line);
+    padding:7px 10px; border-radius:0 5px 5px 0; margin:8px 0;
+    font-size:13px; line-height:1.45;
+  }
+  .bg-note{
+    background:var(--surface-2); border:1px solid var(--line);
+    padding:8px 11px; border-radius:6px; margin:8px 0;
+    font-size:13px; line-height:1.45;
+  }
+  .bg-empty{
+    color:var(--text-3); padding:22px; text-align:center;
+    border:1px dashed var(--line-strong); border-radius:7px; margin:10px 0;
+  }
+
+  .bg-tabs{
+    display:flex; gap:2px; margin:12px 0;
+    border-bottom:1px solid var(--line);
+  }
+  .bg-tab{
+    appearance:none; background:none; border:0; cursor:pointer;
+    padding:7px 14px; font:inherit; font-size:13px; color:var(--text-3);
+    border-bottom:2px solid transparent; margin-bottom:-1px;
+  }
+  .bg-tab:hover{ color:var(--text-2); background:var(--surface-2); }
+  .bg-tab.on{ color:var(--text); border-bottom-color:var(--accent); }
+
+  .bg-btn{
+    appearance:none; cursor:pointer; font:inherit; font-size:12px;
+    padding:5px 11px; border-radius:5px;
+    color:var(--text-2); background:var(--surface-3);
+    border:1px solid var(--line);
+  }
+  .bg-btn:hover{ background:var(--surface-4); color:var(--text); }
+  .bg-btn.primary{
+    color:var(--bg); background:var(--accent); border-color:var(--accent);
+    font-weight:600;
+  }
+  .bg-btn.primary:hover{ filter:brightness(1.08); color:var(--bg); }
+  .bg-btn:disabled{ opacity:.5; cursor:not-allowed; }
+
+  .bg-link{
+    appearance:none; background:none; border:0; cursor:pointer;
+    font:inherit; color:var(--accent); padding:0; text-align:left;
+  }
+  .bg-link:hover{ text-decoration:underline; }
+
+  /* Inputs are sized to their content rather than stretched: a "seconds" box
+     and a "logline" box are not the same question and should not be the same
+     width. Anything that genuinely wants the row says so inline. */
+  .bg-form{
+    background:var(--surface-2); border:1px solid var(--line);
+    border-radius:7px; padding:12px 14px; margin:12px 0;
+    display:flex; flex-wrap:wrap; gap:7px; align-items:center;
+  }
+  .bg-form h4{ width:100%; margin:0; font-size:13px; }
+  .bg-form p{ width:100%; margin:0; }
+  .bg-form br{ width:100%; content:""; }
+  .bg-form input[type=text], .bg-form input:not([type]),
+  .bg-form input[type=number], .bg-form input[type=search],
+  .bg-form select, .bg-form textarea{
+    font:inherit; font-size:13px; padding:5px 8px; border-radius:5px;
+    color:var(--text); background:var(--surface-1);
+    border:1px solid var(--line);
+  }
+  .bg-form input:focus-visible, .bg-form select:focus-visible,
+  .bg-form textarea:focus-visible{
+    outline:2px solid var(--accent); outline-offset:1px;
+  }
+  .bg-form textarea{ width:100%; resize:vertical; line-height:1.45; }
+  .bg-form input::placeholder, .bg-form textarea::placeholder{
+    color:var(--text-3);
+  }
+
+  .bg-list, .bg-cine ul{ list-style:none; margin:8px 0; padding:0; }
+  .bg-list li, .bg-cine > .bg-cine-body ul > li{
+    padding:7px 0; border-bottom:1px solid var(--line-soft);
+  }
+
+  /* Live jobs and unfinished generations. Fixed to the bottom of the panel
+     because the thing it reports — a paid job in flight — matters wherever
+     you have scrolled to. */
+  .bg-jobs{
+    margin-top:14px; padding:9px 11px; border-radius:6px;
+    background:var(--surface-1); border:1px solid var(--line);
+    font-size:12px; color:var(--text-2);
+  }
+  .bg-jobs > div{ padding:2px 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STORYBOARD — the cinematic seat's free surface
+
+   A grid of panels, sized so a whole scene is legible without scrolling and
+   nobody mistakes one for a deliverable. The cells are drop targets: a
+   storyboard is a thing people drag pictures into, and making them find a
+   file picker for that is the difference between using this and not.
+
+   THE SOURCE CHIP IS COLOURED, and it is the only decoration here that
+   carries meaning. A frame a person chose and a frame a model guessed are
+   different evidence for spending video money, so they do not look alike.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@layer views {
+  .bg-board-grid{
+    display:grid; gap:14px; margin:14px 0;
+    grid-template-columns:repeat(auto-fill, minmax(210px, 1fr));
+  }
+
+  .bg-board-cell{
+    margin:0; padding:8px; border-radius:8px;
+    background:var(--surface-2); border:1px solid var(--line);
+    display:flex; flex-direction:column; gap:6px;
+  }
+  /* A cut frame stays on the board so the argument can be re-fought, but it
+     must never read as part of the scene. */
+  .bg-board-cut{ opacity:.45; }
+  .bg-board-cell.bg-drop{ border-color:var(--accent); background:var(--surface-3); }
+
+  .bg-board-num{
+    font-size:12px; color:var(--text-3);
+    display:flex; align-items:center; gap:6px;
+  }
+
+  .bg-board-img{
+    width:100%; aspect-ratio:16/9; object-fit:cover;
+    border-radius:5px; background:var(--surface-1); display:block;
+  }
+  .bg-board-empty{
+    display:flex; align-items:center; justify-content:center; text-align:center;
+    padding:8px; font-size:12px; color:var(--text-3);
+    border:1px dashed var(--line-strong);
+  }
+
+  .bg-board-beat{ font-size:13px; line-height:1.35; }
+  .bg-board-cell figcaption{ display:flex; flex-direction:column; gap:3px; }
+  .bg-board-acts{ margin-top:auto; display:flex; flex-wrap:wrap; gap:4px; }
+
+  .bg-chip{
+    display:inline-flex; align-items:center; gap:4px;
+    padding:1px 7px; border-radius:999px; font-size:11px;
+    color:var(--text-2); background:var(--surface-3);
+    border:1px solid var(--line);
+  }
+  .bg-chip input{ margin:0; }
+  .bg-chip-gen{   color:var(--warn); border-color:var(--warn-line);
+                  background:var(--warn-soft); }
+  .bg-chip-human{ color:var(--good); border-color:var(--good-line);
+                  background:var(--good-soft); }
+
+  .bg-cine-cast, .bg-board-pins{
+    display:flex; flex-wrap:wrap; gap:6px; align-items:center;
+    margin:8px 0; font-size:13px;
+  }
+
+  /* The promotion form is the boundary between free and paid, so it is drawn
+     as a boundary rather than as one more form in the stack. */
+  .bg-board-promote{
+    border-top:2px solid var(--line-strong); margin-top:18px; padding-top:12px;
+  }
+}

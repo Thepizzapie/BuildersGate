@@ -47,6 +47,15 @@ us their rate (BGATE_KIE_USD_PER_CREDIT) gets exact ledger rows rather than
 estimates. Without it the result carries the credit count and says plainly that
 no dollar figure was recorded.
 
+MEASURING AFTER THE FACT IS NOT ENOUGH FOR A GATE, which is what VIDEO_CREDITS
+and :func:`estimate_usd` are for. A budget check runs BEFORE the spend, so a
+pipeline holding only a post-hoc number had to hand it projected_usd=0.0 and
+could never refuse ONE expensive shot — only a project already over its ceiling.
+The estimate is explicitly an upper bound derived from kie's published band
+rather than a price, it says so on every value it returns, and a model it has no
+rate for yields known=False and NO NUMBER: a fabricated figure in front of a
+spend gate does not read as "unpriced", it reads as "free".
+
 LOCAL FILES ARE SENT BY UPLOADING THEM FIRST — A THIRD API FAMILY. Every
 reference field on a generation endpoint is a URI and none of them takes inline
 bytes, so a pinned anchor on disk cannot go straight into a request; this module
@@ -70,6 +79,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -467,7 +477,33 @@ def video_capabilities(model: str) -> dict:
         "max_refs": (spec.get("caps") or {}).get(table.get("refs", ""), 0),
         "note": spec.get("note", ""),
         "source": spec.get("source", "built-in"),
+        # WHETHER THE ID HAS EVER BEEN CONFIRMED AGAINST kie. Separate from
+        # `source` because they answer different questions — source says who
+        # typed it, this says whether anything checked it. See
+        # :func:`register_video_model` for why an unchecked id is a paid 404.
+        "verified": model_id_verified(model),
+        "verified_note": ("" if model_id_verified(model) else UNVERIFIED_NOTE),
     }
+
+
+# The stamp a registered model carries until something confirms its id exists.
+# Nothing in this module can confirm one for free (see :func:`probe_model_id`),
+# so this is the normal state of a user-registered entry rather than an alarm.
+UNVERIFIED_NOTE = (
+    "this model id has never been confirmed against the provider. kie serves no "
+    "catalogue endpoint this adapter can read, so a typo in the id survives "
+    "registration and surfaces as a PAID 404 at the first generation. Check it "
+    "against the model's own page on docs.kie.ai, or call probe_model_id.")
+
+
+def model_id_verified(model: str) -> bool:
+    """Has this model's id been checked against kie, or only typed in?
+
+    Built-in entries are True by construction: MODELS carries only ids read off
+    their own reference page, which is the rule that table exists to keep.
+    """
+    spec = MODELS.get(str(model or "").strip()) or {}
+    return bool(spec.get("verified", spec.get("source", "built-in") != "registered"))
 
 
 def register_video_model(name: str, spec: dict) -> dict:
@@ -487,6 +523,17 @@ def register_video_model(name: str, spec: dict) -> dict:
     verified one. What it moves is WHO does the reading — which was always the
     honest answer, because the person with the page open knows more than this
     table does.
+
+    WHAT THIS CANNOT CHECK, AND IT IS THE EXPENSIVE ONE. The `model` id is a
+    string handed to kie and there is no catalogue endpoint here to hold it
+    against — `available()` and `models()` read this file's own dicts. A typo
+    therefore passes registration and is discovered at the first generation, as
+    a 404 that arrives AFTER the conditioning frames have been uploaded. So
+    every registered entry is stamped `verified: False` (see UNVERIFIED_NOTE)
+    and everything that CAN be checked locally is, before the id is trusted:
+    the shape of the id itself, the structure of every limit table, and whether
+    this registration silently redefines a model something already planned
+    against. Those are cheap; the 404 is not.
     """
     key = str(name or "").strip()
     if not key:
@@ -500,34 +547,337 @@ def register_video_model(name: str, spec: dict) -> dict:
             "model calls seconds/shape/quality/first_frame/last_frame/refs/"
             "audio. Both come off the model's reference page; guessing either "
             "buys a 404 or a setting that silently did not apply.")
+    if not isinstance(spec["intent"], dict):
+        raise KieError(f"{key}: intent must be a mapping of "
+                       f"{'/'.join(VIDEO_INTENT)} to this model's own field "
+                       f"names, got {type(spec['intent']).__name__}")
     bad = sorted(set(spec["intent"]) - set(VIDEO_INTENT))
     if bad:
         raise KieError(f"{key}: unknown intent name(s) {bad} — the vocabulary "
                        f"is {', '.join(VIDEO_INTENT)}")
+
+    model_id = _check_model_id(key, spec["model"])
+    intent = _check_intent_fields(key, spec["intent"])
+    supports = set(spec.get("supports")
+                   or ({"prompt"} | set(intent.values())))
+    supports = {str(s).strip() for s in supports if str(s).strip()}
     entry = {
-        "model": str(spec["model"]),
+        "model": model_id,
         "kind": "video",
         "label": str(spec.get("label") or key),
         "required": tuple(spec.get("required") or ("prompt",)),
-        "supports": set(spec.get("supports")
-                        or ({"prompt"} | set(spec["intent"].values()))),
-        "enums": {k: tuple(v) for k, v in (spec.get("enums") or {}).items()},
-        "ranges": {k: tuple(v) for k, v in (spec.get("ranges") or {}).items()},
-        "caps": dict(spec.get("caps") or {}),
-        "images": str(spec.get("images") or spec["intent"].get("refs", "")),
+        "supports": supports,
+        "enums": _check_enums(key, spec.get("enums"), supports),
+        "ranges": _check_ranges(key, spec.get("ranges"), supports),
+        "caps": _check_caps(key, spec.get("caps"), supports),
+        "images": str(spec.get("images") or intent.get("refs", "")),
         "images_list": bool(spec.get("images_list", True)),
-        "credits": None,
+        "credits": _rate_numbers(spec.get("credits")) and dict(spec["credits"]),
         "note": str(spec.get("note") or ""),
-        "intent": dict(spec["intent"]),
-        "intent_values": {k: dict(v) for k, v
-                          in (spec.get("intent_values") or {}).items()},
-        "intent_scale": dict(spec.get("intent_scale") or {}),
+        "intent": intent,
+        "intent_values": _check_intent_values(key, spec.get("intent_values"),
+                                              intent),
+        "intent_scale": _check_intent_scale(key, spec.get("intent_scale"),
+                                            intent),
         # The stamp that keeps this honest on every surface that lists models.
         "source": "registered",
+        # AND THE ONE THAT SAYS WHAT NOBODY CHECKED. `source` says a human typed
+        # it; this says nothing has ever held the id against kie.
+        "verified": False,
     }
+    missing_required = sorted(set(entry["required"]) - supports)
+    if missing_required:
+        raise KieError(
+            f"{key}: {', '.join(missing_required)} is required but not in "
+            "`supports`, so build_input would refuse every request this model "
+            "could ever be sent")
+    if entry["images"] and entry["images"] not in supports:
+        raise KieError(
+            f"{key}: images field {entry['images']!r} is not in `supports`, so "
+            "a reference frame handed to it would be refused before it was sent")
+    _check_collision(key, entry)
+
     MODELS[key] = entry
     _refresh_model_kinds()
     return video_capabilities(key)
+
+
+# WHAT A kie MODEL ID LOOKS LIKE, measured off the ids in MODELS rather than
+# imagined: "google/nano-banana", "flux-2/pro-image-to-image",
+# "bytedance/seedance-2". Family/variant, lowercase, dots and dashes, sometimes
+# a colon for a version. This is a PLAUSIBILITY check and not a validity one —
+# it cannot know whether kie serves the id, only that this one could not
+# possibly be served, which catches the paste that brought a whole URL or a
+# trailing newline with it.
+_MODEL_ID_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*[A-Za-z0-9]$")
+_MODEL_ID_MAX = 120
+
+
+def _check_model_id(key: str, value: Any) -> str:
+    """The literal id kie will be sent, proven to be shaped like one."""
+    text = str(value or "")
+    if text != text.strip():
+        raise KieError(
+            f"{key}: the model id {text!r} has whitespace around it, which kie "
+            "would send verbatim and answer with a 404 after the upload. Paste "
+            "it without the newline.")
+    if not text:
+        raise KieError(f"{key}: the model id is empty")
+    if len(text) > _MODEL_ID_MAX:
+        raise KieError(f"{key}: {len(text)} characters is not a model id — kie's "
+                       "are family/variant strings like 'bytedance/seedance-2'")
+    if text.startswith(("http://", "https://")):
+        raise KieError(
+            f"{key}: {text!r} is a URL, not a model id. The id is the literal "
+            "string in the `model` field of kie's own example request — on a "
+            "reference page at docs.kie.ai/market/<family>/<variant> that is "
+            "usually '<family>/<variant>', but not always, which is exactly why "
+            "it has to be read rather than derived from the URL.")
+    if not _MODEL_ID_OK.match(text):
+        raise KieError(
+            f"{key}: {text!r} is not shaped like a kie model id — they are "
+            "lowercase family/variant strings such as 'bytedance/seedance-2', "
+            "with no spaces. A malformed one costs a round trip and a 404 to "
+            "discover.")
+    return text
+
+
+def _check_intent_fields(key: str, table: dict) -> dict:
+    """The intent map, with each field name proven usable as one."""
+    out: dict[str, str] = {}
+    for name, field in table.items():
+        text = str(field or "").strip()
+        if not text or text != str(field):
+            raise KieError(
+                f"{key}: intent {name!r} maps to {field!r}, which is not a "
+                "field name. It has to be the literal key this model's own "
+                "input object uses, e.g. seconds -> 'duration'.")
+        if text in out.values():
+            # Two intents on one field means the second silently overwrites the
+            # first in video_input's output — a setting paid for and not applied.
+            clash = [n for n, f in out.items() if f == text]
+            raise KieError(
+                f"{key}: {name} and {clash[0]} both map to {text!r}. One field "
+                "cannot carry two settings — whichever is translated second "
+                "would overwrite the other and you would be charged for the "
+                "one that did not apply.")
+        out[name] = text
+    return out
+
+
+def _check_enums(key: str, given: Any, supports: set) -> dict:
+    """`enums` as {field: (values,)}, refusing the shapes that fail silently."""
+    out: dict[str, tuple] = {}
+    for field, values in dict(given or {}).items():
+        if field not in supports:
+            raise KieError(
+                f"{key}: enums names {field!r}, which is not in `supports`, so "
+                "nothing would ever be checked against it")
+        if isinstance(values, str) or not isinstance(values, (list, tuple, set)):
+            # A bare string tuple()s into its characters, and the resulting
+            # "enum" refuses every real value with a message listing letters.
+            raise KieError(
+                f"{key}: enums[{field!r}] is {type(values).__name__}, not a "
+                "list of the values this model accepts. A single allowed value "
+                "still goes in a list.")
+        cleaned = tuple(values)
+        if not cleaned:
+            raise KieError(f"{key}: enums[{field!r}] is empty, which would "
+                           "refuse every possible value for that field")
+        out[field] = cleaned
+    return out
+
+
+def _check_ranges(key: str, given: Any, supports: set) -> dict:
+    """`ranges` as {field: (lo, hi)}, both numbers and in that order."""
+    out: dict[str, tuple] = {}
+    for field, bounds in dict(given or {}).items():
+        if field not in supports:
+            raise KieError(
+                f"{key}: ranges names {field!r}, which is not in `supports`, so "
+                "the bound would never be applied to anything")
+        if isinstance(bounds, str) or not isinstance(bounds, (list, tuple)) \
+                or len(bounds) != 2:
+            raise KieError(
+                f"{key}: ranges[{field!r}] must be (low, high), got {bounds!r}")
+        try:
+            lo, hi = float(bounds[0]), float(bounds[1])
+        except (TypeError, ValueError):
+            raise KieError(f"{key}: ranges[{field!r}] must be two numbers, got "
+                           f"{bounds!r}") from None
+        if lo > hi:
+            raise KieError(
+                f"{key}: ranges[{field!r}] is ({lo:g}, {hi:g}) — the low bound "
+                "is above the high one, which refuses every value")
+        out[field] = (bounds[0], bounds[1])
+    return out
+
+
+def _check_caps(key: str, given: Any, supports: set) -> dict:
+    """`caps` as {field: max array length}, positive whole numbers only."""
+    out: dict[str, int] = {}
+    for field, cap in dict(given or {}).items():
+        if field not in supports:
+            raise KieError(
+                f"{key}: caps names {field!r}, which is not in `supports`")
+        try:
+            value = int(cap)
+        except (TypeError, ValueError):
+            raise KieError(f"{key}: caps[{field!r}] must be a whole number of "
+                           f"items, got {cap!r}") from None
+        if value <= 0:
+            raise KieError(f"{key}: caps[{field!r}] is {value}, which would "
+                           "refuse every request that used the field")
+        out[field] = value
+    return out
+
+
+def _check_intent_values(key: str, given: Any, intent: dict) -> dict:
+    """`intent_values` as {intent: {canonical: this model's spelling}}."""
+    out: dict[str, dict] = {}
+    for name, mapping in dict(given or {}).items():
+        if name not in intent:
+            raise KieError(
+                f"{key}: intent_values names {name!r}, which this model has no "
+                f"intent entry for — it maps {', '.join(sorted(intent))}")
+        if not isinstance(mapping, dict) or not mapping:
+            raise KieError(
+                f"{key}: intent_values[{name!r}] must be a non-empty mapping of "
+                "the canonical value to this model's own spelling, e.g. "
+                "{'16:9': 'landscape'}")
+        out[name] = {str(k): v for k, v in mapping.items()}
+    return out
+
+
+def _check_intent_scale(key: str, given: Any, intent: dict) -> dict:
+    """`intent_scale` as {intent: multiplier}, positive numbers only."""
+    out: dict[str, float] = {}
+    for name, factor in dict(given or {}).items():
+        if name not in intent:
+            raise KieError(
+                f"{key}: intent_scale names {name!r}, which this model has no "
+                f"intent entry for — it maps {', '.join(sorted(intent))}")
+        try:
+            value = float(factor)
+        except (TypeError, ValueError):
+            raise KieError(f"{key}: intent_scale[{name!r}] must be a number, "
+                           f"got {factor!r}") from None
+        if value <= 0:
+            raise KieError(
+                f"{key}: intent_scale[{name!r}] is {value:g} — a zero or "
+                "negative multiplier turns every duration into nonsense before "
+                "it is sent")
+        out[name] = value
+    return out
+
+
+def _check_collision(key: str, entry: dict) -> None:
+    """Refuse a registration that quietly redefines something already in use.
+
+    TWO COLLISIONS, AND NEITHER ERRORS ANYWHERE ELSE. Overwriting a BUILT-IN
+    means every sequence already planned against that name silently starts
+    buying from a different model — the ids and enums in MODELS were read off a
+    reference page and a runtime entry has no such standing, so this is a
+    downgrade with no error attached. Two NAMES pointing at one id with
+    different specs is the same problem wearing a disguise: the generations look
+    like two models and are one, and only the stricter entry's limits are true.
+    """
+    existing = MODELS.get(key)
+    if existing is not None and existing.get("source", "built-in") != "registered":
+        raise KieError(
+            f"{key!r} is a built-in model whose id and schema were read off "
+            "kie's own reference page. Registering over it would repoint every "
+            "sequence already planned against that name at an unverified entry, "
+            "with nothing saying so. Pick another name.")
+    for other, spec in MODELS.items():
+        if other == key or spec.get("model") != entry["model"]:
+            continue
+        if spec.get("intent") != entry["intent"] or \
+                spec.get("enums") != entry["enums"] or \
+                spec.get("ranges") != entry["ranges"]:
+            raise KieError(
+                f"{key!r} and {other!r} are both {entry['model']!r} but "
+                "describe it differently. One of the two is wrong about this "
+                "model's limits, and a shot planned against the wrong one is "
+                "refused at the provider after the frames are uploaded — or "
+                "worse, accepted with a setting that did not apply.")
+
+
+# ---------------------------------------------------------------------------
+# CONFIRMING AN ID EXISTS WITHOUT BUYING ANYTHING, and the caveat on it
+# ---------------------------------------------------------------------------
+# There is no free lookup. kie serves no catalogue endpoint this adapter can
+# read, /api/v1/chat/credit takes no model, and recordInfo needs a task that only
+# a generation creates. What DOES discriminate is the business code on a
+# deliberately malformed createTask: the model is resolved before the input is
+# validated, so a bad id answers 404 ("no such endpoint or task") and a good one
+# answers 422 ("refused the request shape"). An empty input cannot render
+# anything — every model here documents `prompt` as required.
+#
+# WHY IT IS OPT-IN ANYWAY. That reasoning is inference from kie's own error
+# table, not a documented contract, and the branch it cannot rule out is a model
+# that accepts an empty input and STARTS A JOB. That would be a real charge, so
+# nothing calls this on your behalf: it is a flag a human sets, and if a taskId
+# ever comes back the result says loudly that one may have been created and
+# carries the id so it is recoverable rather than lost.
+def probe_model_id(model: str, *, root: Any = None,
+                   timeout: float = 30.0) -> dict:
+    """Ask kie whether a model id exists, by sending it something unusable.
+
+    Returns ``{exists: True|False|None, checked, reason, task_id}``. ``None``
+    means the question could not be answered — no key, no network, or an answer
+    this cannot interpret — and must never be read as either verdict.
+    """
+    name = str(model or "").strip()
+    spec = MODELS.get(name)
+    if spec is None:
+        raise KieError(f"unknown kie model {name!r} — known: {sorted(MODELS)}")
+    key = api_key(root)
+    if not key:
+        return {"exists": None, "checked": False, "model": name,
+                "id": spec["model"], "task_id": "",
+                "reason": available(root)["reason"]}
+    try:
+        got = _request(JOBS_CREATE, key, method="POST", timeout=timeout,
+                       payload={"model": spec["model"], "input": {}})
+    except KieError as exc:
+        text = str(exc)
+        if "code 404" in text or "HTTP 404" in text:
+            return {"exists": False, "checked": True, "model": name,
+                    "id": spec["model"], "task_id": "",
+                    "reason": f"kie has no model {spec['model']!r} — it answered "
+                              "404 for it. Check the id on the model's own page; "
+                              "generating with it would 404 after the "
+                              "conditioning frames were uploaded."}
+        if "code 422" in text or "HTTP 422" in text:
+            _mark_verified(name)
+            return {"exists": True, "checked": True, "model": name,
+                    "id": spec["model"], "task_id": "",
+                    "reason": "kie refused the request SHAPE rather than the "
+                              "model, which it could only do after resolving "
+                              "the id. Nothing was generated or charged."}
+        return {"exists": None, "checked": True, "model": name,
+                "id": spec["model"], "task_id": "",
+                "reason": f"kie answered something this cannot read as a "
+                          f"verdict on the id: {text}"}
+    # THE BRANCH THE OPT-IN EXISTS FOR. kie accepted an empty input, which means
+    # a job may be running and billed.
+    task_id = str(got.get("taskId") or "")
+    _mark_verified(name)
+    return {"exists": True, "checked": True, "model": name, "id": spec["model"],
+            "task_id": task_id,
+            "reason": "the id exists — and kie ACCEPTED an empty input rather "
+                      "than refusing it, so a generation may have started and "
+                      "may be charged for. "
+                      + (f"Poll {JOBS_RECORD}?taskId={task_id}."
+                         if task_id else "No task id came back.")}
+
+
+def _mark_verified(model: str) -> None:
+    """Record that something held this id against the provider and it stood."""
+    spec = MODELS.get(str(model or "").strip())
+    if spec is not None:
+        spec["verified"] = True
 
 
 def _refresh_model_kinds() -> None:
@@ -682,6 +1032,241 @@ def price_for(model: str = DEFAULT_IMAGE_MODEL) -> Optional[float]:
     """
     _spec(model)
     return None
+
+
+# ---------------------------------------------------------------------------
+# THE FORWARD ESTIMATE — what a shot will cost BEFORE anybody buys it
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. Everything above measures cost AFTER the fact:
+# `creditsConsumed` arrives on the finished record, which is the truth and is
+# useless to a budget gate, because a gate runs before the spend.
+# bgate_core.cinematic._budget_refusal therefore passed projected_usd=0.0 into
+# spend.check and could only ever catch "this project is already over" — never
+# "this ONE shot is expensive", which for a fifteen-second clip is the larger
+# number and the one a sequence of eight multiplies.
+#
+# WHERE THESE NUMBERS COME FROM, AND IT IS NOT A PRICE PAGE. kie publishes no
+# per-model price. The whole of the public record is the quickstart's "image
+# models typically 10-50 credits, video 100-500", and docs.kie.ai was not
+# reachable from the machine this was written on, so — unlike MODELS, where the
+# no-guessing rule is absolute — not one number below was read off a model's own
+# reference page. That is stated on every value this produces rather than buried
+# here, because an estimate a caller mistakes for a quote is worse than none.
+#
+# SO THE TABLE IS SHAPED TO BE HONEST IN THREE WAYS:
+#
+#   * IT IS CONSERVATIVE. Each entry spreads the CEILING of kie's published band
+#     across the model's own documented duration range, so the longest shot it
+#     will generate quotes at the top of the band and a shorter one quotes less.
+#     A gate that under-quotes lets through exactly the spend it exists to stop,
+#     so an upper bound is the only safe direction to be wrong in.
+#   * AN UNKNOWN MODEL YIELDS NO NUMBER. `known: False` and `credits: None`,
+#     never 0 — a fabricated credit count that reaches spend.check does not read
+#     as "unpriced", it reads as "free", which is the failure this whole module
+#     was written to avoid.
+#   * EVERY ENTRY IS OVERRIDABLE, because a user with a month of invoices knows
+#     more than this table does. BGATE_KIE_VIDEO_CREDITS takes JSON keyed by the
+#     model name here: {"seedance-2": {"per_second": 30, "per_call": 0}}. A
+#     model registered at runtime may also carry its own `credits` block, which
+#     beats the table and loses to the environment.
+VIDEO_CREDITS: dict[str, dict] = {
+    "seedance-2": {
+        # 500 credits — the ceiling of kie's published video band — over the 15s
+        # ceiling of this model's own documented duration range, with the band's
+        # FLOOR as a minimum so no shot is ever quoted below the cheapest video
+        # generation kie describes.
+        "per_call": 0,
+        "per_second": round(500 / 15, 2),
+        "minimum": 100,
+        "source": "kie quickstart, 'video models typically 100-500 credits'. No "
+                  "per-model price is published and no reference page was "
+                  "reachable to read one, so this is that band's ceiling spread "
+                  "across seedance-2's own 4..15s range: an upper bound, not a "
+                  "rate.",
+    },
+}
+VIDEO_CREDITS_ENV = "BGATE_KIE_VIDEO_CREDITS"
+
+ESTIMATE_NOTE = (
+    "This is an ESTIMATE and kie publishes no per-model price. It is an upper "
+    "bound derived from kie's own 100-500 credit band for video, spread across "
+    "the model's documented duration range — not a quote, and not read off a "
+    "price page. Override it with " + VIDEO_CREDITS_ENV + " (JSON, keyed by "
+    "model name) once your invoices say what a shot really costs.")
+
+# WHAT THE ESTIMATE DELIBERATELY DOES NOT MODEL. Resolution almost certainly
+# moves the price — 4k is not 480p — and no published rate says by how much, so
+# inventing a multiplier would put a fabricated number in front of a budget gate
+# wearing the same label as a derived one. It is named as a caveat instead.
+_ESTIMATE_UNMODELLED = (
+    "resolution, reference frames and generated audio are not modelled — kie "
+    "publishes no rate for any of them, so a 4k shot quotes the same as a 480p "
+    "one and may cost more")
+
+
+def _credit_overrides() -> dict:
+    """BGATE_KIE_VIDEO_CREDITS, parsed. Junk is ignored, never guessed at."""
+    raw = (os.environ.get(VIDEO_CREDITS_ENV) or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _rate_numbers(entry: Any) -> Optional[dict]:
+    """One rate block as three non-negative numbers, or None if it says nothing.
+
+    An all-zero or unparseable block is None rather than a zero rate, for the
+    reason the whole module gives: a zero that reaches a budget gate is
+    permission, not an absence.
+    """
+    if not isinstance(entry, dict):
+        return None
+    try:
+        per_call = float(entry.get("per_call") or 0)
+        per_second = float(entry.get("per_second") or 0)
+        minimum = float(entry.get("minimum") or 0)
+    except (TypeError, ValueError):
+        return None
+    if min(per_call, per_second, minimum) < 0:
+        return None
+    if max(per_call, per_second, minimum) <= 0:
+        return None
+    return {"per_call": per_call, "per_second": per_second, "minimum": minimum}
+
+
+def video_credit_rate(model: str) -> Optional[dict]:
+    """The credit rate in force for one model, or None when there is none.
+
+    Most specific first, the same precedence keys follow: the environment beats
+    what a registered model declared, which beats this file's table.
+    """
+    name = str(model or "").strip()
+    spec = MODELS.get(name) or {}
+    for entry, origin in (
+            (_credit_overrides().get(name), VIDEO_CREDITS_ENV),
+            (spec.get("credits"), "the model's own registration"),
+            (VIDEO_CREDITS.get(name), "kie's published band")):
+        rate = _rate_numbers(entry)
+        if rate is None:
+            continue
+        rate["origin"] = origin
+        rate["source"] = str((entry or {}).get("source") or "")
+        return rate
+    return None
+
+
+def _seconds_ceiling(model: str) -> Optional[float]:
+    """The longest shot this model documents, in seconds. None if it says none."""
+    try:
+        options = video_capabilities(model)["options"]
+    except Exception:                                            # noqa: BLE001
+        return None
+    band = options.get("seconds")
+    if isinstance(band, list) and len(band) == 2:
+        try:
+            return float(band[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def estimate_credits(model: str = "", seconds: Optional[float] = None,
+                     **intent: Any) -> dict:
+    """What one video generation is likely to cost in CREDITS, before it runs.
+
+    Returns ``{model, seconds, credits, known, basis, caveats, rate}``.
+    ``known=False`` means no rate is configured and ``credits`` is None — which
+    a caller must carry as "unknown", never fold to zero.
+
+    ``intent`` is accepted in the pipeline's own vocabulary and recorded rather
+    than priced: see _ESTIMATE_UNMODELLED for what no published number covers.
+    """
+    name = str(model or "").strip() or DEFAULT_VIDEO_MODEL
+    spec = MODELS.get(name)
+    base = {"model": name, "seconds": seconds, "credits": None, "known": False,
+            "rate": None, "caveats": [], "note": ESTIMATE_NOTE}
+    if spec is None or spec.get("kind") != "video":
+        return {**base,
+                "basis": f"{name!r} is not a registered kie video model, so "
+                         f"nothing here can price it — known: "
+                         f"{sorted(VIDEO_MODELS)}"}
+
+    rate = video_credit_rate(name)
+    if rate is None:
+        return {**base,
+                "basis": f"no credit rate is configured for {name}, and kie "
+                         "publishes none. The cost of this generation is "
+                         f"UNKNOWN, not zero — set {VIDEO_CREDITS_ENV} to what "
+                         "your invoices say, or register the model with a "
+                         "`credits` block."}
+
+    length, caveats = seconds, [_ESTIMATE_UNMODELLED]
+    if length in (None, ""):
+        length = _seconds_ceiling(name)
+        if length is None:
+            return {**base, "rate": rate,
+                    "basis": f"no duration was given and {name} documents no "
+                             "seconds range, so there is nothing to multiply "
+                             f"the rate by. Cost UNKNOWN, not zero."}
+        caveats.append(f"no duration was given, so this is quoted at {name}'s "
+                       f"ceiling of {length:g}s")
+    try:
+        length = float(length)
+    except (TypeError, ValueError):
+        return {**base, "rate": rate,
+                "basis": f"{seconds!r} is not a number of seconds, so this "
+                         "generation cannot be quoted. Cost UNKNOWN, not zero."}
+
+    # Rounded UP. A budget gate handed the fractional truth of an upper bound is
+    # a gate that lets a shot through on a rounding error.
+    import math
+
+    raw = rate["per_call"] + rate["per_second"] * length
+    credits = int(math.ceil(max(rate["minimum"], raw)))
+    asked = sorted(k for k, v in intent.items()
+                   if v not in (None, "", [], False))
+    if asked:
+        caveats.append("not varied by " + ", ".join(asked))
+    return {**base, "seconds": length, "credits": credits, "known": True,
+            "rate": rate, "caveats": caveats,
+            "basis": f"{credits} credits: {rate['per_second']:g}/s over "
+                     f"{length:g}s"
+                     + (f" plus {rate['per_call']:g} per call"
+                        if rate["per_call"] else "")
+                     + f", floor {rate['minimum']:g}, from "
+                     + (rate["origin"] or "an unnamed source")
+                     + (f" — {rate['source']}" if rate["source"] else "")}
+
+
+def estimate_usd(model: str = "", seconds: Optional[float] = None,
+                 **intent: Any) -> dict:
+    """The same estimate in DOLLARS, which needs one more thing to be knowable.
+
+    Two independent unknowns, and folding them together is how a caller ends up
+    unable to say which is missing: the CREDIT count needs a rate for the model
+    (VIDEO_CREDITS), and the DOLLAR figure needs the account's own credit rate
+    (BGATE_KIE_USD_PER_CREDIT). ``credits_known`` and ``known`` answer those
+    separately, and ``usd`` is None — never 0.0 — whenever either is missing.
+    """
+    got = estimate_credits(model, seconds, **intent)
+    rate = usd_per_credit()
+    usd = None
+    if got["known"] and rate is not None:
+        usd = round(float(got["credits"]) * rate, 6)
+    if usd is None:
+        why = (got["basis"] if not got["known"] else
+               "no credit-to-dollar rate is set, so the credit estimate cannot "
+               "be turned into money — set " + USD_PER_CREDIT_ENV + " to your "
+               "account's rate. " + PRICE_NOTE)
+        basis = f"cost UNKNOWN, not zero: {why}"
+    else:
+        basis = f"about ${usd:.4f} — {got['basis']}, at ${rate:g}/credit"
+    return {**got, "credits_known": got["known"], "known": usd is not None,
+            "usd": usd, "usd_per_credit": rate, "basis": basis}
 
 
 # ---------------------------------------------------------------------------
@@ -1351,8 +1936,17 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
                    audio: Optional[bool] = None,
                    root: Any = None, logical_name: str = "",
                    work_item_id: Optional[int] = None,
-                   timeout: float = 1800.0, **extra: Any) -> dict:
+                   timeout: float = 1800.0, on_submit: Any = None,
+                   **extra: Any) -> dict:
     """Submit, wait, download one clip. The video twin of :func:`generate_image`.
+
+    ``on_submit`` IS CALLED WITH THE TASK ID THE INSTANT THERE IS ONE, and it is
+    the difference between a lost generation and a recoverable one. The charge
+    happens at submit and the poll loop then runs for minutes; a caller that
+    only learns the task id from the RETURN VALUE learns it never if the process
+    dies in between, and a paid clip with no handle cannot be collected by
+    anything. Its failure is swallowed on purpose — bookkeeping must not lose
+    the file it was bookkeeping.
 
     THE ARGUMENTS ARE INTENT, NOT ONE MODEL'S FIELD NAMES. They used to be
     Seedance's — ``duration``, ``aspect_ratio``, ``first_frame_url`` — which made
@@ -1420,6 +2014,11 @@ def generate_video(prompt: str, out_path: str | os.PathLike[str], *,
     try:
         job = submit(model, root=root, timeout=60.0, **fields)
         task_id = job["task_id"]
+        if on_submit:
+            try:
+                on_submit(task_id)
+            except Exception:                                    # noqa: BLE001
+                pass
         rec = poll(task_id, root=root, timeout=timeout, interval=5.0)
         urls = result_urls(rec)
         if not urls:
@@ -1717,6 +2316,34 @@ def poll_music(task_id: str, *, root: Any = None, timeout: float = 900.0,
                    f"{timeout:.0f}s (last status {last.get('status') or 'unknown'})")
 
 
+def _free_path(path: Path) -> Path:
+    """``path``, or the next name beside it that is not already taken.
+
+    NOTHING GENERATED IS EVER WRITTEN OVER SOMETHING GENERATED, because the file
+    that would be destroyed was paid for and its destruction errors nowhere.
+    :func:`download_tracks` names takes by their INDEX in the batch, so a second
+    generation under the same logical name lands on `<stem>_1.mp3` and
+    `<stem>_2.mp3` again — the first batch's bytes are gone and the revisions
+    registered against them now describe audio nobody generated. The same shape
+    as the cutscene slug collision (bgate_core.cinematic._occupied), and the same
+    cost.
+
+    It STEPS ASIDE rather than refusing, which is the opposite of what the
+    cutscene path does, and the difference is which layer can act on it. A
+    generation there is one call with an `overwrite` argument a human can pass;
+    this is a download loop three layers under a caller that has no such flag,
+    so a refusal here would turn an ordinary second take into an error nobody
+    can clear. A new filename loses nothing and costs nobody a decision.
+    """
+    if not path.exists():
+        return path
+    for bump in range(2, 1000):
+        candidate = path.with_name(f"{path.stem}-{bump}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    return path.with_name(f"{path.stem}-{int(time.time())}{path.suffix}")
+
+
 def download_tracks(tracks: list, out_dir: str | os.PathLike[str], *,
                     stem: str = "track", on_progress: Any = None) -> list[dict]:
     """Pull every track in a record onto disk. Returns them with path + bytes.
@@ -1739,7 +2366,7 @@ def download_tracks(tracks: list, out_dir: str | os.PathLike[str], *,
             on_progress(0.80 + 0.15 * (index - 1) / max(1, total),
                         f"downloading take {index} of {total}", SUNO_DONE)
         suffix = Path(urllib.parse.urlparse(url).path).suffix
-        path = target / f"{stem}_{index}{suffix or '.mp3'}"
+        path = _free_path(target / f"{stem}_{index}{suffix or '.mp3'}")
         size = download(url, path, accept="audio/*")
         written.append({**track, "path": str(path), "bytes": size})
     return written
