@@ -124,6 +124,10 @@ def cinematic_generate(payload: dict, request: Request) -> dict:
 
     model = str(body.get("model") or "")
     audio = bool(body.get("generate_audio", False))
+    # EXPLICIT INTENT, DEFAULT OFF. Without it a generation refuses rather than
+    # writing over a candidate file that is already on disk — which is a clip
+    # somebody already paid for, and overwriting one errors nowhere.
+    overwrite = bool(body.get("overwrite", False))
 
     def work(job_id: int) -> dict:
         def progress(fraction: float, words: str, _status: str = "") -> None:
@@ -137,6 +141,7 @@ def cinematic_generate(payload: dict, request: Request) -> dict:
         try:
             result = _cine.generate_shot(project, name, idx, model=model,
                                          generate_audio=audio,
+                                         overwrite=overwrite,
                                          on_progress=progress)
         except Exception as exc:                                 # noqa: BLE001
             return {"ok": False, "error": api.safe_error(exc)}
@@ -346,7 +351,25 @@ def cinematic_recover(payload: dict) -> dict:
         raise api.bad_request("idx must be the shot number") from None
     try:
         return api.ok(_cine.recover_shot(root(), name, idx,
-                                         str(body.get("task_id") or "")))
+                                         str(body.get("task_id") or ""),
+                                         overwrite=bool(body.get("overwrite"))))
+    except _cine.CinematicError as exc:
+        raise api.bad_request(str(exc)) from exc
+
+
+@router.get("/api/cinematic/estimate")
+def cinematic_estimate(name: str = "") -> dict:
+    """What a shot list will cost, before any of it is bought. Spends nothing.
+
+    An UPPER-BOUND ESTIMATE and it says so on every value — kie publishes no
+    per-model price, so this is derived from the band its own quickstart states
+    (see kie.ESTIMATE_NOTE). A shot the estimate cannot price is listed in
+    ``unknown_shots`` and left OUT of the total rather than counted as zero.
+    """
+    if not str(name or "").strip():
+        raise api.bad_request("which sequence?")
+    try:
+        return api.ok(_cine.estimate_sequence(root(), name))
     except _cine.CinematicError as exc:
         raise api.bad_request(str(exc)) from exc
 
@@ -363,6 +386,15 @@ def cinematic_jobs(limit: int = 12) -> dict:
     A non-terminal job older than this process is reported ORPHANED: its thread
     died with the previous dashboard and it will never move again. That is a
     thing to dismiss, not a thing to wait for.
+
+    ``orphaned`` IS THREE-VALUED — true, false, or null for "could not tell",
+    with ``orphan_reason`` saying which and why. See :func:`_orphan_state`.
+
+    ``stuck`` IS THE DATABASE'S OWN ANSWER, not the provider's. A shot left at
+    'generating' by a dead process may be a paid, finished clip sitting at kie
+    with nobody collecting it, and the only thing that used to notice was a
+    human remembering. This half costs no network call so it can ride on every
+    refresh; GET /api/cinematic/stuck asks the provider.
     """
     project = root()
     cap = max(1, min(int(limit), 50))
@@ -374,30 +406,65 @@ def cinematic_jobs(limit: int = 12) -> dict:
             request = view.get("request") or {}
             view["sequence"] = str(request.get("sequence") or "")
             view["idx"] = request.get("idx")
-            view["orphaned"] = bool(
-                view.get("status") not in ("done", "failed", "cancelled")
-                and _job_started_before_process(job))
+            view["orphaned"], view["orphan_reason"] = _orphan_state(view, job)
             out.append(view)
     out.sort(key=lambda j: int(j.get("id") or 0), reverse=True)
-    return api.ok({"jobs": out[:cap]})
+    return api.ok({"jobs": out[:cap],
+                   "stuck": _cine.stuck_shots(project, poll=False)})
 
 
-def _job_started_before_process(job: dict) -> bool:
-    """Whether this row predates the process that would have to be advancing it.
+@router.get("/api/cinematic/stuck")
+def cinematic_stuck(older_than_s: int = 0, poll: bool = True) -> dict:
+    """Shots left mid-generation, and which of them are paid and collectable.
 
-    Best-effort: an unparseable timestamp reports False, because calling a live
-    job orphaned is worse than missing a dead one — the first makes a human
-    dismiss work that is still running.
+    THE ONE ENDPOINT HERE THAT CAN FIND MONEY. A generation is charged at submit
+    and polled for minutes afterwards; anything that kills this process in that
+    window leaves the row at 'generating' while the provider holds a finished,
+    billed clip. This asks the provider about every stale row and says which
+    ones recover_shot can collect — the alternative, which is what happened
+    before, is a human pressing generate again and paying twice.
+
+    ``poll=false`` answers from the database alone, with no provider call.
+    """
+    return api.ok(_cine.stuck_shots(
+        root(), poll=bool(poll),
+        older_than_s=(int(older_than_s) if older_than_s > 0
+                      else _cine.STUCK_AFTER_S)))
+
+
+def _orphan_state(view: dict, job: dict) -> tuple:
+    """Is this job dead, live, or unknowable? Returns ``(state, reason)``.
+
+    THREE STATES, BECAUSE COLLAPSING THEM HID THE EXPENSIVE ONE. This used to be
+    a bool: an unparseable ``created_at`` reported False, on the reasoning that
+    calling a live job orphaned is worse than missing a dead one. That reasoning
+    is right and the encoding was not — False does not mean "not orphaned", it
+    is READ as "healthy", and a generate job is a paid provider call. So a shot
+    whose timestamp this could not parse was displayed as running fine, for
+    ever, while its clip sat finished and billed at kie.
+
+    The bias is kept: nothing here calls a job orphaned on a guess. What changes
+    is that a guess is now ``None`` rather than a clean bill of health.
     """
     import datetime as _dt
 
+    if view.get("status") in ("done", "failed", "cancelled"):
+        return False, ""
     stamp = str(job.get("created_at") or "").strip()
     if not stamp:
-        return False
+        return None, ("this job has no created_at, so whether it predates this "
+                      "process cannot be told. If it is a generation it may be "
+                      "finished and already charged — check /api/cinematic/stuck")
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
             when = _dt.datetime.strptime(stamp[:19], fmt)
         except ValueError:
             continue
-        return when.replace(tzinfo=_dt.timezone.utc).timestamp() < _STARTED_AT
-    return False
+        if when.replace(tzinfo=_dt.timezone.utc).timestamp() < _STARTED_AT:
+            return True, ("this job was created before the current dashboard "
+                          "process started, so the thread that would advance it "
+                          "is gone and it will never move again")
+        return False, ""
+    return None, (f"created_at {stamp[:40]!r} is in a format this could not "
+                  "read, so whether the job is still live is unknown — not "
+                  "resolved. Check /api/cinematic/stuck before waiting on it.")

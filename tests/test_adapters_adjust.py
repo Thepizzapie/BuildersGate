@@ -89,6 +89,21 @@ FAILING_LOAD = (
     "   at: _load (core/io/resource_loader.cpp:317)\n"
 )
 
+# VERBATIM tail of `--headless --path <project> --import` on 4.4.1-stable with
+# one .glb in the project. The import SUCCEEDED — this is the editor's
+# thumbnail step failing to read a texture back out of the headless renderer.
+HEADLESS_GLB_IMPORT = (
+    "Godot Engine v4.4.1.stable.official.49a5bc7b6 - https://godotengine.org\n"
+    "\n"
+    "reimport: begin: (Re)Importing Assets steps: 1\n"
+    "\treimport: step 0: shard.glb\n"
+    "import: begin: Import Scene steps: 104\n"
+    "\timport: step 104: Saving...\n"
+    "import: end\n"
+    "ERROR: Parameter \"t\" is null.\n"
+    "   at: texture_2d_get (servers/rendering/dummy/storage/texture_storage.h:107)\n"
+)
+
 GODOT = pytest.mark.skipif(not godot.available()["available"],
                            reason="Godot not installed")
 BLENDER = pytest.mark.skipif(not blender.available()["available"],
@@ -143,6 +158,32 @@ class TestGodotErrorParsing:
         assert godot._errors("\x1b[91mERROR: Cannot open file 'res://x.tscn'."
                              "\x1b[0m\n") == [
             "ERROR: Cannot open file 'res://x.tscn'."]
+
+    def test_headless_thumbnail_noise_is_not_a_failed_import(self):
+        """Godot 4.4 regressed: importing ANY glTF headlessly prints
+        `Parameter "t" is null.` from the dummy renderer, because the scene
+        importer's editor-thumbnail step reads a viewport texture back and the
+        headless RenderingServer owns none (godotengine/godot#108994).
+
+        The import itself is fine — measured content-blind, a materialless
+        untextured cube does it too, and the resource loads with full geometry.
+        Counting it made every 3D project with a .glb report a failing build.
+        """
+        assert godot._errors(HEADLESS_GLB_IMPORT) == []
+
+    def test_the_same_message_from_a_real_renderer_is_still_fatal(self):
+        """The suppression is pinned to the dummy-renderer frame, and this is
+        why. The screenshot capture runs the game WITHOUT --headless precisely
+        because this error there means no PNG was written at all — a genuine
+        failure that must never be swallowed along with the thumbnail noise.
+        """
+        real = ("ERROR: Parameter \"t\" is null.\n"
+                "   at: texture_2d_get (servers/rendering/renderer_rd/"
+                "storage_rd/texture_storage.cpp:1428)\n")
+        assert godot._errors(real) == ['ERROR: Parameter "t" is null.']
+        # ...and so is the same message with no frame under it at all.
+        assert godot._errors("ERROR: Parameter \"t\" is null.\n") == [
+            'ERROR: Parameter "t" is null.']
 
     def test_duplicates_collapse_and_the_list_is_capped(self):
         assert godot._errors("ERROR: same\n" * 3) == ["ERROR: same"]

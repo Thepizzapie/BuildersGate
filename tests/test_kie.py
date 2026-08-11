@@ -16,6 +16,7 @@ can end up in CI output.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -599,3 +600,262 @@ class TestTheUploadSurface:
             kie.build_input("seedance-2", prompt="a long enough prompt",
                             first_frame_url="C:/art/hero.png")
         assert "upload_file" in str(exc.value)
+
+
+class TestNothingIsWrittenOverSomethingPaidFor:
+    def test_a_second_batch_does_not_land_on_the_first_one(self, tmp_path,
+                                                           monkeypatch):
+        """Takes are named by their INDEX in the batch, so a second generation
+        under the same logical name used to write `<stem>_1.mp3` again — the
+        first batch's bytes gone, and the revisions registered against them now
+        describing audio nobody generated."""
+        monkeypatch.setattr(kie, "download",
+                            lambda url, path, **kw: pathlib.Path(path).write_bytes(b"x"))
+        tracks = [{"audio_url": "https://kie.test/a.mp3"}]
+        first = kie.download_tracks(tracks, tmp_path, stem="theme")
+        second = kie.download_tracks(tracks, tmp_path, stem="theme")
+        assert first[0]["path"] != second[0]["path"]
+        assert pathlib.Path(first[0]["path"]).is_file()
+
+
+@pytest.fixture()
+def clean_models(monkeypatch):
+    """Registration mutates module-level MODELS, so put it back afterwards.
+
+    A leftover entry is not a leaked fixture — it is a video model the next test
+    can plan a sequence against.
+    """
+    monkeypatch.delenv(kie.VIDEO_CREDITS_ENV, raising=False)
+    before = dict(kie.MODELS)
+    yield
+    kie.MODELS.clear()
+    kie.MODELS.update(before)
+    kie._refresh_model_kinds()
+
+
+class TestTheForwardEstimate:
+    """The number a budget gate needs, which is the one kie does not publish.
+
+    Everything else here measures cost after the fact — creditsConsumed arrives
+    on the finished record, which is the truth and is useless to a gate that
+    runs before the spend. So these are mostly about what happens when there is
+    NO number: it stays None, it says so, and it never reaches spend.check
+    wearing a zero.
+    """
+
+    def test_an_unknown_model_is_priced_at_nothing_rather_than_at_zero(self):
+        got = kie.estimate_usd("veo-9", 5)
+        assert got["credits"] is None and got["usd"] is None
+        assert got["known"] is False and got["credits_known"] is False
+        assert "UNKNOWN" in got["basis"]
+
+    def test_a_registered_model_with_no_rate_is_unknown_not_free(
+            self, clean_models):
+        """A model somebody added at runtime has no published price, and a zero
+        here reads as permission to a spend ceiling."""
+        kie.register_video_model("kling-like", {
+            "model": "kling/v3-text-to-video",
+            "intent": {"seconds": "duration"}})
+        got = kie.estimate_credits("kling-like", 6)
+        assert got["known"] is False and got["credits"] is None
+        assert kie.VIDEO_CREDITS_ENV in got["basis"]
+
+    def test_the_estimate_moves_with_the_length_and_stays_in_the_band(self):
+        """An upper bound spread across the model's own duration range, so the
+        longest shot it will generate quotes at the top of kie's band."""
+        short = kie.estimate_credits("seedance-2", 4)["credits"]
+        longest = kie.estimate_credits("seedance-2", 15)["credits"]
+        assert 100 <= short < longest <= 500
+
+    def test_dollars_need_the_credit_rate_and_the_account_rate_separately(
+            self, monkeypatch):
+        """Two independent unknowns. Folded together a caller cannot tell which
+        is missing — and one of them is a thing they can fix."""
+        unpriced = kie.estimate_usd("seedance-2", 5)
+        assert unpriced["credits_known"] is True
+        assert unpriced["known"] is False and unpriced["usd"] is None
+        assert kie.USD_PER_CREDIT_ENV in unpriced["basis"]
+
+        monkeypatch.setenv(kie.USD_PER_CREDIT_ENV, "0.005")
+        priced = kie.estimate_usd("seedance-2", 5)
+        assert priced["known"] is True
+        assert priced["usd"] == pytest.approx(priced["credits"] * 0.005)
+
+    def test_the_environment_beats_the_built_in_band(self, monkeypatch):
+        """A user with a month of invoices knows more than this table does."""
+        monkeypatch.setenv(kie.VIDEO_CREDITS_ENV,
+                           json.dumps({"seedance-2": {"per_second": 10,
+                                                      "per_call": 5}}))
+        got = kie.estimate_credits("seedance-2", 6)
+        assert got["credits"] == 65
+        assert kie.VIDEO_CREDITS_ENV in got["rate"]["origin"]
+
+    def test_a_junk_override_is_ignored_rather_than_believed(self, monkeypatch):
+        monkeypatch.setenv(kie.VIDEO_CREDITS_ENV, "not json at all")
+        assert kie.estimate_credits("seedance-2", 6)["known"] is True
+        monkeypatch.setenv(kie.VIDEO_CREDITS_ENV,
+                           json.dumps({"seedance-2": {"per_second": -3}}))
+        # A negative rate is not a rate. It falls through to the table rather
+        # than quoting a shot at less than nothing.
+        assert kie.estimate_credits("seedance-2", 6)["rate"]["per_second"] > 0
+
+    def test_a_zero_rate_is_never_a_rate(self, monkeypatch):
+        """The one number this module refuses to produce."""
+        monkeypatch.setenv(kie.VIDEO_CREDITS_ENV,
+                           json.dumps({"seedance-2": {"per_second": 0,
+                                                      "per_call": 0,
+                                                      "minimum": 0}}))
+        assert kie.estimate_credits("seedance-2", 6)["credits"] > 0
+
+    def test_the_estimate_says_it_is_one(self):
+        got = kie.estimate_usd("seedance-2", 5)
+        assert "ESTIMATE" in got["note"]
+        assert any("not modelled" in c for c in got["caveats"])
+
+
+class TestRegistrationValidation:
+    """A typo in a model id passes registration and fails as a PAID 404 — after
+    the conditioning frames have been uploaded. kie serves no catalogue endpoint
+    this adapter can read, so none of this can prove an id EXISTS; what it can
+    do is refuse the ones that could not possibly."""
+
+    def _spec(self, **over):
+        return {"model": "vendor/model-v1",
+                "intent": {"seconds": "duration"}, **over}
+
+    def test_an_id_with_whitespace_is_refused(self, clean_models):
+        with pytest.raises(kie.KieError, match="whitespace"):
+            kie.register_video_model("x", self._spec(model="vendor/model \n"))
+
+    def test_a_url_is_not_a_model_id(self, clean_models):
+        with pytest.raises(kie.KieError, match="URL, not a model id"):
+            kie.register_video_model(
+                "x", self._spec(model="https://docs.kie.ai/market/kling"))
+
+    def test_a_malformed_id_is_refused(self, clean_models):
+        with pytest.raises(kie.KieError, match="not shaped like"):
+            kie.register_video_model("x", self._spec(model="two words"))
+
+    def test_a_bare_string_enum_is_refused_not_split_into_letters(
+            self, clean_models):
+        """tuple("720p") is ('7','2','0','p') — an enum that refuses every real
+        value and lists letters when it does."""
+        with pytest.raises(kie.KieError, match="not a list"):
+            kie.register_video_model("x", self._spec(
+                intent={"seconds": "duration", "quality": "resolution"},
+                enums={"resolution": "720p"}))
+
+    def test_a_backwards_range_is_refused(self, clean_models):
+        with pytest.raises(kie.KieError, match="low bound is above"):
+            kie.register_video_model("x", self._spec(
+                ranges={"duration": (15, 4)}))
+
+    def test_a_cap_of_zero_is_refused(self, clean_models):
+        with pytest.raises(kie.KieError, match="refuse every request"):
+            kie.register_video_model("x", self._spec(
+                intent={"seconds": "duration", "refs": "image_urls"},
+                caps={"image_urls": 0}))
+
+    def test_a_limit_on_a_field_the_model_does_not_take_is_refused(
+            self, clean_models):
+        with pytest.raises(kie.KieError, match="not in .supports."):
+            kie.register_video_model("x", self._spec(
+                ranges={"n_frames": (1, 10)}))
+
+    def test_two_intents_on_one_field_are_refused(self, clean_models):
+        """The second overwrites the first in video_input's output, so one of
+        the two settings is billed for and does not apply."""
+        with pytest.raises(kie.KieError, match="both map to"):
+            kie.register_video_model("x", self._spec(
+                intent={"seconds": "duration", "quality": "duration"}))
+
+    def test_a_scale_of_zero_is_refused(self, clean_models):
+        with pytest.raises(kie.KieError, match="multiplier"):
+            kie.register_video_model("x", self._spec(
+                intent_scale={"seconds": 0}))
+
+    def test_intent_values_for_an_intent_the_model_lacks_are_refused(
+            self, clean_models):
+        with pytest.raises(kie.KieError, match="no intent entry"):
+            kie.register_video_model("x", self._spec(
+                intent_values={"shape": {"16:9": "landscape"}}))
+
+    def test_a_built_in_cannot_be_registered_over(self, clean_models):
+        """Every sequence already planned against that name would silently
+        start buying from an unverified entry."""
+        with pytest.raises(kie.KieError, match="built-in"):
+            kie.register_video_model("seedance-2", self._spec())
+
+    def test_two_names_for_one_id_that_disagree_are_refused(self, clean_models):
+        kie.register_video_model("a", self._spec(ranges={"duration": (4, 15)}))
+        with pytest.raises(kie.KieError, match="describe it differently"):
+            kie.register_video_model("b", self._spec(ranges={"duration": (1, 5)}))
+
+    def test_re_registering_the_same_model_is_allowed(self, clean_models):
+        kie.register_video_model("a", self._spec())
+        assert kie.register_video_model("a", self._spec())["model"] == "a"
+
+    def test_a_registered_model_says_its_id_was_never_confirmed(
+            self, clean_models):
+        got = kie.register_video_model("a", self._spec())
+        assert got["verified"] is False
+        assert "never been confirmed" in got["verified_note"]
+        assert kie.video_capabilities("seedance-2")["verified"] is True
+
+
+class TestProbingAnId:
+    """The only free way to ask kie whether an id exists, and its caveat.
+
+    There is no catalogue endpoint. What discriminates is the business code on a
+    deliberately malformed createTask: a bad id answers 404, a good one answers
+    422 because it got as far as validating the input. That is inference from
+    kie's own error table rather than a documented contract, which is why the
+    probe is opt-in and why the branch where kie ACCEPTS the empty input says
+    loudly that a job may have been created.
+    """
+
+    def test_no_key_is_unknown_rather_than_a_verdict(self):
+        got = kie.probe_model_id("seedance-2")
+        assert got["exists"] is None and got["checked"] is False
+        assert "KIE_API_KEY" in got["reason"]
+
+    def test_a_404_means_the_id_is_wrong(self, keyed, monkeypatch,
+                                         clean_models):
+        kie.register_video_model("typo", {"model": "vendor/mdoel-v1",
+                                          "intent": {"seconds": "duration"}})
+
+        def boom(*a, **k):
+            raise kie.KieError("kie refused POST /api/v1/jobs/createTask "
+                               "(code 404)")
+
+        monkeypatch.setattr(kie, "_request", boom)
+        got = kie.probe_model_id("typo")
+        assert got["exists"] is False
+        assert kie.video_capabilities("typo")["verified"] is False
+
+    def test_a_422_proves_the_model_resolved_and_nothing_was_charged(
+            self, keyed, monkeypatch, clean_models):
+        kie.register_video_model("real", {"model": "vendor/model-v1",
+                                          "intent": {"seconds": "duration"}})
+
+        def refuse(*a, **k):
+            raise kie.KieError("kie refused POST /api/v1/jobs/createTask "
+                               "(code 422): Please enter prompt.")
+
+        monkeypatch.setattr(kie, "_request", refuse)
+        got = kie.probe_model_id("real")
+        assert got["exists"] is True and got["task_id"] == ""
+        assert "charged" in got["reason"]
+        assert kie.video_capabilities("real")["verified"] is True
+
+    def test_an_accepted_empty_input_is_reported_as_possibly_billed(
+            self, keyed, monkeypatch, clean_models):
+        """The branch the opt-in exists for. A task id that came back is money
+        that may be moving, and losing it loses the only handle on it."""
+        kie.register_video_model("loose", {"model": "vendor/model-v1",
+                                           "intent": {"seconds": "duration"}})
+        monkeypatch.setattr(kie, "_request",
+                            lambda *a, **k: {"taskId": "task-77"})
+        got = kie.probe_model_id("loose")
+        assert got["exists"] is True and got["task_id"] == "task-77"
+        assert "may be charged" in got["reason"]

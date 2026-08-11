@@ -164,6 +164,84 @@ class TestPostProductionEndpoints:
                            json={}).status_code == 400
 
 
+class TestJobsAndOrphans:
+    """A generate job is a PAID provider call, so "is this still alive" is a
+    money question and answering it wrongly costs a re-generation."""
+
+    def test_an_unreadable_timestamp_is_unknown_not_healthy(self):
+        """It reported False, which is not read as "not orphaned" — it is read
+        as "healthy", so a shot whose stamp could not be parsed was displayed as
+        running fine for ever while its clip sat finished and billed."""
+        from bgate_ui.routes import cinematic as routes
+
+        state, reason = routes._orphan_state({"status": "running"},
+                                             {"created_at": "last Tuesday"})
+        assert state is None
+        assert "unknown" in reason and "/api/cinematic/stuck" in reason
+
+    def test_a_missing_timestamp_is_also_unknown(self):
+        from bgate_ui.routes import cinematic as routes
+
+        state, _ = routes._orphan_state({"status": "running"}, {})
+        assert state is None
+
+    def test_a_job_older_than_this_process_is_still_called_orphaned(self):
+        from bgate_ui.routes import cinematic as routes
+
+        state, reason = routes._orphan_state(
+            {"status": "running"}, {"created_at": "2001-01-01 00:00:00"})
+        assert state is True and "never move again" in reason
+
+    def test_a_live_job_is_not_called_orphaned(self):
+        """The bias that was right and is kept: nothing here calls a running job
+        dead on a guess."""
+        from bgate_ui.routes import cinematic as routes
+
+        state, _ = routes._orphan_state({"status": "running"},
+                                        {"created_at": "2099-01-01 00:00:00"})
+        assert state is False
+
+    def test_a_finished_job_is_never_orphaned(self):
+        from bgate_ui.routes import cinematic as routes
+
+        state, _ = routes._orphan_state({"status": "done"},
+                                        {"created_at": "not a date"})
+        assert state is False
+
+    def test_the_jobs_list_carries_the_cheap_stuck_sweep(self, client):
+        """The dashboard must be able to show paid, uncollected work without an
+        agent thinking to ask — and without a provider call per refresh."""
+        got = data(client.get("/api/cinematic/jobs"))
+        assert got["stuck"]["polled"] is False
+        assert got["stuck"]["stale"] == 0
+
+    def test_the_sweep_has_its_own_endpoint(self, client, monkeypatch):
+        monkeypatch.setattr(cinematic, "stuck_shots",
+                            lambda *a, **k: {"ok": True, "recoverable": 2,
+                                             "shots": [], "polled": k.get("poll")})
+        got = data(client.get("/api/cinematic/stuck"))
+        assert got["recoverable"] == 2 and got["polled"] is True
+
+
+class TestTheEstimateEndpoint:
+    def test_a_shot_list_can_be_priced_before_it_is_bought(self, client):
+        client.post("/api/cinematic/plan", json={
+            "name": "pricey",
+            "shots": [{"action": "a", "duration": 5},
+                      {"action": "b", "duration": 10}]})
+        got = data(client.get("/api/cinematic/estimate?name=pricey"))
+        assert got["shots"] == 2
+        assert "ESTIMATE" in got["note"]
+
+    def test_a_plan_answers_with_its_own_estimate(self, client):
+        got = data(client.post("/api/cinematic/plan", json={
+            "name": "pricey", "shots": [{"action": "a", "duration": 5}]}))
+        assert "estimate" in got and got["estimate"]["shots"] == 1
+
+    def test_estimate_needs_a_sequence(self, client):
+        assert client.get("/api/cinematic/estimate").status_code == 400
+
+
 class TestMachineWideKeys:
     """A key set with `bgate key set <provider> --global` and nowhere else was
     invisible to every panel that asks an adapter whether it is configured.

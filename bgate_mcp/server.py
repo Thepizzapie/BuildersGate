@@ -7570,6 +7570,7 @@ def cinematic_sequences(name: str = "") -> dict:
 @_tool
 def cinematic_generate_shot(name: str, idx: int, model: str = "",
                             generate_audio: bool = False,
+                            overwrite: bool = False,
                             timeout: float = 1800.0) -> dict:
     """Buy ONE shot of a planned sequence. Costs real credits. Runs in minutes.
 
@@ -7592,6 +7593,7 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
 
         result = _cine.generate_shot(_root(), name, int(idx), model=model,
                                      generate_audio=bool(generate_audio),
+                                     overwrite=bool(overwrite),
                                      timeout=float(timeout),
                                      work_item_id=_work_item_id())
         if result.get("ok"):
@@ -7722,7 +7724,8 @@ def cinematic_register_model(name: str, model: str, intent: dict,
                              ranges: Optional[dict] = None,
                              caps: Optional[dict] = None,
                              intent_values: Optional[dict] = None,
-                             intent_scale: Optional[dict] = None) -> dict:
+                             intent_scale: Optional[dict] = None,
+                             credits: Optional[dict] = None) -> dict:
     """Add a video model from a reference page you have READ. Spends nothing.
 
     kie's market carries dozens of video models; this product ships only the
@@ -7756,7 +7759,99 @@ def cinematic_register_model(name: str, model: str, intent: dict,
             "model": model, "intent": dict(intent or {}), "label": label,
             "note": note, "enums": enums or {}, "ranges": ranges or {},
             "caps": caps or {}, "intent_values": intent_values or {},
-            "intent_scale": intent_scale or {}})}
+            "intent_scale": intent_scale or {}, "credits": credits or {}})}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_estimate(name: str, model: str = "") -> dict:
+    """What this sequence will cost to buy, before buying any of it. Free.
+
+    Read this between cinematic_plan and the first cinematic_generate_shot. A
+    shot list is the only artifact here that can be reviewed for nothing, and
+    an eight-shot sequence is eight paid generations — the argument about
+    whether shot 3 earns its place is much easier with the bill next to it.
+
+    AN UNKNOWN PRICE IS REPORTED AS UNKNOWN, NEVER AS ZERO. kie publishes credit
+    bands rather than per-model prices, so shots on an unrated model come back
+    in `unknown_shots` and are left OUT of the total; `usd` is null, not 0.0. A
+    total that silently omitted them would read as "this is cheap".
+
+    The numbers are an upper bound derived from kie's published band, not read
+    off an invoice. Set BGATE_KIE_USD_PER_CREDIT once you have real figures, or
+    BGATE_KIE_VIDEO_CREDITS to correct a model's rate without a code change.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return {"ok": True, **_cine.estimate_sequence(_root(), name,
+                                                      model=model)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_stuck_shots(older_than_s: int = 0, poll: bool = True) -> dict:
+    """Find generations that were PAID FOR and never collected. This is the tool
+    that finds money.
+
+    A generation is charged at submit. Everything after that — the poll loop,
+    the download, this process surviving the ten minutes it takes — can fail
+    while the provider sits on a finished clip you have already been billed for.
+    Nothing surfaces that on its own; a shot row simply stays at 'generating'
+    forever and looks like work in flight.
+
+    Run this after any dashboard restart, any killed agent, and before planning
+    a re-generation of a shot that "failed". The classification to act on is
+    `recoverable`: the clip is finished and waiting, and cinematic_recover_shot
+    collects it WITHOUT paying again. Pressing generate instead pays twice.
+
+      older_than_s  how stale a 'generating' row must be to be suspicious.
+                    Defaults to the module's own threshold.
+      poll          ask the provider about each one. False answers from the
+                    database alone and never leaves the machine.
+
+    `lost` means the row has no task id at all — the submit failed before it
+    returned one, so there is probably nothing to collect and nothing was
+    charged. `unknown` means the provider was asked and did not say.
+    """
+    try:
+        from bgate_core import cinematic as _cine
+
+        return {"ok": True, **_cine.stuck_shots(
+            _root(),
+            older_than_s=int(older_than_s) or _cine.STUCK_AFTER_S,
+            poll=bool(poll))}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def cinematic_probe_model(name: str, timeout: float = 30.0) -> dict:
+    """Ask kie whether a registered model id actually exists. Opt-in, and READ
+    THE CAVEAT.
+
+    cinematic_register_model takes a model id on trust — kie publishes no
+    catalogue endpoint, so a typo passes registration cleanly and surfaces as a
+    PAID 404 at generation time. This narrows that window by submitting a
+    deliberately empty request and reading which error comes back: 404 means the
+    id is wrong, 422 means the id resolved and only the arguments were missing.
+
+    IT IS INFERENCE, NOT A CONTRACT. The 404-vs-422 split is read off kie's
+    error table, not documented behaviour, and the case it cannot rule out is a
+    model that ACCEPTS an empty input and starts a billable job. If that happens
+    the returned task id is reported loudly rather than swallowed — treat it as
+    a real charge and collect it with cinematic_recover_shot.
+
+    Registered models are marked unverified until this says otherwise. An
+    unverified model is not a broken one; it is one nobody has confirmed.
+    """
+    try:
+        from bgate_adapters import kie
+
+        return {"ok": True, **kie.probe_model_id(name, root=_root(),
+                                                 timeout=float(timeout))}
     except Exception as exc:
         return _fail(exc)
 
@@ -7801,7 +7896,8 @@ def cinematic_shot_status(task_id: str) -> dict:
 
 
 @_tool
-def cinematic_recover_shot(name: str, idx: int, task_id: str = "") -> dict:
+def cinematic_recover_shot(name: str, idx: int, task_id: str = "",
+                           overwrite: bool = False) -> dict:
     """Download a shot that was ALREADY PAID FOR and register it. Repair verb.
 
     A generation is charged at SUBMIT, and everything after that — the poll
@@ -7818,6 +7914,7 @@ def cinematic_recover_shot(name: str, idx: int, task_id: str = "") -> dict:
         from bgate_core import cinematic as _cine
 
         return _cine.recover_shot(_root(), name, int(idx), task_id,
+                                  overwrite=bool(overwrite),
                                   work_item_id=_work_item_id())
     except Exception as exc:
         return _fail(exc)
@@ -7904,6 +8001,335 @@ def cinematic_deliver(name: str, force: bool = False) -> dict:
         from bgate_core import cinematic as _cine
 
         return _cine.deliver(_root(), name, force=bool(force))
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# storyboards — the free half of a cutscene
+# ---------------------------------------------------------------------------
+
+def _board_images(result: dict) -> list[str]:
+    """The frame this call drew, handed back as an image block.
+
+    A board is a picture. A tool that draws one and returns only a path makes
+    the agent spend another call to look at what it just bought.
+    """
+    root = _Path(_root())
+    rel = (result or {}).get("path") or ""
+    if not rel:
+        return []
+    full = root / rel
+    return [str(full)] if full.exists() else []
+
+
+def _frames_images(result: dict) -> list[str]:
+    root = _Path(_root())
+    out = []
+    for frame in ((result or {}).get("frames") or []):
+        rel = frame.get("image_path") if isinstance(frame, dict) else ""
+        if rel and (root / rel).exists():
+            out.append(str(root / rel))
+    return out[:12]
+
+
+@_tool
+def storyboard_write_script(name: str, premise: str, frames: int = 6,
+                            style: str = "", style_note: str = "",
+                            cast_refs: Optional[list] = None,
+                            characters: str = "",
+                            aspect_ratio: str = "16:9") -> dict:
+    """Turn a premise into a script and a beat-per-frame board. Costs a fraction
+    of a cent. START HERE when you know what the scene is ABOUT but not yet what
+    is in it.
+
+    This writes prose and beats. It draws NOTHING and buys no video. The board it
+    creates is a plan you can argue with, reorder and throw away for free, which
+    is the entire reason it exists in front of cinematic_plan.
+
+      premise     one or two sentences. What happens in this scene.
+      frames      how many beats to break it into, 1-24. Default 6.
+      cast_refs   PINNED REFERENCE NAMES for who is in this scene. Every one
+                  contributes its stored profile so the script is written about
+                  THIS project's characters rather than plausible strangers.
+                  Pin them with ref_pin first; ref_list shows what exists.
+      characters  anything about the cast the pins do not say
+      style       a cinematic_styles preset key, or free prose
+
+    THE CAST IS THE POINT. A script written without it invents people nobody has
+    drawn, and every frame then anchors on a stranger. Pass cast_refs.
+
+    Re-running replaces the board's beats. Frames that already have an image keep
+    it at the same index, so re-writing the script does not throw away drawings.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.write_script(
+            _root(), name, premise, frames=int(frames), style=style,
+            style_note=style_note, cast_refs=list(cast_refs or []),
+            characters=characters, aspect_ratio=aspect_ratio)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_plan(name: str, frames: Optional[list] = None, premise: str = "",
+                    logline: str = "", style: str = "", style_note: str = "",
+                    style_refs: Optional[list] = None,
+                    cast_refs: Optional[list] = None,
+                    aspect_ratio: str = "16:9") -> dict:
+    """Write or edit a storyboard by hand. SPENDS NOTHING.
+
+    `frames` is a list of objects, in scene order. Each takes:
+      beat      what happens, in story terms. Required unless action is given.
+      action    what is VISIBLE and moving. This is what the image model reads.
+      camera    shot size and movement ("low angle wide", "slow push in")
+      dialogue  a spoken line
+      duration  seconds this beat will run as a shot. Default 5.
+      refs      frame-specific pinned reference names, on top of the cast
+      note      anything for the human reading the board
+
+    OMIT `frames` ENTIRELY to edit the board's own fields — cast, style, premise
+    — and leave the drawings alone. That is how you re-cast a board you have
+    already drawn without paying to draw it again.
+
+    A frame that already has an image KEEPS it when the board is re-planned at
+    the same index. Images are the only thing here that cost money.
+
+    storyboard_write_script does this from a premise with one cheap model call.
+    Use this to fix what it wrote, or when you already know your beats.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.plan(
+            _root(), name,
+            None if frames is None else list(frames),
+            premise=premise, logline=logline, style=style,
+            style_note=style_note,
+            style_refs=None if style_refs is None else list(style_refs),
+            cast_refs=None if cast_refs is None else list(cast_refs),
+            aspect_ratio=aspect_ratio)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_boards(limit: int = 100) -> dict:
+    """Every storyboard in this project, newest first, with its frame counts."""
+    try:
+        from bgate_core import storyboard as _sb
+
+        return {"ok": True, "boards": _sb.boards(_root(), limit=int(limit))}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool(images=_frames_images)
+def storyboard_open(name: str) -> dict:
+    """One board: its script, its cast, every frame in order, and whether it can
+    be promoted yet. The drawn frames come back as images, so you can LOOK at the
+    scene rather than reading paths.
+
+    `ready.blockers` is the specific list of what stands between this board and
+    a paid sequence. Read it before reaching for allow_unanchored.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return {"ok": True, **_sb.board(_root(), name)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool(images=_board_images)
+def storyboard_frame_generate(name: str, idx: int, prompt: str = "",
+                              provider: str = "", model: str = "",
+                              refs: Optional[list] = None,
+                              use_cast: bool = True, ref_strength: float = 0.5,
+                              quality: str = "medium") -> dict:
+    """Draw ONE storyboard frame. This is the only tool here that costs money,
+    and it is an IMAGE — roughly two orders of magnitude cheaper than the video
+    shot it exists to stop you buying blind.
+
+    ONE FRAME PER CALL, deliberately. A loop that draws the whole board has
+    nowhere to stop when frame 2 comes back wrong.
+
+    CONDITIONING IS WHY THIS BEATS A BARE image_generate. The board's cast_refs
+    and style_refs are resolved and passed as reference images automatically, so
+    frame 6 is drawn against the same character files as frame 1. That is the
+    drift this whole subsystem exists to prevent.
+
+      refs         extra pinned names for THIS frame only
+      use_cast     False for a frame with nobody in it (an empty room). A
+                   character reference on a shot with no character is noise the
+                   model has to fight.
+      quality      low | medium | high. Boards are read at a glance; low is
+                   usually enough and costs about a quarter of medium.
+
+    The prompt is built from the frame's action, camera and the board's style
+    unless you pass `prompt` to override it outright.
+
+    Comes back as 'drafted', never 'approved'. A human or a judging pass decides
+    that, because approval is what lets a shot be bought against this frame.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.frame_generate(
+            _root(), name, int(idx), prompt=prompt, provider=provider,
+            model=model, refs=list(refs or []), use_cast=bool(use_cast),
+            ref_strength=float(ref_strength), quality=quality)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_frame_attach(name: str, idx: int, image: str = "",
+                            ref: str = "", approve: bool = False) -> dict:
+    """Put an EXISTING image on a frame — one the author drew, shot, or pinned.
+    Costs nothing.
+
+    Pass exactly one of:
+      image   a repo-relative path to a file already in the project
+      ref     a pinned reference name (ref_list shows them)
+
+    THE HUMAN PATH, and it is first-class rather than a fallback. A frame a
+    person chose is better evidence for spending video money than one a model
+    guessed, so `source` records which this was. Do not launder an uploaded
+    frame as a generated one or the reverse.
+
+    approve=True marks it approved in the same call. Only do that if you are the
+    one who decided, not merely the one who attached it.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.frame_attach(_root(), name, int(idx), image=image, ref=ref,
+                                approve=bool(approve))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_frame_set(name: str, idx: int, beat: Optional[str] = None,
+                         action: Optional[str] = None,
+                         camera: Optional[str] = None,
+                         dialogue: Optional[str] = None,
+                         duration: Optional[int] = None,
+                         note: Optional[str] = None,
+                         status: Optional[str] = None,
+                         slug: Optional[str] = None) -> dict:
+    """Edit one frame's text, timing or status without touching the rest.
+
+    status is empty | generating | drafted | approved | cut. APPROVING A FRAME
+    WITH NO IMAGE IS REFUSED — a shot promoted from it would be bought against
+    prose alone, which is the thing this board exists to prevent.
+
+    An image is changed with storyboard_frame_generate or _frame_attach, never
+    here, so how it got there is always recorded.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        fields = {"beat": beat, "action": action, "camera": camera,
+                  "dialogue": dialogue, "duration": duration, "note": note,
+                  "status": status, "slug": slug}
+        return _sb.frame_set(_root(), name, int(idx),
+                             **{k: v for k, v in fields.items() if v is not None})
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_frame_add(name: str, beat: str = "", action: str = "",
+                         camera: str = "", dialogue: str = "",
+                         duration: int = 5,
+                         after: Optional[int] = None) -> dict:
+    """Insert one frame. At the end by default, or straight after `after`.
+    Everything below it shifts down and keeps its drawing."""
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.frame_add(_root(), name, beat=beat, action=action,
+                             camera=camera, dialogue=dialogue,
+                             duration=duration,
+                             after=None if after is None else int(after))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_frame_cut(name: str, idx: int) -> dict:
+    """Mark a frame cut. It stays on the board and stays out of the promotion.
+
+    Cut rather than deleted because a drawn frame was paid for, and an argument
+    about whether the scene needs it is one you may lose twice.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return {"ok": True, **_sb.frame_cut(_root(), name, int(idx))}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_reorder(name: str, order: list) -> dict:
+    """Re-sequence a board. `order` lists every current index in its new order.
+
+    Every live frame must appear exactly once — a partial list is refused rather
+    than interpreted, because a reorder that quietly dropped a frame would throw
+    away an image somebody paid for.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return {"ok": True, **_sb.frame_reorder(_root(), name, list(order or []))}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_promote(name: str, sequence_name: str = "", model: str = "",
+                       resolution: str = "720p",
+                       allow_unanchored: bool = False) -> dict:
+    """Turn an approved board into a cutscene shot list ready to be bought.
+    THIS IS THE LINE between free and paid.
+
+    Each frame's image becomes that shot's `first_frame`, which is exactly the
+    "anchor on an approved still" the cinematic seat has always required and
+    previously had no path to produce. Style, style refs and aspect ratio ride
+    along, so the shots are bought under the look the board was approved under.
+
+    REFUSES BY DEFAULT on a board whose live frames are not all approved and
+    drawn, and names which ones. allow_unanchored=True is for the deliberate
+    case only — every shot in what comes out of this is a paid generation.
+
+    Cut frames do not travel. What comes back is a cine_sequence: read it with
+    cinematic_sequences, then buy it one shot at a time with
+    cinematic_generate_shot.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.promote(_root(), name, sequence_name=sequence_name,
+                           model=model, resolution=resolution,
+                           allow_unanchored=bool(allow_unanchored))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def storyboard_delete(name: str, drop_images: bool = False) -> dict:
+    """Remove a board. Its generated images stay on disk unless you ask
+    otherwise — they were paid for, and a deleted row is not a reason to burn
+    them."""
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.delete(_root(), name, drop_images=bool(drop_images))
     except Exception as exc:
         return _fail(exc)
 

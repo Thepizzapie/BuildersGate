@@ -555,6 +555,12 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
                  f"~{sum(s['duration'] for s in cleaned)}s",
                  seat="cinematic", ref=stem)
     out = sequence(root, stem)
+    # WHAT THE LIST WILL COST, ON THE LIST. plan() is the only free step and the
+    # only place a shot gets argued out of a sequence; the total belongs beside
+    # the runtime, where that argument happens, rather than on an invoice after
+    # eight generations. It is an upper-bound ESTIMATE and says so — see
+    # estimate_sequence, and kie.ESTIMATE_NOTE for where the numbers come from.
+    out["estimate"] = _sequence_estimate(out)
     if warnings:
         out["warnings"] = warnings
     if dropped:
@@ -771,6 +777,33 @@ def _style_warnings(look: dict, refs: list, missing: list,
     return out
 
 
+def _occupied(out_path: Path, *, overwrite: bool = False) -> str:
+    """Refuse to write a generated clip on top of one that is already there.
+
+    THE BACKSTOP FOR A WHOLE CLASS OF MONEY LOSS, not a duplicate of
+    :func:`_unique_slug`. That one closes the way a collision was REACHED —
+    slugify("") returning the truthy "unnamed", so every unnamed shot in a
+    sequence shared a slug, a logical name and a path, and shot 2's generation
+    silently overwrote the clip shot 1 had just been paid for. This closes the
+    CONSEQUENCE, and it holds however the paths came to collide: the revision
+    counter is derived from the artifact table, so a database restored from a
+    backup, a revision row deleted by hand, or a second process generating the
+    same shot all produce a path that already exists on disk.
+
+    Overwriting it destroys a paid clip and nothing errors — the failure looks
+    like a sequence where two beats came back identical. So the collision is
+    refused BEFORE the spend, loudly, and ``overwrite`` is the explicit way to
+    say the file on disk is genuinely scrap.
+    """
+    if overwrite or not out_path.exists():
+        return ""
+    return (f"{out_path.name} is already in the candidate directory. Generating "
+            "over it would destroy a clip that has already been paid for, and "
+            "nothing would say so — the sequence would simply come back with "
+            "two beats looking the same. Nothing has been charged. Move or "
+            "delete that file, or pass overwrite=True if it is scrap.")
+
+
 def _unique_slug(given: Any, index: int, used: set) -> str:
     """A slug that is unique within the sequence. It names a FILE, so a
     collision is not cosmetic — it is a shot overwriting another shot's clip.
@@ -788,13 +821,23 @@ def _unique_slug(given: Any, index: int, used: set) -> str:
     is an ordinary authoring slip with the identical catastrophic result — so the
     index is appended rather than the duplicate being refused. A shot list is not
     worth rejecting over a name.
+
+    THE SUFFIX IS RETRIED RATHER THAN TRUSTED, because appending the index is
+    only USUALLY unique: a list holding "x", "x" and "x-03" resolves the second
+    "x" to "x-03", which the third shot already had. Vanishingly rare and
+    exactly as expensive as the common case, and there is no unique index on
+    (sequence_id, slug) to catch it — the database constrains (sequence_id, idx)
+    and nothing else, so this loop IS where slug uniqueness within a sequence is
+    enforced.
     """
     text = str(given or "").strip()
     slug = slugify(text) if text else ""
     if not slug or slug == "unnamed":
         slug = f"shot{index:02d}"
-    if slug in used:
-        slug = f"{slug}-{index:02d}"
+    base, bump = slug, index
+    while slug in used:
+        slug = f"{base}-{bump:02d}"
+        bump += 1
     used.add(slug)
     return slug
 
@@ -925,6 +968,7 @@ def prompt_for(shot: dict, style: str = "") -> str:
 def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
                   model: str = "", generate_audio: bool = False,
                   timeout: float = 1800.0, on_progress: Any = None,
+                  overwrite: bool = False,
                   work_item_id: Optional[int] = None) -> dict:
     """Buy one shot of a sequence and register it as a candidate revision.
 
@@ -950,10 +994,14 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
     seq = sequence(root, name)
     shot = _shot_at(seq, idx)
 
-    refusal = _budget_refusal(root)
+    # Resolved before the gate rather than after it, because the gate now needs
+    # to know which model is being bought from in order to price the shot.
+    chosen = _model_for(seq, model)
+    estimate = _shot_estimate(seq, shot, model=chosen)
+    refusal = _budget_refusal(root, estimate)
     if refusal:
         return {"ok": False, "error": refusal, "stage": "spend_gate",
-                "sequence": seq["name"], "idx": idx}
+                "estimate": estimate, "sequence": seq["name"], "idx": idx}
 
     # The encoder is checked HERE, before the spend, and not at keep() where it
     # is used. A project with no libtheora can generate every shot of a sequence,
@@ -978,7 +1026,6 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
     # sequence planned at 12 seconds against a model that caps at 8 is refused
     # here rather than at the provider, after the upload and before the refund
     # that does not exist.
-    chosen = str(model or "").strip() or seq["model"] or kie.DEFAULT_VIDEO_MODEL
     wanted = {
         "seconds": int(shot["duration"]),
         "quality": seq["resolution"],
@@ -1010,27 +1057,43 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
     revision = 1 + len(artifacts.list_revisions(root, logical_name=stem,
                                                 limit=500))
     out_path = out_dir / f"{stem}_r{revision}.mp4"
+    collision = _occupied(out_path, overwrite=overwrite)
+    if collision:
+        return {"ok": False, "stage": "collision", "error": collision,
+                "path": str(out_path), "sequence": seq["name"], "idx": idx}
 
     _set_shot(root, shot["id"], status="generating")
     if on_progress:
         on_progress(0.05, f"generating shot {idx} of {len(seq['shots'])}", "")
 
+    def remember(task_id: str) -> None:
+        # THE ID IS WRITTEN THE MOMENT IT EXISTS, not when the call returns. The
+        # charge happens at submit and the poll runs for minutes after it; a
+        # process that dies in that window used to leave a row at 'generating'
+        # with an empty task_id, which is a paid clip with no handle — nothing,
+        # including stuck_shots, can collect one of those.
+        _set_shot(root, shot["id"], task_id=str(task_id or ""))
+
     result = kie.generate_video(
         prompt_for(shot, seq["style_resolved"]["text"]), str(out_path),
-        model=chosen, root=root, logical_name=stem,
+        model=chosen, root=root, logical_name=stem, on_submit=remember,
         work_item_id=work_item_id, timeout=float(timeout), **intent)
 
+    # AN EMPTY TASK ID NEVER OVERWRITES A REMEMBERED ONE. `remember` above may
+    # already have stored the id the charge was made against; a result that came
+    # back without one (a download that died, a caller that lost the record) must
+    # not erase the only handle on paid work.
+    task_id = {"task_id": str(result["task_id"])} if result.get("task_id") else {}
     if not result.get("ok"):
-        _set_shot(root, shot["id"], status="failed",
-                  task_id=str(result.get("task_id") or ""),
+        _set_shot(root, shot["id"], status="failed", **task_id,
                   note=str(result.get("error") or "")[:400])
-        return {**result, "sequence": seq["name"], "idx": idx}
+        return {**result, "estimate": estimate,
+                "sequence": seq["name"], "idx": idx}
 
     artifact = _register(root, stem, shot, seq, result,
                          work_item_id=work_item_id)
     _set_shot(root, shot["id"], status="generated",
-              artifact_id=artifact["id"],
-              task_id=str(result.get("task_id") or ""), note="")
+              artifact_id=artifact["id"], **task_id, note="")
     activity.log(root, "cinematic",
                  f"generated {seq['name']} shot {idx} ({shot['duration']}s) "
                  f"-> r{artifact['revision']}",
@@ -1042,6 +1105,10 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
            "revision": artifact["revision"],
            "uploads": result.get("uploads") or [],
            "credits_consumed": result.get("credits_consumed"),
+           # What it was expected to cost, beside what it did. The provider
+           # reports creditsConsumed only after the fact, so this pair is the
+           # only way anyone finds out the estimate is wrong.
+           "estimate": estimate,
            "seconds": result.get("seconds"),
            "consumes": "WATCH IT. Then cinematic_keep to transcode it into the "
                        "engine project, or re-generate this shot — a shot "
@@ -1168,7 +1235,7 @@ def shot_status(root: str | os.PathLike[str], task_id: str) -> dict:
 
 
 def recover_shot(root: str | os.PathLike[str], name: str, idx: int,
-                 task_id: str = "", *,
+                 task_id: str = "", *, overwrite: bool = False,
                  work_item_id: Optional[int] = None) -> dict:
     """Download a clip that was already paid for and register it. The repair door.
 
@@ -1212,6 +1279,12 @@ def recover_shot(root: str | os.PathLike[str], name: str, idx: int,
     revision = 1 + len(artifacts.list_revisions(root, logical_name=stem,
                                                 limit=500))
     out_path = out_dir / f"{stem}_r{revision}_recovered.mp4"
+    # A recovery is a download onto a path derived the same way a generation's
+    # is, so it can collide the same way — and the file it would land on is by
+    # definition one somebody already paid for.
+    collision = _occupied(out_path, overwrite=overwrite)
+    if collision:
+        raise CinematicError(collision)
     kie.download(urls[0], out_path, accept="video/*", timeout=600.0)
 
     artifact = _register(
@@ -2092,21 +2165,233 @@ def _stamp(root: str, artifact_id: int, key: str, value: Any) -> None:
                      (json.dumps(meta), int(artifact_id)))
 
 
-def _budget_refusal(root: str) -> str:
+# ---------------------------------------------------------------------------
+# What it will cost, asked BEFORE it is bought
+# ---------------------------------------------------------------------------
+
+def estimate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
+                  model: str = "") -> dict:
+    """What one planned shot is likely to cost, before anybody buys it.
+
+    Thin over :func:`bgate_adapters.kie.estimate_usd` — what this layer adds is
+    the shot's OWN numbers: its duration, and the sequence's model, resolution
+    and shape, which are the inputs an estimate needs and which live in three
+    different columns.
+    """
+    seq = sequence(root, name)
+    return _shot_estimate(seq, _shot_at(seq, idx), model=model)
+
+
+def _shot_estimate(seq: dict, shot: dict, *, model: str = "") -> dict:
+    from bgate_adapters import kie
+
+    chosen = _model_for(seq, model)
+    got = kie.estimate_usd(chosen, seconds=int(shot["duration"]),
+                           quality=seq.get("resolution") or "",
+                           shape=seq.get("aspect_ratio") or "")
+    return {**got, "idx": shot["idx"], "slug": shot["slug"],
+            "sequence": seq["name"]}
+
+
+def estimate_sequence(root: str | os.PathLike[str], name: str, *,
+                      model: str = "") -> dict:
+    """The bill for the WHOLE shot list, so a planner can see it before buying.
+
+    THE NUMBER THAT WAS NEVER IN FRONT OF ANYONE. A sequence is the most
+    expensive thing this product buys in one sitting and it was bought one shot
+    at a time, so the only place its total appeared was on an invoice. plan() is
+    free and is where a shot gets argued out of the list; a total belongs there,
+    beside the runtime, where the argument happens.
+
+    UNKNOWN IS CARRIED, NOT SUMMED AWAY. A shot whose model has no configured
+    rate contributes nothing to the total and is counted in ``unknown_shots``,
+    and ``known`` is False whenever any shot is unpriced — because a partial sum
+    presented as a total is the same lie as a zero.
+    """
+    return _sequence_estimate(sequence(root, name), model=model)
+
+
+def _sequence_estimate(seq: dict, *, model: str = "") -> dict:
+    from bgate_adapters import kie
+
+    shots = [_shot_estimate(seq, shot, model=model)
+             for shot in seq["shots"] if shot["status"] != "cut"]
+    priced = [s for s in shots if s["known"]]
+    unknown = [s for s in shots if not s["known"]]
+    credits = sum(int(s["credits"] or 0) for s in shots if s["credits"])
+    usd = round(sum(float(s["usd"]) for s in priced), 6) if priced else None
+    return {
+        "sequence": seq["name"],
+        "model": _model_for(seq, model),
+        "shots": len(shots),
+        "runtime_s": sum(int(s.get("seconds") or 0) for s in shots),
+        "credits": credits or None,
+        # A PARTIAL SUM, and `known` is what stops it being read as a total.
+        # Never 0.0 for "we could not work it out" — None is the only honest
+        # answer to a question nothing could answer.
+        "usd": usd,
+        "known": bool(shots) and not unknown,
+        "unknown_shots": [s["idx"] for s in unknown],
+        "per_shot": shots,
+        "note": kie.ESTIMATE_NOTE,
+        "basis": (f"{len(priced)} of {len(shots)} shot(s) could be estimated"
+                  + (f"; shot(s) {[s['idx'] for s in unknown]} could not and are "
+                     "NOT in the total — the real bill is higher by an unknown "
+                     "amount" if unknown else "")),
+    }
+
+
+def _model_for(seq: dict, model: str = "") -> str:
+    """Which video model a shot of this sequence would actually be bought from."""
+    from bgate_adapters import kie
+
+    return str(model or "").strip() or seq.get("model") or kie.DEFAULT_VIDEO_MODEL
+
+
+def _budget_refusal(root: str, estimate: Optional[dict] = None) -> str:
     """The project budget's answer, or "" to proceed. Never raises.
 
-    Projected at zero because kie publishes no price — this cannot catch "this
-    one shot is too expensive", only "this project is already over". A sequence
-    is the most expensive thing this product buys in one sitting, which makes the
-    ceiling worth asking about before every single shot rather than once per run.
+    IT USED TO PROJECT ZERO, and that made this gate half a gate: it could catch
+    "this project is already over its ceiling" and never "this one shot is
+    expensive", which for a fifteen-second clip is the larger number. kie
+    publishes no price, so there was nothing else to hand it — until
+    kie.estimate_usd, which produces a conservative upper bound and says
+    explicitly when it cannot.
+
+    AN UNKNOWN PRICE IS STILL NOT ZERO, and the shape of this reflects that. A
+    known estimate is projected. An unknown one falls back to today's behaviour
+    — the ceiling is still asked about, nothing is invented — but any refusal
+    that comes back SAYS the per-shot figure was unavailable and why, so nobody
+    reads a passed gate as "this shot is free".
     """
+    projected = 0.0
+    if estimate and estimate.get("known") and estimate.get("usd"):
+        projected = float(estimate["usd"])
     try:
         from . import spend
 
-        verdict = spend.check(root, projected_usd=0.0)
+        verdict = spend.check(root, projected_usd=projected)
     except Exception:                                            # noqa: BLE001
         return ""   # no ledger is not a licence to refuse work
     if verdict.get("allowed", True):
         return ""
+    said = (f" This shot was projected at about ${projected:.2f}."
+            if projected else
+            f" The cost of this shot could not be estimated, so the ceiling was "
+            f"checked against the project total alone: "
+            f"{(estimate or {}).get('basis') or 'no estimate was available'}")
     return (f"the project budget refuses this shot: "
-            f"{verdict.get('reason') or 'ceiling reached'}")
+            f"{verdict.get('reason') or 'ceiling reached'}." + said)
+
+
+# ---------------------------------------------------------------------------
+# Paid work nobody is watching any more
+# ---------------------------------------------------------------------------
+
+# How long a shot may sit at 'generating' before it is worth asking the provider
+# about. A video job runs five to fifteen minutes, so anything under that is a
+# job doing its job; kie's own advice is to stop polling at 10-15 minutes.
+STUCK_AFTER_S = 1200
+
+
+def stuck_shots(root: str | os.PathLike[str], *,
+                older_than_s: int = STUCK_AFTER_S, poll: bool = True,
+                limit: int = 50) -> dict:
+    """Shots left mid-generation, and which of them are paid and collectable.
+
+    THE FAILURE THIS SWEEPS FOR IS SILENT AND EXPENSIVE. A generation is charged
+    at SUBMIT and then polled for minutes; if the dashboard restarts, the agent
+    is killed or the connection drops in that window, the row stays at
+    'generating' for ever and the finished clip sits at the provider, paid for,
+    with nobody asking for it. recover_shot has always been able to collect
+    one — what was missing is anything that NOTICES, so recovery depended on a
+    human remembering a shot they started an hour ago.
+
+    ``poll=False`` answers from the database alone: no network, no provider
+    call, safe to run on every dashboard refresh. ``poll=True`` asks the
+    provider about each one, which is what turns "stale" into "finished, paid
+    for, and one call from being on disk".
+
+    A ROW WITH NO TASK ID IS ITS OWN CATEGORY and the worst one. The charge
+    happened; the handle did not survive. It is reported as ``lost`` rather than
+    folded in with the failures, because the two want different things from a
+    human — one is a click, the other is the provider's own dashboard.
+    """
+    root = str(root)
+    conn = db.connect(root)
+    stale = rows(conn.execute(
+        """
+        SELECT s.id, s.idx, s.slug, s.task_id, s.status, s.updated_at,
+               q.name AS sequence
+        FROM cine_shot s JOIN cine_sequence q ON q.id = s.sequence_id
+        WHERE s.status = 'generating'
+          AND s.updated_at <= datetime('now', ?)
+        ORDER BY s.updated_at LIMIT ?
+        """, (f"-{max(0, int(older_than_s))} seconds", max(1, int(limit)))))
+
+    out = []
+    for row in stale:
+        entry = {"sequence": row["sequence"], "idx": row["idx"],
+                 "slug": row["slug"], "shot_id": row["id"],
+                 "task_id": row["task_id"] or "", "updated_at": row["updated_at"],
+                 "recoverable": False}
+        if not entry["task_id"]:
+            out.append({**entry, "state": "lost",
+                        "note": "this shot was left mid-generation with no task "
+                                "id recorded, so there is no handle to collect "
+                                "it with. If it reached the provider it was "
+                                "charged for; kie's own dashboard is the only "
+                                "place left to look."})
+            continue
+        if not poll:
+            out.append({**entry, "state": "unpolled",
+                        "note": "stale, and not asked about — call with "
+                                "poll=True to find out whether the provider is "
+                                "holding a finished clip for it"})
+            continue
+        try:
+            status = shot_status(root, entry["task_id"])
+        except Exception as exc:                                 # noqa: BLE001
+            out.append({**entry, "state": "unknown", "error": str(exc)[:300],
+                        "note": "the provider could not be asked about this "
+                                "task, so whether it is running, finished or "
+                                "dead is unknown — not resolved."})
+            continue
+        if status.get("recoverable"):
+            out.append({**entry, "state": "recoverable", "recoverable": True,
+                        "provider_status": status.get("status", ""),
+                        "note": "PAID AND COLLECTABLE — the provider is holding "
+                                "a finished clip for this shot. recover_shot "
+                                "puts it on disk without paying again; "
+                                "re-generating pays twice."})
+        elif status.get("failed"):
+            out.append({**entry, "state": "failed",
+                        "provider_status": status.get("status", ""),
+                        "note": "the generation failed at the provider. The "
+                                "shot can be re-generated."})
+        else:
+            out.append({**entry, "state": "running",
+                        "provider_status": status.get("status", ""),
+                        "note": "still running at the provider despite the age "
+                                "of the row — wait rather than re-generating."})
+
+    counts: dict[str, int] = {}
+    for entry in out:
+        counts[entry["state"]] = counts.get(entry["state"], 0) + 1
+    recoverable = counts.get("recoverable", 0)
+    return {
+        "ok": True,
+        "older_than_s": int(older_than_s),
+        "polled": bool(poll),
+        "stale": len(out),
+        "counts": counts,
+        "recoverable": recoverable,
+        "shots": out,
+        "note": (f"{recoverable} shot(s) are finished at the provider, already "
+                 "charged for, and waiting to be collected with recover_shot"
+                 if recoverable else
+                 "no shot is sitting on a paid, uncollected generation"
+                 if poll else
+                 f"{len(out)} shot(s) are stale; nothing was asked of the "
+                 "provider, so none of them is resolved either way"),
+    }

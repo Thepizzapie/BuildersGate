@@ -1339,6 +1339,104 @@ _MIGRATIONS: list = [
     ALTER TABLE cine_shot ADD COLUMN transition_s REAL NOT NULL DEFAULT 0.5;
     ALTER TABLE cine_shot ADD COLUMN vo TEXT NOT NULL DEFAULT '';
     """,
+    # 0029 — THE STORYBOARD. 0027 gave the cinematic seat a shot list and 0028
+    # gave it a cut; both start at the point where somebody already knows what
+    # the scene IS. Nothing modelled the part before that, so the only place to
+    # work out a scene was the shot list itself — where every wrong idea is one
+    # click from a paid generation and a re-think means editing rows that a
+    # provider task id is already attached to.
+    #
+    # A BOARD IS SEPARATE FROM A SEQUENCE BECAUSE PLANNING IS FREE AND SHOTS ARE
+    # NOT. That is the whole reason for two tables rather than more columns on
+    # cine_sequence. A board is the place you are allowed to be wrong: reorder
+    # it, throw half of it out, generate six versions of frame 3, and none of it
+    # bills. Promotion to a cine_sequence is the moment that stops being true,
+    # and it should be a moment you can point at rather than a gradient.
+    #
+    # `sequence_id` IS THE PROMOTION RECORD, nullable until then. It is not a
+    # parent link — a board is not owned by a sequence, it is what the sequence
+    # was argued out of — and it is kept afterwards so that a shot which looks
+    # wrong on screen can be read back against the frame it was approved from.
+    # ON DELETE SET NULL: abandoning a sequence must not delete the thinking.
+    #
+    # `cast_refs_json` IS THE COHERENCE LEVER and the reason this table earns
+    # its place. It holds ref_pin NAMES (not paths) for the characters and style
+    # anchors in this scene, resolved at generation time, so every frame on the
+    # board is conditioned on the same cast. Names rather than paths because
+    # ref_pin.pin() versions a re-pin into a new file and moves the pointer —
+    # storing the path here would silently keep boarding against revision 1 of a
+    # character that art has since redrawn twice.
+    #
+    # `script_json` HOLDS THE PROSE THE BEATS WERE DERIVED FROM. Written once by
+    # a model or a human, then read by a human — it is a document, not a query
+    # target, and the beats that matter are already normalised into story_frame
+    # rows. Storing it whole keeps the reasoning next to the result; parsing it
+    # back out on every read would make the prose authoritative over the rows
+    # and re-open exactly the string-surgery hole that split cine_shot into
+    # action/camera/dialogue in the first place.
+    """
+    CREATE TABLE story_board (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL UNIQUE,
+        premise      TEXT NOT NULL DEFAULT '',
+        logline      TEXT NOT NULL DEFAULT '',
+        -- Same three-part split as cine_sequence, and for the same reason: the
+        -- preset key, the project's own wording, and the images that outvote
+        -- both. Carried onto the sequence verbatim at promotion so the look a
+        -- board was approved under is the look that gets bought.
+        style        TEXT NOT NULL DEFAULT '',
+        style_note   TEXT NOT NULL DEFAULT '',
+        style_refs_json TEXT NOT NULL DEFAULT '[]',
+        cast_refs_json  TEXT NOT NULL DEFAULT '[]',
+        script_json  TEXT NOT NULL DEFAULT '{}',
+        aspect_ratio TEXT NOT NULL DEFAULT '16:9',
+        status       TEXT NOT NULL DEFAULT 'drafting'
+                         CHECK (status IN ('drafting','boarded','promoted',
+                                           'abandoned')),
+        sequence_id  INTEGER REFERENCES cine_sequence(id) ON DELETE SET NULL,
+        work_item_id INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE story_frame (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id     INTEGER NOT NULL
+                         REFERENCES story_board(id) ON DELETE CASCADE,
+        idx          INTEGER NOT NULL,
+        slug         TEXT NOT NULL DEFAULT '',
+        -- The beat is what HAPPENS in story terms; action/camera/dialogue are
+        -- the shot-list columns it will become at promotion. Kept apart because
+        -- a beat survives being re-shot three different ways, and collapsing
+        -- them means re-framing a shot edits the story.
+        beat         TEXT NOT NULL DEFAULT '',
+        action       TEXT NOT NULL DEFAULT '',
+        camera       TEXT NOT NULL DEFAULT '',
+        dialogue     TEXT NOT NULL DEFAULT '',
+        duration     INTEGER NOT NULL DEFAULT 5,
+        -- The board image, project-relative, same contract as cine_shot frames:
+        -- a path that survives a re-plan, never a provider URL that expires.
+        image_path   TEXT NOT NULL DEFAULT '',
+        artifact_id  INTEGER REFERENCES artifact_revision(id) ON DELETE SET NULL,
+        -- HOW THIS FRAME GOT HERE, and it is not bookkeeping. A frame a human
+        -- drew or chose is evidence; a frame the model guessed from the premise
+        -- is a suggestion. Approving a paid shot off the second one while
+        -- believing it was the first is the mistake this column exists to make
+        -- impossible to make quietly.
+        source       TEXT NOT NULL DEFAULT 'none'
+                         CHECK (source IN ('none','generated','uploaded',
+                                           'pinned')),
+        refs_json    TEXT NOT NULL DEFAULT '[]',
+        prompt       TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL DEFAULT 'empty'
+                         CHECK (status IN ('empty','generating','drafted',
+                                           'approved','cut')),
+        note         TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (board_id, idx)
+    );
+    CREATE INDEX idx_story_frame_board ON story_frame(board_id, idx);
+    """,
 ]
 
 

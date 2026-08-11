@@ -122,7 +122,8 @@ NOT_TOOLS = {
     "bg_help", "bg_join", "bg_mat", "bg_mirror", "bg_plane", "bg_smooth",
     "bg_stats", "bg_taper", "bg_unwrap",
     # parameters and result keys
-    "anchor_views", "artifact_id", "audio_track", "decal_on", "dry_run",
+    "anchor_views", "artifact_id", "audio_track", "cast_refs", "decal_on",
+    "dry_run",
     "first_frame", "last_frame", "max_cost_usd", "ref_image", "ref_images",
     "ref_strength", "source_ref", "style_note", "style_refs", "task_kind",
     "tileable", "transition_s", "unweighted_verts", "use_pinned",
