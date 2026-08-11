@@ -13,7 +13,7 @@ Ordered roughly by when you will meet them.
 A standard way for an AI coding assistant to call tools that live outside
 itself. You register a server once; from then on, tools it exposes appear to the
 assistant as things it can call, the same way it can call "read a file".
-Builders Gate is one such server (`bgate_mcp/server.py`, some eighty tools). It runs on
+Builders Gate is one such server (`bgate_mcp/server.py`, some 180 tools). It runs on
 your machine, over stdin/stdout, with no network service and no cloud account.
 "Custom MCP" just means a server somebody wrote for their own domain instead of
 using an off-the-shelf one.

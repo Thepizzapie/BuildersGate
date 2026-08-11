@@ -41,7 +41,7 @@ call the tools it exposes, the same way it calls "read a file". A "custom MCP"
 is nothing more exotic than a server somebody wrote for their own domain instead
 of using an off-the-shelf one.
 
-Builders Gate is one of those, for game development. It exposes some eighty
+Builders Gate is one of those, for game development. It exposes some 180
 tools: `godot_run`, `image_sprites`, `bible_add`, `asset_lock`,
 `playtest_start`, and so on. It runs on your machine as a local process talking
 over stdin and stdout. There is no network service, no account, no cloud. Each
@@ -132,6 +132,11 @@ developed against. Windows is the supported platform; Linux is best-effort and
 macOS is untested. Blender is optional and only matters for the 3D leg. An image
 API key (OpenAI or Krea) is optional and only matters for generated art.
 
+Python must be installed and on your `PATH` before any of this — check with
+`python --version`, and if that command is not found, install Python first. A
+virtual environment is optional but recommended, so this install cannot disagree
+with another project's dependencies.
+
 ```bash
 git clone https://github.com/Thepizzapie/BuildersGate
 cd BuildersGate
@@ -139,11 +144,33 @@ pip install -e .
 bgate doctor
 ```
 
-`bgate doctor` exits 1 if *anything* on its list of eight is missing. That is
-right for a CI step and alarming for a human: you only need Python and Godot for
-the core loop. Read the rows, not the exit code. The `art_key` row covers every
-art provider, so either `OPENAI_API_KEY` or `KREA_API_KEY` turns it green — and
-you can set either one from the dashboard (Settings → Art providers).
+**If `bgate` is "not recognized" on Windows**, nothing is broken: pip put the
+`bgate` shortcut in Python's `Scripts\` directory and that directory is not on
+your `PATH`. Either run `python -m pip install -e .` and then call every command
+the long way — `python -m bgate_cli.main doctor`, `python -m bgate_cli.main
+init`, and so on — or re-run the Python installer, choose Modify, tick **Add
+Python to PATH**, and open a new terminal, because `PATH` is read when the shell
+starts.
+
+### What `bgate doctor` is actually telling you
+
+It exits 1 if *anything* on its list is missing, and most of that list is
+optional. The exit code is right for a CI step and alarming for a human. Read the
+rows:
+
+| Row | Needed for |
+|---|---|
+| `python`, `godot` | **Required.** Making a project, building it, running it |
+| `blender` | Optional — the 3D leg |
+| `ffmpeg`, `ffprobe` | Optional — playtest capture, cutscene transcoding |
+| `whisper` | Optional — voice transcription while you play |
+| `art_key`, `local_image` | Optional — image generation, rented or local |
+| `imageto3d`, `local_runtimes`, `agent_cli`, `godot_web_templates` | Optional — capability inventory |
+
+**A red optional row is not a blocker.** If `python` and `godot` are green, go to
+the next step; you can add the rest the day you need it. The `art_key` row covers
+every art provider, so either `OPENAI_API_KEY` or `KREA_API_KEY` turns it green —
+and you can set either one from the dashboard (Settings → Art providers).
 
 ### 1. Make a project
 
@@ -195,12 +222,21 @@ without you) and the approval gate (does it FINISH without you).
 ### 3. Register the server and install the hook
 
 ```bash
+python -c "import sys; print(sys.executable)"    # prints <absolute-python-path>
 claude mcp add builders-gate --scope user -- <absolute-python-path> -m bgate_mcp.server
 bgate hook-install .
 bgate hook-status .
 ```
 
-Use the **absolute** python path. The Claude CLI's health check resolves a bare
+**Restart Claude Code now, before you look for the tools.** A session that was
+already running does not pick up a newly registered MCP server — only a fresh one
+does. Confirm it worked by asking Claude to call `project_status`; if that tool is
+not in its list, the server is not connected and nothing below will work.
+
+Use the **absolute** python path, and get it by running that first line *in the
+same environment where `pip install -e .` ran* — a different environment prints
+a Python that has no Builders Gate in it, and the registration then fails in a way
+that points nowhere near the cause. The Claude CLI's health check resolves a bare
 `python` differently than your shell does, and reports "failed to connect"
 against a server that runs fine.
 
@@ -236,6 +272,22 @@ work: writing the decision down where the fleet reads it.
 
 Pick something small. File it as a work item against `gameplay`. Dispatch it.
 Watch it in the Agents view. When it says it is done, look at the diff.
+
+#### Your first task, spelled out
+
+Ask Claude to file this, or type it into the dashboard's queue form:
+
+- **Seat:** `gameplay`
+- **Title:** Add a double jump
+- **Brief:** The player can jump once more while airborne, and the second jump
+  is weaker than the first. It resets on landing, not on a timer. Acceptance:
+  `godot_run` starts clean, and a `godot_screenshot` shows the player above the
+  height a single jump reaches.
+
+A brief that names what "done" looks like is the difference between one round
+and four. Filing it **files a database row and starts nothing** — the dashboard
+is what dispatches it, so `bgate serve` has to be running or the item just sits
+there looking exactly like work in flight.
 
 The loop the tool is built around, once you are past the first hour:
 
