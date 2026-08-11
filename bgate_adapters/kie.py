@@ -203,6 +203,18 @@ _CODE_HELP = {
          "keys come from " + KEY_URL,
     402: "kie has no credit left — top the account up at kie.ai, then retry; "
          "nothing was charged",
+    # THE ROW THE 1010 SHOULD HAVE HAD. Cloudflare fronts both kie hosts and
+    # answers a banned agent with HTTP 403 and a body reading "error code:
+    # 1010" — no `code` field, so it never reaches _envelope and lands here
+    # instead, where the table had nothing to say. Every anchored shot died on
+    # file-base64-upload with a bare "kie HTTP 403", which reads as an auth
+    # problem and is not: the key was valid and the request was refused for its
+    # User-Agent. _request now always sends one (see DOWNLOAD_UA there); this
+    # row is what tells the next person what a 403 means if it ever comes back.
+    403: "Cloudflare refused the request, not kie — a body reading 'error code: "
+         "1010' is the browser-integrity rule firing on the User-Agent, NOT a "
+         "bad key. Every request from this module sends a browser-shaped one; a "
+         "403 here means something bypassed _request or the rule widened",
     404: "kie has no such endpoint or task — check the model id against "
          "docs.kie.ai/market",
     422: "kie refused the request shape — every model has its own input schema, "
@@ -293,6 +305,9 @@ MODELS: dict[str, dict] = {
         },
         "ranges": {"prompt": (3, 5000)},
         "caps": {},
+        # kie answers "resolution is required" with a 500 despite its reference
+        # listing this as optional. Measured, not guessed.
+        "defaults": {"resolution": "2K"},
         "images": "input_urls",
         "images_list": True,
         "credits": None,
@@ -357,6 +372,21 @@ MODELS: dict[str, dict] = {
             "refs": "reference_image_urls",
             "audio": "generate_audio",
         },
+        # SEEDANCE TAKES AN ANCHOR FRAME OR REFERENCE IMAGES, NEVER BOTH. Its
+        # own words on the 422: "The reference image and the first and last
+        # frames are mutually exclusive, and only one scene can be selected."
+        # Nothing in supports/caps/ranges can express that — they describe
+        # fields one at a time — so a shot list carrying a storyboard still AND
+        # a pinned cast built a payload that is individually valid in every
+        # field and refused as a whole, after the anchors had been uploaded.
+        #
+        # Ordered most-specific-first: the group named first is the one KEPT.
+        # first_frame wins over refs because it is a composed, approved still of
+        # this exact beat that was itself drawn against the cast, so the
+        # characters are already inside it; dropping the anchor to keep the
+        # references would throw away the framing to re-state something the
+        # frame already says.
+        "exclusive": ((("first_frame", "last_frame"), ("refs",)),),
     },
 }
 
@@ -449,6 +479,32 @@ def video_input(model: str, **intent: Any) -> dict:
     return out
 
 
+def image_ref_cap(model: str) -> int:
+    """How many reference images this IMAGE model accepts. 0 if it takes none.
+
+    Read from the model's own table entry rather than assumed, because the two
+    shapes here are genuinely different: `qwen-edit` takes a single `image_url`,
+    while a list-shaped model declares `reference_image_urls` with a cap. A
+    caller that guessed "probably a list" would build a payload the model
+    rejects, after the upload has already happened.
+
+    This exists so chroma can UPLOAD local anchors and condition a kie image on
+    them. That path used to be refused outright on the grounds that kie's image
+    fields are URIs and a pinned ref is a local file — true, but upload_file has
+    always been able to bridge exactly that gap, and the refusal left a project
+    whose only funded account is kie unable to draw an anchored frame at all.
+    """
+    spec = MODELS.get(model)
+    if not spec or spec.get("kind") != "image":
+        return 0
+    field = str(spec.get("images") or "")
+    if not field:
+        return 0
+    if spec.get("images_list"):
+        return int((spec.get("caps") or {}).get(field, 0)) or 9
+    return 1
+
+
 def video_capabilities(model: str) -> dict:
     """What one video model can be asked for, in intent terms.
 
@@ -475,6 +531,13 @@ def video_capabilities(model: str) -> dict:
         "supports": sorted(table),
         "options": ranges,
         "max_refs": (spec.get("caps") or {}).get(table.get("refs", ""), 0),
+        # WHICH SETTINGS CANNOT RIDE TOGETHER. `options` answers one field at a
+        # time and cannot express "an anchor frame OR reference images, never
+        # both" — so a planner reading only that builds a shot list whose every
+        # value is legal and whose payload is refused. Reported in intent names,
+        # first group first, which is the one build_input keeps.
+        "exclusive": [[list(g) for g in rule]
+                      for rule in (spec.get("exclusive") or ())],
         "note": spec.get("note", ""),
         "source": spec.get("source", "built-in"),
         # WHETHER THE ID HAS EVER BEEN CONFIRMED AGAINST kie. Separate from
@@ -579,12 +642,32 @@ def register_video_model(name: str, spec: dict) -> dict:
                                               intent),
         "intent_scale": _check_intent_scale(key, spec.get("intent_scale"),
                                             intent),
+        # THE TWO THIS ENTRY USED TO SWALLOW, and both were added because a
+        # built-in model needed them — which means the next model to need them
+        # is exactly the kind a user registers. `defaults` came from flux-2
+        # answering "resolution is required" with a 500 on a field its own
+        # reference calls optional; `exclusive` came from Seedance's 422 on an
+        # anchor frame sent alongside reference images. Neither was in the key
+        # set this dict is built from, so a registration carrying either had it
+        # DROPPED IN SILENCE and bought the identical failure the mechanisms
+        # exist to prevent — the module's own cardinal sin, committed by the
+        # door that was supposed to be the safe way in.
+        "defaults": _check_defaults(key, spec.get("defaults"), supports),
+        "exclusive": _check_exclusive(key, spec.get("exclusive"), intent,
+                                      supports),
         # The stamp that keeps this honest on every surface that lists models.
         "source": "registered",
         # AND THE ONE THAT SAYS WHAT NOBODY CHECKED. `source` says a human typed
         # it; this says nothing has ever held the id against kie.
         "verified": False,
     }
+    for field, value in entry["defaults"].items():
+        allowed = entry["enums"].get(field)
+        if allowed and str(value) not in allowed:
+            raise KieError(
+                f"{key}: defaults[{field!r}] is {value!r}, which this same "
+                f"registration says is not one of {list(allowed)}. build_input "
+                "would fill the hole with it and then refuse its own value.")
     missing_required = sorted(set(entry["required"]) - supports)
     if missing_required:
         raise KieError(
@@ -771,6 +854,75 @@ def _check_intent_scale(key: str, given: Any, intent: dict) -> dict:
     return out
 
 
+def _check_defaults(key: str, given: Any, supports: set) -> dict:
+    """`defaults` as {field: value}, for a field this model actually takes.
+
+    A default on a field outside `supports` is worse than useless: build_input
+    fills the hole and then refuses its own filling as an unknown key, so every
+    request the model could ever be sent dies on a value nobody passed.
+    """
+    out: dict[str, Any] = {}
+    for field, value in dict(given or {}).items():
+        if field not in supports:
+            raise KieError(
+                f"{key}: defaults names {field!r}, which is not in `supports` — "
+                "build_input would add it and then refuse the request for "
+                "carrying a key this model does not take")
+        if value is None or value == "":
+            raise KieError(
+                f"{key}: defaults[{field!r}] is empty, which fills nothing. "
+                "Leave the field out if the model has no required value for it.")
+        out[field] = value
+    return out
+
+
+def _check_exclusive(key: str, given: Any, intent: dict, supports: set) -> tuple:
+    """`exclusive` as ((group, group, ...), ...) — settings legal apart, not together.
+
+    Each group is a tuple of INTENT names (or of raw field names, for a model
+    that states the rule in its own vocabulary). The first group in a rule is
+    the one kept when both are present; see :func:`_exclusive_refusal` and
+    bgate_core.cinematic._fit_intent, which apply that precedence in opposite
+    ways for the same reason.
+
+    A rule naming something this model has no field for cannot ever fire, so it
+    is refused rather than kept as decoration that reads like protection.
+    """
+    out: list[tuple] = []
+    for rule in (given or ()):
+        if isinstance(rule, str) or not isinstance(rule, (list, tuple)):
+            raise KieError(
+                f"{key}: exclusive must be a sequence of RULES, each a sequence "
+                "of groups, e.g. ((('first_frame',), ('refs',)),) — got "
+                f"{rule!r}")
+        groups: list[tuple] = []
+        for group in rule:
+            if isinstance(group, str) or not isinstance(group, (list, tuple)):
+                raise KieError(
+                    f"{key}: exclusive group {group!r} must be a sequence of "
+                    "names. A bare string iterates into its characters and the "
+                    "rule then guards fields called 'f', 'i', 'r'.")
+            names = tuple(str(n).strip() for n in group if str(n).strip())
+            if not names:
+                raise KieError(f"{key}: exclusive has an empty group, which "
+                               "can never conflict with anything")
+            for name in names:
+                if name not in intent and name not in supports:
+                    raise KieError(
+                        f"{key}: exclusive names {name!r}, which is neither an "
+                        f"intent this model maps ({', '.join(sorted(intent))}) "
+                        "nor a field in `supports`. The rule would never fire, "
+                        "so the payload it was written to refuse would be sent "
+                        "and paid for.")
+            groups.append(names)
+        if len(groups) < 2:
+            raise KieError(
+                f"{key}: an exclusive rule needs at least two groups — one "
+                "group is not exclusive with anything")
+        out.append(tuple(groups))
+    return tuple(out)
+
+
 def _check_collision(key: str, entry: dict) -> None:
     """Refuse a registration that quietly redefines something already in use.
 
@@ -792,9 +944,17 @@ def _check_collision(key: str, entry: dict) -> None:
     for other, spec in MODELS.items():
         if other == key or spec.get("model") != entry["model"]:
             continue
+        # `defaults` and `exclusive` are compared too, and normalised on the way
+        # in because a built-in that declares neither carries no key at all
+        # while a registration always carries an empty one. Two names for one id
+        # that disagree about a REQUIRED default, or about which settings cannot
+        # ride together, are the same failure as disagreeing about a range: the
+        # request planned against the looser entry is refused at the provider.
         if spec.get("intent") != entry["intent"] or \
                 spec.get("enums") != entry["enums"] or \
-                spec.get("ranges") != entry["ranges"]:
+                spec.get("ranges") != entry["ranges"] or \
+                (spec.get("defaults") or {}) != (entry.get("defaults") or {}) or \
+                (spec.get("exclusive") or ()) != (entry.get("exclusive") or ()):
             raise KieError(
                 f"{key!r} and {other!r} are both {entry['model']!r} but "
                 "describe it differently. One of the two is wrong about this "
@@ -1361,6 +1521,19 @@ def _request(path: str, key: str, *, payload: Optional[dict] = None,
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
+        # THE SAME 1010 THAT ALREADY BIT THE DOWNLOAD PATH, one door further
+        # up. DOWNLOAD_UA was added because kie's Cloudflare front refuses
+        # urllib's default agent — and the API host does too, but only on some
+        # endpoints, so it went unnoticed until file-base64-upload started
+        # answering 403 "browser_signature_banned" for every anchored shot.
+        # Measured: identical POST, Bearer key valid, no UA -> 403 error_code
+        # 1010; with a UA -> the endpoint answers normally.
+        #
+        # This is not evasion of a paywall, a rate limit or a bot gate meant to
+        # keep us out: it is our own key, our own credits, and a documented
+        # endpoint that this product is entitled to call. urllib simply
+        # announces itself in a way a generic Cloudflare rule bans.
+        "User-Agent": DOWNLOAD_UA,
     })
     what = f"{method} {path}"
     try:
@@ -1551,6 +1724,52 @@ def _reject_local(value: Any, field: str) -> None:
             f"valid for {UPLOAD_TTL_DAYS} days that this field accepts.")
 
 
+def _exclusive_refusal(spec: dict, given: dict) -> str:
+    """The one refusal no field-by-field check can reach, or "" when clear.
+
+    WHY THIS IS NOT ALREADY COVERED. `supports`, `enums`, `ranges` and `caps`
+    each describe ONE field, and Seedance's constraint is about a pair: "The
+    reference image and the first and last frames are mutually exclusive, and
+    only one scene can be selected." Every value in such a payload is
+    individually legal and the payload is refused as a whole — with a 422 that
+    arrives AFTER upload_file has already put both anchors on kie's storage.
+
+    WHY IT IS ENFORCED HERE AND NOT ONLY IN THE PIPELINE. bgate_core.cinematic
+    resolves the same groups in _fit_intent, which is right for it — a shot list
+    should lose the weaker anchor and say so rather than fail. But that left the
+    rule stated in THIS table and enforced nowhere in this module, so
+    kie.generate_video, kie.submit and every other entry point still built the
+    illegal payload and paid the round trip to learn it. A constraint that lives
+    in a capability table has to bite at the layer that owns the table; a caller
+    with no resolver of its own gets a refusal before the spend instead of a 422
+    after the upload.
+
+    Groups are written in INTENT names for a video model (they are what a caller
+    reasons in) and translated through `intent` here; a model with no intent map
+    may state raw field names and they pass through unchanged. The group listed
+    FIRST is the one to keep, which is the same precedence _fit_intent applies.
+    """
+    table = spec.get("intent") or {}
+    for groups in (spec.get("exclusive") or ()):
+        used = []
+        for group in groups:
+            hit = [table.get(name, name) for name in group
+                   if given.get(table.get(name, name)) not in (None, "", [])]
+            if hit:
+                used.append((group, hit))
+        if len(used) < 2:
+            continue
+        keep, drop = used[0], used[1:]
+        return (
+            "this model takes " + " or ".join("/".join(g) for g, _ in used)
+            + ", never both — every one of those fields is legal on its own and "
+            "the payload is refused as a whole, which kie only says in a 422 "
+            "after any conditioning frames have already been uploaded. Send "
+            + ", ".join(sorted(keep[1])) + " and drop "
+            + ", ".join(sorted(f for _, fields in drop for f in fields)) + ".")
+    return ""
+
+
 def build_input(model: str, **fields: Any) -> dict:
     """The `input` object for one model, validated against its own schema.
 
@@ -1561,7 +1780,23 @@ def build_input(model: str, **fields: Any) -> dict:
     you passed did not apply.
     """
     spec = _spec(model)
-    given = {k: v for k, v in fields.items() if v is not None and v != ""}
+    # AN EMPTY LIST IS AN ABSENT FIELD, not a value. `video_input` has always
+    # dropped one (`value == []` is in its skip test) and this did not, so the
+    # two halves of the same module disagreed about whether
+    # reference_image_urls=[] is a reference field that is present. That matters
+    # exactly where the mutual-exclusion rule below reads presence: a local
+    # check that calls it absent while the payload still carries the key is a
+    # check that passes and a request that may be refused at the provider.
+    given = {k: v for k, v in fields.items()
+             if v is not None and v != "" and v != []}
+
+    # DEFAULTS FOR FIELDS THE MODEL DEMANDS AND THE CALLER HAS NO OPINION ON.
+    # flux-2-pro-edit answers "resolution is required" with a 500 — a field this
+    # table listed as merely supported, so every anchored call through it died
+    # before generating and the error read as kie being broken. A caller-supplied
+    # value always wins; this only fills a hole that would otherwise be a refusal.
+    for field, value in (spec.get("defaults") or {}).items():
+        given.setdefault(field, value)
 
     unknown = sorted(set(given) - spec["supports"])
     if unknown:
@@ -1596,6 +1831,10 @@ def build_input(model: str, **fields: Any) -> dict:
         if field in given and len(given[field]) > cap:
             raise KieError(f"{model} takes at most {cap} {field}, got "
                            f"{len(given[field])}")
+
+    conflict = _exclusive_refusal(spec, given)
+    if conflict:
+        raise KieError(f"{model}: {conflict}")
 
     for field in ("input_urls", "image_url", "first_frame_url", "last_frame_url",
                   "reference_image_urls", "reference_video_urls",

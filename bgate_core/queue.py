@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from . import activity, db, iterations, scope as _scope, seats as _seats
+from . import activity, db, iterations, seats as _seats
 from .util import rows
 
 # 'cancelled' is a human calling work off — distinct from 'failed', which is an
@@ -72,25 +72,26 @@ def clip_result(text: str) -> str:
 
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
-        scope_tier_id: Optional[int] = None, chain_id: str = "",
-        chain_pos: int = 0, depends_on: Optional[int] = None) -> dict:
+        chain_id: str = "", chain_pos: int = 0,
+        depends_on: Optional[int] = None) -> dict:
+    # A `scope_tier_id` used to be filed here and run through scope.enforce
+    # first — the cut line's one gate. It never refused an item in the product's
+    # life: untiered work was deliberately allowed through, and nothing was ever
+    # tiered, so the gate was a no-op with a paragraph of documentation. Both
+    # the parameter and the column are gone (migration 0030).
     if seat not in _seats.DEFAULT_SEATS:
         raise ValueError(f"unknown seat {seat!r}; seats are {tuple(_seats.DEFAULT_SEATS)}")
     if not title.strip():
         raise ValueError("a work item needs a title")
-    # The cut line only means something if work cannot be filed under it.
-    # OutOfScope subclasses ValueError, so every caller that already maps
-    # ValueError -> 400 reports this correctly without knowing about scope.
-    _scope.enforce(root, scope_tier_id)
     if depends_on is not None:
         get(root, int(depends_on))          # LookupError if the link is a fiction
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO work_item (seat, title, brief, priority, source, "
-            "source_ref, scope_tier_id, chain_id, chain_pos, depends_on) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_ref, chain_id, chain_pos, depends_on) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (seat, title.strip(), brief, priority, source, source_ref,
-             scope_tier_id, chain_id.strip(), int(chain_pos),
+             chain_id.strip(), int(chain_pos),
              int(depends_on) if depends_on is not None else None),
         )
         item_id = int(cur.lastrowid)
@@ -145,7 +146,6 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
                    priority=int(link.get("priority") or 0),
                    source=str(link.get("source") or source),
                    source_ref=str(link.get("source_ref") or source_ref),
-                   scope_tier_id=link.get("scope_tier_id"),
                    chain_id=chain_id, chain_pos=pos, depends_on=previous)
         previous = int(item["id"])
         made.append(item)

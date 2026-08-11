@@ -190,6 +190,15 @@ window.ModelEdit = (() => {
               " have not been saved.",
         ok: "discard", danger: true}))
       return;
+    // The previous model's renderer, released before the next one is built.
+    // `S` is replaced wholesale below, so opening a second model left the first
+    // one's WebGLRenderer alive with no reference anything could reach: the rAF
+    // loop stops (it compares S.three against the block it captured) but the GL
+    // context, its textures and its framebuffers do not go anywhere. Browsers
+    // cap live contexts — Chromium at ~16 — and force-lose the OLDEST when the
+    // cap is hit, so a session spent browsing the picker eventually starts
+    // killing contexts to make room for the one being looked at.
+    if (S && S.three) teardownThree();
     mount();
     $.stage.querySelector(".me-empty")?.remove();
     const loading = document.createElement("div");
@@ -259,9 +268,26 @@ window.ModelEdit = (() => {
         '<div class="me-pick-list" id="me-pick-list"><div class="me-empty-note">searching…</div></div>' +
       '</div>';
     box.querySelector("#me-pick-q").focus();
-    const r = await fetch("/api/model3d/list?limit=200" +
-      (q ? "&q=" + encodeURIComponent(q) : ""));
-    const d = await r.json();
+    // A REFUSAL AND AN EMPTY PROJECT MUST NOT LOOK THE SAME.
+    // This read the body without ever checking the status, so /api/model3d/list
+    // answering 4xx/5xx — the envelope carries {error}, not {models} — landed on
+    // `d.models || []` and painted "no 3D models found in this project." A
+    // scanner that fell over therefore reported itself as a finished scan of a
+    // project with nothing in it, and there was no unhandled rejection to see
+    // either: a dropped connection threw out of this function and left the list
+    // saying "searching…" for the rest of the session.
+    let d = null;
+    try {
+      const r = await fetch("/api/model3d/list?limit=200" +
+        (q ? "&q=" + encodeURIComponent(q) : ""));
+      d = await r.json();
+      if (!r.ok) throw new Error((d && d.error && d.error.message) || r.statusText);
+    } catch (e) {
+      const el = document.getElementById("me-pick-list");
+      if (el) el.innerHTML = '<div class="me-empty-note">could not list this ' +
+        'project\'s models - ' + E(e.message || e) + '</div>';
+      return;
+    }
     const list = document.getElementById("me-pick-list");
     if (!list) return;
     const models = d.models || [];
@@ -308,7 +334,10 @@ window.ModelEdit = (() => {
     $.back.innerHTML =
       '<div class="me-bar">' +
         '<span class="me-title">Model</span>' +
-        `<span class="me-sub" title="${S ? E(S.rel) : ""}">${S ? E(S.rel) + (dirty ? " *" : "") : "nothing open"}</span>` +
+        `<span class="me-sub" title="${S ? E(S.rel) : ""}">${S ? E(S.rel) : "nothing open"}</span>` +
+        // A " *" on the end of a path is not a save state. See SaveState in
+        // seats/_core.js for what replaced it and why the toast was not it.
+        (S ? '<span id="me-save-state"></span>' : "") +
         '<span class="me-spacer"></span>' +
         `<button class="me-btn" onclick="ModelEdit.pick()">${I("model")} open…</button>` +
         (S && S.viewable ? `<button class="me-btn" onclick="ModelEdit.fit()">${I("fit")} frame</button>` : "") +
@@ -475,8 +504,8 @@ window.ModelEdit = (() => {
       if (!sk) return "";
       return '<div class="me-h">selected socket</div>' +
         row("name", `<input class="me-in" value="${E(sk.name)}" onchange="ModelEdit.renameSocket('${E(sk.name)}', this.value)">`) +
-        row("pos", vec3(sk.position, v => `ModelEdit.socketField('${E(sk.name)}','position',${v})`)) +
-        row("rot°", vec3(sk.rotation, v => `ModelEdit.socketField('${E(sk.name)}','rotation',${v})`)) +
+        row("pos", vec3(sk.position, sk.name, "position")) +
+        row("rot°", vec3(sk.rotation, sk.name, "rotation")) +
         row("note", `<input class="me-in" value="${E(sk.note || "")}" onchange="ModelEdit.socketNote('${E(sk.name)}', this.value)">`);
     }
     if (S.selectedNode) {
@@ -493,10 +522,22 @@ window.ModelEdit = (() => {
     function row(label, html){
       return `<div class="me-row"><label>${E(label)}</label>${html}</div>`;
     }
-    function vec3(v, fn){
+    /* ONE AXIS PER FIELD, and deliberately NOT the whole vector.
+     *
+     * Each of the three boxes used to bake the OTHER two components into its
+     * own onchange as literals, so the handler was only correct for as long as
+     * nothing moved the socket after it was rendered. That was survivable only
+     * because every write path called renderSide() immediately afterwards and
+     * re-baked all three — which is exactly the full-panel rebuild the gizmo
+     * drag can no longer afford (see the objectChange listener). Take the
+     * rebuild away and the stale literals become a socket that silently jumps
+     * back to where it was two edits ago on the two axes you did not touch.
+     * Sending the index instead means no field ever carries a value it does
+     * not own. */
+    function vec3(v, name, key){
       return '<div class="me-vec3">' + [0, 1, 2].map(i =>
         `<input class="me-in num" type="number" step="0.01" value="${v[i].toFixed(3)}" ` +
-        `onchange="${fn(`[${[0,1,2].map(j => j===i ? "this.value" : v[j]).join(",")}]`)}">`
+        `onchange="ModelEdit.socketAxis('${E(name)}','${key}',${i},this.value)">`
       ).join("") + '</div>';
     }
   }
@@ -509,7 +550,23 @@ window.ModelEdit = (() => {
     const save = $.back && $.back.querySelector(".me-btn.go");
     if (save) save.disabled = !(S && S.dirty);
     const sub = $.back && $.back.querySelector(".me-sub");
-    if (sub && S) sub.textContent = S.rel + (S.dirty ? " *" : "");
+    if (sub && S) sub.textContent = S.rel;
+    paintSaveState();
+  }
+
+  /* The one place that answers "is my work on disk". Every state a save has
+     is here, including the two nobody rendered before: in flight, and failed.
+     `at: 0` on a freshly-opened clean model is deliberate — it IS on disk, but
+     it was not saved by this session, and stamping it "saved just now" would
+     be a made-up fact. */
+  function paintSaveState(){
+    if (!window.SaveState || !S || !$.back) return;
+    const el = $.back.querySelector("#me-save-state");
+    if (!el) return;
+    if (S.saving)         SaveState.set(el, {state:"saving"});
+    else if (S.saveError) SaveState.set(el, {state:"error", detail:S.saveError});
+    else if (S.dirty)     SaveState.set(el, {state:"dirty"});
+    else                  SaveState.set(el, {state:"saved", at:S.savedAt || 0});
   }
 
   // ── field handlers ────────────────────────────────────────────────────
@@ -568,12 +625,37 @@ window.ModelEdit = (() => {
     S.selectedSocket = name;
     markDirty(); rebuildSocketObjects(); renderSide();
   }
-  function socketField(name, key, value){
+  function socketAxis(name, key, i, value){
     if (!S) return;
     const sk = S.model.sockets.find(s => s.name === name);
-    if (!sk) return;
-    sk[key] = value.map(Number);
-    markDirty(); syncSocketObject(sk); renderSide();
+    if (!sk || !Array.isArray(sk[key])) return;
+    const n = parseFloat(value);
+    sk[key][i] = isFinite(n) ? n : 0;
+    markDirty(); syncSocketObject(sk); syncSocketInputs(sk);
+  }
+
+  /* Write a socket's numbers into the inspector's own six boxes, in place.
+   *
+   * The alternative — and what the gizmo's objectChange used to do — is
+   * renderSide(), which replaces $.side.innerHTML wholesale. On a drag that
+   * fires per pointermove, so the outliner's scroll position was thrown away
+   * on every frame, the slot <select> and any open colour picker under the
+   * cursor were torn off their elements, and a row per named node was rebuilt
+   * dozens of times a second on a model that has hundreds of them. Same
+   * reasoning as renderBar(): touch the fields that moved, leave the panel
+   * that did not. A field the operator is typing in is skipped, because
+   * overwriting the caret's own box mid-edit is its own bug. */
+  function syncSocketInputs(sk){
+    if (!$.side || !sk) return;
+    const groups = $.side.querySelectorAll(".me-vec3");
+    [sk.position, sk.rotation].forEach((vec, g) => {
+      if (!groups[g] || !Array.isArray(vec)) return;
+      const inputs = groups[g].querySelectorAll("input");
+      for (let i = 0; i < inputs.length && i < 3; i++){
+        if (document.activeElement !== inputs[i])
+          inputs[i].value = Number(vec[i]).toFixed(3);
+      }
+    });
   }
   function socketNote(name, v){
     const sk = S && S.model.sockets.find(s => s.name === name);
@@ -685,8 +767,7 @@ window.ModelEdit = (() => {
       const e = obj.rotation;
       sk.rotation = [THREE.MathUtils.radToDeg(e.x), THREE.MathUtils.radToDeg(e.y), THREE.MathUtils.radToDeg(e.z)];
       markDirty();
-      const posInputs = $.side && $.side.querySelectorAll(".me-vec3")[0];
-      if (posInputs) renderSide();
+      syncSocketInputs(sk);
     });
     scene.add(transform.getHelper());
 
@@ -1148,6 +1229,7 @@ window.ModelEdit = (() => {
   async function save(){
     if (!S) return;
     saveCameraBookmark();
+    S.saving = true; S.saveError = null; renderBar();
     try {
       const r = await fetch("/api/model3d/save", {
         method: "POST", headers: {"Content-Type": "application/json"},
@@ -1157,9 +1239,16 @@ window.ModelEdit = (() => {
       if (!r.ok) throw new Error((body.error && body.error.message) || r.statusText);
       S.model = body.data.model;
       S.dirty = false;
+      S.savedAt = Date.now();
+      S.saving = false; S.saveError = null;
       renderBar();
       say("saved " + S.rel, "ok");
     } catch (e) {
+      // The corner toast is 2.6 seconds long and the eye is on the canvas.
+      // A failed save has to STAY on screen, next to the button that failed.
+      S.saving = false;
+      S.saveError = String((e && e.message) || e).slice(0, 120);
+      renderBar();
       say("could not save: " + (e.message || e), "err");
     }
   }
@@ -1180,6 +1269,7 @@ window.ModelEdit = (() => {
       if (!r.ok) throw new Error((body.error && body.error.message) || r.statusText);
       S.model = body.data.model;
       S.selectedNode = null; S.selectedSocket = null; S.dirty = false;
+      S.savedAt = Date.now(); S.saving = false; S.saveError = null;
       applyNodeOverrides(); applyDisplayMode(); applyDisplayToggles(); rebuildSocketObjects();
       renderChrome();
       say("labels reset", "ok");
@@ -1244,7 +1334,7 @@ window.ModelEdit = (() => {
     embed, unembed, activate,
     setTool, toggleDisplay, setDisplayMode, setBackground,
     selectNode, toggleNode, nodeColor, nodeOpacity,
-    selectSocket, deleteSocket, renameSocket, socketField, socketNote,
+    selectSocket, deleteSocket, renameSocket, socketAxis, socketNote,
     setClip, togglePlay, scrub, notesField,
     get state(){ return S; },
   };

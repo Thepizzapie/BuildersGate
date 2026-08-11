@@ -46,6 +46,7 @@
     _counter: 0,
     _saveTimer: null,
     _drag: null,          // active drag context
+    _lastSaveErr: "",     // last save refusal, so autosave toasts it once
     _lore: [],            // GET /api/lore — canon entities a panel can bind to
 
     render: function (container, bg) {
@@ -268,8 +269,18 @@
       this._setStatus("saving…");
       this._bg.post("/api/workspace/narrative/storyboard", { data: this._serialize() })
         .then(function (r) {
-          if (r && (r.ok || r.seat)) self._setStatus("saved " + self._clock());
-          else { self._setStatus("save failed", true); if (explicit) self._bg.toast("save failed", true); }
+          if (r && (r.ok || r.seat)) { self._lastSaveErr = ""; self._setStatus("saved " + self._clock()); return; }
+          // bg.post hands a refusal BACK rather than throwing, so this branch
+          // is the one a 4xx lands in — and it used to drop the server's
+          // sentence on the floor and print a flat "save failed". The workspace
+          // store refuses a lost update with a 409 that names what it is about
+          // to erase; that is precisely the thing worth reading. Autosave runs
+          // every second, so the toast fires once per distinct reason instead
+          // of once per attempt.
+          var err = self._err(r) || "save failed";
+          self._setStatus("save failed - " + err.slice(0, 60), true);
+          if (explicit || err !== self._lastSaveErr) self._bg.toast(err, true);
+          self._lastSaveErr = err;
         })
         .catch(function (e) {
           console.warn("narrative save", e);
@@ -720,10 +731,16 @@
         body.innerHTML =
           '<div class="nar-verdict v-' + bg.esc(d.verdict || "ok") + '">verdict: ' +
             bg.esc(d.verdict || "ok") + "</div>" + self._flagHtml(flags) +
-          (Array.isArray(d.entities) && d.entities.length
-            ? '<div class="nar-consulted">canon consulted: ' +
-              bg.esc(d.entities.map(function (e) { return e.slug || e.name || e; }).join(", ")) + "</div>"
-            : "");
+          // The checker answers {verdict, mentions, canon, flags} — there is no
+          // `entities` key and never was, so this line rendered for nobody:
+          // "which canon did you actually check me against" was the one
+          // question the panel could answer and silently didn't.
+          (function (seen) {
+            return seen.length
+              ? '<div class="nar-consulted">canon consulted: ' +
+                bg.esc(seen.map(function (e) { return e.slug || e.name || e; }).join(", ")) + "</div>"
+              : "";
+          })(Array.isArray(d.mentions) ? d.mentions : []);
       }).catch(function (e) {
         var body = overlay.querySelector(".nar-modal-body");
         if (body) body.innerHTML = '<div class="nar-flag hard">canon check failed: ' + bg.esc(e && e.message) + "</div>";

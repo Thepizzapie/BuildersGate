@@ -31,7 +31,6 @@ from bgate_core import assets as _assets
 from bgate_core import gates as _gates
 from bgate_core import gitwork as _git
 from bgate_core import queue as _queue
-from bgate_core import scope as _scope
 from bgate_core import settings as _settings
 from bgate_core import spend as _spend
 from bgate_ui import runners as _runners
@@ -660,17 +659,11 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                        item_id=item_id, waiting_on=held["id"],
                        waiting_on_status=held["status"])
 
-    # The cut line, enforced at the last possible moment. queue.add refuses to
-    # FILE work below the line, but the line moves — an item queued legitimately
-    # can be retroactively out of scope by the time anyone dispatches it, and
-    # spending an agent on it is exactly the gold-plating the tier system exists
-    # to stop.
-    verdict = _scope.check(root, item["scope_tier_id"])
-    if not verdict["allowed"]:
-        return _refuse("out_of_scope", verdict["reason"], **{
-            k: v for k, v in verdict.items()
-            if k in ("tier", "cut_line", "cut_line_rank")},
-            scope_code=verdict["code"])
+    # A cut-line re-check used to sit here, refusing to spend an agent on an
+    # item whose scope tier had fallen below the line since it was queued. The
+    # tier system is gone (nothing was ever filed under a tier, so this check
+    # never refused a dispatch either); the chain gate above is now the last
+    # thing between a queued item and a process.
     with _lock:
         if item_id in _live and _live[item_id]["proc"].poll() is None:
             return {"ok": False, "error": f"item {item_id} already has a live agent"}
@@ -1378,11 +1371,24 @@ def reconcile(root: str) -> dict:
     except Exception:
         return {"settled": []}  # no project here (or no DB yet) — nothing to do
     settled = []
+    pids = _read_pids(root)
+    adopted_items = {int(m["item_id"]) for m in pids.values()
+                     if isinstance(m, dict) and m.get("item_id")
+                     and _recent_progress(root, m)}
     for item in stranded:
         item_id = int(item["id"])
         with _lock:
             if item_id in _live:
                 continue  # this server run owns it
+        # STILL WORKING IS NOT STRANDED. reap_orphans now ADOPTS an inherited
+        # agent that is making progress instead of killing it — but this pass
+        # still settled its item as "the process did not survive", which is a
+        # lie about a process that is generating art right now. The item then
+        # failed, the follow-up router reopened it, and the next attempt paid
+        # again for everything the first had already made. Observed on #357:
+        # marked failed at 02:54:07, generated another sheet at 02:54:22.
+        if item_id in adopted_items:
+            continue
         final = _final_event(root, item_id)
         if final.get("subtype") == "success":
             outcome = "done"
@@ -1593,6 +1599,49 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
             "autopilot": auto, "errors": errors, "reason": note}
 
 
+"""How long an inherited agent may be silent before it is treated as stuck.
+
+Generous on purpose. The cost of waiting is a process that idles a few more
+minutes; the cost of being wrong the other way is killing live work, failing its
+item, and paying a second time for everything it had already generated."""
+AGENT_SILENT_AFTER_S = 600.0
+
+
+def _recent_progress(root: str, meta: dict) -> bool:
+    """Has this agent done anything lately? Any evidence counts.
+
+    Three independent signals, because each can be absent for an innocent
+    reason: an agent that has not yet written its manifest, an item whose row
+    has not been touched since dispatch, a run that logs but does not write.
+    Any ONE of them being fresh is enough to leave the process alone.
+    """
+    item_id = meta.get("item_id")
+    if not item_id:
+        return False
+
+    # REUSE THE HEARTBEAT THAT ALREADY WORKS. The first version of this checked
+    # the progress manifest, the ledger's start time and work_item.updated_at,
+    # and got all three wrong: the manifest is optional, the ledger writes
+    # `spawned_at` (not `started_at`), and a work_item row is NOT touched while
+    # an agent runs — so a process generating a sheet every twenty seconds read
+    # as silent. _last_output_age_s is purpose-built for exactly this question
+    # and watches what actually moves: the agent's log plus file mtimes under
+    # .bgate_out and the game assets.
+    log_path = str(Path(root) / ".bgate" / "agents" / f"item-{int(item_id)}.log")
+    age = _last_output_age_s(root, {"log": log_path})
+    if age is not None:
+        return age < AGENT_SILENT_AFTER_S
+
+    # No observable output at all yet. A just-spawned agent has not written
+    # anything, so fall back to how long ago it was spawned rather than calling
+    # it stuck the moment it starts.
+    try:
+        spawned = float(meta.get("spawned_at") or meta.get("started") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return bool(spawned) and (time.time() - spawned) < AGENT_SILENT_AFTER_S
+
+
 def reap_orphans(root: str) -> dict:
     """Sweep agents orphaned by a previous server run.
 
@@ -1616,13 +1665,33 @@ def reap_orphans(root: str) -> dict:
                 "reset": bool(path.write_text("{}", encoding="utf-8"))}
     with _lock:
         live_pids = {e["proc"].pid for e in _live.values()}
+    adopted = []
     for pid_s, meta in list(data.items()):
         pid = int(pid_s)
         if pid in live_pids:
             continue  # owned by this server run
-        if _is_recorded_agent(pid, meta if isinstance(meta, dict) else {}):
+        info = meta if isinstance(meta, dict) else {}
+        if _is_recorded_agent(pid, info):
+            # AN ORPHAN IS A STUCK PROCESS, NOT AN INHERITED ONE. This used to
+            # kill every recorded agent that was not in _live — and _live is
+            # EMPTY at startup, which is the only time this runs. So restarting
+            # the dashboard executed every agent then working, the follow-up
+            # router reopened their items, and the next attempt re-bought art
+            # the dead attempt had already paid for. Observed: item #357
+            # generated a sheet at 02:36:20 and was reaped at 02:36:21, twice,
+            # each lap spending again.
+            #
+            # A dispatched agent does not need this server: it is not waiting on
+            # our stdin, it is working. Only the STEER pump needs the pipe, and
+            # losing steerability is a far smaller harm than killing live work.
+            # So: if it has shown progress recently, leave it alone, leave it in
+            # the ledger, and leave its item unsettled — it will finish and
+            # settle itself, or fall quiet and be reaped by a later sweep.
+            if _recent_progress(root, info):
+                adopted.append({"pid": pid, "item_id": info.get("item_id")})
+                continue
             _kill_tree(pid)
-            killed.append({"pid": pid, "item_id": (meta or {}).get("item_id")})
+            killed.append({"pid": pid, "item_id": info.get("item_id")})
         data.pop(pid_s)
         cleared.append(pid)
     try:
@@ -1630,7 +1699,7 @@ def reap_orphans(root: str) -> dict:
     except Exception:
         pass
     _reconcile_quietly(root)
-    return {"killed": killed, "cleared": cleared}
+    return {"killed": killed, "cleared": cleared, "adopted": adopted}
 
 
 def _reconcile_quietly(root: str) -> None:
@@ -1797,6 +1866,57 @@ def status(root: str) -> list[dict]:
                                 if entry.get("started_at") else 0),
                     "cost_usd": round(float(entry.get("cost_usd") or 0), 4),
                     "last_output_s": _last_output_age_s(root, entry)})
+    # AGENTS THIS PROCESS DID NOT SPAWN ARE STILL RUNNING AGENTS. _live is an
+    # in-memory table, so an agent inherited across a dashboard restart — or
+    # dispatched from another process — was invisible here: /api/agents returned
+    # an empty list, the deck showed "0 running", and the work item's panel said
+    # "no live steps" while the agent generated a sheet every twenty seconds.
+    # The reaper no longer kills those and reconcile no longer fails them, and
+    # both fixes were still invisible to the person watching, which is the half
+    # of the bug they actually experience.
+    #
+    # Reported with what is genuinely known and no more: the pid and the item
+    # are on record, the steer pipe is NOT ours (steerable=False, and that is
+    # true rather than pessimistic — only the spawning process holds the stdin).
+    known = {item_id for item_id, _ in entries}
+    # MOST RECENTLY SPAWNED FIRST. An item that was re-dispatched has several
+    # entries in the ledger and only the last is the live agent; listing both
+    # showed one item as two running agents. Ordered by spawn time, NOT by pid:
+    # a pid is not a clock, and sorting by the number reported the dead attempt
+    # as the running one whenever the OS handed the retry a lower pid.
+    ledger = sorted(_read_pids(root).items(),
+                    key=lambda kv: float((kv[1] or {}).get("spawned_at") or 0.0)
+                    if isinstance(kv[1], dict) else 0.0, reverse=True)
+    for pid_s, meta in ledger:
+        if not isinstance(meta, dict):
+            continue
+        item_id = meta.get("item_id")
+        if not item_id or int(item_id) in known:
+            continue
+        # Claimed only once it PASSES: a re-dispatched item has a dead pid in
+        # the ledger beside its live one, and marking the item seen before the
+        # liveness check let the dead entry shadow the working agent — which
+        # reported nothing running while it generated a sheet every 20 seconds.
+        if not (_is_recorded_agent(int(pid_s), meta) and
+                _recent_progress(root, meta)):
+            continue
+        known.add(int(item_id))
+        # The pids ledger records identity, not paths, so the log is derived
+        # from the convention /api/agent-log already reads.
+        log_path = str(Path(root) / ".bgate" / "agents" / f"item-{int(item_id)}.log")
+        out.append({"item_id": int(item_id), "state": "running",
+                    "pid": int(pid_s), "log": log_path,
+                    "adopted": True,
+                    "steers": 0, "steers_pending": 0, "steer_latency_s": [],
+                    "runner": str(meta.get("runner") or "claude"),
+                    "cost_tracked": False,
+                    "steerable": False,
+                    "native_images": False,
+                    "seconds": 0,
+                    "cost_usd": 0.0,
+                    "last_output_s": _last_output_age_s(
+                        root, {"log": log_path})})
+
     with _lock:
         finished = [dict(row) for key, row in _done.items() if key[0] == project]
     out.extend(sorted(finished, key=lambda r: r["ended_at"]))

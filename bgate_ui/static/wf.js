@@ -51,6 +51,21 @@
     } catch (e) { return { ok: false, __status: 0 }; }
   };
   const getX = async p => { try { const r = await fetch(p); const j = await r.json().catch(() => ({})); if (j && typeof j === "object") { try { j.__status = r.status; } catch (e) {} } return j; } catch (e) { return { __status: 0 }; } };
+  /* Why a read failed, in the words the panel that failed should print.
+     `get`/`getX` never reject, so a call site that only tests for a payload
+     cannot tell "the server said no" from "there is nothing here" — which is
+     how a refused endpoint ends up rendering the empty state. Every caller that
+     shows a reason routes through this so the reason is the same sentence. */
+  const readErr = (res, what) => {
+    const code = res && res.__status;
+    if (code === 0) return "the dashboard is unreachable";
+    if (code === 404) return `this server has no ${what} endpoint`;
+    return errMsg(res) + (code ? ` (${code})` : "");
+  };
+  // A write through `post` that the server refused. _ws.set answers a BARE
+  // document, so "no ok field" is success here and only an explicit ok:false —
+  // or a non-2xx status — is a refusal.
+  const refused = res => !res || res.ok === false || Number(res.__status || 0) >= 400;
   const toast = (m, bad) => (window.BGWS ? BGWS.toast(m, bad) : console.log(m));
   const uid = (p) => p + "_" + Math.random().toString(36).slice(2, 8);
 
@@ -74,7 +89,7 @@
 
   const WF = {
     steps: {}, templates: [], _nc: null, _wf: null, _saved: [], _api: null, _saveT: null,
-    _run: null, _runNodes: null, _pollT: null,
+    _run: null, _runNodes: null, _pollT: null, _savedError: "", _saveErr: "",
 
     registerStep(def) { if (def && def.type) this.steps[def.type] = def; },
     registerTemplate(t) { if (t && t.id) this.templates.push(t); },
@@ -102,12 +117,19 @@
        webp anchor blank — and pointed at a revision that may not exist. The
        registry is read once and every thumbnail resolves through it. A step
        may name an older revision as "<name>@r2". */
-    _refs: { list: [], at: 0, loading: null },
+    _refs: { list: [], at: 0, loading: null, error: "" },
     refsLoad(force) {
       const now = Date.now();
       if (!force && this._refs.list.length && now - this._refs.at < 20000) return Promise.resolve(this._refs.list);
       if (this._refs.loading) return this._refs.loading;
-      this._refs.loading = get("/api/refs").then(d => {
+      /* /api/refs is BARE ({refs: […]}) - `d.refs`, not `d.data.refs`. getX so a
+         refused read can be told from an empty registry: when this failed, every
+         name in the graph stopped resolving and the reference node accused the
+         USER of naming something that does not exist in their project. The
+         registry not being readable is a different sentence. */
+      this._refs.loading = getX("/api/refs").then(d => {
+        this._refs.error = Number(d && d.__status || 0) >= 400
+          ? readErr(d, "GET /api/refs") : "";
         const list = (d && d.refs) || (d && d.data) || [];
         const first = !this._refs.at;
         if (Array.isArray(list)) { this._refs.list = list; this._refs.at = Date.now(); }
@@ -127,6 +149,9 @@
       const m = /^(.+?)@r?(\d+)$/.exec(s);
       return m ? { name: m[1], revision: parseInt(m[2], 10) } : { name: s, revision: null };
     },
+    // Why the pin registry is empty, when it is empty for a reason. "" means the
+    // read worked and there simply are no pins.
+    refsError() { return this._refs.error || ""; },
     refPin(name) {
       const want = String(name || "").trim().toLowerCase();
       return this._refs.list.find(r => r && String(r.name || "").toLowerCase() === want) || null;
@@ -188,14 +213,27 @@
         return Promise.resolve(this._sources.data);
       }
       if (this._sources.loading && !key) return this._sources.loading;
-      const req = get("/api/refs/sources" + (key ? "?q=" + encodeURIComponent(key) : ""))
+      /* getX, not get: a refused read has to arrive AS a refusal. `get` answers
+         {} on any non-2xx and never rejects, so the .catch that used to sit here
+         could not fire and a 404/500 on this route rendered as "nothing matched
+         - pin a reference from the art seat" — the picker told you your project
+         had no references when it had simply not been asked. */
+      const req = getX("/api/refs/sources" + (key ? "?q=" + encodeURIComponent(key) : ""))
         .then(r => {
-          const d = data(r) || { pins: [], sheets: [], artifacts: [] };
-          if (!key) { this._sources.data = d; this._sources.at = Date.now(); }
+          const d = data(r);
           this._sources.loading = null;
+          if (!d) {
+            // Cached with at=0 so the panel can print the reason now and the
+            // next open still retries — a failure must not sit in the 20s cache.
+            const bad = { pins: [], sheets: [], artifacts: [],
+              __error: readErr(r, "GET /api/refs/sources") };
+            if (!key) { this._sources.data = bad; this._sources.at = 0; }
+            return bad;
+          }
+          if (!key) { this._sources.data = d; this._sources.at = Date.now(); }
           return d;
         })
-        .catch(() => { this._sources.loading = null; return { pins: [], sheets: [], artifacts: [], __error: 1 }; });
+        .catch(() => { this._sources.loading = null; return { pins: [], sheets: [], artifacts: [], __error: "the reference read threw" }; });
       if (!key) this._sources.loading = req;
       return req;
     },
@@ -215,7 +253,10 @@
       const d = this._sources.q[hostId + ":data"] || this._sources.data;
       if (!d) { host.innerHTML = `<div class="wf-b-note">loading references…</div>`; return; }
       if (d.__error) {
-        host.innerHTML = `<div class="wf-warn">could not read the project's references (GET /api/refs/sources) - name one by hand below</div>`;
+        // The REASON, not just the fact. "could not read" over a 404 and over a
+        // 500 are two different afternoons, and the picker is the only place the
+        // difference is ever shown.
+        host.innerHTML = `<div class="wf-warn">could not read the project's references - ${esc(d.__error)}. Name one by hand below.</div>`;
         return;
       }
       const node = (this._wf && this._wf.nodes || []).find(n => n.id === nodeId);
@@ -254,7 +295,12 @@
       const known = [].concat(d.pins || [], d.sheets || [], d.artifacts || [])
         .some(i => String(i.value || "").toLowerCase() === curKey);
       if (cur && !known && !this.refRel(cur)) {
-        html += `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact - this step would run against nothing.</div>`;
+        // Do not blame the name when the registry is what failed: an unreachable
+        // /api/refs makes every pin unresolvable, and this line would then tell
+        // the user their perfectly good anchor does not exist.
+        html += this.refsError()
+          ? `<div class="wf-b-note" style="color:var(--warn)">“${esc(cur)}” cannot be checked - the pin registry could not be read (${esc(this.refsError())}).</div>`
+          : `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact - this step would run against nothing.</div>`;
       }
       host.innerHTML = html;
     },
@@ -282,9 +328,12 @@
         const d = (r && r.ok && r.data !== undefined) ? r.data : (r && r.tiers ? r : null);
         if (!d) {
           t.ok = false;
+          // This sentence is printed on every model card (resolvedLine), so
+          // "request failed" for a dead dashboard was the least useful of the
+          // three things it could have been. readErr tells them apart.
           t.error = (r && r.__status === 404)
             ? "no tier ladder on this server (GET /api/tiers)"
-            : errMsg(r);
+            : readErr(r, "GET /api/tiers");
           return t;
         }
         this._absorbTiers(d);
@@ -615,8 +664,19 @@
       await this._loadSaved();
       this._renderLibrary();
     },
+    /* The index is a BARE document: {seat, key, data:{list}}. `d.data.list` is
+       the stored payload, not an envelope, so it is read at that depth on
+       purpose. A failed read used to leave `_saved` empty, which renders exactly
+       like "you have never saved a workflow" - the one thing it must not be
+       confused with. */
     async _loadSaved() {
-      const d = await get("/api/workspace/studio/wf-index");
+      const d = await getX("/api/workspace/studio/wf-index");
+      if (d && Number(d.__status || 0) >= 400) {
+        this._savedError = readErr(d, "GET /api/workspace/studio/wf-index");
+        this._saved = [];
+        return;
+      }
+      this._savedError = "";
       this._saved = ((d.data && d.data.list) || []);
     },
     _renderLibrary() {
@@ -633,6 +693,10 @@
         if (!ts.length) return;
         html += `<div class="wf-lib-sec"><div class="wf-lib-cat">${esc(c.label)}</div><div class="wf-card-grid">${ts.map(t => tplCard(t)).join("")}</div></div>`;
       });
+      if (this._savedError) {
+        html += `<div class="wf-lib-sec"><div class="wf-lib-cat">Your saved workflows</div>`
+          + `<div class="wf-warn">could not read your saved workflows - ${esc(this._savedError)}. They are still on the server; this is a read that failed, not an empty library.</div></div>`;
+      }
       if (this._saved.length) {
         html += `<div class="wf-lib-sec"><div class="wf-lib-cat">Your saved workflows</div><div class="wf-card-grid">${this._saved.map(s => `<button class="wf-card" onclick="WF.openSaved('${esc(s.id)}')"><span class="wf-card-g">◆</span><span class="wf-card-t">${esc(s.name)}</span><span class="wf-card-h">${esc(s.category || "workflow")} · ${(s.stepCount || 0)} steps</span><span class="wf-card-x" onclick="event.stopPropagation();WF.deleteSaved('${esc(s.id)}')">✕</span></button>`).join("")}</div></div>`;
       }
@@ -654,9 +718,14 @@
                           fromTemplate: id, nodes: built.nodes, edges: built.edges });
     },
     async openSaved(id) {
-      const d = await get("/api/workspace/studio/wf:" + id);
-      if (d.data && d.data.id) this.openWorkflow(d.data);
-      else toast("could not load workflow", true);
+      const d = await getX("/api/workspace/studio/wf:" + id);
+      if (d.data && d.data.id) { this.openWorkflow(d.data); return; }
+      // "could not load workflow" was true of a refused read, a deleted
+      // tombstone and a document from a build that stored a different shape -
+      // three problems with three different answers.
+      toast(Number(d.__status || 0) >= 400
+        ? `could not load that workflow - ${readErr(d, "GET /api/workspace/studio/wf:…")}`
+        : "that saved workflow is empty - it was deleted, or written by a build that stored it differently", true);
     },
     /* Delete meant "drop it from the index": no confirmation, and the stored
        document (and any run history keyed to it) stayed behind forever. Now it
@@ -670,11 +739,21 @@
         ok: "delete", danger: true,
       });
       if (!go) return;
+      const keep = this._saved;
       this._saved = this._saved.filter(s => s.id !== id);
-      await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      const idx = await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      // A refused index write left the row gone from the screen and present on
+      // the server: it came back on the next reload with no explanation.
+      if (refused(idx)) {
+        this._saved = keep;
+        toast(`could not delete ${name} - ${readErr(idx, "POST /api/workspace/studio/wf-index")}`, true);
+        this._renderLibrary();
+        return;
+      }
       // The workspace store has no DELETE; an empty document is the tombstone,
       // and openSaved() already treats a doc with no id as unloadable.
-      await post("/api/workspace/studio/wf:" + id, { data: {} });
+      const tomb = await post("/api/workspace/studio/wf:" + id, { data: {} });
+      if (refused(tomb)) toast(`${name} was removed from the list, but its stored document could not be emptied - ${readErr(tomb, "POST /api/workspace/studio/wf:…")}`, true);
       if (this._wf && this._wf.id === id) { this._wf = null; clearTimeout(this._saveT); }
       toast(`deleted ${name}`);
       this._renderPalette();
@@ -718,7 +797,15 @@
       // canvas, and got no account of the run you had just paid for. The last
       // run's outcome is exactly what a reopened builder should show.
       const q = encodeURIComponent(wfId);
-      let run = data(await get(`/api/workflows/runs/latest?workflow_id=${q}`));
+      const first = await getX(`/api/workflows/runs/latest?workflow_id=${q}`);
+      // {ok:true, data:null} is a real answer - this workflow has never run.
+      // A non-2xx is not, and used to look identical: no run bar, no account of
+      // the run you had just paid for, and nothing saying why.
+      if (Number(first.__status || 0) >= 400) {
+        toast(`could not check for a run of this workflow - ${readErr(first, "GET /api/workflows/runs/latest")}`, true);
+        this._renderRun(); return;
+      }
+      let run = data(first);
       if (!run || !run.id) {
         run = data(await get(
           `/api/workflows/runs/latest?workflow_id=${q}&running_only=false`));
@@ -894,7 +981,6 @@
       const out = row && row.output;
       return (out && typeof out === "object") ? out : {};
     },
-    nodeText(nodeId) { return String(this.nodeOutput(nodeId).text || ""); },
     nodeArtifacts(nodeId) {
       const a = this.nodeOutput(nodeId).artifacts;
       return Array.isArray(a) ? a : [];
@@ -1053,14 +1139,31 @@
       return { id: this._wf.id, name: this._wf.name, category: this._wf.category, nodes, edges: (nc ? nc.edges : this._wf.edges || []) };
     },
     persist() { clearTimeout(this._saveT); this._saveT = setTimeout(() => this.save(true), 800); },
+    /* THE WRITE IS CHECKED. The document store answers 409 on a stale write (two
+       tabs holding the same workflow) and this used to ignore the response
+       entirely: the graph on screen was not the graph on disk, the autosave went
+       on failing every 800ms, and the only thing the user ever saw was
+       "workflow saved". A refusal is now said out loud even in silent mode —
+       silent means "do not announce routine success", never "hide a failure" —
+       and deduped by message so a debounced autosave cannot become a toast
+       storm. */
     async save(silent) {
       const wf = this._serialize(); this._wf.nodes = wf.nodes; this._wf.edges = wf.edges;
-      await post("/api/workspace/studio/wf:" + wf.id, { data: wf });
+      const doc = await post("/api/workspace/studio/wf:" + wf.id, { data: wf });
+      if (refused(doc)) return this._saveFailed(doc, "workflow");
       const entry = { id: wf.id, name: wf.name, category: wf.category, stepCount: wf.nodes.length };
       const i = this._saved.findIndex(s => s.id === wf.id);
       if (i >= 0) this._saved[i] = entry; else this._saved.push(entry);
-      await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      const idx = await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      if (refused(idx)) return this._saveFailed(idx, "workflow list");
+      this._saveErr = "";
       if (!silent) toast("workflow saved");
+    },
+    _saveFailed(res, what) {
+      const why = readErr(res, "POST /api/workspace/studio/…");
+      const msg = `${what} NOT saved - ${why}`;
+      if (msg !== this._saveErr) { this._saveErr = msg; toast(msg, true); }
+      return false;
     },
     async saveAsNode() {
       await this.save(true);
@@ -1103,8 +1206,16 @@
       const tick = async () => {
         const bar = document.getElementById("wf-runbar");
         if (!bar || !bar.isConnected) return;              // left the builder
-        const run = data(await post(`/api/workflows/runs/${runId}/advance`, {}));
-        if (!run) return;
+        const res = await post(`/api/workflows/runs/${runId}/advance`, {});
+        const run = data(res);
+        if (!run) {
+          // The poll stopping is invisible: the run bar keeps showing whatever
+          // it last painted, so a run that the server has forgotten (404) or is
+          // refusing to tick reads as one that is still going. Say it once and
+          // stop, rather than freezing on a stale "running".
+          toast(`run #${runId} stopped polling - ${readErr(res, "POST /api/workflows/runs/{run}/advance")}`, true);
+          return;
+        }
         this._paint(run);
         if (run.status === "running") this._pollT = setTimeout(tick, 2500);
       };
@@ -1204,8 +1315,12 @@
     },
     async cancelRun() {
       if (!this._run) return;
-      const run = data(await post(`/api/workflows/runs/${this._run.id}/cancel`, {}));
-      if (run) { clearTimeout(this._pollT); this._paint(run); toast("run cancelled"); }
+      const res = await post(`/api/workflows/runs/${this._run.id}/cancel`, {});
+      const run = data(res);
+      // A refused cancel used to do nothing at all - no repaint, no word - so
+      // the button read as dead while the server had answered with a reason.
+      if (!run) { toast(`could not cancel - ${readErr(res, "POST /api/workflows/runs/{run}/cancel")}`, true); return; }
+      clearTimeout(this._pollT); this._paint(run); toast("run cancelled");
     },
     _topoOrder(wf) {
       const ids = wf.nodes.map(n => n.id);
@@ -1239,7 +1354,12 @@
     body: n => {
       const ref = (n.config && n.config.ref) || "";
       if (!ref) return WF.refCard("", "pick a reference - a pin, a sprite sheet, or an artifact");
-      if (!WF.refRel(ref)) return WF.refCard("", `“${ref}” does not resolve to anything in this project`);
+      // A failed registry read makes EVERY pin unresolvable. Saying the anchor
+      // does not exist would be this card accusing the user of a typo for a
+      // server problem, on the one node whose whole job is to be checkable.
+      if (!WF.refRel(ref)) return WF.refCard("", WF.refsError()
+        ? `“${ref}” cannot be checked - the pin registry could not be read (${WF.refsError()})`
+        : `“${ref}” does not resolve to anything in this project`);
       return WF.refCard(ref, "");
     },
     config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference - the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`

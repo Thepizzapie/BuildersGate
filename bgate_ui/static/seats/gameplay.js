@@ -385,7 +385,12 @@ func _init():
     if (btn) { btn.disabled = false; btn.textContent = "Capture"; }
     if (!host) return;
     if (r && r.ok && r.rel) {
-      host.innerHTML = `<img src="${S.bg.preview(r.rel)}?t=${Date.now()}" alt="scene screenshot" onerror="this.parentNode.innerHTML='<div class=&quot;gp-empty&quot;>image failed to load</div>'">`;
+      // bg.preview() ALREADY ends in "?rel=…". Appending "?t=" put the
+      // cache-buster inside the rel VALUE, so every capture asked the server
+      // for "…/shot.png?t=1770000000" — a path with no image extension, which
+      // /api/preview answers 415 to. This panel had never once shown a
+      // screenshot; it went straight to the onerror branch. Separator is "&".
+      host.innerHTML = `<img src="${S.bg.preview(r.rel)}&t=${Date.now()}" alt="scene screenshot" onerror="this.parentNode.innerHTML='<div class=&quot;gp-empty&quot;>image failed to load</div>'">`;
     } else {
       host.innerHTML = `<div class="gp-empty">no image - ${esc((r && (r.error || (r.errors && r.errors.join(", ")))) || "capture failed")}</div>`;
     }

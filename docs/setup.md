@@ -16,9 +16,11 @@ MCP server, and platform detail.
 | `ffmpeg` + `ffprobe` on PATH | playtest capture, optional | Screen capture, frame extraction, reading a recording's duration |
 | `faster-whisper` + `sounddevice` | playtest transcription, optional | `pip install -e ".[stt,record]"` |
 
-## API keys: two image providers, either or both
+## API keys: three art providers, any of them
 
-The art seat needs at least one.
+The art seat needs at least one. Which one a given job actually goes to is a
+routing rule, not a preference — see
+[reference.md](reference.md#the-art-providers-and-what-routes-where).
 
 ```bash
 bgate key set openai --global    # stored once, every project inherits it
@@ -31,9 +33,10 @@ it never lands in shell history or a process list.
 | Variable | Provider | What it buys |
 |---|---|---|
 | `OPENAI_API_KEY` | OpenAI `gpt-image` | Portraits, UI, backdrops, reference-first sprite sets. Prices by quality tier. |
-| `KREA_API_KEY` | [Krea](https://krea.ai) | A catalogue of 14 models (Flux, Imagen, Nano Banana, Krea-2) behind one key, with `image_style_references` as a first-class input. That input is exactly what the art seat's pinned anchors are. Prices per model, per request. |
+| `KREA_API_KEY` | [Krea](https://krea.ai) | A catalogue of 14 models (Flux, Imagen, Nano Banana, Krea-2) plus image-to-3D, behind one key. Character work routes here by default. Prices per model AND per payload — attaching references changes the price. |
+| `KIE_API_KEY` | [kie.ai](https://kie.ai/api-key) | Nano Banana / FLUX.2 / Qwen images, Suno music and Seedance video — the only key here that generates audio or video at all. No 3D. Billed in credits with no published per-model price; set `BGATE_KIE_USD_PER_CREDIT` to your account's rate for dollar ledger rows. |
 
-Neither provider returns usable transparency. Measured:
+No provider here returns usable transparency. Measured:
 `background="transparent"` came back as a brown gradient. Sprite work goes
 through the chroma-key path in `bgate_core/chroma.py` either way. The module
 docstring in `bgate_adapters/krea.py` has the full comparison.

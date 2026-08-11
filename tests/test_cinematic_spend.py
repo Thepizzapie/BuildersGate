@@ -361,3 +361,36 @@ class TestNothingOverwritesSomethingPaidFor:
                     "INSERT INTO cine_shot (sequence_id, idx, slug, action) "
                     "VALUES (?, 1, 'clash', 'a duplicate beat')",
                     (seq["id"],))
+
+
+class TestMutuallyExclusiveIntent:
+    """Some settings are legal alone and refused together.
+
+    Seedance takes an anchor frame OR reference images, never both, and says so
+    only in a 422: "The reference image and the first and last frames are
+    mutually exclusive". Field-by-field validation cannot see that — every value
+    is individually fine — so a storyboard-promoted shot carrying a still AND a
+    pinned cast built a payload that was refused as a whole, AFTER both anchors
+    had been uploaded to the provider.
+    """
+
+    def test_the_anchor_frame_wins_and_the_refs_are_dropped(self):
+        intent, dropped, refusal = cinematic._fit_intent("seedance-2", {
+            "seconds": 5, "first_frame": "a.png", "refs": ["x.png", "y.png"]})
+        assert not refusal
+        assert intent["first_frame"] == "a.png"
+        assert "refs" not in intent
+        # Reported, never silent: losing the cast references changes the clip.
+        assert "refs" in dropped
+
+    def test_references_alone_are_left_alone(self):
+        """The rule is a conflict resolver, not a ban on references."""
+        intent, dropped, _ = cinematic._fit_intent(
+            "seedance-2", {"seconds": 5, "refs": ["x.png"]})
+        assert intent["refs"] == ["x.png"]
+        assert "refs" not in dropped
+
+    def test_a_model_declaring_no_exclusivity_keeps_both(self):
+        from bgate_adapters import kie
+
+        assert not (kie.MODELS["qwen-edit"].get("exclusive") or ())

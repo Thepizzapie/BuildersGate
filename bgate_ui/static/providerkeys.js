@@ -334,6 +334,15 @@ when you are not in a project at all. A project's own key still wins over it.">
       const value = field ? field.value : "";
       if (!value.trim()) { say("paste the key first"); if (field) field.focus(); return; }
       const scope = this.scopeOf(id, where);
+      /* Read BEFORE the write, because the "we edited your .gitignore" notice is
+         derived from the change in this flag rather than from the response.
+         set_key reports the stamp as `applied.gitignore`, which the server puts
+         BESIDE `data` in the envelope — and window.mutate returns unwrap(body),
+         i.e. `data` alone. So `r.applied` here was always undefined and the
+         branch below never once fired: Builders Gate edited somebody's
+         .gitignore and said "ready". `env_gitignored` rides on every providers
+         read, so false -> true is the same fact, from a key that survives. */
+      const wasIgnored = ((this.data || {}).env_gitignored) !== false;
       this._busy = id;
       const r = await window.mutate(`/api/providers/${encodeURIComponent(id)}/key`,
         { method: "POST", body: { key: value, scope }, button, quiet: true });
@@ -345,9 +354,9 @@ when you are not in a project at all. A project's own key still wins over it.">
       if (!r.ok) { say(r.error); return; }
       this.data = r.data; this._read = Date.now();
       Object.keys(this.hosts).forEach(w => this.paint(w));
-      const row = (r.applied || {});
       const now = (r.data.providers || []).filter(p => p.id === id)[0] || {};
-      if (row.gitignore) {
+      const nowIgnored = (r.data.env_gitignored) !== false;
+      if (!wasIgnored && nowIgnored) {
         say(`saved - and added the .env ignore rule to .gitignore first`, "ok");
       } else if (now.available && scope === "global" && now.source === "env_file") {
         /* The write landed and something else is still winning. Silence here

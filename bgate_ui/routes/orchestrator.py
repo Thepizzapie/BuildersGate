@@ -45,7 +45,7 @@ _DELEGATED_RE = re.compile(re.escape(DELEGATED_FROM) + r"(\d+)")
 # Fields the board actually paints. `brief` is deliberately absent — it is the
 # largest column in the table and the board renders a card, not a document.
 _CARD_FIELDS = ("id", "seat", "title", "status", "priority", "source",
-                "source_ref", "attempts", "total_cost_usd", "scope_tier_id",
+                "source_ref", "attempts", "total_cost_usd",
                 "created_at", "updated_at")
 
 _BOARD_ORDER = ("ORDER BY CASE status WHEN 'queued' THEN 0 "

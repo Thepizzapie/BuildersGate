@@ -64,12 +64,17 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait as _wait
 from typing import Any, Iterable, Optional
 
 from . import (activity, artifacts as _artifacts, db, generate as _generate,
-               queue as _queue, spend as _spend)
+               queue as _queue, spend as _spend, wfnodes as _wfnodes)
 from .util import rows
 
 RUN_STATUSES = ("running", "passed", "failed", "cancelled")
 NODE_STATUSES = ("pending", "queued", "running", "passed", "failed", "skipped")
-KINDS = ("agent", "gate", "consistency", "passive", "generate", "pick")
+# 'tool' is the generic executor added in bgate_core.wfnodes: a node that calls
+# ONE named MCP tool with arguments mapped off its card and its wires. It is a
+# kind of its own rather than another _GENERATE_TYPES entry because a tool node
+# can legitimately be exclusive — a Godot or Blender node drives the game repo,
+# and two of those at once is last-write-wins — while a generate node never is.
+KINDS = ("agent", "gate", "consistency", "passive", "generate", "pick", "tool")
 
 # Agents stamp this prefix into BGATE_ACTOR; see bgate_ui.api.current_actor.
 AGENT_ACTOR_PREFIX = "agent:"
@@ -94,7 +99,7 @@ _CONTEXT_TYPES = {"input.bible", "input.lore"}
 
 # Kinds a human can run one at a time from the canvas. A gate/pick is resolved,
 # not run; that is a different verb with a different guard.
-RUNNABLE_KINDS = ("generate", "agent", "consistency", "passive")
+RUNNABLE_KINDS = ("generate", "agent", "consistency", "passive", "tool")
 
 # Concurrency ceiling for generate fan-out when the budget states none.
 DEFAULT_MAX_CONCURRENT = 4
@@ -122,6 +127,16 @@ def kind_for(spec: dict) -> str:
     kind only fills in what the type leaves open.
     """
     node_type = str(spec.get("type") or "")
+    # The tool table first. A tool node is derived here, not trusted from the
+    # client, for the same reason a gate is: the registry says which tool a type
+    # calls and whether that tool touches the game repo, and a graph POSTed by
+    # hand must not be able to relabel a Godot write as a 'passive' step that
+    # walks straight past the single-file rule.
+    if _wfnodes.is_tool_node(node_type):
+        return "tool"
+    if _wfnodes.is_flow_node(node_type):
+        # Glue is passive: it calls nothing, costs nothing and finishes inline.
+        return "passive"
     if node_type in _GATE_TYPES:
         return "gate"
     if node_type in _PICK_TYPES:
@@ -364,8 +379,12 @@ def start(root: str | os.PathLike[str], graph: dict, *, name: str = "",
         specs[spec["id"]] = spec
     edges = [e for e in (graph.get("edges") or []) if _edge_pair(e, specs)]
     order = _topo(list(specs), edges)
-    if not any(specs[i]["kind"] in ("agent", "consistency", "generate") for i in order):
-        raise ValueError("this workflow has no agent or generate step to run")
+    if not any(specs[i]["kind"] in ("agent", "consistency", "generate", "tool")
+               for i in order):
+        raise ValueError(
+            "this workflow has no step that does anything — add a generate, "
+            "tool or agent step. Inputs and glue nodes carry values; something "
+            "has to consume them.")
 
     workflow = graph.get("workflow") if isinstance(graph.get("workflow"), dict) else {}
     run_name = (name or workflow.get("name") or "workflow").strip()[:120]
@@ -504,12 +523,21 @@ def _inputs(root: str | os.PathLike[str], run_id: int, node_id: str,
                       downstream generate uses as its style reference;
       * ``refs``    — pinned anchors a parent Reference node names. These are
                       the style references the user WIRED IN, and leaving them
-                      out made that wire decorative.
+                      out made that wire decorative;
+      * ``paths``   — raw files a parent tool node produced that were never
+                      registered as artifacts (a screenshot, a .glb, an ffmpeg
+                      cut). Without this a tool that makes a FILE could not feed
+                      a tool that takes one, which is most of the engine side;
+      * ``data``    — a parent tool node's structured payload (a level plan, a
+                      scene outline), so a step can be driven by what the
+                      previous step LEARNED and not only by what it made.
     """
     text = ""
     candidates: list[dict] = []
     picked: list[dict] = []
     refs: list[dict] = []
+    paths: list[str] = []
+    data: list[Any] = []
     for parent in ups.get(node_id, ()):
         out = _output(node_rows.get(parent) or {})
         ref = out.get("ref")
@@ -523,8 +551,17 @@ def _inputs(root: str | os.PathLike[str], run_id: int, node_id: str,
         chosen = out.get("picked")
         if isinstance(chosen, dict) and chosen.get("artifact_id"):
             picked.append(dict(chosen, node_id=parent))
+        for path in out.get("paths") or []:
+            if isinstance(path, str) and path.strip() and path not in paths:
+                paths.append(path)
+        if out.get("data") is not None:
+            data.append(out["data"])
+    # `paths` is deliberately NOT folded into `candidates`. A candidate is a
+    # thing a human can pick, and `pick()` resolves a choice by artifact id — an
+    # entry with no id in that list would make the picker offer an option the
+    # engine then refuses. Tool nodes read `paths` directly.
     return {"text": text, "candidates": candidates, "picked": picked,
-            "refs": refs}
+            "refs": refs, "paths": paths, "data": data}
 
 
 def _prompt_for(spec: dict, inputs: dict) -> str:
@@ -731,6 +768,24 @@ def _text_output(spec: dict) -> dict:
     return {}
 
 
+def _passive_output(root: str | os.PathLike[str], spec: dict,
+                    inputs: Optional[dict] = None) -> dict:
+    """Everything a passive node can produce, resolved in one place.
+
+    There were two copies of this expression — one in :func:`advance`, one in
+    :func:`run_node` — and they had already drifted apart (one of them called
+    ``_ref_output`` twice). A glue node has to be added to both or it works from
+    the poll and not from the ▶, which is the least debuggable kind of bug.
+
+    Glue is tried FIRST because a flow node is the only passive kind that reads
+    its inputs: everything else here is the head of a wire, not a bend in one.
+    """
+    if _wfnodes.is_flow_node(str(spec.get("type") or "")):
+        return _wfnodes.flow_output(root, spec, inputs or {})
+    return (_text_output(spec) or _context_output(root, spec)
+            or _ref_output(root, spec))
+
+
 # ---------------------------------------------------------------------------
 # Generate nodes — the only thing in this engine that runs in parallel
 # ---------------------------------------------------------------------------
@@ -822,6 +877,96 @@ def _start_generate(root: str | os.PathLike[str], run_id: int, spec: dict,
               info={"prompt": prompt[:400]})
     future = _pool().submit(_generate_worker, root, run_id, spec, prompt,
                             style_refs, cascade)
+    with _INFLIGHT_LOCK:
+        _INFLIGHT[(int(run_id), node_id)] = future
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Tool nodes — one named MCP tool per node, on the same worker machinery
+# ---------------------------------------------------------------------------
+#
+# Deliberately built on _start_generate's bones rather than beside them. The
+# claim-then-submit dance, the _INFLIGHT registry, join(), the cascade — all of
+# that is the concurrency contract this engine already has, and a second
+# mechanism would be a second set of races to find. The only thing a tool node
+# adds is EXCLUSIVITY: a Godot or Blender node drives the game repo and takes
+# the line like an agent step, while a generation tool fans out like a model
+# card because everything it touches is new.
+
+def _tool_exclusive(spec: dict) -> bool:
+    """Does this tool node have to take the line?
+
+    Read from the registry, never from the graph. A hand-POSTed workflow that
+    declared a scene write non-exclusive would run two of them at once and the
+    loser's edit would vanish — the same reasoning that puts kind derivation in
+    :func:`kind_for` rather than trusting the client's declared kind.
+    """
+    entry = _wfnodes.spec_for(str(spec.get("type") or ""))
+    return True if entry is None else bool(entry.exclusive)
+
+
+def _tool_paid(spec: dict) -> bool:
+    """Does running this node call a provider that bills? From the registry."""
+    entry = _wfnodes.spec_for(str(spec.get("type") or ""))
+    return bool(entry and entry.paid)
+
+
+def _tool_worker(root: str | os.PathLike[str], run_id: int, spec: dict,
+                 inputs: dict, cascade: bool) -> None:
+    """One tool node, off the request thread.
+
+    Godot boots, Blender renders and provider calls all run for minutes; doing
+    any of it on the poll's thread would block the dashboard for every other
+    seat, which is the exact failure the MCP server's own docstring says its
+    thread hop exists to avoid.
+    """
+    node_id = spec["id"]
+    try:
+        result = _wfnodes.run(
+            root, run_id=run_id, node_id=node_id, label=spec.get("label", ""),
+            node_type=str(spec.get("type") or ""),
+            config=spec.get("config") or {}, inputs=inputs)
+    except Exception as exc:  # a crashed worker must not leave a node 'running'
+        result = {"ok": False, "artifacts": [],
+                  "error": f"the tool call crashed: {type(exc).__name__}: {exc}"}
+    try:
+        if result.get("ok"):
+            _set_output(root, run_id, node_id, result.get("output") or {})
+            _set_node(root, run_id, node_id, "passed",
+                      message=str(result.get("message") or "the tool finished"),
+                      info={"tool": (result.get("output") or {}).get("tool", ""),
+                            "usd": result.get("usd", 0),
+                            "candidates": len(result.get("artifacts") or [])})
+        else:
+            # The payload is kept even on failure: "godot refused to open the
+            # project" is a fact the next person needs, and throwing it away
+            # leaves a red node with a one-line summary of a ten-line reason.
+            if result.get("output"):
+                _set_output(root, run_id, node_id, result["output"])
+            _set_node(root, run_id, node_id, "failed",
+                      message=str(result.get("error") or "the tool failed"))
+    finally:
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.pop((int(run_id), node_id), None)
+    if cascade:
+        try:
+            advance(root, run_id)
+        except Exception:
+            pass
+
+
+def _start_tool(root: str | os.PathLike[str], run_id: int, spec: dict,
+                inputs: dict, *, cascade: bool) -> bool:
+    """Claim the node and put it on a worker. False if someone else got it."""
+    node_id = spec["id"]
+    entry = _wfnodes.spec_for(str(spec.get("type") or ""))
+    if not _claim(root, run_id, node_id):
+        return False
+    _set_node(root, run_id, node_id, "running",
+              message=f"calling {entry.tool}…" if entry else "calling the tool…",
+              info={"tool": entry.tool if entry else "", })
+    future = _pool().submit(_tool_worker, root, run_id, spec, inputs, cascade)
     with _INFLIGHT_LOCK:
         _INFLIGHT[(int(run_id), node_id)] = future
     return True
@@ -1005,7 +1150,16 @@ def advance(root: str | os.PathLike[str], run_id: int,
             break
         if status in ("queued", "running"):
             waiting = True
-            if (specs.get(node_id) or {}).get("kind") != "generate":
+            spec_live = specs.get(node_id) or {}
+            kind_live = spec_live.get("kind")
+            # A generate node is never on the line. A tool node is on it only
+            # when the registry says it touches the game repo or an engine
+            # process — see _tool_exclusive.
+            if kind_live == "generate":
+                pass
+            elif kind_live == "tool" and not _tool_exclusive(spec_live):
+                pass
+            else:
                 line_held = True
             continue
         # pending — can it start?
@@ -1034,14 +1188,58 @@ def advance(root: str | os.PathLike[str], run_id: int,
                 waiting = True
                 node_rows[node_id] = _node_rows(root, run_id)[node_id]
             continue
+        if kind == "tool":
+            # A PAID TOOL NODE IS NEVER STARTED BY A TICK.
+            #
+            # The canvas opens a run just to HOST a single-node execution
+            # (wf.js `_ensureRun`, dispatch off). Without this, pressing ▶ on a
+            # free node would also fire every paid node whose inputs happened to
+            # be satisfied — a video shot, a music track, a variant grid — none
+            # of which the user asked for and all of which are real money. So a
+            # paid node waits for a person to press ▶ on IT, unless the whole
+            # workflow was started with Run (dispatch on), which is the explicit
+            # "yes, do all of this" act.
+            if _tool_paid(spec) and not dispatch:
+                waiting = True
+                if not _info(row).get("awaiting_human"):
+                    node_rows[node_id] = _set_node(
+                        root, run_id, node_id, "pending",
+                        message="this step spends money — press run on this "
+                                "card when you want it, or use Run workflow",
+                        info={"awaiting_human": True})
+                continue
+            exclusive = _tool_exclusive(spec)
+            if exclusive:
+                if line_held:
+                    waiting = True
+                    continue
+            elif slots <= 0:
+                waiting = True  # over the concurrency cap; the next tick takes it
+                continue
+            if _start_tool(root, run_id, spec, inputs, cascade=True):
+                waiting = True
+                if exclusive:
+                    line_held = True
+                else:
+                    slots -= 1
+                node_rows[node_id] = _node_rows(root, run_id)[node_id]
+            continue
         if line_held:
             waiting = True
             continue
         if kind == "passive":
-            text = (_text_output(spec) or _context_output(root, spec)
-                or _ref_output(root, spec)) or _ref_output(root, spec)
-            if text:
-                _set_output(root, run_id, node_id, text)
+            produced = _passive_output(root, spec, inputs)
+            # A glue node that could not do its job FAILS the run rather than
+            # passing an empty wire on. "the filter matched nothing" arriving as
+            # a green node is how a graph silently produces nothing at the end.
+            if produced.get("flow_error"):
+                node_rows[node_id] = _set_node(
+                    root, run_id, node_id, "failed",
+                    message=str(produced["flow_error"]))
+                failed = True
+                break
+            if produced:
+                _set_output(root, run_id, node_id, produced)
             node_rows[node_id] = _set_node(
                 root, run_id, node_id, "passed",
                 message="no agent work — carried straight through")
@@ -1261,8 +1459,8 @@ def run_node(root: str | os.PathLike[str], run_id: int, node_id: str, *,
         raise ValueError(
             f"a {kind} step is not run, it is resolved by a human — "
             f"use {'pick' if kind == 'pick' else 'approve'} on {node_id!r}")
-    if row["status"] == "running" and kind == "generate":
-        raise ValueError(f"{label} is already generating — wait for it to finish")
+    if row["status"] == "running" and kind in ("generate", "tool"):
+        raise ValueError(f"{label} is already running — wait for it to finish")
     if row["status"] != "pending":
         # Say what happened and what to do about it. "is queued, not pending"
         # is this module's vocabulary, not the user's, and it was the only
@@ -1290,11 +1488,34 @@ def run_node(root: str | os.PathLike[str], run_id: int, node_id: str, *,
                                _style_refs_for(root, spec, inputs), cascade=False):
             raise ValueError(f"{node_id!r} was already claimed by another tick")
         return get(root, run_id)
+    if kind == "tool":
+        # An exclusive tool node still respects the single-file rule: it drives
+        # the game repo or an engine process, and two of those at once is
+        # last-write-wins exactly as it is for an agent session.
+        if _tool_exclusive(spec):
+            busy_line = [nid for nid, r in node_rows.items()
+                         if r["status"] in ("queued", "running")
+                         and (r.get("work_item_id")
+                              or (specs.get(nid, {}).get("kind") == "tool"
+                                  and _tool_exclusive(specs[nid])))]
+            busy_line = [nid for nid in busy_line if nid != node_id]
+            if busy_line:
+                raise ValueError(
+                    f"{label} writes into the game project, so it cannot start "
+                    f"while {busy_line[0]!r} is still in flight — two of those "
+                    "at once is last-write-wins")
+        if not _start_tool(root, run_id, spec, inputs, cascade=False):
+            raise ValueError(f"{node_id!r} was already claimed by another tick")
+        return get(root, run_id)
     if kind == "passive":
-        text = (_text_output(spec) or _context_output(root, spec)
-                or _ref_output(root, spec))
-        if text:
-            _set_output(root, run_id, node_id, text)
+        produced = _passive_output(root, spec, inputs)
+        if produced.get("flow_error"):
+            # Refused rather than failed: the human is standing at the card and
+            # can fix the template/index and press run again, which is a better
+            # afternoon than a node that has to be reopened out of 'failed'.
+            raise ValueError(f"{label}: {produced['flow_error']}")
+        if produced:
+            _set_output(root, run_id, node_id, produced)
         _set_node(root, run_id, node_id, "passed",
                   message="no agent work — carried straight through")
         return get(root, run_id)

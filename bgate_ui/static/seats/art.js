@@ -22,7 +22,8 @@
  * and a failed fetch renders its error message — never an empty panel.
  */
 (function () {
-  const BGICON = (n) => (window.BGIcon ? BGIcon(n, { size: 15 }) : "");
+  const BGICON = (n) =>
+    (window.BGIcon && (!BGIcon.has || BGIcon.has(n))) ? BGIcon(n, { size: 15 }) : "";
   window.SeatWS = window.SeatWS || {};
 
   // Documented thresholds. These live in one place so a chip's colour and the
@@ -62,36 +63,89 @@
     render(container, bg) {
       try {
         this._bg = bg;
+        // Every repaint guard in this seat compares against a stored signature.
+        // Switching seats builds a FRESH container, so each of them has to be
+        // cleared here or an unchanged payload would skip the first paint and
+        // leave "loading…" on screen forever — the trap the style card already
+        // documents, applied to the four panels that adopted the pattern after.
         this._detailSig = "";
+        this._pickSig = "";
+        this._flowSig = "";
+        this._lockSig = "";
+        this._listSig = "";
+        this._qaSig = "";
         this._sel = new Set();
         this._cmp = [];
         this._focusId = null;
         try { this._logical = localStorage.getItem("art-logical") || null; } catch (e) {}
+        /* THE FOUR STAGES ARE THE BRIEF, IN ORDER. bgate_core/seats.py opens
+         * this seat with "pin the reference, condition every frame on it,
+         * measure the result" and closes with "verify with godot_import_asset,
+         * because the engine's view is the truth". That is the pipeline, and
+         * it is what these four panels-worth of surface are actually for:
+         *
+         *   anchor      what every generation is conditioned on (rules 2/3/4)
+         *   candidates  generate, then MEASURE — the lab and its evidence
+         *   land        approval has to move a file, and a lock is why it did not
+         *   engine      the only view of the work that counts
+         *
+         * Every body stays in the DOM and is toggled with `hidden`, so the lab
+         * keeps its scroll, the filter keeps its term, and RefManager is not
+         * remounted by a stage click. See SeatStage.show. */
         container.innerHTML = STYLE + `
           <div class="art-root" id="art-review">
             <div class="art-pick" id="art-picker"></div>
-            <div class="art-cols">
-              <div class="art-side">
-                <div class="art-card"><h3 class="art-h">${BGICON("reference")} References &amp; anchoring</h3>
-                  <div id="art-refs"></div></div>
-                <div class="art-card"><h3 class="art-h">⧉ Flow map — assets rigged into Godot</h3>
-                  <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div></div>
-                <div class="art-card"><h3 class="art-h">⛨ Locks &amp; contention</h3>
-                  <div id="art-locks"><div class="art-empty">loading locks…</div></div></div>
+            <div class="bg-stagewrap" id="art-wrap">
+              <div id="art-stages"></div>
+              <div id="art-lede"></div>
+
+              <div class="bg-stagebody" data-stagebody="anchor" hidden>
+                <div class="art-anchorgrid">
+                  <div class="spanel k-list">
+                    <div class="sec-h">${BGICON("reference")}<h3 class="sec-t">Pinned references</h3>
+                      <span class="sec-n" id="art-n-refs"></span></div>
+                    <div id="art-refs"></div>
+                  </div>
+                  <!-- Not a reference panel: it decides what EVERY image this
+                       project generates looks like. The anchors are shown
+                       rather than counted — "6 of 26" is the least useful way
+                       to describe a dataset of pictures. -->
+                  <div class="spanel k-list art-stcard">
+                    <div class="sec-h">${BGICON("art")}<h3 class="sec-t">Trained style</h3>
+                      <span class="art-sth" id="art-stmode"></span></div>
+                    <div id="art-style"><div class="art-empty">loading…</div></div>
+                  </div>
+                </div>
               </div>
-              <div class="art-main">
-                <!-- Full width, above the lab, because this is not a reference
-                     panel: it decides what EVERY image this project generates
-                     looks like. The anchors are shown rather than counted —
-                     "6 of 26" is the least useful way to describe a dataset of
-                     pictures, and "which of my anchors is in this" is the
-                     question actually being asked. -->
-                <div class="art-card art-stcard"><h3 class="art-h">${BGICON("art")} Trained style
-                  <span class="art-sth" id="art-stmode"></span></h3>
-                  <div id="art-style"><div class="art-empty">loading…</div></div></div>
-                <div class="art-card" id="art-lab">
-                  <h3 class="art-h">Iteration lab</h3>
-                  <div class="art-empty">loading candidates…</div>
+
+              <div class="bg-stagebody" data-stagebody="candidates" hidden>
+                <div class="spanel k-list" id="art-lab">
+                  <div class="sec-h">${BGICON("consistency")}<h3 class="sec-t">Iteration lab</h3>
+                    <span class="sec-n" id="art-n-cand"></span></div>
+                  <div id="art-labbody"><div class="art-empty">loading candidates…</div></div>
+                </div>
+              </div>
+
+              <div class="bg-stagebody" data-stagebody="land" hidden>
+                <div class="art-landgrid">
+                  <div class="spanel k-read">
+                    <div class="sec-h">${BGICON("verify")}<h3 class="sec-t">What the build is loading</h3>
+                      <span class="sec-n" id="art-n-live"></span></div>
+                    <div id="art-install"><div class="art-empty">loading…</div></div>
+                  </div>
+                  <div class="spanel k-read">
+                    <div class="sec-h">${BGICON("lock")}<h3 class="sec-t">Locks &amp; contention</h3>
+                      <span class="sec-n" id="art-n-locks"></span></div>
+                    <div id="art-locks"><div class="art-empty">loading locks…</div></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="bg-stagebody" data-stagebody="engine" hidden>
+                <div class="spanel k-read">
+                  <div class="sec-h">${BGICON("rig")}<h3 class="sec-t">Flow map - assets rigged into Godot</h3>
+                    <span class="sec-n" id="art-n-rig"></span></div>
+                  <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div>
                 </div>
               </div>
             </div>
@@ -102,15 +156,18 @@
           refs: container.querySelector("#art-refs"),
           flow: container.querySelector("#art-flow"),
           locks: container.querySelector("#art-locks"),
-          lab: container.querySelector("#art-lab"),
+          install: container.querySelector("#art-install"),
+          // The lab's BODY, not its card: the section header is static markup
+          // now, and _renderLab used to replace the whole card including it.
+          lab: container.querySelector("#art-labbody"),
           lightbox: container.querySelector("#art-lightbox"),
           style: container.querySelector("#art-style"),
           stmode: container.querySelector("#art-stmode"),
+          stages: container.querySelector("#art-stages"),
+          lede: container.querySelector("#art-lede"),
+          wrap: container.querySelector("#art-wrap"),
           review: container.querySelector("#art-review"),
         };
-        // fix the stray glyph typo in a way that can't break: overwrite header text
-        const labH = this._els.lab.querySelector(".art-h");
-        if (labH) labH.innerHTML = BGICON("consistency") + " Iteration lab";
 
         // react to shared active-item changes from other seats
         if (this._onItem) window.removeEventListener("bgws-item", this._onItem);
@@ -179,8 +236,27 @@
     // --- data ------------------------------------------------------------
     async _loadAll(full) {
       const bg = this._bg;
-      const [arts, ws, queue, cost, locks, style] = await Promise.all([
-        bg.get("/api/artifacts").catch(() => ({ artifacts: [] })),
+      const [arts, ws, queue, cost, locks, style, refs] = await Promise.all([
+        /* THE `?limit=` IS LOAD-BEARING TWICE OVER.
+         *
+         * Without it, app.py's `_listing()` applies this route's LEGACY window
+         * of 100 rows. This project already has 280 artifact revisions, so the
+         * filmstrip that promises "every candidate revision" was drawing the
+         * newest hundred and 180 iterations — with their costs, their
+         * consistency evidence and, for a logical asset whose whole history is
+         * older than the cut, the asset itself — did not exist as far as this
+         * seat was concerned. Nothing said so; the lab simply described a
+         * subset as the whole history.
+         *
+         * Asking for a window ALSO FLIPS THE RESPONSE SHAPE. `_listing()`
+         * answers bare `{artifacts, page}` only when neither `limit` nor
+         * `offset` is in the query string, and the `{ok, data, page}` envelope
+         * the moment one is — the shape is a property of the CALL, not of the
+         * route. That is why the read below accepts both instead of picking
+         * one: get it wrong in either direction and the seat is blank.
+         *
+         * 500 is the server's MAX_LIMIT (api.py); asking for more is a 422. */
+        bg.get("/api/artifacts?limit=500").catch(() => ({ artifacts: [] })),
         bg.get("/api/assets/workspace").catch(() => ({ groups: [] })),
         bg.get("/api/queue").catch(() => ({ items: [] })),
         bg.get("/api/art/cost").catch(() => null),
@@ -191,18 +267,49 @@
         // A dashboard that predates this route 404s; the panel says so rather
         // than rendering an empty card that looks like "no styles trained".
         bg.get("/api/art/style").catch(() => null),
+        // RefManager fetches this for itself, but the anchor STAGE has to be
+        // able to say "nothing pinned" on the strip without opening the stage.
+        bg.get("/api/refs").catch(() => ({ refs: [] })),
       ]);
       this._style = this._data(style);
-      /* IMAGES ONLY. /api/artifacts answers every artifact the project has,
-         and since music generation landed that includes .mp3 takes. This seat
-         renders each one as an <img src="/api/preview">, and /api/preview
-         answers 415 for anything that is not an image — so every poll fired a
-         pair of failing requests and painted two dead thumbnails in the art
-         seat. Filtering here rather than at each <img> because an audio take
-         is not art-seat work in the first place; it belongs to the audio seat,
-         which already lists it properly through /api/audio/file. */
-      this._arts = ((arts && arts.artifacts) || []).filter(
-        a => !a || !a.rel || /\.(png|jpe?g|gif|webp|bmp)$/i.test(a.rel));
+      /* IMAGES ONLY — and this time against a field the response actually has.
+       *
+       * The intent below was right and the code was dead. It filtered on
+       * `a.rel`, and /api/artifacts returns no `rel` on any row: the columns are
+       * id, path, kind, logical_name, revision, status, metadata, … so `!a.rel`
+       * was true for EVERY row and short-circuited the whole predicate. Nothing
+       * was ever excluded. Measured on this project: 15 of 304 revisions are
+       * not images (8 kind=audio .mp3, 7 kind=video .mp4) spread over 9 logical
+       * families, and each one reached the filmstrip and the detail pane as an
+       * <img src="/api/preview?rel=…">. Confirmed live: /api/preview answers
+       * 415 for .mp3 — its allow-list is _IMAGE_SUFFIXES | _VIDEO_SUFFIXES and
+       * audio is in neither. Those families also sat in the asset picker as if
+       * there were art to review in them.
+       *
+       * Video is excluded too even though /api/preview WILL serve an .mp4: an
+       * <img> pointed at one is a broken box either way, and a cutscene take is
+       * the cinematic seat's to judge, on the panel that has a <video>.
+       *
+       * The suffix list is now the endpoint's own image list rather than a
+       * hand-written near-miss — it had .bmp, which /api/preview 415s, and
+       * lacked .svg, which it serves. `kind` is checked as well because it is
+       * the authoritative field and it catches a row whose path is odd or
+       * absent. Filtering here rather than at each <img> because an audio take
+       * is not art-seat work in the first place; it belongs to the audio seat,
+       * which already lists it properly through /api/audio/file. */
+      const IMG_RE = /\.(png|jpe?g|gif|webp|svg)$/i;   // == app.py _IMAGE_SUFFIXES
+      // Dual shape — see the comment on the fetch. `data` is the live branch
+      // while this call carries a limit; the bare read stays for the `.catch`
+      // fallback literal and for anyone who drops the query string again.
+      const artRows = this._data(arts);
+      this._artsPage = (arts && arts.page) || null;
+      this._arts = (Array.isArray(artRows) ? artRows : ((arts && arts.artifacts) || []))
+        .filter(a => {
+          if (!a) return false;
+          const kind = String(a.kind || "").toLowerCase();
+          if (kind === "audio" || kind === "video") return false;
+          return IMG_RE.test(String(a.path || ""));
+        });
       this._groups = (ws && ws.groups) || [];
       this._queueArt = ((queue && queue.items) || []).filter(i => i && i.seat === "art");
       const c = this._data(cost);
@@ -215,10 +322,13 @@
       }
 
       this._locks = { payload: this._data(locks), error: this._err(locks) };
+      this._refs = (refs && refs.refs) || [];
 
       this._renderPicker();
+      this._renderStages();
       this._renderFlow();
       this._renderLocks();
+      this._renderInstall();
       this._renderStyle();
       // ensure a valid selection
       const names = this._logicalNames();
@@ -227,6 +337,207 @@
       }
       this._renderLab(full);
       if (full || this._refItem !== this._bg.activeItem) this._mountRefs();
+    },
+
+    /* --- the stage strip -------------------------------------------------
+     * Counts are derived from data these panels already fetched. Nothing here
+     * asks the server a new question, and nothing here reports a state the
+     * panel underneath would contradict — a strip that disagrees with the
+     * panel it heads is worse than no strip. */
+    _tally() {
+      const arts = this._arts || [];
+      const cand = arts.filter(a => a && a.status === "candidate").length;
+      let stuck = 0, live = 0, rigged = 0;
+      (this._groups || []).forEach(g => {
+        let anyRig = false;
+        (g.revisions || []).forEach(r => {
+          if (!r) return;
+          const integ = r.integration || null;
+          if (integ && integ.ok === false) stuck++;
+          else if (integ && integ.promoted) live++;
+          if ((r.engine_import && Object.keys(r.engine_import).length) ||
+              r.used_in_current_build) anyRig = true;
+        });
+        if (anyRig) rigged++;
+      });
+      const d = (this._locks && this._locks.payload) || {};
+      const held = Array.isArray(d.held) ? d.held : [];
+      return {
+        pins: (this._refs || []).length,
+        cand, stuck, live, rigged,
+        assets: (this._groups || []).length,
+        revisions: arts.length,
+        held: held.length,
+        waiters: held.reduce((n, h) => n + ((h.waiters || []).length), 0),
+        lora: !!(this._style && this._style.mode === "lora" && this._style.active),
+      };
+    },
+
+    _stageSpec() {
+      const t = this._tally();
+      return [
+        { id: "anchor", label: "Anchor",
+          hint: "What every generation is conditioned on. The seat's first rule.",
+          done: t.pins > 0,
+          tone: t.pins ? "" : "bad",
+          note: t.pins
+            ? `${t.pins} pinned · ${t.lora ? "trained style on" : "conditioning on refs"}`
+            : "nothing pinned - every frame drifts" },
+        { id: "candidates", label: "Candidates",
+          hint: "Generate, then measure. Approve, reject or buy another.",
+          done: t.revisions > 0 && !t.cand,
+          tone: t.cand ? "warn" : "",
+          note: t.cand
+            ? `${t.cand} waiting on you`
+            : (t.revisions ? "nothing waiting" : "nothing generated yet") },
+        { id: "land", label: "Land",
+          hint: "Approval has to move a file, and a held lock is why it did not.",
+          done: t.live > 0 && !t.stuck,
+          tone: t.stuck ? "bad" : (t.held ? "warn" : ""),
+          // NOT "nothing installed yet" WHEN THE COUNT IS ZERO. An install
+          // record is written by the approval path; art delivered before that
+          // path existed has none, and this project has 128 rigged assets with
+          // no record at all. Reporting that as "nothing installed" is the
+          // same lie as "no models found" over a project full of sheets, so a
+          // zero says which zero it is.
+          note: t.stuck
+            ? `${t.stuck} approved but not live`
+            : (t.held
+                ? `${t.held} locked${t.waiters ? ` · ${t.waiters} waiting` : ""}`
+                : (t.live ? `${t.live} installed` : "no install records yet")) },
+        { id: "engine", label: "In engine",
+          hint: "The engine's view is the truth. Anything else is a preview.",
+          done: t.rigged > 0,
+          tone: t.rigged ? "" : "warn",
+          note: t.rigged
+            ? `${t.rigged} of ${t.assets} assets rigged`
+            : "nothing wired into a scene" },
+      ];
+    },
+
+    _LEDE: {
+      anchor: "Pin the reference first, and keep a style reference off the " +
+        "identity slot. Everything generated after this is conditioned on what " +
+        "is here - a frame drawn from prose alone drifts, and no later stage " +
+        "recovers it.",
+      candidates: "Judge what came back, against the reference it was drawn " +
+        "against. Approve installs it as the live sheet, reject keeps the " +
+        "reason for the next agent, regenerate buys another candidate.",
+      land: "Approving has to MOVE the file. Anything approved but not live is " +
+        "a build still loading the old image, and a lock held by another seat " +
+        "is why a regenerate looked like it did nothing.",
+      engine: "The engine's view is the truth. An asset nothing imports is not " +
+        "in the game however good the frame looks - a line to GODOT means this " +
+        "one is.",
+    },
+
+    _renderStages() {
+      const els = this._els;
+      if (!els || !els.stages) return;
+      const at = window.SeatStage
+        ? SeatStage.paint(els.stages, {
+            key: "art",
+            stages: this._stageSpec(),
+            // Repaint the STRIP, not only the body: the click handler clears
+            // the signature and nothing else would move the `on` class until
+            // the next 3s poll, so a stage click read as a dead button for up
+            // to three seconds — the exact complaint _act() was written for in
+            // the cinematic seat.
+            onPick: () => this._renderStages(),
+          })
+        : "candidates";
+      this._stage = at;
+      if (window.SeatStage) {
+        SeatStage.show(els.wrap, at);
+        SeatStage.lede(els.lede, this._LEDE[at] || "");
+      } else if (els.wrap) {
+        // Every body starts hidden, so a missing SeatStage would render an
+        // empty seat rather than a broken one — which is worse, because it
+        // looks like a project with nothing in it.
+        els.wrap.querySelectorAll("[data-stagebody]").forEach(s => {
+          s.hidden = s.getAttribute("data-stagebody") !== at;
+        });
+      }
+      const t = this._tally();
+      const put = (id, text, cls) => {
+        const el = this._els.review && this._els.review.querySelector("#" + id);
+        if (!el) return;
+        el.textContent = text == null ? "" : String(text);
+        el.className = "sec-n" + (cls ? " " + cls : "");
+      };
+      put("art-n-refs", t.pins || "", t.pins ? "" : "bad");
+      put("art-n-cand", t.cand || "", t.cand ? "warn" : "");
+      put("art-n-live", t.stuck ? t.stuck : (t.live || ""), t.stuck ? "bad" : "good");
+      put("art-n-locks", t.held || "", t.held ? "warn" : "");
+      put("art-n-rig", t.rigged || "", "");
+    },
+
+    /* --- what the build is actually loading ------------------------------
+     * The Land stage's own readout, and the one thing this seat could never
+     * answer without opening a card: approval is supposed to copy the frame
+     * into the engine project, and when it cannot, the game keeps loading the
+     * old image with nothing anywhere saying so. The candidate cards carry
+     * that as a chip; a chip on a card you have to find is not a report. */
+    _renderInstall() {
+      const bg = this._bg, host = this._els && this._els.install;
+      if (!host) return;
+      try {
+        const stuck = [], live = [];
+        (this._groups || []).forEach(g => {
+          (g.revisions || []).forEach(r => {
+            const integ = r && r.integration;
+            if (!integ || typeof integ !== "object") return;
+            if (integ.ok === false) stuck.push({ g, r, integ });
+            else if (integ.promoted) live.push({ g, r, integ });
+          });
+        });
+        const sig = stuck.map(x => x.r.id).join(",") + "|" + live.map(x => x.r.id).join(",");
+        if (sig === this._instSig && host.firstChild) return;
+        this._instSig = sig;
+
+        if (!stuck.length && !live.length) {
+          host.innerHTML = SeatStage.nothing(
+            "no revision on this project carries an install record",
+            "Approving a candidate copies it into the engine project and " +
+            "records where it landed - that record is what this reads. Art " +
+            "delivered before the record existed is not missing: it shows in " +
+            "the In engine map instead.");
+          return;
+        }
+        const row = (x, bad) =>
+          `<div class="art-inst${bad ? " bad" : ""}">
+            <button class="art-instname" data-instpick="${bg.esc(x.g.logical_name || "")}"
+              title="open this asset in the iteration lab">${bg.esc(x.g.logical_name || "?")}</button>
+            <span class="art-instrev">r${bg.esc(x.r.revision)}</span>
+            <span class="art-instpath" title="${bg.esc(x.integ.path || x.integ.detail || "")}">${
+              bg.esc(x.integ.path || x.integ.detail || "")}</span>
+          </div>`;
+        host.innerHTML =
+          (stuck.length
+            ? `<div class="bg-warn">${stuck.length} approved revision${
+                stuck.length === 1 ? "" : "s"} never reached the engine project. ` +
+              "The build is still loading a different image for " +
+              (stuck.length === 1 ? "this one." : "these.") + "</div>" +
+              stuck.map(x => row(x, true)).join("")
+            : "") +
+          (live.length
+            ? `<div class="art-insth">${live.length} installed</div>` +
+              live.slice(0, 40).map(x => row(x, false)).join("") +
+              (live.length > 40
+                ? `<div class="art-muted">${live.length - 40} more</div>` : "")
+            : "");
+        host.querySelectorAll("[data-instpick]").forEach(b =>
+          b.addEventListener("click", () => {
+            this._selectLogical(b.dataset.instpick);
+            SeatStage.select("art", "candidates");
+            this._els.stages._bgsSig = "";
+            this._renderStages();
+          }));
+      } catch (e) {
+        this._instSig = "";
+        host.innerHTML = '<div class="art-empty">install readout error</div>';
+        console.error("[art] install", e);
+      }
     },
 
     _groupMap() {
@@ -282,11 +593,30 @@
       const tot = this._cost.totals || null;
       const spent = tot && tot.by_kind && typeof tot.by_kind.image === "number"
         ? `<span class="art-spend" title="every image this project has bought, from the spend ledger">image spend ${this._money(tot.by_kind.image)}</span>` : "";
+      // If the route's 500-row ceiling is ever the reason a revision is missing,
+      // SAY SO. The whole point of raising the window was that a truncated
+      // history is indistinguishable from a short one, and this seat is where
+      // somebody decides an asset is finished.
+      const page = this._artsPage || {};
+      const more = page.next_offset != null
+        ? `<span class="art-spend" title="one window of this route holds at most 500 revisions">newest ${
+            this._arts.length} of ${page.total} revisions</span>` : "";
+
+      // DO NOT REBUILD A <select> TWENTY TIMES A MINUTE. This seat refreshes
+      // every ~3 seconds and this method replaces the row's whole innerHTML, so
+      // an open dropdown closed under the pointer and a focused control lost
+      // focus on the tick. Same guard the style card and the cinematic panel
+      // carry; only fields a repaint would actually show are in the signature.
+      const sig = [active, this._itemOnly ? 1 : 0, spent, more,
+        this._queueArt.map(i => i.id + ":" + i.status + ":" + (i.title || "")).join(",")].join("|");
+      if (sig === this._pickSig && el.firstChild) return;
+      this._pickSig = sig;
+
       el.innerHTML = `
         <label class="art-pl">Focus item</label>
         <select class="art-sel" id="art-item-sel">${opts}</select>
         ${item ? `<label class="art-chk"><input type="checkbox" id="art-itemonly" ${this._itemOnly ? "checked" : ""}> only this item's assets</label>` : ""}
-        ${spent}
+        ${spent}${more}
         <button class="art-btn art-primary" id="art-review-all" title="Dispatch an independent QA reviewer over every current candidate">Run QA review · all candidates</button>`;
       const sel = el.querySelector("#art-item-sel");
       if (sel) sel.onchange = () => { bg.setActiveItem(sel.value || null); };
@@ -327,7 +657,18 @@
       const bg = this._bg, host = this._els.flow;
       try {
         const groups = (this._groups || []).filter(g => g && g.logical_name);
-        if (!groups.length) { host.innerHTML = '<div class="art-empty">no assets yet</div>'; return; }
+        // Clearing the signature on every early return matters: the guard below
+        // compares against it, and a stale match would leave "no assets yet" on
+        // screen after the assets came back.
+        if (!groups.length) {
+          this._flowSig = "";
+          host.innerHTML = SeatStage.nothing(
+            "no asset has reached the engine project",
+            "This map draws one node per logical asset and a line to GODOT for " +
+            "every one an import record or the current build references. It " +
+            "fills in as approved art is delivered with godot_import_asset.");
+          return;
+        }
         const statusOf = (g) => {
           if (g.approved) return "approved";
           const revs = g.revisions || [];
@@ -338,6 +679,14 @@
         const rigged = (g) => (g.revisions || []).some(r =>
           (r.engine_import && Object.keys(r.engine_import).length) || r.used_in_current_build);
         const color = { approved: "var(--good)", candidate: "var(--warn)", rejected: "var(--bad)", other: "var(--ash2)" };
+
+        // Rebuilding 249 SVG nodes every three seconds threw away the scroll
+        // position of a 320px-tall map on every tick, so scrolling to an asset
+        // near the bottom and clicking it was a race against the poll.
+        const sig = this._logical + "|" + groups.map(g =>
+          g.logical_name + ":" + statusOf(g) + (rigged(g) ? "*" : "")).join(",");
+        if (sig === this._flowSig && host.firstChild) return;
+        this._flowSig = sig;
 
         const cols = 3, nodeW = 150, nodeH = 30, gapX = 26, gapY = 12, padL = 12, padT = 12;
         const rows = Math.ceil(groups.length / cols);
@@ -396,12 +745,24 @@
       if (!host) return;
       try {
         const st = this._locks || {};
-        if (st.error) { host.innerHTML = `<div class="art-empty">locks unavailable - ${bg.esc(st.error)}</div>`; return; }
         const d = st.payload || {};
         const held = Array.isArray(d.held) ? d.held : [];
         const leases = Array.isArray(d.path_leases) ? d.path_leases : [];
+        // Same repaint guard as the flow map. Every early return clears the
+        // signature so a state that renders through a different branch cannot
+        // be matched by a later payload and left on screen.
+        const sig = st.error ? "e:" + st.error : held.map(h =>
+          (h.seat || "") + ":" + (h.path || "") + ":" + ((h.waiters || []).length) +
+          ":" + (h.lease_expires_at || "")).join(",") + "|" + leases.length;
+        if (sig === this._lockSig && host.firstChild) return;
+        this._lockSig = sig;
+        if (st.error) { host.innerHTML = `<div class="art-empty">locks unavailable - ${bg.esc(st.error)}</div>`; return; }
         if (!held.length && !leases.length) {
-          host.innerHTML = '<div class="art-empty">nothing locked - every asset is free to edit.</div>';
+          host.innerHTML = SeatStage.nothing(
+            "nothing is locked - every asset is free to edit",
+            "A seat claims a binary before editing it, because a .png does not " +
+            "merge. When one is held this is where the holder, the waiters and " +
+            "an expired lease show up.");
           return;
         }
         const short = p => { const s = String(p || "").replace(/\\/g, "/"); const i = s.lastIndexOf("/"); return i === -1 ? s : s.slice(i + 1); };
@@ -429,6 +790,7 @@
         host.querySelectorAll("[data-lockitem]").forEach(b =>
           b.addEventListener("click", () => bg.setActiveItem(Number(b.dataset.lockitem))));
       } catch (e) {
+        this._lockSig = "";
         host.innerHTML = '<div class="art-empty">lock panel error</div>';
         console.error("[art] locks", e);
       }
@@ -504,8 +866,24 @@
         const m = this._groupMap();
         const names = this._logicalNames();
         if (!names.length) {
-          host.innerHTML = `<h3 class="art-h">${BGICON("consistency")} Iteration lab</h3>
-            <div class="art-empty">No artifacts yet. When the art seat produces candidate images they appear here — every revision as a thumbnail, each beside the reference it was drawn against.</div>`;
+          // Every early return clears the signature, or the state that renders
+          // through a different branch can be matched by a later payload and
+          // left on screen. And the empty state NAMES what would fill it: "no
+          // models found" over a 584-sheet project is the bug this wording
+          // exists to make impossible to mistake for the truth.
+          this._detailSig = "";
+          const filtered = this._bg.activeItem && this._itemOnly;
+          host.innerHTML = SeatStage.nothing(
+            filtered
+              ? "no candidates on the focused work item"
+              : "no image candidates on this project yet",
+            filtered
+              ? "This is filtered to the focus item above. Untick \"only this " +
+                "item's assets\" to see every asset on the project."
+              : "Queue art work to the board, or regenerate an existing asset. " +
+                "Every revision lands here as a thumbnail, each beside the " +
+                "reference it was drawn against and what the consistency pass " +
+                "measured about it.");
           return;
         }
         // signature: re-render detail only when the selected group's state
@@ -522,7 +900,7 @@
         // The picker lists every logical asset — 99 of them on this project —
         // in a 560px-tall scroller with no way to narrow it. A filter costs one
         // input and turns "scroll and hope" into "type three letters".
-        host.innerHTML = `<h3 class="art-h">${BGICON("consistency")} Iteration lab</h3>
+        host.innerHTML = `
           <div class="art-lab">
             <div class="art-listwrap">
               <input class="art-lfilter" id="art-lfilter" type="search"
@@ -545,7 +923,7 @@
       const bg = this._bg;
       const list = this._els.lab.querySelector("#art-list");
       if (!list) return;
-      list.innerHTML = names.map(n => {
+      const rows = names.map(n => {
         const g = m[n] || [];
         const approved = g.some(a => a.status === "approved" || a.status === "integrated");
         const cand = g.filter(a => a.status === "candidate").length;
@@ -564,6 +942,17 @@
           <span class="art-lcount">${g.length}${cand ? " · " + cand + "c" : ""}</span>
         </button>`;
       }).join("");
+      /* 99 ROWS REBUILT EVERY THREE SECONDS IS A SCROLLER YOU CANNOT USE. This
+       * list is 520px tall over ~99 assets, and replacing its innerHTML on the
+       * poll reset scrollTop to zero — so scrolling down to an asset and
+       * reaching for it was a race against the next tick, and the filter's
+       * show/hide had to be re-applied from scratch each time. The rendered
+       * markup IS the signature here: if it is byte-identical there is by
+       * definition nothing for a repaint to show. */
+      if (rows !== this._listSig || !list.firstChild) {
+        this._listSig = rows;
+        list.innerHTML = rows;
+      }
       // One delegated listener on the scroller instead of 99 on the rows —
       // the list is rebuilt on every poll, so per-row binding re-ran 99 times
       // every few seconds.
@@ -1388,9 +1777,7 @@
      * ways — the disposition, a durable art-seat preference note the NEXT agent
      * reads in its seat brief, and a live steer to the agent still working the
      * item. /review writes a column nobody reads, so a rejection through it
-     * teaches nothing. The endpoint reports a refused disposition in
-     * `review_error` (it keeps the note and the steer either way), so that has
-     * to be surfaced as well as the envelope error. */
+     * teaches nothing. */
     async _react(ids, verdict, note) {
       const bg = this._bg;
       const item = bg.activeItem || null;
@@ -1399,12 +1786,48 @@
         const body = { verdict, note: note || "" };
         if (item) body.item_id = item;
         const r = await bg.post(`/api/artifacts/${id}/react`, body);
-        // Approval is human-only server-side; a 403 comes back as a real
-        // sentence and must be shown, not swallowed into a blank panel.
-        const err = this._err(r) || (r && r.review_error) || null;
-        if (err) { if (!firstErr) firstErr = err; } else done++;
+        const out = this._reactOutcome(r);
+        if (out.landed) done++;
+        if (out.msg && !firstErr) firstErr = out.msg;
       }
       return { done, firstErr };
+    },
+
+    /* WHAT /react ACTUALLY ANSWERS, which is not what this used to read.
+     *
+     * The route was rewritten to report each fan-out leg separately in
+     * `effects` and to set `ok:false` when any ATTEMPTED leg failed. It no
+     * longer emits the `review_error` key this file was looking for, and its
+     * failure body carries no top-level `error` at all — so _err() saw
+     * ok:false, found nothing to quote, and toasted the literal words "request
+     * failed" on top of a body that said, in a full sentence, that only a human
+     * may approve. The refusal was written, transmitted, parsed, and thrown
+     * away one line from the screen.
+     *
+     * Second, quieter lie: `done` counted a frame only when the whole call was
+     * clean, so a frame that WAS approved and whose seat-note leg happened to
+     * fail was reported as not approved — and then the reload showed it
+     * approved. Only the DISPOSITION leg decides whether the frame moved; a
+     * note or a steer that failed is worth saying and is not a failed review.
+     *
+     * A raised refusal (bad verdict, unknown artifact) is still the plain
+     * envelope with no `effects`, so that path stays with _err(). */
+    _reactOutcome(r) {
+      const eff = r && r.effects;
+      if (!eff || typeof eff !== "object") {
+        const e = this._err(r);
+        return { landed: !e, msg: e };
+      }
+      const failed = Array.isArray(r.failed) ? r.failed : [];
+      const named = {
+        disposition: "the verdict did not save",
+        seat_note: "the art-seat preference note was not written",
+        steer: "the live agent was not steered",
+      };
+      const parts = failed.map(k => (named[k] || k) + ": " +
+        String((eff[k] && eff[k].error) || "no reason recorded"));
+      return { landed: failed.indexOf("disposition") === -1,
+               msg: parts.length ? parts.join(" · ") : null };
     },
     async _approve(ids, note) {
       const bg = this._bg;
@@ -1475,6 +1898,10 @@
       const view = document.getElementById("view-seats");
       if (!view || view.hidden) return false;
       if (window.SeatShell && window.SeatShell.current !== "art") return false;
+      // j/k/a/r are the FILMSTRIP's keys. With the workspace staged, the strip
+      // is only on screen in Candidates, and a bare "a" approving something you
+      // cannot see is the worst kind of shortcut.
+      if (this._stage && this._stage !== "candidates") return false;
       return !!(this._els && this._els.lab && this._els.lab.isConnected);
     },
     _key(e) {
@@ -1557,7 +1984,19 @@
       const id = this._reviewers[this._logical] || this._reviewers["__all__"];
       if (!host || !id) return;
       try {
-        const raw = await bg.get(`/api/agent-activity/${id}`).catch(() => null);
+        // A failed fetch is NOT an empty feed. This blanked the panel outright
+        // whenever the poll lost a request or the item id had aged out, so a
+        // reviewer that was dispatched and running looked like one that had
+        // never been asked for. Keep whatever was last true and say why.
+        let raw = null, reach = null;
+        try { raw = await bg.get(`/api/agent-activity/${id}`); }
+        catch (e) { reach = String((e && e.message) || "unreachable").slice(0, 120); }
+        if (reach) {
+          if (!host.firstChild) {
+            host.innerHTML = `<div class="art-muted">QA reviewer #${id} - activity unavailable (${bg.esc(reach)})</div>`;
+          }
+          return;
+        }
         const act = this._data(raw);
         if (!act) { host.innerHTML = ""; return; }
         const steps = (act.steps || []).slice(-8);
@@ -1569,9 +2008,16 @@
           return `<div class="art-step art-say">${bg.esc((s.text || "").slice(0, 160))}</div>`;
         }).join("");
         const fin = act.final ? `<div class="art-final">✓ ${bg.esc((act.final.text || "").slice(0, 200))}</div>` : "";
-        host.innerHTML = `<div class="art-qapanel">
+        const html = `<div class="art-qapanel">
           <div class="art-qah">${running ? '<span class="art-live">● live</span>' : '<span class="art-muted">done</span>'} independent QA reviewer · item #${id}</div>
           ${rows || '<div class="art-muted">waiting for the reviewer to start…</div>'}${fin}</div>`;
+        // The reviewer emits a step every several seconds and this polls every
+        // three, so most ticks had nothing new to draw and redrew anyway —
+        // taking the panel's scroll position with them.
+        if (html !== this._qaSig || !host.firstChild) {
+          this._qaSig = html;
+          host.innerHTML = html;
+        }
       } catch (e) { /* leave prior content */ }
     },
 
@@ -1761,14 +2207,38 @@
   };
 
   const STYLE = `<style>
-    /* The seat's two halves. Review is the filmstrip and the gates; Pixels is
-       the sprite editor, mounted here rather than in Studio — see _setMode. */
-      border:1px solid var(--line);border-radius:8px;color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}
     .art-editor{min-height:620px;height:calc(100vh - 300px)}
     .art-root{color:var(--bone);font-size:13px}
-    .art-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6);margin-bottom:var(--s-6)}
-    .art-h{display:flex;align-items:center;gap:var(--s-4);margin:0 0 var(--s-5);font-size:var(--fs-2xs);font-weight:var(--fw-bold);text-transform:uppercase;letter-spacing:var(--track-label);color:var(--text-3)}
     .art-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
+
+    /* The stage bodies. Two panels side by side where the pair is one
+       question — what conditions a generation (refs + trained style), and
+       whether a decision actually landed (installs + locks). Everything else
+       is one panel wide, because a stage with two unrelated boxes in it is the
+       stack this whole strip exists to replace. */
+    .art-anchorgrid{display:grid;grid-template-columns:minmax(280px,340px) minmax(0,1fr);
+      gap:var(--s-5);align-items:start}
+    .art-landgrid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);
+      gap:var(--s-5);align-items:start}
+    @media(max-width:1080px){
+      .art-anchorgrid,.art-landgrid{grid-template-columns:1fr}
+    }
+
+    /* Land: what the build is loading. A bad row is the one that matters -
+       approved, and the engine never got it. */
+    .art-insth{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);
+      text-transform:uppercase;letter-spacing:var(--track-label);margin:var(--s-5) 0 var(--s-3)}
+    .art-inst{display:flex;align-items:baseline;gap:var(--s-4);padding:4px 0;
+      border-bottom:1px solid var(--line-soft);font-size:12px}
+    .art-inst.bad{color:var(--bad)}
+    .art-instname{flex:0 0 auto;max-width:42%;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;background:none;border:0;padding:0;color:var(--accent);
+      font:inherit;font-size:12px;cursor:pointer;text-align:left}
+    .art-instname:hover{text-decoration:underline}
+    .art-inst.bad .art-instname{color:var(--bad)}
+    .art-instrev{flex:none;color:var(--text-3);font-variant-numeric:tabular-nums;font-size:11px}
+    .art-instpath{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;color:var(--text-3);font-size:11px;text-align:right}
 
     /* Trained style. Full width above the lab, because it decides what EVERY
        image this project generates looks like — and a LoRA's drift is baked
@@ -1854,12 +2324,10 @@
     .art-spend{font-size:11px;color:var(--ember);border:1px solid var(--seam);border-radius:6px;padding:3px 8px;font-variant-numeric:tabular-nums}
     #art-review-all{margin-left:auto}
     /* columns */
-    .art-cols{display:flex;gap:14px;align-items:flex-start}
-    .art-side{width:340px;flex:0 0 340px}
-    .art-main{flex:1;min-width:0}
-    @media(max-width:1080px){.art-cols{flex-direction:column}.art-side{width:100%;flex:none}}
     /* flow map */
-    .art-flowwrap{overflow:auto;max-height:320px}
+    /* The map is the whole stage now rather than a 320px sliver in a side
+       column, so it gets the height to be read instead of scrubbed. */
+    .art-flowwrap{overflow:auto;max-height:min(62vh,620px)}
     .art-svg{display:block}
     .art-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:var(--ash);align-items:center}
     .art-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}

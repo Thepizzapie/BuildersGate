@@ -323,15 +323,32 @@
       document.querySelectorAll("#ck-gate [data-gate]").forEach(b =>
         b.onclick = () => this.setGate(b.dataset.gate, b));
       const filter = document.getElementById("ck-filter");
-      if (filter) filter.onclick = () => {
-        const mode = window.AgentsGraph
+      if (filter) {
+        // WRITTEN, NEVER ASSUMED. The label was markup and the mode was
+        // localStorage, so a tab that had been left on "everything" came back
+        // saying "in flight" over a canvas showing everything - which is exactly
+        // how a filter gets reported as ignoring its own button.
+        const paint = mode => {
+          filter.textContent = mode === "active" ? "in flight" : "everything";
+          filter.setAttribute("aria-pressed", mode === "active" ? "true" : "false");
+          // .on is the app's pressed treatment; a ghost button that reads the
+          // same in both states cannot show which one you are in.
+          filter.classList.toggle("on", mode === "active");
+          // Says what AgentsGraph.keep() actually keeps. It claimed "queued" and
+          // "just landed", and the graph deliberately draws neither - queued work
+          // is a plan and lives in the panel below, finished work leaves the
+          // canvas unless something still hangs off it. A tooltip promising two
+          // categories the canvas will never show makes their absence read as the
+          // filter being broken.
+          filter.title = mode === "active"
+            ? "Showing work that is running, holding a gate, or broke in the last half hour - and whatever caused it"
+            : "Showing every item in the window, queued and finished included";
+        };
+        this._paintFilter = paint;
+        filter.onclick = () => paint(window.AgentsGraph
           ? AgentsGraph.setFilter(AgentsGraph.filter === "active" ? "all" : "active")
-          : "active";
-        filter.textContent = mode === "active" ? "in flight" : "everything";
-        filter.title = mode === "active"
-          ? "Showing work that is running, queued, broken, or just landed"
-          : "Showing every item in the window, finished ones included";
-      };
+          : "active");
+      }
       const clear = document.getElementById("ck-target-x");
       if (clear) clear.onclick = () => this.aim(null);
       this.bindQueueButtons();
@@ -348,6 +365,12 @@
 
       if (window.AgentsGraph) {
         AgentsGraph.mount(graphHost, document.getElementById("ck-detail"));
+      }
+      // AFTER mount, not with the binding above: mount() is where the graph
+      // restores its saved filter, so painting the button before it runs would
+      // label the persisted mode with the default one.
+      if (this._paintFilter) {
+        this._paintFilter(window.AgentsGraph ? AgentsGraph.filter : "active");
       }
       this.findSprite();
       this.bindDeck();
@@ -562,8 +585,28 @@
            <div class="ck-msg dir live"><div class="ck-who">director <span class="ck-dots"><i></i><i></i><i></i></span></div>
              <div class="ck-txt thinking">waking up…</div></div></div>` : "";
       if (sig !== this._lastTurnSig || pending) {
+        // AN OPENED STEP FOLD SURVIVES THE REPAINT. dirSteps() renders a
+        // finished turn's receipt as <details>, and <details> carries its open
+        // state in the DOM and nowhere else — so wholesale innerHTML slammed
+        // every one of them shut. The signature above moves whenever ANY turn's
+        // step count or answer length changes, which is every three seconds
+        // while something is running: expanding turn #3 to read what it did
+        // while turn #4 works was impossible, and read as a fold that refused
+        // to open rather than one that kept being closed.
+        const open = new Set();
+        box.querySelectorAll(".ck-turn").forEach(el => {
+          const fold = el.querySelector("details.ck-steps-fold");
+          if (fold && fold.open && el.dataset.turn) open.add(el.dataset.turn);
+        });
         this._lastTurnSig = sig;
         box.innerHTML = rows + this.steerHTML() + pending;
+        if (open.size) {
+          box.querySelectorAll(".ck-turn").forEach(el => {
+            if (!open.has(el.dataset.turn)) return;
+            const fold = el.querySelector("details.ck-steps-fold");
+            if (fold) fold.open = true;
+          });
+        }
         if (this._pinBottom) box.scrollTop = box.scrollHeight;
       }
       // Clicking a turn selects it on the graph — the sentence and its
@@ -794,7 +837,15 @@
       // AIMING AND BRAINSTORMING ARE INCOMPATIBLE. The target rail points the
       // composer at one running agent; a brainstorm has no agent to steer, and
       // leaving it aimed would send a thinking sentence into a working session.
-      if (want && this.target) this.setTarget(null);
+      //
+      // This called `setTarget`, which has never existed on this object — the
+      // method is aim(). So the ONE case the line was written for was the one
+      // case it broke: flipping to brainstorm while aimed threw a TypeError out
+      // of an un-awaited click handler, and every statement below it (the mode
+      // repaint, the session load, the transcript swap) never ran. The toggle
+      // read as dead, bsMode was already true, and the composer was still
+      // pointed at a running agent — the exact footgun this guard exists for.
+      if (want && this.target) this.aim(null);
       this.renderSayMode();
       if (want) await this.bsEnsureSession();
       this._lastTurnSig = "";

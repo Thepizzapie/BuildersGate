@@ -19,11 +19,33 @@ from typing import Optional
 
 from fastapi import APIRouter, Request
 
+from bgate_core import wfnodes as _wfnodes
 from bgate_core import workflows as _workflows
 from bgate_ui import api
 from bgate_ui.deps import root
 
 router = APIRouter(prefix="/api/workflows")
+
+
+@router.get("/nodes")
+def node_catalogue() -> dict:
+    """The tool-node table, so the palette builds itself from the server.
+
+    The palette used to be forty-five hand-written cards in JavaScript, and
+    behind most of them there was no executor at all — the card existed, the
+    tool did not run. Now the SAME table that the executor calls with is what
+    the browser draws, so a card can only exist for a tool this build really
+    has, and an argument on a card is an argument the tool really takes. A typo
+    in an argument name would otherwise surface as a 422 in the middle of a paid
+    run, discovered by the user.
+
+    ``tools`` are the nodes that call something; ``flow`` are the glue nodes
+    that only move values around. They are separate lists because they are
+    different promises: one can spend money and fail against a provider, the
+    other cannot fail against anything but its own configuration.
+    """
+    return api.ok({"tools": _wfnodes.catalogue(),
+                   "flow": _wfnodes.flow_catalogue()})
 
 
 def _run_or_404(r, run_id: int, *, include_graph: bool = False) -> dict:

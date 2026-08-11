@@ -143,6 +143,21 @@ def queue_revert(request: Request, item_id: int,
     if got["conflicts"]:
         raise api.conflict(got["reason"], conflicts=got["conflicts"],
                            item_id=item_id)
+    # THE ONE SAFE PLACE TO DROP AN ISOLATED RUN'S WORKTREE, and the only thing
+    # that ever drained them: dispatch cuts .bgate/work/item-N when
+    # `dispatch.isolation` is on and nothing removed it, so every isolated run
+    # left a full checkout and a bgate/item-N branch behind forever.
+    #
+    # NOT at run finish, which is where it looks like it belongs. The agent's
+    # edits are UNCOMMITTED inside that worktree and nothing merges the branch,
+    # so `worktree remove --force` there would delete the run's entire output —
+    # and /diff, /revert, /peek and the history previews all resolve a finished
+    # item's files through item["worktree"] for as long as the item exists.
+    # A completed full revert is the moment that stops being true: the human
+    # has just put every path this run touched back to base, so what is left in
+    # the checkout is base, and there is nothing in it to lose.
+    if item.get("worktree") and not payload.get("paths"):
+        got["worktree_removed"] = _git.remove_worktree(root(), item_id)
     return api.ok(got)
 
 

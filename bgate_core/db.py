@@ -185,6 +185,112 @@ def _work_item_chain_rebuild(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _work_item_drop_scope_tier(conn: sqlite3.Connection) -> None:
+    """Rebuild work_item once more, this time to LOSE a column: scope_tier_id.
+
+    WHAT WENT AND WHY. Scope tiers and the cut line were a gate that never
+    fired. `scope.enforce` sat in queue.add from the day it was written and
+    refused nothing, because refusing untiered work would have rejected every
+    existing queue on the first line anyone drew — so untiered work was allowed
+    through and flagged, and nothing was ever filed under a tier. Measured on a
+    real project before this landed: 2 tiers, 0 cut, 0 work items tiered, 7
+    untiered open. What it cost was not zero — three panels of the World bible,
+    a paragraph of every seat brief, and a column on the table every board row
+    lives in. The feature is gone; this is the column following it.
+
+    A plain ALTER cannot drop a column on the SQLite versions this ships
+    against, so it is the same documented 12-step rebuild as
+    _work_item_rebuild, with the same two pragmas — see that docstring for why
+    ``legacy_alter_table`` is not optional. The column list here is the 0014
+    table plus the four columns 0017 and 0019 ALTERed on afterwards, minus the
+    one being dropped; there is nothing else to reconcile because nothing has
+    ever ALTERed work_item since.
+
+    Re-runnable, because migrate() cannot fold a callable into one commit: if
+    the column is already gone this returns without touching the table.
+    """
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(work_item)")]
+    if "scope_tier_id" not in columns:
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("DROP INDEX IF EXISTS idx_work_status")
+        conn.execute("DROP INDEX IF EXISTS idx_work_chain")
+        conn.execute("DROP INDEX IF EXISTS idx_work_depends")
+        conn.execute("ALTER TABLE work_item RENAME TO work_item_old")
+        conn.execute("""
+            CREATE TABLE work_item (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                seat        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                brief       TEXT NOT NULL DEFAULT '',
+                status      TEXT NOT NULL DEFAULT 'queued'
+                                CHECK (status IN
+                                    ('queued','dispatched','review','done',
+                                     'failed','cancelled')),
+                priority    INTEGER NOT NULL DEFAULT 0,
+                source      TEXT NOT NULL DEFAULT 'manual',
+                source_ref  TEXT NOT NULL DEFAULT '',
+                result      TEXT NOT NULL DEFAULT '',
+                actor         TEXT NOT NULL DEFAULT '',
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                num_turns     INTEGER NOT NULL DEFAULT 0,
+                max_cost_usd  REAL,
+                max_runtime_s INTEGER,
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                base_commit   TEXT NOT NULL DEFAULT '',
+                branch        TEXT NOT NULL DEFAULT '',
+                worktree      TEXT NOT NULL DEFAULT '',
+                chain_id      TEXT NOT NULL DEFAULT '',
+                chain_pos     INTEGER NOT NULL DEFAULT 0,
+                depends_on    INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+                approved_by   TEXT NOT NULL DEFAULT '',
+                -- 0017 and 0019, ALTERed on after the last rebuild.
+                closed_by     TEXT NOT NULL DEFAULT '',
+                gate_skip     INTEGER NOT NULL DEFAULT 0,
+                stopped_by    TEXT NOT NULL DEFAULT '',
+                stopped_at    TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            INSERT INTO work_item
+                (id, seat, title, brief, status, priority, source, source_ref,
+                 result, actor, total_cost_usd, num_turns, max_cost_usd,
+                 max_runtime_s, attempts, base_commit, branch, worktree,
+                 chain_id, chain_pos, depends_on, approved_by, closed_by,
+                 gate_skip, stopped_by, stopped_at, created_at, updated_at)
+            SELECT id, seat, title, brief, status, priority, source, source_ref,
+                   result, actor, total_cost_usd, num_turns, max_cost_usd,
+                   max_runtime_s, attempts, base_commit, branch, worktree,
+                   chain_id, chain_pos, depends_on, approved_by, closed_by,
+                   gate_skip, stopped_by, stopped_at, created_at, updated_at
+            FROM work_item_old
+        """)
+        moved = conn.execute("SELECT COUNT(*) FROM work_item").fetchone()[0]
+        had = conn.execute("SELECT COUNT(*) FROM work_item_old").fetchone()[0]
+        if moved != had:
+            raise RuntimeError(f"work_item rebuild moved {moved} of {had} rows")
+        conn.execute("DROP TABLE work_item_old")
+        conn.execute("CREATE INDEX idx_work_status ON work_item(status, priority DESC, id)")
+        conn.execute("CREATE INDEX idx_work_chain ON work_item(chain_id, chain_pos)")
+        conn.execute("CREATE INDEX idx_work_depends ON work_item(depends_on)")
+        conn.commit()
+        broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise RuntimeError(f"work_item rebuild broke {len(broken)} references")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 # ---------------------------------------------------------------------------
 # Schema. Forward-only: append, never rewrite.
 #
@@ -1436,6 +1542,52 @@ _MIGRATIONS: list = [
         UNIQUE (board_id, idx)
     );
     CREATE INDEX idx_story_frame_board ON story_frame(board_id, idx);
+    """,
+    # 0030 — THE CUT LINE COMES OUT. work_item loses scope_tier_id; the tier
+    # gate it fed never refused a single item. See _work_item_drop_scope_tier
+    # for the measurement and for why this is a rebuild rather than an ALTER.
+    #
+    # bible_section keeps its 'scope_tier' and 'cut_line' kinds in the CHECK.
+    # Nothing writes them any more — bible.KINDS no longer offers them — but a
+    # project that already authored tiers has that prose in those rows, and a
+    # migration that deleted them would be this change quietly throwing away
+    # something the user typed. They are inert: no view lists them, no tool
+    # creates them. Narrowing the CHECK is a later job for whoever is willing
+    # to also decide what happens to the text.
+    _work_item_drop_scope_tier,
+    # 0031 — the bible gets the anchoring the art seat already had.
+    #
+    # The bible describes the game in prose while every image that actually
+    # DEFINES the look lived somewhere else: ref_pin (project-wide) and task_ref
+    # (one work item). A pillar like "Corporate-collapse satire" had no way to
+    # point at the art that shows what it means, so a seat reading the bible got
+    # the words and had to guess the pictures.
+    #
+    # bible_ref is task_ref's shape with a different parent on purpose — same
+    # columns, same UNIQUE, same kinds — so a reader who knows one knows the
+    # other, and bible_refs.py can mirror task_refs.py line for line.
+    #
+    # `ref` HOLDS A PIN NAME (or a project-relative path), never a resolved
+    # path. refs.pin() versions a re-pin into <slug>.rN and moves the pointer;
+    # a stored path would freeze the section onto revision 1 of art that has
+    # since been redrawn, which is the exact failure storyboard._clean_refs
+    # documents. Resolution happens at read time, every time.
+    #
+    # CASCADE: the anchors are part of the section. A deleted pillar must not
+    # leave rows pointing at an id that will be handed to the next section.
+    """
+    CREATE TABLE bible_ref (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        section_id   INTEGER NOT NULL REFERENCES bible_section(id) ON DELETE CASCADE,
+        ref          TEXT NOT NULL,
+        kind         TEXT NOT NULL DEFAULT 'style'
+                         CHECK (kind IN ('character','style','ui','concept')),
+        note         TEXT NOT NULL DEFAULT '',
+        rank         INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (section_id, ref)
+    );
+    CREATE INDEX idx_bible_ref_section ON bible_ref(section_id, rank);
     """,
 ]
 

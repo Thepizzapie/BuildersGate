@@ -63,6 +63,7 @@ from bgate_core import activity as _activity
 from bgate_core import assets as _assets
 from bgate_core import autotile as _autotile
 from bgate_core import levelgen as _levelgen
+from bgate_core import providers as _providers
 from bgate_core import scenewire as _scenewire
 from bgate_core import tilemap as _tilemap
 from bgate_core import art_tournament as _art_tournament
@@ -70,6 +71,7 @@ from bgate_core import artifacts as _artifacts
 from bgate_core import refs as _refs
 from bgate_core import seats as _seats
 from bgate_core import bible as _bible
+from bgate_core import bible_refs as _bible_refs
 from bgate_core import brainstorm as _bs
 from bgate_core import playtest as _playtest
 from bgate_core import scaffold as _scaffold
@@ -791,9 +793,9 @@ def project_set_dimension(dimension: str) -> dict:
 def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
     """Add a bible section.
 
-    kind: pillar | loop | scope_tier | cut_line | constraint | reference.
-    rank orders within a kind; for scope_tier, LOWER rank = higher priority, and
-    anything ranked at or below the cut_line's rank is explicitly not being built.
+    kind: pillar | loop | constraint | reference.
+    rank orders sections within a kind — it is the reading order of the
+    document, lowest first.
     """
     try:
         return _bible.add(_root(), kind, title, body=body, rank=rank)
@@ -813,7 +815,7 @@ def bible_update(section_id: int, title: Optional[str] = None,
 
 @_tool
 def bible_read(kind: Optional[str] = None) -> dict:
-    """Read the bible. No kind: the grouped overview with the scope cut applied."""
+    """Read the bible. No kind: every section, grouped by kind."""
     try:
         root = _root()
         if kind:
@@ -824,19 +826,89 @@ def bible_read(kind: Optional[str] = None) -> dict:
 
 
 @_tool
-def scope_check(rank: int) -> dict:
-    """Is work at this rank above the cut line? Call before building anything."""
+def bible_ref_attach(section_id: int, ref: str, kind: str = "style",
+                     note: str = "", rank: int = 0) -> dict:
+    """Anchor a pinned reference IMAGE to a bible section — the art that says
+    what the words mean.
+
+    The bible is prose. A pillar reading "grimy corporate satire", a canon
+    entity, a locked art-direction constraint — each is settled by pictures that
+    until now lived only in the pin list, unconnected to the text. A seat read
+    the section, got the words, and guessed the look; that guess is where style
+    drift starts, and afterwards nobody can point at where it began.
+
+    ref is a PIN NAME from ref_list (or a project-relative path); pin the image
+    first with ref_pin. The NAME is what gets stored, never the resolved path,
+    so re-pinning better art under the same name upgrades every section that
+    points at it instead of stranding them on the old revision.
+    kind: character | style | ui | concept.
+    """
     try:
-        root = _root()
-        line = _bible.cut_line(root)
-        return {
-            "rank": rank,
-            "in_scope": _bible.in_scope(root, rank),
-            "cut_line": line,
-            "note": "no cut line set — scope call not yet made" if line is None else "",
-        }
+        out = _bible_refs.add(_root(), section_id, ref, kind=kind, note=note,
+                              rank=rank)
+        _log("bible", f"anchored ref {ref!r} to bible section {section_id}",
+             ref=f"bible:{section_id}")
+        return out
     except Exception as exc:
         return _fail(exc)
+
+
+@_tool
+def bible_ref_list(section_id: Optional[int] = None, suggest: bool = False) -> dict:
+    """The reference art anchored to the bible. READ BEFORE WRITING OR
+    ILLUSTRATING CANON.
+
+    No section_id: every section that has anchors, so the director can see at a
+    glance which pillars are still described in words alone. With one: that
+    section's anchors plus `resolved` — the layered set to condition a
+    generation on (this section's anchors first, then the global pins), the same
+    shape the task-level refs hand back.
+
+    Every entry carries resolved_path and exists. A false `exists` is a pin
+    whose file went missing underneath it, and generating against one of those
+    produces an unconditioned image that looks like a result.
+
+    suggest=True adds `suggestions`: sections whose PROSE names a pin (people
+    typed "(pinned: concept-battle / concept-battle-dark)" into titles because
+    there was nowhere structured to put it). It is a proposal only — attach the
+    ones that are right with bible_ref_attach, and leave the titles alone.
+    """
+    try:
+        root = _root()
+        if section_id is None:
+            grouped = _bible_refs.list_all(root)
+            titles = {int(s["id"]): s["title"] for s in _bible.list_sections(root)}
+            out = {"by_section": [
+                {"section_id": sid, "title": titles.get(sid, ""), "refs": anchored}
+                for sid, anchored in sorted(grouped.items())]}
+            if suggest:
+                out["suggestions"] = _bible_refs.suggest_from_titles(root)
+            return out
+        return {"section_id": section_id,
+                "anchored": _bible_refs.list_for_section(root, section_id),
+                "resolved": _bible_refs.resolve_for_section(root, section_id)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def bible_ref_detach(section_id: int, ref: str) -> dict:
+    """Remove one anchor from a bible section. The pin itself survives — only
+    the claim that this section is about that image goes away."""
+    try:
+        out = _bible_refs.remove(_root(), section_id, ref)
+        _log("bible", f"detached ref {ref!r} from bible section {section_id}",
+             ref=f"bible:{section_id}")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+# `scope_check(rank)` was here, and every seat's rules told agents to call it
+# before building anything. It answered off a `cut_line` bible section that
+# almost no project drew, and the queue gate behind the same idea never once
+# refused an item. Removed with the rest of the tier machinery — a tool that
+# always says yes still costs a slot in every agent's tool list.
 
 
 # ---------------------------------------------------------------------------
@@ -2500,6 +2572,9 @@ def _pick_provider(asked: str = "") -> str:
         return "openai"
     if os.environ.get("KREA_API_KEY"):
         return "krea"
+    # NOTE: character/sprite/animation work does NOT come through here — it goes
+    # to providers.provider_for(task_kind), which routes identity work to krea
+    # regardless of this order. See that function for the measurement.
     # kie LAST, and it is the only one of the three that has to be named to be
     # used for anything else. Its image fields take public URLs only, so
     # auto-selecting it would silently turn every anchored generation in the
@@ -2603,7 +2678,9 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         # image_talkhead, the two tools that happened to expose `provider`.
         # chroma.generate has dispatched to either since it was written; the
         # tool simply never passed the choice along.
-        result = _chroma.generate(prompt, str(out), provider=_pick_provider(provider),
+        result = _chroma.generate(prompt, str(out),
+                                  provider=_providers.provider_for(
+                                      task_kind, asked=provider),
                                   model=model,
                                   task_kind=task_kind,
                                   keyed=True if transparent else None,
@@ -8031,6 +8108,54 @@ def _frames_images(result: dict) -> list[str]:
         if rel and (root / rel).exists():
             out.append(str(root / rel))
     return out[:12]
+
+
+@_tool(images=_frames_images)
+def storyboard_auto(name: str, premise: str = "", frames: int = 6,
+                    style: str = "", style_note: str = "",
+                    cast_refs: Optional[list] = None,
+                    aspect_ratio: str = "16:9", quality: str = "low",
+                    promote_to: str = "", model: str = "") -> dict:
+    """Premise in, finished storyboard out, in ONE call. START HERE.
+
+    THIS IS THE DEFAULT DOOR FOR "MAKE ME A CUTSCENE" and the other storyboard
+    tools are its parts, for when you need to change one thing. Do not hand-run
+    write_script then six frame_generates then promote: that is this tool with
+    five extra places to stop, and stopping to ask about something the brief
+    already answered is the failure mode this exists to remove.
+
+    WHAT IT DOES WITHOUT ASKING:
+      * No cast pinned? It derives one - character pins first, canon lore
+        entities second - and conditions every frame on it, so the look holds
+        across the board. An underspecified cast is a reason to go looking, not
+        a reason to stop and file a note.
+      * No style? The project bible's locked art direction is appended at the
+        generation door regardless, so the game's look applies anyway.
+      * No beats? It writes them from the premise for a fraction of a cent.
+      * A frame fails? The rest still draw. You get a partial board and a named
+        list of what failed, which is worth more than a refusal.
+
+    COST: images only, and cheap - `quality="low"` is the default here because
+    a board is read at a glance. Six frames is a few tens of cents. It does NOT
+    buy video: promote_to writes the shot list, which is free, and
+    cinematic_generate_shot spends per shot as a separate decision.
+
+    Re-running is safe and does not re-buy: a frame that already has an image is
+    kept and approved rather than redrawn, and a board that already has beats
+    keeps them rather than having a model overwrite somebody's edits.
+    """
+    try:
+        from bgate_core import storyboard as _sb
+
+        return _sb.auto(
+            _root(), name, premise, frames=int(frames), style=style,
+            style_note=style_note,
+            cast_refs=list(cast_refs) if cast_refs else None,
+            aspect_ratio=aspect_ratio, quality=quality,
+            promote_to=promote_to, model=model,
+            work_item_id=_work_item_id())
+    except Exception as exc:
+        return _fail(exc)
 
 
 @_tool

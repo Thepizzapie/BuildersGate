@@ -359,8 +359,40 @@ window.ChatLive = (() => {
     return `<div class="cl-log" id="cl-log">${body}</div>`;
   }
 
+  /* Only the fields a repaint would actually SHOW, in a short string.
+   *
+   * Same shape as SeatWork._sig and seats/cinematic.js's _signature(), and for
+   * the same reason: this panel repaints on a 2.5s clock and innerHTML is the
+   * whole DOM, so an unchanged payload was costing a rebuild every tick. Free-
+   * running values are deliberately absent — a per-tick timestamp in here would
+   * make the signature always differ and quietly defeat the check. Message
+   * identity rides on the cursor and the row count rather than on the text.
+   */
+  function signature() {
+    const conn = (state && state.connection) || {};
+    const cap = (state && state.capture) || {};
+    const p = (state && state.privacy) || {};
+    const p0 = platformOf() || {};
+    const open = (state && state.feedback && state.feedback.session) || {};
+    const c = open.counts || {};
+    return [conn.state, conn.state_label, conn.channel, conn.anonymous ? 1 : 0,
+            conn.reason, p0.configured ? 1 : 0, p0.id, p0.channel,
+            state && state.env_gitignored, cap.owner, cap.why,
+            p.advise ? 1 : 0, p.message,
+            open.id, open.prompt, c.total, c.authors, c.injection_attempts,
+            open.seen, busy, lastStop && lastStop.brainstorm_id,
+            rows.length, rows.length ? rows[rows.length - 1].seq : 0,
+    ].join("");
+  }
+
   function render() {
     if (!host) return;
+    /* NOTHING MOVED: leave the DOM alone. Beyond the wasted work, a rebuild
+       drops the caret out of whichever box is being typed in — see the restore
+       below, which is the backstop for the repaints that DO have to happen. */
+    const sig = signature();
+    if (sig === host._clSig && host.firstChild) return;
+    host._clSig = sig;
     const conn = (state && state.connection) || { state: "off" };
     const st = conn.state || "off";
     /* CONFIGURED IS A FACT ABOUT THE .env, NOT ABOUT THE SOCKET. Reading it off
@@ -378,6 +410,15 @@ window.ChatLive = (() => {
     const pinned = !log || (log.scrollTop + log.clientHeight >= log.scrollHeight - 24);
     const draftChannel = (host.querySelector("#cl-channel") || {}).value;
     const draftPrompt = (host.querySelector("#cl-prompt") || {}).value;
+    /* WHICH BOX HAD THE CARET, AND WHERE IN IT. Preserving the VALUE alone was
+       not enough: the input element is replaced, so focus and the selection go
+       with it and the next keystrokes land nowhere. A new chat message arriving
+       while somebody is halfway through typing the question they want to ask
+       their viewers is not a rare case — it is a live channel. */
+    const active = document.activeElement;
+    const heldId = active && host.contains(active) && active.id ? active.id : "";
+    const heldStart = heldId ? active.selectionStart : 0;
+    const heldEnd = heldId ? active.selectionEnd : 0;
 
     const head = `
       <div class="cl-bar">
@@ -409,6 +450,16 @@ window.ChatLive = (() => {
     if (chan && draftChannel !== undefined) chan.value = draftChannel;
     const prompt = host.querySelector("#cl-prompt");
     if (prompt && draftPrompt !== undefined) prompt.value = draftPrompt;
+
+    if (heldId) {
+      const again = host.querySelector("#" + heldId);
+      if (again) {
+        try {
+          again.focus();
+          again.setSelectionRange(heldStart, heldEnd);
+        } catch (e) { /* not every focusable element carries a selection */ }
+      }
+    }
 
     /* Stick to the bottom only if the reader was already there — scrolling up
        to read something and being yanked back down is the classic chat bug. */
@@ -467,16 +518,43 @@ window.ChatLive = (() => {
   }
 
   function openRoom(id) {
-    /* Hand off to whatever owns the brainstorm view. Guarded rather than
-       assumed: this module is mountable anywhere and must not throw because a
-       different part of the dashboard is not on the page. */
+    /* THIS LINK DID NOTHING AT ALL, AND IT IS THE ONE LINK THAT MATTERS.
+     *
+     * Stopping a feedback session is the moment the panel promises the most:
+     * "brainstorm #N is open with them in it". It called Brainstorm.open(), a
+     * method that has never existed — the module's whole surface is mount /
+     * unmount / active — and then fell through to `location.hash =
+     * "#brainstorm/N"`, which nothing in the dashboard listens for (only
+     * settingsview.js reads a hash, and only its own). So the sentence was true
+     * and the link was inert: click, and the page sits there.
+     *
+     * The real route is the one the director seat already uses. brainstorm.js
+     * picks its session from localStorage "bs-last-<seat>" on mount, and the
+     * director seat picks its mode from "dir-mode" on render — so writing both
+     * and then selecting the seat lands on this exact session, through the
+     * ordinary paths rather than a second way in. If the workspace happens to be
+     * mounted already, open() it directly so nothing is torn down needlessly.
+     *
+     * Every hop is guarded: this module is mountable anywhere and must not throw
+     * because a different part of the dashboard is not on the page. */
+    const n = Number(id);
+    if (!n) return;
+    try { localStorage.setItem("bs-last-director", String(n)); } catch (e) {}
+    try { localStorage.setItem("dir-mode", "brainstorm"); } catch (e) {}
     try {
-      if (window.Brainstorm && typeof window.Brainstorm.open === "function") {
-        window.Brainstorm.open(Number(id));
+      // Only the DIRECTOR workspace. The narrative one would happily read a
+      // director session by id and render it under a seat that is not allowed
+      // to file from it.
+      const live = window.Brainstorm && window.Brainstorm.active;
+      if (live && live.seat === "director" && typeof live.open === "function") {
+        live.open(n);
         return;
       }
-    } catch (e) { /* fall through to the link */ }
-    try { location.hash = `#brainstorm/${id}`; } catch (e) { /* nothing to do */ }
+    } catch (e) { /* fall through to the navigation */ }
+    try { if (window.setWorkspace) window.setWorkspace("seats"); } catch (e) {}
+    try {
+      if (window.SeatShell && window.SeatShell.select) window.SeatShell.select("director");
+    } catch (e) { /* the seat view is not on this page */ }
   }
 
   function onClick(event) {

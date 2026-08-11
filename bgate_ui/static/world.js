@@ -1,36 +1,41 @@
 /* World — the producer's surface, and the only one that was missing a pen.
  *
- * The audit: "the two things my job actually is — writing the design bible and
- * holding the cut line — have no write path in the UI at all; the bible is a
- * read-only chip list." So this module is a write surface first:
+ * The audit: "the thing my job actually is — writing the design bible — has no
+ * write path in the UI at all; the bible is a read-only chip list." So this
+ * module is a write surface first:
  *
- *   Bible tab   every section editable in place, and the SCOPE TIERS rendered as
- *               one drag-ordered list with the cut line as a draggable row in it.
- *               Dropping the line is the scope decision: it commits the tier
- *               order (POST /api/bible/reorder) and then the line's own rank,
- *               because rank is the shared numeric space scope.check compares.
- *               What the line strands — open work it retroactively invalidates —
- *               is the panel next to it, with a one-click re-file.
+ *   Bible tab   every section editable in place, drag-ordered within its kind.
  *   Lore tab    the canon graph, re-laid out here by how it is wired, rendered
  *               with NodeCanvas.
  *
- * Two refusals are surfaced rather than swallowed, because both are the feature:
- *   409 from DELETE /api/bible/{id}  — work is filed under that section; the user
- *                                      picks reassign / untier / cancel.
- *   409 from a lore write            — the prose breaks canon; the flags are shown
- *                                      and a human may override. An agent may not.
+ * THE SCOPE TIERS ARE GONE, and with them the "Stranded by the line" and "The
+ * line" panels that stood beside them, GET /api/scope, and the delete-a-tier
+ * negotiation modal. The gate underneath all of it — file work under a tier,
+ * refuse anything below the line — never refused an item: nothing was ever
+ * tiered, so three panels of this view were paid for by a mechanism that had
+ * never fired. Removed 2026-08-10.
+ *
+ * One refusal is still surfaced rather than swallowed, because it is the
+ * feature: a 409 from a lore write means the prose breaks canon; the flags are
+ * shown and a human may override. An agent may not.
  */
 window.World = (() => {
   const E = s => String(s ?? "").replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const TABS = [{ id: "bible", label: "Bible & cut line" },
+  const TABS = [{ id: "bible", label: "Bible" },
                 { id: "lore", label: "Lore graph" }];
   const KIND_LABEL = {
     pillar: "Pillars", loop: "Core loop", constraint: "Constraints",
-    reference: "References", scope_tier: "Scope tiers", cut_line: "Cut line",
+    reference: "References",
   };
   const EDITABLE_KINDS = ["pillar", "loop", "constraint", "reference"];
+  /* Every section header names an icon from icons.js, chosen for what the
+   * section IS: an anchor holds the design down, a loop is a loop, a lock is a
+   * constraint. */
+  const KIND_ICON = {
+    pillar: "anchor", loop: "loop", constraint: "lock", reference: "reference",
+  };
   // /api/bible answers the four editable kinds under their own plural keys.
   const GROUP_KEY = {
     pillar: "pillars", loop: "loop", constraint: "constraints", reference: "references",
@@ -42,9 +47,7 @@ window.World = (() => {
   };
 
   let tab = "bible";
-  let bible = null;      // {pillars, loop, constraints, references, cut_line, in_scope, cut, sections, kinds}
-  let scope = null;      // {cut_line, tiers, in_scope, cut, untiered_open, stranded}
-  let slots = [];        // scope-tier ids interleaved with the "CUT" marker
+  let bible = null;      // {pillars, loop, constraints, references, sections, kinds}
   let lore = null;       // {data:[entities], graph:{nodes,edges,kinds,statuses}}
   let canvas = null;
   let selected = null;   // slug of the entity in the side panel
@@ -79,6 +82,21 @@ window.World = (() => {
   const PATCH = (p, b) => send("PATCH", p, b);
   const DEL = p => req(p, { method: "DELETE" });
 
+  const icon = (name, size) => (window.BGIcon ? BGIcon(name, { size: size || 15 }) : "");
+
+  /* ---- the section header ------------------------------------------------ *
+   * One shape for every panel lid on this view: icon, label, count, actions.
+   * The classes are app.css's (.sec-h / .sec-t / .sec-n / .sec-a) rather than
+   * local ones, because the whole point is that the other content views wear
+   * the same header and a reader learns it once. */
+  function secHead(iconName, label, count, actions, tone) {
+    const n = (count === undefined || count === null || count === "")
+      ? "" : `<span class="sec-n ${tone || ""}">${E(count)}</span>`;
+    return `<div class="sec-h">${icon(iconName)}
+      <h3 class="sec-t">${E(label)}</h3>${n}
+      ${actions ? `<div class="sec-a">${actions}</div>` : ""}</div>`;
+  }
+
   function toast(msg, bad) {
     if (window.BGWS && BGWS.toast) BGWS.toast(msg, bad);
     else if (bad) console.warn(msg);
@@ -101,81 +119,26 @@ window.World = (() => {
   const host = () => document.getElementById("world-root");
 
   /* ====================================================================== *
-   * Bible + cut line
+   * The bible
    * ====================================================================== */
 
   async function renderBibleTab() {
     const box = host(); if (!box) return;
     box.innerHTML = `<div class="empty">reading the bible…</div>`;
-    const [b, s] = await Promise.all([GET("/api/bible"), GET("/api/scope")]);
+    // This used to fetch /api/scope alongside the bible, for the tier list and
+    // the two panels beside it. That route is gone with the cut line.
+    const b = await GET("/api/bible");
     if (!b.ok) { box.innerHTML = `<div class="empty">${E(b.error.message)}</div>`; return; }
     bible = b.data;
-    scope = s.ok ? s.data : null;
-    rebuildSlots();
     drawBible();
-  }
-
-  /* The list the user drags: tier ids with a "CUT" marker at the line. Its
-   * INDEX is the decision — everything after it is not being built. */
-  function rebuildSlots() {
-    const tiers = (scope && scope.tiers) || [];
-    const above = tiers.filter(t => !t.below_cut).map(t => String(t.id));
-    const below = tiers.filter(t => t.below_cut).map(t => String(t.id));
-    slots = scope && scope.cut_line ? [...above, "CUT", ...below] : [...above, ...below];
-  }
-
-  function tierById(id) {
-    return ((scope && scope.tiers) || []).find(t => String(t.id) === String(id));
   }
 
   function drawBible() {
     const box = host(); if (!box) return;
     box.innerHTML = `
-      <div class="wl-cols">
-        <div class="wl-main">${scopeCard()}${sectionCards()}</div>
-        <div class="wl-side">${strandedCard()}${scopeStatsCard()}</div>
-      </div>
+      ${sectionCards()}
       <div class="wl-modal" id="wl-modal" hidden></div>`;
     bindDrag();
-  }
-
-  function scopeCard() {
-    const line = scope && scope.cut_line;
-    const rows = slots.map((slot, index) => slot === "CUT"
-      ? `<div class="wl-row wl-cut" draggable="true" data-i="${index}" title="Drag to move the cut line">
-           <span class="wl-grip">⠿</span>
-           <span class="wl-cut-label">CUT LINE · ${E(line ? line.title : "")}</span>
-           <span class="wl-cut-note">everything below is explicitly not being built</span>
-         </div>`
-      : tierRow(tierById(slot), index)).join("");
-    const draw = line ? "" :
-      `<button class="qbtn small" onclick="World.drawCutLine()">draw the cut line</button>`;
-    return `
-      <div class="wl-card">
-        <div class="wl-head">
-          <h3>Scope tiers <span class="wl-n">${slots.filter(s => s !== "CUT").length}</span></h3>
-          <div class="wl-actions">${draw}
-            <button class="qbtn small ghost" onclick="World.addSection('scope_tier')">＋ tier</button></div>
-        </div>
-        <p class="wl-note">Drag to rank, drag the line to cut. Rank is priority — highest first.</p>
-        <div class="wl-list" id="wl-tiers">${rows || `<div class="empty">no scope tiers yet - add the first thing you are actually building</div>`}</div>
-      </div>`;
-  }
-
-  function tierRow(tier, index) {
-    if (!tier) return "";
-    const cut = tier.below_cut;
-    const items = tier.items || { total: 0, open: 0 };
-    return `
-      <div class="wl-row ${cut ? "below" : ""}" draggable="true" data-i="${index}" data-id="${tier.id}">
-        <span class="wl-grip">⠿</span>
-        <span class="wl-rank">${tier.rank}</span>
-        <span class="wl-title" contenteditable="true" spellcheck="false"
-              onblur="World.retitle(${tier.id}, this.textContent)">${E(tier.title)}</span>
-        ${items.open ? `<span class="wl-badge ${cut ? "bad" : ""}">${items.open} open</span>` : ""}
-        ${cut ? `<span class="wl-badge bad">cut</span>` : ""}
-        <button class="wl-x" title="Delete this tier" onclick="World.removeSection(${tier.id})">✕</button>
-      </div>`;
   }
 
   const sectionsOf = kind => (bible && bible[GROUP_KEY[kind]]) || [];
@@ -205,15 +168,11 @@ window.World = (() => {
       const rows = list.map(section => sectionRow(section, kind)).join("");
       const allOpen = list.length > 0 && list.every(s => expanded.has(String(s.id)));
       return `
-        <section class="wl-card wl-kind" data-wide="${list.length > 5 ? "1" : "0"}">
-          <div class="wl-head">
-            <h3>${E(KIND_LABEL[kind])} <span class="wl-n">${list.length}</span></h3>
-            <div class="wl-actions">
-              ${list.length ? `<button class="qbtn small ghost" id="wl-all-${kind}"
+        <section class="spanel k-doc wl-card wl-kind" data-wide="${list.length > 5 ? "1" : "0"}">
+          ${secHead(KIND_ICON[kind], KIND_LABEL[kind], list.length,
+            `${list.length ? `<button class="qbtn small ghost" id="wl-all-${kind}"
                 onclick="World.toggleKind('${kind}')">${allOpen ? "collapse all" : "expand all"}</button>` : ""}
-              <button class="qbtn small ghost" onclick="World.addSection('${kind}')">＋ add</button>
-            </div>
-          </div>
+             <button class="qbtn small ghost" onclick="World.addSection('${kind}')">＋ add</button>`)}
           <div class="wl-list wl-secs" id="wl-list-${kind}">${rows ||
             `<div class="empty">nothing written yet</div>`}</div>
         </section>`;
@@ -245,15 +204,16 @@ window.World = (() => {
   function spine(groups) {
     const total = EDITABLE_KINDS.reduce((n, kind) => n + groups[kind].length, 0);
     const blocks = EDITABLE_KINDS.map(kind => !groups[kind].length ? "" : `
-      <div class="wl-toc-k"><span>${E(KIND_LABEL[kind])}</span>
+      <div class="wl-toc-k sec-sub">${icon(KIND_ICON[kind], 12)}
+        <span>${E(KIND_LABEL[kind])}</span>
         <span class="wl-n">${groups[kind].length}</span></div>
       <ol class="wl-toc-l">${groups[kind].map((s, i) => `
         <li><button class="wl-toc-i" title="${E(s.title)}" onclick="World.jumpSection(${s.id})">
           <span class="wl-toc-r">${i + 1}</span><span class="wl-toc-t">${E(s.title)}</span>
         </button></li>`).join("")}</ol>`).join("");
     return `
-      <nav class="wl-toc" aria-label="Bible contents">
-        <div class="wl-head"><h3>Contents <span class="wl-n">${total}</span></h3></div>
+      <nav class="spanel k-read wl-toc" aria-label="Bible contents">
+        ${secHead("outline", "Contents", total)}
         ${blocks || `<div class="empty">nothing written yet</div>`}
       </nav>`;
   }
@@ -301,43 +261,6 @@ window.World = (() => {
     if (pk) pk.textContent = peek(body);
   }
 
-  function strandedCard() {
-    const list = (scope && scope.stranded) || [];
-    const targets = ((scope && scope.in_scope) || []);
-    const rows = list.map(item => `
-      <div class="wl-strand">
-        <div class="wl-strand-t">${E(item.title)}</div>
-        <div class="wl-strand-m">#${item.id} · ${E(item.seat)} · ${E(item.status)} · under <b>${E(item.tier_title)}</b></div>
-        <div class="wl-strand-a">
-          <select id="wl-refile-${item.id}" aria-label="Move to tier">
-            <option value="">untier it</option>
-            ${targets.map(t => `<option value="${t.id}">${E(t.title)}</option>`).join("")}
-          </select>
-          <button class="qbtn small" onclick="World.refile(${item.id})">re-file</button>
-        </div>
-      </div>`).join("");
-    return `
-      <div class="wl-card ${list.length ? "alarm" : ""}">
-        <div class="wl-head"><h3>Stranded by the line <span class="wl-n ${list.length ? "bad" : ""}">${list.length}</span></h3></div>
-        <p class="wl-note">Open work sitting at or below the cut line. The line is retroactive or it is theatre — re-file it or cut it.</p>
-        <div class="wl-list">${rows || `<div class="empty">nothing stranded - the line and the queue agree</div>`}</div>
-      </div>`;
-  }
-
-  function scopeStatsCard() {
-    if (!scope) return "";
-    const line = scope.cut_line;
-    return `
-      <div class="wl-card">
-        <div class="wl-head"><h3>The line</h3></div>
-        <div class="wl-stat"><span>cut line</span><b>${line ? E(line.title) + " · rank " + line.rank : "not drawn"}</b></div>
-        <div class="wl-stat"><span>in scope</span><b>${(scope.in_scope || []).length} tiers</b></div>
-        <div class="wl-stat"><span>cut</span><b>${(scope.cut || []).length} tiers</b></div>
-        <div class="wl-stat"><span>untiered open work</span><b class="${scope.untiered_open ? "warn" : ""}">${scope.untiered_open}</b></div>
-        <p class="wl-note">Untiered work is flagged, not refused — refusing it would make the first line anyone draws reject the whole queue.</p>
-      </div>`;
-  }
-
   /* ---- bible mutations -------------------------------------------------- */
 
   async function addSection(kind) {
@@ -346,24 +269,10 @@ window.World = (() => {
       label: "Title", multiline: false, required: true, ok: "add",
     });
     if (!title || !title.trim()) return;
-    // Append, never rank 0: passing 0 for every non-tier kind filed each new
-    // section ahead of everything already written, so order was arbitrary.
-    const rank = kind === "scope_tier"
-      ? slots.filter(s => s !== "CUT").length + 1
-      : sectionsOf(kind).length + 1;
+    // Append, never rank 0: passing 0 for every kind filed each new section
+    // ahead of everything already written, so order was arbitrary.
+    const rank = sectionsOf(kind).length + 1;
     const res = await POST("/api/bible", { kind, title: title.trim(), rank });
-    if (!res.ok) return fail(res);
-    renderBibleTab();
-  }
-
-  async function drawCutLine() {
-    // The line is its own section, so "no line" is genuinely "the scope call has
-    // not been made" rather than a missing field. Draw it at the bottom: nothing
-    // is cut until the producer drags it up.
-    const res = await POST("/api/bible", {
-      kind: "cut_line", title: "ship it",
-      rank: slots.filter(s => s !== "CUT").length + 1,
-    });
     if (!res.ok) return fail(res);
     renderBibleTab();
   }
@@ -382,61 +291,22 @@ window.World = (() => {
     if (!res.ok) fail(res);
   }
 
-  async function removeSection(id, query) {
-    const res = await DEL(`/api/bible/${id}${query || ""}`);
-    if (res.ok) { closeModal(); return renderBibleTab(); }
-    if (res.error.code === "conflict" && (res.error.detail.work_items || []).length) {
-      return dependentsModal(id, res.error);
-    }
-    fail(res);
-  }
-
-  /* The 409 the delete route raises carries the work items filed under the
-   * section. Rendering it as a CHOICE is the point — swallowing it would either
-   * lose the delete or silently untier live work. */
-  function dependentsModal(id, error) {
-    const items = error.detail.work_items || [];
-    const targets = ((scope && scope.tiers) || []).filter(t => String(t.id) !== String(id));
-    openModal(`
-      <h3>${items.length} work item${items.length === 1 ? " is" : "s are"} filed under this section</h3>
-      <p class="wl-note">${E(error.message)}</p>
-      <div class="wl-list">${items.map(i =>
-        `<div class="wl-strand"><div class="wl-strand-t">${E(i.title)}</div>
-         <div class="wl-strand-m">#${i.id} · ${E(i.seat)} · ${E(i.status)}</div></div>`).join("")}</div>
-      <div class="wl-choice">
-        <div class="wl-opt">
-          <select id="wl-dep-target" aria-label="Move the work to">
-            ${targets.map(t => `<option value="${t.id}">${E(t.title)}</option>`).join("")}
-          </select>
-          <button class="qbtn small" onclick="World.deleteReassigning(${id})"
-                  ${targets.length ? "" : "disabled"}>move the work, then delete</button>
-        </div>
-        <button class="qbtn small ghost" onclick="World.deleteForcing(${id})">untier the work and delete</button>
-        <button class="qbtn small ghost" onclick="World.closeModal()">cancel</button>
-      </div>`);
-  }
-  function deleteReassigning(id) {
-    const to = document.getElementById("wl-dep-target");
-    if (!to || !to.value) return;
-    removeSection(id, `?reassign_to=${encodeURIComponent(to.value)}`);
-  }
-  function deleteForcing(id) { removeSection(id, "?force=true"); }
-
-  async function refile(itemId) {
-    const select = document.getElementById(`wl-refile-${itemId}`);
-    const tier = select && select.value ? Number(select.value) : null;
-    const res = await POST("/api/scope/assign", { item_id: itemId, scope_tier_id: tier });
+  /* DELETE used to be able to come back 409 with the work items filed under the
+   * section, and this rendered that refusal as a choice: move the work to
+   * another tier, untier it, or cancel. Only scope tiers were ever pointed at
+   * and that column is gone, so a delete is now just a delete. */
+  async function removeSection(id) {
+    const res = await DEL(`/api/bible/${id}`);
     if (!res.ok) return fail(res);
-    toast(tier ? "re-filed" : "untiered");
+    closeModal();
     renderBibleTab();
   }
 
-  /* ---- dragging the line, and everything else ---------------------------- *
-   * One binder for every ordered list on the tab. It was hardcoded to #wl-tiers,
-   * which is why only scope tiers could be re-ranked even though
+  /* ---- dragging sections into order -------------------------------------- *
+   * One binder for every ordered list on the tab. It was hardcoded to the scope
+   * tier list, which is why only tiers could be re-ranked even though
    * POST /api/bible/reorder has always taken any kind. The caller says how a row
-   * names itself and what committing an order means — for the tiers that is two
-   * writes (order, then the line), for a kind it is the one reorder call. */
+   * names itself and what committing an order means. */
   function bindSortable(list, rowSel, keyOf, commit) {
     if (!list) return;
     let from = null;
@@ -476,8 +346,6 @@ window.World = (() => {
   }
 
   function bindDrag() {
-    bindSortable(document.getElementById("wl-tiers"), ".wl-row",
-      row => slots[Number(row.dataset.i)], next => commitOrder(next));
     EDITABLE_KINDS.forEach(kind => bindSortable(
       document.getElementById(`wl-list-${kind}`), ".wl-sec",
       row => Number(row.dataset.id), next => reorderKind(kind, next)));
@@ -487,27 +355,6 @@ window.World = (() => {
     const res = await POST("/api/bible/reorder", { kind, order });
     if (!res.ok) return fail(res);
     renderBibleTab();
-  }
-
-  /* Committing an order IS the scope decision, so it is two writes in a fixed
-   * order: the tiers get contiguous ranks 1..N, then the line is parked at the
-   * rank of the first tier it cuts. scope.check compares those ranks directly. */
-  async function commitOrder(next) {
-    const order = next.filter(s => s !== "CUT").map(Number);
-    if (order.length) {
-      const res = await POST("/api/bible/reorder", { kind: "scope_tier", order });
-      if (!res.ok) { fail(res); return renderBibleTab(); }
-    }
-    const line = scope && scope.cut_line;
-    if (line) {
-      const above = next.indexOf("CUT");
-      const res = await PATCH(`/api/bible/${line.id}`, { rank: above + 1 });
-      if (!res.ok) { fail(res); return renderBibleTab(); }
-    }
-    slots = next;
-    await renderBibleTab();
-    const strandedNow = (scope && scope.stranded) || [];
-    if (strandedNow.length) toast(`${strandedNow.length} open item(s) now below the line`, true);
   }
 
   /* ---- modal ------------------------------------------------------------ */
@@ -596,7 +443,7 @@ window.World = (() => {
     const counts = facetCounts(field);
     return `
       <div class="wl-facet" data-facet="${field}">
-        <span class="wl-facet-l">${E(label)}</span>
+        <span class="wl-facet-l sec-sub">${icon(field === "kind" ? "world" : "verify", 12)}${E(label)}</span>
         ${present.map(v => `
           <button class="afilter ${loreFilter[field] === v ? "active" : ""}" data-v="${E(v)}"
                   onclick="World.setLoreFilter('${field}', '${E(v)}')">
@@ -759,7 +606,7 @@ window.World = (() => {
       <div class="wl-facets">${facetRow("kind", "kind")}${facetRow("status", "canon")}</div>
       <div class="wl-graph">
         <div class="wl-canvas" id="wl-canvas"></div>
-        <aside class="wl-entity" id="wl-entity"><div class="empty">pick a node</div></aside>
+        <aside class="spanel k-doc wl-entity" id="wl-entity"><div class="empty">pick a node</div></aside>
       </div>
       <div class="wl-modal" id="wl-modal" hidden></div>`;
 
@@ -1126,23 +973,23 @@ window.World = (() => {
     const style = document.createElement("style");
     style.id = "world-style";
     style.textContent = `
-      .wl-cols{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:var(--s-6);align-items:start}
-      @media(max-width:1080px){.wl-cols{grid-template-columns:1fr}}
-      .wl-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:var(--s-5);margin-bottom:var(--s-5)}
-      .wl-card.alarm{border-color:var(--bad)}
-      .wl-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s-5);margin-bottom:var(--s-4)}
-      .wl-head h3{margin:0;font-size:var(--fs-md);color:var(--text)}
-      .wl-actions{display:flex;gap:var(--s-3)}
-      .wl-n{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);margin-left:var(--s-2)}
+      /* .wl-cols (a 1fr/340px split) was the bible tab's layout while a side
+       * column held the stranded-work and cut-line panels. Both are gone, so
+       * the document gets the full width. */
+      /* The surface, the hairline, the radius and the header band all come
+       * from .spanel / .sec-h in app.css. Everything left here is layout that
+       * is genuinely this view's own — redeclaring the rest locally is what
+       * made every panel in the app diverge in the first place, and an
+       * injected <style> is unlayered, so a local copy would silently beat
+       * the shared rule rather than merely duplicating it. */
+      .wl-card{margin-bottom:var(--s-5)}
+      .wl-n{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);margin-left:auto}
       .wl-n.bad{color:var(--bad)}
       .wl-note{margin:0 0 var(--s-5);font-size:var(--fs-xs);color:var(--text-3);line-height:var(--lh-snug)}
       .wl-list{display:flex;flex-direction:column;gap:var(--s-3)}
-      .wl-row{display:flex;align-items:center;gap:var(--s-4);padding:var(--s-4) var(--s-5);background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm)}
-      .wl-row.below{opacity:.55}
-      .wl-row.dragging{opacity:.35}
-      .wl-row.over{border-color:var(--accent)}
+      /* .wl-row / .wl-rank were the scope-tier row and its rank column; the
+       * section rows below carry .wl-sec and their own rules. */
       .wl-grip{color:var(--text-3);cursor:grab;font-size:var(--fs-sm);flex:none}
-      .wl-rank{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);width:var(--s-6);flex:none}
       .wl-title{flex:1;font-size:var(--fs-md);color:var(--text);outline:none;min-width:0}
       .wl-title:focus{border-bottom:1px solid var(--accent)}
       .wl-body{padding:var(--s-1) var(--s-5) var(--s-5) var(--s-9);font-size:var(--fs-sm);color:var(--text-2);outline:none;white-space:pre-wrap;min-height:var(--s-6)}
@@ -1156,8 +1003,12 @@ window.World = (() => {
       /* The design document. The spine is sticky because the point of it is to
        * stay legible while a 6.5k-character section is open next to it. */
       .wl-doc{display:grid;grid-template-columns:minmax(0,210px) minmax(0,1fr);gap:var(--s-6);align-items:start}
-      .wl-toc{position:sticky;top:var(--s-4);background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:var(--s-5);max-height:calc(100vh - 220px);overflow:auto}
-      .wl-toc-k{display:flex;align-items:center;justify-content:space-between;gap:var(--s-3);margin:var(--s-5) 0 var(--s-2);font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3)}
+      .wl-toc{position:sticky;top:var(--s-4);max-height:calc(100vh - 220px);overflow:auto}
+      /* The lid stays put while 34 entries scroll under it — a spine whose own
+       * label scrolls away stops being a spine. calc() because .sec-h's first
+       * -child rule pulls it up by the panel's padding. */
+      .wl-toc > .sec-h{position:sticky;top:calc(-1 * var(--s-5));z-index:1}
+      .wl-toc-k{margin:var(--s-5) 0 var(--s-2)}
       .wl-toc-l{list-style:none;margin:0;padding:0}
       .wl-toc-i{display:flex;align-items:baseline;gap:var(--s-3);width:100%;text-align:left;border:0;background:transparent;color:var(--text-2);font:inherit;font-size:var(--fs-xs);line-height:var(--lh-snug);padding:var(--s-2) var(--s-3);border-radius:var(--r-xs);cursor:pointer}
       .wl-toc-i:hover{background:var(--surface-3);color:var(--text)}
@@ -1167,16 +1018,27 @@ window.World = (() => {
       /* 14 loop entries and 2 references do not want the same box. */
       .wl-kind{margin-bottom:0}
       .wl-kind[data-wide="1"]{grid-column:1/-1}
-      @media(max-width:1400px){.wl-kinds{grid-template-columns:1fr}}
-      @media(max-width:1080px){.wl-doc{grid-template-columns:1fr}.wl-toc{position:static;max-height:none}}
+      /* minmax(0,…), not 1fr. A bare 1fr track takes its MIN-CONTENT as its
+       * floor, and a 6.5k-character section's one-line peek has no wrap point,
+       * so under 1400px every kind panel grew to 9,200px and ran off the side
+       * of the view. Every 1fr on this tab is spelled minmax(0,1fr) for that
+       * reason; .wl-sec-h needs the same on its own account, being a flex row
+       * inside the track. */
+      @media(max-width:1400px){.wl-kinds{grid-template-columns:minmax(0,1fr)}}
+      @media(max-width:1080px){
+        .wl-doc{grid-template-columns:minmax(0,1fr)}
+        .wl-toc{position:static;max-height:none}
+      }
 
       .wl-secs{gap:var(--s-2)}
-      .wl-sec{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);transition:border-color var(--dur) var(--ease)}
-      .wl-sec.open{background:var(--surface-2);border-color:var(--line-strong)}
+      /* Closed: a sunken row in the panel. Open: it rises ABOVE the panel it
+       * is in, which is the only cue that says "this is the one you opened". */
+      .wl-sec{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-sm);transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+      .wl-sec.open{background:var(--surface-3);border-color:var(--line-strong)}
       .wl-sec.dragging{opacity:.35}
       .wl-sec.over,.wl-sec.lit{border-color:var(--accent)}
       .wl-sec.lit{background:var(--accent-wash)}
-      .wl-sec-h{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-4) var(--s-4) var(--s-4) var(--s-5)}
+      .wl-sec-h{display:flex;align-items:center;gap:var(--s-3);min-width:0;padding:var(--s-4) var(--s-4) var(--s-4) var(--s-5)}
       .wl-disc{border:0;background:transparent;color:var(--text-3);cursor:pointer;font-size:var(--fs-2xs);line-height:1;padding:var(--s-1);flex:none;transition:transform var(--dur) var(--ease)}
       .wl-sec.open .wl-disc{transform:rotate(90deg);color:var(--accent)}
       .wl-meas{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text-3);flex:none;white-space:nowrap}
@@ -1185,17 +1047,9 @@ window.World = (() => {
       .wl-sec .wl-body{display:none}
       .wl-sec.open .wl-peek{display:none}
       .wl-sec.open .wl-body{display:block;max-width:76ch;margin:0 var(--s-5) var(--s-5) var(--s-9);padding:var(--s-4) 0 0;border-top:1px solid var(--line-soft);line-height:var(--lh-loose)}
-      .wl-cut{background:var(--ember-soft);border-color:var(--ember);border-style:dashed}
-      .wl-cut-label{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ember);flex:none}
-      .wl-cut-note{font-size:11px;color:var(--ash2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .wl-strand{padding:9px 10px;background:var(--void);border:1px solid var(--seam);border-radius:9px}
-      .wl-strand-t{font-size:12.5px;color:var(--bone)}
-      .wl-strand-m{font-family:var(--mono);font-size:10px;color:var(--ash2);margin-top:3px}
-      .wl-strand-a{display:flex;gap:6px;margin-top:8px}
-      .wl-strand-a select{flex:1;min-width:0}
-      .wl-stat{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--seam);font-size:12px;color:var(--ash)}
-      .wl-stat b{color:var(--bone);font-weight:var(--fw-semi);text-align:right}
-      .wl-stat b.warn{color:var(--warn)}
+      /* The dashed CUT LINE row (.wl-cut*), the stranded-work cards
+       * (.wl-strand*) and the line's stat readout (.wl-stat*) were styled here.
+       * All three panels went with the cut line. */
       .wl-modal{position:fixed;inset:0;z-index:8500;background:var(--scrim);display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto}
       .wl-modal[hidden]{display:none}
       .wl-modal-card{width:min(560px,100%);background:var(--plate);border:1px solid var(--seam);border-radius:14px;padding:22px}
@@ -1218,7 +1072,6 @@ window.World = (() => {
       .wl-facets{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-5);margin-bottom:var(--s-5)}
       .wl-facets:empty{display:none}
       .wl-facet{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s-3)}
-      .wl-facet-l{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3)}
       .wl-facet .afilter{cursor:pointer}
       .wl-facet .afilter.wl-none{opacity:.4}
       /* The search has to land on the GRAPH: misses recede, hits keep their
@@ -1232,7 +1085,10 @@ window.World = (() => {
       .wl-graph.reading{grid-template-columns:minmax(0,1fr) min(600px,44vw)}
       @media(max-width:1080px){.wl-graph,.wl-graph.reading{grid-template-columns:1fr;height:auto}.wl-canvas{height:460px}}
       .wl-canvas{position:relative;min-height:0}
-      .wl-entity{background:var(--plate);border:1px solid var(--seam);border-radius:12px;padding:14px;overflow-y:auto}
+      /* Surface, hairline and radius come from .spanel; the entity's own name
+       * is its header, so this one deliberately has no .sec-h band - the kind
+       * rule down the left edge is what files it with the rest. */
+      .wl-entity{overflow-y:auto}
       .wl-ehead{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
       .wl-ehead h3{margin:2px 0 0;font-size:15px;color:var(--bone)}
       .wl-ekind{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ash2)}
@@ -1253,7 +1109,7 @@ window.World = (() => {
       .wl-rl{margin:0 0 var(--s-5);padding:0 0 0 var(--s-6);list-style:none}
       .wl-rl li{position:relative;margin-bottom:var(--s-3)}
       .wl-rl li:before{content:"-";position:absolute;left:calc(-1 * var(--s-6));color:var(--text-3)}
-      .wl-entity textarea,.wl-entity input,.wl-toolbar select,.wl-strand-a select,.wl-opt select{width:100%;padding:8px 10px;background:var(--void);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12.5px}
+      .wl-entity textarea,.wl-entity input,.wl-toolbar select,.wl-opt select{width:100%;padding:8px 10px;background:var(--void);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12.5px}
       .wl-toolbar select{width:auto}
       .wl-entity textarea{resize:vertical;margin-bottom:8px}
       .wl-fact{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--void);border:1px solid var(--seam);border-radius:8px;font-size:12px;color:var(--ash)}
@@ -1272,10 +1128,10 @@ window.World = (() => {
   }
 
   return {
-    activate, setTab, refresh: activate,
-    addSection, removeSection, retitle, rebody, drawCutLine, refile,
+    activate, setTab,
+    addSection, removeSection, retitle, rebody,
     toggleSection, toggleKind, jumpSection,
-    deleteReassigning, deleteForcing, closeModal,
+    closeModal,
     setLoreFilter, setLoreQuery, clearLoreFilter,
     addEntity, saveEntity, setStatus, addFact, overrideCanon,
     setEntityMode,

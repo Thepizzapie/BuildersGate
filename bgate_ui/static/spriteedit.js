@@ -420,6 +420,13 @@ window.SpriteEdit = (() => {
     // have been confidently wrong.
     const d = await readJSON(
       `/api/sprite/list?limit=2000${q ? `&q=${encodeURIComponent(q)}` : ""}`, {sheets:[]});
+    // The {sheets:[]} fallback is what readJSON hands back on a REFUSAL as well
+    // as on a scan that legitimately found nothing, which is why it also tags
+    // the result — and this read the tag off the floor. A 500 out of the walker,
+    // or the dashboard going away mid-search, therefore painted "no .png or
+    // .webp sheet matches" over a project with 584 of them, and the operator's
+    // next move is to go looking for their missing art.
+    _pickError = d.__error || null;
     _pickAll = d.sheets || [];
     _pickTruncated = !!d.truncated;
     _pickTotal = d.total || _pickAll.length;
@@ -430,6 +437,7 @@ window.SpriteEdit = (() => {
      project already sorts itself — characters, enemies, props, tiles, portraits,
      tmp — by the path segment under assets/, so the picker groups on that. */
   let _pickAll = [], _pickCat = null, _pickTruncated = false, _pickTotal = 0;
+  let _pickError = null;   // the refusal behind an empty list, when there was one
 
   function categoryOf(rel){
     const parts = String(rel).replace(/\\/g, "/").split("/");
@@ -465,11 +473,18 @@ window.SpriteEdit = (() => {
 
     const shown = _pickCat ? _pickAll.filter(s => categoryOf(s.rel) === _pickCat) : _pickAll;
     const n = document.getElementById("se-pick-n");
-    if (n) n.textContent = _pickTruncated
+    if (n) n.textContent = _pickError
+      ? "could not read the project"
+      : _pickTruncated
       ? `${_pickAll.length} of ${_pickTotal} - narrow the filter`
       : `${shown.length} editable image${shown.length === 1 ? "" : "s"}`;
 
     const list = document.getElementById("se-pick-list");
+    if (list && _pickError){
+      list.innerHTML = `<div class="se-note se-warn" style="padding:24px;text-align:center">`
+        + `the sheet list could not be read - ${E(_pickError)}</div>`;
+      return;
+    }
     if (list) list.innerHTML = shown.length ? shown.map(s => `
       <div class="se-pick-i" onclick="SpriteEdit.closePick();SpriteEdit.open('${E(s.rel)}')">
         <img loading="lazy" src="/api/preview?rel=${encodeURIComponent(s.rel)}" alt="">
@@ -495,6 +510,7 @@ window.SpriteEdit = (() => {
       <div class="se-bar">
         <span class="se-title">sprite editor</span>
         <span class="se-sub" id="se-name"></span>
+        <span id="se-save-state"></span>
         <span class="se-spacer"></span>
         <button class="se-btn" id="se-undo" onclick="SpriteEdit.undo()"
                 title="Undo (Ctrl+Z)" aria-label="Undo">${I("undo")}</button>
@@ -631,6 +647,10 @@ window.SpriteEdit = (() => {
   try{ window.addEventListener("bgate:theme", () => { try{ paint(); }catch(e){} }); }catch(e){}
 
   function paint(){
+    // Cheap (SaveState dedupes on a signature) and it means every path that
+    // dirties the rig - a dozen of them, none of which call refreshHistory -
+    // still moves the indicator.
+    paintSaveState();
     if (!S || !$.ctx) return;
     if (S._pending) return;
     S._pending = true;
@@ -912,9 +932,33 @@ window.SpriteEdit = (() => {
     const u = document.getElementById("se-undo"), r = document.getElementById("se-redo");
     if (u) u.disabled = !S.undo.length;
     if (r) r.disabled = !S.redo.length;
-    if ($.name) $.name.innerHTML =
-      `${E(S.rel)}${S.dirty ? ' <span class="se-dirty"><span class="se-mark"></span>unsaved</span>' : ""}`;
+    if ($.name) $.name.innerHTML = E(S.rel);
+    paintSaveState();
     renderHistory();
+  }
+
+  /* Is my work on disk? The word "unsaved" tucked after the filename was the
+     whole answer before, and it said nothing about WHEN the last save was,
+     nothing while one was in flight, and nothing at all when one failed - the
+     failure was a 2.6s toast in the far corner while the eye was on the
+     canvas. See SaveState in seats/_core.js.
+
+     The rig is in here too. It is a separate sidecar with its own button, but
+     it is the same document as far as "have I lost work" is concerned, and a
+     saved sheet with an unsaved rig used to look completely clean. */
+  function paintSaveState(){
+    if (!window.SaveState || !S) return;
+    const el = document.getElementById("se-save-state");
+    if (!el) return;
+    if (S.saving)         return SaveState.set(el, {state:"saving"});
+    if (S.saveError)      return SaveState.set(el, {state:"error", detail:S.saveError});
+    if (S.dirty && S.rigDirty)
+      return SaveState.set(el, {state:"dirty", detail:"sheet and rig"});
+    if (S.dirty)          return SaveState.set(el, {state:"dirty", detail:"Ctrl+S"});
+    if (S.rigDirty)       return SaveState.set(el, {state:"dirty", detail:"rig not saved"});
+    // at:0 - it is on disk, but not by this session, so there is no honest
+    // "when" to print.
+    SaveState.set(el, {state:"saved", at:S.savedAt || 0});
   }
 
   function renderHistory(){
@@ -2120,10 +2164,19 @@ window.SpriteEdit = (() => {
   async function save(){
     if (!S) return;
     const png = S.work.toDataURL("image/png");
+    S.saving = true; S.saveError = null; paintSaveState();
     const r = await mutate("/api/sprite/save", {
       body:{rel:S.rel, png, mtime:S.mtime}, button:"se-save"});
-    if (!r.ok) return;
+    S.saving = false;
+    if (!r.ok) {
+      // A refusal has to stay on screen next to the button that refused.
+      S.saveError = String(r.error || "the server refused the write").slice(0, 120);
+      paintSaveState();
+      return;
+    }
+    S.saveError = null;
     S.dirty = false;
+    S.savedAt = Date.now();
     S.mtime = r.data.mtime;
     refreshHistory();
     say(`saved · previous copy at ${r.data.backup}`, "ok");
@@ -2139,10 +2192,18 @@ window.SpriteEdit = (() => {
       labels: (S.rig.labels || []),
       notes: S.rig.notes || "",
     };
+    S.saving = true; S.saveError = null; paintSaveState();
     const r = await mutate("/api/sprite/rig", {body:{rel:S.rel, rig}, button:"se-rigsave"});
-    if (!r.ok) return;
+    S.saving = false;
+    if (!r.ok) {
+      S.saveError = String(r.error || "the rig sidecar was not written").slice(0, 120);
+      paintSaveState();
+      return;
+    }
     S.rig = r.data.rig;
     S.rigDirty = false;
+    S.savedAt = Date.now();
+    paintSaveState();
     renderSide(); paint();
     say(`rig saved to ${r.data.sidecar}`, "ok");
   }

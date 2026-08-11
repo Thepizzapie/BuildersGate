@@ -1,7 +1,7 @@
 /* BGIcon — the icon system.
  *
  * Everything here descends from one mark. Builders Gate is a pipeline of gates:
- * the cut line, the QA gate, the canon gate, the approval gate, the lane hook.
+ * the QA gate, the canon gate, the approval gate, the lane hook.
  * Work does not stop at them, it PASSES THROUGH them — so the mark is a tall
  * post, a broken post, and a chevron moving between the two. That is the whole
  * vocabulary the icons are drawn from: uprights, gaps, and 45-degree movement.
@@ -68,7 +68,6 @@
     sheet:     `<rect x="3.5" y="4.5" width="17" height="15" rx="1"/><path d="M9 4.5 V19.5 M15 4.5 V19.5 M3.5 12 H20.5"/><path class="e" d="M3.5 4.5 H9 V12 H3.5 Z"/>`,
     rig:       `<path d="M12 3.5 L20.5 8 V16 L12 20.5 L3.5 16 V8 Z"/><path class="e" d="M12 12 L20.5 8 M12 12 V20.5 M12 12 L3.5 8"/>`,
     background:`<path d="M3.5 17 L9 9.5 L13 15 L16 11 L20.5 17 Z"/><circle class="e" cx="16.5" cy="6.5" r="2.5"/>`,
-    parallax:  `<path d="M3.5 8.5 H20.5 M3.5 15.5 H20.5"/><path class="e" d="M7 12 H17"/>`,
     tileset:   `<path d="M3.5 3.5 H20.5 V20.5 H3.5 Z M9.5 3.5 V20.5 M15 3.5 V20.5 M3.5 9 H20.5 M3.5 15 H20.5"/>`,
     props:     `<rect x="4" y="12" width="7" height="7"/><rect x="13" y="12" width="7" height="7"/><rect class="e" x="8.5" y="5" width="7" height="7"/>`,
     stage:     `<path d="M3.5 18.5 H20.5 M6 18.5 V11 H18 V18.5"/><path class="e" d="M12 11 V5.5 M9 8 H15"/>`,
@@ -169,8 +168,6 @@
     // ghost, because the onion skin IS the ghost — putting it on the frame
     // made the whole toggle shout in a row of eight.
     onion:      `<rect x="10.5" y="6" width="10" height="12"/><path d="M4.5 10 V14"/><path class="e" d="M7.5 8 V16"/>`,
-    frame_prev: `<path d="M6 4.5 V19.5"/><path class="e" d="M19 5.5 L9 12 L19 18.5 Z"/>`,
-    frame_next: `<path d="M18 4.5 V19.5"/><path class="e" d="M5 5.5 L15 12 L5 18.5 Z"/>`,
     flip_h:     `<path d="M12 3.5 V20.5"/><path d="M9.5 6.5 V17.5 L4 12 Z"/><path class="e" d="M14.5 6.5 V17.5 L20 12 Z"/>`,
     flip_v:     `<path d="M3.5 12 H20.5"/><path d="M6.5 9.5 H17.5 L12 4 Z"/><path class="e" d="M6.5 14.5 H17.5 L12 20 Z"/>`,
     // The two shape tools, built from one idea: the geometry you dragged out,
@@ -208,8 +205,7 @@
     trim:       `<path d="M3.5 12 H6 M18 12 H20.5"/><path d="M8 6.5 V17.5 M16 6.5 V17.5"/><path class="e" d="M8 12 H16"/>`,
     // Back to the beginning: the start post, the rail the head travelled, and
     // the ember chevron arriving at the post. Deliberately NOT the media-player
-    // glyph — bar-plus-solid-triangle is already `frame_prev`, and drawn that
-    // way the two were the same icon. An open chevron against a post reads as
+    // bar-plus-solid-triangle: an open chevron against a post reads as
     // "returns to the start"; a solid triangle reads as "step".
     skip_start: `<path d="M5 4.5 V19.5"/><path d="M13 12 H20.5"/><path class="e" d="M13 7 L8 12 L13 17"/>`,
 
@@ -258,7 +254,7 @@
   // sprite editor's paint tool), and an alias wins over P, so leaving the row
   // here would have made the new geometry unreachable. Nothing called
   // BGIcon("brush") for the seat icon; `art` still resolves it.
-  const ALIASES = { anim: "animation", ref: "reference", qa_seat: "qa" };
+  const ALIASES = { anim: "animation", ref: "reference" };
 
   function BGIcon(name, opts) {
     opts = opts || {};
@@ -326,7 +322,6 @@
   };
 
   BGIcon.has = (name) => !!P[ALIASES[name] || name];
-  BGIcon.names = () => Object.keys(P);
   window.BGIcon = BGIcon;
 
   if (!document.getElementById("bgi-style")) {

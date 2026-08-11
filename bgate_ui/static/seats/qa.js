@@ -15,6 +15,13 @@ window.SeatWS.qa = {
   label: "QA",
   glyph: (window.BGIcon ? BGIcon("qa", { size: 15 }) : ""),
 
+  // Section-header glyph. Guarded on has() because an unknown name must not
+  // take the whole shell down with it.
+  _icon(n) {
+    return (window.BGIcon && (!BGIcon.has || BGIcon.has(n)))
+      ? BGIcon(n, { size: 15 }) : "";
+  },
+
   // --- module state -------------------------------------------------------
   _bg: null,
   _container: null,
@@ -29,7 +36,11 @@ window.SeatWS.qa = {
   _selItem: null,       // selected qa work item id
   _playtest: null,      // last playtest status payload
   _preflight: null,     // /api/playtest/preflight — same gate the overview uses
+  _ptSig: "",           // last painted recording-panel signature (see _paintPlaytest)
+  _ptMsg: "",           // the record panel's status line, kept across repaints
+  _ptBad: false,
   _runs: [],            // /api/qa-bots/runs — recorded verdicts, newest first
+  _actSig: "",          // last painted agent-activity signature (see _loadActivity)
   _comparators: ["eq", "ne", "lt", "lte", "gt", "gte", "between", "contains"],
 
   _DEFAULT_BOT: {
@@ -60,6 +71,12 @@ window.SeatWS.qa = {
     this._bg = bg;
     this._container = container;
     container.innerHTML = this._shellHTML();
+    // Switching seats builds a FRESH container, so the strip's repaint guard
+    // has to be cleared or an unchanged tally would skip the first paint and
+    // leave every stage body hidden.
+    const strip = this._$("qa-stages");
+    if (strip) strip._bgsSig = "";
+    this._renderStages();
     // Paint sections async so a slow/failed fetch never blanks the workspace.
     this._loadActions();
     this._loadBots();
@@ -76,6 +93,7 @@ window.SeatWS.qa = {
     this._loadPlaytest();
     this._loadGates();  // verdicts only — never repaints the agent panel (would clobber a steer being typed)
     if (this._selItem != null) this._loadActivity();
+    this._renderStages();
   },
 
   async _loadGates() {
@@ -85,6 +103,7 @@ window.SeatWS.qa = {
         this._gates = r.items.filter(it => it.seat === "qa" && it.source === "qa-gate")
           .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
         this._paintVerdicts();
+        this._renderStages();
       }
     } catch (e) { /* keep last verdicts */ }
   },
@@ -140,38 +159,184 @@ window.SeatWS.qa = {
         .qa-hist .when{color:var(--text-3);font-size:11px;margin-left:auto}
       </style>
       <div class="qa-wrap">
-        <div class="qa-card">
-          <div class="qa-row qa-sp"><h3 style="margin:0">Bot roster</h3>
-            <div class="qa-row">
-              <button class="qa-btn small pri" onclick="SeatWS.qa.runAll()"
-                title="Run every bot in sequence and take one verdict for the set - one failure fails it, anything unproven is unknown">▶ run all</button>
-              <button class="qa-btn small" onclick="SeatWS.qa.newBot()">+ new bot</button>
-            </div></div>
-          <div id="qa-roster"><div class="qa-empty">loading bots…</div></div>
-          <div id="qa-editor"></div>
-          <div id="qa-runall"></div>
-        </div>
-        <div class="qa-card">
-          <h3>Verdicts — automatic QA-gate runs</h3>
-          <div id="qa-verdicts"><div class="qa-empty">loading verdicts…</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Match result</h3>
-          <div id="qa-result"><div class="qa-empty">run a bot to see how the fight played out.</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Bot run history — recorded verdicts</h3>
-          <div id="qa-runs"><div class="qa-empty">loading run history…</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Live playtest recording</h3>
-          <div id="qa-playtest"><div class="qa-empty">loading…</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Live QA agent</h3>
-          <div id="qa-agent"><div class="qa-empty">loading…</div></div>
+        <div class="bg-stagewrap" id="qa-wrap">
+          <div id="qa-stages"></div>
+          <div id="qa-lede"></div>
+
+          <div class="bg-stagebody" data-stagebody="bots" hidden>
+            <div class="spanel k-list">
+              <div class="sec-h">${this._icon("qa")}<h3 class="sec-t">Bot roster</h3>
+                <span class="sec-n" id="qa-n-bots"></span>
+                <span class="sec-a">
+                  <button class="qa-btn small pri" onclick="SeatWS.qa.runAll()"
+                    title="Run every bot in sequence and take one verdict for the set - one failure fails it, anything unproven is unknown">▶ run all</button>
+                  <button class="qa-btn small" onclick="SeatWS.qa.newBot()">+ new bot</button>
+                </span></div>
+              <div id="qa-roster"><div class="qa-empty">loading bots…</div></div>
+              <div id="qa-editor"></div>
+            </div>
+          </div>
+
+          <div class="bg-stagebody" data-stagebody="run" hidden>
+            <div class="spanel k-read">
+              <div class="sec-h">${this._icon("run")}<h3 class="sec-t">Match result</h3></div>
+              <div id="qa-runall"></div>
+              <div id="qa-result"><div class="qa-empty">run a bot to see how the fight played out.</div></div>
+            </div>
+            <div class="spanel">
+              <div class="sec-h">${this._icon("record")}<h3 class="sec-t">Live playtest recording</h3></div>
+              <div id="qa-playtest"><div class="qa-empty">loading…</div></div>
+            </div>
+          </div>
+
+          <div class="bg-stagebody" data-stagebody="verdict" hidden>
+            <div class="spanel k-read">
+              <div class="sec-h">${this._icon("gate")}<h3 class="sec-t">Verdicts - automatic QA-gate runs</h3>
+                <span class="sec-n" id="qa-n-gates"></span></div>
+              <div id="qa-verdicts"><div class="qa-empty">loading verdicts…</div></div>
+            </div>
+            <div class="spanel">
+              <div class="sec-h">${this._icon("agents")}<h3 class="sec-t">Live QA agent</h3></div>
+              <div id="qa-agent"><div class="qa-empty">loading…</div></div>
+            </div>
+          </div>
+
+          <div class="bg-stagebody" data-stagebody="history" hidden>
+            <div class="spanel k-read">
+              <div class="sec-h">${this._icon("timeline")}<h3 class="sec-t">Bot run history - recorded verdicts</h3>
+                <span class="sec-n" id="qa-n-runs"></span></div>
+              <div id="qa-runs"><div class="qa-empty">loading run history…</div></div>
+            </div>
+          </div>
         </div>
       </div>`;
+  },
+
+  /* --- the four stages ---------------------------------------------------
+   * QA's brief is a LOOP with a fixed order, and it is written down in
+   * bgate_core/seats.py: author what has to be proven, drive the real thing,
+   * take a verdict ("PASS only if it genuinely matches the ref and every check
+   * is clean … Almost is a FAIL"), and keep it so a regression has a date.
+   * These are those four steps, and every panel that was in the old stack
+   * belongs to exactly one of them.
+   *
+   * The stack it replaces put a bot roster, a verdict wall, a match result, a
+   * run history, a recorder and a live agent feed in one column, in that
+   * order, with nothing saying which one you were supposed to be looking at.
+   */
+  _tally() {
+    const bots = this._bots || [];
+    const mute = bots.filter(b => !(b.expect || []).length).length;
+    const gates = this._gates || [];
+    let fail = 0, pass = 0, reviewing = 0, unknown = 0;
+    gates.forEach(g => {
+      const v = this._verdictOf(g);
+      if (v === "FAIL" || v === "ERROR") fail++;
+      else if (v === "PASS") pass++;
+      else if (v === "UNKNOWN") unknown++;
+      else reviewing++;
+    });
+    const rec = this._playtest && this._playtest.recording;
+    return {
+      bots: bots.length, mute, gates: gates.length, fail, pass, reviewing, unknown,
+      runs: (this._runs || []).length,
+      recording: !!rec,
+      last: this._lastRun
+        ? String(this._lastRun.pending
+            ? "running"
+            : (this._lastRun.verdict || (this._lastRun.ok ? "unknown" : "error"))).toLowerCase()
+        : null,
+    };
+  },
+
+  _stageSpec() {
+    const t = this._tally();
+    const lastTone = { pass: "good", fail: "bad", error: "bad", unknown: "warn" };
+    return [
+      { id: "bots", label: "Bots",
+        hint: "Author the schedule and the expectations it has to prove.",
+        done: t.bots > 0 && !t.mute,
+        tone: t.mute ? "warn" : "",
+        note: !t.bots
+          ? "no bots yet"
+          : (t.mute
+              ? `${t.mute} of ${t.bots} cannot pass`
+              : `${t.bots} bot${t.bots === 1 ? "" : "s"} armed`) },
+      { id: "run", label: "Run",
+        hint: "Drive the real game - headless bot match, or a recorded session.",
+        done: !!t.last && t.last !== "running",
+        tone: t.recording ? "bad" : (t.last ? (lastTone[t.last] || "") : ""),
+        note: t.recording
+          ? "recording now"
+          : (t.last ? `last match: ${t.last}` : "nothing run yet") },
+      { id: "verdict", label: "Verdict",
+        hint: "PASS only if every check is clean. Almost is a FAIL.",
+        done: t.gates > 0 && !t.fail && !t.reviewing,
+        tone: t.fail ? "bad" : (t.reviewing ? "warn" : (t.gates ? "good" : "")),
+        note: !t.gates
+          ? "no gate runs yet"
+          : (t.fail
+              ? `${t.fail} failing`
+              : (t.reviewing
+                  ? `${t.reviewing} waiting on a verdict`
+                  : `${t.pass} passing${t.unknown ? ` · ${t.unknown} undecided` : ""}`)) },
+      { id: "history", label: "History",
+        hint: "Every recorded verdict, so a regression has a date.",
+        done: t.runs > 0,
+        tone: "",
+        note: t.runs
+          ? `${t.runs} run${t.runs === 1 ? "" : "s"} recorded`
+          : "nothing recorded yet" },
+    ];
+  },
+
+  _LEDE: {
+    bots: "A bot is a scripted sequence of inputs replayed against the REAL " +
+      "game. Its expectations are what turn a run into a verdict - a bot that " +
+      "asserts nothing can only ever report unknown, and unknown is not a pass.",
+    run: "Drive the real thing. A bot match replays the schedule headless and " +
+      "samples both fighters; a recording captures a human or agent playing " +
+      "the current build, with the mic and the telemetry attached to it.",
+    verdict: "PASS only if it genuinely matches the reference and every check " +
+      "is clean - otherwise a blunt, ranked nitpick list. A gate run that " +
+      "finished without writing a verdict line decided nothing.",
+    history: "Every recorded verdict, newest first, measured against the " +
+      "baseline. This is what makes \"when did this start failing\" a question " +
+      "with an answer rather than an opinion.",
+  },
+
+  _renderStages() {
+    const host = this._$("qa-stages");
+    if (!host || !window.SeatStage) return;
+    const at = SeatStage.paint(host, {
+      key: "qa",
+      stages: this._stageSpec(),
+      onPick: () => this._renderStages(),
+    });
+    this._stage = at;
+    SeatStage.show(this._$("qa-wrap"), at);
+    SeatStage.lede(this._$("qa-lede"), this._LEDE[at] || "");
+    const t = this._tally();
+    const put = (id, text, cls) => {
+      const el = this._$(id);
+      if (!el) return;
+      el.textContent = text == null ? "" : String(text);
+      el.className = "sec-n" + (cls ? " " + cls : "");
+    };
+    put("qa-n-bots", t.bots || "", t.mute ? "warn" : "");
+    put("qa-n-gates", t.gates || "", t.fail ? "bad" : (t.reviewing ? "warn" : "good"));
+    put("qa-n-runs", t.runs || "", "");
+  },
+
+  // Pressing run has to TAKE YOU to where the answer appears. Writing a match
+  // result into a stage nobody is looking at is the dead-button complaint in
+  // another costume.
+  _goStage(id) {
+    if (!window.SeatStage) return;
+    SeatStage.select("qa", id);
+    const host = this._$("qa-stages");
+    if (host) host._bgsSig = "";
+    this._renderStages();
   },
 
   _$(id) { return this._container ? this._container.querySelector("#" + id) : null; },
@@ -196,6 +361,7 @@ window.SeatWS.qa = {
     }
     this._bots = bots.map(b => this._normBot(b));
     this._paintRoster();
+    this._renderStages();
   },
 
   _normBot(b) {
@@ -243,7 +409,11 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._bots || !this._bots.length) {
-      host.innerHTML = '<div class="qa-empty">no bots yet - click “+ new bot”.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no bots on this project yet",
+        "A bot is a schedule of inputs plus the expectations it has to prove. " +
+        "\"+ new bot\" above starts one; it runs against the real game the " +
+        "moment it is saved.");
       return;
     }
     host.innerHTML = this._bots.map((b, i) => `
@@ -263,10 +433,21 @@ window.SeatWS.qa = {
       </div>`).join("");
   },
 
+  /* Returns whether the roster actually reached the server.
+   *
+   * bg.post() does NOT throw on a 4xx - it hands the body back. So the old
+   * bare try/catch caught nothing a refusal could ever throw, and saveEdit()
+   * went on to toast "saved <bot>" over the top of a write the server had
+   * declined (a 409 stale write from a second tab, a 400 on a malformed
+   * expectation). The roster was gone on the next reload and the UI had said
+   * it was fine. Read the answer, and say so when it is no. */
   async _saveBots() {
-    try {
-      await this._bg.post("/api/workspace/qa/bots", { data: this._bots });
-    } catch (e) { this._bg.toast("save failed", true); }
+    let r;
+    try { r = await this._bg.post("/api/workspace/qa/bots", { data: this._bots }); }
+    catch (e) { r = { ok: false, error: { message: String((e && e.message) || e) } }; }
+    const err = this._err(r);
+    if (err) { this._bg.toast("bot roster NOT saved - " + err, true); return false; }
+    return true;
   },
 
   newBot() {
@@ -401,22 +582,25 @@ window.SeatWS.qa = {
     this._paintEditor();
   },
 
-  saveEdit() {
+  async saveEdit() {
     this._syncEditor();
     const bot = this._normBot(this._editing.bot);
     if (this._editing.index >= 0) this._bots[this._editing.index] = bot;
     else this._bots.push(bot);
     this._editing = null;
-    this._saveBots();
     this._paintRoster();
     this._paintEditor();
-    this._bg.toast("saved " + bot.name);
+    // Only claim it is saved once the store says so - _saveBots toasts the
+    // server's refusal itself when it is not.
+    if (await this._saveBots()) this._bg.toast("saved " + bot.name);
   },
 
   // --- run a bot match ----------------------------------------------------
   async runBot(i) {
     const bot = this._bots && this._bots[i];
     if (!bot) return;
+    // Take the reader to where the answer will appear.
+    this._goStage("run");
     this._running = true;
     this._lastRun = { pending: true, name: bot.name };
     this._paintResult();
@@ -430,12 +614,19 @@ window.SeatWS.qa = {
     this._running = false;
     this._lastRun = Object.assign({ name: bot.name }, res || {});
     this._paintResult();
+    this._renderStages();
     this._loadRuns();
     // `ok` only means the probe drove the game. The VERDICT is the server's.
     const v = (res && res.verdict) || (res && res.ok ? "unknown" : "error");
     if (v === "pass") this._bg.toast(`${bot.name}: PASS`);
-    else this._bg.toast(`${bot.name}: ${v.toUpperCase()}` +
-      ((res && res.error) ? " - " + res.error : ""), v !== "pass");
+    else {
+      // /api/qa-bots/run answers a flat `error` string when the probe failed,
+      // but a refused REQUEST (a 400 on a malformed expectation) comes back as
+      // the {ok:false, error:{code,message}} envelope. Concatenating that
+      // object printed "[object Object]" where the reason should have been.
+      const why = this._err(res);
+      this._bg.toast(`${bot.name}: ${v.toUpperCase()}` + (why ? " - " + why : ""), true);
+    }
   },
 
   /* One verdict for the whole roster — the shape a gate can consume. The
@@ -443,6 +634,7 @@ window.SeatWS.qa = {
    * unproven is unknown rather than green. */
   async runAll() {
     if (!this._bots || !this._bots.length) { this._bg.toast("no bots to run", true); return; }
+    this._goStage("run");
     const host = this._$("qa-runall");
     if (host) host.innerHTML = `<div class="qa-empty">running ${this._bots.length} bot(s) against the live game…</div>`;
     this._running = true;
@@ -508,6 +700,7 @@ window.SeatWS.qa = {
     const d = this._data(r);
     if (Array.isArray(d)) this._runs = d;
     this._paintRuns();
+    this._renderStages();
   },
 
   _paintRuns() {
@@ -515,7 +708,11 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._runs.length) {
-      host.innerHTML = '<div class="qa-empty">no bot runs recorded yet - run a bot and its verdict is kept here, so "when did this start failing" has an answer.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no bot run has been recorded",
+        "Every run from the Run stage is kept with its verdict and its failed " +
+        "checks, and compared against the baseline - that history is what " +
+        "turns \"when did this start failing\" into a date.");
       return;
     }
     host.innerHTML = this._runs.map(r => `
@@ -551,7 +748,7 @@ window.SeatWS.qa = {
       <div class="qa-row" style="gap:10px">
         <span class="qa-vbadge" style="${this._vstyle(verdict)}">${bg.esc(verdict.toUpperCase())}</span>
         <b>${bg.esc(r.name || "match")}</b>
-        <span class="meta" style="color:var(--text-3)">${r.ok ? "drove the game" : bg.esc(r.error || "the probe failed")}</span>
+        <span class="meta" style="color:var(--text-3)">${r.ok ? "drove the game" : bg.esc(this._err(r) || "the probe failed")}</span>
       </div>
       <span class="meta" style="color:var(--text-3)">${r.seconds != null ? r.seconds + "s" : ""}</span></div>`;
     if (verdict === "unknown") {
@@ -631,6 +828,7 @@ window.SeatWS.qa = {
     try { st = await this._bg.get("/api/playtest/status"); } catch (e) { /* keep last */ }
     this._playtest = st;
     this._paintPlaytest();
+    this._renderStages();
   },
 
   async _loadPreflight() {
@@ -639,6 +837,15 @@ window.SeatWS.qa = {
     try { this._preflight = await this._bg.get("/api/playtest/preflight?native=false"); }
     catch (e) { this._preflight = null; }
     this._paintPlaytest();
+  },
+
+  // The record panel's status line. It lives on the module, not in the DOM,
+  // because the DOM node it writes into is thrown away by the next poll.
+  _setPtMsg(text, bad) {
+    this._ptMsg = String(text || "");
+    this._ptBad = !!bad;
+    const m = this._$("qa-pt-msg");
+    if (m) { m.textContent = this._ptMsg; m.className = "meta " + (this._ptBad ? "qa-bad" : ""); }
   },
 
   _paintPlaytest() {
@@ -677,6 +884,35 @@ window.SeatWS.qa = {
           return !(c.ok != null ? c.ok : c.available);
         }).map(k => `${k} (${String((p.checks[k] || {}).reason || "unavailable").slice(0, 60)})`)
       : [];
+
+    /* This panel is rebuilt from a 3s poll and it carries a text input (the
+     * session name) and a status line. Repainting it unconditionally wiped
+     * whatever was half-typed into the name box and erased the sentence
+     * startPlaytest() had just written — "recording - play the build…" lasted
+     * under three seconds. Same two defences cinematic.js settled on:
+     *
+     *   a SIGNATURE of only what a repaint would actually show, so an idle
+     *   panel is not rebuilt at all, and
+     *   carrying the typed name, the caret, the focus and the status line
+     *   across the repaints that do have something new to say.
+     *
+     * telemetry_events is in the signature on purpose - it is the number the
+     * user is watching during a take, not a free-running clock. */
+    const sig = [
+      st ? "st" : "-", rec ? rec.id : "-", rec ? rec.name : "",
+      rec ? rec.telemetry_events : "", rec ? String(rec.native) : "",
+      rec ? JSON.stringify(rec.level || null) : "",
+      st && st.processing ? st.processing.length : "",
+      notReady ? "blocked" : (p ? "ready" : "unknown"), blockers.join("|"),
+    ].join("~");
+    if (sig === this._ptSig && host.firstChild) return;
+    this._ptSig = sig;
+    const nameEl = host.querySelector(".qa-pt-name");
+    const kept = nameEl
+      ? { value: nameEl.value, focus: document.activeElement === nameEl,
+          at: nameEl.selectionStart }
+      : null;
+
     host.innerHTML = `
       <div class="qa-row qa-sp">
         <div>${statusHtml}</div>
@@ -692,7 +928,18 @@ window.SeatWS.qa = {
           ? `<span class="qa-bad">not ready: ${bg.esc(blockers.join(" · ") || "preflight failed")}</span>`
           : "records a live human/agent play session - the same path as the overview's record button: preflight, rebuild a stale build, then boot the telemetry frame."
       }</div>
-      <div class="meta" id="qa-pt-msg" style="color:var(--text-3);margin-top:4px"></div>`;
+      <div class="meta ${this._ptBad ? "qa-bad" : ""}" id="qa-pt-msg" style="color:var(--text-3);margin-top:4px">${bg.esc(this._ptMsg)}</div>`;
+
+    if (kept) {
+      const el = host.querySelector(".qa-pt-name");
+      if (el) {
+        el.value = kept.value;
+        if (kept.focus) {
+          el.focus();
+          try { el.setSelectionRange(kept.at, kept.at); } catch (e) { /* disabled input */ }
+        }
+      }
+    }
   },
 
   /* One record path, not two. The overview rebuilds a stale build, starts the
@@ -703,7 +950,7 @@ window.SeatWS.qa = {
     const bg = this._bg;
     const el = this._$("qa-playtest") && this._$("qa-playtest").querySelector(".qa-pt-name");
     const name = (el && el.value.trim()) || "qa session";
-    const msg = (t, bad) => { const m = this._$("qa-pt-msg"); if (m) { m.textContent = t; m.className = "meta " + (bad ? "qa-bad" : ""); } };
+    const msg = (t, bad) => this._setPtMsg(t, bad);
     try {
       const p = await bg.get("/api/playtest/preflight?native=false").catch(() => null);
       this._preflight = p;
@@ -717,13 +964,17 @@ window.SeatWS.qa = {
         msg("rebuilding the current build before recording…");
         const rebuilt = await bg.post("/api/play/rebuild", {});
         if (!rebuilt || !rebuilt.ok) {
-          msg("record blocked: current build failed - " + ((rebuilt && rebuilt.error) || "?"), true);
+          msg("record blocked: current build failed - " + (this._err(rebuilt) || "?"), true);
           return;
         }
       }
       const r = await bg.post("/api/playtest/start", { name });
       if (!r || r.error || r.ok === false) {
-        msg("start failed: " + ((r && (r.error || (r.error && r.error.message))) || "?"), true);
+        // A refusal is `{ok:false, error:{code,message}}` on the enveloped
+        // path and a bare `error` string on this one. Both used to be pasted
+        // into the sentence raw, and the envelope rendered "[object Object]" -
+        // the server had written a reason and the panel showed noise.
+        msg("start failed: " + (this._err(r) || "?"), true);
         bg.toast("could not start recording", true);
         return;
       }
@@ -742,10 +993,10 @@ window.SeatWS.qa = {
   },
 
   async stopPlaytest() {
-    const msg = (t, bad) => { const m = this._$("qa-pt-msg"); if (m) { m.textContent = t; m.className = "meta " + (bad ? "qa-bad" : ""); } };
+    const msg = (t, bad) => this._setPtMsg(t, bad);
     try {
       const r = await this._bg.post("/api/playtest/stop", {});
-      if (r && r.ok === false) { msg("stop failed: " + (r.error || "?"), true); this._bg.toast("stop failed", true); }
+      if (r && r.ok === false) { msg("stop failed: " + (this._err(r) || "?"), true); this._bg.toast("stop failed", true); }
       else {
         msg(`session ${(r && r.session_id) || ""} transcribing - a director triage item lands in the queue when it finishes`);
         if (typeof window.bootFrame === "function") { try { window.bootFrame(); } catch (e) {} }
@@ -772,6 +1023,7 @@ window.SeatWS.qa = {
     }
     this._paintVerdicts();
     this._paintAgent();
+    this._renderStages();
     if (this._selItem != null) this._loadActivity();
   },
 
@@ -792,7 +1044,12 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._gates.length) {
-      host.innerHTML = '<div class="qa-empty">no QA-gate runs yet - when a maker seat completes a work item, an automatic verify run lands here with a PASS/FAIL verdict.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no QA-gate run has reported yet",
+        "Completing a maker-seat work item on the board spawns an independent " +
+        "verify run, and its PASS/FAIL verdict lands here with the nitpick " +
+        "list. Nothing here means nothing has been gated, not that everything " +
+        "passed.");
       return;
     }
     const style = {
@@ -853,7 +1110,10 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._items.length) {
-      host.innerHTML = '<div class="qa-empty">no qa work items in the queue. Art-QA reviews and other qa tasks show up here once dispatched.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no qa work item is in the queue",
+        "An art-QA review, a gate run or anything queued to this seat appears " +
+        "here while it is live, with its transcript and a steer box.");
       return;
     }
     const opts = this._items.map(it =>
@@ -872,6 +1132,7 @@ window.SeatWS.qa = {
 
   selectItem(v) {
     this._selItem = parseInt(v, 10) || null;
+    this._actSig = "";   // a different item is always a repaint
     this._loadActivity();
   },
 
@@ -882,6 +1143,15 @@ window.SeatWS.qa = {
     const feed = this._$("qa-feed");
     if (!feed) return;
     const bg = this._bg;
+    // This runs on the 3s poll and replaces the feed's innerHTML, which resets
+    // its scrollbox to the top: scrolling back to read an earlier step was
+    // undone before you could finish the line. Only rebuild when the transcript
+    // actually moved — the same dedupe the gameplay seat's feed uses.
+    const sig = this._selItem + "|" + (act && act.running) + "|" +
+      ((act && act.step_count) != null ? act.step_count : (act && act.steps || []).length) +
+      "|" + ((act && act.final && act.final.subtype) || "");
+    if (sig === this._actSig && feed.firstChild) return;
+    this._actSig = sig;
     if (!act || !Array.isArray(act.steps) || !act.steps.length) {
       feed.innerHTML = `<div class="qa-empty">${act && act.running ? "agent running - no steps yet." : "no activity recorded for this item."}</div>`;
       if (act && act.final) feed.innerHTML += `<div class="qa-step"><span class="k">result</span>${bg.esc(act.final.text || "")}</div>`;

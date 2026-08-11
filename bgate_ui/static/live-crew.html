@@ -364,6 +364,23 @@ window.PX = (function () {
     director:1, narrative:1, gameplay:1, art:1, qa:1, tech:1, audio:1
   });
 
+  /* WHICH SEATS ACTUALLY HAVE ART. agent-feed, agent-ticker and agent-stage all
+     probe their sheets before painting one; this overlay was the only one that
+     assumed every seat had a pair, and the assumption is already false - the
+     `cinematic` seat was added after the sheets were drawn, so there is no
+     cinematic_talk.png or cinematic_walk.png. The result on camera: a 404 on
+     every paint and an empty cell where a crew member should be, with no way to
+     tell that apart from a seat that is simply idle. `false` means probed and
+     absent; `undefined` means not answered yet, and is drawn optimistically so
+     the roster does not flicker in on load. */
+  var known = {};
+
+  function applySheet(c, seat, busy) {
+    if (known[seat] === false) { c.sprite.style.backgroundImage = "none"; return; }
+    c.sprite.style.backgroundImage =
+      "url('" + SHEETS + seat + (busy ? "_walk.png" : "_talk.png") + "')";
+  }
+
   /* build the roster once; only classes and text change afterwards */
   var cells = {};
   SEATS.forEach(function (seat) {
@@ -387,6 +404,19 @@ window.PX = (function () {
     PX.paint(nm);
   });
 
+  /* One probe per seat, at load. A seat whose walk sheet is missing keeps its
+     name and its lamp - it is still on the roster and still reports busy, it
+     just does not get a body - rather than requesting a 404 on every repaint. */
+  SEATS.forEach(function (seat) {
+    var img = new Image();
+    img.onload = function () { known[seat] = true; };
+    img.onerror = function () {
+      known[seat] = false;
+      if (cells[seat]) applySheet(cells[seat], seat, cells[seat].sprite.className === "walk");
+    };
+    img.src = SHEETS + seat + "_talk.png";
+  });
+
   function setBusy(seat, busy) {
     var c = cells[seat];
     if (!c) return;
@@ -394,8 +424,7 @@ window.PX = (function () {
     var want = busy ? "walk" : "idle";
     if (c.sprite.className !== want) {
       c.sprite.className = want;
-      c.sprite.style.backgroundImage =
-        "url('" + SHEETS + seat + (busy ? "_walk.png" : "_talk.png") + "')";
+      applySheet(c, seat, busy);
     }
   }
 
@@ -459,7 +488,20 @@ window.PX = (function () {
       var running = (res.agents || []).filter(function (a) { return a.state === "running"; });
       return Promise.all(running.map(function (a) {
         return getJSON("/api/queue/" + a.item_id)
-          .then(function (d) { return { seat: d.seat || "", title: d.title || "" }; })
+          /* UNWRAP THE ENVELOPE. /api/queue/{id} answers {ok, data:{...}} while
+             /api/agents next to it answers a bare {agents}, and this read
+             assumed bare for both - so d.seat and d.title were undefined on
+             every row. The damage was not a blank line: agentName("") returns
+             "System", so every working agent was captioned SYSTEM with no
+             title, and because busy[""] is what got set, setBusy() then ran
+             false for all eight seats and NOT ONE crew sprite ever animated.
+             An overlay whose only job is showing who is working showed nobody
+             working while the header counted them.
+             live-deck.html and agent-ticker.html both already coerce this way. */
+          .then(function (res) {
+            var d = (res && res.data) || res || {};
+            return { seat: d.seat || "", title: d.title || "" };
+          })
           .catch(function () { return null; });
       })).then(function (rows) {
         return { jobs: rows.filter(Boolean), waiting: 0 };

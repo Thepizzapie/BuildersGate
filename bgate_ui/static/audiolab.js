@@ -937,7 +937,7 @@ window.AudioLab = (() => {
                title="Where this saves. Editing it here is the same as editing it in the export panel."
                oninput="AudioLab.saveAsField(this.value)"
                onchange="AudioLab.renderSheet()">
-        <span class="ab-saved" id="ab-saved"><i></i><b id="ab-saved-t">saved</b></span>
+        <span id="ab-saved"></span>
         <span class="ab-spacer"></span>
         <button class="ab-ico" id="ab-undo" onclick="AudioLab.undo()" title="Undo (Ctrl+Z)">${ic("undo")}</button>
         <button class="ab-ico" id="ab-redo" onclick="AudioLab.redo()" title="Redo (Ctrl+Shift+Z)">${ic("redo")}</button>
@@ -1329,6 +1329,10 @@ window.AudioLab = (() => {
   }); }catch(e){}
 
   function paint(){
+    // Cheap - SaveState dedupes on a signature - and it means every path that
+    // dirties the buffer moves the indicator, not just the few that happen to
+    // call refreshHistory.
+    paintSaveState();
     if (!S || !$.ctx2d) return;
     if (S._pending) return;
     S._pending = true;
@@ -2052,10 +2056,25 @@ window.AudioLab = (() => {
     if (r) r.disabled = !S.redo.length;
     if ($.name && document.activeElement !== $.name)
       $.name.value = S.rel || S.saveAs || "";
-    const chip = document.getElementById("ab-saved");
-    const txt = document.getElementById("ab-saved-t");
-    if (chip) chip.classList.toggle("dirty", !!S.dirty);
-    if (txt) txt.textContent = S.dirty ? "unsaved" : (S.rel ? "saved" : "new");
+    paintSaveState();
+  }
+
+  /* Is my work on disk? The chip this replaces said "saved" or "unsaved" and
+     nothing else: no WHEN, nothing while a write was in flight, and nothing at
+     all when one failed - a failed save was a 2.6s toast in the far corner of
+     a screen whose middle is a waveform. See SaveState in seats/_core.js. */
+  function paintSaveState(){
+    if (!window.SaveState || !S) return;
+    const el = document.getElementById("ab-saved");
+    if (!el) return;
+    if (S.saving)    return SaveState.set(el, {state:"saving"});
+    if (S.saveError) return SaveState.set(el, {state:"error", detail:S.saveError});
+    if (!S.rel)      return SaveState.set(el,
+      {state:"new", detail:S.dirty ? "never written to disk" : "give it a path"});
+    if (S.dirty)     return SaveState.set(el, {state:"dirty", detail:"Ctrl+S"});
+    // at:0 - on disk, but not written by this session, so there is no honest
+    // "when" to print.
+    SaveState.set(el, {state:"saved", at:S.savedAt || 0});
   }
 
   /* ── edits ────────────────────────────────────────────────────────────── */
@@ -3135,6 +3154,7 @@ window.AudioLab = (() => {
       say(S.status.ogg_reason || "ffmpeg is needed to write .ogg"); return;
     }
     const wav = encodeWav(S.buf);
+    S.saving = true; S.saveError = null; paintSaveState();
     const post = force => mutate("/api/audio/lab/save", {
       body: { rel, wav, mtime: (rel === S.rel) ? S.mtime : undefined,
               overwrite: force || undefined, ogg_quality: 6 },
@@ -3154,6 +3174,10 @@ window.AudioLab = (() => {
         body: exists ? "" : "Whatever wrote it since this session opened is what gets replaced.",
         ok: "overwrite", danger: true })){
         say(r.error);
+        // Declining the overwrite is a cancelled save, not a save in flight:
+        // leaving the indicator on "Saving…" would be a worse lie than the
+        // silence this whole change is fixing.
+        S.saving = false; S.saveError = null; paintSaveState();
         const box = document.getElementById("ab-saveas");
         if (box){ box.focus(); box.select(); }
         return;
@@ -3162,10 +3186,17 @@ window.AudioLab = (() => {
     } else if (!r.ok){
       say(r.error);
     }
-    if (!r.ok) return;
+    S.saving = false;
+    if (!r.ok) {
+      S.saveError = String(r.error || "the server refused the write").slice(0, 120);
+      paintSaveState();
+      return;
+    }
+    S.saveError = null;
     S.rel = r.data.rel; S.mtime = r.data.mtime; S.saveAs = r.data.rel;
     S.meta = r.data; S.loop = r.data.loop || S.loop;
     S.dirty = false;
+    S.savedAt = Date.now();
     renderSheet(); paint();
     say(r.data.created
         ? `created ${r.data.rel}${r.data.needs_godot_import

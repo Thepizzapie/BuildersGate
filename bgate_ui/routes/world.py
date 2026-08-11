@@ -1,21 +1,24 @@
-"""The world surface: the design bible, the cut line, the lore graph, canon.
+"""The world surface: the design bible, the lore graph, canon.
 
 The audit's verdict was that the dashboard is a viewer over a store only agents
 can write — bible.add/update/remove and lore.link/add_fact/canon.check were
-MCP-only, so the producer authored the scope document by asking the thing it
+MCP-only, so the producer authored the design document by asking the thing it
 constrains to write it. These are the write paths, and they are gates rather
 than pass-throughs:
 
-* bible mutations and scope assignment require a human actor. An agent must not
-  be able to edit the document that bounds it, or file its own work under a
-  cheaper tier.
+* bible mutations require a human actor. An agent must not be able to edit the
+  document that bounds it.
 * every narrative write runs canon.check first. A ``conflict`` verdict is a 409
   carrying the flags; a human may pass ``override`` after reading them, an agent
   may not. Checking and then writing anyway is what made the old gate a
   formality.
 
+/api/scope, /api/scope/check and /api/scope/assign lived here until 2026-08-10,
+feeding the three cut-line panels of the World view. The gate behind them never
+refused an item, so the panels and the routes went together.
+
 Auto-registers via routes/__init__.py. Errors are the api.py envelope: ValueError
-from core is a 400, LookupError a 404, a scope refusal a 403.
+from core is a 400, LookupError a 404.
 """
 from __future__ import annotations
 
@@ -26,7 +29,6 @@ from fastapi import APIRouter, Depends, Request
 from bgate_core import bible as _bible
 from bgate_core import canon as _canon
 from bgate_core import lore as _lore
-from bgate_core import scope as _scope
 from bgate_ui import api
 from bgate_ui.deps import root
 
@@ -105,26 +107,25 @@ def bible_update(request: Request, section_id: int, payload: dict) -> dict:
 
 
 @router.delete("/api/bible/{section_id}")
-def bible_remove(request: Request, section_id: int,
-                 reassign_to: Optional[int] = None, force: bool = False) -> dict:
-    """Refuses while work is still filed under the section. ``reassign_to`` moves
-    that work to another tier; ``force`` untiers it, on the record."""
+def bible_remove(request: Request, section_id: int) -> dict:
+    """Delete a section.
+
+    This used to take ``reassign_to``/``force`` and 409 while work items were
+    filed under the section. Only scope tiers were ever pointed at, and that
+    column is gone, so there is nothing left to negotiate.
+    """
     api.require_human(api.current_actor(request), "delete a design bible section")
     _section(section_id)
     try:
-        return api.ok(_bible.remove(root(), section_id,
-                                    reassign_to=reassign_to, force=force))
-    except ValueError as exc:
-        raise api.conflict(str(exc), section_id=section_id,
-                           work_items=_bible.dependents(root(), section_id))
+        return api.ok(_bible.remove(root(), section_id))
     except LookupError as exc:
         raise api.not_found(str(exc))
 
 
 @router.post("/api/bible/reorder")
 def bible_reorder(request: Request, payload: dict) -> dict:
-    """Rewrite one kind's ranks to the given id order. For scope_tier and
-    cut_line this IS the scope decision, so it is atomic — see bible.reorder."""
+    """Rewrite one kind's ranks to the given id order, atomically — a
+    half-applied reorder is a bible that argues with itself. See bible.reorder."""
     api.require_human(api.current_actor(request), "reorder the design bible")
     order = payload.get("order")
     if not isinstance(order, list) or not order:
@@ -132,42 +133,6 @@ def bible_reorder(request: Request, payload: dict) -> dict:
     try:
         return api.ok(_bible.reorder(root(), (payload.get("kind") or "").strip(),
                                      [int(i) for i in order]))
-    except (TypeError, ValueError) as exc:
-        raise api.bad_request(str(exc))
-
-
-# ---------------------------------------------------------------------------
-# Scope — the cut line
-# ---------------------------------------------------------------------------
-
-@router.get("/api/scope")
-def scope_view() -> dict:
-    """The tiers, the line, what is under it, and the open work the line already
-    invalidates."""
-    return api.ok(_scope.overview(root()))
-
-
-@router.get("/api/scope/check")
-def scope_check(scope_tier_id: Optional[int] = None) -> dict:
-    """The same verdict the queue and the dispatcher get. 200 either way — this
-    is the question, not the gate."""
-    return api.ok(_scope.check(root(), scope_tier_id))
-
-
-@router.post("/api/scope/assign")
-def scope_assign(request: Request, payload: dict) -> dict:
-    """File a work item under a tier. Refuses a tier that is already cut."""
-    api.require_human(api.current_actor(request), "set a work item's scope tier")
-    if payload.get("item_id") is None:
-        raise api.bad_request("item_id is required")
-    tier_id = payload.get("scope_tier_id")
-    try:
-        return api.ok(_scope.assign(root(), int(payload["item_id"]),
-                                    None if tier_id is None else int(tier_id)))
-    except _scope.OutOfScope as exc:
-        raise api.forbidden(exc.verdict["reason"], **exc.verdict)
-    except LookupError as exc:
-        raise api.not_found(str(exc))
     except (TypeError, ValueError) as exc:
         raise api.bad_request(str(exc))
 

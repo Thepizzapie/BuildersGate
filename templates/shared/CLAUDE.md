@@ -70,7 +70,7 @@ work as one.
 
 | seat | owns |
 | --- | --- |
-| `director` | pillars, scope, the cut line, arbitrating conflicts |
+| `director` | pillars, the core loop, priorities, arbitrating conflicts |
 | `narrative` | lore graph, quests, dialogue |
 | `gameplay` | mechanics, systems, game feel |
 | `tech` | engine, build, performance, project plumbing |
@@ -108,9 +108,9 @@ integration is indistinguishable from a bug.
 cheap and it is the difference between building the game and building a
 different game next to it.
 
-- Add a settled decision: `bible_add(kind, title, body, rank)`. `rank` is the
-  scope tier — `scope_check(rank)` tells you whether something at that tier is
-  above the cut line (i.e. whether it gets built at all).
+- Add a settled decision: `bible_add(kind, title, body, rank)`. `kind` is
+  `pillar`, `loop`, `constraint` or `reference`; `rank` orders sections within
+  a kind, lowest first.
 - Add world facts: `lore_add(kind, name, summary)`, then `lore_fact(ref,
   statement, locked=True)` for anything that is now canon, and `lore_link` for
   relationships. `lore_brief(ref)` / `lore_list` to read back.

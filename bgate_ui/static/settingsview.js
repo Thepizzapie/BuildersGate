@@ -506,6 +506,15 @@
       this._err = null;
       this._absorb(r.data);
       this.paint();
+      // THE LOST CALLER. streamer.js exports StreamerChip.refresh() with a
+      // comment saying Settings calls it after a save so the chip does not lag
+      // the switch by a poll interval — and nothing here ever did, so flipping
+      // privacy.streamer left the chip reading the old state for up to a poll.
+      // Guarded and swallowed: this is a cosmetic follow-up to a write that has
+      // already succeeded, and it must not turn a saved setting into an error.
+      try {
+        if (window.StreamerChip) window.StreamerChip.refresh();
+      } catch (e) { /* the chip is not mounted on this page */ }
       const now = this.field(key);
       const shown = now ? this.show(now, now.value) : String(value);
       // An env var can make the stored value not the effective one. Saying

@@ -34,7 +34,9 @@
   window.SeatWS = window.SeatWS || {};
 
   const CINE = {
-    label: "Cinematic",
+    // Display name only — the seat id, this file's name and every cinematic_*
+    // tool stay as they are. See bgate_core/seats.py for why.
+    label: "Video",
     glyph: BGICON("cinematic"),
     _bg: null,
     _root: null,
@@ -51,6 +53,7 @@
     _stuck: [],         // paid generations nobody collected. See _stuckHtml.
     _est: null,         // the open sequence's bill, before any of it is bought
     _busy: false,       // a mutation is in flight; do not repaint over it
+    _sig: "",           // what the panel already shows. See _signature().
     _painted: false,    // the FORM is built once — never repaint someone's typing
 
     render(container, bg) {
@@ -122,10 +125,48 @@
       }
     },
 
+    /* WHAT THIS PANEL LOOKS LIKE RIGHT NOW, as a short string.
+     *
+     * The shell calls refresh() every three seconds and _paint() replaces
+     * host.innerHTML, so the whole panel was being destroyed and rebuilt twenty
+     * times a minute whether or not anything had changed. That is not merely
+     * wasteful: it takes the <video> element with it, so a take reset to 0:00
+     * every three seconds and could not be watched to the end — on a seat whose
+     * entire review step is "watch the clip before you keep it". Typing in the
+     * plan form died the same way.
+     *
+     * _core.js has solved this since it was written (SeatWork._sig); this panel
+     * simply never adopted it. Only the fields a repaint would actually show
+     * are in the signature — a timestamp that ticks on its own would defeat it. */
+    _signature() {
+      const seq = this._seq || {};
+      const board = this._board || {};
+      return [
+        this._mode,
+        (this._seqs || []).map((s) => s.name + ":" + (s.kept || 0)).join(","),
+        seq.name + ":" + (seq.shots || []).map((s) =>
+          s.idx + s.status + (s.artifact ? s.artifact.id : "")).join("."),
+        (this._boards || []).map((b) => b.name + ":" + (b.frames || 0)).join(","),
+        board.name + ":" + (board.frames || []).map((f) =>
+          f.idx + f.status + (f.has_image ? "1" : "0")).join("."),
+        (this._cands || []).map((c) => c.artifact_id).join(","),
+        (this._kept || []).map((k) => k.artifact_id + (k.installed ? "i" : "")).join(","),
+        (this._jobs || []).map((j) => j.id + ":" + j.status + ":" + (j.stage || "")).join(","),
+        (this._stuck || []).map((s) => s.idx + ":" + s.state).join(","),
+        this._est ? String(this._est.usd) + this._est.known : "",
+      ].join("|");
+    },
+
     _paint() {
       const bg = this._bg;
       const host = this._root && this._root.querySelector(".bg-cine");
       if (!host) return;
+
+      // Nothing moved: leave the DOM, and whatever is playing or focused in it,
+      // exactly where it is.
+      const sig = this._signature();
+      if (sig === this._sig && host.firstChild) return;
+      this._sig = sig;
       const o = this._opts || {};
       const enc = o.encoder || {};
 
@@ -691,7 +732,22 @@
       const live = (this._jobs || []).filter((j) =>
         j.status && j.status !== "done" && j.status !== "failed" &&
         j.status !== "cancelled");
-      if (!live.length) return "";
+
+      // A JOB THAT FAILS IN A SECOND WAS INVISIBLE. Only non-terminal jobs were
+      // listed, so clicking generate on a shot that gets refused up front —
+      // missing anchor, dead budget, no encoder — queued a job, failed it, and
+      // filtered it out before the next repaint. The button read as dead and
+      // the honest refusal the server had written was never shown to anyone.
+      const broke = (this._jobs || [])
+        .filter((j) => j.status === "failed")
+        .slice(-3);
+      const failed = broke.length
+        ? '<div class="bg-warn"><b>Refused</b>' + broke.map((j) =>
+            "<div>" + bg.esc(j.kind || "job") +
+            (j.idx ? " shot " + j.idx : "") + ": " +
+            bg.esc(this._why(j)) + "</div>").join("") + "</div>"
+        : "";
+      if (!live.length) return failed + this._stuckHtml();
       // ORPHANED IS THREE-STATE, not a boolean, and rendering it as one is how
       // a paid job that nobody could classify got shown as healthy. true means
       // it started before this process and will never move; null means its
@@ -708,11 +764,19 @@
         }
         return "";
       };
-      return '<div class="bg-jobs">' + live.map((j) =>
+      return failed + '<div class="bg-jobs">' + live.map((j) =>
         '<div>' + bg.esc(j.kind || "job") + " " +
         bg.esc(j.sequence || "") + (j.idx ? " shot " + j.idx : "") + " - " +
         bg.esc(j.stage || j.status || "") + orphan(j) +
         "</div>").join("") + "</div>" + this._stuckHtml();
+    },
+
+    /* The server writes a sentence explaining every refusal. It is buried two
+     * levels down in the job record, and showing "failed" instead of it is how
+     * a fixable problem reads as a broken button. */
+    _why(j) {
+      const r = j.result || {};
+      return j.error || r.error || j.stage || j.status || "no reason recorded";
     },
 
     /* Shots that were PAID FOR and never collected. Shown next to the live
@@ -759,6 +823,10 @@
       } finally {
         this._busy = false;
       }
+      // A deliberate action always repaints, even if the signature happens to
+      // land the same — a click that visibly does nothing is the complaint that
+      // started this whole thread.
+      this._sig = "";
       this._load();
     },
   };

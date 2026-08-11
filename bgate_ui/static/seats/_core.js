@@ -58,7 +58,13 @@
       get: (_t, seat) => (window.BGIcon && BGIcon.has(seat))
         ? BGIcon(seat, { size: 15 }) : "",
     }),
+    /* `bad` is TRUTHY-FOR-FAILURE, but half the callers in this app say
+     * toast(msg, "ok") meaning SUCCESS — the three editors all do, through
+     * their local `say(m, k)` helper. A bare truthiness test paints those
+     * green-intent messages red. So the success words are recognised
+     * explicitly and everything else keeps the old meaning. */
     toast(msg, bad) {
+      if (bad === "ok" || bad === "good" || bad === "success") bad = false;
       let t = document.getElementById("bgws-toast");
       if (!t) {
         t = document.createElement("div"); t.id = "bgws-toast";
@@ -131,6 +137,28 @@
     },
   };
   window.BGWS = BGWS;
+
+  /* THE GLOBAL TOAST, AND WHY EVERY EDITOR SAVED SILENTLY WITHOUT IT.
+   *
+   * BGWS.toast above is the only real toast in the app, and it was reachable
+   * only as a property of the seat shell. Everything outside the shell called a
+   * bare `toast(...)` or `window.toast(...)` that had never existed:
+   *
+   *   modeledit.js:67, spriteedit.js:43, audiolab.js:42
+   *       const say = (m, k) => { try { toast(m, k); } catch (e) { console.warn(m); } };
+   *
+   * `toast` was undefined, so every one of those calls threw a ReferenceError
+   * straight into its own catch and degraded to console.warn. The 3D viewer,
+   * the sprite editor and the audio lab each wrote "saved <file>" to a console
+   * nobody has open, and the owner's report was exact: "there is zero feedback
+   * in saving in any of the editors". The message was always being produced and
+   * never being shown. notify.js and agents_console.js call window.toast the
+   * same way and were failing the same way.
+   *
+   * One export rather than a local copy per file: a second implementation is
+   * how the two that already exist (brainstorm.js, world.js) drifted into
+   * different signatures in the first place. */
+  if (!window.toast) window.toast = (msg, bad) => BGWS.toast(msg, bad);
 
   /* ---- SeatWork: the shared work + logs panel -----------------------------
    * ONE component, rendered above every seat's workspace by the shell, so no
@@ -228,6 +256,11 @@
       const focused = document.activeElement;
       const keepFocus = focused && focused.classList
         && focused.classList.contains("swk-find") && host.contains(focused);
+      // Restoring focus alone was not enough: this runs off a 3s poll, and
+      // parking the caret at the end of the value moved it out from under
+      // anyone editing the MIDDLE of a filter. Keep the real selection.
+      const at = keepFocus ? focused.selectionStart : 0;
+      const to = keepFocus ? focused.selectionEnd : 0;
       host.innerHTML = this._style() + this._body();
       if (!host._swkWired) {
         host._swkWired = true;
@@ -241,7 +274,11 @@
       }
       if (keepFocus) {
         const box = host.querySelector(".swk-find");
-        if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+        if (box) {
+          box.focus();
+          try { box.setSelectionRange(at, to); }
+          catch (e) { box.setSelectionRange(box.value.length, box.value.length); }
+        }
       }
     },
 
@@ -434,6 +471,240 @@
     },
   };
   window.SeatWork = SeatWork;
+
+  /* ---- SaveState: is my work on disk, or is it not? -----------------------
+   *
+   * THE COMPLAINT THIS ANSWERS: "there is zero feedback in saving in any of
+   * the editors."
+   *
+   * The toast is not the bug. It fires, it renders, it says the right thing.
+   * It is simply the wrong instrument for this: `.toasts` is fixed to the
+   * bottom-right corner and lives for 2.6 seconds, and in the sprite editor or
+   * the 3D viewer the eye is on the canvas in the middle of the screen. A
+   * small flash in the far corner is indistinguishable from nothing happening,
+   * which is exactly the report.
+   *
+   * The real gap is that a TRANSITION was the only signal and there was no
+   * STATE. All three editors track `dirty` and barely render it — modeledit
+   * appends a " *" to the filename, spriteedit shows a word, audiolab a chip
+   * with no time on it — so between toasts an editor looks identical whether
+   * the work is on disk or not, and the only way to know was to have caught a
+   * 2.6-second corner flash. "Saved" with no "when" is barely better: it is
+   * true of a file saved four seconds ago and of one saved before forty edits.
+   *
+   * So: one persistent indicator, mounted in the editor's own toolbar directly
+   * above the canvas rather than at the edge of the page, carrying all five
+   * states a save actually has — never written / unsaved / saving / saved when
+   * / failed why. The toast keeps the transition; this holds the state.
+   *
+   * Usage, from anywhere (this file loads before every editor):
+   *   SaveState.set("me-save-state", { state: "dirty" });
+   *   SaveState.set(el, { state: "saved" });               // stamps `at` for you
+   *   SaveState.set(el, { state: "error", detail: msg });
+   *
+   * The relative time re-renders on a 10s ticker, so "saved just now" becomes
+   * "saved 4m ago" without the editor having to repaint anything.
+   */
+  const SaveState = {
+    _els: new Set(),
+    _timer: 0,
+
+    set(host, o) {
+      const el = typeof host === "string" ? document.getElementById(host) : host;
+      if (!el) return;
+      const next = Object.assign({}, el._svst || {}, o || {});
+      // A save that just landed stamps itself; a caller may still pass `at`
+      // (restoring a session, say) and keep it.
+      if (o && o.state === "saved" && o.at == null) next.at = Date.now();
+      if (o && o.state && o.state !== "error") next.detail = (o.detail || "");
+      el._svst = next;
+      this._els.add(el);
+      this._paint(el);
+      if (!this._timer) {
+        this._timer = setInterval(() => {
+          this._els.forEach(x => {
+            if (!x.isConnected) { this._els.delete(x); return; }
+            this._paint(x);
+          });
+        }, 10000);
+      }
+    },
+
+    // How long ago, in the units a person actually cares about while editing.
+    since(ms) {
+      const s = Math.max(0, (Date.now() - (Number(ms) || 0)) / 1000);
+      if (s < 20) return "just now";
+      if (s < 90) return Math.round(s) + "s ago";
+      if (s < 5400) return Math.round(s / 60) + "m ago";
+      return Math.round(s / 3600) + "h ago";
+    },
+
+    _paint(el) {
+      const st = el._svst || {};
+      const state = st.state || "new";
+      let label = "", sub = "";
+      if (state === "dirty") {
+        label = "Unsaved changes"; sub = st.detail || "Ctrl+S";
+      } else if (state === "saving") {
+        label = "Saving…"; sub = st.detail || "";
+      } else if (state === "saved") {
+        // A time AND a note: "Saved · 2 other tabs unsaved" is a different
+        // fact from "Saved", and this file being clean does not make the
+        // project clean.
+        label = "Saved";
+        sub = [st.at ? this.since(st.at) : "", st.detail || ""]
+          .filter(Boolean).join(" · ");
+      } else if (state === "error") {
+        label = "Save failed"; sub = st.detail || "no reason recorded";
+      } else {
+        label = "Not saved yet"; sub = st.detail || "never written to disk";
+      }
+      // Called from paint loops that run on every stroke, so an unchanged
+      // indicator must not re-enter the DOM — replacing innerHTML restarts the
+      // dot's animation, and a pulse that resets 60 times a second is a solid
+      // dot that tells you nothing.
+      const sig = state + "|" + label + "|" + sub;
+      if (sig === el._svstSig) return;
+      el._svstSig = sig;
+      el.className = "svst s-" + state;
+      el.setAttribute("role", "status");
+      el.title = label + (sub ? " - " + sub : "");
+      el.innerHTML = '<span class="svst-dot"></span><b class="svst-l">' +
+        BGWS.esc(label) + "</b>" +
+        (sub ? '<span class="svst-w">' + BGWS.esc(sub) + "</span>" : "");
+    },
+  };
+  window.SaveState = SaveState;
+
+  /* ---- SeatStage: the strip that gives a seat an ORDER --------------------
+   *
+   * THE COMPLAINT THIS ANSWERS: "seat workspaces is still a mess … it's all
+   * just square components w basic info." It was true, and the reason is
+   * structural rather than cosmetic. A seat panel was a STACK of unrelated
+   * boxes — art put "Flow map", "Locks & contention" and "Iteration lab" one
+   * under the other; qa put a bot roster, verdicts, a match result and a run
+   * history in a column — and nothing on the page said what you do first, what
+   * follows it, or where in the work you currently are. There was no flow
+   * because the layout expressed none.
+   *
+   * Every seat ALREADY HAS a written order: the numbered steps in its brief in
+   * bgate_core/seats.py. Art's mission is literally three of these in sequence
+   * ("pin the reference, condition every frame on it, measure the result") and
+   * qa's is a verdict loop. The UI ignored all of it. A stage strip is that
+   * brief, made into the layout.
+   *
+   * MODELLED ON cinematic.js's tabs, WHICH ARE ITS PIPELINE (storyboard ->
+   * shot list -> takes: free planning, then paid generation, then human
+   * decisions). That seat is the one that reads as a workflow, and the reason
+   * is that its tabs are ordered by the work rather than by the panels.
+   *
+   * WHY THIS IS NOT JUST A TAB BAR. A tab says what a surface is called. A
+   * stage has to say what STATE it is in, because the question a workspace
+   * exists to answer is "what is waiting for me". So each stage carries a
+   * status line and a tone: "3 waiting on you" in warn, "approved but not
+   * live" in bad, "nothing here yet" in off. A stage nobody has to touch and a
+   * stage holding three human decisions must not look the same from across the
+   * room.
+   *
+   * Usage:
+   *   const at = SeatStage.paint(stripEl, {
+   *     key: "art",                                  // localStorage namespace
+   *     stages: [{ id, label, note, tone, done, hint }, …],
+   *     onPick(id) { … },
+   *   });
+   *   SeatStage.show(rootEl, at);   // toggles [data-stagebody="<id>"]
+   *
+   * It carries the same repaint guard cinematic.js documents: this is painted
+   * off a 3s poll, and rebuilding the strip on every tick would take the
+   * pressed state out from under a click.
+   */
+  const SeatStage = {
+    _act: {},
+
+    active(key, ids) {
+      let id = this._act[key];
+      if (id === undefined) {
+        try { id = localStorage.getItem("bgws-stage-" + key) || null; } catch (e) { id = null; }
+        this._act[key] = id;
+      }
+      if (!ids || !ids.length) return id;
+      return ids.indexOf(id) === -1 ? ids[0] : id;
+    },
+
+    select(key, id) {
+      this._act[key] = id;
+      try { localStorage.setItem("bgws-stage-" + key, id); } catch (e) {}
+    },
+
+    paint(host, spec) {
+      if (!host) return null;
+      const stages = (spec.stages || []).filter(Boolean);
+      const ids = stages.map(s => s.id);
+      const at = this.active(spec.key, ids);
+      host._bgsKey = spec.key;
+      host._bgsPick = spec.onPick;
+      // Only what a repaint would actually SHOW is in the signature.
+      const sig = at + "|" + stages.map(s =>
+        [s.id, s.label, s.note, s.tone, s.done ? 1 : 0].join("")).join(",");
+      if (sig === host._bgsSig && host.firstChild) return at;
+      host._bgsSig = sig;
+      host.className = "bg-stages";
+      host.setAttribute("role", "tablist");
+      host.innerHTML = stages.map((s, i) => {
+        const on = s.id === at;
+        return `<button class="bg-stage${on ? " on" : ""}${s.done ? " done" : ""}"
+          role="tab" aria-selected="${on ? "true" : "false"}"
+          data-stage="${BGWS.esc(s.id)}" title="${BGWS.esc(s.hint || "")}">
+          <span class="bg-stage-n">${s.done ? "&#10003;" : (i + 1)}</span>
+          <span class="bg-stage-b">
+            <span class="bg-stage-t">${BGWS.esc(s.label)}</span>
+            <span class="bg-stage-s t-${BGWS.esc(s.tone || "off")}">${BGWS.esc(s.note || "")}</span>
+          </span></button>`;
+      }).join("");
+      if (!host._bgsWired) {
+        host._bgsWired = true;
+        host.addEventListener("click", ev => {
+          const b = ev.target.closest("[data-stage]");
+          if (!b || !host.contains(b)) return;
+          SeatStage.select(host._bgsKey, b.dataset.stage);
+          host._bgsSig = "";
+          if (host._bgsPick) { try { host._bgsPick(b.dataset.stage); } catch (e) {} }
+        });
+      }
+      return at;
+    },
+
+    // Show one stage's body. Every body stays in the DOM — the panels inside
+    // them hold scroll positions, half-typed forms and mounted editors, and a
+    // stage switch must not be a remount.
+    show(root, at) {
+      if (!root) return;
+      root.querySelectorAll("[data-stagebody]").forEach(sec => {
+        sec.hidden = sec.getAttribute("data-stagebody") !== at;
+      });
+    },
+
+    // The one sentence that says what this stage is for and what to do next.
+    lede(host, text) {
+      if (!host) return;
+      const s = String(text || "");
+      if (host._bgsLede === s) return;
+      host._bgsLede = s;
+      host.className = "bg-stagelede";
+      host.textContent = s;
+    },
+
+    /* AN EMPTY STAGE MUST SAY WHAT WOULD FILL IT. "no models found" over a
+     * 584-sheet project was a real bug found here, and the reason it survived
+     * is that an empty panel and a broken one look identical. A stage with
+     * nothing in it names the step that produces something, so a reader can
+     * tell "I have not done that yet" from "this is lying to me". */
+    nothing(what, how) {
+      return '<div class="bg-nothing"><b>' + BGWS.esc(what) + "</b>" +
+        (how ? "<span>" + BGWS.esc(how) + "</span>" : "") + "</div>";
+    },
+  };
+  window.SeatStage = SeatStage;
 
   /* ---- SeatLog: the transcript reader -------------------------------------
    * The review surface. An agent log is a stream-json file that runs to tens of
@@ -1070,15 +1341,39 @@
       this._container = container; this._opts = opts;
     },
     _reload() { if (this._container) this.mount(this._container, this._opts); },
+    /* A refusal from this API is `{ok:false, error:{code,message,detail}}` — an
+     * OBJECT. Every button here used to concatenate `r.error` straight into a
+     * toast, which renders "[object Object]": the server had written the exact
+     * reason ("'foo' does not resolve to a ref or file", "unsupported image
+     * type") and the user was shown noise instead. Some of them checked
+     * nothing at all and just re-rendered, so a refused delete looked like a
+     * card that came back by itself. */
+    _err(r) {
+      if (!r) return "no response from the server";
+      const e = r.error;
+      if (!e) return r.ok === false ? "request failed" : null;
+      return typeof e === "string" ? e : (e.message || e.code || "request failed");
+    },
     async _addTask(itemId) {
       const ref = document.getElementById("rm-task-ref").value.trim();
       const kind = document.getElementById("rm-task-kind").value;
       if (!ref) return;
       const r = await BGWS.post(`/api/tasks/${itemId}/refs`, { ref, kind });
-      if (r.ok) { BGWS.toast("anchored " + ref); this._reload(); } else BGWS.toast(r.error || "failed", true);
+      const err = this._err(r);
+      if (err) { BGWS.toast(err, true); return; }
+      BGWS.toast("anchored " + ref);
+      this._reload();
     },
-    async _rmTask(itemId, ref, btn) { await BGWS.del(`/api/tasks/${itemId}/refs?ref=${encodeURIComponent(ref)}`); this._reload(); },
-    async _rmGlobal(name, btn) { await BGWS.del(`/api/refs/${encodeURIComponent(name)}`); this._reload(); },
+    async _rmTask(itemId, ref, btn) {
+      const err = this._err(await BGWS.del(`/api/tasks/${itemId}/refs?ref=${encodeURIComponent(ref)}`));
+      if (err) BGWS.toast(err, true);
+      this._reload();
+    },
+    async _rmGlobal(name, btn) {
+      const err = this._err(await BGWS.del(`/api/refs/${encodeURIComponent(name)}`));
+      if (err) BGWS.toast(err, true);
+      this._reload();
+    },
     _upload(ev, itemId) { this._uploadFiles(ev.target.files, itemId, this._container); },
     async _uploadFiles(files, itemId, container) {
       const f = files && files[0]; if (!f) return;
@@ -1086,7 +1381,11 @@
       const kind = container.querySelector("#rm-g-kind").value;
       const data = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
       const resp = await BGWS.post("/api/refs/upload", { name, kind, data });
-      if (resp.ok || resp.name) { BGWS.toast("pinned " + name); this._reload(); } else BGWS.toast(resp.error || "upload failed", true);
+      // Success here is the pin ROW (bare, no `ok`) — hence the `resp.name`
+      // arm; a refusal is the error envelope, which _err renders as its
+      // sentence rather than as "[object Object]".
+      if (resp && (resp.ok || resp.name)) { BGWS.toast("pinned " + name); this._reload(); }
+      else BGWS.toast(this._err(resp) || "upload failed", true);
     },
   };
 })();

@@ -542,26 +542,48 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
     out_path = Path(root) / out_rel
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Explicit provider means the caller chose; honour it and do not wander off
+    # to a different vendor behind their back. Otherwise try each configured
+    # provider until one draws, moving on only when the failure was the
+    # ACCOUNT's rather than the prompt's - see _is_account_failure.
+    chain = [provider] if provider else _providers(root)
+
     _set_frame(root, frame["id"], status="generating", prompt=text)
-    try:
-        result = chroma.generate(
-            text, out_path,
-            provider=provider or _pick_provider(root),
-            model=model, task_kind="concept",
-            keyed=False, transparent=False,
-            size=FRAME_SIZES.get(b["aspect_ratio"], "1536x1024"),
-            quality=quality, ref_paths=ref_paths, ref_strength=ref_strength,
-            root=root, logical_name=_logical(b, frame),
-            work_item_id=work_item_id)
-    except Exception as exc:
-        _set_frame(root, frame["id"], status="empty")
-        return {"ok": False, "stage": "generate",
-                "error": f"{type(exc).__name__}: {exc}", "estimated_usd": 0.0}
+    result: dict = {}
+    tried: list[dict] = []
+    for candidate in chain:
+        try:
+            result = chroma.generate(
+                text, out_path,
+                provider=candidate,
+                model=model, task_kind="concept",
+                keyed=False, transparent=False,
+                size=FRAME_SIZES.get(b["aspect_ratio"], "1536x1024"),
+                quality=quality, ref_paths=ref_paths,
+                ref_strength=ref_strength,
+                root=root, logical_name=_logical(b, frame),
+                work_item_id=work_item_id)
+        except Exception as exc:                                 # noqa: BLE001
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        if result.get("ok", True) and out_path.exists():
+            result["provider"] = candidate
+            break
+
+        tried.append({"provider": candidate,
+                      "error": str(result.get("error", "no image returned"))})
+        if not _is_account_failure(result.get("error")):
+            break   # the next vendor would refuse this too
 
     if not result.get("ok", True) or not out_path.exists():
         _set_frame(root, frame["id"], status="empty")
+        # EVERY provider is named, with its own reason. One line saying "image
+        # generation is unavailable" is what let a dead OpenAI account read as
+        # an org-wide outage while Krea sat there working.
         return {"ok": False, "stage": "generate",
-                "error": result.get("error", "the provider returned no image"),
+                "error": "; ".join(f"{t['provider']}: {t['error']}"
+                                   for t in tried) or "no image returned",
+                "tried": tried,
                 "estimated_usd": result.get("estimated_usd", 0.0)}
 
     art = artifacts.register(
@@ -579,6 +601,12 @@ def frame_generate(root: str | os.PathLike[str], name: str, idx: int, *,
     return {"ok": True, "board": b["name"], "idx": idx, "path": out_rel,
             "artifact_id": art.get("id"), "prompt": text,
             "refs_used": [*extra, *cast, *looks], "missing_refs": missing,
+            # WHICH ACCOUNT PAID, and what it had to walk past to get here. With
+            # only the model name in the result, a frame drawn by the second
+            # provider after the first refused looked identical to one drawn by
+            # the first - so nobody could see that an account had gone dry.
+            "provider": result.get("provider", ""),
+            "fell_back_from": [t["provider"] for t in tried],
             "model": result.get("model", ""),
             "seconds": result.get("seconds", 0.0),
             "estimated_usd": result.get("estimated_usd", 0.0),
@@ -744,6 +772,154 @@ def frame_cut(root: str | os.PathLike[str], name: str, idx: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# the one call
+# ---------------------------------------------------------------------------
+
+def auto(root: str | os.PathLike[str], name: str, premise: str = "", *,
+         frames: int = 6, style: str = "", style_note: str = "",
+         cast_refs: Optional[list] = None, aspect_ratio: str = "16:9",
+         quality: str = "low", approve: bool = True, promote_to: str = "",
+         model: str = "", work_item_id: Optional[int] = None) -> dict:
+    """Premise in, finished storyboard out. No questions asked.
+
+    THIS IS THE DEFAULT DOOR AND THE OTHER VERBS ARE ITS PARTS. Every piece of
+    this module could already do its own job, and the result was that asking for
+    a cutscene got you a scaffolded board and a list of things somebody still
+    had to decide: pin a cast, write the beats, draw each frame, approve each
+    frame, promote. Six calls and five judgement points to answer one request
+    that was fully specified when it arrived. A seat that stops five times is
+    not being careful, it is refusing to do the job with the tools in its hand.
+
+    So: nothing here waits for a human who already said what they wanted.
+
+      * NO CAST PINNED? One is derived — from the project's own character pins
+        first, then from canon lore entities, and the frames are conditioned on
+        whatever that finds. An underspecified cast is a reason to go looking,
+        not a reason to stop.
+      * NO STYLE GIVEN? The bible's locked art direction is already appended to
+        every prompt at the generation door, so the project's look applies
+        whether or not anyone names a preset here.
+      * NO BEATS? write_script invents them from the premise for a fraction of
+        a cent, which is cheaper than the round trip to ask.
+      * A FRAME FAILS? The rest still draw. A partial board is worth looking at;
+        a refusal is not. Every failure is named in `failed`.
+
+    What it deliberately does NOT do is buy video. `promote_to` writes the shot
+    list, which is still free — cinematic_generate_shot spends, one shot at a
+    time, and that stays a separate decision because it is the expensive one.
+
+    `approve` defaults True here and nowhere else: the frames were drawn from
+    the caller's own premise in the caller's own style, so treating them as
+    drafts pending review would reintroduce the stop this exists to remove.
+    """
+    text = (premise or "").strip()
+    cast = _clean_refs(root, cast_refs) if cast_refs else _derive_cast(root)
+
+    steps: list[dict] = []
+    existing = None
+    try:
+        existing = board(root, name)
+    except StoryboardError:
+        pass
+
+    # BEATS FIRST, and only if there are none. Re-running auto on a board that
+    # already has beats must not rewrite somebody's edits back to a model's
+    # first guess.
+    if existing and existing["frames"]:
+        b = plan(root, name, None, cast_refs=cast, style=style,
+                 style_note=style_note, aspect_ratio=aspect_ratio,
+                 work_item_id=work_item_id)
+        steps.append({"step": "reuse", "frames": len(existing["frames"])})
+    elif text:
+        written = write_script(root, name, text, frames=frames, style=style,
+                               style_note=style_note, cast_refs=cast,
+                               aspect_ratio=aspect_ratio,
+                               work_item_id=work_item_id)
+        steps.append({"step": "script", "ok": bool(written.get("ok")),
+                      "error": written.get("error", "")})
+        if not written.get("ok"):
+            return {"ok": False, "stage": "script", "board": slugify(name),
+                    "error": written.get("error", "the script could not be written"),
+                    "steps": steps}
+        b = board(root, name)
+    else:
+        return {"ok": False, "stage": "premise", "error":
+                "give a premise, or point at a board that already has beats"}
+
+    drawn, failed, spent = [], [], 0.0
+    for frame in b["frames"]:
+        idx = int(frame["idx"])
+        if frame["status"] == "cut":
+            continue
+        # ALREADY DRAWN STILL GETS APPROVED. Skipping the whole frame because it
+        # had a picture meant a board with one frame drawn on an earlier run
+        # came out five-of-six approved and refused to promote - this function
+        # stopping on a technicality of its own making, which is the exact stop
+        # it exists to remove. Redrawing it would be worse: that is money spent
+        # to re-buy something already paid for.
+        if frame.get("has_image"):
+            if approve and frame["status"] != "approved":
+                frame_set(root, name, idx, status="approved")
+            continue
+        shot = frame_generate(root, name, idx, quality=quality,
+                              work_item_id=work_item_id)
+        spent += float(shot.get("estimated_usd") or 0.0)
+        if shot.get("ok"):
+            drawn.append(idx)
+            if approve:
+                frame_set(root, name, idx, status="approved")
+        else:
+            # NAMED, NOT SWALLOWED. A board that came back four-of-six with no
+            # note about the other two is how a cutscene ships with holes.
+            failed.append({"idx": idx, "error": str(shot.get("error"))[:400]})
+
+    out = board(root, name)
+    result = {"ok": bool(drawn) or not failed, "board": out["name"],
+              "drawn": drawn, "failed": failed, "cast_refs": cast,
+              "estimated_usd": round(spent, 4), "steps": steps,
+              "ready": out["ready"]}
+
+    if promote_to or (approve and not failed):
+        promoted = promote(root, name, sequence_name=promote_to or name,
+                           model=model, work_item_id=work_item_id)
+        result["promoted"] = promoted
+        result["sequence"] = promoted.get("sequence", "")
+    return result
+
+
+def _derive_cast(root: str | os.PathLike[str]) -> list[str]:
+    """A cast, when nobody pinned one. Best effort, never an exception.
+
+    Pins first, because a pinned character is a picture and a picture beats any
+    amount of prose at holding a face still across six frames. Canon lore
+    entities are the fallback: they are only NAMES, which condition nothing on
+    their own, but they reach the script writer and stop it inventing a cast
+    the project has never heard of.
+
+    Capped, because every reference past the fourth is dropped by the provider
+    anyway and a board conditioned on eight faces holds none of them.
+    """
+    out: list[str] = []
+    try:
+        for pin in _refs.list_refs(root, kind="character"):
+            out.append(pin["name"])
+    except Exception:
+        pass
+    if out:
+        return out[:4]
+
+    try:
+        from . import lore
+
+        for ent in lore.list_entities(root, kind="character"):
+            if ent.get("canon") or ent.get("canon_status") == "canon":
+                out.append(ent["name"])
+    except Exception:
+        pass
+    return out[:4]
+
+
+# ---------------------------------------------------------------------------
 # promotion — the free/paid boundary
 # ---------------------------------------------------------------------------
 
@@ -790,7 +966,15 @@ def promote(root: str | os.PathLike[str], name: str, *, sequence_name: str = "",
             "duration": f["duration"],
             "slug": f["slug"],
             "first_frame": f["image_path"] if f["has_image"] else "",
-            "refs": f["refs"],
+            # RESOLVED TO PATHS ON THE WAY OUT, and this is a real interface
+            # boundary rather than bookkeeping. A board stores pin NAMES on
+            # purpose, so a re-pinned character is picked up at generation time
+            # instead of the board freezing onto revision 1. cine_shot.refs is
+            # the opposite contract: project-relative paths, checked on disk
+            # before a shot is bought. Handing names across unresolved made
+            # every promoted shot refuse with "conditioning frames not on disk"
+            # naming the pins - correct, and unreadable as a type mismatch.
+            "refs": _resolve_for_shot(root, f["refs"]),
             "note": f["note"],
         })
 
@@ -941,6 +1125,29 @@ def _clean_refs(root: str | os.PathLike[str], given: Any) -> list[str]:
     return out
 
 
+def _resolve_for_shot(root: str | os.PathLike[str], names: list) -> list[str]:
+    """Pin names to project-relative paths, for handing to cinematic.
+
+    Anything that does not resolve to a file inside the project is DROPPED
+    rather than passed through. cine_shot refuses a shot whose refs are not on
+    disk, and it is right to - those paths get uploaded to a provider - so a
+    name that survives here as a name only turns into a refusal later, naming a
+    pin and reading like a missing file.
+    """
+    out = []
+    for name in names or []:
+        try:
+            resolved = Path(_refs.resolve(root, name))
+        except Exception:
+            resolved = Path(root) / str(name)
+        if not resolved.exists():
+            continue
+        rel = _relative(root, str(resolved))
+        if rel and not Path(rel).is_absolute():
+            out.append(rel)
+    return out
+
+
 def _resolve_all(root: str | os.PathLike[str],
                  names: list) -> tuple[list[str], list[str]]:
     """Reference names to on-disk paths, and the ones that did not resolve.
@@ -1046,12 +1253,49 @@ def _script_blob(script: Any, prior: Optional[dict]) -> dict:
     return _loads((prior or {}).get("script_json"), {})
 
 
-def _pick_provider(root: str | os.PathLike[str]) -> str:
-    """Whichever image provider this project actually has a key for.
+# A failure the NEXT provider would not also hit. Quota, billing and auth are
+# properties of one ACCOUNT; a content refusal or a malformed prompt is not, and
+# cascading on those would just buy the same refusal from three vendors.
+_ACCOUNT_FAILURE = (
+    "insufficient_quota", "quota", "billing", "exceeded your current",
+    "rate_limit", "ratelimit", "too many requests",
+    "invalid_api_key", "incorrect api key", "authentication",
+    "permissiondenied", "account is not active", "payment",
+)
 
-    kie is excluded on purpose even when configured: its image endpoints take
-    public URLs, not local files, so it cannot be conditioned on a pinned
-    character — and an unconditioned board frame defeats the point.
+
+def _is_account_failure(error: Any) -> bool:
+    text = str(error or "").lower()
+    return any(hint in text for hint in _ACCOUNT_FAILURE)
+
+
+def _providers(root: str | os.PathLike[str]) -> list[str]:
+    """Every provider this project could draw a frame with, in order to try.
+
+    A LIST, NOT A PICK, AND THAT DISTINCTION COST A CUTSCENE. The first version
+    returned the FIRST provider whose key was present and stopped there. A key
+    that exists but has no credits left is still present — so a project whose
+    OpenAI account had run dry picked openai, took `insufficient_quota`, and
+    reported that image generation was unavailable, while a working KREA_API_KEY
+    sat in the same .env and was never tried. The seat then correctly reported
+    that it could not draw the board, which made a bug look like a considered
+    answer and parked a cutscene waiting on credits it did not need.
+
+    KIE IS IN THIS LIST, and leaving it out was the second half of the same
+    mistake. It was excluded on the grounds that its image fields take public
+    URLs rather than local files, so it could not be conditioned on a pinned
+    character — true of the raw endpoint, and irrelevant, because
+    kie.upload_file has always been able to mint those URLs and is exactly what
+    the video path uses for first_frame. Excluding it meant the CINEMATIC seat,
+    whose entire funded account is kie, could not draw its own storyboard.
+
+    It sits after krea because krea takes an anchor inline in the same request
+    while kie needs a separate upload whose product expires in three days. That
+    is a reason to prefer krea, not a reason to refuse kie.
+
+    Local is LAST despite being free, because it needs a workflow configured and
+    silently drawing from a graph nobody set up is worse than saying the hosted
+    account is dry.
     """
     try:
         from . import envfile
@@ -1059,14 +1303,29 @@ def _pick_provider(root: str | os.PathLike[str]) -> str:
         envfile.load_project_env(root)
     except Exception:
         pass
+
+    out = []
     if (os.environ.get("OPENAI_API_KEY") or "").strip():
-        return "openai"
+        out.append("openai")
     if (os.environ.get("KREA_API_KEY") or "").strip():
-        return "krea"
-    raise StoryboardError(
-        "no image provider configured - set OPENAI_API_KEY or KREA_API_KEY in "
-        "the project's .env. You can still build the board by hand: draw the "
-        "frames yourself and attach them with storyboard_frame_attach.")
+        out.append("krea")
+    if (os.environ.get("KIE_API_KEY") or "").strip():
+        out.append("kie")
+    try:
+        from bgate_adapters import localgen
+
+        if localgen.available().get("available"):
+            out.append("local")
+    except Exception:
+        pass
+
+    if not out:
+        raise StoryboardError(
+            "no image provider configured - set OPENAI_API_KEY, KREA_API_KEY or "
+            "KIE_API_KEY in the project's .env. You can still build the board by "
+            "hand: draw the frames yourself and attach them with "
+            "storyboard_frame_attach.")
+    return out
 
 
 def _frame_price(quality: str) -> float:

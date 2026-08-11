@@ -13,68 +13,63 @@
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const get = async p => { try { const r = await fetch(p); return r.ok ? r.json() : {}; } catch (e) { return {}; } };
-  const post = async (p, b) => { try { const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }); return r.json().catch(() => ({ ok: r.ok })); } catch (e) { return { ok: false }; } };
+  /* A refusal from this helper used to be a bare {ok:false} with no sentence in
+     it, and the callers below toasted success unconditionally anyway — so a
+     dispatch the server declined (concurrency cap, dirty tree, a chain link
+     whose predecessor has not landed) reported "dispatched" and the item simply
+     never moved. The body already carries the reason in both of this repo's
+     conventions; carry it out under one key so a caller has something to say. */
+  const why = (body, status) => {
+    const e = body && body.error;
+    if (e && typeof e === "object") return e.message || e.code || "";
+    if (typeof e === "string" && e) return e;
+    if (body && typeof body.detail === "string" && body.detail) return body.detail;
+    return `request failed - ${status}`;
+  };
+  const post = async (p, b) => {
+    let r, body = null;
+    try {
+      r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) });
+    } catch (e) {
+      return { ok: false, error: "the dashboard is not reachable" };
+    }
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || (body && body.ok === false)) {
+      return { ok: false, error: why(body, r.status) };
+    }
+    return body || { ok: r.ok };
+  };
   const toast = (m, bad) => (window.BGWS ? BGWS.toast(m, bad) : console.log(m));
 
-  /* Every flow this dispatcher can open, and where its module lives. The tab
-     strip and the whitelist are BOTH derived from here plus whatever a plugin
-     registered on window.StudioFlows — a hardcoded ["workflows","game"] made
-     two finished flows (asset, agent) unreachable, and their script tags were
-     never added either, so nothing registered them. Loading is lazy and
-     idempotent; a module that fails to load falls back to the built-in below. */
-  // AGENT FLOW WAS REMOVED. It drew a second orchestration canvas over the same
-  // data the Agents console already owns — two places to watch one floor, and
-  // the one with the conversation, the queue and the live rails is the one that
-  // survived. Its module is gone from the tree; nothing lazily loads here now.
-  const MODULES = {};
-  // Flows this file implements itself — the fallback when a module is absent.
-  //
-  // THE SPRITE EDITOR AND THE AUDIO MIXER LEFT. They were tabs here, which put
-  // the art tools in a workspace that has nothing else to do with art and left
-  // the art seat as a review-only surface that could point at a bad sprite and
-  // not fix it. They are now mounted inside the seats that own that work —
-  // SeatWS.art and SeatWS.audio call the same SpriteEdit.embed()/AudioLab.embed()
-  // this used to. Deliberately NOT left behind as redirect tabs: a tab whose
-  // only content is "it moved" is a third place to look for a tool with one home.
-  const BUILTIN = {};
+  /* Every flow this dispatcher can open. The tab strip and the whitelist are
+     BOTH derived from here plus whatever a plugin registered on
+     window.StudioFlows — a hardcoded ["workflows","game"] made two finished
+     flows unreachable, and their script tags were never added either, so
+     nothing registered them.
+
+     THERE ARE NO LAZY MODULES AND NO BUILT-IN FLOWS LEFT. The agent flow drew a
+     second orchestration canvas over the data the Agents console already owns;
+     the sprite editor and audio mixer moved into the art and audio seats, which
+     is where that work lives. The empty MODULES/BUILTIN maps they left behind,
+     and the lazy loadScript() that could only ever iterate an empty map, are
+     gone with them — a registered plugin supplies its own build(). */
   const CORE = { workflows: { label: "Workflows", icon: "studio" } };
 
-  function loadScript(src) {
-    return new Promise(resolve => {
-      if (document.querySelector(`script[src="${src}"]`)) { resolve(false); return; }
-      const s = document.createElement("script");
-      s.src = src;
-      s.onload = () => resolve(true);
-      s.onerror = () => { console.warn("[studio] could not load", src); resolve(false); };
-      document.head.appendChild(s);
-    });
-  }
-
   const Studio = {
-    _flow: null, _nc: null, _loaded: null,
+    _flow: null, _nc: null,
 
-    // The registry, in tab order: the core builder, then every registered or
-    // built-in flow. Adding a flow_*.js is all it takes to appear here.
+    // The registry, in tab order: the core builder, then every registered flow.
     flows() {
       const reg = window.StudioFlows || {};
       const ids = Object.keys(CORE)
-        .concat(Object.keys(BUILTIN).filter(id => !(id in CORE)))
-        .concat(Object.keys(reg).filter(id => !(id in CORE) && !(id in BUILTIN)));
+        .concat(Object.keys(reg).filter(id => !(id in CORE)));
       return ids.map(id => {
-        const meta = reg[id] || BUILTIN[id] || CORE[id] || {};
+        const meta = reg[id] || CORE[id] || {};
         return { id, label: meta.label || id, icon: meta.icon || "note" };
       });
     },
-    _ensureModules() {
-      if (!this._loaded) {
-        this._loaded = Promise.all(Object.keys(MODULES).map(id =>
-          ((window.StudioFlows || {})[id] ? Promise.resolve(false) : loadScript(MODULES[id]))));
-      }
-      return this._loaded;
-    },
     async activate() {
       if (!this._flow) { try { this._flow = localStorage.getItem("studio-flow"); } catch (e) {} }
-      await this._ensureModules();
       this._renderNav();
       const ids = this.flows().map(f => f.id);
       if (ids.indexOf(this._flow) === -1) this._flow = ids[0] || "workflows";
@@ -106,61 +101,14 @@
         }
         const plugin = (window.StudioFlows || {})[flow];
         if (plugin && plugin.build) { plugin.build(body, this._api()); return; }
-        if (typeof this[flow] === "function") { this[flow](body); return; }  // built-in
         body.innerHTML = `<div class="empty">no module registered for the “${esc(flow)}” flow</div>`;
       } catch (e) { body.innerHTML = `<div class="empty">studio error: ${esc(e.message)}</div>`; console.error(e); }
     },
     // Shared services handed to full flow modules (window.StudioFlows.<flow>).
     _api() {
       return { NodeCanvas: window.NodeCanvas, get, post, toast, esc,
-               reselect: () => this.select(this._flow),
                setCanvas: nc => { this._nc = nc; } };
     },
-
-    /* ══════════════════ AGENT FLOW ══════════════════ */
-    async agent(host) {
-      host.innerHTML = `<div class="st-wrap"><div class="st-canvas" id="st-canvas" style="flex:1"></div>
-        <div class="st-insp" id="st-insp"><div class="st-insp-empty">Select a task or agent.</div></div></div>`;
-      const [q, ag] = await Promise.all([get("/api/queue"), get("/api/agents")]);
-      const live = new Set((ag.agents || []).filter(a => a.state === "running").map(a => a.item_id));
-      const seatColors = { director: "var(--c-director)", narrative: "var(--c-narrative)", gameplay: "var(--c-gameplay)", tech: "var(--c-tech)", art: "var(--c-art)", audio: "var(--c-audio)", cinematic: "var(--c-cinematic)", qa: "var(--c-qa)" };
-      const items = (q.items || []).filter(i => i.status !== "done").slice(0, 10);
-      const seats = [...new Set(items.map(i => i.seat))];
-      const nodes = [], edges = [];
-      seats.forEach((s, i) => nodes.push({ id: "seat_" + s, type: "seat", glyph: "◈", title: s.toUpperCase(), badge: live.has(items.find(x => x.seat === s && live.has(x.id)) && items.find(x => x.seat === s && live.has(x.id)).id) ? "live" : "", accent: seatColors[s] || "var(--ember)", x: 420, y: 30 + i * 120, w: 190, data: { seat: s }, ports: { in: [{ id: "i", label: "" }], out: [{ id: "o", label: "" }] } }));
-      items.forEach((it, i) => {
-        const running = live.has(it.id);
-        nodes.push({ id: "task_" + it.id, type: "task", glyph: running ? "▶" : "▷", title: it.title, badge: running ? "running" : it.status, accent: running ? "var(--ember)" : "var(--seam2)", x: 30, y: 30 + i * 96, w: 240, data: it, ports: { out: [{ id: "o", label: "" }] } });
-        edges.push({ from: ["task_" + it.id, "o"], to: ["seat_" + it.seat, "i"] });
-      });
-      const nc = new NodeCanvas(document.getElementById("st-canvas"), {
-        nodes, edges, accent: "var(--ember)",
-        renderBody: n => n.type === "task" ? `<div class="st-tmeta">${esc(n.data.source || "")} · ${esc(n.data.status)}</div>` : `<div class="st-tmeta">${(n.badge === "live") ? "● working" : "idle"}</div>`,
-        onSelect: n => this._agentInspect(n, live),
-      });
-      nc.mount(); nc.fit(); this._nc = nc;
-    },
-    _agentInspect(n, live) {
-      const insp = document.getElementById("st-insp"); if (!insp) return;
-      if (!n) { insp.innerHTML = `<div class="st-insp-empty">Select a task or agent.</div>`; return; }
-      if (n.type === "task") {
-        const it = n.data, running = live && live.has(it.id);
-        insp.innerHTML = `<div class="st-insp-h">${n.glyph} ${esc(it.title)}</div>
-          <div class="st-kv"><span>seat</span><span>${esc(it.seat)}</span></div>
-          <div class="st-kv"><span>status</span><span>${esc(it.status)}</span></div>
-          <div class="st-insp-p">${esc((it.brief || "").slice(0, 300))}</div>
-          <div class="st-insp-actions">
-            ${it.status === "queued" ? `<button class="qbtn small" onclick="Studio.dispatchTask(${it.id})">dispatch</button>` : ""}
-            <button class="qbtn small ghost" onclick="watchAgent(${it.id})">watch</button>
-            ${running ? `<button class="qbtn small ghost" onclick="Studio.stopTask(${it.id})">stop</button>` : ""}
-          </div>`;
-      } else {
-        insp.innerHTML = `<div class="st-insp-h">${n.glyph} ${esc(n.title)}</div><div class="st-insp-p">Seat. Tasks routed here run as dispatched agents.</div>`;
-      }
-    },
-    async dispatchTask(id) { await post(`/api/queue/${id}/dispatch`, {}); toast("dispatched"); this.select("agent"); },
-    async stopTask(id) { await post(`/api/queue/${id}/stop`, {}); toast("stop sent"); this.select("agent"); },
-
   };
   window.Studio = Studio;
 

@@ -92,9 +92,6 @@ class TestMutationsSurfaceTheError:
         ("stopItem", "/stop"),
         ("addItem", "/api/queue"),
         ("reviewArtifact", "/review"),
-        ("promoteFeedback", "/promote"),
-        ("dismissFeedback", "/dismiss"),
-        ("mergeFeedback", "/merge"),
     ])
     def test_every_named_mutation_routes_through_mutate(self, page, fn, endpoint):
         body = _function_body(page, fn)
@@ -104,7 +101,7 @@ class TestMutationsSurfaceTheError:
 
     def test_a_failed_mutation_skips_the_re_render(self, page):
         # `if (!r.ok) return;` is what keeps the operator's selection alive.
-        for fn in ("dispatchItem", "stopItem", "dismissFeedback"):
+        for fn in ("dispatchItem", "stopItem"):
             assert "if (!r.ok) return;" in _function_body(page, fn)
 
 
@@ -157,15 +154,10 @@ class TestFirstRunBeatsOffline:
 # 3. Promote cannot silently file an unrouted bug under the director
 # ---------------------------------------------------------------------------
 class TestUnroutedStaysUnrouted:
-    def test_the_seat_dropdown_offers_unassigned(self, page):
-        assert '"unassigned", ...Object.keys(SEATS)' in page
-
-    def test_promote_refuses_an_unrouted_item(self, page):
-        body = _function_body(page, "promoteFeedback")
-        assert 'seat === "unassigned"' in body
-        # and it bails before the request rather than defaulting
-        assert body.index('seat === "unassigned"') < body.index("mutate(")
-
+    # The two page-level assertions here covered the shell's own promote
+    # dropdown and promoteFeedback(). The playtest rewrite moved triage out of
+    # index.html entirely, so both were asserting on a surface that no longer
+    # exists. What survives is the rule they were protecting, on the backend.
     def test_unassigned_is_a_real_backend_seat(self):
         from bgate_core import feedback
 
@@ -176,24 +168,10 @@ class TestUnroutedStaysUnrouted:
 # 4. Merged is not dismissed, and merging asks first
 # ---------------------------------------------------------------------------
 class TestMergedFeedbackIsDistinct:
-    def test_merged_items_render_their_own_state(self, page, shell):
-        # The data and the copy are rendered by index.html's script; the two
-        # class rules moved into app.css with the rest of the stylesheet.
-        assert "merged_into_id" in page
-        assert "merged into" in page
-        assert ".feedback-card.st-merged" in shell
-        assert ".chip.merged" in shell
-
-    def test_merging_confirms_because_it_cannot_be_undone(self, page):
-        body = _function_body(page, "mergeFeedback")
-        ask = "askConfirm(" if "askConfirm(" in body else "confirm("
-        assert ask in body
-        assert body.index(ask) < body.index("mutate(")
-
-    def test_the_merge_target_links_back_to_the_target_card(self, page):
-        assert "function jumpToFeedback(" in page
-        assert 'id="feedback-${item.id}"' in page
-
+    # Three page-level assertions lived here — the merged card's own state, the
+    # confirm before mergeFeedback(), and the jump link to the merge target.
+    # All three read index.html, and the playtest rewrite took that triage UI
+    # out of the shell. The column the whole feature rests on is still checked.
     def test_backend_still_records_the_link_merge_relies_on(self, root):
         from bgate_core import db
 

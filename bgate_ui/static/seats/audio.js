@@ -41,6 +41,13 @@
       this._bg = bg;
       this._root = container;
       this._mPainted = false;
+      // Every repaint guard below compares a rendered panel against a stored
+      // signature. Leaving this seat and coming back builds a FRESH container
+      // whose panels all say "loading…", so a signature that survived the trip
+      // would match, the paint would be skipped, and "loading…" would be the
+      // final state of the seat. Clear them with the DOM they describe.
+      this._libSig = this._cueSig = this._candSig = "";
+      this._jobSig = this._agentSig = this._feedSig = "";
       try {
         const saved = localStorage.getItem("aud-mode");
         this._mode = saved === "music" ? "music" : "library";
@@ -167,9 +174,27 @@
 
       this._sounds = Array.isArray(lib && lib.sounds) ? lib.sounds : [];
       this._arts = this._audioArtifacts(groups && groups.groups);
+
+      /* DO NOT OVERWRITE AN UNSAVED CUE SHEET.
+       *
+       * _loadAll is not just the first load: it runs again after every keep,
+       * install, discard, dispatch and stop. It replaced this._cues with the
+       * server's copy and repainted the table, so a row being filled in while a
+       * music take was kept in the other mode was simply gone — no save, no
+       * warning, no way to tell it had happened. The server's copy is adopted
+       * only while the table on screen still matches what was last loaded FROM
+       * it; the moment it does not, the person editing owns it until they save.
+       */
       const data = cues && cues.data;
-      this._cues = (data && Array.isArray(data.cues)) ? data.cues
+      const fromServer = (data && Array.isArray(data.cues)) ? data.cues
         : (Array.isArray(data) ? data : []);
+      this._syncCuesFromDom();
+      const dirty = this._cuesLoaded != null
+        && JSON.stringify(this._cues) !== this._cuesLoaded;
+      if (!dirty) {
+        this._cues = fromServer;
+        this._cuesLoaded = JSON.stringify(fromServer);
+      }
       this._agentItems = ((ws && ws.items) || []).filter(i => i && i.seat === "audio");
       if (this._activeItem == null) {
         const live = this._agentItems.find(i => i.status === "dispatched")
@@ -179,7 +204,7 @@
       }
 
       this._renderLibrary();
-      this._renderCues();
+      if (!dirty) this._renderCues();   // a repaint here is what ate the edit
       this._renderAgent();
     },
 
@@ -218,6 +243,53 @@
       return (n / 1024 / 1024).toFixed(1) + " MB";
     },
 
+    /* REPAINT WITHOUT KILLING WHAT IS PLAYING.
+     *
+     * The cinematic seat shipped for months unable to play a take, because its
+     * poll replaced host.innerHTML and took the live <video> with it. Every
+     * panel in THIS seat renders <audio controls> — the sound library, the cue
+     * rows, the candidate gallery — and every one of them is rebuilt wholesale
+     * when a generation lands, a take is kept, or a file is installed. That is
+     * the same bug in audio: the take you were listening to is torn out of the
+     * document and replaced by a fresh element at 0:00. A batch finishing while
+     * you audition the previous batch is not an edge case, it is the loop.
+     *
+     * Two guards, and both are needed. An identical render is not painted at
+     * all — most ticks have nothing to say. A render that DID change carries
+     * the position of anything that was playing across to the element with the
+     * same src, so a repaint costs a blip rather than the take.
+     *
+     * The elements are `preload="none"`, so seeking has to wait for metadata
+     * that only arrives once something asks for the bytes; play()/load() is
+     * what asks. Setting currentTime before then is silently discarded.
+     */
+    _paintAudio(host, html, sigKey) {
+      if (!host) return false;
+      if (html === this[sigKey] && host.firstChild) return false;
+      this[sigKey] = html;
+      const held = [];
+      host.querySelectorAll("audio").forEach(el => {
+        if (el.currentTime > 0 && !el.ended) {
+          held.push({ src: el.getAttribute("src") || "",
+                      at: el.currentTime, playing: !el.paused });
+        }
+      });
+      host.innerHTML = html;
+      if (!held.length) return true;
+      const fresh = Array.from(host.querySelectorAll("audio"));
+      held.forEach(h => {
+        if (!h.src) return;
+        const next = fresh.find(el => (el.getAttribute("src") || "") === h.src);
+        if (!next) return;                     // that take is genuinely gone
+        next.addEventListener("loadedmetadata", () => {
+          try { next.currentTime = h.at; } catch (e) {}
+        }, { once: true });
+        if (h.playing) { const p = next.play(); if (p && p.catch) p.catch(() => {}); }
+        else { try { next.load(); } catch (e) {} }
+      });
+      return true;
+    },
+
     _renderLibrary() {
       const bg = this._bg;
       const body = this._root.querySelector("#aud-lib-body");
@@ -227,6 +299,7 @@
       if (count) count.textContent = total ? `(${total})` : "";
 
       if (!total) {
+        this._libSig = "";
         body.innerHTML = '<div class="aud-empty">no audio files found under '
           + '<code>game/assets/audio</code> (or <code>audio/</code>). '
           + 'Drop .wav/.ogg/.mp3 files there and refresh.</div>';
@@ -263,9 +336,12 @@
         </tr>`);
       });
 
-      body.innerHTML = `<table class="aud-tbl">
+      // _loadAll re-runs after a keep, an install, a dispatch and a stop, and
+      // this table is full of <audio>. Repaint through the guard so auditioning
+      // a sound survives somebody else's button.
+      this._paintAudio(body, `<table class="aud-tbl">
         <thead><tr><th>name</th><th>path</th><th>size</th><th>play</th><th></th></tr></thead>
-        <tbody>${rows.join("")}</tbody></table>`;
+        <tbody>${rows.join("")}</tbody></table>`, "_libSig");
     },
 
     _soundOptions(selected) {
@@ -288,6 +364,7 @@
       const body = this._root.querySelector("#aud-cue-body");
       if (!body) return;
       if (!this._cues.length) {
+        this._cueSig = "";
         body.innerHTML = '<div class="aud-empty">no cues yet - hit '
           + '<b>+ row</b> to map a game event (e.g. <code>jab_hit</code>) to a sound, '
           + 'then <b>save</b>.</div>';
@@ -302,9 +379,12 @@
           : '<span class="aud-muted">-</span>'}</td>
         <td><button class="aud-btn aud-del" data-i="${i}">✕</button></td>
       </tr>`).join("");
-      body.innerHTML = `<table class="aud-tbl">
+      // Cue rows carry <audio> previews as well as the inputs, so the same
+      // guard applies: an identical table is left alone, and a real repaint
+      // does not silence a preview mid-listen.
+      this._paintAudio(body, `<table class="aud-tbl">
         <thead><tr><th>event</th><th>sound</th><th>note</th><th>preview</th><th></th></tr></thead>
-        <tbody>${rows}</tbody></table>`;
+        <tbody>${rows}</tbody></table>`, "_cueSig");
 
       body.querySelectorAll(".aud-del").forEach(btn => {
         btn.onclick = () => { this._syncCuesFromDom(); this._cues.splice(Number(btn.dataset.i), 1); this._renderCues(); };
@@ -351,10 +431,13 @@
         const r = await this._bg.post("/api/workspace/audio/cues", { data: { cues: clean } });
         if (r && (r.ok || r.key || r.data !== undefined)) {
           this._cues = clean;
+          // The saved state is now the shared state, so _loadAll may adopt the
+          // server's copy again — see the dirty check there.
+          this._cuesLoaded = JSON.stringify(clean);
           this._bg.toast(`saved ${clean.length} cue${clean.length === 1 ? "" : "s"}`);
           this._renderCues();
         } else {
-          this._bg.toast((r && r.error) || "save failed", true);
+          this._bg.toast(this._errText(r) || "save failed", true);
         }
       } catch (e) {
         this._bg.toast("save failed", true);
@@ -497,6 +580,11 @@
           </h3>
           <div id="aud-cand-body"><div class="aud-empty">loading…</div></div>
         </div>`;
+
+      // Same reason as in render(): #aud-cand-body and #aud-jobs were just
+      // replaced with placeholders, so their signatures no longer describe
+      // anything on screen.
+      this._candSig = this._jobSig = "";
 
       const $ = (id) => host.querySelector(id);
       const sync = () => this._syncLimits();
@@ -645,7 +733,14 @@
     async _loadJobs() {
       const got = await this._bg.get("/api/music/jobs").catch(() => null);
       const jobs = ((got && got.data) || {}).jobs;
-      const next = Array.isArray(jobs) ? jobs : [];
+      // A LOST POLL IS NOT AN EMPTY JOB LIST. `null` here meant the strip was
+      // replaced with nothing — a running generation vanished off the screen on
+      // one dropped request and came back three seconds later, which reads as
+      // the job having been cancelled by something. Worse, it wiped the
+      // previous-terminal map below, so a batch that finished across that gap
+      // never announced itself and its takes appeared with no toast at all.
+      if (!Array.isArray(jobs)) { this._pulse(); return this._mJobs || []; }
+      const next = jobs;
       // WHICH ONES JUST FINISHED. Compared against the previous poll rather
       // than tracked from the click, so a job started in another tab — or
       // before a reload — still announces itself.
@@ -734,7 +829,19 @@
       const live = jobs.filter(j => !j.terminal);
       const recent = jobs.filter(j => j.terminal).slice(0, 3);
       const rows = live.concat(recent);
-      if (!rows.length) { host.innerHTML = ""; return; }
+      if (!rows.length) { this._jobSig = ""; host.innerHTML = ""; return; }
+      /* THE ELAPSED CLOCK IS DELIBERATELY NOT IN THE SIGNATURE. It advances on
+       * its own every second and _pulse writes it into the existing node in
+       * place, so putting it here would make every poll a full repaint and the
+       * guard would buy nothing — the same trap the cinematic panel documents
+       * about free-running timestamps. Only what a repaint would actually
+       * change goes in: which jobs, how far, and how each one ended. */
+      const sig = rows.map(j => [j.id, j.state, j.stage, j.terminal ? 1 : 0,
+        j.orphaned ? 1 : 0, Math.round(100 * (Number(j.progress) || 0)),
+        (j.result && (j.result.error || (j.result.candidates || []).length)) || "",
+        j.task_id || ""].join(":")).join(",");
+      if (sig === this._jobSig && host.firstChild) return;
+      this._jobSig = sig;
       host.innerHTML = `<div class="aud-card mus-jobs">
         <h3 class="aud-h">${BGICON("timeline")} Generations
           <span class="aud-sub">${live.length
@@ -908,11 +1015,17 @@
       };
       const pending = this._mCands.map(c => card(c, false)).join("");
       const kept = this._mKept.map(c => card(c, true)).join("");
-      body.innerHTML = (pending || kept)
+      // THE PANEL WHOSE ENTIRE JOB IS LISTENING TO SOMETHING. This is rebuilt
+      // whenever a generation lands, a take is kept or installed, or the
+      // refresh button is pressed — and a batch finishing while you audition
+      // the previous batch is the normal case, not an edge one. Through the
+      // guard, so the take being judged is not reset to 0:00 by the arrival of
+      // the next one.
+      this._paintAudio(body, (pending || kept)
         ? `${pending}${kept ? `<div class="aud-kepth">approved takes</div>${kept}` : ""}`
         : '<div class="aud-empty">no generated tracks yet. Write a prompt above - '
           + 'a request comes back as several takes, you keep one, and keeping is '
-          + 'what copies it into the engine project.</div>';
+          + 'what copies it into the engine project.</div>', "_candSig");
     },
 
     /* THREE THINGS CAN BE WRONG WITH AN APPROVED TAKE, and each has one button.
@@ -1049,10 +1162,21 @@
       this._loadAll();
     },
 
-    // The one error envelope (bgate_ui/api.py): {ok:false, error:{message}}.
+    /* TWO ERROR CONVENTIONS ARE LIVE AT ONCE, whatever api.py documents. The
+     * route modules answer {ok:false, error:{code,message}}; app.py's older
+     * endpoints — /api/queue/{id}/dispatch, /steer, /stop, and the workspace
+     * doc writer this seat saves cues through — answer {ok:false, error:"a
+     * sentence"}. Reading only the first shape turned every one of the second
+     * kind into the words "request failed", which is the same thing the user
+     * would have seen if nothing had been written at all. */
     _errText(r) {
       if (!r) return "no answer from the dashboard";
-      if (r.ok === false) return (r.error && r.error.message) || "request failed";
+      if (r.ok === false) {
+        const e = r.error;
+        if (typeof e === "string" && e) return e;
+        if (e && typeof e === "object") return e.message || e.code || "request failed";
+        return "request failed";
+      }
       return "";
     },
 
@@ -1062,9 +1186,26 @@
       if (!body) return;
 
       if (!this._agentItems.length) {
+        this._agentSig = "";
         body.innerHTML = '<div class="aud-empty">no audio work items in the queue.</div>';
         return;
       }
+
+      /* THE ONLY PANEL THIS SEAT REPAINTS ON THE POLL, and it was rebuilding
+       * its <select> and its scrolling feed every three seconds. Three things
+       * came of that: an open dropdown shut under the pointer, the feed's
+       * scroll position jumped back to the top while an agent was talking, and
+       * the "no activity yet" placeholder flashed on every tick before
+       * _loadFeed refilled it. Nothing in the picker changes unless the work
+       * items do, so that is exactly what decides a repaint here — the feed
+       * has its own, finer guard in _loadFeed. */
+      const sig = this._activeItem + "|" + this._agentItems.map(i =>
+        i.id + ":" + i.status + ":" + (i.title || "")).join(",");
+      if (sig === this._agentSig && body.firstChild) {
+        if (this._activeItem != null) this._loadFeed();
+        return;
+      }
+      this._agentSig = sig;
 
       const picker = `<select class="aud-in" id="aud-item-pick">${this._agentItems.map(i =>
         `<option value="${i.id}"${i.id === this._activeItem ? " selected" : ""}>#${i.id} · ${bg.esc(i.title || "")} [${bg.esc(i.status || "")}]</option>`
@@ -1080,6 +1221,7 @@
           <button class="aud-btn aud-danger" id="aud-stop">stop</button>` : ""}
       </span>`;
 
+      this._feedSig = "";   // the feed node is about to be replaced too
       body.innerHTML = `<div class="aud-agent-top">${picker}${controls}</div>
         <div id="aud-feed"><div class="aud-empty">no activity yet</div></div>`;
 
@@ -1099,17 +1241,28 @@
       const bg = this._bg;
       const id = this._activeItem;
       if (id == null) return;
-      let act;
+      /* A FAILED FETCH IS NOT AN EMPTY FEED. The catch handed back a blank
+       * activity object, which rendered as "no activity recorded." — the exact
+       * sentence a real, quiet agent produces. So a dashboard that could not
+       * reach its own endpoint, and an agent that had genuinely done nothing,
+       * were the same screen. /api/agent-activity answers BARE (app.py returns
+       * dispatch.read_activity directly), so there is no envelope to unwrap. */
+      let act = null, reach = null;
       try { act = await bg.get(`/api/agent-activity/${id}`); }
-      catch (e) { act = { steps: [], running: false, final: null }; }
+      catch (e) { reach = String((e && e.message) || "unreachable").slice(0, 160); }
       const feed = this._root && this._root.querySelector("#aud-feed");
       if (!feed || this._activeItem !== id) return;
+      if (reach) {
+        this._paintFeed(feed, '<div class="aud-empty">could not read the agent feed - '
+          + bg.esc(reach) + '</div>');
+        return;
+      }
 
       const steps = (act && act.steps) || [];
       if (!steps.length && !(act && act.final)) {
-        feed.innerHTML = '<div class="aud-empty">'
+        this._paintFeed(feed, '<div class="aud-empty">'
           + ((act && act.running) ? "agent running - waiting for first step…" : "no activity recorded.")
-          + '</div>';
+          + '</div>');
         return;
       }
       const rowFor = (s) => {
@@ -1122,7 +1275,21 @@
       if (act && act.final) {
         html += `<div class="aud-final"><b>result (${bg.esc(act.final.subtype || "")})</b> ${bg.esc(act.final.text || "")}</div>`;
       }
-      feed.innerHTML = html + `<div class="aud-run">${(act && act.running) ? "● running" : "○ idle"}</div>`;
+      this._paintFeed(feed, html + `<div class="aud-run">${(act && act.running) ? "● running" : "○ idle"}</div>`);
+    },
+
+    // The feed is a 340px scroller polled every three seconds. Repainting it
+    // unchanged threw the reader back to wherever innerHTML leaves you — and if
+    // they WERE at the bottom watching a live agent, the new step arrived
+    // off-screen. So: skip an identical render, and keep somebody who was
+    // reading the tail pinned to the tail.
+    _paintFeed(feed, html) {
+      if (!feed || html === this._feedSig) return;
+      this._feedSig = html;
+      const atEnd = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
+      const was = feed.scrollTop;
+      feed.innerHTML = html;
+      feed.scrollTop = atEnd ? feed.scrollHeight : was;
     },
 
     async _dispatch() {

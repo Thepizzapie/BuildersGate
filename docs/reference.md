@@ -6,9 +6,9 @@ made. [gotchas.md](gotchas.md) covers what went wrong on the way.
 
 ## What is in the box
 
-- **Design bible + lore canon.** Pillars, scope tiers with a mechanical cut
-  line, an entity graph with atomic facts, and `canon_check`, a deterministic
-  lexical gate every narrative write passes through.
+- **Design bible + lore canon.** Pillars, the core loop, constraints and
+  references, an entity graph with atomic facts, and `canon_check`, a
+  deterministic lexical gate every narrative write passes through.
 - **Eight agent seats.** Director, narrative, gameplay, tech, art, audio,
   cinematic, qa.
   Each has write lanes, one-call briefs, and a shared blackboard. A PreToolUse
@@ -19,9 +19,9 @@ made. [gotchas.md](gotchas.md) covers what went wrong on the way.
   inspection, live game screenshots, and project scaffolds with telemetry and F1
   live-tuning autoloads already wired.
 - **Painted-art leg, optional.** Portraits, UI and backdrops, plus
-  reference-first sprite sets with pinned reference anchors. Two providers:
-  OpenAI `gpt-image` and Krea's 14-model catalogue, chosen per asset and per
-  quality tier.
+  reference-first sprite sets with pinned reference anchors. Three providers —
+  OpenAI `gpt-image`, Krea's 14-model catalogue, kie.ai's images plus music and
+  video — routed per asset kind, not merely defaulted.
 - **Asset registry.** Content hashes plus per-file locks for binaries, which do
   not merge, with a drift detector that names silent clobbers.
 - **Playtest mode.** Record the game window and your voice, whisper-transcribe,
@@ -30,8 +30,8 @@ made. [gotchas.md](gotchas.md) covers what went wrong on the way.
 - **Dashboard.** Nine views over the same store.
 - **The arcade.** `bgate publish` turns every game on the machine into a static
   site with a page per game, and gets it under the host's per-file limit.
-- **Gates with teeth.** The cut line refuses out-of-scope work. A spend budget
-  refuses an agent that would blow the ceiling. Watchdogs kill a wedged run.
+- **Gates with teeth.** A spend budget refuses an agent that would blow the
+  ceiling. A seat lane refuses a write outside it. Watchdogs kill a wedged run.
   Approval is human-only: an agent records a verdict, it does not sign off.
 
 ## The dashboard
@@ -55,8 +55,7 @@ Ten views over the same store:
 | Playtests | Recorded sessions: video, transcript, telemetry, the director's triage, editable repro steps, and a bug report exported as markdown or as a zip with the frames it links |
 | Assets | Immutable revisions grouped by logical asset, with an integrity audit |
 | Atlas | Every screen wired to every asset it uses, derived live from the scenes, scripts and SpriteFrames. Click a node to file work against it. Four modes: the map, a graph that wires an asset in, a scene builder, and a code editor — the editor lists everything a scene reaches (its resources, plus one hop through what its scripts `preload`), edits them in place, and plays the rebuilt web build in the same pane. A save is refused if the file changed on disk since the tab opened, and refused again if a seat holds a lock on it; the previous bytes land under `.bgate_out/edits/` either way |
-| World bible | A write surface, not a viewer: pillars, constraints, and one drag-ordered list of scope tiers with the cut line as a draggable row in it, plus the lore graph. Every narrative write runs `canon_check` first. A conflict is a 409 carrying its flags, and only a human may override it |
-| Timeline | The causal chain per iteration: goal, source and build snapshot, assets, playtest evidence, decisions, work, resulting build, outcome |
+| World bible | A write surface, not a viewer: pillars, the core loop, constraints and references, each editable in place and drag-ordered within its kind, plus the lore graph. Every narrative write runs `canon_check` first. A conflict is a 409 carrying its flags, and only a human may override it |
 | Settings | Every switch in one place, from one registry: dispatch, the approval gate, follow-up, notifications, budget, console. Each row says whether the value is the default, stored, or overridden by an environment variable — and a switch that widens a safety guard (`dispatch.allow_dirty`) asks before it is turned off and records that it was |
 
 The header carries a **bell**: what has happened since you last looked, read
@@ -232,6 +231,79 @@ Two contracts worth knowing before you author one:
 - **Clips are deltas from the template rest pose**, baked to absolute values at
   emit time. That is what makes a per-character adjustment survive frame one of
   every clip instead of being erased by it.
+
+## The art providers, and what routes where
+
+Three keys, and they are not interchangeable. See [setup.md](setup.md) for where
+a key lives and which layer wins.
+
+| Provider | Catalogue | Anchored (reference) work |
+|---|---|---|
+| OpenAI `gpt-image` | one model, four quality tiers | edits the references. Refuses multi-pose sheet prompts by design — see [gotchas.md](gotchas.md) |
+| Krea | 14 image models + 5 image-to-3D | its models split into **style** models, which follow a look, and **edit** models, which take reference images. Only the second kind holds a character through a pose change |
+| kie.ai | 3 image models, Suno music, Seedance video | the default image model takes no references at all; `flux-2-pro-edit` (a list) and `qwen-edit` (one) do, over a hosted URL `kie.upload_file` mints from a local file and that expires in three days. No 3D |
+
+**Character work is routed, not defaulted.** `providers.provider_for(task_kind)`
+sends the character kinds — `sprite`, `sheet`, `animation`, `anchor`, `portrait`
+— to Krea and `nano-banana-2` whenever `KREA_API_KEY` is set, ahead of the
+general `openai → krea → kie` order that still applies to everything else. An
+explicit `provider=` always wins, including when its key is missing: the caller
+gets that provider's own error rather than a silent substitution it pays for.
+
+The bug that fixed: `krea.CHARACTER_KINDS` listed only `anchor` and `animation`
+while `chroma.KEYED_KINDS` had always treated `sprite`, `sheet` and `portrait` as
+character art, so every sprite fell through to the style model the pin exists to
+route away from — on the one kind people generate most.
+
+Re-measured 2026-08-10, one pinned character, identical prompt and reference, a
+16-frame NE/SE walk sheet, through every reference-capable model on both
+providers:
+
+| Model | Verdict |
+|---|---|
+| `nano-banana-2` ($0.06) | **won.** Eight frames a row, correct back and front rows, clean key |
+| `flux-kontext`, `seedream-5-lite`, `gpt-image`, `krea-2-medium` | clean |
+| `flux-1-dev` ($0.007) | clean, and the cheapest that passed |
+| `krea-2-large` (the old default) | **failed** the alpha audit at 14% hollow interior — the key colour landed inside the figure and was cut out of it — and drew near-identical frames with no direction change |
+| `nano-banana-pro`, `z-image` | failed: background bleed |
+| `ideogram-3` | rejects 1536x1024 outright |
+
+Why a style reference loses is in `bgate_adapters/krea.py:264` and in
+[sprite-animation-research.md](sprite-animation-research.md): asked for four back
+views out of eight, `krea-2-medium` drew a face in seven.
+
+### What a call costs
+
+Krea prices **per model and per payload** — `krea-2-large` is $0.06 plain,
+$0.065 once style references are attached, $0.07 with a moodboard — so an
+estimate has to read the request, not the model name. Every price in
+`krea.MODELS` comes off that model's own API reference.
+
+kie publishes **no per-model price**. Its quickstart bands (images "typically
+10-50 credits", video "100-500") are per *call*, so they under-count a long shot.
+Measured on a real invoice: a 5-second `seedance-2` shot consumed **205 credits**,
+and $1.025 of account spend across it gives **$0.005 per credit** — about 41
+credits, or $0.205, per second of video. That is one invoice on one account, not
+a published rate, so the shipped estimate (`kie.VIDEO_CREDITS`) still spreads the
+band's ceiling across the model's 4-15s range at 33.3 credits/second: an upper
+bound on a per-call band, which against the measured figure under-quotes a long
+sequence by roughly a quarter. Two environment variables replace both numbers
+with your own, no code change:
+
+```bash
+BGATE_KIE_USD_PER_CREDIT=0.005                              # your account's rate
+BGATE_KIE_VIDEO_CREDITS='{"seedance-2":{"per_second":41}}'  # what invoices say
+```
+
+A model with no rate yields `known: false` and **no number** rather than zero — a
+fabricated figure in front of a spend gate does not read as "unpriced", it reads
+as "free". kie reports `creditsConsumed` on the finished record, so with the rate
+set, ledger rows are exact rather than estimated.
+
+**Known gap:** `imagegen.IMAGE_PRICE_USD` prices gpt-image by quality tier only
+and ignores size, although gpt-image-1's published price moves with resolution
+too. A 1024x1536 generation is therefore quoted as a 1024x1024 one. No corrected
+numbers have been measured, so none are stated here.
 
 ## Local generation, no API key
 

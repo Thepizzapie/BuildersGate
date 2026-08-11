@@ -487,3 +487,37 @@ class TestEnvCacheInvalidation:
         assert secret not in caplog.text
         captured = capsys.readouterr()
         assert secret not in captured.out + captured.err
+
+
+class TestCharacterWorkAvoidsTheStyleModel:
+    """A style reference follows a LOOK; it does not hold a SUBJECT through a
+    pose change. krea.py has recorded that difference since the edit models
+    landed — and then routed sprites past it.
+
+    KEYED_KINDS treats sprite/sheet/portrait as character art. CHARACTER_KINDS
+    listed only anchor/animation, so those three fell through to DEFAULT_MODEL,
+    which is the style model the pin exists to avoid. Measured on a 16-frame
+    walk sheet: the style model failed the alpha audit at 14% hollow interior
+    and produced no direction change between rows.
+    """
+
+    def test_every_kind_that_carries_an_identity_uses_the_edit_model(self):
+        from bgate_adapters import krea
+
+        for kind in ("anchor", "animation", "sprite", "sheet", "portrait"):
+            assert krea.model_for(kind) == krea.CHARACTER_MODEL, kind
+
+    def test_kinds_with_no_pose_continuity_are_left_on_the_default(self):
+        """Deliberately narrow: a prop has no identity to hold."""
+        from bgate_adapters import krea
+
+        for kind in ("item", "prop", "icon", "vfx", "concept", ""):
+            assert krea.model_for(kind) == krea.DEFAULT_MODEL, kind
+
+    def test_the_character_kinds_are_a_subset_of_the_keyed_kinds(self):
+        """A kind routed as character work that the keyer does not recognise
+        would come back with an opaque background and no alpha at all."""
+        from bgate_adapters import krea
+        from bgate_core import chroma
+
+        assert krea.CHARACTER_KINDS <= chroma.KEYED_KINDS

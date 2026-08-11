@@ -62,9 +62,9 @@ until someone notices the art changed.
 
 ### Work item
 
-One unit of queued work: a seat, a title, a brief, a status
-(`queued | dispatched | review | done | failed | cancelled`), and optionally the
-scope tier it belongs to. Filed with `queue_add`. It is a row in
+One unit of queued work: a seat, a title, a brief, and a status
+(`queued | dispatched | review | done | failed | cancelled`). Filed with
+`queue_add`. It is a row in
 `.bgate/game.db`, not a running thing. Filing an item costs nothing and starts
 nothing. `review` is finished-but-not-counted — see **the approval gate**.
 
@@ -206,14 +206,14 @@ Turning a queued work item into a **running agent**. The dashboard (or
 `BGATE_SEAT`, `BGATE_ROOT`, `BGATE_WORK_ITEM` and `BGATE_ACTOR=agent:item-<id>`
 in its environment, on a captured git base commit so its edits are readable as a
 diff afterwards. Dispatch is where the refusals live. Before any process exists,
-it re-checks the cut line, the concurrency cap, the spend ceilings, whether the
-item's chain predecessor has landed, and whether your working tree is dirty
+it re-checks the concurrency cap, the spend ceilings, whether the item's chain
+predecessor has landed, and whether your working tree is dirty
 (`bgate_ui/dispatch.py`). Filing is free; dispatching is what spends money.
 
 ### The bible
 
 The design document, stored as structured sections rather than prose: pillars,
-the core loop, constraints, art direction, and the scope tiers. It is a write
+the core loop, constraints, art direction and references. It is a write
 surface, not a viewer. Agents read it through `bible_read` and `seat_brief`, and
 it is the source the art prompts are assembled from, so editing it changes the art
 (`bgate_core/artdirection.py`). A bible that nothing reads is decoration; this
@@ -240,23 +240,16 @@ polarity flips, number disagreements. It runs on every write because it is
 cheap. `ok` means nothing **mechanical** is wrong. It will not catch thematic
 drift, and it does not claim to (`bgate_core/canon.py`).
 
-### Scope tier
+### Scope tier / the cut line (removed)
 
-A named, ranked band of ambition in the bible: roughly "must ship", "should
-ship", "nice to have", "someday", in whatever words you choose. Work items can
-be filed under one.
-
-### The cut line
-
-A marker placed between two scope tiers. Everything ranked at or below it is
-**explicitly not being built**. This is the only mechanism in the tool that
-reliably stops an agent fleet gold-plating, and it is a refusal, not advice:
-`queue_add` will not file work under a cut tier, and dispatch re-checks at the
-last possible moment before spawning, because the line moves and an item that
-was in scope on Tuesday may not be on Thursday. Untiered work is deliberately
-allowed through and loudly flagged. Refusing it would make the first cut line
-anyone draws reject their entire existing queue, and the predictable next step
-would be turning the gate off.
+Ranked bands of ambition in the bible with a line drawn through them, below
+which nothing was to be built. `queue_add` and dispatch both checked it. It
+never refused an item in the product's life, because untiered work had to be
+allowed through and nothing was ever tiered - see
+[design-notes.md](design-notes.md) for the measurement and the reasoning.
+Removed 2026-08-10, along with `scope_check`, the three World panels and
+`work_item.scope_tier_id`. Deciding what you are not building is still the
+director's job; it is now written in the bible like every other decision.
 
 ### Pin / pinned reference
 

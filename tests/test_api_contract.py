@@ -206,7 +206,6 @@ class TestPagination:
         ("/api/queue", "items"),
         ("/api/activity", "events"),
         ("/api/artifacts", "artifacts"),
-        ("/api/iterations", "iterations"),
         ("/api/agents", "agents"),
         ("/api/assets/workspace", "groups"),
     ])
@@ -217,7 +216,7 @@ class TestPagination:
         assert set(got["page"]) == {"limit", "offset", "total", "next_offset"}
 
     @pytest.mark.parametrize("path", [
-        "/api/queue", "/api/activity", "/api/artifacts", "/api/iterations",
+        "/api/queue", "/api/activity", "/api/artifacts",
         "/api/agents", "/api/assets/workspace",
     ])
     def test_every_list_endpoint_envelopes_when_asked(self, client, root, path):

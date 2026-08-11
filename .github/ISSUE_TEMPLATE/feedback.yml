@@ -14,7 +14,7 @@ body:
       label: What kind
       options:
         - The docs describe something the code does not do
-        - A gate can be walked around (cut line, seat lanes, locks, budget, approval)
+        - A gate can be walked around (seat lanes, locks, budget, canon, approval)
         - This does not fit how I actually work
         - Feature idea
         - Something else

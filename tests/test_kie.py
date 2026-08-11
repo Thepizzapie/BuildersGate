@@ -489,14 +489,72 @@ class TestWiring:
         # A video model is not an image model, however real its id is.
         assert "no image model" in str(exc.value)
 
-    def test_chroma_refuses_anchored_work_on_kie_before_spending(self, root):
+    def test_chroma_uploads_anchors_for_kie_rather_than_refusing_them(
+            self, root, monkeypatch):
+        """kie's image fields are URLs and a pinned ref is a local file, and
+        this used to be refused outright on exactly that basis. upload_file has
+        always bridged that gap — it is what the video path uses for
+        first_frame — so the refusal left a project whose only funded account is
+        kie unable to draw an anchored frame at all."""
         from bgate_core import chroma
 
+        anchor = root / "anchor.png"
+        anchor.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+        seen = {}
+
+        monkeypatch.setattr(kie, "upload_file",
+                            lambda p, **kw: {"url": "https://kie.test/a.png"})
+
+        def _gen(prompt, out_path, **kw):
+            seen.update(model=kw.get("model"), urls=kw.get("image_urls"))
+            pathlib.Path(out_path).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+            return {"ok": True, "model": kw.get("model"), "estimated_usd": 0.0}
+
+        monkeypatch.setattr(kie, "generate_image", _gen)
+
         got = chroma.generate("a hero", str(root / "out.png"), provider="kie",
-                              ref_paths=[str(root / "anchor.png")], root=root)
+                              ref_paths=[str(anchor)], root=root)
+        assert got["ok"] is True, got
+        assert seen["urls"] == ["https://kie.test/a.png"]
+        # The default image model declares no references, so asking for anchored
+        # work on it would refuse every time and look like kie not supporting
+        # anchors at all. An unnamed model is upgraded to one that can hold them.
+        assert kie.image_ref_cap(seen["model"]) >= 1
+
+    def test_an_explicit_kie_model_that_takes_no_refs_is_still_refused(
+            self, root, monkeypatch):
+        """Overriding a model the caller NAMED would be buying something other
+        than what they asked for. The refusal still lands before any spend."""
+        from bgate_core import chroma
+
+        anchor = root / "anchor.png"
+        anchor.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+        monkeypatch.setattr(kie, "generate_image", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not reach the provider")))
+
+        got = chroma.generate("a hero", str(root / "out.png"), provider="kie",
+                              model="nano-banana",
+                              ref_paths=[str(anchor)], root=root)
         assert got["ok"] is False
-        assert "cannot condition on the pinned refs" in got["error"]
-        assert "krea" in got["error"]
+        assert "takes no reference images" in got["error"]
+
+    def test_a_failed_anchor_upload_refuses_rather_than_buying_unanchored(
+            self, root, monkeypatch):
+        """The original refusal existed to stop a paid frame that looks nothing
+        like the character. That reasoning still holds at the upload."""
+        from bgate_core import chroma
+
+        anchor = root / "anchor.png"
+        anchor.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+        monkeypatch.setattr(kie, "upload_file", lambda p, **kw: (_ for _ in ()).throw(
+            kie.KieError("upload rejected")))
+        monkeypatch.setattr(kie, "generate_image", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not reach the provider")))
+
+        got = chroma.generate("a hero", str(root / "out.png"), provider="kie",
+                              ref_paths=[str(anchor)], root=root)
+        assert got["ok"] is False
+        assert "could not upload the anchor" in got["error"]
 
     def test_the_mcp_server_exposes_the_two_new_capabilities(self):
         from bgate_mcp import server

@@ -485,6 +485,16 @@ func _init():
       ${fin.text ? "\n" + esc(fin.text) : ""}</div>` : "";
 
     const running = !!(r && r.running);
+    /* The signature above only skips a repaint when NOTHING moved, and while an
+     * agent is running the step count moves every few seconds — which is
+     * exactly when the steer box is enabled and being typed into. Rebuilding
+     * this card threw the half-written steer away mid-word. Carry the text,
+     * the caret and the focus across the rebuild. */
+    const steerWas = $("#tech-steer");
+    const keptSteer = steerWas
+      ? { text: steerWas.value, at: steerWas.selectionStart,
+          focus: document.activeElement === steerWas }
+      : null;
     body.innerHTML = `
       <div class="tech-flex" style="margin:6px 0 10px">
         <span class="tech-lamp ${running ? "ok" : (fin ? "warn" : "")}"></span>
@@ -508,6 +518,13 @@ func _init():
     const steerI = $("#tech-steer");
     if (steerB) steerB.onclick = steerAgent;
     if (steerI) steerI.onkeydown = (e) => { if (e.key === "Enter") steerAgent(); };
+    if (steerI && keptSteer && keptSteer.text) {
+      steerI.value = keptSteer.text;
+      if (keptSteer.focus && !steerI.disabled) {
+        steerI.focus();
+        try { steerI.setSelectionRange(keptSteer.at, keptSteer.at); } catch (e) {}
+      }
+    }
   }
 
   async function dispatchAgent() {

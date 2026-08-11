@@ -13,8 +13,8 @@ studio", is more useful than a merged diff.
   machine.
 - **The docs lie.** Anywhere the README or `docs/` describes behaviour the code
   does not have. Quote the line.
-- **A gate that does not gate.** Any place a refusal (the cut line, seat lanes,
-  asset locks, the budget, human-only approval) can be walked around. That class
+- **A gate that does not gate.** Any place a refusal (seat lanes, asset locks,
+  the budget, the canon check, human-only approval) can be walked around. That class
   of bug is the point of the project, so it is the class I most want to hear
   about. Security-shaped findings go through [SECURITY.md](SECURITY.md), not a
   public issue.
