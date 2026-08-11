@@ -1041,6 +1041,37 @@
      adding a second one. */
   .spanel.alarm{border-color:var(--bad)}
 
+  /* WHOSE SECTION THIS IS - IN THE ICON, AND ONLY THE ICON. A seat workspace
+     is six panels that all belong to the same seat, so a seat colour is
+     CONSTANT down that column and carries no information at all; kind is the
+     thing that varies there (a file tree you edit, a readout you cannot). So
+     the left edge stays kind's, exactly as rule 3 above says, and the seat
+     takes the header glyph - which rule 2 already nominates as the one place
+     an accent is allowed to live. One mark per panel either way; it is the
+     seat's hue instead of the interface's.
+
+     Painting the border instead was tried first and is the wrong trade: it
+     replaces a signal that varies with one that does not, on the one view
+     where you most need to know which panels are readouts.
+
+     Spelled out rather than matched with [class*="s-"]: `.mus-compose` and
+     `.al-sec` both contain "s-", and a substring match would have tinted a
+     music composer with whatever --seat-c it happened to inherit. */
+  .spanel.s-director > .sec-h > .bgi,.spanel.s-narrative > .sec-h > .bgi,
+  .spanel.s-gameplay > .sec-h > .bgi,.spanel.s-tech > .sec-h > .bgi,
+  .spanel.s-art > .sec-h > .bgi,.spanel.s-audio > .sec-h > .bgi,
+  .spanel.s-cinematic > .sec-h > .bgi,.spanel.s-qa > .sec-h > .bgi{
+    color:var(--seat-c);
+  }
+  .spanel.s-director{--seat-c:var(--c-director)}
+  .spanel.s-narrative{--seat-c:var(--c-narrative)}
+  .spanel.s-gameplay {--seat-c:var(--c-gameplay)}
+  .spanel.s-tech     {--seat-c:var(--c-tech)}
+  .spanel.s-art      {--seat-c:var(--c-art)}
+  .spanel.s-audio    {--seat-c:var(--c-audio)}
+  .spanel.s-cinematic{--seat-c:var(--c-cinematic)}
+  .spanel.s-qa       {--seat-c:var(--c-qa)}
+
   .sec-h{
     display:flex; align-items:center; gap:var(--s-4); min-height:var(--s-8);
     padding-bottom:var(--s-4); margin-bottom:var(--s-5);
@@ -1075,6 +1106,11 @@
   /* A count that has not arrived yet is not a count. Panels that fill their
      badge from a poll ship it empty, and an empty pill is furniture. */
   .sec-h .sec-n:empty{display:none}
+  /* A FOURTH TONE, and the only one that is a FILL rather than a tinted
+     outline: "how many agents are running right now" is the one count in the
+     app that has to read from across a room, or off a stream. The three above
+     are statuses; this one is a heartbeat. */
+  .sec-h .sec-n.live{background:var(--accent); border-color:var(--accent); color:var(--accent-fg)}
   .sec-h .sec-n.bad{color:var(--bad); border-color:var(--bad-line); background:var(--bad-soft)}
   .sec-h .sec-n.good{color:var(--good); border-color:var(--good-line); background:var(--good-soft)}
   .sec-h .sec-n.warn{color:var(--warn); border-color:var(--warn-line); background:var(--warn-soft)}
@@ -1543,10 +1579,12 @@
   }
 
   /* ── orchestration: composer ───────────────────────────────────────────── */
+  /* .spanel supplies the surface, the hairline, the radius and the padding
+     (index.html), so only the stacking and the gap to the sections below it
+     are left here. It used to redeclare all four with its own values, which is
+     why it and the two sections under it were three different boxes. */
   .orch-composer{
-    display:flex; flex-direction:column; gap:var(--s-4); margin-bottom:var(--s-7);
-    padding:var(--s-5); border:1px solid var(--line); border-radius:var(--r-lg);
-    background:var(--surface-2);
+    display:flex; flex-direction:column; gap:var(--s-4); margin-bottom:var(--s-6);
   }
   .orch-composer-row{display:flex; gap:var(--s-4); align-items:center}
   .orch-composer select{
@@ -1581,18 +1619,14 @@
   }
   .orch-brief-foot .hint{color:var(--text-3)}
 
-  .orch-sec{margin-bottom:var(--s-8)}
-  .orch-sec-head{
-    display:flex; align-items:center; gap:var(--s-4); margin-bottom:var(--s-5);
-    font-family:var(--mono); font-size:var(--fs-3xs); font-weight:var(--fw-bold);
-    letter-spacing:var(--track-wide); text-transform:uppercase; color:var(--text-3);
-  }
-  .orch-sec-head .n{
-    min-width:18px; text-align:center; padding:var(--s-1) var(--s-3);
-    border-radius:var(--r-full); background:var(--surface-3); border:1px solid var(--line);
-    color:var(--text); font-size:var(--fs-3xs); font-variant-numeric:tabular-nums;
-  }
-  .orch-sec-head .n.live{background:var(--accent); border-color:var(--accent); color:var(--accent-fg)}
+  /* The board's two sections are .spanel + .sec-h now (index.html). What was
+     here was a fourth private version of the section pattern - a bold
+     uppercase line of text with a count bubble, no surface and no icon - so
+     "Active now" and "Pipeline" read as two labels on one continuous page.
+     .orch-sec survives as the spacing between them; the count keeps its .live
+     tone, which .sec-n has no equivalent for (it is a FILL, not a border, and
+     it is the one badge on this view that has to be seen from a stream). */
+  .orch-sec{margin-bottom:var(--s-6)}
 
   /* ── orchestration: active agent cards ─────────────────────────────────── */
   .orch-active{display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:var(--s-5)}
@@ -3824,6 +3858,12 @@
         .wl-sec, .seat-tab, .iteration-card, .ck-q, .shot and .aud-card.
         Re-run that walk rather than re-deriving it by eye.
 
+        .tech-card, .gp-card and .dir-sec left the lists later, and not by a
+        judgement call: the tech, gameplay and director workspaces are built
+        out of .spanel now and those three classes no longer exist in any
+        file. A rim list naming a dead class is a rule that can never fire and
+        a reader who thinks it does.
+
         .wl-toc left the list later, and it is worth knowing why, because it
         is the walk working rather than an exception to it. The bible's spine
         used to be the one pane on that view with its own shape, so it read
@@ -3855,8 +3895,8 @@
       .ck-canvas,.swk,.st-wrap,.st-insp,.st-palette,.st-game,.playpanel,
       .telemetry-chart,.tele-panel,.orch-activity,.asset-vault,.asset-lib,
       .transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,.bs-pane,
-      .dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,.rm-card,
-      .tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .lane,.ledger,.ac-card,.art-card,.qa-card,.rm-card,
+      .ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
       .review-shell,.wl-modal-card,.bs-drawer){
     position:relative;
   }
@@ -3870,8 +3910,8 @@
       .ck-canvas,.ck-detail,.swk,.st-wrap,.st-insp,.st-palette,.st-game,
       .playpanel,.telemetry-chart,.tele-panel,.orch-activity,.asset-vault,
       .asset-lib,.transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,
-      .bs-pane,.dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,
-      .rm-card,.tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .bs-pane,.lane,.ledger,.ac-card,.art-card,.qa-card,
+      .rm-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
       .review-shell,.wl-modal-card,.inspector,.asset-drawer,.nt-drawer,
       .bgs-pop,.bs-drawer,.bs-drawer-h)::after{
     content:""; position:absolute; inset:0; border-radius:inherit;
@@ -3898,16 +3938,16 @@
       .ck-canvas,.ck-detail,.swk,.st-wrap,.st-insp,.st-palette,.st-game,
       .playpanel,.telemetry-chart,.tele-panel,.orch-activity,.asset-vault,
       .asset-lib,.transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,
-      .bs-pane,.dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,
-      .rm-card,.tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .bs-pane,.lane,.ledger,.ac-card,.art-card,.qa-card,
+      .rm-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
       .review-shell,.wl-modal-card,.inspector,.asset-drawer,.nt-drawer,
       .bgs-pop,.bs-drawer,.bs-drawer-h) :is(
       .panel,[id="agentview"],.ck-deck,.ck-right,.ck-convo,
       .ck-canvas,.ck-detail,.swk,.st-wrap,.st-insp,.st-palette,.st-game,
       .playpanel,.telemetry-chart,.tele-panel,.orch-activity,.asset-vault,
       .asset-lib,.transcript,.artrail,.art-qapanel,.revision-pane,.slg-side,
-      .bs-pane,.dir-sec,.lane,.ledger,.ac-card,.art-card,.gp-card,.qa-card,
-      .rm-card,.tech-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
+      .bs-pane,.lane,.ledger,.ac-card,.art-card,.qa-card,
+      .rm-card,.ask-card,.ask-pickbox,.fr-card,.toast,.pk-card,
       .review-shell,.wl-modal-card,.inspector,.asset-drawer,.nt-drawer,
       .bgs-pop,.bs-drawer,.bs-drawer-h)::after{
     display:none;
@@ -3949,13 +3989,13 @@
      has to stay the brightest edge on the page, or the hierarchy inverts
      every time the mouse crosses a card. */
   :root[data-theme="orbit"] :is(
-      .panel,.ac-card,.lane,.art-card,.gp-card,.qa-card,
-      .rm-card,.tech-card,.dir-sec)::after{
+      .panel,.ac-card,.lane,.art-card,.qa-card,
+      .rm-card)::after{
     transition:opacity var(--dur) var(--ease);
   }
   :root[data-theme="orbit"] :is(
-      .panel,.ac-card,.lane,.art-card,.gp-card,.qa-card,
-      .rm-card,.tech-card,.dir-sec):hover::after{
+      .panel,.ac-card,.lane,.art-card,.qa-card,
+      .rm-card):hover::after{
     opacity:calc(var(--iris-rim) * 1.5);
   }
 
@@ -4242,6 +4282,21 @@
     font-size:12px; color:var(--text-2);
   }
   .bg-jobs > div{ padding:2px 0; }
+
+  /* ── these blocks in a section panel ──────────────────────────────────────
+     The cinematic seat wraps each of its blocks in a .spanel now, and both of
+     the primitives above were drawn to sit BARE on the tab background: a
+     surface, a border and a radius each. Inside a panel that is a panel drawn
+     inside a panel, which is the doubled-border look this whole pass exists to
+     remove. The form loses its box entirely; the jobs strip keeps its sunken
+     well (a row inside a raised panel is exactly the elevation ladder) and
+     only drops the margin it needed as a free-floating element. */
+  .spanel > .bg-form{
+    background:none; border:0; border-radius:0; padding:0; margin:0;
+  }
+  .spanel > .bg-jobs{ margin-top:0; }
+  /* Sections need air between them or the tab reads as one field again. */
+  .bg-cine .spanel{ margin:0 0 var(--s-6); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

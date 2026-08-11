@@ -1706,16 +1706,22 @@
      * else when they came back.
      */
     deck: {
+      /* EACH PAGE NAMES AN ICON. The deck is one frame that five different
+         panels rotate through, so the tab strip is the ONLY thing on screen
+         saying which of the five you are looking at - and five words in the
+         same size and colour is the weakest possible way to say it. The names
+         are icons.js keys; a page whose icon is missing still renders, with the
+         dashed placeholder the set draws for exactly that. */
       pages: [
-        { id: "queue",   label: "queue",     hint: "waiting to deploy" },
-        { id: "ask",     label: "asked you", hint: "goes back to the agent that asked", urgent: true },
-        { id: "review",  label: "approve",   hint: "approve to release the chain",      urgent: true },
-        { id: "replies", label: "responses", hint: "live only" },
+        { id: "queue",   label: "queue",     icon: "task",   hint: "waiting to deploy" },
+        { id: "ask",     label: "asked you", icon: "note",   hint: "goes back to the agent that asked", urgent: true },
+        { id: "review",  label: "approve",   icon: "gate",   hint: "approve to release the chain",      urgent: true },
+        { id: "replies", label: "responses", icon: "agents", hint: "live only" },
         /* The audience. Not urgent — a viewer's remark is never something an
            agent is STOPPED waiting on, which is what urgent means here — and
            its count is the feedback session's, not the message rate, so a busy
            channel cannot yank the deck off an approval somebody has to make. */
-        { id: "chat",    label: "chat",      hint: "live stream chat and feedback sessions" },
+        { id: "chat",    label: "chat",      icon: "seats",  hint: "live stream chat and feedback sessions" },
       ],
       at: 0, pinnedUntil: 0, turnAt: 0,
     },
@@ -1801,9 +1807,10 @@
             const n = counts[p.id] || 0;
             const cls = ["ck-tab", i === d.at ? "on" : "",
                          n ? "has" : "", p.urgent && n ? "urgent" : ""].join(" ");
+            const ic = window.BGIcon ? BGIcon(p.icon || "more", { size: 13 }) : "";
             return `<button class="${cls}" type="button" role="tab"
                       aria-selected="${i === d.at}" data-go="${i}"
-                      title="${esc(p.hint)}">${esc(p.label)}${
+                      title="${esc(p.hint)}">${ic}${esc(p.label)}${
                       n ? `<span class="ck-tab-n">${n}</span>` : ""}</button>`;
           }).join("");
           tabs.querySelectorAll("[data-go]").forEach(b =>

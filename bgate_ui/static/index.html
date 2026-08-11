@@ -390,7 +390,10 @@
         </div>
 
         <div id="agents-board" hidden>
-        <div class="orch-composer">
+        <div class="orch-composer spanel">
+          <div class="sec-h"><span data-icon="task" data-icon-size="15"></span>
+            <h3 class="sec-t">Add work</h3>
+            <span class="sec-sub">files a queue item - it does not dispatch</span></div>
           <div class="orch-composer-row">
             <select id="q-seat" aria-label="Seat"></select>
             <input type="text" id="q-title" placeholder="Task title - a short imperative…" maxlength="120"
@@ -407,15 +410,23 @@
           </div>
         </div>
 
-        <div class="orch-sec">
-          <div class="orch-sec-head">Active now <span class="n" id="orch-active-n">0</span></div>
+        <!-- .spanel + .sec-h, the same section shape the bible, the seat
+             workspaces and the settings panel wear. These were two bold
+             uppercase LINES with no surface under them, so the board read as
+             one continuous field and "Active now" looked like a caption on the
+             composer above it rather than the lid of its own section. -->
+        <section class="orch-sec spanel k-read">
+          <div class="sec-h"><span data-icon="agents" data-icon-size="15"></span>
+            <h3 class="sec-t">Active now</h3>
+            <span class="sec-n" id="orch-active-n"></span></div>
           <div class="orch-active" id="orch-active"></div>
-        </div>
+        </section>
 
-        <div class="orch-sec">
-          <div class="orch-sec-head">Pipeline</div>
+        <section class="orch-sec spanel k-list">
+          <div class="sec-h"><span data-icon="timeline" data-icon-size="15"></span>
+            <h3 class="sec-t">Pipeline</h3></div>
           <div class="orch-pipeline" id="orch-pipeline"></div>
-        </div>
+        </section>
 
         <div class="orch-foot">
           <div class="orch-seats" id="floor"></div>
@@ -1986,7 +1997,12 @@ function renderActive(items, liveSet, acts){
   const nEl = document.getElementById("orch-active-n");
   if (!box) return;
   const liveItems = items.filter(i => liveSet.has(i.id));
-  if (nEl){ nEl.textContent = liveItems.length; nEl.className = "n" + (liveItems.length ? " live" : ""); }
+  // .sec-n is the shared count chip (app.css). Empty when nothing is running,
+  // because an empty .sec-n hides itself and a pill reading "0" is furniture.
+  if (nEl){
+    nEl.textContent = liveItems.length || "";
+    nEl.className = "sec-n" + (liveItems.length ? " live" : "");
+  }
   if (!liveItems.length){
     box.innerHTML = `<div class="empty-card">No agents running. Dispatch a queued item below, or add work above and send it to a seat.</div>`;
     return;

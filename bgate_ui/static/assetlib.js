@@ -79,7 +79,7 @@ window.AssetLib = (() => {
        *            where every other action on this page already lives.
        * Family went from fifteen pills to one select for the same reason:
        * fifteen mutually-exclusive options is a list, not a row of switches. */
-      ".al-head{margin-bottom:var(--s-6);padding-bottom:var(--s-5);border-bottom:1px solid var(--line)}",
+      ".al-head{margin-bottom:var(--s-6)}",
       ".al-row{display:flex;gap:var(--s-5);align-items:center;flex-wrap:wrap}",
       ".al-row+.al-row{margin-top:var(--s-4)}",
       /* A POD, NOT A RULE BETWEEN NEIGHBOURS. A separator drawn as the group's
@@ -123,12 +123,18 @@ window.AssetLib = (() => {
       ".al-segb[aria-pressed=true]{background:var(--accent-soft);color:var(--text)}",
       ".al-segb b{color:var(--text);font-weight:var(--fw-semi)}",
       ".al-sum{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);margin-left:auto;text-align:right}",
-      ".al-sec{margin-bottom:22px}",
-      /* .sec-h (app.css) carries the icon, the label, the count pill and the
-       * rule. What is left here is the one thing this instance needs and the
-       * shared class must not assume: it rides the scroll, so it needs the
-       * canvas painted behind it or the grid shows through the label. */
-      ".al-sech{position:sticky;top:0;background:var(--bg);z-index:2;padding-top:var(--s-4)}",
+      /* A CATEGORY GROUP IS A PANEL. It was a bare .sec-h band over a naked
+       * grid, so eight categories ran together as one continuous field of
+       * tiles and the header was the only thing separating them - which is the
+       * "everything blends together" complaint, on the view with the most
+       * things on it. .spanel gives each group its own surface and edge; the
+       * header band is unchanged because it was already the shared one. */
+      ".al-sec{margin-bottom:var(--s-6)}",
+      /* Sticky INSIDE the panel now, so the offset is the panel's own padding
+       * rather than 0 - the same calc() world.js uses on the bible spine, for
+       * the same reason. --surface-2 rather than --bg: the grid it rides over
+       * is the panel's paper, not the canvas. */
+      ".al-sec > .al-sech{position:sticky;top:calc(-1 * var(--s-5));z-index:2}",
       ".al-sech .n{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3)}",
       ".al-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:12px;align-items:start}",
       ".al-grid.dense{grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:9px}",
@@ -266,7 +272,11 @@ window.AssetLib = (() => {
     const shipping = (st.in_use || 0) + (st.unused || 0);
 
     host.innerHTML = `
-      <div class="al-head">
+      <!-- The filter rail is chrome FOR the grid below it, so it takes the
+           panel surface and deliberately no header band: a lid reading
+           "filters" over a row of filters labels a thing that already says
+           what it is, and the view chrome above already says "Assets". -->
+      <div class="al-head spanel">
         <div class="al-row">
           <input class="al-in" placeholder="Search families and files…"
                  value="${E(view.search)}" oninput="AssetLib.setSearch(this.value)">
@@ -350,7 +360,7 @@ window.AssetLib = (() => {
     const groups = {};
     shown.forEach(f => (groups[f.category] = groups[f.category] || []).push(f));
     body.innerHTML = Object.keys(groups).map(cat => `
-      <div class="al-sec">
+      <section class="al-sec spanel k-list">
         ${view.cat ? "" : `<div class="sec-h al-sech">
           <span data-icon="${CAT_ICON[cat] || "assets"}" data-icon-size="15"></span>
           <h3 class="sec-t">${E(cat)}</h3>
@@ -359,7 +369,7 @@ window.AssetLib = (() => {
         <div class="al-grid${view.dense ? " dense" : ""}">
           ${groups[cat].map(tile).join("")}
         </div>
-      </div>`).join("");
+      </section>`).join("");
   }
 
   /* The same family name lives in more than one directory more often than you

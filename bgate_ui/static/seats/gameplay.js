@@ -83,16 +83,24 @@ func _init():
     return `
 <style>
   .gp-wrap{display:flex;flex-direction:column;gap:12px;color:var(--text);font-size:13px}
-  .gp-head{display:flex;align-items:center;gap:12px;background:var(--surface-1);border:1px solid var(--line);border-radius:12px;padding:10px 14px;flex-wrap:wrap}
+  .gp-head{display:flex;align-items:center;gap:var(--s-5);background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-md);padding:var(--s-4) var(--s-6);flex-wrap:wrap}
+  .gp-head .bgi{color:var(--text-3)}
   .gp-lamp{width:10px;height:10px;border-radius:50%;background:var(--bad-line);box-shadow:0 0 0 3px rgba(90,42,42,.18);flex-shrink:0}
   .gp-lamp.ok{background:var(--accent);box-shadow:0 0 0 3px rgba(59,127,158,.2)}
-  .gp-head b{font-size:14px}
   .gp-head .gp-meta{color:var(--text-3);font-size:11.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
-  .gp-cols{display:grid;grid-template-columns:minmax(260px,1fr) minmax(340px,1.4fr);gap:12px;align-items:start}
+  .gp-cols{display:grid;grid-template-columns:minmax(260px,1fr) minmax(340px,1.4fr);gap:var(--s-6);align-items:start}
   @media(max-width:1080px){.gp-cols{grid-template-columns:1fr}}
-  .gp-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
-  .gp-card h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);font-weight:var(--fw-semi);display:flex;align-items:center;gap:8px;justify-content:space-between}
-  .gp-btn{padding:6px 12px;background:var(--good-soft);border:1px solid var(--good-line);border-radius:8px;color:var(--good);cursor:pointer;font:inherit;font-size:12px}
+  /* The panels are .spanel + .sec-h from app.css. There was a private .gp-card
+     here with its own <h4> treatment, which is how six sections on one screen
+     ended up looking like one continuous grey field: the header was a slightly
+     smaller line of text inside the same surface, so nothing marked where a
+     section started. min-width:0 because these sit in a grid and a <pre> or a
+     long res:// path inside one will otherwise widen the whole column. */
+  .gp-cols > .spanel,.gp-cols > div > .spanel{min-width:0}
+  /* inline-flex, because BGIcon renders display:block - a glyph dropped into a
+     plain inline button stacked itself on top of the label and "Run" arrived as
+     two lines. Every button in this file can now carry an icon. */
+  .gp-btn{display:inline-flex;align-items:center;gap:var(--s-3);padding:6px 12px;background:var(--good-soft);border:1px solid var(--good-line);border-radius:var(--r-sm);color:var(--good);cursor:pointer;font:inherit;font-size:12px}
   .gp-btn:hover{background:var(--good-soft)}
   .gp-btn.alt{background:var(--surface-1);border-color:var(--line);color:var(--text)}
   .gp-btn.alt:hover{background:var(--surface-2)}
@@ -131,57 +139,62 @@ func _init():
   .gp-step.steer .gp-tag{color:var(--warn)}
   .gp-final{margin-top:8px;padding:8px 10px;border-radius:8px;border:1px solid var(--good-line);background:var(--good-soft);font-size:12px}
   .gp-final.bad{border-color:var(--bad-line);background:var(--bad-soft);color:var(--bad)}
-  .gp-badge{font-size:10px;padding:2px 7px;border-radius:6px;background:var(--surface-1);border:1px solid var(--line);color:var(--text-2)}
-  .gp-badge.live{background:var(--good-soft);border-color:var(--good-line);color:var(--good)}
   .gp-sel{padding:6px 9px;background:var(--bg);border:1px solid var(--line);border-radius:7px;color:var(--text);font:inherit;font-size:12px;max-width:100%}
   .gp-empty{color:var(--text-3);font-size:12px;padding:8px 2px}
 </style>
 <div class="gp-wrap">
+  <!-- A STATUS STRIP, not a heading. It used to say "Godot workspace" in bold,
+       which is the seat tab's own label repeated four pixels under it - the
+       duplicate-title complaint, in miniature. What it is actually for is the
+       engine lamp and the version, so that is all it says now. -->
   <div class="gp-head" id="gp-head">
     <span class="gp-lamp" id="gp-lamp"></span>
-    <b>Godot workspace</b>
+    ${BGICON("tech")}<span class="sec-sub">engine</span>
     <span class="gp-meta" id="gp-status">checking engine…</span>
   </div>
 
   <div class="gp-cols">
-    <div class="gp-card">
-      <h4>Script browser <button class="gp-btn alt" id="gp-tree-reload" style="padding:3px 9px">reload</button></h4>
+    <section class="spanel s-gameplay k-list">
+      <div class="sec-h">${BGICON("sheet")}<h4 class="sec-t">Script browser</h4>
+        <span class="sec-a"><button class="gp-btn alt" id="gp-tree-reload" style="padding:3px 9px">reload</button></span></div>
       <div class="gp-tree" id="gp-tree"><div class="gp-empty">loading scripts…</div></div>
       <div class="gp-view" id="gp-view" style="display:none"></div>
-    </div>
+    </section>
 
-    <div style="display:flex;flex-direction:column;gap:12px">
-      <div class="gp-card">
-        <h4>GDScript runner</h4>
+    <div style="display:flex;flex-direction:column;gap:var(--s-6);min-width:0">
+      <section class="spanel s-gameplay">
+        <div class="sec-h">${BGICON("run")}<h4 class="sec-t">GDScript runner</h4></div>
         <textarea class="gp-ta" id="gp-script" spellcheck="false"></textarea>
         <div class="gp-row">
-          <button class="gp-btn" id="gp-run">▶ Run</button>
+          <button class="gp-btn" id="gp-run">${BGICON("run")} Run</button>
           <button class="gp-btn alt" id="gp-check">Build check</button>
           <span class="gp-hint" style="margin:0">script must extend SceneTree and quit()</span>
         </div>
         <div class="gp-out" id="gp-run-out" style="display:none"></div>
-      </div>
+      </section>
 
-      <div class="gp-card">
-        <h4>Screenshot</h4>
+      <section class="spanel s-gameplay">
+        <div class="sec-h">${BGICON("export_image")}<h4 class="sec-t">Screenshot</h4></div>
         <div class="gp-row" style="margin-top:0">
           <input class="gp-in" id="gp-shot-scene" placeholder="res://scenes/Main.tscn (blank = main)" style="flex:1;min-width:180px">
           <input class="gp-in" id="gp-shot-at" type="number" step="0.1" value="1.0" title="seconds into the scene" style="width:80px">
           <button class="gp-btn" id="gp-shot-btn">Capture</button>
         </div>
         <div class="gp-shot" id="gp-shot" style="display:none"></div>
-      </div>
+      </section>
 
-      <div class="gp-card">
-        <h4>Play alongside <button class="gp-btn alt" id="gp-play-reload" style="padding:3px 9px">reload build</button></h4>
+      <section class="spanel s-gameplay k-read">
+        <div class="sec-h">${BGICON("playtests")}<h4 class="sec-t">Play alongside</h4>
+          <span class="sec-a"><button class="gp-btn alt" id="gp-play-reload" style="padding:3px 9px">reload build</button></span></div>
         <iframe class="gp-frame" id="gp-play" src="about:blank" title="playable build"></iframe>
-        <div class="gp-hint" id="gp-play-hint">Live build — checking for the tuning overlay…</div>
-      </div>
+        <div class="gp-hint" id="gp-play-hint">Live build - checking for the tuning overlay…</div>
+      </section>
     </div>
   </div>
 
-  <div class="gp-card">
-    <h4>Live gameplay agent <span class="gp-badge" id="gp-agent-badge">—</span></h4>
+  <section class="spanel s-gameplay">
+    <div class="sec-h">${BGICON("agents")}<h4 class="sec-t">Live gameplay agent</h4>
+      <span class="gp-badge sec-n" id="gp-agent-badge"></span></div>
     <div class="gp-row" style="margin-top:0">
       <select class="gp-sel" id="gp-item" style="flex:1;min-width:220px"></select>
       <button class="gp-btn alt" id="gp-dispatch">Dispatch</button>
@@ -196,7 +209,7 @@ func _init():
       <input class="gp-in" id="gp-steer" placeholder="no live agent - dispatch one to steer it" style="flex:1;min-width:220px" disabled>
       <button class="gp-btn" id="gp-steer-btn" disabled title="no live agent to steer">Steer</button>
     </div>
-  </div>
+  </section>
 </div>`;
   }
 
@@ -492,11 +505,15 @@ func _init():
     const badge = q("gp-agent-badge");
     const live = liveAgentFor(S.selItem);
     setAgentControls(live);
+    // The badge lives in the section header band now, so it is a .sec-n count
+    // pill and takes that class's tones. An empty one hides itself, which is
+    // why "no item picked" writes "" instead of a dash: a pill containing a
+    // hyphen is furniture, and app.css already says so.
     if (badge) {
-      if (live) { badge.className = "gp-badge live"; badge.textContent = `● live · pid ${live.pid}`; }
-      else if (item && item.status === "dispatched") { badge.className = "gp-badge"; badge.textContent = "dispatched"; }
-      else if (item) { badge.className = "gp-badge"; badge.textContent = item.status; }
-      else { badge.className = "gp-badge"; badge.textContent = "-"; }
+      if (live) { badge.className = "sec-n good"; badge.textContent = `live · pid ${live.pid}`; }
+      else if (item && item.status === "dispatched") { badge.className = "sec-n"; badge.textContent = "dispatched"; }
+      else if (item) { badge.className = "sec-n"; badge.textContent = item.status; }
+      else { badge.className = "sec-n"; badge.textContent = ""; }
     }
 
     let act;

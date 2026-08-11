@@ -59,30 +59,32 @@
         </div>
         <div class="aud-wrap" id="aud-music" hidden></div>
         <div class="aud-wrap" id="aud-main">
-          <div class="aud-card" id="aud-lib">
-            <h3 class="aud-h">${BGICON("audio")} Sound library <span class="aud-sub" id="aud-lib-count"></span>
-              <span class="aud-actions">
+          <section class="spanel s-audio k-list" id="aud-lib">
+            <div class="sec-h">${BGICON("audio")}<h3 class="sec-t">Sound library</h3>
+              <span class="sec-n" id="aud-lib-count"></span>
+              <span class="sec-a">
                 <button class="aud-btn aud-primary" id="aud-open-studio"
                         title="Trim, layer, synthesise and mix - the audio lab, in this seat">
                   ${BGICON("edit")} open the audio lab
                 </button>
               </span>
-            </h3>
+            </div>
             <div id="aud-lib-body"><div class="aud-empty">loading…</div></div>
-          </div>
-          <div class="aud-card" id="aud-cues">
-            <h3 class="aud-h">${BGICON("timeline")} Cue sheet <span class="aud-sub">which sound plays when</span>
-              <span class="aud-actions">
+          </section>
+          <section class="spanel s-audio k-list" id="aud-cues">
+            <div class="sec-h">${BGICON("timeline")}<h3 class="sec-t">Cue sheet</h3>
+              <span class="sec-sub">which sound plays when</span>
+              <span class="sec-a">
                 <button class="aud-btn" id="aud-cue-add">+ row</button>
                 <button class="aud-btn aud-primary" id="aud-cue-save">save</button>
               </span>
-            </h3>
+            </div>
             <div id="aud-cue-body"><div class="aud-empty">loading…</div></div>
-          </div>
-          <div class="aud-card" id="aud-agent">
-            <h3 class="aud-h">${BGICON("agents")} Live audio agent</h3>
+          </section>
+          <section class="spanel s-audio" id="aud-agent">
+            <div class="sec-h">${BGICON("agents")}<h3 class="sec-t">Live audio agent</h3></div>
             <div id="aud-agent-body"><div class="aud-empty">loading…</div></div>
-          </div>
+          </section>
         </div>`;
 
       // Wire the static buttons once.
@@ -296,7 +298,8 @@
       const count = this._root.querySelector("#aud-lib-count");
       if (!body) return;
       const total = this._sounds.length + this._arts.length;
-      if (count) count.textContent = total ? `(${total})` : "";
+      // .sec-n is a count chip: digits, no brackets, and empty means hidden.
+      if (count) count.textContent = total ? String(total) : "";
 
       if (!total) {
         this._libSig = "";
@@ -484,7 +487,7 @@
       const host = this._root && this._root.querySelector("#aud-music");
       if (!host) return;
       if (!this._mOpts) {
-        host.innerHTML = '<div class="aud-card"><div class="aud-empty">loading…</div></div>';
+        host.innerHTML = '<div class="spanel s-audio"><div class="aud-empty">loading…</div></div>';
         const got = await this._bg.get("/api/music/options").catch(() => null);
         this._mOpts = (got && got.data) || { available: false,
           reason: "the music API did not answer - restart bgate serve so the "
@@ -512,11 +515,11 @@
       const blocked = !o.available;
 
       host.innerHTML = `
-        <div class="aud-card mus-compose">
-          <h3 class="aud-h">${BGICON("waveform")} Generate music
-            <span class="aud-sub">Suno via kie · one request returns ${bg.esc(o.tracks_hint || 2)} takes,
+        <section class="spanel s-audio mus-compose">
+          <div class="sec-h">${BGICON("waveform")}<h3 class="sec-t">Generate music</h3>
+            <span class="sec-sub">Suno via kie · one request returns ${bg.esc(o.tracks_hint || 2)} takes,
               you keep one</span>
-          </h3>
+          </div>
           ${blocked ? `<div class="mus-strip bad">${BGICON("stop")}
             <span><b>Music generation is unavailable.</b> ${bg.esc(o.reason || "kie is not configured")}</span>
           </div>` : ""}
@@ -567,19 +570,19 @@
           </div>
 
           ${this._spendStrip()}
-        </div>
+        </section>
 
         <div id="aud-jobs"></div>
 
-        <div class="aud-card" id="aud-cands">
-          <h3 class="aud-h">${BGICON("select")} Takes to audition
-            <span class="aud-sub" id="aud-cand-count"></span>
-            <span class="aud-actions">
+        <section class="spanel s-audio k-list" id="aud-cands">
+          <div class="sec-h">${BGICON("select")}<h3 class="sec-t">Takes to audition</h3>
+            <span class="sec-n" id="aud-cand-count"></span>
+            <span class="sec-a">
               <button class="aud-btn" id="aud-cand-reload">${BGICON("verify")} refresh</button>
             </span>
-          </h3>
+          </div>
           <div id="aud-cand-body"><div class="aud-empty">loading…</div></div>
-        </div>`;
+        </section>`;
 
       // Same reason as in render(): #aud-cand-body and #aud-jobs were just
       // replaced with placeholders, so their signatures no longer describe
@@ -842,12 +845,12 @@
         j.task_id || ""].join(":")).join(",");
       if (sig === this._jobSig && host.firstChild) return;
       this._jobSig = sig;
-      host.innerHTML = `<div class="aud-card mus-jobs">
-        <h3 class="aud-h">${BGICON("timeline")} Generations
-          <span class="aud-sub">${live.length
-            ? `${live.length} in flight` : "nothing running"}</span></h3>
+      host.innerHTML = `<section class="spanel s-audio k-read mus-jobs">
+        <div class="sec-h">${BGICON("timeline")}<h3 class="sec-t">Generations</h3>
+          <span class="sec-n${live.length ? " good" : ""}">${live.length || ""}</span>
+          <span class="sec-sub">${live.length ? "in flight" : "nothing running"}</span></div>
         ${rows.map(j => this._jobRow(j)).join("")}
-      </div>`;
+      </section>`;
     },
 
     _jobRow(j) {
@@ -973,10 +976,14 @@
       const body = this._root && this._root.querySelector("#aud-cand-body");
       const count = this._root && this._root.querySelector("#aud-cand-count");
       if (!body) return;
+      // The band's count chip: the number, and a tone that says which number it
+      // is. "3 awaiting a decision" was a sentence in a pill sized for digits.
       if (count) {
-        count.textContent = this._mCands.length
-          ? `${this._mCands.length} awaiting a decision`
-          : (this._mKept.length ? `${this._mKept.length} kept` : "");
+        const waiting = this._mCands.length;
+        count.className = "sec-n" + (waiting ? " warn" : "");
+        count.title = waiting ? `${waiting} awaiting a decision`
+                              : `${this._mKept.length} kept`;
+        count.textContent = String(waiting || this._mKept.length || "");
       }
       const card = (c, keptRow) => {
         const cost = c.estimated_usd ? `$${Number(c.estimated_usd).toFixed(4)}`
@@ -1335,12 +1342,18 @@
           border:1px solid var(--line);border-radius:8px;color:var(--text-3);font:inherit;font-size:12px;cursor:pointer}
         .aud-mode:hover{border-color:var(--accent);color:var(--text-2)}
         .aud-mode.on{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
-        .aud-wrap{display:flex;flex-direction:column;gap:14px;color:var(--text);font-size:13px}
-        .aud-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
-        .aud-h{font-size:13px;font-weight:var(--fw-semi);color:var(--text);display:flex;align-items:center;gap:8px;margin-bottom:12px}
-        .aud-sub{font-weight:400;color:var(--text-3);font-size:11px}
-        .aud-actions{margin-left:auto;display:flex;gap:6px}
-        .aud-btn{padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}
+        .aud-wrap{display:flex;flex-direction:column;gap:var(--s-6);color:var(--text);font-size:13px}
+        /* Panels here are .spanel + .sec-h from app.css. .aud-card and .aud-h
+           were a sixth private version of that pattern, and .aud-h in
+           particular was a bold 13px line INSIDE the panel surface - one step
+           away from the row titles under it, which is why five sections read as
+           one field. .aud-actions survives because the live-agent body still
+           uses it as a right-aligned button run outside any header band. */
+        .aud-actions{margin-left:auto;display:flex;gap:var(--s-3)}
+        /* inline-flex: BGIcon renders display:block, so a glyph in a plain
+           inline button stacked itself above the label and "generate" arrived
+           as two lines. Half the buttons in this file carry an icon. */
+        .aud-btn{display:inline-flex;align-items:center;gap:var(--s-3);padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}
         .aud-btn:hover{border-color:var(--accent);color:var(--text)}
         .aud-primary{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}
         .aud-danger{border-color:var(--bad-line);color:var(--bad)}
@@ -1385,7 +1398,11 @@
            behind "more". The previous version gave a 500-character prompt the
            same visual weight as a "negative tags" box, which is how a panel
            ends up feeling like a form instead of a place to write. */
-        #aud-music .aud-card{background:var(--solid-2)}
+        /* The header band is left on --surface-4 deliberately. On orbit that
+           token is a translucent white, but it is composited against THIS
+           opaque fill rather than against the blurred page, so the band stays
+           readable and still steps up from the panel on all four grounds. */
+        #aud-music .spanel{background:var(--solid-2)}
         .mus-prompt{width:100%;box-sizing:border-box;background:var(--solid-1);
           border:1px solid var(--line);border-radius:10px;color:var(--text);
           font:inherit;font-size:15px;line-height:1.55;padding:12px 14px;resize:vertical;

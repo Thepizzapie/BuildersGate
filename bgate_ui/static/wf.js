@@ -69,15 +69,22 @@
   const toast = (m, bad) => (window.BGWS ? BGWS.toast(m, bad) : console.log(m));
   const uid = (p) => p + "_" + Math.random().toString(36).slice(2, 8);
 
+  /* Each category names an icon from icons.js. It is not decoration: the
+     library is seven card grids on one scroll, and the band at the top of each
+     one is the only thing that says which grid you are looking at. */
   const CATS = [
-    { id: "input", label: "Inputs" },
-    { id: "asset", label: "2D asset gen" },
-    { id: "world", label: "World / background" },
-    { id: "3d", label: "3D · Blender" },
-    { id: "agent", label: "Agents" },
-    { id: "control", label: "Control / QA" },
-    { id: "saved", label: "Saved workflows" },
+    { id: "input", label: "Inputs", icon: "task" },
+    { id: "asset", label: "2D asset gen", icon: "art" },
+    { id: "world", label: "World / background", icon: "background" },
+    { id: "3d", label: "3D · Blender", icon: "model" },
+    { id: "agent", label: "Agents", icon: "agents" },
+    { id: "control", label: "Control / QA", icon: "gate" },
+    { id: "saved", label: "Saved workflows", icon: "note" },
   ];
+  const CAT_ICON = {};
+  CATS.forEach(c => { CAT_ICON[c.id] = c.icon; });
+  const wfIcon = (name, size) =>
+    (window.BGIcon ? BGIcon(name, { size: size || 15 }) : "");
 
   // API envelope: {ok:true,data} | {ok:false,error:{code,message}}. Unwrap once
   // here so every call site deals in payloads, not envelopes.
@@ -655,9 +662,13 @@
     /* ---- library landing ------------------------------------------------ */
     async open(host, api) {
       this._api = api || {};
+      // NO TITLE HERE. The view chrome says "Studio" and the subnav tab you
+      // just pressed says "Workflows"; a third heading reading "Workflow
+      // library / Templates & saved workflows" was the same page named three
+      // times in eighty pixels. What is left is the one thing the chrome above
+      // cannot offer, which is the action.
       host.innerHTML = `<div class="wf-lib">
         <div class="wf-lib-head">
-          <div><div class="wf-eyebrow">Workflow library</div><h3 class="wf-h">Templates &amp; saved workflows</h3></div>
           <button class="qbtn small" onclick="WF.newBlank()">＋ New workflow</button>
         </div>
         <div id="wf-lib-body"><div class="empty">loading…</div></div>
@@ -708,18 +719,31 @@
         <span class="wf-card-g">${esc(t.glyph || "⬡")}</span>
         <span class="wf-card-t">${esc(t.name)}</span>
         <span class="wf-card-h">${esc(t.hint || (saved ? "saved workflow" : "template"))}</span></button>`;
+      /* A CATEGORY IS A SECTION, and it wears app.css's .spanel + .sec-h like
+         every other section in the app - icon, label, count. It used to be a
+         bare uppercase line over a naked card grid, so seven categories ran
+         together as one field of two hundred identical cards and the only
+         thing separating them was 22px of margin. */
+      const sec = (icon, label, n, inner) =>
+        `<section class="spanel k-list wf-lib-sec">
+           <div class="sec-h">${wfIcon(icon)}<h3 class="sec-t">${esc(label)}</h3>
+             ${n ? `<span class="sec-n">${n}</span>` : ""}</div>
+           ${inner}</section>`;
+
       let html = "";
       CATS.filter(c => c.id !== "saved").forEach(c => {
         const ts = byCat[c.id] || [];
         if (!ts.length) return;
-        html += `<div class="wf-lib-sec"><div class="wf-lib-cat">${esc(c.label)}</div><div class="wf-card-grid">${ts.map(t => tplCard(t)).join("")}</div></div>`;
+        html += sec(c.icon, c.label, ts.length,
+          `<div class="wf-card-grid">${ts.map(t => tplCard(t)).join("")}</div>`);
       });
       if (this._savedError) {
-        html += `<div class="wf-lib-sec"><div class="wf-lib-cat">Your saved workflows</div>`
-          + `<div class="wf-warn">could not read your saved workflows - ${esc(this._savedError)}. They are still on the server; this is a read that failed, not an empty library.</div></div>`;
+        html += sec("note", "Your saved workflows", 0,
+          `<div class="wf-warn">could not read your saved workflows - ${esc(this._savedError)}. They are still on the server; this is a read that failed, not an empty library.</div>`);
       }
       if (this._saved.length) {
-        html += `<div class="wf-lib-sec"><div class="wf-lib-cat">Your saved workflows</div><div class="wf-card-grid">${this._saved.map(s => `<button class="wf-card" onclick="WF.openSaved('${esc(s.id)}')"><span class="wf-card-g">◆</span><span class="wf-card-t">${esc(s.name)}</span><span class="wf-card-h">${esc(s.category || "workflow")} · ${(s.stepCount || 0)} steps</span><span class="wf-card-x" onclick="event.stopPropagation();WF.deleteSaved('${esc(s.id)}')">✕</span></button>`).join("")}</div></div>`;
+        html += sec("note", "Your saved workflows", this._saved.length,
+          `<div class="wf-card-grid">${this._saved.map(s => `<button class="wf-card" onclick="WF.openSaved('${esc(s.id)}')"><span class="wf-card-g">${wfIcon(CAT_ICON[s.category] || "note", 18)}</span><span class="wf-card-t">${esc(s.name)}</span><span class="wf-card-h">${esc(s.category || "workflow")} · ${(s.stepCount || 0)} steps</span><span class="wf-card-x" onclick="event.stopPropagation();WF.deleteSaved('${esc(s.id)}')">✕</span></button>`).join("")}</div>`);
       }
       body.innerHTML = html || `<div class="empty">no templates registered</div>`;
     },
@@ -798,10 +822,21 @@
           <button class="qbtn small" onclick="WF.run()">▶ Run workflow</button>
         </div>
         <div class="wf-runbar" id="wf-runbar" hidden></div>
+        <!-- The two rails get header bands for the same reason every other
+             pane in the app now has one: without them the builder is three
+             unlabelled columns, and the left one (a list of things you can add)
+             and the right one (the settings of the thing you selected) are the
+             two most easily confused surfaces on the page. -->
         <div class="wf-main">
-          <div class="wf-palette" id="wf-palette"></div>
+          <div class="wf-rail wf-palette-rail">
+            <div class="sec-h">${wfIcon("studio", 14)}<h4 class="sec-t">Steps</h4></div>
+            <div class="wf-palette" id="wf-palette"></div>
+          </div>
           <div class="wf-canvas" id="wf-canvas"></div>
-          <div class="wf-insp" id="wf-insp"><div class="wf-insp-empty">Select a step to configure it.</div></div>
+          <div class="wf-rail wf-insp-rail">
+            <div class="sec-h">${wfIcon("settings", 14)}<h4 class="sec-t">Inspector</h4></div>
+            <div class="wf-insp" id="wf-insp"><div class="wf-insp-empty">Select a step to configure it.</div></div>
+          </div>
         </div>
       </div>`;
       this._renderPalette();
@@ -848,7 +883,7 @@
         let list = byCat[c.id] || [];
         if (c.id === "saved") list = this._saved.map(s => ({ type: "sub:" + s.id, label: s.name, glyph: "◆", accent: "var(--ember)" }));
         if (!list.length) return;
-        html += `<div class="wf-pal-cat">${esc(c.label)}</div>` + list.map(s =>
+        html += `<div class="wf-pal-cat">${wfIcon(c.icon, 12)}${esc(c.label)}</div>` + list.map(s =>
           `<button class="wf-pi" style="--a:${s.accent || "var(--ember)"}" onclick="WF.addStep('${esc(s.type)}')"><span class="g">${esc(s.glyph || "◇")}</span> ${esc(s.label)}</button>`).join("");
       });
       pal.innerHTML = html || `<div class="empty">no steps</div>`;
@@ -1395,11 +1430,10 @@
     const s = document.createElement("style"); s.id = "wf-style";
     s.textContent = `
       .wf-lib{padding:6px 4px}
-      .wf-lib-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px}
-      .wf-eyebrow{font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--ash2)}
-      .wf-h{font-size:18px;color:var(--bone);margin:4px 0 0}
-      .wf-lib-sec{margin-bottom:22px}
-      .wf-lib-cat{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ash);margin-bottom:10px}
+      /* An action row, not a heading row - .wf-eyebrow and .wf-h went with the
+         title they styled. See open() for why there is no title here. */
+      .wf-lib-head{display:flex;align-items:center;justify-content:flex-start;margin-bottom:var(--s-6)}
+      .wf-lib-sec{margin-bottom:var(--s-6)}
       .wf-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
       .wf-card{position:relative;display:flex;flex-direction:column;gap:4px;text-align:left;padding:16px;background:var(--plate);border:1px solid var(--seam);border-radius:12px;cursor:pointer;color:var(--bone);font:inherit}
       .wf-card:hover{border-color:var(--ember);background:var(--plate2)}
@@ -1429,14 +1463,22 @@
       .wf-st-passed{color:var(--good)}
       .wf-st-failed,.wf-st-cancelled{color:var(--bad)}
       .wf-main{flex:1;display:flex;border:1px solid var(--seam);border-radius:0 0 12px 12px;overflow:hidden;min-height:0}
-      .wf-palette{width:186px;flex:none;background:var(--iron);border-right:1px solid var(--seam);padding:12px 10px;overflow-y:auto}
-      .wf-pal-cat{font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash2);margin:12px 0 6px}
+      /* The rail is the column; the band is its lid and the list below it
+         scrolls under the band rather than with it. app.css owns .sec-h, so
+         only the seam and the scroll live here. */
+      .wf-rail{display:flex;flex-direction:column;min-height:0;background:var(--iron)}
+      .wf-palette-rail{width:186px;flex:none;border-right:1px solid var(--seam)}
+      .wf-insp-rail{width:270px;flex:none;border-left:1px solid var(--seam)}
+      .wf-rail > .sec-h{flex:none;padding:var(--s-4) var(--s-5);margin:0;background:var(--surface-4)}
+      .wf-palette{flex:1;min-height:0;padding:var(--s-5) var(--s-4);overflow-y:auto}
+      .wf-pal-cat{display:flex;align-items:center;gap:var(--s-3);font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash2);margin:12px 0 6px}
       .wf-pal-cat:first-child{margin-top:0}
+      .wf-pal-cat .bgi{color:var(--ash2)}
       .wf-pi{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 9px;margin-bottom:5px;background:var(--plate);border:1px solid var(--seam);border-left:2px solid var(--a);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;cursor:pointer}
       .wf-pi:hover{background:var(--plate2);border-color:var(--a)}
       .wf-pi .g{color:var(--a)}
       .wf-canvas{flex:1;position:relative;min-width:0}
-      .wf-insp{width:270px;flex:none;background:var(--iron);border-left:1px solid var(--seam);padding:15px;overflow-y:auto}
+      .wf-insp{flex:1;min-height:0;padding:var(--s-6);overflow-y:auto}
       .wf-insp-empty{color:var(--ash2);font-size:12px}
       .wf-insp-h{font-size:13.5px;font-weight:var(--fw-semi);color:var(--bone);margin-bottom:12px;display:flex;gap:8px;align-items:center}
       .wf-insp-p{font-size:12px;color:var(--ash);line-height:1.5;margin:6px 0}

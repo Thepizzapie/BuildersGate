@@ -190,7 +190,7 @@ window.SeatWS.qa = {
           <div id="qa-lede"></div>
 
           <div class="bg-stagebody" data-stagebody="bots" hidden>
-            <div class="spanel k-read">
+            <div class="spanel s-qa k-read">
               <div class="sec-h">${this._icon("outline")}<h3 class="sec-t">Probe contract - what a bot drives</h3>
                 <span class="sec-n" id="qa-n-contract"></span>
                 <span class="sec-a">
@@ -200,7 +200,7 @@ window.SeatWS.qa = {
                 </span></div>
               <div id="qa-contract"><div class="qa-empty">loading the probe contract…</div></div>
             </div>
-            <div class="spanel k-list">
+            <div class="spanel s-qa k-list">
               <div class="sec-h">${this._icon("qa")}<h3 class="sec-t">Bot roster</h3>
                 <span class="sec-n" id="qa-n-bots"></span>
                 <span class="sec-a">
@@ -214,31 +214,31 @@ window.SeatWS.qa = {
           </div>
 
           <div class="bg-stagebody" data-stagebody="run" hidden>
-            <div class="spanel k-read">
+            <div class="spanel s-qa k-read">
               <div class="sec-h">${this._icon("run")}<h3 class="sec-t">Match result</h3></div>
               <div id="qa-runall"></div>
               <div id="qa-result"><div class="qa-empty">run a bot to see what the game actually did.</div></div>
             </div>
-            <div class="spanel">
+            <div class="spanel s-qa">
               <div class="sec-h">${this._icon("record")}<h3 class="sec-t">Live playtest recording</h3></div>
               <div id="qa-playtest"><div class="qa-empty">loading…</div></div>
             </div>
           </div>
 
           <div class="bg-stagebody" data-stagebody="verdict" hidden>
-            <div class="spanel k-read">
+            <div class="spanel s-qa k-read">
               <div class="sec-h">${this._icon("gate")}<h3 class="sec-t">Verdicts - automatic QA-gate runs</h3>
                 <span class="sec-n" id="qa-n-gates"></span></div>
               <div id="qa-verdicts"><div class="qa-empty">loading verdicts…</div></div>
             </div>
-            <div class="spanel">
+            <div class="spanel s-qa">
               <div class="sec-h">${this._icon("agents")}<h3 class="sec-t">Live QA agent</h3></div>
               <div id="qa-agent"><div class="qa-empty">loading…</div></div>
             </div>
           </div>
 
           <div class="bg-stagebody" data-stagebody="history" hidden>
-            <div class="spanel k-read">
+            <div class="spanel s-qa k-read">
               <div class="sec-h">${this._icon("timeline")}<h3 class="sec-t">Bot run history - recorded verdicts</h3>
                 <span class="sec-n" id="qa-n-runs"></span></div>
               <div id="qa-runs"><div class="qa-empty">loading run history…</div></div>

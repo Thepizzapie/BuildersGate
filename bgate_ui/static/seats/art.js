@@ -101,7 +101,7 @@
 
               <div class="bg-stagebody" data-stagebody="anchor" hidden>
                 <div class="art-anchorgrid">
-                  <div class="spanel k-list">
+                  <div class="spanel s-art k-list">
                     <div class="sec-h">${BGICON("reference")}<h3 class="sec-t">Pinned references</h3>
                       <span class="sec-n" id="art-n-refs"></span></div>
                     <div id="art-refs"></div>
@@ -110,7 +110,7 @@
                        project generates looks like. The anchors are shown
                        rather than counted — "6 of 26" is the least useful way
                        to describe a dataset of pictures. -->
-                  <div class="spanel k-list art-stcard">
+                  <div class="spanel s-art k-list art-stcard">
                     <div class="sec-h">${BGICON("art")}<h3 class="sec-t">Trained style</h3>
                       <span class="art-sth" id="art-stmode"></span></div>
                     <div id="art-style"><div class="art-empty">loading…</div></div>
@@ -119,7 +119,7 @@
               </div>
 
               <div class="bg-stagebody" data-stagebody="candidates" hidden>
-                <div class="spanel k-list" id="art-lab">
+                <div class="spanel s-art k-list" id="art-lab">
                   <div class="sec-h">${BGICON("consistency")}<h3 class="sec-t">Iteration lab</h3>
                     <span class="sec-n" id="art-n-cand"></span></div>
                   <div id="art-labbody"><div class="art-empty">loading candidates…</div></div>
@@ -128,12 +128,12 @@
 
               <div class="bg-stagebody" data-stagebody="land" hidden>
                 <div class="art-landgrid">
-                  <div class="spanel k-read">
+                  <div class="spanel s-art k-read">
                     <div class="sec-h">${BGICON("verify")}<h3 class="sec-t">What the build is loading</h3>
                       <span class="sec-n" id="art-n-live"></span></div>
                     <div id="art-install"><div class="art-empty">loading…</div></div>
                   </div>
-                  <div class="spanel k-read">
+                  <div class="spanel s-art k-read">
                     <div class="sec-h">${BGICON("lock")}<h3 class="sec-t">Locks &amp; contention</h3>
                       <span class="sec-n" id="art-n-locks"></span></div>
                     <div id="art-locks"><div class="art-empty">loading locks…</div></div>
@@ -142,7 +142,7 @@
               </div>
 
               <div class="bg-stagebody" data-stagebody="engine" hidden>
-                <div class="spanel k-read">
+                <div class="spanel s-art k-read">
                   <div class="sec-h">${BGICON("rig")}<h3 class="sec-t">Flow map - assets rigged into Godot</h3>
                     <span class="sec-n" id="art-n-rig"></span></div>
                   <div id="art-flow" class="art-flowwrap"><div class="art-empty">loading…</div></div>

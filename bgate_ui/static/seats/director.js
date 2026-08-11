@@ -26,12 +26,13 @@
   };
 
   const STYLE = `
-    .dir-wrap{display:flex;flex-direction:column;gap:18px;color:var(--text);font-size:13px}
-    .dir-sec{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
-    .dir-sec-h{display:flex;align-items:center;gap:10px;margin:0 0 12px;font-size:12px;
-      text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
-    .dir-sec-h .dir-count{color:var(--accent);font-weight:var(--fw-semi)}
-    .dir-sec-h .dir-spacer{flex:1}
+    .dir-wrap{display:flex;flex-direction:column;gap:var(--s-6);color:var(--text);font-size:13px}
+    /* The two sections are .spanel + .sec-h out of app.css. They used to be a
+       private .dir-sec box with a .dir-sec-h line of uppercase text inside it,
+       which is a header that is only a FONT SIZE away from the cards under it -
+       the control tower read as one continuous field of grey boxes. Nothing
+       local is left: the band, the icon, the count pill and the actions slot
+       are all the shared classes now. */
     .dir-empty{color:var(--text-3);font-size:var(--fs-sm);padding:var(--s-5) var(--s-1);line-height:var(--lh)}
     /* agent board */
     .dir-agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
@@ -82,8 +83,12 @@
     .dir-st.failed{color:var(--bad);border-color:var(--bad-line)}
     .dir-qacts{display:flex;gap:5px;flex-wrap:wrap}
     .dir-chk{width:14px;height:14px;accent-color:var(--accent);margin-top:2px;cursor:pointer}
-    .dir-batch{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface-1);
-      border:1px solid var(--accent);border-radius:9px}
+    /* It rides in the header band's .sec-a now, so it is sized to the band
+       rather than to a row of its own - a 9px-radius pill with 8px of padding
+       in there pushed the whole lid a line taller than the section above it. */
+    .dir-batch{display:flex;align-items:center;gap:var(--s-4);padding:var(--s-2) var(--s-4);
+      background:var(--surface-1);border:1px solid var(--accent);border-radius:var(--r-sm);
+      font-size:var(--fs-xs)}
     .dir-batch b{color:var(--text)}
     /* mode bar — the control tower and the brainstorm surface are both
        full-width tools, so they take turns instead of stacking. */
@@ -107,6 +112,17 @@
   function toast(m, bad) { try { S.bg.toast(m, bad); } catch (err) {} }
   function mounted() { return S.container && document.body.contains(S.container); }
 
+  /* A COUNT PILL IS A NUMBER; THE WORD GOES BESIDE IT. .sec-n is a chip sized
+     for digits, so "(3 running)" stretched the band and stopped lining up with
+     every other section header in the app. The number goes in the pill, the
+     noun in the .sec-sub next to it, and an empty pill hides itself. */
+  function setCount(nId, subId, n, word) {
+    const pill = document.getElementById(nId);
+    if (pill) pill.textContent = n ? String(n) : "";
+    const sub = document.getElementById(subId);
+    if (sub) sub.textContent = n ? word : "";
+  }
+
   // ---- render -------------------------------------------------------------
 
   function render(container, bg) {
@@ -121,20 +137,22 @@
        </div>
        <div class="dir-brain" id="dir-brain" hidden></div>
        <div class="dir-wrap" id="dir-boardwrap">
-         <section class="dir-sec">
-           <h3 class="dir-sec-h">${BGICON("agents")} Live agent board
-             <span class="dir-count" id="dir-agent-count"></span>
-             <span class="dir-spacer"></span>
-             <button class="dir-btn dir-sm" onclick="DirCtl.refreshNow()">refresh</button>
-           </h3>
+         <section class="spanel s-director k-read">
+           <div class="sec-h">${BGICON("agents")}<h3 class="sec-t">Live agent board</h3>
+             <span class="sec-n" id="dir-agent-count"></span>
+             <span class="sec-sub" id="dir-agent-sub"></span>
+             <span class="sec-a">
+               <button class="dir-btn dir-sm" onclick="DirCtl.refreshNow()">refresh</button>
+             </span>
+           </div>
            <div id="dir-agents"><div class="dir-empty">loading agents…</div></div>
          </section>
-         <section class="dir-sec">
-           <h3 class="dir-sec-h">Queue board — by seat
-             <span class="dir-count" id="dir-queue-count"></span>
-             <span class="dir-spacer"></span>
-             <span id="dir-batch-slot"></span>
-           </h3>
+         <section class="spanel s-director k-list">
+           <div class="sec-h">${BGICON("seats")}<h3 class="sec-t">Queue board - by seat</h3>
+             <span class="sec-n" id="dir-queue-count"></span>
+             <span class="sec-sub" id="dir-queue-sub"></span>
+             <span class="sec-a" id="dir-batch-slot"></span>
+           </div>
            <div id="dir-queue"><div class="dir-empty">loading queue…</div></div>
          </section>
        </div>`;
@@ -234,8 +252,7 @@
     // Don't clobber a steer box the user is typing in — repaint on the next tick.
     const ae = document.activeElement;
     if (ae && ae.classList && ae.classList.contains("dir-steer-in") && host.contains(ae)) {
-      const cnt = document.getElementById("dir-agent-count");
-      if (cnt) cnt.textContent = countRunning() ? `(${countRunning()} running)` : "";
+      setCount("dir-agent-count", "dir-agent-sub", countRunning(), "running");
       return;
     }
     // LIVE means live. This board used to keep every exited and stopped session
@@ -245,8 +262,7 @@
     // shared work panel above, with their whole transcript.
     const agents = (S.overview.agents || []).filter(a => a && a.state === "running");
     const idx = itemIndex();
-    const cnt = document.getElementById("dir-agent-count");
-    if (cnt) cnt.textContent = agents.length ? `(${agents.length} running)` : "";
+    setCount("dir-agent-count", "dir-agent-sub", agents.length, "running");
 
     if (!agents.length) {
       host.innerHTML = `<div class="dir-empty">No agents running. Dispatch a queued item below, or "Review for delegation" to spin up a director.</div>`;
@@ -359,8 +375,8 @@
       total += items.length;
       queuedTotal += items.filter(i => i && i.status === "queued").length;
     });
-    const cnt = document.getElementById("dir-queue-count");
-    if (cnt) cnt.textContent = total ? `(${total} active · ${queuedTotal} queued)` : "";
+    setCount("dir-queue-count", "dir-queue-sub", total,
+             `active · ${queuedTotal} queued`);
 
     // Prune stale selections (items no longer queued/present).
     const present = {};

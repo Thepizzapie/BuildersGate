@@ -215,6 +215,28 @@
         '" data-mode="' + id + '">' + this._bg.esc(label) + "</button>";
     },
 
+    /* ---- sections --------------------------------------------------------
+     * This tab used to be a run of bare <h3>/<h4> headings over unboxed lists,
+     * forms and a video gallery, all on the same surface - so "Awaiting a
+     * decision", "Kept" and the promote form (the one control here that spends
+     * money) read as one continuous page. Every block is a .spanel with a
+     * .sec-h band now, exactly as world.js and the art and QA seats build them.
+     * Nothing new is defined: `kind` is app.css's k-list/k-read/k-doc and
+     * `s-cinematic` is the seat accent. */
+    _sec(icon, title, body, o) {
+      o = o || {};
+      const bg = this._bg;
+      const n = (o.n === undefined || o.n === null || o.n === "")
+        ? "" : '<span class="sec-n ' + (o.tone || "") + '">' + bg.esc(o.n) + "</span>";
+      return '<section class="spanel s-cinematic ' + (o.kind || "") +
+        (o.alarm ? " alarm" : "") + '">' +
+        '<div class="sec-h">' + BGICON(icon) +
+        '<h3 class="sec-t">' + bg.esc(title) + "</h3>" + n +
+        (o.note ? '<span class="sec-sub">' + bg.esc(o.note) + "</span>" : "") +
+        (o.actions ? '<span class="sec-a">' + o.actions + "</span>" : "") +
+        "</div>" + body + "</section>";
+    },
+
     _paintPlan(body) {
       const bg = this._bg;
       const o = this._opts || {};
@@ -227,12 +249,15 @@
           (s.kept || 0) + " kept <span class=\"bg-dim\">" +
           bg.esc(s.status || "") + "</span></li>").join("");
         body.innerHTML =
-          "<p class=\"bg-note\">A cutscene is a SEQUENCE of shots - no model " +
-          "generates past about 15 seconds. Planning is free; every shot after " +
-          "it costs money. Argue with the list here.</p>" +
-          (rows ? "<ul class=\"bg-list\">" + rows + "</ul>"
-                : '<div class="bg-empty">no shot lists yet</div>') +
-          this._planFormHtml();
+          this._sec("timeline", "Shot lists",
+            "<p class=\"bg-note\">A cutscene is a SEQUENCE of shots - no model " +
+            "generates past about 15 seconds. Planning is free; every shot after " +
+            "it costs money. Argue with the list here.</p>" +
+            (rows ? "<ul class=\"bg-list\">" + rows + "</ul>"
+                  : '<div class="bg-empty">no shot lists yet</div>'),
+            { kind: "k-list", n: this._seqs.length || "" }) +
+          this._sec("note", "New shot list", this._planFormHtml(),
+            { note: "free" });
         body.querySelectorAll("[data-open]").forEach((b) => {
           b.onclick = () => {
             this._seq = { name: b.dataset.open };
@@ -267,27 +292,32 @@
           "</li>";
       }).join("");
 
+      // The sequence name is the section band's label, so it is NOT printed
+      // again as an <h3> underneath it - that was the same title twice, four
+      // pixels apart.
       body.innerHTML =
-        '<button class="bg-link" data-back="1">&larr; all shot lists</button>' +
-        "<h3>" + bg.esc(seq.name) + "</h3>" +
-        '<p class="bg-dim">' + bg.esc(seq.logline || "") + "</p>" +
-        '<p class="bg-note"><b>Style:</b> ' + bg.esc(look.label || "unstyled") +
-        " - " + bg.esc(look.text || "") + "</p>" +
-        this._estimateHtml() +
-        '<p class="bg-dim">model ' + bg.esc(seq.model || o.default_model || "") +
-        " · " + bg.esc(seq.aspect_ratio) + " · " + bg.esc(seq.resolution) +
-        " · " + (seq.runtime_s || 0) + "s · " + (seq.kept || 0) + "/" +
-        (seq.shots || []).length + " kept</p>" +
-        (seq.style_refs && seq.style_refs.length
-          ? '<p class="bg-dim">style refs: ' +
-            bg.esc(seq.style_refs.join(", ")) + "</p>"
-          : "") +
-        '<ul class="bg-list">' + shots + "</ul>" +
-        (seq.ready_to_assemble
-          ? '<button class="bg-btn primary" data-assemble="1">assemble the cut</button>'
-          : '<p class="bg-dim">every shot has to be kept before the cut can be ' +
-            "assembled - a cut around a missing beat ships a story that does " +
-            "not make sense.</p>");
+        this._sec("cinematic", seq.name || "sequence",
+          '<p class="bg-dim">' + bg.esc(seq.logline || "") + "</p>" +
+          '<p class="bg-note"><b>Style:</b> ' + bg.esc(look.label || "unstyled") +
+          " - " + bg.esc(look.text || "") + "</p>" +
+          this._estimateHtml() +
+          '<p class="bg-dim">model ' + bg.esc(seq.model || o.default_model || "") +
+          " · " + bg.esc(seq.aspect_ratio) + " · " + bg.esc(seq.resolution) +
+          " · " + (seq.runtime_s || 0) + "s</p>" +
+          (seq.style_refs && seq.style_refs.length
+            ? '<p class="bg-dim">style refs: ' +
+              bg.esc(seq.style_refs.join(", ")) + "</p>"
+            : "") +
+          '<ul class="bg-list">' + shots + "</ul>" +
+          (seq.ready_to_assemble
+            ? '<button class="bg-btn primary" data-assemble="1">assemble the cut</button>'
+            : '<p class="bg-dim">every shot has to be kept before the cut can be ' +
+              "assembled - a cut around a missing beat ships a story that does " +
+              "not make sense.</p>"),
+          { kind: "k-list",
+            n: (seq.kept || 0) + "/" + (seq.shots || []).length,
+            note: "kept",
+            actions: '<button class="bg-link" data-back="1">&larr; all shot lists</button>' });
 
       const b = body.querySelector("[data-back]");
       if (b) b.onclick = () => { this._seq = null; this._load(); };
@@ -344,8 +374,8 @@
       const models = Object.keys(o.models || {}).map((k) =>
         '<option value="' + bg.esc(k) + '">' +
         bg.esc((o.models[k] || {}).label || k) + "</option>").join("");
+      // The <h4> that used to open this form is the section band's job now.
       return '<form class="bg-form bg-cine-new">' +
-        "<h4>New shot list</h4>" +
         '<input name="name" placeholder="sequence name" required> ' +
         '<input name="logline" placeholder="logline"> ' +
         '<select name="style">' + opts + "</select> " +
@@ -402,20 +432,29 @@
         : '<span class="bg-warn">no cast pinned. Every frame is drawn from ' +
           "prose alone and the look will wander between them.</span>";
 
+      const approved = (b.frames || []).filter((f) => f.status === "approved").length;
+      // Three sections, because they are three different decisions: the board
+      // itself, the one control that spends money, and adding a beat. They were
+      // a run of forms under one heading, which is how the promote button ended
+      // up looking like the "add frame" button one line below it.
       body.innerHTML =
-        '<button class="bg-link" data-back="1">&larr; all storyboards</button>' +
-        "<h3>" + bg.esc(b.name) + "</h3>" +
-        (b.logline ? '<p class="bg-dim">' + bg.esc(b.logline) + "</p>" : "") +
-        '<div class="bg-cine-cast">Cast: ' + cast + "</div>" +
-        (b.script && b.script.prose
-          ? "<details><summary>script</summary><pre>" +
-            bg.esc(b.script.prose) + "</pre></details>"
-          : "") +
-        '<div class="bg-board-grid">' +
-        (b.frames || []).map((f) => this._frameCard(f)).join("") +
-        "</div>" +
-        this._promoteHtml(ready) +
-        this._frameAddHtml();
+        this._sec("cinematic", b.name || "storyboard",
+          (b.logline ? '<p class="bg-dim">' + bg.esc(b.logline) + "</p>" : "") +
+          '<div class="bg-cine-cast">Cast: ' + cast + "</div>" +
+          (b.script && b.script.prose
+            ? "<details><summary>script</summary><pre>" +
+              bg.esc(b.script.prose) + "</pre></details>"
+            : "") +
+          '<div class="bg-board-grid">' +
+          (b.frames || []).map((f) => this._frameCard(f)).join("") +
+          "</div>",
+          { kind: "k-list",
+            n: approved + "/" + (b.frames || []).length,
+            note: "approved",
+            actions: '<button class="bg-link" data-back="1">&larr; all storyboards</button>' }) +
+        this._sec("spend", "Promote to a shot list", this._promoteHtml(ready),
+          { note: "everything above is free", alarm: !ready.promotable }) +
+        this._sec("place", "Add a beat", this._frameAddHtml(), {});
 
       this._wireBoard(body);
     },
@@ -474,7 +513,6 @@
       // the button being merely disabled: "you cannot do this" with no reason
       // is how somebody spends an afternoon on the wrong problem.
       return '<form class="bg-form bg-board-promote">' +
-        "<h4>Promote to a shot list</h4>" +
         '<p class="bg-dim">Everything above is free. Every shot below this ' +
         "button is a paid generation.</p>" +
         (ready.promotable
@@ -512,11 +550,14 @@
       }).join("");
 
       body.innerHTML =
-        (rows ? "<ul>" + rows + "</ul>"
-              : '<div class="bg-empty">no storyboards yet. A board is where a ' +
-                "scene gets worked out for free, before any of it is bought." +
-                "</div>") +
-        this._boardFormHtml();
+        this._sec("sheet", "Storyboards",
+          (rows ? '<ul class="bg-list">' + rows + "</ul>"
+                : '<div class="bg-empty">no storyboards yet. A board is where a ' +
+                  "scene gets worked out for free, before any of it is bought." +
+                  "</div>"),
+          { kind: "k-list", n: this._boards.length || "" }) +
+        this._sec("concept", "New storyboard", this._boardFormHtml(),
+          { note: "a fraction of a cent, draws nothing" });
       this._wireBoardList(body);
     },
 
@@ -538,7 +579,6 @@
         .join(" ");
 
       return '<form class="bg-form bg-board-new">' +
-        "<h4>New storyboard</h4>" +
         '<input name="name" placeholder="scene name" required> ' +
         '<select name="style">' + sopts + "</select> " +
         '<input name="frames" type="number" min="1" max="24" value="6" ' +
@@ -704,14 +744,17 @@
         "</li>";
 
       body.innerHTML =
-        "<h4>Awaiting a decision</h4>" +
-        (this._cands.length
-          ? '<ul class="bg-list">' + this._cands.map(card).join("") + "</ul>"
-          : '<div class="bg-empty">nothing waiting</div>') +
-        "<h4>Kept</h4>" +
-        (this._kept.length
-          ? '<ul class="bg-list">' + this._kept.map(card).join("") + "</ul>"
-          : '<div class="bg-empty">nothing kept yet</div>');
+        this._sec("select", "Awaiting a decision",
+          (this._cands.length
+            ? '<ul class="bg-list">' + this._cands.map(card).join("") + "</ul>"
+            : '<div class="bg-empty">nothing waiting</div>'),
+          { kind: "k-list", n: this._cands.length || "",
+            tone: this._cands.length ? "warn" : "" }) +
+        this._sec("verify", "Kept",
+          (this._kept.length
+            ? '<ul class="bg-list">' + this._kept.map(card).join("") + "</ul>"
+            : '<div class="bg-empty">nothing kept yet</div>'),
+          { kind: "k-read", n: this._kept.length || "" });
 
       body.querySelectorAll("[data-keep]").forEach((el) => {
         el.onclick = () => this._act("/api/cinematic/keep",
@@ -742,10 +785,11 @@
         .filter((j) => j.status === "failed")
         .slice(-3);
       const failed = broke.length
-        ? '<div class="bg-warn"><b>Refused</b>' + broke.map((j) =>
+        ? this._sec("stop", "Refused", '<div class="bg-warn">' + broke.map((j) =>
             "<div>" + bg.esc(j.kind || "job") +
             (j.idx ? " shot " + j.idx : "") + ": " +
-            bg.esc(this._why(j)) + "</div>").join("") + "</div>"
+            bg.esc(this._why(j)) + "</div>").join("") + "</div>",
+            { kind: "k-read", alarm: true, n: broke.length, tone: "bad" })
         : "";
       if (!live.length) return failed + this._stuckHtml();
       // ORPHANED IS THREE-STATE, not a boolean, and rendering it as one is how
@@ -764,11 +808,14 @@
         }
         return "";
       };
-      return failed + '<div class="bg-jobs">' + live.map((j) =>
-        '<div>' + bg.esc(j.kind || "job") + " " +
-        bg.esc(j.sequence || "") + (j.idx ? " shot " + j.idx : "") + " - " +
-        bg.esc(j.stage || j.status || "") + orphan(j) +
-        "</div>").join("") + "</div>" + this._stuckHtml();
+      return failed + this._sec("timeline", "Generations",
+        '<div class="bg-jobs">' + live.map((j) =>
+          '<div>' + bg.esc(j.kind || "job") + " " +
+          bg.esc(j.sequence || "") + (j.idx ? " shot " + j.idx : "") + " - " +
+          bg.esc(j.stage || j.status || "") + orphan(j) +
+          "</div>").join("") + "</div>",
+        { kind: "k-read", n: live.length, tone: "good", note: "in flight" }) +
+        this._stuckHtml();
     },
 
     /* The server writes a sentence explaining every refusal. It is buried two
@@ -800,8 +847,9 @@
             '" data-seq="' + bg.esc(s.sequence || "") + '">recover</button>'
           : "") +
         "</div>";
-      return '<div class="bg-jobs bg-warn"><b>Unfinished generations</b>' +
-        rows.map(line).join("") + "</div>";
+      return this._sec("spend", "Unfinished generations",
+        '<div class="bg-jobs bg-warn">' + rows.map(line).join("") + "</div>",
+        { kind: "k-read", alarm: true, n: rows.length, tone: "warn" });
     },
 
     /* Every mutation goes through here so `_busy` is set in exactly one place.
