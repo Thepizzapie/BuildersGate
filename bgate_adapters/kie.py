@@ -2614,8 +2614,22 @@ def download_tracks(tracks: list, out_dir: str | os.PathLike[str], *,
 def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
                    name: str = "", root: Any = None, logical_name: str = "",
                    work_item_id: Optional[int] = None,
-                   timeout: float = 900.0, **options: Any) -> dict:
+                   timeout: float = 900.0, on_submit: Any = None,
+                   **options: Any) -> dict:
     """Submit, wait, download every track. Returns {ok, tracks:[{path,...}]}.
+
+    ``on_submit`` IS CALLED WITH THE TASK ID THE INSTANT THERE IS ONE, the same
+    hook and for the same reason as :func:`generate_video`. The charge lands at
+    submit and the poll loop then runs for MINUTES; a caller that only learns
+    the task id from the RETURN VALUE learns it never if the process dies in
+    between, and a paid batch with no handle cannot be collected by anything —
+    not :func:`bgate_core.music.recover`, which needs the id, and not the sweep
+    that looks for uncollected work. Measured: every failure mode this module
+    already documents (the CDN 403 on download, a cancel, a timeout) carried the
+    id out on the RESULT, which survives a return and not a kill.
+
+    Its failure is swallowed on purpose — bookkeeping must not lose the file it
+    was bookkeeping.
 
     ONE REQUEST IS SEVERAL FILES, which is why this returns a list where the
     image path returns a path. Suno generates "multiple variations for each
@@ -2639,9 +2653,17 @@ def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
     false — never 0.0, which every budget check in this product reads as free.
     """
     started = time.monotonic()
+    # UNKNOWN, STATED, ON EVERY PATH — not absent, and never 0.0. The success
+    # path below has always said `credits_source` and left `estimated_usd` None
+    # when the rate is unconfigured, but a FAILED run returned none of these
+    # keys at all, so a caller reading `result.get("credits_consumed", 0)` or
+    # summing `estimated_usd or 0` scored a charge that may well have happened
+    # as free. Same rule estimate_usd holds for video: the two unknowns are
+    # named separately and neither folds to zero.
     base = {"ok": False, "provider": "kie", "kind": "audio",
             "model": str(options.get("model") or DEFAULT_SUNO_MODEL),
-            "estimated_usd": None}
+            "credits_consumed": None, "credits_source": "unavailable",
+            "accounted": False, "estimated_usd": None}
     task_id = ""
     # BEFORE THE SUBMIT, not before the download: the charge lands when the job
     # is accepted. Best effort — a balance that cannot be read must not stop a
@@ -2662,6 +2684,11 @@ def generate_music(prompt: str, out_dir: str | os.PathLike[str], *,
         job = submit_music(prompt, root=root, **options)
         task_id = job["task_id"]
         base["model"] = job["model"]
+        if on_submit:
+            try:
+                on_submit(task_id)
+            except Exception:                                    # noqa: BLE001
+                pass
         rec = poll_music(task_id, root=root, timeout=timeout,
                          on_progress=on_progress)
         tracks = music_tracks(rec)
