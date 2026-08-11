@@ -311,7 +311,10 @@ window.AudioLab = (() => {
       ".ab-sheet.collapsed .ab-pane,.ab-sheet.collapsed .ab-tabhint{display:none}",
       ".ab-clipwrap{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}",
       ".ab-clipbar{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-3) var(--s-4);border-bottom:1px solid var(--line-soft);flex:none;flex-wrap:wrap;background:var(--surface-1)}",
-      ".ab-rack{width:288px;flex:none;border-left:1px solid var(--line);overflow-y:auto;padding:var(--s-4);background:var(--surface-1)}",
+      ".ab-rack{width:288px;flex:none;border-left:1px solid var(--line);overflow-y:auto;padding:var(--s-4);background:var(--surface-1);display:flex;flex-direction:column;gap:var(--s-5)}",
+      // flex:none, or the three panels stretch to fill a tall rack and the
+      // buttons in them float in the middle of their own boxes.
+      ".ab-rack > .spanel{flex:none}",
 
       /* ── the panel rail ─────────────────────────────────────────────────
          Soundtrap's right edge: a vertical stack of circular buttons, each
@@ -335,7 +338,9 @@ window.AudioLab = (() => {
       ".ab-read{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);white-space:nowrap}",
       ".ab-pop{position:absolute;bottom:46px;right:var(--s-5);z-index:5;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:var(--shadow-3);padding:var(--s-4);width:238px}",
       ".ab-pop[hidden]{display:none}",
-      ".ab-pop .ab-h:first-child{margin-top:0}",
+      /* `.ab-pop .ab-h:first-child{margin-top:0}` stood here and is gone with
+         .ab-h. Nothing replaces it: the popover's header is a bare .sec-h now
+         (see togglePrefs) and .sec-h carries no top margin to cancel. */
 
       // setMode()/openSheet() hide these with the `hidden` attribute, and the UA
       // rule that implements it ([hidden]{display:none}) loses to any author
@@ -367,9 +372,16 @@ window.AudioLab = (() => {
       ".ab-knob .kv{font-family:var(--mono);font-size:var(--fs-3xs);color:var(--text);font-variant-numeric:tabular-nums}",
       ".ab-knob:hover .kv{color:var(--accent)}",
 
-      ".ab-h{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-wide);text-transform:uppercase;color:var(--text-3);margin:var(--s-6) 0 var(--s-3);display:flex;align-items:center;gap:var(--s-3)}",
-      ".ab-h:first-child{margin-top:0}",
-      ".ab-h span{flex:1;height:1px;background:var(--line)}",
+      /* The sheet's sections are .spanel + .sec-h out of app.css now (see sec()
+         further down), so nothing here restyles a header. These two rules are
+         only the columns the panels stand in: .ab-col and .ab-rack were plain
+         blocks holding a run of headings, and a .spanel is a bordered box that
+         needs the gap between its neighbours declared rather than borrowed from
+         a heading's margin. The last-child rule kills the trailing --s-4 every
+         .ab-note and .ab-grid2 carries, which otherwise reads as panels with
+         uneven bottoms sitting side by side in the fx and mix panes. */
+      ".ab-col > .spanel,.ab-rack > .spanel{min-width:0}",
+      ".ab-col > .spanel > :last-child,.ab-rack > .spanel > :last-child{margin-bottom:0}",
       ".ab-row{display:flex;align-items:center;gap:var(--s-3);margin-bottom:var(--s-3);flex-wrap:wrap}",
       ".ab-row label{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);flex:none;min-width:46px}",
       ".ab-in{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-xs);color:var(--text);font:inherit;font-size:var(--fs-xs);padding:var(--s-3)}",
@@ -380,11 +392,14 @@ window.AudioLab = (() => {
       ".ab-row .ab-tg{flex:none}",
       ".ab-row .ab-btn{flex:none}",
       ".ab-grid2 .ab-btn{width:100%;justify-content:center;margin-bottom:0}",
-      ".ab-note{font-size:var(--fs-xs);color:var(--text-2);line-height:var(--lh);margin-bottom:var(--s-4)}",
+      // overflow-wrap: "this clip" prints the project-relative path, which is
+      // one unbroken token in a 288px rack. Inside a .spanel that hangs out
+      // over the panel's own right edge instead of quietly widening a column.
+      ".ab-note{font-size:var(--fs-xs);color:var(--text-2);line-height:var(--lh);margin-bottom:var(--s-4);overflow-wrap:anywhere}",
       ".ab-note b{color:var(--text)}",
       ".ab-warn{color:var(--warn)}",
       ".ab-cols{display:flex;gap:var(--s-6);align-items:flex-start;flex-wrap:wrap}",
-      ".ab-col{flex:1;min-width:240px}",
+      ".ab-col{flex:1;min-width:240px;display:flex;flex-direction:column;gap:var(--s-5)}",
       ".ab-pick{position:fixed;inset:0;z-index:1401;background:var(--overlay);display:flex;align-items:center;justify-content:center;padding:40px}",
       ".ab-pbox{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-md);width:min(720px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}",
       ".ab-plist{overflow-y:auto;padding:var(--s-4)}",
@@ -3511,6 +3526,31 @@ window.AudioLab = (() => {
     paintLayers();
   }
 
+  /* ONE SHAPE FOR EVERY LID IN THE SHEET, and it is the app's own rather than
+     this file's: .spanel + .sec-h out of app.css, built the way
+     settingsview.js and every seat workspace builds it.
+     `.ab-h` was what stood here — an uppercase word with a hairline running off
+     to the right of it, fifteen times across six panes. Two of those stacked in
+     one 240px column read as one list with captions in it, which is how "fade"
+     ended up looking like a continuation of "level" and why nobody could tell
+     the mix pane's two columns apart at a glance.
+     NO `s-<seat>` CLASS. That variant tints the header glyph with a seat's hue
+     and belongs to the seat workspaces, where a panel really is one seat's
+     property. The lab is a tool anyone opens, and every non-seat view that took
+     this pattern — assetlib.js, world.js, the settings panel — ships a plain
+     .spanel. KIND is what varies here anyway: a layer list you re-order, a
+     readout you cannot touch. */
+  function sec(icon, title, body, o){
+    o = o || {};
+    const n = (o.n === undefined || o.n === null || o.n === "")
+      ? "" : `<span class="sec-n${o.tone ? " " + o.tone : ""}">${E(o.n)}</span>`;
+    return `<section class="spanel ${o.kind || ""}">` +
+      `<div class="sec-h">${ic(icon, 15)}<h3 class="sec-t">${E(title)}</h3>${n}` +
+      (o.note ? `<span class="sec-sub">${E(o.note)}</span>` : "") +
+      (o.actions ? `<span class="sec-a">${o.actions}</span>` : "") +
+      `</div>${body}</section>`;
+  }
+
   /* CLIP — the waveform, what is selected in it, and the structural cuts. The
      ops here are not judged by ear (a trim either kept the right span or it did
      not), so they commit rather than staging. */
@@ -3544,7 +3584,7 @@ window.AudioLab = (() => {
       <div id="ab-clipslot" style="flex:1;min-height:0;position:relative;display:flex"></div>
     </div>
     <div class="ab-rack">
-      <div class="ab-h">cut<span></span></div>
+      ${sec("trim", "Cut", `
       <div class="ab-grid2">
         <button class="ab-btn" onclick="AudioLab.trim()">${ic("trim", 13)} trim to sel</button>
         <button class="ab-btn" onclick="AudioLab.cut()">${ic("delete", 13)} delete</button>
@@ -3555,9 +3595,10 @@ window.AudioLab = (() => {
       <div class="ab-note">Drag an edge to move it, ←/→ nudges by 1 ms (Shift 10 ms,
         Alt the in point, Ctrl the whole selection). <b>Snap to zero</b> — in the
         transport's gear — lands the boundary on a zero crossing, which is what
-        stops a trim from clicking.</div>
+        stops a trim from clicking.</div>`,
+        { note: sel ? "on the selection" : "whole clip" })}
 
-      <div class="ab-h">insert<span></span></div>
+      ${sec("place", "Insert", `
       <div class="ab-row">
         <label>silence</label>
         <input class="ab-in num" id="ab-sil" type="number" step="0.05" min="0" max="60"
@@ -3565,9 +3606,9 @@ window.AudioLab = (() => {
         <button class="ab-btn" onclick="AudioLab.insertSilence(+document.getElementById('ab-sil').value)">insert</button>
       </div>
       <div class="ab-note">Lands at the selection's in point, or at the end when
-        nothing is selected.</div>
+        nothing is selected.</div>`)}
 
-      <div class="ab-h">this clip<span></span></div>
+      ${sec("waveform", "This clip", `
       <div class="ab-note">
         <b>${fmt(S.buf.duration)}</b> · ${rate} Hz ·
         ${S.buf.numberOfChannels === 2 ? "stereo" : "mono"}<br>
@@ -3575,7 +3616,8 @@ window.AudioLab = (() => {
       <div class="ab-grid2">
         <button class="ab-btn" onclick="AudioLab.newDup()">duplicate</button>
         <button class="ab-btn" onclick="AudioLab.newFromSel()">carve out sel</button>
-      </div>
+      </div>`,
+        { kind: "k-read", note: S.buf.numberOfChannels === 2 ? "stereo" : "mono" })}
     </div>`;
   }
 
@@ -3585,7 +3627,7 @@ window.AudioLab = (() => {
   function paneFx(u){
     return `<div class="ab-cols">
       <div class="ab-col">
-        <div class="ab-h">level<span></span></div>
+        ${sec("audio", "Level", `
         <div class="ab-knobs">
           ${knob("kf-gain", "gain", u.gain_db, -36, 24, .5, "db", "ui:gain_db")}
           ${knob("kf-norm", "target", u.norm_db, -60, 0, .5, "db", "ui:norm_db")}
@@ -3601,9 +3643,9 @@ window.AudioLab = (() => {
                                                      : "one factor keeps the image"}</span>
         </div>
         <div class="ab-note">Leave headroom: a stinger normalised to <b>0 dBFS</b>
-          clips the moment anything else plays under it.</div>
+          clips the moment anything else plays under it.</div>`)}
 
-        <div class="ab-h">fade<span></span></div>
+        ${sec("line", "Fade", `
         <div class="ab-row">
           <label>curve</label>
           <select class="ab-in" onchange="AudioLab.uiField('fade_curve',this.value)">
@@ -3615,11 +3657,12 @@ window.AudioLab = (() => {
           <button class="ab-btn" onclick="AudioLab.fade('out')">fade out</button>
         </div>
         <div class="ab-note">A <b>linear</b> fade-out on a tail sounds like it stops
-          early — logarithmic or equal-power is what a tail actually wants.</div>
+          early — logarithmic or equal-power is what a tail actually wants.</div>`,
+          { note: u.fade_curve })}
       </div>
 
       <div class="ab-col">
-        <div class="ab-h">pitch &amp; time<span></span></div>
+        ${sec("timeline", "Pitch and time", `
         <div class="ab-knobs">
           ${knob("kf-speed", "speed", u.speed, 0.25, 4, .01, "x", "ui:speed")}
           ${knob("kf-semi", "semitones", u.semitones, -24, 24, 1, "n", "ui:semitones")}
@@ -3630,9 +3673,9 @@ window.AudioLab = (() => {
         </div>
         <div class="ab-note">Speed moves pitch with it, like pitching tape — which
           is how you make a heavy version of a light hit. Semitones is the same
-          resample said in musical units, so the clip gets shorter as it goes up.</div>
+          resample said in musical units, so the clip gets shorter as it goes up.</div>`)}
 
-        <div class="ab-h">extend<span></span></div>
+        ${sec("loop", "Extend", `
         <div class="ab-knobs">
           ${knob("kf-reps", "repeat", u.reps, 2, 64, 1, "n", "ui:reps")}
           ${knob("kf-xf", "crossfade", u.xf, 0, 2000, 10, "n", "ui:xf")}
@@ -3648,7 +3691,7 @@ window.AudioLab = (() => {
                   onclick="AudioLab.uiField('preview',${!u.preview})">audition first</button>
           <span class="ab-read">${u.preview ? "apply / cancel each one"
                                             : "straight to the clip"}</span>
-        </div>
+        </div>`)}
       </div>
     </div>`;
   }
@@ -3660,7 +3703,7 @@ window.AudioLab = (() => {
     const i = WAVES.indexOf(p.wave);
     return `<div class="ab-cols">
       <div class="ab-col" style="max-width:520px">
-        <div class="ab-h">instrument<span></span></div>
+        ${sec("waveform", "Instrument", `
         <div class="ab-row">
           <button class="ab-ico" title="Previous waveform"
                   onclick="AudioLab.stepWave(-1)">${ic("undo", 13)}</button>
@@ -3675,8 +3718,10 @@ window.AudioLab = (() => {
           ${knob("ks-seconds", "length", p.seconds, 0.02, 6, .01, "ms", "synth:seconds")}
           ${knob("ks-noise", "noise", p.noise, 0, 1, .01, "n", "synth:noise")}
           ${knob("ks-crush", "crush", p.crush, 0, 7, 1, "n", "synth:crush")}
-        </div>
-        <div class="ab-h">envelope<span></span></div>
+        </div>`,
+          { note: p.wave })}
+
+        ${sec("animation", "Envelope", `
         <div class="ab-knobs">
           ${knob("ks-attack", "attack", p.attack, 0, 1, .005, "ms", "synth:attack")}
           ${knob("ks-decay", "decay", p.decay, 0, 2, .005, "ms", "synth:decay")}
@@ -3691,7 +3736,7 @@ window.AudioLab = (() => {
         <button class="ab-btn wide go" onclick="AudioLab.synthReplace()">generate — replace the clip</button>
         <div class="ab-note">Deterministic: the same settings are the same sound
           every time, so "that one was good, do it again" works. Replacing the
-          clip is undoable like any other edit.</div>
+          clip is undoable like any other edit.</div>`)}
       </div>
     </div>`;
   }
@@ -3702,7 +3747,7 @@ window.AudioLab = (() => {
     const solo = S.tracks.some(t => t.solo) || S.clipLane.solo;
     return `<div class="ab-cols">
       <div class="ab-col">
-        <div class="ab-h">layers<span></span></div>
+        ${sec("agents", "Layers", `
         <div class="ab-note">${S.tracks.length
           ? `<b>${S.tracks.length}</b> layer${S.tracks.length === 1 ? "" : "s"} under the clip${
               solo ? " · <b>solo is active</b>, so only soloed lanes are heard" : ""}.
@@ -3729,16 +3774,19 @@ window.AudioLab = (() => {
           <button class="ab-btn" onclick="AudioLab.splitLayer()">split at playhead</button>
         </div>
         <input type="file" id="ab-lfile" accept="audio/*" multiple style="display:none"
-               onchange="AudioLab.importPicked(event,true)">
-        <div class="ab-h">clip lane<span></span></div>
+               onchange="AudioLab.importPicked(event,true)">`,
+          { kind: "k-list", n: S.tracks.length,
+            note: solo ? "solo active" : "" })}
+
+        ${sec("waveform", "Clip lane", `
         <div class="ab-knobs">
           ${knob("km-cg", "clip vol", S.clipLane.gain_db || 0, -60, 12, .5, "db", "clip:gain_db")}
           ${knob("km-cp", "clip pan", S.clipLane.pan || 0, -1, 1, .02, "pan", "clip:pan")}
-        </div>
+        </div>`)}
       </div>
 
       <div class="ab-col">
-        <div class="ab-h">render<span></span></div>
+        ${sec("rebuild", "Render", `
         <div class="ab-grid2">
           <button class="ab-btn go" onclick="AudioLab.mixdown(true)">mix into this clip</button>
           <button class="ab-btn" onclick="AudioLab.mixdown(false)">layers only</button>
@@ -3755,7 +3803,7 @@ window.AudioLab = (() => {
         <button class="ab-btn wide" onclick="AudioLab.saveSession()">save the mix session</button>
         <div class="ab-note">The session — every layer's path, offset, trim, gain
           and pan — lands in a sidecar next to the clip, so a mixdown stays a
-          document you can re-open rather than a one-shot.</div>
+          document you can re-open rather than a one-shot.</div>`)}
       </div>
     </div>`;
   }
@@ -3766,7 +3814,7 @@ window.AudioLab = (() => {
     const st = S.status, loop = S.loop || {}, sel = S.sel;
     return `<div class="ab-cols">
       <div class="ab-col">
-        <div class="ab-h">save<span></span></div>
+        ${sec("export", "Save", `
         <div class="ab-row">
           <input class="ab-in" id="ab-saveas" value="${E(S.saveAs || S.rel || "")}"
                  oninput="AudioLab.saveAsField(this.value)" onchange="AudioLab.renderSheet()">
@@ -3780,11 +3828,12 @@ window.AudioLab = (() => {
                     : `<span class="ab-warn">${E(st.ogg_reason)}</span>`)
           : "checking what this install can write…"}</div>
         <div class="ab-note">A save keeps the previous bytes: the old copy lands
-          in <b>.bgate_out/audio_backups</b> and the toast names it.</div>
+          in <b>.bgate_out/audio_backups</b> and the toast names it.</div>`,
+          { note: st ? (st.ogg ? "wav and ogg" : "wav only") : "" })}
       </div>
 
       <div class="ab-col">
-        <div class="ab-h">godot loop<span></span></div>
+        ${sec("loop", "Godot loop", `
         ${loop.supported ? `
           <div class="ab-note">${loop.enabled
             ? `This clip <b>loops</b> from <b>${fmt(loop.begin_s)}</b>${
@@ -3807,7 +3856,9 @@ window.AudioLab = (() => {
           ${!loop.has_import ? `<div class="ab-note ab-warn">No .import yet — open
             the project in Godot once so the engine writes one.</div>` : ""}`
           : `<div class="ab-note">${E(S.rel || "this clip")} has no Godot loop
-              settings (${E(loop.importer || "unknown importer")}).</div>`}
+              settings (${E(loop.importer || "unknown importer")}).</div>`}`,
+          { note: loop.supported ? (loop.enabled ? "loops" : "plays once")
+                                 : "not supported" })}
       </div>
     </div>`;
   }
@@ -3820,8 +3871,12 @@ window.AudioLab = (() => {
     if (!p || !S) return;
     if (!p.hidden){ p.hidden = true; return; }
     const u = S.ui;
+    /* A BARE .sec-h, not a .spanel. The popover is already a bordered, raised
+       box; putting a panel inside it would draw a second border 4px in from the
+       first. The .sec-h on its own is the same header contract without the
+       surface — icon, label, hairline. */
     p.innerHTML = `
-      <div class="ab-h">editing<span></span></div>
+      <div class="sec-h">${ic("settings", 14)}<h3 class="sec-t">Editing</h3></div>
       <div class="ab-row">
         <button class="ab-tg${u.preview ? " on" : ""}"
                 onclick="AudioLab.uiField('preview',${!u.preview});AudioLab.togglePrefs();AudioLab.togglePrefs()">audition first</button>

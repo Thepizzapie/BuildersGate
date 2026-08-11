@@ -176,7 +176,16 @@ window.SpriteEdit = (() => {
       ".se-stage{flex:1;position:relative;min-width:0;overflow:hidden;background:var(--bg)}",
       ".se-stage canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}",
       ".se-hud{position:absolute;left:10px;bottom:10px;font-family:var(--mono);font-size:10px;color:var(--ash2);background:rgba(10,11,14,.8);border:1px solid var(--seam);border-radius:6px;padding:4px 8px;pointer-events:none;white-space:pre}",
-      ".se-side{width:284px;flex:none;background:var(--iron);border-left:1px solid var(--seam);overflow-y:auto;padding:12px}",
+      ".se-side{width:284px;flex:none;background:var(--iron);border-left:1px solid var(--seam);overflow-y:auto;padding:var(--s-4);display:flex;flex-direction:column;gap:var(--s-5)}",
+      /* The sidebar's sections are .spanel + .sec-h out of app.css now (see
+         sec() in renderSide), so nothing here restyles a header. This is only
+         the column they sit in. flex:none matters: the frame strip and the
+         history list have their own max-heights, and a flex column without it
+         stretches the short panels to match instead of scrolling the sidebar.
+         The last-child rule kills the trailing 7px every .se-row leaves, which
+         otherwise read as five panels with uneven bottoms. */
+      ".se-side > .spanel{flex:none;min-width:0}",
+      ".se-side > .spanel > :last-child{margin-bottom:0}",
       // history list
       ".se-prevwrap{position:relative;margin-bottom:8px;border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden;line-height:0}",
       ".se-prevwrap canvas{width:100%;height:auto;display:block;image-rendering:pixelated}",
@@ -198,8 +207,6 @@ window.SpriteEdit = (() => {
       ".se-hrow.undone{opacity:.5}",
       ".se-hrow.undone .se-hdot{background:transparent;border:1px solid var(--line-strong)}",
       ".se-hrow.base{color:var(--text-3);cursor:default}",
-      ".se-h{font-family:var(--mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ash2);margin:16px 0 7px}",
-      ".se-h:first-child{margin-top:0}",
       ".se-row{display:flex;align-items:center;gap:7px;margin-bottom:7px}",
       ".se-row label{font-family:var(--mono);font-size:10px;color:var(--ash2);flex:none}",
       ".se-in{flex:1;min-width:0;background:var(--void);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font:inherit;font-size:11.5px;padding:5px 7px}",
@@ -245,7 +252,11 @@ window.SpriteEdit = (() => {
       ".se-anim{border:1px solid var(--seam);border-radius:7px;padding:7px;margin-bottom:6px}",
       ".se-anim .hd{display:flex;gap:6px;align-items:center;margin-bottom:5px}",
       ".se-anim .fr{font-family:var(--mono);font-size:9.5px;color:var(--ash2);word-break:break-all}",
-      ".se-note{font-size:11px;color:var(--ash);line-height:1.5}",
+      // overflow-wrap: the sidecar path in the save section is one unbroken
+      // token. In an unbordered column it merely widened the scroll area and
+      // nobody looked; inside a .spanel it hangs 63px out over the panel's own
+      // right edge, which reads as a broken box.
+      ".se-note{font-size:11px;color:var(--ash);line-height:1.5;overflow-wrap:anywhere}",
       ".se-note b{color:var(--bone)}",
       ".se-warn{color:var(--warn)}",
       ".se-pick{position:fixed;inset:0;z-index:1401;background:rgba(4,5,7,.9);display:flex;align-items:center;justify-content:center;padding:40px}",
@@ -1727,6 +1738,31 @@ window.SpriteEdit = (() => {
     } catch (e) { return []; }
   }
 
+  /* ONE SHAPE FOR EVERY LID IN THIS SIDEBAR, and it is the app's own, not a
+     local invention: .spanel + .sec-h out of app.css, built exactly the way
+     settingsview.js and the seat workspaces build it.
+     `.se-h` was what stood here — 9px of letter-spaced grey with no rule and no
+     surface under it, eleven times down one 284px column. The result was that
+     "rig labels", "coverage" and "regenerate frames" all looked like captions
+     inside one continuous list rather than three sections, and nothing marked
+     where the brush controls stopped and the sheet grid began.
+     NO `s-<seat>` CLASS. That variant tints the header glyph with a seat's hue
+     and belongs to the seat workspaces, where a panel really is one seat's
+     property. An editor is a tool anyone opens; assetlib.js, world.js and the
+     settings panel all ship plain .spanel for the same reason. KIND is what
+     varies down this column anyway — a strip you re-order, a readout you cannot
+     touch, a prompt you write — and it already owns the left edge. */
+  function sec(icon, title, body, o){
+    o = o || {};
+    const n = (o.n === undefined || o.n === null || o.n === "")
+      ? "" : `<span class="sec-n${o.tone ? " " + o.tone : ""}">${E(o.n)}</span>`;
+    return `<section class="spanel ${o.kind || ""}">` +
+      `<div class="sec-h">${I(icon, 15)}<h3 class="sec-t">${E(title)}</h3>${n}` +
+      (o.note ? `<span class="sec-sub">${E(o.note)}</span>` : "") +
+      (o.actions ? `<span class="sec-a">${o.actions}</span>` : "") +
+      `</div>${body}</section>`;
+  }
+
   function renderSide(){
     if (!S || !$.side) return;
     const g = grid();
@@ -1737,8 +1773,8 @@ window.SpriteEdit = (() => {
     const pal = palette();
     const cov = coverageNow();
 
-    $.side.innerHTML = `
-      <div class="se-h">brush</div>
+    $.side.innerHTML =
+      sec("brush", "Brush", `
       <div class="se-row">
         <input class="se-sw" type="color" value="${E(S.color)}" oninput="SpriteEdit.setColor(this.value)">
         <label>size</label>
@@ -1747,9 +1783,13 @@ window.SpriteEdit = (() => {
       </div>
       <div class="se-pal">${pal.map(c =>
         `<span class="se-pc${c.toLowerCase()===S.color.toLowerCase()?" on":""}"
-               title="${E(c)}" onclick="SpriteEdit.setColor('${E(c)}')"><span style="background:${E(c)}"></span></span>`).join("")}</div>
+               title="${E(c)}" onclick="SpriteEdit.setColor('${E(c)}')"><span style="background:${E(c)}"></span></span>`).join("")}</div>`,
+        // No .sec-sub here on purpose: the only thing it could carry is the
+        // current colour, and the swatch two lines down already IS that, in the
+        // one form a hex string cannot be read as.
+        { }) +
 
-      <div class="se-h">sheet grid</div>
+      sec("snap_grid", "Sheet grid", `
       <div class="se-row">
         <label>cell</label>
         <input class="se-in num" id="se-cw" type="number" min="1" value="${g.cell_w}">
@@ -1782,9 +1822,10 @@ window.SpriteEdit = (() => {
           <option value="both"${S.onion==="both"?" selected":""}>before + after</option>
           <option value="all"${S.onion==="all"?" selected":""}>all frames</option>
         </select></label>
-      </div>
+      </div>`,
+        { note: `${g.cell_w}×${g.cell_h}` }) +
 
-      <div class="se-h">frames</div>
+      sec("sprites", "Frames", `
       <div class="se-strip" id="se-strip"></div>
       <div class="se-row" style="margin-top:8px;flex-wrap:wrap">
         <button class="se-btn" title="Flip horizontally" aria-label="Flip horizontally"
@@ -1806,9 +1847,10 @@ window.SpriteEdit = (() => {
       <div class="se-row" style="margin-top:8px">
         <button class="se-btn" title="Clear the semi-transparent halo a matte left behind"
                 onclick="SpriteEdit.dehalo(128)">de-halo sheet</button>
-      </div>
+      </div>`,
+        { kind: "k-list", n: n }) +
 
-      <div class="se-h">rig labels · frame ${S.frame}</div>
+      sec("rig", "Rig labels", `
       <div class="se-note" style="margin-bottom:7px">Where the character's hands
         <b>are</b>. Click a button, then click the pixel.</div>
       <div class="se-hands">${HANDS.map(h => handBtn(h)).join("")}</div>
@@ -1835,13 +1877,15 @@ window.SpriteEdit = (() => {
         : `<div class="se-note se-warn">frame ${S.frame} has no labels</div>`}
       <div class="se-row" style="margin-top:7px">
         <button class="se-btn" onclick="SpriteEdit.spreadLabels()">spread to all frames</button>
-      </div>
-      ${cov}
+      </div>`,
+        { kind: "k-list", n: labels.length, note: `frame ${S.frame}`,
+          tone: labels.length ? "" : "warn" }) +
 
-      <div class="se-h">regenerate frames</div>
-      ${regenPanel()}
+      cov +
 
-      <div class="se-h">animations</div>
+      sec("art", "Regenerate frames", regenPanel()) +
+
+      sec("animation", "Animations", `
       ${(S.rig.animations || []).map((a, i) => `
         <div class="se-anim">
           <div class="hd">
@@ -1859,17 +1903,19 @@ window.SpriteEdit = (() => {
       <div class="se-row">
         <button class="se-btn" onclick="SpriteEdit.addAnimation()">+ animation</button>
         <button class="se-btn" onclick="SpriteEdit.rowAnimations()">one per row</button>
-      </div>
+      </div>`,
+        { kind: "k-list", n: (S.rig.animations || []).length }) +
 
-      <div class="se-h">save</div>
+      sec("export", "Save", `
       <div class="se-row"><button class="se-btn" style="flex:1" id="se-rigsave"
         onclick="SpriteEdit.saveRig()">${S.rigDirty ? '<span class="se-mark"></span>' : ""}save rig</button></div>
       <div class="se-row"><button class="se-btn" style="flex:1"
         onclick="SpriteEdit.exportFrames()">export SpriteFrames .tres</button></div>
       <div class="se-note">The sidecar is <b>${E((S.info && S.info.sidecar) || "")}</b> —
-        it travels with the art, not the database.</div>
+        it travels with the art, not the database.</div>`,
+        { note: S.rigDirty ? "unsaved" : "" }) +
 
-      <div class="se-h">preview</div>
+      sec("real_preview", "Preview", `
       <div class="se-prevwrap">
         <canvas id="se-prev" width="252" height="150"></canvas>
         <span class="se-prev-n" id="se-prev-n"></span>
@@ -1886,12 +1932,14 @@ window.SpriteEdit = (() => {
           <option value="sheet"${S.preview.row === "sheet" ? " selected" : ""}>whole sheet · ${n} frames</option>
           ${(S.rig.animations || []).map(a => `<option value="${E(a.name)}"${
             S.preview.row === a.name ? " selected" : ""}>${E(a.name)} · ${a.frames.length}f</option>`).join("")}
-        </select></div>` : ""}
+        </select></div>` : ""}`,
+        { note: S.preview.on ? "playing" : "" }) +
 
-      <div class="se-h">history</div>
+      sec("timeline", "History", `
       <div class="se-hist" id="se-hist"></div>
       <div class="se-note">Click a step to go back to just before it. Undo depth is
-        capped by memory, so the oldest steps drop off on long sessions.</div>`;
+        capped by memory, so the oldest steps drop off on long sessions.</div>`,
+        { kind: "k-list", n: S.undo ? S.undo.length : "" });
     // renderSide() rebuilds the panel, which throws away the history list and
     // the preview canvas with it — repaint both into the fresh DOM.
     renderHistory();
@@ -1923,7 +1971,16 @@ window.SpriteEdit = (() => {
         <b>${E(s)}</b> ${miss.length ? `missing on frame ${miss.slice(0,8).join(", ")}${miss.length>8?"…":""}`
                                      : "covers every played frame"}</div>`;
     }).join("");
-    return `<div class="se-h">coverage</div>${rows}`;
+    // k-read: every line in here is derived from the labels and the animations
+    // above it. There is nothing to click, and the left edge is the only thing
+    // that says so before you try.
+    const gaps = slots.filter(s => {
+      const have = new Set((S.rig.labels || []).filter(l => l.slot === s).map(l => l.frame));
+      return [...played].some(f => !have.has(f));
+    }).length;
+    return sec("verify", "Coverage", rows,
+      { kind: "k-read", n: gaps || slots.length,
+        tone: gaps ? "bad" : "good", note: gaps ? "with gaps" : "complete" });
   }
 
   /* ── frame regeneration ───────────────────────────────────────────────────
@@ -1985,8 +2042,14 @@ window.SpriteEdit = (() => {
       ${r.results.length ? regenResults() : ""}`;
   }
 
+  /* A SUBORDINATE LABEL, not another section band. These results live INSIDE
+     the regenerate panel — a second .sec-h here would draw a header band in the
+     middle of a panel and read as a new section that had swallowed the prompt
+     above it. .sec-sub is app.css's answer to exactly this: a label inside a
+     section, quieter than the band over it. */
   function regenResults(){
-    return `<div class="se-h" style="margin-top:14px">results</div>
+    return `<div class="sec-sub" style="margin:var(--s-5) 0 var(--s-4)">${
+      I("verify", 13)} results</div>
       ${S.regen.results.map((res, i) => `
         <div class="se-res${res.error ? " bad" : ""}">
           <div class="hd">frame ${res.frame}
