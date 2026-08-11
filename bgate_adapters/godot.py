@@ -2697,17 +2697,78 @@ def check_ui_matches(manifest: dict, expect: dict, tolerance: float = 0.5) -> di
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _ERROR_LINE = re.compile(
     r"^(?:USER\s+)?(?:SCRIPT|SHADER|SHADER\s+COMPILATION)?\s*ERROR\s*:\s*\S")
+_AT_LINE = re.compile(r"^at:\s")
+
+# ENGINE NOISE THAT IS NOT A PROJECT FAULT — matched on the message AND on the
+# source frame Godot attributes it to. Each entry is (message, C++ frame
+# substring) and BOTH must match, which is the whole safety argument: the same
+# words from a different frame stay fatal.
+#
+# 1. `Parameter "t" is null.` from servers/rendering/dummy/.
+#
+#    Godot 4.4 grew an editor-thumbnail step in the scene importer
+#    (ResourceImporterScene::_generate_editor_preview_for_scene, upstream PR
+#    #96544) that renders every imported 3D scene into a viewport and reads the
+#    result back with ViewportTexture::get_image(). Under --headless the
+#    RenderingServer is the DUMMY implementation, which owns no textures, so the
+#    readback trips ERR_FAIL_NULL_V and prints:
+#
+#        ERROR: Parameter "t" is null.
+#           at: texture_2d_get (servers/rendering/dummy/storage/texture_storage.h:107)
+#
+#    Upstream godotengine/godot#108994; regressed in 4.4, absent in 4.3, fixed
+#    by PR #109116. MEASURED here on 4.4.1-stable, and it is benign on three
+#    independent counts:
+#
+#      * It is content-blind. A 1740-byte default cube with no material, no UV
+#        and no texture produces it exactly as a real asset does — so it cannot
+#        be describing anything about the mesh.
+#      * It fires only on the pass that actually reimports. The steady-state
+#        second --import over the same project is clean.
+#      * The imported resource is correct anyway. inspect_resource on the .glb
+#        that "failed" reports its full tri count, its UVs and its material.
+#
+#    What it costs is a FileSystem-dock thumbnail nobody is looking at in a
+#    headless run. Without this rule, on 4.4.x every 3D project containing any
+#    glTF file reports a failing build forever.
+#
+#    THE FRAME IS LOAD-BEARING, not decoration. The dummy directory only
+#    compiles into the headless RenderingServer stub, so an error attributed
+#    there is by construction an artifact of running without a display. The same
+#    message from a real renderer is genuinely fatal and MUST still be reported —
+#    see the screenshot capture above, which deliberately does not pass
+#    --headless precisely because this error there means no PNG was written.
+#    Matching the frame is what keeps those two cases apart.
+#
+#    If Godot ever emits the message without a frame we report it as an error,
+#    which is the correct way to be wrong: the failure mode is noise, not
+#    silence.
+_BENIGN = (
+    ('ERROR: Parameter "t" is null.', "servers/rendering/dummy/"),
+)
 
 
 def _errors(output: str) -> list[str]:
     """The engine's own error lines, in order. Godot reports failures on
     stdout/stderr and often still exits 0, so this list — not the return code —
-    is what 'did it build' actually means."""
-    hits = []
-    for raw in output.splitlines():
+    is what 'did it build' actually means.
+
+    Drops the entries in _BENIGN, each of which is pinned to the engine source
+    frame that proves it is a headless-only artifact rather than a fault in the
+    project. Read that table before adding to it — a message alone is never
+    enough to call an error benign.
+    """
+    lines = [_ANSI.sub("", raw).strip() for raw in output.splitlines()]
+    hits: list[str] = []
+    for i, line in enumerate(lines):
         # --import paints its progress lines; the labels arrive colored too.
-        line = _ANSI.sub("", raw).strip()
         if not _ERROR_LINE.match(line):
+            continue
+        # Godot prints "   at: <func> (<file>:<line>)" directly under the
+        # message, so the frame is the next line or there is none.
+        after = lines[i + 1] if i + 1 < len(lines) else ""
+        frame = after if _AT_LINE.match(after) else ""
+        if any(line == msg and where in frame for msg, where in _BENIGN):
             continue
         if line not in hits:
             hits.append(line)

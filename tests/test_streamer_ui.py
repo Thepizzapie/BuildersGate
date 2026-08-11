@@ -30,6 +30,23 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv(streamer.ENV_VAR, "1")
     monkeypatch.setattr(streamer, "_ACTIVE", None)  # no bleed between tests
 
+    # THERE ARE TWO CACHES, AND CLEARING ONE IS WHY THIS TEST WAS FLAKY.
+    # streamer._ACTIVE holds the redactor; bgate_ui.redact._cache separately
+    # holds the ANSWER TO "is the filter on at all", for 2 seconds, so that
+    # flipping the panel switch is felt while you are looking at the screen.
+    # Any earlier test that touched the dashboard with streamer mode off leaves
+    # that cache saying False, and if this fixture runs inside the 2-second
+    # window the filter never engages — the response comes back completely
+    # unredacted and the failure reads as a broken redactor rather than a stale
+    # boolean. It went unnoticed while the suite happened to be slow enough
+    # between the two; adding ~95 tests elsewhere changed the timing and it
+    # started failing. Resetting the clock, not the value, is what invalidate()
+    # is for.
+    from bgate_ui import redact as _redact
+
+    _redact.invalidate()
+    monkeypatch.setattr(_redact, "_cache", (0.0, False))
+
     # The redactor reads identity from the environment at construction, so the
     # fake home has to be there before the first request builds one.
     monkeypatch.setenv("USERNAME", "streamer")
