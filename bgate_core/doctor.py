@@ -82,7 +82,11 @@ SUMMARY_CHECKS = ("local_runtimes", "agent_cli")
 # godot: the templates and the telemetry autoload are Godot 4 only.
 # whisper: faster-whisper's segment API (word confidences) settled at 0.10.
 MIN_REQUIRED = {
-    "python": "3.10",
+    # 3.11 because pyproject.toml's requires-python is >=3.11: a floor of 3.10
+    # here made `bgate doctor` report a green python row on an interpreter pip
+    # then REFUSES to install on, which is a false pass in the one check a
+    # first-time user reads before anything else works.
+    "python": "3.11",
     "art_key": "",
     # Next to art_key on purpose: the two answer one question between them —
     # "can this project generate anything" — from the two directions it can be
@@ -522,6 +526,66 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
     with _lock:
         _cache[key] = (time.monotonic(), {n: dict(r) for n, r in report.items()})
     return report
+
+
+def project_report(root: Optional[str] = None) -> list[dict]:
+    """Project-level configuration faults — the ones no binary probe can see.
+
+    SEPARATE FROM ``CHECKS`` ON PURPOSE. Every row there answers "is this
+    executable on this machine", is cached per machine, and has a test contract
+    that counts it. These rows answer "is THIS PROJECT wired correctly", need a
+    root, and are cheap enough to recompute every time.
+
+    Two faults, both of which used to be invisible until an agent hit them:
+    lanes that describe a directory layout the project does not have (every
+    dispatched agent then refused on contact with the source tree), and lane
+    rules that are not being enforced at all because the hook was never
+    installed — adopt does not install it, so that is the out-of-box state.
+
+    Returns [{name, ok, detail, fix}]. Never raises: a diagnostic that dies
+    takes the whole doctor run with it.
+    """
+    out: list[dict] = []
+    if not root:
+        return out
+    try:
+        from . import seats as _seats
+        layout = _seats.detect_layout(root)
+        owned = _seats.lane_owners(root, layout["prefix"] + "scenes/x.tscn")
+        ok = bool(owned)
+        out.append({
+            "name": "seat_lanes",
+            "ok": ok,
+            "detail": (
+                f"lanes cover this project's layout (game lives at "
+                f"{layout['prefix'] or 'the project root'})" if ok else
+                f"NO SEAT owns {layout['prefix'] or ''}scenes/** — the seat "
+                "lanes describe a layout this project does not have, so every "
+                "dispatched agent is refused on contact with the source tree"),
+            "fix": ("" if ok else
+                    "bgate adopt (re-runs layout detection and rewrites the "
+                    "lanes), or set them by hand with seat_configure"),
+        })
+    except Exception as exc:
+        out.append({"name": "seat_lanes", "ok": False,
+                    "detail": f"could not read the seat table: {exc}",
+                    "fix": ""})
+    try:
+        from bgate_cli import hook as _hook
+        state = _hook.selftest(root)
+        live = bool(state.get("installed") and state.get("enforcing"))
+        out.append({
+            "name": "lane_hook",
+            "ok": live,
+            "detail": ("lane and lock enforcement is live" if live else
+                       "the PreToolUse hook is not installed here, so lanes "
+                       "and locks are advisory — agents can write anywhere"),
+            "fix": "" if live else f"bgate hook-install {root}",
+        })
+    except Exception as exc:
+        out.append({"name": "lane_hook", "ok": False,
+                    "detail": f"could not probe the hook: {exc}", "fix": ""})
+    return out
 
 
 def summary(report: dict) -> str:

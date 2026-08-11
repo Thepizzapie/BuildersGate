@@ -674,3 +674,64 @@ class TestHarnessMetadataLane:
         manifest = next(r for r in brief["rules"] if r.startswith("WORK MANIFEST"))
         assert ".bgate/progress/" in manifest
         assert seats.can_write(root, "qa", ".bgate/progress/item-1.jsonl")["allowed"]
+
+
+class TestRefusalsRoute:
+    """A refusal that only names the wall teaches an agent to stop.
+
+    The observed pattern on a real board: a worker hit its lane, correctly
+    refused to trespass, wrote a LEFTOVERS block or a seat note, and closed —
+    and nothing was ever queued for the seat that owned the path. The refusal
+    is the one message guaranteed to arrive at that exact moment, so it now
+    carries the route: which seat owns the path, and the queue_add call that
+    hands the work over.
+    """
+
+    def test_a_lane_refusal_names_the_owning_seat_and_the_handoff(self, root):
+        # gameplay writing an asset: art's game/assets/** is the most specific
+        # owner and must be named ahead of tech's blanket game/**.
+        code, msg = hook.decide(payload("Write", str(root / "game/assets/rock.png")),
+                                "gameplay")
+        assert code == hook.BLOCK
+        assert "queue_add('art'" in msg
+        assert "depends_on" in msg
+        assert "Do NOT stop" in msg
+
+    def test_the_most_specific_lane_wins_over_a_blanket_one(self, root):
+        # audio's game/assets/audio/** beats art's game/assets/** and
+        # tech's game/**.
+        code, msg = hook.decide(
+            payload("Write", str(root / "game/assets/audio/hit.wav")), "gameplay")
+        assert code == hook.BLOCK
+        assert "queue_add('audio'" in msg
+
+    def test_an_unowned_path_names_the_layout_mismatch_not_a_dead_route(self, root):
+        # Routing this to the director was wrong: its lane is design/**, so the
+        # escalation target cannot write it either. An adopted repo (or one
+        # `bgate init` scaffolded into <root>) hits this for EVERY path.
+        code, msg = hook.decide(payload("Write", str(root / "orphan/nobody.txt")),
+                                "gameplay")
+        assert code == hook.BLOCK
+        assert "seat_configure" in msg
+        assert "layout" in msg
+        assert "queue_add('director'" not in msg
+
+    def test_a_lease_refusal_suggests_depending_on_the_holding_item(self, root):
+        target = root / "game" / "scripts" / "shared.gd"
+        data = {"tool_name": "Write", "cwd": str(root),
+                "tool_input": {"file_path": str(target)}}
+        assert hook.decide(data, "gameplay", "item-12")[0] == hook.ALLOW
+        code, msg = hook.decide(data, "tech", "item-13")
+        assert code == hook.BLOCK
+        assert "depends_on=12" in msg
+        assert "do not poll" in msg
+
+    def test_the_directors_refusal_is_unchanged(self, root):
+        # The director's tail predates this and is asserted elsewhere; this
+        # guards that the worker route did not replace it.
+        data = {"tool_name": "Write", "cwd": str(root), "session_id": "dddd-4444",
+                "tool_input": {"file_path": str(root / "game/scripts/x.gd")}}
+        code, msg = hook.decide(data, hook.DIRECTOR_SEAT,
+                                hook.session_owner(data), "block")
+        assert code == hook.BLOCK
+        assert "queue_add(seat, ...)" in msg

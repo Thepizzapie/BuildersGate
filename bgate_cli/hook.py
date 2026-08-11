@@ -491,12 +491,23 @@ def _judge_path(target: str, payload: dict, seat: str,
                 return ALLOW, ""
 
     if blocker:
+        # WAITING IS NOT A PLAN. Observed: one run polled the same leased path
+        # 8 times over 24 minutes (each poll a full-context turn), another was
+        # killed mid-wait. When the holder is a work item, the board can do the
+        # waiting instead — that is exactly what depends_on is for.
+        route = ""
+        held_item = re.match(r"item-(\d+)$", str(blocker))
+        if held_item:
+            route = (" If your work cannot land without this file, do not poll "
+                     "and do not wait: file the follow-up with queue_add(your "
+                     f"seat, ..., depends_on={held_item.group(1)}) so it runs "
+                     "after that item finishes, and continue what you CAN do.")
         return BLOCK, (
             f"[builders-gate] {verdict['path']}: {verdict['reason']}. "
             f"{blocker} is in that file right now — coordinate with it "
             "(seat_post_note) or work on something else; do not edit around it. "
             "If that run is dead, the claim expires on its own; asset_status "
-            "shows what is held."
+            "shows what is held." + route
         )
 
     level = BLOCK if mode == "block" else WARN
@@ -507,10 +518,55 @@ def _judge_path(target: str, payload: dict, seat: str,
             "that lane does it and the QA gate sees it — or set "
             "BGATE_DIRECTOR_MODE=collide if you mean to edit it here."
             if seat == DIRECTOR_SEAT else
-            " Use seat_can_write to find your lanes, or asset_lock if you need to "
-            "claim a binary.")
+            _worker_route(root, str(rel), seat))
     return level, (f"{lead} may not write {verdict['path']}: "
                    f"{verdict['reason']}.{tail}")
+
+
+def _worker_route(root, rel: str, seat: str) -> str:
+    """The sentence after a worker's lane refusal — a route, not a wall.
+
+    This tail used to say "use seat_can_write to find your lanes", which
+    answers a question nobody asked: the agent knows where its lanes are, it
+    is standing at the edge of them holding work. The observed result was the
+    dead-end pattern — the write refused, a LEFTOVERS block or a seat note
+    filed, the item closed, and the work never queued for the seat that could
+    do it. Fifteen files carried those blocks; the notes outlived the last
+    board row by five hours. So the refusal now names the seat that owns the
+    path and the exact call that hands the work over. Best-effort by the same
+    rule as everything in this hook: an unreadable seat table degrades to the
+    generic route, never to a crash.
+    """
+    try:
+        from bgate_core import seats as _seats
+        owners = [o for o in _seats.lane_owners(root, rel) if o != seat]
+    except Exception:
+        owners = []
+    if owners:
+        named = owners[0]
+        also = f" (also in-lane: {', '.join(owners[1:])})" if len(owners) > 1 else ""
+        return (f" That path is the {named!r} seat's lane{also}. Do NOT stop, "
+                "and do not leave this in a note or a LEFTOVERS block — "
+                f"queue_add({named!r}, title, brief) files it for an agent that "
+                "CAN write it (pass depends_on=<your item id> if it needs your "
+                "output), then continue your own work. Handing work on IS part "
+                "of finishing yours.")
+    # NO OWNER IS USUALLY A LAYOUT MISMATCH, NOT AN EXOTIC PATH. The default
+    # lanes assume the scaffold layout (<root>/game, <root>/design); an ADOPTED
+    # repo — or one made by `bgate init`, which scaffolds into <root> — has its
+    # source somewhere no lane names, so EVERY seat is refused on contact with
+    # the real tree. Routing that to the director as a ruling is a dead end:
+    # the director's lane is design/** and it cannot write the path either.
+    # Say what is actually wrong, and name the one call that fixes it for good.
+    return (" NO SEAT'S LANE COVERS THAT PATH AT ALL, which usually means this "
+            "project's layout does not match the default lanes (they assume "
+            "<root>/game and <root>/design). This is a configuration problem, "
+            "not a routing one — a queue item for another seat would be "
+            "refused the same way. Report it in your result note, name the "
+            "path and the directory it lives in, and say that a human should "
+            "widen the owning seat with seat_configure(role, write_globs=[...]) "
+            "— an agent may not widen its own lanes. Then continue with "
+            "whatever part of your task IS inside your lanes.")
 
 
 def _decide_bash(command: str, payload: dict, seat: str,
