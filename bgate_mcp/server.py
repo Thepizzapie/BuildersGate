@@ -627,6 +627,31 @@ def _spend_gate(root: str, projected_usd: float, what: str,
     return None
 
 
+def _gate_images(root: str, count: int, quality: str, what: str,
+                 max_cost_usd: float = 0.0) -> Optional[dict]:
+    """The spend gate for a tool that buys N images. Refusal dict, or None.
+
+    THE GATE GUARDED ONE TOOL OUT OF TWELVE. _spend_gate was written for
+    image_sprites and called only there, so image_generate, image_edit,
+    item_generate, item_variants, image_talkhead, vfx_animate and
+    character_generate all billed first and recorded afterwards — which makes
+    the project budget an invoice for every path except the one it was
+    demonstrated on. An unattended loop on any of them could not be refused.
+
+    Priced off imagegen.IMAGE_PRICE_USD, the same table image_sprites quotes
+    from, so one tool's estimate cannot drift from another's. An unknown
+    quality prices as medium there rather than raising: an estimate must never
+    be the thing that blocks work.
+    """
+    try:
+        from bgate_adapters import imagegen as _imagegen
+        unit = _imagegen.price_per_image(quality or "medium")
+    except Exception:
+        return None                  # no price table is not a licence to refuse
+    return _spend_gate(root, unit * max(1, int(count)), what,
+                       _run_ceiling(root, max_cost_usd))
+
+
 def _register_artifact(logical_name: str, path: str, *, producer: str,
                        model: str = "", prompt: str = "",
                        refs: Optional[list[str]] = None,
@@ -2657,6 +2682,10 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     """
     try:
         root = _Path(_scratch_root())
+        refused = _gate_images(str(root), 1, quality,
+                               f"generating {filename!r}")
+        if refused:
+            return refused
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         named = [str(r) for r in (ref_images or []) if str(r).strip()]
@@ -2754,6 +2783,9 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
     """
     try:
         root = _Path(_scratch_root())
+        refused = _gate_images(str(root), 1, quality, f"editing into {filename!r}")
+        if refused:
+            return refused
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
@@ -2924,6 +2956,9 @@ def item_generate(item_class: str, name: str, descriptor: str,
     item_variants. LOOK at the preview before importing into the game."""
     try:
         root = _Path(_root())
+        refused = _gate_images(str(root), 1, quality, f"generating item {name!r}")
+        if refused:
+            return refused
         style_clause = _item_style_clause(root, character)
         [spec] = _items.plan_variants(
             item_class, name, descriptor,
@@ -2973,6 +3008,12 @@ def item_variants(item_class: str, base_name: str, descriptor: str,
     before importing."""
     try:
         root = _Path(_root())
+        # `limit` bounds the COUNT and never bounded the money: a 12-item grid
+        # at high quality is ~$2 that an exhausted daily budget could not refuse.
+        refused = _gate_images(str(root), max(1, int(limit)), quality,
+                               f"generating up to {int(limit)} variants of {base_name!r}")
+        if refused:
+            return refused
         style_clause = _item_style_clause(root, character)
         specs = _items.plan_variants(item_class, base_name, descriptor,
                                      materials=materials, elements=elements,
@@ -3083,6 +3124,13 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
     COSTS NOTHING AND CALLS NO MODEL."""
     try:
         root = _Path(_root())
+        # Derived, not bought: vfx_animate transforms one existing key frame
+        # rather than generating N. Gated anyway at one unit, because the
+        # budget's job is to be asked on every paid path, and a path that is
+        # cheap today is a path nobody re-checks when it stops being cheap.
+        refused = _gate_images(str(root), 1, 'low', f"animating {key_frame!r}")
+        if refused:
+            return refused
         rel = _assets.normalize_path(root, key_frame)
         src = root / rel
         if not src.exists():
@@ -4070,6 +4118,10 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
         from bgate_core import talkhead as _th
 
         root = _Path(_scratch_root())
+        refused = _gate_images(str(root), _th.FRAME_COUNT if hasattr(_th, 'FRAME_COUNT') else 4,
+                               quality, f"painting a talking head for {name!r}")
+        if refused:
+            return refused
         limit = float(drift_limit or _th.DRIFT_LIMIT)
         stage = root / ".bgate_out" / "art" / "talkheads" / name
         stage.mkdir(parents=True, exist_ok=True)
@@ -4200,6 +4252,144 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     """
     try:
         return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# THE QA SEAT HAD NO WAY TO RUN A TEST. Its mission is "Own tests, repro,
+# regression" and the brief it is dispatched with demands "tests at the known
+# baseline, no new failures" — a question that could only be answered by
+# hand-rolling a godot_run call per script, reading raw stdout, and counting by
+# eye. dispatch._verify_rule already NAMES this project's test scripts in every
+# seat prompt (game/tests/*.gd); this is the tool that runs the thing the prompt
+# points at, and returns a per-script verdict instead of a wall of engine chatter.
+#
+# The pass/fail convention is a marker in the output — a line containing FAIL is
+# a failure, one containing PASS is a pass — because that is what the existing
+# .gd test scripts already print and inventing a framework nobody's tests use
+# would make this tool answer about nothing. Exit code alone is not enough:
+# Godot prints SCRIPT ERROR and still exits 0, which is why godot_run reports
+# `errors` separately and why a script that errors is failed here regardless of
+# how many PASS lines it managed first.
+@_tool
+def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
+                   godot_project: Optional[str] = None) -> dict:
+    """Run this project's own Godot test scripts headless and score them.
+
+    Discovers `<godot project>/tests/*.gd` — resolved through the project's real
+    layout, so it works whether project.godot sits at the root (bgate init) or
+    in <root>/game (godot_scaffold). Pass `paths` to run a subset; each may be
+    absolute, project-relative, or relative to the Godot project.
+
+    Returns a per-script verdict — ok, PASS/FAIL marker counts, exit code,
+    seconds, engine errors, and the OUTPUT of the ones that failed — plus the
+    totals the QA brief asks for in one number: `scripts_failed` and
+    `failures`.
+
+    A PROJECT WITH NO TEST SCRIPTS IS NOT A PASS. It answers ok=false with
+    no_tests=true and says where it looked, because "0 failures" out of nothing
+    run is the single most misleading thing this tool could report — a regression
+    gate that silently tests nothing looks exactly like a green one.
+
+    Each script must `extends SceneTree` and call `quit()`, like godot_run.
+    """
+    try:
+        import re as _re
+
+        root = _root()
+        base = (_Path(godot_project) if godot_project
+                else _project.game_dir(root))
+        if base is None or not (_Path(base) / "project.godot").is_file():
+            return {"ok": False, "no_tests": True,
+                    "error": "no Godot project found — looked for project.godot "
+                             f"at {root} and {_Path(root) / 'game'}. Run "
+                             "godot_scaffold, or pass godot_project."}
+        base = _Path(base)
+        tests_dir = base / "tests"
+
+        scripts: list[_Path] = []
+        missing: list[str] = []
+        if paths:
+            for raw in paths:
+                for candidate in (_Path(raw), base / raw, _Path(root) / raw):
+                    if candidate.is_file():
+                        scripts.append(candidate)
+                        break
+                else:
+                    missing.append(str(raw))
+        else:
+            try:
+                scripts = sorted(p for p in tests_dir.glob("*.gd"))
+            except OSError:
+                scripts = []
+
+        if not scripts:
+            return {
+                "ok": False, "no_tests": True, "tests_dir": str(tests_dir),
+                "missing": missing, "scripts": [], "scripts_run": 0,
+                "error": (f"none of {missing} exist" if missing else
+                          f"no test scripts in {tests_dir} — this project has "
+                          "no regression baseline to check. Write one "
+                          "(extends SceneTree, print PASS/FAIL per assertion, "
+                          "call quit()) before claiming tests are green."),
+            }
+
+        fail_marker = _re.compile(r"\bFAIL(?:ED|URE|URES)?\b", _re.I)
+        pass_marker = _re.compile(r"\bPASS(?:ED|ES)?\b", _re.I)
+
+        results, failed, total_pass, total_fail = [], 0, 0, 0
+        for script in scripts:
+            rel = (script.resolve().relative_to(base.resolve()).as_posix()
+                   if str(script.resolve()).startswith(str(base.resolve()))
+                   else str(script))
+            try:
+                source = script.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                results.append({"script": rel, "ok": False, "passed": 0,
+                                "failed": 0, "error": f"unreadable: {exc}"})
+                failed += 1
+                continue
+            run = _godot.run_script(source, project_dir=str(base),
+                                    timeout=timeout)
+            output = (run.get("stdout") or "") + (run.get("stderr") or "")
+            passes = len(pass_marker.findall(output))
+            fails = len(fail_marker.findall(output))
+            errors = run.get("errors") or []
+            ok = bool(run.get("ok")) and fails == 0 and not errors
+            entry = {
+                "script": rel, "ok": ok, "passed": passes, "failed": fails,
+                "exit_code": run.get("exit_code"), "seconds": run.get("seconds"),
+                "errors": errors,
+            }
+            if not ok:
+                # Only the failures carry their output. A green run's stdout is
+                # thousands of lines of engine boot chatter, and returning it
+                # for every script is how a passing suite stops fitting in a
+                # tool result.
+                entry["output"] = output[-4000:]
+                if run.get("error"):
+                    entry["error"] = run["error"]
+                failed += 1
+            total_pass += passes
+            total_fail += fails
+            results.append(entry)
+
+        return {
+            "ok": failed == 0,
+            "no_tests": False,
+            "tests_dir": str(tests_dir),
+            "godot_project": str(base),
+            "scripts_run": len(results),
+            "scripts_failed": failed,
+            "assertions_passed": total_pass,
+            "assertions_failed": total_fail,
+            "failures": [r["script"] for r in results if not r["ok"]],
+            "missing": missing,
+            "scripts": results,
+            "error": (f"{failed} of {len(results)} test script(s) failed: "
+                      + ", ".join(r["script"] for r in results if not r["ok"])
+                      if failed else ""),
+        }
     except Exception as exc:
         return _fail(exc)
 
@@ -6432,8 +6622,19 @@ def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
                 "of under your own seat, where it is attributed to you.")
         root = _root()
         session = _bs.read(root, int(session_id))
-        return _bs.file_plan(root, session, plan, again=bool(again),
-                             by=_actor())
+        out = _bs.file_plan(root, session, plan, again=bool(again),
+                            by=_actor())
+        # THE GAME-PLAN BACK HALF. A plan carrying a `manifest` is the
+        # premise-to-plan compiler's output: rows land in plan_row (coverage),
+        # slice rows land on the board with real dependency links. Behind the
+        # same human gate as the items — the manifest IS the plan, at a finer
+        # grain. validate_plan ignores the key, so a manifest-free plan is
+        # exactly what it always was.
+        if isinstance(plan, dict) and plan.get("manifest"):
+            from bgate_core import gameplan as _gameplan
+            out["game_plan"] = _gameplan.ingest(
+                root, plan["manifest"], session_id=int(session_id))
+        return out
     except _bs.AlreadyFiled as exc:
         return {"ok": False, "error": str(exc), "already_filed": exc.entry}
     except _bs.PartialDeploy as exc:
@@ -6594,8 +6795,24 @@ def voice_speak(text: str, out_path: str = "",
         if not verdict["available"]:
             raise RuntimeError(verdict["reason"])
 
-        result = _deepgram.speak(str(text),
-                                 model=str(model or _deepgram.DEFAULT_SPEAK_MODEL))
+        # BILLED PER CHARACTER AND NEVER CHECKED. This path recorded its
+        # spend and never asked the budget — the one paid tool an
+        # unattended loop could run up with no gate at all. Priced from
+        # the same table the adapter bills from; an unpriced model quotes
+        # None there rather than 0.0, and an unknown price must not read
+        # as free, so it is gated at the most expensive known rate.
+        speak_model = str(model or _deepgram.DEFAULT_SPEAK_MODEL)
+        per_1k = _deepgram.USD_PER_1K_CHARS.get(speak_model)
+        if per_1k is None:
+            known = [v for v in _deepgram.USD_PER_1K_CHARS.values()
+                     if isinstance(v, (int, float))]
+            per_1k = max(known) if known else 0.0
+        refused = _spend_gate(
+            str(root), (len(str(text)) / 1000.0) * float(per_1k),
+            f"speaking {len(str(text))} characters", _run_ceiling(str(root)))
+        if refused:
+            return refused
+        result = _deepgram.speak(str(text), model=speak_model)
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or "speech failed"))
 
@@ -6615,6 +6832,207 @@ def voice_speak(text: str, out_path: str = "",
                 "chars": result.get("chars"), "usd": result.get("usd"),
                 "model": result.get("model"),
                 "request_id": result.get("request_id")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# SFX — synthesized, not generated
+# ---------------------------------------------------------------------------
+# THE AUDIO SEAT COULD NOT MAKE A GAME SOUND. Its mission opens "Own SFX and
+# music hooks" and every tool it had was a paid, keyed provider — kie_music_*
+# for beds, voice_* for speech — so a project without a key produced no audio at
+# all, and even with one there was no path to a coin pickup or a laser. These
+# three tools need no key, no network and no budget: an SFX is four oscillator
+# parameters and an envelope, and synthesis genuinely beats generation there.
+@_tool
+def sfx_kinds() -> dict:
+    """What game sounds this can synthesize, and the aliases each answers to.
+
+    Read this before guessing a kind — `sfx_generate("pew")` fails, `"laser"`
+    and its alias `"shoot"` do not. Every entry says how long it comes out and
+    what its base frequency is, which are the two knobs worth moving first.
+    """
+    try:
+        from bgate_core import sfx as _sfx
+
+        return {"kinds": _sfx.kinds(), "sample_rate": _sfx.DEFAULT_RATE,
+                "max_seconds": _sfx.MAX_SECONDS}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def sfx_generate(kind: str, name: str, seed: Optional[int] = None,
+                 base_hz: float = 0.0, duration_s: float = 0.0,
+                 gain: float = 1.0, sample_rate: int = 44100,
+                 bits: int = 0, out_dir: str = "") -> dict:
+    """Synthesize a game sound effect into the project. No key, no provider.
+
+    kind        sfx_kinds() lists them: blip, pickup, jump, laser, explosion,
+                hit, powerup, sweep (plus aliases — "coin", "shoot", "thud").
+    name        becomes <name>.wav in the audio seat's lane.
+    base_hz     scales every pitch in the preset — a bigger gun, not a
+                different sound. 0 keeps the preset's own.
+    duration_s  scales every time in the preset. 0 keeps its nominal length.
+    bits        3-8 bit-crushes it for the retro sound; 0 leaves it clean.
+
+    WRITES TWO FILES, AND THAT IS THE POINT. `<name>.synth.json` lands beside
+    the wav carrying the complete parametric recipe — waves, sweeps, ADSR,
+    filter, seed — because the audio house rule requires it and because a .wav
+    whose knobs are lost cannot be nudged by anyone, ever. sfx_rerender rebuilds
+    the identical bytes from that sidecar alone.
+
+    Deterministic: the same kind and name give the same file every time, so
+    regenerating is a no-op rather than a diff nobody asked for. Pass an
+    explicit seed to get a different roll of the noise.
+    """
+    try:
+        from bgate_core import sfx as _sfx
+
+        root = _root()
+        result = _sfx.generate(root, kind, name, out_dir=out_dir or None,
+                               seed=seed, base_hz=base_hz,
+                               duration_s=duration_s, gain=gain,
+                               sample_rate=sample_rate, bits=bits)
+        artifact = _register_artifact(
+            f"sfx_{result['name']}", result["path"], producer="sfx_generate",
+            model="procedural",
+            prompt=f"{result['kind']} sfx",
+            metadata={"kind": result["kind"], "seed": result["seed"],
+                      "seconds": result["seconds"],
+                      "recipe": result["recipe_rel_path"]})
+        if artifact:
+            result["artifact"] = artifact
+        _log("audio", f"synthesized {result['kind']} sfx {result['name']} "
+                      f"({result['seconds']}s)", ref=result["rel_path"])
+        result.pop("recipe", None)     # the sidecar holds it; don't echo it twice
+        return {"ok": True, **result}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def sfx_rerender(recipe_path: str, out_path: str = "") -> dict:
+    """Rebuild a .wav from its `<name>.synth.json` recipe ALONE.
+
+    This is the proof the recipe is a recipe: `identical` says whether the bytes
+    match the wav already on disk. A sidecar that renders something else is
+    worse than no sidecar — it looks like provenance and is not — so run this
+    after hand-editing a recipe, and read that field rather than assuming.
+
+    recipe_path may be absolute or relative to the project root.
+    """
+    try:
+        from bgate_core import sfx as _sfx
+
+        root = _root()
+        path = _Path(recipe_path)
+        if not path.is_absolute():
+            path = _Path(root) / recipe_path
+        result = _sfx.rerender(path, out_path=out_path or None)
+        _log("audio", f"re-rendered {result['name']} from its recipe "
+                      f"(identical={result['identical']})", ref=result["path"])
+        result.pop("recipe", None)
+        return {"ok": True, **result}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def sfx_list() -> dict:
+    """Every synthesized effect in the project, and which ones lost their recipe.
+
+    A wav with no `.synth.json` is listed with has_recipe=false rather than
+    hidden: it is exactly the dead end the audio house rule exists to prevent,
+    and the seat can only fix what it can see.
+    """
+    try:
+        from bgate_core import sfx as _sfx
+
+        root = _root()
+        found = _sfx.list_sfx(root)
+        return {"dir": str(_sfx.sfx_dir(root)), "count": len(found),
+                "sfx": found,
+                "without_recipe": [f["name"] for f in found
+                                   if not f["has_recipe"]]}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Dialogue — the narrative seat's own artifact
+# ---------------------------------------------------------------------------
+@_tool
+def dialogue_write(name: str, nodes: list[dict], start: str = "",
+                   title: str = "", summary: str = "",
+                   allow_canon_conflict: bool = False) -> dict:
+    """Author a dialogue tree as an engine-loadable resource, validated first.
+
+    nodes is a list of {id, speaker, text, choices: [{text, goto}], end}. `goto`
+    names another node's id; `end: true` marks a closing line, which must have
+    no choices. start defaults to the first node.
+
+    THE WRITE IS REFUSED, NOT WARNED, when the graph is broken, and the refusal
+    names the node: a choice pointing at a node that does not exist, a node
+    nothing reaches, a node from which no ending is reachable. All three are
+    invisible in the file and expensive in the game — a dead-ended branch is
+    found weeks later by a player, and a node with no exit reads as a hang.
+
+    canon_check runs on the way in, on the lines AND the choice labels. A hard
+    conflict refuses (pass allow_canon_conflict=True only when the canon is what
+    changed); review-level flags ride along in the result, because an unknown
+    name is the normal state of a first draft.
+
+    Lands at <godot project>/dialogue/<name>.dialogue.json — inside the
+    narrative seat's own lane, for both project layouts.
+    """
+    try:
+        from bgate_core import dialogue as _dialogue
+
+        result = _dialogue.write(_root(), name, nodes, start=start, title=title,
+                                 summary=summary,
+                                 allow_canon_conflict=bool(allow_canon_conflict))
+        _log("narrative", f"wrote dialogue {result['name']} "
+                          f"({result['nodes']} nodes, {result['choices']} choices, "
+                          f"canon {result['canon']['verdict']})",
+             ref=result["rel_path"])
+        return {"ok": True, **result}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def dialogue_read(name: str) -> dict:
+    """One dialogue tree, whole — nodes, choices, start and ends.
+
+    Read before editing: dialogue_write replaces the file outright, so a partial
+    node list silently deletes every branch it left out.
+    """
+    try:
+        from bgate_core import dialogue as _dialogue
+
+        return {"ok": True, **_dialogue.read(_root(), name)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def dialogue_list() -> dict:
+    """Every dialogue tree in the project, and whether each still validates.
+
+    A file that no longer passes the graph checks is reported with ok=false and
+    the reason — hand edits and merges break `goto` targets, and the listing is
+    the cheapest place to find that out.
+    """
+    try:
+        from bgate_core import dialogue as _dialogue
+
+        root = _root()
+        found = _dialogue.list_dialogues(root)
+        return {"dir": str(_dialogue.dialogue_dir(root)), "count": len(found),
+                "dialogues": found,
+                "broken": [d["name"] for d in found if not d["ok"]]}
     except Exception as exc:
         return _fail(exc)
 
@@ -6801,11 +7219,153 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
 
 @_tool
 def queue_next(seat: str) -> dict:
-    """The highest-priority queued item for a seat — what to work on next."""
+    """The highest-priority queued item for a seat — what to work on next.
+
+    A READ: it changes nothing and reserves nothing. A dispatched worker that
+    wants to actually take the item it sees here uses queue_claim_next, which
+    claims atomically — acting on this read alone races the dashboard.
+    """
     try:
         from bgate_core import queue as _q
         item = _q.next_for(_root(), seat)
         return item if item else {"empty": True, "seat": seat}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def board_digest(hours: int = 12) -> dict:
+    """WHAT HAPPENED WHILE YOU WERE AWAY — finished, failed, blocked, spent.
+
+    The morning report. Nothing else answers it: the autopilot keeps only its
+    LAST refusal, notices collapse past three into "11 items finished", and the
+    heartbeat reports stalled chains rather than "the board stopped at 23:02".
+    So after an overnight run the most common question had no surface at all.
+
+    The field to read first is ``blocked``. Queued work with nothing running is
+    either a dead dashboard or a floor refusal — most often a dirty tree, which
+    stops the WHOLE board rather than one item — and this names which.
+
+    Spends nothing. Read it at the start of a session before deciding anything.
+    """
+    try:
+        from bgate_core import gameplan as _gameplan
+        return _gameplan.digest(_root(), hours=int(hours))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def queue_cut_dependency(item_id: int, depends_on: int) -> dict:
+    """Release an item from a predecessor that will never land. THE REPAIR VERB.
+
+    Only 'done' satisfies a dependency, so a CANCELLED predecessor blocks its
+    successors forever — the board's one state with no exit. Before this the
+    only escape was deleting and re-filing the work, losing its brief, its
+    round count and everything the harness observed it write.
+
+    Use it when the predecessor was cut, superseded, or turned out to be
+    unnecessary — NOT to jump a queue: the item you release starts writing
+    against whatever the predecessor was supposed to produce, so if that
+    output is genuinely still needed, this is how a run writes against a file
+    that does not exist. The cut is recorded with your identity, not deleted.
+
+    queue_get shows what an item waits on; the refusal message on a blocked
+    dispatch names it too.
+    """
+    try:
+        from bgate_core import queue as _q
+        return _q.cut_dependency(_root(), int(item_id), int(depends_on),
+                                 by=_actor())
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def queue_add_dependency(item_id: int, depends_on: int) -> dict:
+    """Make an item wait for one MORE predecessor — dependencies are a graph.
+
+    queue_add's own depends_on takes a single parent, which is all a chain
+    ever needed. A real feature is a fan-in: the scene needs the sprite AND
+    the sound AND the script. Call this for each extra parent; the item does
+    not dispatch until every one of them reaches 'done'.
+    """
+    try:
+        from bgate_core import queue as _q
+        return _q.add_dependency(_root(), int(item_id), int(depends_on))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def plan_status() -> dict:
+    """Coverage: what the game consists of vs what is built — THE completeness
+    read.
+
+    An empty queue is NOT a finished game: after a bad decomposition the two
+    are indistinguishable from the board alone, which is how six items died
+    superseded while the objective ranked last. This reads the game-plan
+    manifest (plan_row, written when a human deploys a brainstorm plan that
+    carries one) joined live against the board: spec / on_board / built /
+    lost per row, slice completeness, and `remaining` — the rows the board
+    does not currently hold. Anyone may read it; the director reads it before
+    declaring anything finished, and uses queue_add to put uncovered rows on
+    the board.
+    """
+    try:
+        from bgate_core import gameplan as _gameplan
+        return _gameplan.status(_root())
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def queue_claim_next() -> dict:
+    """Claim the next READY item for YOUR seat and keep this session working.
+
+    THE PICKUP LOOP. A finished worker used to have one move — exit, and let
+    the board pay a fresh agent's entire briefing to start the next item. This
+    is the other move: claim the next item, complete your current one, and
+    continue in the same session with your context already paid for.
+
+    ORDER MATTERS: CLAIM FIRST, THEN queue_complete. The dashboard closes this
+    session shortly after your current item settles unless you already hold a
+    claim — a claim made after completing races that shutdown and loses.
+
+    The claim is atomic against the dashboard's own dispatcher: whoever loses
+    simply does not get the item, so a claim that returns a row is yours. It
+    honours the same holds autodeploy does (dependencies, human-only sources),
+    and it only ever claims for the seat you already hold — this is a loop,
+    not a way to change lanes. Your run's cost and runtime ceilings still come
+    from the ORIGINAL dispatch and bound the whole session; if the claimed
+    work will not fit under what remains, do not claim it.
+
+    Returns the claimed item (its brief is the task) or {empty: true}, which
+    means: queue_complete and finish — an empty board is a finished shift.
+    """
+    try:
+        from bgate_core import queue as _q
+        seat = _seat()
+        origin = _work_item_id()
+        if not seat or not origin:
+            raise PermissionError(
+                "queue_claim_next is the dispatched worker's pickup loop, and "
+                "this session was not dispatched against a work item. File "
+                "work with queue_add (it dispatches when `bgate serve` is up) "
+                "instead of claiming it.")
+        item = _q.claim_next(_root(), seat, actor=f"agent:item-{int(origin)}")
+        if item is None:
+            return {"empty": True, "seat": seat,
+                    "note": "nothing ready for your seat — queue_complete "
+                            "your current item and finish."}
+        _log("queue", f"claimed #{item['id']} to continue after "
+                      f"item {origin}", ref=str(item["id"]))
+        return {**item, "claimed": True,
+                "note": (f"item #{item['id']} is yours. queue_complete your "
+                         f"current item (#{origin}) first, then work this one "
+                         "under the same lanes and rules, and queue_complete "
+                         "it too when it lands. Claim again before that "
+                         "completion if you still have budget for more.")}
     except Exception as exc:
         return _fail(exc)
 
@@ -6838,22 +7398,28 @@ def queue_reopen(item_id: int, reason: str) -> dict:
     The QA gate's FAIL path: reason is the ranked nitpick list (specific
     problems + fixes). It is APPENDED to the item's brief so the next
     dispatched agent reads exactly what to fix, and recorded as the result.
+
+    ROUTED THROUGH queue.reopen, and the difference is not cosmetic. This tool
+    used to re-queue directly, which left ``attempts`` at zero forever — and
+    ``attempts`` is the round counter the QA gate's max-rounds cap reads, so
+    the fail/reopen loop the cap exists to stop could never trip it: an
+    unbounded money pump wearing the gate's own uniform. queue.reopen counts
+    the round AND carries the harness's record of what the last attempt
+    already wrote into the new brief, so a fix round continues instead of
+    regenerating.
     """
     try:
         from bgate_core import queue as _q
         root = _root()
         item = _q.get(root, item_id)
         if item["status"] not in ("done", "failed"):
+            # queue.reopen also accepts 'cancelled', deliberately not offered
+            # here: cancelled is a human calling work off, and a machine
+            # un-cancelling it is the human's call being overridden.
             raise ValueError(
                 f"item {item_id} is {item['status']!r} — only done/failed "
                 "items can be reopened")
-        reason = (reason or "").strip()
-        if not reason:
-            raise ValueError("reason is required — say exactly what to fix")
-        stamp = ("\n\n--- REOPENED (QA gate) ---\n" + reason)[:3000]
-        _q.update(root, item_id, brief=(item["brief"] or "") + stamp)
-        return _q.set_status(root, item_id, "queued",
-                             result=f"reopened: {reason[:1900]}")
+        return _q.reopen(root, item_id, (reason or "").strip())
     except Exception as exc:
         return _fail(exc)
 
@@ -7328,6 +7894,32 @@ def kie_music_status(task_id: str) -> dict:
 
 
 @_tool
+def music_stuck_tracks(older_than_s: int = 0, poll: bool = True) -> dict:
+    """Music generations that were PAID FOR and never collected. Finds money.
+
+    The music twin of cinematic_stuck_shots, and it exists for the same reason:
+    a batch is charged at SUBMIT, and everything after that — the poll loop, the
+    download, the absorb — can die without the charge going anywhere. Until the
+    task id was persisted before the provider call, a crash mid-poll lost the
+    only handle to work you had already bought, and nothing anywhere noticed.
+
+    Run it after any crash, kill or dashboard restart. `recoverable` is the list
+    worth acting on: those are finished generations sitting on the provider that
+    kie_music_recover can still collect — but only inside the provider's
+    retention window, which the result names. `poll=False` answers from local
+    tickets alone and reaches no provider, which is the right call when you only
+    want to know whether anything is outstanding.
+    """
+    try:
+        from bgate_core import music as _music
+        return _music.stuck_tracks(
+            _root(), older_than_s=int(older_than_s) or _music.STUCK_AFTER_S,
+            poll=bool(poll))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def kie_music_recover(task_id: str, name: str = "") -> dict:
     """Download and register the tracks of a task ALREADY PAID FOR. Costs nothing.
 
@@ -7483,6 +8075,29 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
         root = _Path(_root())
         from bgate_adapters import kie
 
+        # THE MOST EXPENSIVE UNIT THIS PRODUCT BUYS, and it was ungated.
+        #
+        # kie reports an unknown price as None, never 0.0, and that distinction
+        # has to survive here or the gate reads "free" for exactly the models
+        # whose cost is least predictable. So: a KNOWN price is gated on the
+        # number. An UNKNOWN one still asks the budget (which catches a project
+        # already over its ceiling) and then says so in the result — a spend
+        # nobody could price is a fact the caller is owed, not something to
+        # bury under a passing check.
+        priced = None
+        try:
+            quote = kie.estimate_usd(model=model, seconds=seconds)
+            if isinstance(quote, dict) and quote.get("usd") is not None:
+                priced = float(quote["usd"])
+        except Exception:
+            priced = None
+        refused = _spend_gate(
+            str(root), priced or 0.0,
+            f"buying {seconds}s of video on {model or 'the default model'}"
+            + ("" if priced is not None else " (price UNKNOWN for this model)"),
+            _run_ceiling(str(root)))
+        if refused:
+            return refused
         base = (root / ".bgate_out" / "video").resolve()
         out = (base / (filename or "clip.mp4")).resolve()
         try:

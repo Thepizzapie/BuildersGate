@@ -177,3 +177,53 @@ async def test_handoff_rejects_a_bad_kind_as_a_payload(wired):
     # act on, not a raised exception that reads as a broken server.
     got = await call("handoff_note", kind="vibes", text="x")
     assert got.get("error") and got.get("ok") is False
+
+
+@pytest.mark.anyio
+class TestQueueReopenCountsRounds:
+    """queue_reopen used to bypass queue.reopen, so ``attempts`` stayed 0
+    forever — and attempts is the round counter the QA gate's max-rounds cap
+    reads, so the fail/reopen loop the cap exists for could never trip it."""
+
+    async def test_reopen_increments_attempts_and_appends_the_reason(self, wired):
+        from bgate_core import queue as _q
+        item = _q.add(wired, "tech", "verify the door")
+        _q.set_status(wired, item["id"], "done", result="looked fine")
+        got = await call("queue_reopen", item_id=item["id"],
+                         reason="the hinge is backwards")
+        assert got["status"] == "queued"
+        assert int(got["attempts"]) == 1
+        assert "hinge is backwards" in got["brief"]
+
+    async def test_reopen_refuses_a_running_item(self, wired):
+        from bgate_core import queue as _q
+        item = _q.add(wired, "tech", "in flight")
+        _q.reserve(wired, item["id"])
+        got = await call("queue_reopen", item_id=item["id"], reason="too soon")
+        assert "error" in got and "dispatched" in got["error"]
+
+
+@pytest.mark.anyio
+class TestQueueClaimNext:
+    """The pickup loop, at the surface a worker actually calls."""
+
+    async def test_a_session_with_no_work_item_may_not_claim(self, wired, monkeypatch):
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        monkeypatch.delenv("BGATE_WORK_ITEM", raising=False)
+        got = await call("queue_claim_next")
+        assert "error" in got and "pickup loop" in got["error"]
+
+    async def test_a_worker_claims_for_its_own_seat_with_its_run_identity(
+            self, wired, monkeypatch):
+        from bgate_core import queue as _q
+        monkeypatch.setenv("BGATE_SEAT", "art")
+        monkeypatch.setenv("BGATE_WORK_ITEM", "41")
+        _q.add(wired, "tech", "not art's problem to claim")
+        target = _q.add(wired, "art", "paint the next thing")
+        got = await call("queue_claim_next")
+        assert got.get("claimed") is True
+        assert got["id"] == target["id"]
+        assert got["actor"] == "agent:item-41"
+        # And the well runs dry honestly: nothing ready means finish the shift.
+        again = await call("queue_claim_next")
+        assert again.get("empty") is True
