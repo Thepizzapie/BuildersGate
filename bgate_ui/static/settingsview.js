@@ -151,7 +151,12 @@
     // Every colour is a theme variable. The orbit ground repaints the whole UI
     // through these and one hardcoded hex is a panel that stops matching.
     s.textContent = [
-      ".st-shell.cfg-shell{max-width:1180px}",
+      /* LEFT, not centred. .st-shell centres itself in 920px because it was
+         once a single column of rows; this panel is a 212px nav against a pane
+         and centring THAT put a wide gutter on the left of the sidebar while
+         every other view in the deck starts at the same x. "centered and
+         awkward" was the complaint, and the margin was the whole of it. */
+      ".st-shell.cfg-shell{max-width:1180px;margin:0}",
 
       /* ── header ── */
       ".cfg-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--s-4) var(--s-5);",
@@ -192,16 +197,18 @@
 
       /* ── the pane ── */
       ".cfg-main{min-width:0}",
-      ".cfg-panehead{display:flex;align-items:baseline;gap:var(--s-4);flex-wrap:wrap;margin-bottom:var(--s-3)}",
-      ".cfg-panehead h3{margin:0;font-size:var(--fs-lg);font-weight:var(--fw-medium);color:var(--text)}",
-      ".cfg-count{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-dim);",
-      "font-variant-numeric:tabular-nums}",
-      ".cfg-note{font-size:var(--fs-xs);color:var(--text-3);line-height:var(--lh);max-width:76ch;margin:0 0 var(--s-6)}",
+      /* EVERY BLOCK IN THE PANE IS A .spanel WITH A .sec-h BAND (app.css).
+         This page had three competing header treatments - a big .cfg-panehead
+         <h3> when a group was the whole pane, a small uppercase .cfg-sech rule
+         when it was one of several, and nothing at all around the rows - so
+         the same group looked like two different objects depending on how you
+         arrived at it, and thirty settings rows ran together underneath either
+         one. One shape now, the same one the bible and the seat workspaces
+         wear, and no local rule redefines it. */
+      ".cfg-sec{margin-bottom:var(--s-6)}",
+      ".cfg-note{font-size:var(--fs-xs);color:var(--text-3);line-height:var(--lh);max-width:76ch;margin:0 0 var(--s-5)}",
+      ".cfg-note:last-child{margin-bottom:0}",
       ".cfg-note code{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-2)}",
-      ".cfg-sec{margin-bottom:var(--s-7)}",
-      ".cfg-sech{display:flex;align-items:center;gap:var(--s-3);margin-bottom:var(--s-4);",
-      "font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-wide);",
-      "text-transform:uppercase;color:var(--text-dim);padding-bottom:var(--s-3);border-bottom:1px solid var(--line-soft)}",
       ".cfg-rows{display:flex;flex-direction:column;gap:var(--s-4)}",
       ".cfg-blank{font-size:var(--fs-xs);color:var(--text-3);line-height:var(--lh);max-width:70ch;",
       "padding:var(--s-6);background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-md)}",
@@ -506,6 +513,15 @@
       this._err = null;
       this._absorb(r.data);
       this.paint();
+      // THE LOST CALLER. streamer.js exports StreamerChip.refresh() with a
+      // comment saying Settings calls it after a save so the chip does not lag
+      // the switch by a poll interval — and nothing here ever did, so flipping
+      // privacy.streamer left the chip reading the old state for up to a poll.
+      // Guarded and swallowed: this is a cosmetic follow-up to a write that has
+      // already succeeded, and it must not turn a saved setting into an error.
+      try {
+        if (window.StreamerChip) window.StreamerChip.refresh();
+      } catch (e) { /* the chip is not mounted on this page */ }
       const now = this.field(key);
       const shown = now ? this.show(now, now.value) : String(value);
       // An env var can make the stored value not the effective one. Saying
@@ -872,7 +888,21 @@
       }
       const group = this.groups().filter(g => g.name === this.pane)[0];
       if (!group) return readErr + `<div class="cfg-blank">that group is gone.</div>`;
-      return readErr + this._section(group.name, group.fields, true);
+      return readErr + this._section(group.name, group.fields);
+    },
+
+    /* One shape for every lid on this page: icon, label, count, actions - the
+       .sec-h contract out of app.css, built here so the six callers below
+       cannot drift apart the way .cfg-panehead and .cfg-sech did. */
+    _sec(ic, title, body, o) {
+      o = o || {};
+      const n = (o.n === undefined || o.n === null || o.n === "")
+        ? "" : `<span class="sec-n${o.tone ? " " + o.tone : ""}">${esc(o.n)}</span>`;
+      return `<section class="spanel ${o.kind || ""} cfg-sec">
+        <div class="sec-h">${icon(ic, 15)}<h3 class="sec-t">${esc(title)}</h3>${n}
+          ${o.note ? `<span class="sec-sub">${esc(o.note)}</span>` : ""}
+          ${o.actions ? `<span class="sec-a">${o.actions}</span>` : ""}
+        </div>${body}</section>`;
     },
 
     _lens(title, keep, note, blank) {
@@ -880,29 +910,27 @@
         name: g.name, fields: (g.fields || []).filter(keep),
       })).filter(g => g.fields.length);
       const n = secs.reduce((t, g) => t + g.fields.length, 0);
-      const head = `<div class="cfg-panehead"><h3>${esc(title)}</h3>
-        <span class="cfg-count">${n} field${n === 1 ? "" : "s"}</span></div>
-        <p class="cfg-note">${esc(note).replace(/\s+/g, " ")}</p>`;
-      if (!n) return head + `<div class="cfg-blank">${esc(blank).replace(/\s+/g, " ")}</div>`;
+      const head = this._sec(title === "Env-forced" ? "doctor" : "edit", title,
+        `<p class="cfg-note">${esc(note).replace(/\s+/g, " ")}</p>` +
+        (n ? "" : `<div class="cfg-blank">${esc(blank).replace(/\s+/g, " ")}</div>`),
+        { kind: "k-doc", n: n || "", note: n ? `field${n === 1 ? "" : "s"}` : "" });
       return head + secs.map(g => this._section(g.name, g.fields)).join("");
     },
 
     _found(hits) {
       const n = hits.reduce((t, g) => t + g.fields.length, 0);
-      return `<div class="cfg-panehead">
-          <h3>${n} match${n === 1 ? "" : "es"}</h3>
-          <span class="cfg-count">for “${esc(this.query.trim())}”</span>
-          <button class="cfg-link" type="button" data-cfg-act="clearq">clear</button>
-        </div>
-        <p class="cfg-note">Matched on key, group, help text and env var name,
-          across every group.</p>`
+      return this._sec("qa", `${n} match${n === 1 ? "" : "es"}`,
+        `<p class="cfg-note">Matched on key, group, help text and env var name,
+          across every group.</p>`,
+        { kind: "k-doc", n, tone: "good",
+          note: `for “${this.query.trim()}”`,
+          actions: `<button class="cfg-link" type="button" data-cfg-act="clearq">clear</button>` })
         + hits.map(g => this._section(g.name, g.fields)).join("");
     },
 
     _credentials() {
-      return `<div class="cfg-panehead"><h3>Credentials</h3>
-          <span class="cfg-count">provider keys</span></div>
-        <p class="cfg-note">Kept out of the registry above on purpose.
+      return this._sec("lock", "Credentials",
+        `<p class="cfg-note">Kept out of the registry above on purpose.
           <code>GET /api/settings</code> returns every field's value verbatim —
           which is exactly what lets a new switch render with no code change — so
           a secret described there would be one missed exception from being
@@ -915,21 +943,22 @@
           machine instead. The panel says which layer is actually supplying each
           value, which is the question worth asking when a key is set and
           nothing works.</p>
-        <div id="cfg-creds-slot"></div>`;
+        <div id="cfg-creds-slot"></div>`,
+        { kind: "k-doc", note: "provider keys" });
     },
 
     /* The other answer to the question Credentials asks. A human wondering "why
        can I not make a 2D image" has two possible answers — no key, or nothing
        running here — and they are one nav row apart on purpose. */
     _local() {
-      return `<div class="cfg-panehead"><h3>Local generators</h3>
-          <span class="cfg-count">no key, no bill</span></div>
-        <p class="cfg-note">Generators you run on your own machine: ComfyUI for
+      return this._sec("art", "Local generators",
+        `<p class="cfg-note">Generators you run on your own machine: ComfyUI for
           2D art, and the local image-to-3D servers. Configure them here, start
-          them yourself, and this page notices — Builders Gate talks to this
+          them yourself, and this page notices - Builders Gate talks to this
           software, it does not launch it, so nothing here can leave a model
           loaded in your GPU after you close the page.</p>
-        <div id="cfg-local-slot"></div>`;
+        <div id="cfg-local-slot"></div>`,
+        { kind: "k-doc", note: "no key, no bill" });
     },
 
     /* PLUMBING, NOT CAPABILITY, and that is why it is not the pane above. This
@@ -937,28 +966,28 @@
        stored value at all, only "is that CLI installed and is our MCP server
        registered with it, against which interpreter". */
     _agents() {
-      return `<div class="cfg-panehead"><h3>Agent CLIs</h3>
-          <span class="cfg-count">installation &amp; wiring</span></div>
-        <p class="cfg-note">The coding-agent CLIs on this machine, and whether
+      return this._sec("agents", "Agent CLIs",
+        `<p class="cfg-note">The coding-agent CLIs on this machine, and whether
           the Builders Gate tools are reachable from <em>your own</em> sessions
-          of them — which is a different question from whether the board can
+          of them - which is a different question from whether the board can
           dispatch work, and one that looks fine right up until a tool call
           fails. Set once; come back when something breaks.</p>
-        <div id="cfg-agents-slot"></div>`;
+        <div id="cfg-agents-slot"></div>`,
+        { kind: "k-doc", note: "installation & wiring" });
     },
 
-    _section(name, fields, sole) {
+    /* ONE HEADER, however you arrived. There used to be a `sole` branch that
+       drew a big <h3> when a group WAS the pane and a small uppercase rule
+       when it was one of several, so the same group was two different objects
+       depending on whether you clicked its nav row or the "All settings" lens.
+       It is a .spanel with a .sec-h either way now, and the pane's own title
+       is the nav row you are standing on. */
+    _section(name, fields) {
       const list = fields || [];
       if (!list.length) return "";
-      const head = sole
-        ? `<div class="cfg-panehead"><h3>${esc(name)}</h3>
-             <span class="cfg-count">${list.length} setting${list.length === 1 ? "" : "s"}</span>
-           </div>`
-        : `<div class="cfg-sech">${icon(groupIcon(name), 12)}
-             <span>${esc(name)}</span><span class="cfg-n">${list.length}</span></div>`;
-      return `<section class="cfg-sec">${head}
-        <div class="cfg-rows">${list.map(f => this._row(f)).join("")}</div>
-      </section>`;
+      return this._sec(groupIcon(name), name,
+        `<div class="cfg-rows">${list.map(f => this._row(f)).join("")}</div>`,
+        { kind: "k-list", n: list.length });
     },
 
     /* ---- one row -------------------------------------------------------- */

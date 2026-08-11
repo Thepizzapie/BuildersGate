@@ -21,7 +21,7 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-from bgate_core import scenedraw, scenewire
+from bgate_core import scenedraw, scenewire, tilemap
 from bgate_ui import api
 from bgate_ui.deps import root
 
@@ -647,3 +647,86 @@ def scene_wirable(asset: Optional[str] = None) -> dict:
                 e["path"] == asset_res for e in parsed["ext"]),
         })
     return {"scenes": scenes, "asset": asset_res}
+
+
+@router.get("/api/scene/tilesets")
+def scene_tilesets() -> dict:
+    """Every TileSet in the project, with the source ids a level can draw with.
+
+    The level template used to ship a hardcoded `res://assets/tiles/main.tres`.
+    No project has ever had that file, so the one template whose whole promise
+    is "this generates a level" failed on its third node in every project it was
+    opened in. `level_generate` refuses a missing tileset correctly, which meant
+    the tool was honest and the card that drove it was not.
+
+    Source ids are the other half of the same trap: they are ids, not indexes,
+    and a tileset is free to number its only source 3. Handing back the real
+    ones lets a caller prefill `floor_source` with something the file defines
+    rather than the 0 that looks safe and usually is not.
+    """
+    project_root = root()
+    gd = _godot_dir(project_root)
+    sets = []
+    for p in sorted(gd.rglob("*.tres")):
+        if SKIP_DIRS & set(p.parts):
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace")
+        # Cheap reject first: every .tres in a project is a candidate here and
+        # most of them are materials, curves and audio buses.
+        if "TileSet" not in text:
+            continue
+        try:
+            parsed = tilemap.parse_tileset(text)
+        except tilemap.TileError:
+            continue
+        if not parsed["sources"]:
+            continue
+        sets.append({
+            "res": f"res://{p.relative_to(gd).as_posix()}",
+            "label": p.stem,
+            "tile_size": parsed["tile_size"],
+            "sources": sorted(parsed["sources"]),
+            "tiles": {str(sid): len(src["tiles"])
+                      for sid, src in sorted(parsed["sources"].items())},
+            "draws": [_source_fit(sid, src["tiles"])
+                      for sid, src in sorted(parsed["sources"].items())],
+        })
+    return {"tilesets": sets}
+
+
+# How many masks each wall layout addresses. level_generate walks them
+# row-major from (wall_atlas_x, wall_atlas_y), `wall_columns` wide.
+_LAYOUT_TILES = {"blob47": 47, "grid16": 16, "solid": 1}
+
+
+def _source_fit(sid: int, tiles: list) -> dict:
+    """Which wall layouts this atlas source can actually draw, and from where.
+
+    A tile COUNT does not answer this. blob47 wants 47 tiles at 47 specific
+    row-major coordinates, so a source holding 36 tiles in a 6x6 block fails it,
+    and a source holding 50 tiles in an L fails it too while looking sufficient.
+    level_generate already refuses that case with the exact list of coordinates
+    the atlas is missing, which is the right behaviour and a terrible thing to
+    discover from a template that chose the layout for you.
+
+    So the arithmetic level_generate checks with is done here first, against the
+    coordinates the .tres actually defines: origin at the source's top-left,
+    width from its own extent, and a layout only offered when every cell it
+    addresses is present.
+    """
+    have = {(int(x), int(y)) for x, y in tiles}
+    if not have:
+        return {"source": sid, "layouts": [], "columns": 0,
+                "atlas_x": 0, "atlas_y": 0, "tiles": 0}
+    ax = min(x for x, _ in have)
+    ay = min(y for _, y in have)
+    cols = max(x for x, _ in have) - ax + 1
+    fits = []
+    for name, need in _LAYOUT_TILES.items():
+        if all((ax + i % cols, ay + i // cols) in have for i in range(need)):
+            fits.append(name)
+    # Richest first, so a caller taking [0] gets the most detailed wall it can
+    # actually draw rather than whichever name sorted first.
+    fits.sort(key=lambda n: -_LAYOUT_TILES[n])
+    return {"source": sid, "layouts": fits, "columns": cols,
+            "atlas_x": ax, "atlas_y": ay, "tiles": len(have)}

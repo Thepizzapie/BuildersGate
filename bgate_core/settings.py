@@ -525,16 +525,10 @@ SETTINGS: tuple[Setting, ...] = (
     # `bgate doctor` (see routes/providers.py for that argument in full). What
     # IS here is behaviour — how much of chat to keep, and whether viewers may
     # write on a recording — which is exactly what a switch should be.
-    Setting(
-        key="chat.autoconnect", group="Community", kind=BOOL, default=False,
-        store=("registry", "chat.autoconnect"), scope=MACHINE,
-        env_coerce=("BGATE_CHAT", lambda raw: False if _falsey(raw) else None),
-        env_note="BGATE_CHAT=0 stops the connection from being made at all, so "
-                 "the stored switch cannot take effect until it is unset",
-        help="Connect to your stream's chat when the dashboard starts, instead "
-             "of pressing connect. Off by default: opening a socket to a public "
-             "chat room is not something a dev tool should do because it "
-             "launched."),
+    # `chat.autoconnect` used to live here. It rendered as a toggle and NOTHING
+    # read it — chatpump only ever consulted the BGATE_CHAT kill switch — so the
+    # switch moved and the behaviour did not. An inert control is worse than a
+    # missing one.
     Setting(
         key="chat.capture", group="Community", kind=ENUM, default="all",
         choices=("all", "marked"),

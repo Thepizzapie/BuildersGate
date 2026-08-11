@@ -40,7 +40,7 @@ budget, the revert, workflow gates, and promoting a candidate to the build.
   can read `.bgate/` has the token, and anything that can write your project can
   do whatever an agent could.
 - **A hostile game project or a hostile prompt.** The seat lanes, asset locks
-  and the cut line are *coordination* controls that stop agents from stomping
+  and the canon gate are *coordination* controls that stop agents from stomping
   each other's work. They are not a sandbox and were never meant to contain an
   adversary. The PreToolUse hook fails **open** by design: a crashing hook must
   never dam a session.

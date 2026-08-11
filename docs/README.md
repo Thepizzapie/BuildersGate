@@ -15,7 +15,7 @@ New here, or never run an MCP server before? Read these three, in order.
 |---|---|
 | [../CLAUDE.md](../CLAUDE.md) | Setup instructions written for a Claude session doing the install for someone else. |
 | [start-here.md](start-here.md) | The front door. What problem this solves, what an MCP server is, this project's vocabulary defined once, what happens when you dispatch an agent, and a first-session walkthrough. Assumes nothing. |
-| [glossary.md](glossary.md) | Every term this project uses in a narrow sense: seat, lane, lock, dispatch, cut line, pin, canon, evidence. A sentence or two each. |
+| [glossary.md](glossary.md) | Every term this project uses in a narrow sense: seat, lane, lock, dispatch, chain, pin, canon, evidence. A sentence or two each. |
 
 ## Reference
 
@@ -23,7 +23,7 @@ New here, or never run an MCP server before? Read these three, in order.
 |---|---|
 | [setup.md](setup.md) | Setup in full: requirements, the API key table, `bgate adopt` for an existing game, switching projects, registering the MCP server and installing the hook, and platform support. |
 | [reference.md](reference.md) | Every surface in detail: the dashboard's nine views, seats, asset locking, the Blender to Godot round trip, templates, `bgate publish`, playtest mode, and the repository layout. |
-| [design-notes.md](design-notes.md) | The concepts the product rests on: the cut line, spend and runtime ceilings, human-only approval, facts versus prose, `canon_check`. Plus the technology choices and why. |
+| [design-notes.md](design-notes.md) | The concepts the product rests on: spend and runtime ceilings, human-only approval, facts versus prose, `canon_check`, and why the cut line was removed. Plus the technology choices and why. |
 | [gotchas.md](gotchas.md) | Things that cost real time: GPU cold starts, `stdin=DEVNULL` under a stdio MCP server, whisper segmentation, unrelated clocks, telemetry that lies plausibly. |
 
 ## Findings and audits

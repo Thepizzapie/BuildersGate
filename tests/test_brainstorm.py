@@ -804,7 +804,6 @@ class TestNarrativeStaysInItsLane:
 
     def test_the_two_seats_get_different_prompts(self):
         assert "CANON" in _bs.synthesis_system("narrative").upper()
-        assert "cut line" in _bs.chat_system("director")
 
 
 # ---------------------------------------------------------------------------
@@ -818,13 +817,6 @@ class TestWorldContext:
         block = _bs.world_context(root, "narrative")
         assert "the-shrine" in block
         assert "[LOCKED] the shrine predates the hub" in block
-
-    def test_director_synthesis_sees_the_cut_line(self, root):
-        _bible.add(root, "scope_tier", "co-op", rank=5)
-        _bible.add(root, "cut_line", "everything below is v2", rank=3)
-        block = _bs.world_context(root, "director")
-        assert "BELOW THE CUT LINE" in block
-        assert "co-op" in block
 
     def test_it_is_only_sent_on_a_synthesis(self, client, root, answers,
                                             no_agents):

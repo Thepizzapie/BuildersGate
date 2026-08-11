@@ -406,8 +406,18 @@ def _save(result, out_path: str, model: str, size: str, quality: str,
           transparent: bool, seconds: Optional[float] = None) -> dict:
     datum = result.data[0]
     if not getattr(datum, "b64_json", None):
+        # NOT ZERO. Reaching here means the call SUCCEEDED and came back without
+        # bytes we can use — the request was generated and billed, and only the
+        # payload is missing. The other two failure paths in this module return
+        # 0.0 because they raised out of the SDK before anything was made; this
+        # one used to copy them, which reported a real charge as free to
+        # anything reading the number. Unknown, and it says which one it is.
         return {"ok": False, "error": "API returned no image payload",
-                "seconds": seconds, "estimated_usd": 0.0}
+                "seconds": seconds, "estimated_usd": None,
+                "cost_note": "the generation call succeeded and returned no "
+                             "image, so it was almost certainly billed at about "
+                             f"${price_per_image(quality):.3f} — unknown rather "
+                             "than zero, because a zero here reads as free"}
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -63,6 +63,33 @@
   // down-and-right of the thing that caused it.
   const DROP = 46;
 
+  // HOW LONG A FAILURE IS STILL "IN FLIGHT".
+  //
+  // The in-flight filter kept every item with status "failed", and the server's
+  // window ranks failed work third — so on a board with a week of history behind
+  // it, "in flight" drew 74 nodes and "everything" drew 60. The toggle was worse
+  // than a no-op: turning it ON showed MORE. What the failed clause was for is a
+  // run that died WHILE YOU WERE WATCHING, so the canvas does not silently lose
+  // the node you were looking at; a break from Tuesday is history and belongs on
+  // the board, not on a picture of the floor right now.
+  const FAIL_FRESH_MS = 30 * 60 * 1000;
+  // And a cap, because a chain that fans out and dies takes its whole fan with
+  // it: eleven failures inside one window is still a wall, just a recent one.
+  const FAIL_KEEP = 6;
+
+  /* Server stamps are SQLite `datetime('now')` — "YYYY-MM-DD HH:MM:SS", UTC and
+   * unmarked. Parsed as-is, the browser reads them as LOCAL time, which on a
+   * machine behind UTC dates every failure into the future and makes every one
+   * of them look fresh — the exact bug the freshness window exists to fix. NaN
+   * for anything unparseable, and callers treat NaN as stale rather than fresh:
+   * an unreadable timestamp must not re-open the flood. */
+  const stampMs = ts => {
+    const text = String(ts || "").trim();
+    if (!text) return NaN;
+    if (/[zZ]$|[+-]\d\d:?\d\d$/.test(text)) return Date.parse(text);
+    return Date.parse(text.replace(" ", "T") + "Z");
+  };
+
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -111,6 +138,13 @@
    * delegated listener (these tiles are re-rendered on every poll, so per-tile
    * handlers would need re-binding every three seconds).
    */
+  /* `itemId` is threaded into thumb() as well as into data-peek. It used to
+     reach only the peek attribute, so the tile's own <img> asked /api/preview
+     for a project-root path that does not exist while an isolated agent is
+     still working in its worktree — a 404 and an empty bordered box in every
+     one of the three grids, under a label naming a file the reader can plainly
+     see the console has. The comment on thumb() records this exact bug for the
+     rail's strip; the grids were the other half of it and were missed. */
   function fileGrid(entries, itemId, artifacts) {
     const run = itemId ? ` data-peek-item="${Number(itemId)}"` : "";
     return `<div class="cg-made">${(entries || []).map(a => {
@@ -123,7 +157,7 @@
         : esc(rel);
       return `<div class="cg-madeone open" role="button" tabindex="0"
                    data-peek="${esc(rel)}"${run} title="${esc(rel)}">
-                ${thumb(a, "cg-thumb")}
+                ${thumb(a, "cg-thumb", itemId)}
                 <div class="cg-madelabel">${esc(label)}<span>${sub}</span></div>
               </div>`;
     }).join("")}</div>`;
@@ -147,10 +181,14 @@
     // target=_blank stays as the fallback: peek.js calls preventDefault, so the
     // viewer wins whenever it is loaded, and the link still opens the image
     // rather than navigating the whole console away when it is not.
+    // The href carries item_id for the same reason the <img> does: the fallback
+    // is what opens when peek.js is not loaded, and a raw /api/preview without
+    // the run's scope 404s on a file that only exists inside its worktree.
+    const scope = itemId ? `&item_id=${Number(itemId)}` : "";
     const shots = (s.images || []).map(rel =>
-      `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}"
+      `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}${scope}"
           target="_blank" rel="noopener" data-peek="${esc(rel)}"${run}
-          title="${esc(rel)}">${thumb({ path: rel }, "cg-shot-in")}</a>`).join("");
+          title="${esc(rel)}">${thumb({ path: rel }, "cg-shot-in", itemId)}</a>`).join("");
     // The files it NAMED. The log always had these paths; it had them in prose,
     // 90 characters wide, in the middle of a sentence you could read and not open.
     const files = (s.files || []).map(rel =>
@@ -308,6 +346,20 @@
      * to hang off something: "approve this" with no idea what "this" was is not
      * a decision anyone can make. It leaves the graph the moment you act on it.
      *
+     * A FRESH FAILURE STAYS. An item that broke was neither live nor dispatched
+     * nor gated, so the poll after the run died removed its node — the canvas
+     * that had a task on it a moment ago simply had one fewer, which is
+     * indistinguishable from a dispatch that never happened. Everything below is
+     * already written to draw one: the failed glyph, the var(--bad) accent,
+     * status:"failed" for the border treatment.
+     *
+     * FRESH is the whole of it, and the version that said `i.status === "failed"`
+     * left that word out. The server's window ranks failed work third and caps at
+     * BOARD, so it is bounded — but bounded at 80, which on a board with a week
+     * behind it meant the in-flight filter drew MORE nodes than "everything"
+     * (measured: 74 against 60). A break you did not watch happen is history; the
+     * board below owns it, and re-running it from there puts it back here live.
+     *
      * Ancestors come back whatever the filter says, because a chain with its
      * middle removed is a lie about who caused what. */
     keep(items, live) {
@@ -316,10 +368,20 @@
       const parents = ((this.state || {}).lineage || {}).parents || {};
       const gated = new Set(((this.state || {}).gates || [])
         .map(g => Number(g.over_item_id || 0)).filter(Boolean));
+      // Newest first, then take a handful: a fan-out that dies whole would
+      // otherwise put its entire fan on the canvas inside one window.
+      const now = Date.now();
+      const fresh = new Set(items
+        .filter(i => i.status === "failed"
+          && now - stampMs(i.updated_at) < FAIL_FRESH_MS)
+        .sort((a, b) => stampMs(b.updated_at) - stampMs(a.updated_at))
+        .slice(0, FAIL_KEEP)
+        .map(i => Number(i.id)));
       const keep = new Set();
       items.forEach(i => {
         const id = Number(i.id);
-        if (live.has(id) || i.status === "dispatched" || gated.has(id)) keep.add(id);
+        if (live.has(id) || i.status === "dispatched" || fresh.has(id)
+            || gated.has(id)) keep.add(id);
       });
       // Walk up: a kept task's ancestors stay so the tree keeps its trunk.
       [...keep].forEach(id => {
@@ -594,9 +656,47 @@
       return { nodes, edges: edges.filter(e => nodes.has(e.from[0]) && nodes.has(e.to[0])) };
     },
 
+    /* SAY WHY THE CANVAS IS EMPTY. A filter that correctly hides a week of dead
+     * work leaves nothing behind on a quiet board, and "nothing" is the same
+     * picture as "this component failed to render" — the reading that made the
+     * owner go hunting in the toggle in the first place. Only shown when the
+     * filter is what is doing the hiding: with it off, an empty canvas really is
+     * an empty board and the panel below says so. */
+    voidNote(taskCount) {
+      if (!this.host) return;
+      let el = this.host.querySelector(":scope > .ck-void");
+      const hidden = this.filter === "active"
+        && !taskCount
+        && ((this.state || {}).items || []).some(i => i.source !== "chat");
+      if (!hidden) { if (el) el.remove(); return; }
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "ck-void";
+        el.innerHTML = `<b>nothing in flight</b>
+          <span>No agent is running and nothing broke in the last half hour.
+          Queued and finished work lives on the board below.</span>
+          <button class="qbtn small ghost" type="button">show everything</button>`;
+        el.querySelector("button").onclick = () => {
+          const btn = document.getElementById("ck-filter");
+          if (btn) btn.click(); else this.setFilter("all");
+        };
+        this.host.appendChild(el);
+      }
+    },
+
     /* ---- render -------------------------------------------------------- */
+    /* The note is painted AFTER the layout, never inside it: NodeCanvas.mount()
+       writes the host's innerHTML, so a note appended on the way in exists for
+       exactly as long as the first build takes and then vanishes. */
     rebuild() {
+      const nodes = this.layout();
+      try { this.voidNote(nodes); } catch (e) {}
+    },
+
+    /* Returns how many task nodes ended up on the canvas. */
+    layout() {
       const next = this.compute();
+      const taskCount = [...next.nodes.keys()].filter(k => k.startsWith("task_")).length;
       const sig = [...next.nodes.keys()].sort().join("|")
         + "#" + next.edges.map(e => e.from[0] + ">" + e.to[0]).join(",");
       if (!this.nc) {
@@ -613,7 +713,7 @@
         });
         this.nc.mount();
         this.renderDetail();
-        return;
+        return taskCount;
       }
       if (sig !== this._sig) {
         this.nodes = next.nodes;
@@ -633,7 +733,7 @@
         // a node to move it sets `sel` with the rail shut, and three seconds
         // later the panel slammed open over the graph.
         if (this.railOpen()) this.renderDetail(true);
-        return;
+        return taskCount;
       }
       // Same shape — patch the nodes that changed so a drag, a scroll and a
       // half-typed steer all survive the poll.
@@ -668,6 +768,7 @@
       // every three seconds, on a canvas the user is trying to drag.
       if (changed.length) { try { this.nc.patchNodes(changed); } catch (e) {} }
       if (this.railOpen()) this.renderDetail(true);
+      return taskCount;
     },
 
     body(n) {
@@ -688,9 +789,10 @@
         const arts = ph.artifacts || [];
         // Made first, then what it is looking at — the node is small, and the
         // strip is a glance, not an inventory.
-        const strip = arts.slice(0, 4).map(a => thumb(a, "cg-mini"))
+        // n.itemId scopes both halves to the run's worktree - see thumb().
+        const strip = arts.slice(0, 4).map(a => thumb(a, "cg-mini", n.itemId))
           .concat((ph.seen || []).slice(0, 4 - Math.min(4, arts.length))
-            .map(rel => thumb({ path: rel }, "cg-mini seen"))).join("");
+            .map(rel => thumb({ path: rel }, "cg-mini seen", n.itemId))).join("");
         // WHOSE POCKET THIS IS, in words as well as in hue. Colour alone fails
         // the two people who need it most — anyone who cannot separate pink from
         // red, and anyone at 40% zoom on a canvas with three runs on it.
@@ -970,7 +1072,7 @@
       const eyesHTML = eyes.length
         ? `<div class="cg-sec">looking at</div>
            <div class="cg-strip big">${eyes.map(rel =>
-             `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}"
+             `<a class="cg-eye" href="/api/preview?rel=${encodeURIComponent(rel)}&item_id=${Number(it.id)}"
                  target="_blank" rel="noopener"
                  data-peek="${esc(rel)}" data-peek-item="${Number(it.id)}"
                  title="${esc(rel)} - click to expand">${thumb({ path: rel }, "cg-thumb", it.id)}</a>`
@@ -999,6 +1101,11 @@
         + (it.brief_preview ? `<div class="cg-note">${esc(it.brief_preview)}${it.brief_len > 240 ? "…" : ""}</div>` : "")
         + (it.result ? `<div class="cg-sec">result</div><div class="cg-answer">${esc(it.result)}</div>` : "")
         + eyesHTML
+        // readHTML was BUILT AND DROPPED — assembled a few lines up and never
+        // concatenated, so the "files it read" chips this rail is supposed to
+        // carry rendered nowhere. Next to eyesHTML, which is the other half of
+        // the same question: what this run is touching in the repo.
+        + readHTML
         + `<div class="cg-sec">live steps</div><div class="cg-feed">${feed}</div>`
         + `<div class="cg-acts">
              ${it.status === "queued" ? `<button class="qbtn small" data-act="dispatch" data-id="${it.id}">dispatch</button>` : ""}
@@ -1021,7 +1128,11 @@
         if (what === "assets") { if (window.setWorkspace) setWorkspace("assets"); return; }
         if (what === "workspace") {
           if (window.setWorkspace) setWorkspace("seats");
-          if (window.SeatShell && SeatShell.open) SeatShell.open(id);
+          // select(), not open() — SeatShell has never had an open(). The guard
+          // made the miss silent, so "open art workspace" switched to the seats
+          // view and left you on whatever seat was last selected: the right
+          // view, the wrong desk, and no sign that anything had been ignored.
+          if (window.SeatShell && SeatShell.select) SeatShell.select(id);
           return;
         }
         if (what === "target") {

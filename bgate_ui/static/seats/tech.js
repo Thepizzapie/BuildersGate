@@ -49,12 +49,18 @@
   // ---- markup -------------------------------------------------------------
   const STYLE = `
   <style>
-  .tech-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+  /* Panels are .spanel + .sec-h out of app.css, NOT a private .tech-card
+     treatment. Six identical grey boxes with a bold <h3> in each was this
+     file's share of "everything blends together": nothing said which of them
+     was a readout and which one runs your engine. What is left below is the
+     grid and the content, which the shared classes do not and should not own. */
+  .tech-wrap{display:grid;grid-template-columns:1fr 1fr;gap:var(--s-6);align-items:start}
   .tech-wrap .tech-span2{grid-column:1 / -1}
+  .tech-wrap > .spanel{min-width:0}
   @media(max-width:1080px){.tech-wrap{grid-template-columns:1fr}.tech-wrap .tech-span2{grid-column:auto}}
-  .tech-card{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s-6)}
-  .tech-card h3{margin:0 0 10px;font-size:13px;font-weight:var(--fw-semi);color:var(--text);display:flex;align-items:center;gap:8px}
-  .tech-card h3 .tech-sub{margin-left:auto;font-weight:400;font-size:11px;color:var(--text-3)}
+  /* The one thing the band does not carry: live engine state. It rides in
+     .sec-a, on the right, so the left of every header is icon-then-label and
+     stays scannable down the column. */
   .tech-lamp{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--line-strong);flex:none}
   .tech-lamp.ok{background:var(--good-line);box-shadow:0 0 6px rgba(63,191,127,.6)}
   .tech-lamp.bad{background:var(--bad);box-shadow:0 0 6px rgba(224,87,76,.5)}
@@ -107,28 +113,47 @@
   .tech-act.k-steer{border-color:var(--warn-line);color:var(--warn)}
   </style>`;
 
+  /* One shape for every panel lid here, the same one world.js and the art and
+     QA seats use: icon, label, count, then whatever the section needs on the
+     right. Written as a helper rather than repeated six times because the point
+     of the pattern is that all six agree. */
+  function head(icon, label, opts) {
+    const o = opts || {};
+    return `<div class="sec-h">${BGICON(icon)}<h3 class="sec-t">${label}</h3>` +
+      (o.nId ? `<span class="sec-n" id="${o.nId}"></span>` : "") +
+      (o.note ? `<span class="sec-sub">${o.note}</span>` : "") +
+      (o.lamp ? `<span class="sec-a"><span class="tech-lamp" id="${o.lamp}"></span></span>` : "") +
+      `</div>`;
+  }
+
   function shell() {
     return `${STYLE}
     <div class="tech-wrap">
-      <div class="tech-card" id="tech-engine"><h3><span class="tech-lamp" id="tech-engine-lamp"></span> Engine &amp; build <span class="tech-sub" id="tech-engine-sub">loading…</span></h3><div id="tech-engine-body"><div class="tech-empty">checking Godot…</div></div></div>
+      <section class="spanel s-tech k-read" id="tech-engine">
+        ${head("rebuild", "Engine &amp; build", { nId: "tech-engine-sub", lamp: "tech-engine-lamp" })}
+        <div id="tech-engine-body"><div class="tech-empty">checking Godot…</div></div></section>
 
-      <div class="tech-card" id="tech-check"><h3><span class="tech-lamp"></span> Build check <span class="tech-sub">headless import — does it compile</span></h3>
+      <section class="spanel s-tech" id="tech-check">
+        ${head("verify", "Build check", { note: "headless import - does it compile" })}
         <button class="tech-btn primary big" id="tech-check-btn">Run build check</button>
-        <div id="tech-check-out"></div></div>
+        <div id="tech-check-out"></div></section>
 
-      <div class="tech-card tech-span2" id="tech-inspect"><h3><span class="tech-lamp"></span> Resource inspector <span class="tech-sub">scene structure &amp; triangle budget</span></h3>
+      <section class="spanel s-tech tech-span2" id="tech-inspect">
+        ${head("outline", "Resource inspector", { note: "structure &amp; triangle budget" })}
         <div class="tech-flex">
-          <select class="tech-select" id="tech-res-sel" style="flex:1;min-width:220px"><option value="">— loading resources —</option></select>
+          <select class="tech-select" id="tech-res-sel" style="flex:1;min-width:220px"><option value="">- loading resources -</option></select>
           <button class="tech-btn primary" id="tech-inspect-btn">Inspect in engine</button>
         </div>
         <div class="tech-meta">.tscn scenes load in-engine and report real mesh/tri counts. .tres may not be a scene.</div>
-        <div id="tech-inspect-out"></div></div>
+        <div id="tech-inspect-out"></div></section>
 
-      <div class="tech-card" id="tech-files"><h3><span class="tech-lamp"></span> Project files <span class="tech-sub" id="tech-files-sub"></span></h3>
+      <section class="spanel s-tech k-list" id="tech-files">
+        ${head("sheet", "Project files", { nId: "tech-files-sub" })}
         <div class="tech-tree" id="tech-tree"><div class="tech-empty">loading tree…</div></div>
-        <div id="tech-file-view"></div></div>
+        <div id="tech-file-view"></div></section>
 
-      <div class="tech-card" id="tech-run"><h3><span class="tech-lamp"></span> GDScript runner <span class="tech-sub">headless perf / diagnostic probe</span></h3>
+      <section class="spanel s-tech" id="tech-run">
+        ${head("run", "GDScript runner", { note: "headless probe" })}
         <textarea class="tech-ta" id="tech-script" spellcheck="false">extends SceneTree
 
 func _init():
@@ -140,13 +165,14 @@ func _init():
           <button class="tech-btn primary" id="tech-run-btn">Run script</button>
           <span class="tech-meta" style="margin:0">must extend SceneTree and call quit()</span>
         </div>
-        <div id="tech-run-out"></div></div>
+        <div id="tech-run-out"></div></section>
 
-      <div class="tech-card tech-span2" id="tech-agent"><h3><span class="tech-lamp"></span> Live tech agent <span class="tech-sub" id="tech-agent-sub">no active item</span></h3>
+      <section class="spanel s-tech tech-span2" id="tech-agent">
+        ${head("agents", "Live tech agent", { nId: "tech-agent-sub" })}
         <div class="tech-flex">
-          <select class="tech-select" id="tech-item-sel" style="flex:1;min-width:220px"><option value="">— pick a tech work item —</option></select>
+          <select class="tech-select" id="tech-item-sel" style="flex:1;min-width:220px"><option value="">- pick a tech work item -</option></select>
         </div>
-        <div id="tech-agent-body"><div class="tech-empty">Select a tech work item to watch its dispatched agent.</div></div></div>
+        <div id="tech-agent-body"><div class="tech-empty">Select a tech work item to watch its dispatched agent.</div></div></section>
     </div>`;
   }
 
@@ -453,7 +479,9 @@ func _init():
     const body = $("#tech-agent-body");
     if (!body) return;
     if (!S.itemId) {
-      if (sub) sub.textContent = "no active item";
+      // The band's count pill, not a sentence: .sec-n is a chip and a phrase in
+      // it stretches the header band out of line with the five beside it.
+      if (sub) sub.textContent = "";
       body.innerHTML = `<div class="tech-empty">Select a tech work item to watch its dispatched agent.</div>`;
       return;
     }
@@ -464,7 +492,10 @@ func _init():
     const sig = S.itemId + ":" + (r && r.running) + ":" + (r && r.step_count) + ":" + ((r && r.final && r.final.subtype) || "");
     if (!force && sig === S.lastActivitySig) return; // no change; skip re-render (keeps steer box focus)
     S.lastActivitySig = sig;
-    if (sub) sub.textContent = r && r.running ? "agent running" : (r && r.final ? "finished" : "idle / not dispatched");
+    if (sub) {
+      sub.textContent = r && r.running ? "running" : (r && r.final ? "done" : "idle");
+      sub.className = "sec-n" + (r && r.running ? " good" : "");
+    }
 
     let feed = "";
     if (steps.length) {
@@ -485,6 +516,16 @@ func _init():
       ${fin.text ? "\n" + esc(fin.text) : ""}</div>` : "";
 
     const running = !!(r && r.running);
+    /* The signature above only skips a repaint when NOTHING moved, and while an
+     * agent is running the step count moves every few seconds — which is
+     * exactly when the steer box is enabled and being typed into. Rebuilding
+     * this card threw the half-written steer away mid-word. Carry the text,
+     * the caret and the focus across the rebuild. */
+    const steerWas = $("#tech-steer");
+    const keptSteer = steerWas
+      ? { text: steerWas.value, at: steerWas.selectionStart,
+          focus: document.activeElement === steerWas }
+      : null;
     body.innerHTML = `
       <div class="tech-flex" style="margin:6px 0 10px">
         <span class="tech-lamp ${running ? "ok" : (fin ? "warn" : "")}"></span>
@@ -508,6 +549,13 @@ func _init():
     const steerI = $("#tech-steer");
     if (steerB) steerB.onclick = steerAgent;
     if (steerI) steerI.onkeydown = (e) => { if (e.key === "Enter") steerAgent(); };
+    if (steerI && keptSteer && keptSteer.text) {
+      steerI.value = keptSteer.text;
+      if (keptSteer.focus && !steerI.disabled) {
+        steerI.focus();
+        try { steerI.setSelectionRange(keptSteer.at, keptSteer.at); } catch (e) {}
+      }
+    }
   }
 
   async function dispatchAgent() {

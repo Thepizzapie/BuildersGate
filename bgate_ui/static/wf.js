@@ -51,18 +51,40 @@
     } catch (e) { return { ok: false, __status: 0 }; }
   };
   const getX = async p => { try { const r = await fetch(p); const j = await r.json().catch(() => ({})); if (j && typeof j === "object") { try { j.__status = r.status; } catch (e) {} } return j; } catch (e) { return { __status: 0 }; } };
+  /* Why a read failed, in the words the panel that failed should print.
+     `get`/`getX` never reject, so a call site that only tests for a payload
+     cannot tell "the server said no" from "there is nothing here" — which is
+     how a refused endpoint ends up rendering the empty state. Every caller that
+     shows a reason routes through this so the reason is the same sentence. */
+  const readErr = (res, what) => {
+    const code = res && res.__status;
+    if (code === 0) return "the dashboard is unreachable";
+    if (code === 404) return `this server has no ${what} endpoint`;
+    return errMsg(res) + (code ? ` (${code})` : "");
+  };
+  // A write through `post` that the server refused. _ws.set answers a BARE
+  // document, so "no ok field" is success here and only an explicit ok:false —
+  // or a non-2xx status — is a refusal.
+  const refused = res => !res || res.ok === false || Number(res.__status || 0) >= 400;
   const toast = (m, bad) => (window.BGWS ? BGWS.toast(m, bad) : console.log(m));
   const uid = (p) => p + "_" + Math.random().toString(36).slice(2, 8);
 
+  /* Each category names an icon from icons.js. It is not decoration: the
+     library is seven card grids on one scroll, and the band at the top of each
+     one is the only thing that says which grid you are looking at. */
   const CATS = [
-    { id: "input", label: "Inputs" },
-    { id: "asset", label: "2D asset gen" },
-    { id: "world", label: "World / background" },
-    { id: "3d", label: "3D · Blender" },
-    { id: "agent", label: "Agents" },
-    { id: "control", label: "Control / QA" },
-    { id: "saved", label: "Saved workflows" },
+    { id: "input", label: "Inputs", icon: "task" },
+    { id: "asset", label: "2D asset gen", icon: "art" },
+    { id: "world", label: "World / background", icon: "background" },
+    { id: "3d", label: "3D · Blender", icon: "model" },
+    { id: "agent", label: "Agents", icon: "agents" },
+    { id: "control", label: "Control / QA", icon: "gate" },
+    { id: "saved", label: "Saved workflows", icon: "note" },
   ];
+  const CAT_ICON = {};
+  CATS.forEach(c => { CAT_ICON[c.id] = c.icon; });
+  const wfIcon = (name, size) =>
+    (window.BGIcon ? BGIcon(name, { size: size || 15 }) : "");
 
   // API envelope: {ok:true,data} | {ok:false,error:{code,message}}. Unwrap once
   // here so every call site deals in payloads, not envelopes.
@@ -74,7 +96,8 @@
 
   const WF = {
     steps: {}, templates: [], _nc: null, _wf: null, _saved: [], _api: null, _saveT: null,
-    _run: null, _runNodes: null, _pollT: null,
+    _run: null, _runNodes: null, _pollT: null, _savedError: "", _saveErr: "",
+    _facts: null,
 
     registerStep(def) { if (def && def.type) this.steps[def.type] = def; },
     registerTemplate(t) { if (t && t.id) this.templates.push(t); },
@@ -102,12 +125,19 @@
        webp anchor blank — and pointed at a revision that may not exist. The
        registry is read once and every thumbnail resolves through it. A step
        may name an older revision as "<name>@r2". */
-    _refs: { list: [], at: 0, loading: null },
+    _refs: { list: [], at: 0, loading: null, error: "" },
     refsLoad(force) {
       const now = Date.now();
       if (!force && this._refs.list.length && now - this._refs.at < 20000) return Promise.resolve(this._refs.list);
       if (this._refs.loading) return this._refs.loading;
-      this._refs.loading = get("/api/refs").then(d => {
+      /* /api/refs is BARE ({refs: […]}) - `d.refs`, not `d.data.refs`. getX so a
+         refused read can be told from an empty registry: when this failed, every
+         name in the graph stopped resolving and the reference node accused the
+         USER of naming something that does not exist in their project. The
+         registry not being readable is a different sentence. */
+      this._refs.loading = getX("/api/refs").then(d => {
+        this._refs.error = Number(d && d.__status || 0) >= 400
+          ? readErr(d, "GET /api/refs") : "";
         const list = (d && d.refs) || (d && d.data) || [];
         const first = !this._refs.at;
         if (Array.isArray(list)) { this._refs.list = list; this._refs.at = Date.now(); }
@@ -127,6 +157,9 @@
       const m = /^(.+?)@r?(\d+)$/.exec(s);
       return m ? { name: m[1], revision: parseInt(m[2], 10) } : { name: s, revision: null };
     },
+    // Why the pin registry is empty, when it is empty for a reason. "" means the
+    // read worked and there simply are no pins.
+    refsError() { return this._refs.error || ""; },
     refPin(name) {
       const want = String(name || "").trim().toLowerCase();
       return this._refs.list.find(r => r && String(r.name || "").toLowerCase() === want) || null;
@@ -188,14 +221,27 @@
         return Promise.resolve(this._sources.data);
       }
       if (this._sources.loading && !key) return this._sources.loading;
-      const req = get("/api/refs/sources" + (key ? "?q=" + encodeURIComponent(key) : ""))
+      /* getX, not get: a refused read has to arrive AS a refusal. `get` answers
+         {} on any non-2xx and never rejects, so the .catch that used to sit here
+         could not fire and a 404/500 on this route rendered as "nothing matched
+         - pin a reference from the art seat" — the picker told you your project
+         had no references when it had simply not been asked. */
+      const req = getX("/api/refs/sources" + (key ? "?q=" + encodeURIComponent(key) : ""))
         .then(r => {
-          const d = data(r) || { pins: [], sheets: [], artifacts: [] };
-          if (!key) { this._sources.data = d; this._sources.at = Date.now(); }
+          const d = data(r);
           this._sources.loading = null;
+          if (!d) {
+            // Cached with at=0 so the panel can print the reason now and the
+            // next open still retries — a failure must not sit in the 20s cache.
+            const bad = { pins: [], sheets: [], artifacts: [],
+              __error: readErr(r, "GET /api/refs/sources") };
+            if (!key) { this._sources.data = bad; this._sources.at = 0; }
+            return bad;
+          }
+          if (!key) { this._sources.data = d; this._sources.at = Date.now(); }
           return d;
         })
-        .catch(() => { this._sources.loading = null; return { pins: [], sheets: [], artifacts: [], __error: 1 }; });
+        .catch(() => { this._sources.loading = null; return { pins: [], sheets: [], artifacts: [], __error: "the reference read threw" }; });
       if (!key) this._sources.loading = req;
       return req;
     },
@@ -215,7 +261,10 @@
       const d = this._sources.q[hostId + ":data"] || this._sources.data;
       if (!d) { host.innerHTML = `<div class="wf-b-note">loading references…</div>`; return; }
       if (d.__error) {
-        host.innerHTML = `<div class="wf-warn">could not read the project's references (GET /api/refs/sources) - name one by hand below</div>`;
+        // The REASON, not just the fact. "could not read" over a 404 and over a
+        // 500 are two different afternoons, and the picker is the only place the
+        // difference is ever shown.
+        host.innerHTML = `<div class="wf-warn">could not read the project's references - ${esc(d.__error)}. Name one by hand below.</div>`;
         return;
       }
       const node = (this._wf && this._wf.nodes || []).find(n => n.id === nodeId);
@@ -254,7 +303,12 @@
       const known = [].concat(d.pins || [], d.sheets || [], d.artifacts || [])
         .some(i => String(i.value || "").toLowerCase() === curKey);
       if (cur && !known && !this.refRel(cur)) {
-        html += `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact - this step would run against nothing.</div>`;
+        // Do not blame the name when the registry is what failed: an unreachable
+        // /api/refs makes every pin unresolvable, and this line would then tell
+        // the user their perfectly good anchor does not exist.
+        html += this.refsError()
+          ? `<div class="wf-b-note" style="color:var(--warn)">“${esc(cur)}” cannot be checked - the pin registry could not be read (${esc(this.refsError())}).</div>`
+          : `<div class="wf-b-note" style="color:var(--bad)">“${esc(cur)}” does not resolve to a pin, a file in the project, or an artifact - this step would run against nothing.</div>`;
       }
       host.innerHTML = html;
     },
@@ -282,9 +336,12 @@
         const d = (r && r.ok && r.data !== undefined) ? r.data : (r && r.tiers ? r : null);
         if (!d) {
           t.ok = false;
+          // This sentence is printed on every model card (resolvedLine), so
+          // "request failed" for a dead dashboard was the least useful of the
+          // three things it could have been. readErr tells them apart.
           t.error = (r && r.__status === 404)
             ? "no tier ladder on this server (GET /api/tiers)"
-            : errMsg(r);
+            : readErr(r, "GET /api/tiers");
           return t;
         }
         this._absorbTiers(d);
@@ -605,18 +662,53 @@
     /* ---- library landing ------------------------------------------------ */
     async open(host, api) {
       this._api = api || {};
+      // NO TITLE HERE. The view chrome says "Studio" and the subnav tab you
+      // just pressed says "Workflows"; a third heading reading "Workflow
+      // library / Templates & saved workflows" was the same page named three
+      // times in eighty pixels. What is left is the one thing the chrome above
+      // cannot offer, which is the action.
       host.innerHTML = `<div class="wf-lib">
         <div class="wf-lib-head">
-          <div><div class="wf-eyebrow">Workflow library</div><h3 class="wf-h">Templates &amp; saved workflows</h3></div>
           <button class="qbtn small" onclick="WF.newBlank()">＋ New workflow</button>
         </div>
         <div id="wf-lib-body"><div class="empty">loading…</div></div>
       </div>`;
-      await this._loadSaved();
+      await Promise.all([this._loadSaved(), this._loadFacts()]);
       this._renderLibrary();
     },
+    /* WHAT THIS PROJECT ACTUALLY CONTAINS, so a template can prefill a real
+       path instead of a plausible one. The level template shipped
+       `res://assets/tiles/main.tres` hardcoded; that file exists in no project,
+       so the card failed at its generate node every single time it was opened.
+       A template that names a file the project does not have is worse than one
+       that names nothing, because it looks configured.
+
+       Best-effort by design: this is prefill, not validation. A project with no
+       engine, or a read that 404s, leaves `_facts` empty and every template
+       falls back to whatever it does when it is handed nothing. */
+    async _loadFacts() {
+      this._facts = { tilesets: [], scenes: [] };
+      try {
+        const [ts, sc] = await Promise.all([
+          getX("/api/scene/tilesets"), getX("/api/scene/wirable"),
+        ]);
+        if (ts && Array.isArray(ts.tilesets)) this._facts.tilesets = ts.tilesets;
+        if (sc && Array.isArray(sc.scenes)) this._facts.scenes = sc.scenes;
+      } catch (e) { /* no engine, no facts, no prefill. Not an error. */ }
+    },
+    /* The index is a BARE document: {seat, key, data:{list}}. `d.data.list` is
+       the stored payload, not an envelope, so it is read at that depth on
+       purpose. A failed read used to leave `_saved` empty, which renders exactly
+       like "you have never saved a workflow" - the one thing it must not be
+       confused with. */
     async _loadSaved() {
-      const d = await get("/api/workspace/studio/wf-index");
+      const d = await getX("/api/workspace/studio/wf-index");
+      if (d && Number(d.__status || 0) >= 400) {
+        this._savedError = readErr(d, "GET /api/workspace/studio/wf-index");
+        this._saved = [];
+        return;
+      }
+      this._savedError = "";
       this._saved = ((d.data && d.data.list) || []);
     },
     _renderLibrary() {
@@ -627,14 +719,31 @@
         <span class="wf-card-g">${esc(t.glyph || "⬡")}</span>
         <span class="wf-card-t">${esc(t.name)}</span>
         <span class="wf-card-h">${esc(t.hint || (saved ? "saved workflow" : "template"))}</span></button>`;
+      /* A CATEGORY IS A SECTION, and it wears app.css's .spanel + .sec-h like
+         every other section in the app - icon, label, count. It used to be a
+         bare uppercase line over a naked card grid, so seven categories ran
+         together as one field of two hundred identical cards and the only
+         thing separating them was 22px of margin. */
+      const sec = (icon, label, n, inner) =>
+        `<section class="spanel k-list wf-lib-sec">
+           <div class="sec-h">${wfIcon(icon)}<h3 class="sec-t">${esc(label)}</h3>
+             ${n ? `<span class="sec-n">${n}</span>` : ""}</div>
+           ${inner}</section>`;
+
       let html = "";
       CATS.filter(c => c.id !== "saved").forEach(c => {
         const ts = byCat[c.id] || [];
         if (!ts.length) return;
-        html += `<div class="wf-lib-sec"><div class="wf-lib-cat">${esc(c.label)}</div><div class="wf-card-grid">${ts.map(t => tplCard(t)).join("")}</div></div>`;
+        html += sec(c.icon, c.label, ts.length,
+          `<div class="wf-card-grid">${ts.map(t => tplCard(t)).join("")}</div>`);
       });
+      if (this._savedError) {
+        html += sec("note", "Your saved workflows", 0,
+          `<div class="wf-warn">could not read your saved workflows - ${esc(this._savedError)}. They are still on the server; this is a read that failed, not an empty library.</div>`);
+      }
       if (this._saved.length) {
-        html += `<div class="wf-lib-sec"><div class="wf-lib-cat">Your saved workflows</div><div class="wf-card-grid">${this._saved.map(s => `<button class="wf-card" onclick="WF.openSaved('${esc(s.id)}')"><span class="wf-card-g">◆</span><span class="wf-card-t">${esc(s.name)}</span><span class="wf-card-h">${esc(s.category || "workflow")} · ${(s.stepCount || 0)} steps</span><span class="wf-card-x" onclick="event.stopPropagation();WF.deleteSaved('${esc(s.id)}')">✕</span></button>`).join("")}</div></div>`;
+        html += sec("note", "Your saved workflows", this._saved.length,
+          `<div class="wf-card-grid">${this._saved.map(s => `<button class="wf-card" onclick="WF.openSaved('${esc(s.id)}')"><span class="wf-card-g">${wfIcon(CAT_ICON[s.category] || "note", 18)}</span><span class="wf-card-t">${esc(s.name)}</span><span class="wf-card-h">${esc(s.category || "workflow")} · ${(s.stepCount || 0)} steps</span><span class="wf-card-x" onclick="event.stopPropagation();WF.deleteSaved('${esc(s.id)}')">✕</span></button>`).join("")}</div>`);
       }
       body.innerHTML = html || `<div class="empty">no templates registered</div>`;
     },
@@ -642,7 +751,8 @@
     openTemplate(id) {
       const t = this.templates.find(x => x.id === id); if (!t) return;
       let built = { nodes: [], edges: [] };
-      try { built = t.build() || built; } catch (e) { console.error(e); }
+      const facts = this._facts || { tilesets: [], scenes: [] };
+      try { built = t.build(facts) || built; } catch (e) { console.error(e); }
       // STABLE id per template, not uid(). A fresh random id every open meant
       // a run started from a template was orphaned the moment you reopened it
       // or reloaded the page: _attachRun looks a run up BY workflow id, so the
@@ -654,9 +764,14 @@
                           fromTemplate: id, nodes: built.nodes, edges: built.edges });
     },
     async openSaved(id) {
-      const d = await get("/api/workspace/studio/wf:" + id);
-      if (d.data && d.data.id) this.openWorkflow(d.data);
-      else toast("could not load workflow", true);
+      const d = await getX("/api/workspace/studio/wf:" + id);
+      if (d.data && d.data.id) { this.openWorkflow(d.data); return; }
+      // "could not load workflow" was true of a refused read, a deleted
+      // tombstone and a document from a build that stored a different shape -
+      // three problems with three different answers.
+      toast(Number(d.__status || 0) >= 400
+        ? `could not load that workflow - ${readErr(d, "GET /api/workspace/studio/wf:…")}`
+        : "that saved workflow is empty - it was deleted, or written by a build that stored it differently", true);
     },
     /* Delete meant "drop it from the index": no confirmation, and the stored
        document (and any run history keyed to it) stayed behind forever. Now it
@@ -670,11 +785,21 @@
         ok: "delete", danger: true,
       });
       if (!go) return;
+      const keep = this._saved;
       this._saved = this._saved.filter(s => s.id !== id);
-      await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      const idx = await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      // A refused index write left the row gone from the screen and present on
+      // the server: it came back on the next reload with no explanation.
+      if (refused(idx)) {
+        this._saved = keep;
+        toast(`could not delete ${name} - ${readErr(idx, "POST /api/workspace/studio/wf-index")}`, true);
+        this._renderLibrary();
+        return;
+      }
       // The workspace store has no DELETE; an empty document is the tombstone,
       // and openSaved() already treats a doc with no id as unloadable.
-      await post("/api/workspace/studio/wf:" + id, { data: {} });
+      const tomb = await post("/api/workspace/studio/wf:" + id, { data: {} });
+      if (refused(tomb)) toast(`${name} was removed from the list, but its stored document could not be emptied - ${readErr(tomb, "POST /api/workspace/studio/wf:…")}`, true);
       if (this._wf && this._wf.id === id) { this._wf = null; clearTimeout(this._saveT); }
       toast(`deleted ${name}`);
       this._renderPalette();
@@ -697,10 +822,21 @@
           <button class="qbtn small" onclick="WF.run()">▶ Run workflow</button>
         </div>
         <div class="wf-runbar" id="wf-runbar" hidden></div>
+        <!-- The two rails get header bands for the same reason every other
+             pane in the app now has one: without them the builder is three
+             unlabelled columns, and the left one (a list of things you can add)
+             and the right one (the settings of the thing you selected) are the
+             two most easily confused surfaces on the page. -->
         <div class="wf-main">
-          <div class="wf-palette" id="wf-palette"></div>
+          <div class="wf-rail wf-palette-rail">
+            <div class="sec-h">${wfIcon("studio", 14)}<h4 class="sec-t">Steps</h4></div>
+            <div class="wf-palette" id="wf-palette"></div>
+          </div>
           <div class="wf-canvas" id="wf-canvas"></div>
-          <div class="wf-insp" id="wf-insp"><div class="wf-insp-empty">Select a step to configure it.</div></div>
+          <div class="wf-rail wf-insp-rail">
+            <div class="sec-h">${wfIcon("settings", 14)}<h4 class="sec-t">Inspector</h4></div>
+            <div class="wf-insp" id="wf-insp"><div class="wf-insp-empty">Select a step to configure it.</div></div>
+          </div>
         </div>
       </div>`;
       this._renderPalette();
@@ -718,7 +854,15 @@
       // canvas, and got no account of the run you had just paid for. The last
       // run's outcome is exactly what a reopened builder should show.
       const q = encodeURIComponent(wfId);
-      let run = data(await get(`/api/workflows/runs/latest?workflow_id=${q}`));
+      const first = await getX(`/api/workflows/runs/latest?workflow_id=${q}`);
+      // {ok:true, data:null} is a real answer - this workflow has never run.
+      // A non-2xx is not, and used to look identical: no run bar, no account of
+      // the run you had just paid for, and nothing saying why.
+      if (Number(first.__status || 0) >= 400) {
+        toast(`could not check for a run of this workflow - ${readErr(first, "GET /api/workflows/runs/latest")}`, true);
+        this._renderRun(); return;
+      }
+      let run = data(first);
       if (!run || !run.id) {
         run = data(await get(
           `/api/workflows/runs/latest?workflow_id=${q}&running_only=false`));
@@ -739,7 +883,7 @@
         let list = byCat[c.id] || [];
         if (c.id === "saved") list = this._saved.map(s => ({ type: "sub:" + s.id, label: s.name, glyph: "◆", accent: "var(--ember)" }));
         if (!list.length) return;
-        html += `<div class="wf-pal-cat">${esc(c.label)}</div>` + list.map(s =>
+        html += `<div class="wf-pal-cat">${wfIcon(c.icon, 12)}${esc(c.label)}</div>` + list.map(s =>
           `<button class="wf-pi" style="--a:${s.accent || "var(--ember)"}" onclick="WF.addStep('${esc(s.type)}')"><span class="g">${esc(s.glyph || "◇")}</span> ${esc(s.label)}</button>`).join("");
       });
       pal.innerHTML = html || `<div class="empty">no steps</div>`;
@@ -894,7 +1038,6 @@
       const out = row && row.output;
       return (out && typeof out === "object") ? out : {};
     },
-    nodeText(nodeId) { return String(this.nodeOutput(nodeId).text || ""); },
     nodeArtifacts(nodeId) {
       const a = this.nodeOutput(nodeId).artifacts;
       return Array.isArray(a) ? a : [];
@@ -1053,14 +1196,31 @@
       return { id: this._wf.id, name: this._wf.name, category: this._wf.category, nodes, edges: (nc ? nc.edges : this._wf.edges || []) };
     },
     persist() { clearTimeout(this._saveT); this._saveT = setTimeout(() => this.save(true), 800); },
+    /* THE WRITE IS CHECKED. The document store answers 409 on a stale write (two
+       tabs holding the same workflow) and this used to ignore the response
+       entirely: the graph on screen was not the graph on disk, the autosave went
+       on failing every 800ms, and the only thing the user ever saw was
+       "workflow saved". A refusal is now said out loud even in silent mode —
+       silent means "do not announce routine success", never "hide a failure" —
+       and deduped by message so a debounced autosave cannot become a toast
+       storm. */
     async save(silent) {
       const wf = this._serialize(); this._wf.nodes = wf.nodes; this._wf.edges = wf.edges;
-      await post("/api/workspace/studio/wf:" + wf.id, { data: wf });
+      const doc = await post("/api/workspace/studio/wf:" + wf.id, { data: wf });
+      if (refused(doc)) return this._saveFailed(doc, "workflow");
       const entry = { id: wf.id, name: wf.name, category: wf.category, stepCount: wf.nodes.length };
       const i = this._saved.findIndex(s => s.id === wf.id);
       if (i >= 0) this._saved[i] = entry; else this._saved.push(entry);
-      await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      const idx = await post("/api/workspace/studio/wf-index", { data: { list: this._saved } });
+      if (refused(idx)) return this._saveFailed(idx, "workflow list");
+      this._saveErr = "";
       if (!silent) toast("workflow saved");
+    },
+    _saveFailed(res, what) {
+      const why = readErr(res, "POST /api/workspace/studio/…");
+      const msg = `${what} NOT saved - ${why}`;
+      if (msg !== this._saveErr) { this._saveErr = msg; toast(msg, true); }
+      return false;
     },
     async saveAsNode() {
       await this.save(true);
@@ -1103,8 +1263,16 @@
       const tick = async () => {
         const bar = document.getElementById("wf-runbar");
         if (!bar || !bar.isConnected) return;              // left the builder
-        const run = data(await post(`/api/workflows/runs/${runId}/advance`, {}));
-        if (!run) return;
+        const res = await post(`/api/workflows/runs/${runId}/advance`, {});
+        const run = data(res);
+        if (!run) {
+          // The poll stopping is invisible: the run bar keeps showing whatever
+          // it last painted, so a run that the server has forgotten (404) or is
+          // refusing to tick reads as one that is still going. Say it once and
+          // stop, rather than freezing on a stale "running".
+          toast(`run #${runId} stopped polling - ${readErr(res, "POST /api/workflows/runs/{run}/advance")}`, true);
+          return;
+        }
         this._paint(run);
         if (run.status === "running") this._pollT = setTimeout(tick, 2500);
       };
@@ -1204,8 +1372,12 @@
     },
     async cancelRun() {
       if (!this._run) return;
-      const run = data(await post(`/api/workflows/runs/${this._run.id}/cancel`, {}));
-      if (run) { clearTimeout(this._pollT); this._paint(run); toast("run cancelled"); }
+      const res = await post(`/api/workflows/runs/${this._run.id}/cancel`, {});
+      const run = data(res);
+      // A refused cancel used to do nothing at all - no repaint, no word - so
+      // the button read as dead while the server had answered with a reason.
+      if (!run) { toast(`could not cancel - ${readErr(res, "POST /api/workflows/runs/{run}/cancel")}`, true); return; }
+      clearTimeout(this._pollT); this._paint(run); toast("run cancelled");
     },
     _topoOrder(wf) {
       const ids = wf.nodes.map(n => n.id);
@@ -1239,7 +1411,12 @@
     body: n => {
       const ref = (n.config && n.config.ref) || "";
       if (!ref) return WF.refCard("", "pick a reference - a pin, a sprite sheet, or an artifact");
-      if (!WF.refRel(ref)) return WF.refCard("", `“${ref}” does not resolve to anything in this project`);
+      // A failed registry read makes EVERY pin unresolvable. Saying the anchor
+      // does not exist would be this card accusing the user of a typo for a
+      // server problem, on the one node whose whole job is to be checkable.
+      if (!WF.refRel(ref)) return WF.refCard("", WF.refsError()
+        ? `“${ref}” cannot be checked - the pin registry could not be read (${WF.refsError()})`
+        : `“${ref}” does not resolve to anything in this project`);
       return WF.refCard(ref, "");
     },
     config: (n, ctx) => `<div class="wf-insp-p">The anchor every downstream step conditions on. Pick a pinned reference - the pin is versioned, so <code>name@r2</code> holds this workflow to the revision it was designed against even after the anchor is re-pinned.</div>`
@@ -1253,11 +1430,10 @@
     const s = document.createElement("style"); s.id = "wf-style";
     s.textContent = `
       .wf-lib{padding:6px 4px}
-      .wf-lib-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px}
-      .wf-eyebrow{font-family:var(--mono);font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:var(--ash2)}
-      .wf-h{font-size:18px;color:var(--bone);margin:4px 0 0}
-      .wf-lib-sec{margin-bottom:22px}
-      .wf-lib-cat{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ash);margin-bottom:10px}
+      /* An action row, not a heading row - .wf-eyebrow and .wf-h went with the
+         title they styled. See open() for why there is no title here. */
+      .wf-lib-head{display:flex;align-items:center;justify-content:flex-start;margin-bottom:var(--s-6)}
+      .wf-lib-sec{margin-bottom:var(--s-6)}
       .wf-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
       .wf-card{position:relative;display:flex;flex-direction:column;gap:4px;text-align:left;padding:16px;background:var(--plate);border:1px solid var(--seam);border-radius:12px;cursor:pointer;color:var(--bone);font:inherit}
       .wf-card:hover{border-color:var(--ember);background:var(--plate2)}
@@ -1287,14 +1463,22 @@
       .wf-st-passed{color:var(--good)}
       .wf-st-failed,.wf-st-cancelled{color:var(--bad)}
       .wf-main{flex:1;display:flex;border:1px solid var(--seam);border-radius:0 0 12px 12px;overflow:hidden;min-height:0}
-      .wf-palette{width:186px;flex:none;background:var(--iron);border-right:1px solid var(--seam);padding:12px 10px;overflow-y:auto}
-      .wf-pal-cat{font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash2);margin:12px 0 6px}
+      /* The rail is the column; the band is its lid and the list below it
+         scrolls under the band rather than with it. app.css owns .sec-h, so
+         only the seam and the scroll live here. */
+      .wf-rail{display:flex;flex-direction:column;min-height:0;background:var(--iron)}
+      .wf-palette-rail{width:186px;flex:none;border-right:1px solid var(--seam)}
+      .wf-insp-rail{width:270px;flex:none;border-left:1px solid var(--seam)}
+      .wf-rail > .sec-h{flex:none;padding:var(--s-4) var(--s-5);margin:0;background:var(--surface-4)}
+      .wf-palette{flex:1;min-height:0;padding:var(--s-5) var(--s-4);overflow-y:auto}
+      .wf-pal-cat{display:flex;align-items:center;gap:var(--s-3);font-family:var(--mono);font-size:9px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash2);margin:12px 0 6px}
       .wf-pal-cat:first-child{margin-top:0}
+      .wf-pal-cat .bgi{color:var(--ash2)}
       .wf-pi{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 9px;margin-bottom:5px;background:var(--plate);border:1px solid var(--seam);border-left:2px solid var(--a);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;cursor:pointer}
       .wf-pi:hover{background:var(--plate2);border-color:var(--a)}
       .wf-pi .g{color:var(--a)}
       .wf-canvas{flex:1;position:relative;min-width:0}
-      .wf-insp{width:270px;flex:none;background:var(--iron);border-left:1px solid var(--seam);padding:15px;overflow-y:auto}
+      .wf-insp{flex:1;min-height:0;padding:var(--s-6);overflow-y:auto}
       .wf-insp-empty{color:var(--ash2);font-size:12px}
       .wf-insp-h{font-size:13.5px;font-weight:var(--fw-semi);color:var(--bone);margin-bottom:12px;display:flex;gap:8px;align-items:center}
       .wf-insp-p{font-size:12px;color:var(--ash);line-height:1.5;margin:6px 0}

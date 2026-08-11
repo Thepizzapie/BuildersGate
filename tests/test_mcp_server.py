@@ -109,7 +109,7 @@ async def test_tools_are_registered():
     names = {t.name for t in await server.mcp.list_tools()}
     assert {
         "project_init", "project_status", "bible_add", "bible_update", "bible_read",
-        "scope_check", "lore_add", "lore_update", "lore_brief", "lore_list",
+        "lore_add", "lore_update", "lore_brief", "lore_list",
         "lore_link", "lore_fact", "canon_check", "recall",
     } <= names
 
@@ -123,21 +123,17 @@ async def test_every_tool_has_a_description():
 @pytest.mark.anyio
 async def test_full_authoring_flow(wired):
     assert (await call("bible_add", kind="pillar", title="Tension over spectacle"))["id"] > 0
-    await call("bible_add", kind="scope_tier", title="Core loop", rank=1)
-    await call("bible_add", kind="cut_line", title="--- ship ---", rank=2)
-    await call("bible_add", kind="scope_tier", title="Multiplayer", rank=5)
+    await call("bible_add", kind="loop", title="Core loop", rank=1)
 
     view = await call("bible_read")
-    assert [s["title"] for s in view["in_scope"]] == ["Core loop"]
-    assert [s["title"] for s in view["cut"]] == ["Multiplayer"]
-    assert (await call("scope_check", rank=5))["in_scope"] is False
+    assert [s["title"] for s in view["loop"]] == ["Core loop"]
 
     await call("lore_add", kind="faction", name="The Ashen Order", status="canon")
     await call("lore_fact", ref="The Ashen Order",
                statement="The Ashen Order worships the flame.", locked=True)
 
     status = await call("project_status")
-    assert status["counts"] == {"bible_sections": 4, "entities": 1,
+    assert status["counts"] == {"bible_sections": 2, "entities": 1,
                                 "canon_entities": 1, "facts": 1, "links": 0}
 
     assert (await call("recall", query="flame"))["results"]

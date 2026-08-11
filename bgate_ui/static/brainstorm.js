@@ -1483,7 +1483,7 @@
     director: {
       label: "Director brainstorm",
       blurb: "what to build",
-      chatSub: "thinking out loud about scope, pillars and the cut line",
+      chatSub: "thinking out loud about pillars, the core loop and priorities",
       deployNote: "synthesises this session into work items for the board",
       empty: "Talk through an idea. When it holds together, Deploy turns it into work items you review before anything is filed."
     },

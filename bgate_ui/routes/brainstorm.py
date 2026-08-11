@@ -293,8 +293,9 @@ def synthesize(session_id: int) -> dict:
     """
     project = root()
     session = _session(project, session_id)
-    # The session, plus the world the plan has to fit: the cut line for a
-    # director session, the existing canon for a narrative one. Sent ONLY here,
+    # The session, plus the world the plan has to fit: the pillars, loop and
+    # constraints for a director session, the existing canon for a narrative
+    # one. Sent ONLY here,
     # never on a chat turn — see brainstorm.world_context.
     try:
         turns = _bs.synthesis_turns(project, session)

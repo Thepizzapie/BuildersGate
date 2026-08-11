@@ -32,6 +32,16 @@ window.AssetLib = (() => {
   const KIND_GLYPH = { image:"▧", audio:"♪", resource:"⬡" };
   const CAT_GLYPH = { characters:"☻", enemies:"☠", items:"⚔", props:"▤",
                       tiles:"▦", audio:"♪", ui:"⊞", shaders:"◐", vfx:"✦" };
+  /* The category rail still wears the glyphs — they are inline in a chip, next
+   * to a count, and a stroked 15px icon there would be a second row of
+   * furniture. A SECTION header is the one place the real icon earns its size,
+   * so this map is deliberately separate from CAT_GLYPH rather than replacing
+   * it. Names come from icons.js; anything unlisted falls back to `assets`. */
+  const CAT_ICON = { characters:"rig", enemies:"collision", items:"props",
+                     props:"stage", tiles:"tileset", audio:"audio",
+                     ui:"overview", shaders:"fill", vfx:"concept",
+                     lights:"lighting", pickups:"select", portraits:"art",
+                     generated_static:"background", assets:"assets" };
   const SORTS = [
     { id:"name",  label:"name" },
     { id:"new",   label:"newest" },
@@ -50,21 +60,82 @@ window.AssetLib = (() => {
     const s = document.createElement("style");
     s.id = "assetlib-style";
     s.textContent = [
-      ".al-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}",
-      ".al-in{background:var(--void);border:1px solid var(--seam);border-radius:8px;color:var(--bone);font:inherit;font-size:12px;padding:7px 11px;min-width:200px}",
-      ".al-in:focus{outline:none;border-color:var(--ember)}",
-      ".al-chip{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;padding:5px 10px;border:1px solid var(--seam);border-radius:999px;color:var(--ash);cursor:pointer;background:none;display:inline-flex;gap:6px;align-items:center}",
-      ".al-chip:hover{border-color:var(--ember);color:var(--bone)}",
-      ".al-chip.on{border-color:var(--ember);color:var(--bone);background:var(--plate)}",
-      ".al-chip b{color:var(--bone);font-weight:var(--fw-semi)}",
-      ".al-chip.good.on{border-color:var(--good);color:var(--good)}",
-      ".al-chip.warn.on{border-color:var(--warn);color:var(--warn)}",
-      ".al-rail{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:14px;padding-bottom:11px;border-bottom:1px solid var(--seam)}",
-      ".al-sum{font-family:var(--mono);font-size:10px;color:var(--ash2);margin-left:auto}",
-      ".al-sec{margin-bottom:22px}",
-      ".al-sech{display:flex;align-items:baseline;gap:9px;font-family:var(--mono);font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:var(--ash);margin-bottom:9px;position:sticky;top:0;background:var(--void);padding:5px 0;z-index:2}",
-      ".al-sech .g{color:var(--ember);font-size:12px}",
-      ".al-sech .n{color:var(--ash2);font-size:9px}",
+      /* ── the control header ────────────────────────────────────────────────
+       * WHAT THIS REPLACED was one run of 24 identical pills: a search box, five
+       * status filters, fifteen family filters, four sort modes and three
+       * actions, all the same shape, the same size and the same colour. `rescan`
+       * — which walks the whole project off disk — looked exactly like `tiles`.
+       * Nothing on the row told you which pills narrowed the grid, which one
+       * reordered it, and which one would go and DO something.
+       *
+       * So the three kinds are now three different species, and each one wears
+       * the label of what it is:
+       *   filters  stay pills, because a pill that lights up is a toggle;
+       *   sort and family are SELECTS - one-of-many, and the app's combobox
+       *            makes them look nothing like a toggle;
+       *   view     is a pressed-state toggle, squared off so it is not a pill;
+       *   actions  left the header entirely - `rescan` now sits with sprite
+       *            editor / audio lab / 3D viewer in the view heading, which is
+       *            where every other action on this page already lives.
+       * Family went from fifteen pills to one select for the same reason:
+       * fifteen mutually-exclusive options is a list, not a row of switches. */
+      ".al-head{margin-bottom:var(--s-6)}",
+      ".al-row{display:flex;gap:var(--s-5);align-items:center;flex-wrap:wrap}",
+      ".al-row+.al-row{margin-top:var(--s-4)}",
+      /* A POD, NOT A RULE BETWEEN NEIGHBOURS. A separator drawn as the group's
+       * own left border is correct only while the row fits on one line - the
+       * moment it wraps, the first group on the new line wears a hairline
+       * against the page margin, which reads as a rendering artefact. A tinted
+       * pod groups the same controls and survives the wrap, which this header
+       * does at any window narrower than about 1100px. */
+      ".al-grp{display:flex;gap:var(--s-3);align-items:center;flex-wrap:wrap;"
+        + "background:var(--surface-1);border-radius:var(--r-lg);padding:var(--s-3) var(--s-4)}",
+      ".al-lab{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3);white-space:nowrap}",
+      ".al-in{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-lg);color:var(--text);font:inherit;font-size:var(--fs-sm);padding:7px 11px;min-width:200px;flex:1 1 200px;max-width:340px}",
+      ".al-in:focus{outline:none;border-color:var(--accent)}",
+      /* A FILTER IS A PILL. Round, toggles, lights up in the colour of what it
+       * is asserting - and nothing else on this header is round. */
+      ".al-chip{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r-full);color:var(--text-2);cursor:pointer;background:none;display:inline-flex;gap:6px;align-items:center}",
+      ".al-chip:hover{border-color:var(--accent);color:var(--text)}",
+      ".al-chip.on{border-color:var(--accent);color:var(--text);background:var(--accent-soft)}",
+      ".al-chip b{color:var(--text);font-weight:var(--fw-semi)}",
+      ".al-chip.good.on{border-color:var(--good);color:var(--good);background:var(--good-soft)}",
+      ".al-chip.warn.on{border-color:var(--warn);color:var(--warn);background:var(--warn-soft)}",
+      /* ONE OF MANY IS A SELECT. bgselect.js swaps the native element for the
+       * app's combobox and copies these classes onto it, so the caret and the
+       * squared corners are what the user actually sees - deliberately the
+       * opposite shape to a filter pill. */
+      ".al-sel,.al-sel.bgs-btn{font-family:var(--mono);font-size:var(--fs-2xs);letter-spacing:.06em;padding:5px 9px;border-radius:var(--r-lg);background:var(--surface-2);border:1px solid var(--line);color:var(--text)}",
+      ".al-sel.bgs-btn:hover{border-color:var(--accent)}",
+      /* A VIEW TOGGLE IS NEITHER. Squared like the selects because it is about
+       * presentation, pressed like a switch because it has two states, and never
+       * round - `compact` changes the layout, it does not narrow the set. */
+      ".al-tgl{font-family:var(--mono);font-size:var(--fs-2xs);letter-spacing:.06em;padding:5px 10px;border-radius:var(--r-lg);background:var(--surface-2);border:1px solid var(--line);color:var(--text-2);cursor:pointer}",
+      ".al-tgl:hover{border-color:var(--accent);color:var(--text)}",
+      ".al-tgl[aria-pressed=true]{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}",
+      /* WHICH LIBRARY, not which filter. Working files are a different set of
+       * files entirely (see families()), so this is a segmented switch between
+       * two drawers rather than another pill in the filter run. */
+      ".al-seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}",
+      ".al-segb{font-family:var(--mono);font-size:var(--fs-2xs);letter-spacing:.06em;padding:5px 10px;background:none;border:0;color:var(--text-3);cursor:pointer;display:inline-flex;gap:6px;align-items:center}",
+      ".al-segb+.al-segb{border-left:1px solid var(--line)}",
+      ".al-segb:hover{color:var(--text)}",
+      ".al-segb[aria-pressed=true]{background:var(--accent-soft);color:var(--text)}",
+      ".al-segb b{color:var(--text);font-weight:var(--fw-semi)}",
+      ".al-sum{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--text-3);margin-left:auto;text-align:right}",
+      /* A CATEGORY GROUP IS A PANEL. It was a bare .sec-h band over a naked
+       * grid, so eight categories ran together as one continuous field of
+       * tiles and the header was the only thing separating them - which is the
+       * "everything blends together" complaint, on the view with the most
+       * things on it. .spanel gives each group its own surface and edge; the
+       * header band is unchanged because it was already the shared one. */
+      ".al-sec{margin-bottom:var(--s-6)}",
+      /* Sticky INSIDE the panel now, so the offset is the panel's own padding
+       * rather than 0 - the same calc() world.js uses on the bible spine, for
+       * the same reason. --surface-2 rather than --bg: the grid it rides over
+       * is the panel's paper, not the canvas. */
+      ".al-sec > .al-sech{position:sticky;top:calc(-1 * var(--s-5));z-index:2}",
+      ".al-sech .n{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3)}",
       ".al-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:12px;align-items:start}",
       ".al-grid.dense{grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:9px}",
       ".al-tile{border:1px solid var(--seam);background:var(--iron);border-radius:11px;overflow:hidden;cursor:pointer;transition:border-color .12s}",
@@ -149,7 +220,14 @@ window.AssetLib = (() => {
     // correctly, "unused", and on a real project they were 508 of 775 families.
     // Two thirds of the page was grey rows that could never turn green and that
     // nobody could act on, which is what buried the assets that matter.
-    if (!view.working) out = out.filter(f => !f.working);
+    // A DRAWER IS EXCLUSIVE IN BOTH DIRECTIONS, and only one of these lines was
+    // here. Turning working files ON stopped filtering rather than switching, so
+    // the drawer showed both sets: the count rail and the summary line (which
+    // both already scoped themselves to one drawer) said "730 families" over a
+    // grid of 1012. The header's library switch is now a two-option segmented
+    // control, which asserts exclusivity outright and cannot be the one thing on
+    // the page telling the truth.
+    out = out.filter(f => (view.working ? !!f.working : !f.working));
     if (view.cat) out = out.filter(f => f.category === view.cat);
     if (view.search){
       const q = view.search;
@@ -190,43 +268,76 @@ window.AssetLib = (() => {
       `<button class="al-chip${on ? " on" : ""}${cls ? " " + cls : ""}"
         ${title ? `title="${E(title)}"` : ""} onclick="${onclick}">${inner}</button>`;
 
+    const cats = Object.keys(catCount).sort();
+    const shipping = (st.in_use || 0) + (st.unused || 0);
+
     host.innerHTML = `
-      <div class="al-bar">
-        <input class="al-in" placeholder="Search families and files…"
-               value="${E(view.search)}" oninput="AssetLib.setSearch(this.value)">
-        ${chip(view.status === "used", "good", "AssetLib.setStatus('used')",
-               `in use <b>${st.in_use || 0}</b>`,
-               "Reached by a scene or script - including paths the game builds at runtime.")}
-        ${chip(view.status === "unused", "warn", "AssetLib.setStatus('unused')",
-               `unused <b>${st.unused || 0}</b>`,
-               "On disk, reached by nothing. Approved is not the same as shipping.")}
-        ${chip(view.status === "review", "", "AssetLib.setStatus('review')",
-               `needs review`, "Has a candidate revision waiting on a decision.")}
-        ${chip(view.status === "rigged", "", "AssetLib.setStatus('rigged')",
-               `rigged <b>${st.rigged || 0}</b>`,
-               "Carries a rig sidecar - labelled slots the gear pipeline can read.")}
-        ${chip(view.status === "unrigged", "", "AssetLib.setStatus('unrigged')",
-               `no rig`, "Image families with no rig sidecar - the gear pipeline has to guess.")}
-        <span class="al-sum">${shown.length} of ${
-          view.working ? (st.working || 0)
-                       : (st.in_use || 0) + (st.unused || 0)} families ·
-          ${st.files || 0} files${data.truncated ? " · scan truncated" : ""}</span>
-      </div>
-      <div class="al-rail">
-        ${chip(!view.cat, "", "AssetLib.setCat('')", `all`)}
-        ${Object.keys(catCount).sort().map(c => chip(view.cat === c, "",
-          `AssetLib.setCat('${E(c)}')`,
-          `${CAT_GLYPH[c] || "·"} ${E(c)} <b>${catCount[c]}</b>`)).join("")}
-        <span style="flex:1"></span>
-        ${SORTS.map(s => chip(view.sort === s.id, "",
-          `AssetLib.setSort('${s.id}')`, E(s.label))).join("")}
-        ${chip(view.dense, "", "AssetLib.toggleDense()", "compact")}
-        ${st.working ? chip(view.working, "", "AssetLib.toggleWorking()",
-          `working files <b>${st.working}</b>`,
-          "Files outside res://assets/** - the art seat's scratch renders, tmp/, "
-          + "test fixtures. The engine cannot load any of them, so they are all "
-          + "'unused' and none of that is a defect.") : ""}
-        ${chip(false, "", "AssetLib.refresh()", "rescan")}
+      <!-- The filter rail is chrome FOR the grid below it, so it takes the
+           panel surface and deliberately no header band: a lid reading
+           "filters" over a row of filters labels a thing that already says
+           what it is, and the view chrome above already says "Assets". -->
+      <div class="al-head spanel">
+        <div class="al-row">
+          <input class="al-in" placeholder="Search families and files…"
+                 value="${E(view.search)}" oninput="AssetLib.setSearch(this.value)">
+          <div class="al-grp">
+            <span class="al-lab">family</span>
+            <select class="al-sel" aria-label="Family"
+                    onchange="AssetLib.pickCat(this.value)">
+              <option value=""${view.cat ? "" : " selected"}>all families${
+                cats.length ? ` · ${cats.length}` : ""}</option>
+              ${cats.map(c => `<option value="${E(c)}"${
+                view.cat === c ? " selected" : ""}>${CAT_GLYPH[c] || "·"} ${
+                E(c)} · ${catCount[c]}</option>`).join("")}
+            </select>
+          </div>
+          <div class="al-grp">
+            <span class="al-lab">filter</span>
+            ${chip(view.status === "used", "good", "AssetLib.setStatus('used')",
+                   `in use <b>${st.in_use || 0}</b>`,
+                   "Reached by a scene or script - including paths the game builds at runtime.")}
+            ${chip(view.status === "unused", "warn", "AssetLib.setStatus('unused')",
+                   `unused <b>${st.unused || 0}</b>`,
+                   "On disk, reached by nothing. Approved is not the same as shipping.")}
+            ${chip(view.status === "review", "", "AssetLib.setStatus('review')",
+                   `needs review`, "Has a candidate revision waiting on a decision.")}
+            ${chip(view.status === "rigged", "", "AssetLib.setStatus('rigged')",
+                   `rigged <b>${st.rigged || 0}</b>`,
+                   "Carries a rig sidecar - labelled slots the gear pipeline can read.")}
+            ${chip(view.status === "unrigged", "", "AssetLib.setStatus('unrigged')",
+                   `no rig`, "Image families with no rig sidecar - the gear pipeline has to guess.")}
+          </div>
+          <span class="al-sum">${shown.length} of ${
+            view.working ? (st.working || 0) : shipping} families ·
+            ${st.files || 0} files${data.truncated ? " · scan truncated" : ""}</span>
+        </div>
+        <div class="al-row">
+          <div class="al-grp">
+            <span class="al-lab">sort</span>
+            <select class="al-sel" aria-label="Sort"
+                    onchange="AssetLib.pickSort(this.value)">
+              ${SORTS.map(s => `<option value="${s.id}"${
+                view.sort === s.id ? " selected" : ""}>${E(s.label)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="al-grp">
+            <span class="al-lab">view</span>
+            <button class="al-tgl" type="button" aria-pressed="${view.dense}"
+                    title="Smaller tiles, more of them on screen. A layout change - it hides nothing."
+                    onclick="AssetLib.toggleDense()">compact</button>
+          </div>
+          ${st.working ? `<div class="al-grp">
+            <span class="al-lab">library</span>
+            <div class="al-seg" role="group" aria-label="Which library">
+              <button class="al-segb" type="button" aria-pressed="${!view.working}"
+                      title="Files under res://assets/** - the ones the game can actually load."
+                      onclick="${view.working ? "AssetLib.toggleWorking()" : ""}">in the game <b>${shipping}</b></button>
+              <button class="al-segb" type="button" aria-pressed="${view.working}"
+                      title="Files outside res://assets/** - the art seat's scratch renders, tmp/, test fixtures. The engine cannot load any of them, so they are all 'unused' and none of that is a defect."
+                      onclick="${view.working ? "" : "AssetLib.toggleWorking()"}">working files <b>${st.working}</b></button>
+            </div>
+          </div>` : ""}
+        </div>
       </div>
       ${view.working ? `<div class="al-note">Working files — outside
         <code>res://assets/</code>, so the game cannot load them. Nothing here
@@ -249,13 +360,16 @@ window.AssetLib = (() => {
     const groups = {};
     shown.forEach(f => (groups[f.category] = groups[f.category] || []).push(f));
     body.innerHTML = Object.keys(groups).map(cat => `
-      <div class="al-sec">
-        ${view.cat ? "" : `<div class="al-sech"><span class="g">${CAT_GLYPH[cat] || "·"}</span>
-          ${E(cat)}<span class="n">${groups[cat].length} famil${groups[cat].length===1?"y":"ies"}</span></div>`}
+      <section class="al-sec spanel k-list">
+        ${view.cat ? "" : `<div class="sec-h al-sech">
+          <span data-icon="${CAT_ICON[cat] || "assets"}" data-icon-size="15"></span>
+          <h3 class="sec-t">${E(cat)}</h3>
+          <span class="sec-n">${groups[cat].length}</span>
+          <span class="n">famil${groups[cat].length===1?"y":"ies"}</span></div>`}
         <div class="al-grid${view.dense ? " dense" : ""}">
           ${groups[cat].map(tile).join("")}
         </div>
-      </div>`).join("");
+      </section>`).join("");
   }
 
   /* The same family name lives in more than one directory more often than you
@@ -307,7 +421,13 @@ window.AssetLib = (() => {
     openKey = key;
     let fam = (data && data.families || []).find(f => f.key === key);
     if (!fam) fam = await readJSON(`/api/assets/family?key=${encodeURIComponent(key)}`, null);
-    if (!fam || fam.__error){ say("that family is gone - rescan"); return; }
+    // The server's own sentence, not a guess about it. readJSON tags the reason
+    // onto __error and this discarded it, so a refused path, a 500 and an
+    // unreachable backend all read as "that family is gone" — the one diagnosis
+    // that tells you to do the one thing (rescan) that cannot help.
+    if (!fam || fam.__error){
+      say((fam && fam.__error) || "that family is gone - rescan"); return;
+    }
 
     let scrim = document.getElementById("al-scrim");
     if (!scrim){
@@ -454,12 +574,21 @@ window.AssetLib = (() => {
   function setStatus(s){ view.status = view.status === s ? "" : s; render(); }
   function setSort(s){ view.sort = s; render(); }
   function toggleDense(){ view.dense = !view.dense; render(); }
+
+  /* THE SELECT'S OWN TEARDOWN HAS TO FINISH FIRST. bgselect.js fires `change`
+     and only THEN closes its popup and returns focus to the button - and this
+     header rebuilds its innerHTML on every change, so a synchronous re-render
+     rips that button out from under the code about to focus it. One tick is
+     invisible and leaves the combobox to close against a DOM that still has it. */
+  const defer = fn => setTimeout(fn, 0);
+  function pickCat(c){ defer(() => setCat(c)); }
+  function pickSort(s){ defer(() => setSort(s)); }
   /* Category comes back with it: the two drawers have almost no categories in
      common, so keeping `art` selected on the way back to shipping assets lands
      on an empty grid that reads as a broken page. */
   function toggleWorking(){ view.working = !view.working; view.cat = ""; render(); }
 
-  return { activate, refresh, render, open, close, edit, editAudio, wire, task, review,
-           setSearch, setCat, setStatus, setSort, toggleDense, toggleWorking,
-           get data(){ return data; } };
+  return { activate, refresh, open, close, edit, editAudio, wire, task, review,
+           setSearch, setCat, setStatus, setSort, pickCat, pickSort,
+           toggleDense, toggleWorking };
 })();

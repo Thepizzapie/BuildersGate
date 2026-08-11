@@ -1123,7 +1123,7 @@ def debrief_brief(root: str | os.PathLike[str], item: dict) -> str:
         "another seat is about to make). Name the acceptance test in the brief.")
     lines.append(
         "  2. ASK THE HUMAN ONE QUESTION. ask_human(question, refs) when the "
-        "next step is a judgement you do not own — a pillar, the cut line, or "
+        "next step is a judgement you do not own — a pillar, a priority call, or "
         "spending more money. If that tool is not in your list, put the question "
         "in your result note instead and stop there; do not guess.")
     lines.append(
@@ -1131,9 +1131,8 @@ def debrief_brief(root: str | os.PathLike[str], item: dict) -> str:
         "enough. This is a real answer and the cheapest one — take it when it is "
         "true, and do not invent follow-up work to look busy.")
     lines.append("")
-    lines.append("Do not file anything below the cut line, and do not re-file "
-                 "what just landed. Then queue_complete THIS item (done) with "
-                 "the move you took.")
+    lines.append("Do not re-file what just landed. Then queue_complete THIS "
+                 "item (done) with the move you took.")
     return "\n".join(lines)
 
 

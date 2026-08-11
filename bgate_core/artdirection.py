@@ -36,9 +36,9 @@ from bgate_core import bible
 # is advice we still pass to the model but never fail a frame over.
 _LOCK_MARKERS = ("LOCKED", "CONTRACT", "MUST")
 
-# Bible kinds that describe how art should look. `pillar`/`loop`/`scope_tier`
-# are about what the game IS, not how it renders, and stuffing them into an
-# image prompt buys nothing but tokens.
+# Bible kinds that describe how art should look. `pillar` and `loop` are about
+# what the game IS, not how it renders, and stuffing them into an image prompt
+# buys nothing but tokens.
 _ART_KINDS = ("constraint", "reference")
 
 # Words that mean "this constraint is about rendering" — a Determinism

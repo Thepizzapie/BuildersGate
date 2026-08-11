@@ -26,7 +26,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from bgate_core import (
-    activity, artifacts, assets, bible, db, iterations, lore, playtest,
+    activity, artifacts, assets, bible, db, lore, playtest,
     project, scaffold, seats,
 )
 from bgate_core import controls as _controls
@@ -310,7 +310,80 @@ _STATIC = Path(__file__).with_name("static")
 
 # Only ever serve images, and only from inside the project. The preview endpoint
 # takes root-relative paths; anything that escapes the root is refused.
-_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"}
+
+# VIDEO GOES THROUGH THE SAME DOOR, and it did not, which quietly broke the one
+# review step the cinematic seat treats as mandatory. The Takes panel renders a
+# <video src="/api/preview?rel=...mp4"> for every generated shot; this endpoint
+# answered 415 "images only", so the player drew as a black rectangle at 0:00.
+# A seat whose brief says WATCH THE CLIP BEFORE YOU KEEP IT shipped with no way
+# to watch one, and a shot that was already paid for looked like a broken file.
+#
+# .ogv is served for completeness, not for playback: Chromium removed Ogg Theora
+# decoding in 123, so a kept cutscene — which this product transcodes to Theora
+# precisely because it is the only thing GODOT will play — is undecodable in the
+# browser reviewing it. The .mp4 candidate is what the panel should point at,
+# and does; this list simply stops the endpoint lying about why.
+_VIDEO_SUFFIXES = {".mp4", ".webm", ".ogv", ".mov", ".m4v"}
+_PREVIEW_SUFFIXES = _IMAGE_SUFFIXES | _VIDEO_SUFFIXES
+_VIDEO_MIME = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+               ".webm": "video/webm", ".ogv": "video/ogg"}
+_RANGE_CHUNK = 1 << 18   # 256 KiB
+
+
+def _ranged(target: Path, request: Optional[Request], mime: str):
+    """Serve a file with byte-range support, because <video> requires it.
+
+    A player does not simply GET a clip: it sends `Range: bytes=0-` and expects
+    206 with a Content-Range. Starlette 0.38's FileResponse has no Range
+    handling at all — it answers 200 with the whole file — and Chromium's
+    response to that is a player that will not scrub and frequently will not
+    start, which on screen is a black rectangle stuck at 0:00. That is
+    indistinguishable from a broken encode, which is the wrong thing for a
+    reviewer to conclude about a clip they have already paid for.
+
+    Only the requested slice is read. A cutscene shot is tens of megabytes and
+    the alternative is holding all of it in memory to hand back 256 KiB of it.
+    """
+    size = target.stat().st_size
+    header = (request.headers.get("range") if request else "") or ""
+    start, end = 0, size - 1
+    partial = False
+
+    match = re.match(r"bytes=(\d*)-(\d*)$", header.strip())
+    if match and size:
+        raw_start, raw_end = match.group(1), match.group(2)
+        if raw_start:
+            start = int(raw_start)
+            end = int(raw_end) if raw_end else size - 1
+        elif raw_end:
+            # A suffix range: the LAST n bytes. Players use this to read the
+            # moov atom of an mp4 that was written with it at the end.
+            start = max(0, size - int(raw_end))
+        if start >= size:
+            return Response(status_code=416,
+                            headers={"Content-Range": f"bytes */{size}"})
+        end = min(end, size - 1)
+        partial = True
+
+    length = max(0, end - start + 1)
+
+    def _chunks():
+        with target.open("rb") as handle:
+            handle.seek(start)
+            left = length
+            while left > 0:
+                block = handle.read(min(_RANGE_CHUNK, left))
+                if not block:
+                    break
+                left -= len(block)
+                yield block
+
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(length)}
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(_chunks(), status_code=206 if partial else 200,
+                             media_type=mime, headers=headers)
 
 
 def _root() -> Path:
@@ -556,7 +629,7 @@ def _no_project(root: Optional[Path]) -> dict:
         "kinds": list(scaffold.KINDS),
         "known": project.known_projects(),
         "seats": [], "assets": [], "artifacts": [], "asset_groups": [],
-        "iterations": [], "sessions": [], "notes": [], "previews": [],
+        "sessions": [], "notes": [], "previews": [],
     }
 
 
@@ -626,7 +699,6 @@ def state() -> dict:
         "assets": assets.list_assets(root),
         "artifacts": artifacts.list_revisions(root, limit=100),
         "asset_groups": artifacts.workspace(root),
-        "iterations": iterations.list_iterations(root, limit=12),
         "verify": _verification_snapshot(root),
         "bible": bible.overview(root),
         "lore": {
@@ -756,8 +828,9 @@ def peek(rel: str, item_id: int = 0, offset: int = 0,
 
 
 @app.get("/api/preview")
-def preview(rel: str, item_id: int = 0) -> FileResponse:
-    """Serve one image from inside the project, or from a run's worktree.
+def preview(rel: str, item_id: int = 0,
+            request: Request = None) -> FileResponse:
+    """Serve one image OR video from inside the project, or a run's worktree.
 
     ``item_id`` resolves the same way /api/peek does, and for the same reason:
     a file an isolated agent is editing does not exist at the project root yet.
@@ -773,11 +846,16 @@ def preview(rel: str, item_id: int = 0) -> FileResponse:
         target.relative_to(base)
     except ValueError:
         raise _api.forbidden("path escapes the project root", rel=rel)
-    if target.suffix.lower() not in _IMAGE_SUFFIXES:
-        raise _api.ApiError(415, "images only", detail={"rel": rel})
+    suffix = target.suffix.lower()
+    if suffix not in _PREVIEW_SUFFIXES:
+        raise _api.ApiError(
+            415, "previewable images and video only",
+            detail={"rel": rel, "allowed": sorted(_PREVIEW_SUFFIXES)})
     if not target.is_file():
-        raise _api.not_found(f"no image at {rel}", rel=rel)
-    return FileResponse(target)
+        raise _api.not_found(f"nothing to preview at {rel}", rel=rel)
+    if suffix not in _VIDEO_SUFFIXES:
+        return FileResponse(target)
+    return _ranged(target, request, _VIDEO_MIME.get(suffix, "video/mp4"))
 
 
 # ---------------------------------------------------------------------------
@@ -855,22 +933,18 @@ def queue_add(payload: dict) -> dict:
     except (TypeError, ValueError):
         raise _api.bad_request("priority must be a whole number",
                                priority=payload.get("priority"))
-    tier = payload.get("scope_tier_id")
-    try:
-        tier = None if tier in (None, "") else int(tier)
-    except (TypeError, ValueError):
-        raise _api.bad_request("scope_tier_id must be a scope tier id",
-                               scope_tier_id=payload.get("scope_tier_id"))
+    # A scope_tier_id was read off the payload and forwarded here, so the cut
+    # line could refuse the item. Tiers are gone; a body that still carries the
+    # field is simply ignored rather than 400'd, because an old bookmark or a
+    # stale tab is not a malformed request.
     try:
         return _queue.add(_root(), seat, title,
                           brief=str(payload.get("brief") or ""),
                           priority=priority,
                           source=str(payload.get("source") or "manual"),
-                          source_ref=str(payload.get("source_ref") or ""),
-                          scope_tier_id=tier)
+                          source_ref=str(payload.get("source_ref") or ""))
     except ValueError as exc:
-        # Unknown seat, blank title, and out-of-scope (OutOfScope subclasses
-        # ValueError) — all of them are the caller's, not the server's.
+        # Unknown seat and blank title — both the caller's, not the server's.
         raise _api.bad_request(str(exc), seat=seat)
 
 
@@ -1284,29 +1358,10 @@ def artifact_link_feedback(artifact_id: int, item_id: int,
         raise _api.bad_request(str(exc), artifact_id=artifact_id, item_id=item_id)
 
 
-@app.get("/api/iterations")
-def iteration_list(request: Request, page: _api.Page = Depends()) -> dict:
-    root = _root()
-
-    def fetch(limit: int, offset: int) -> tuple[list[dict], int]:
-        conn = db.connect(root)
-        total = conn.execute("SELECT count(*) FROM iteration").fetchone()[0]
-        # Page the ids, then hydrate only that window — iterations.get pulls
-        # events and checks per row, which is far too expensive to do table-wide.
-        ids = [int(row[0]) for row in conn.execute(
-            "SELECT id FROM iteration ORDER BY id DESC LIMIT ? OFFSET ?",
-            (limit, offset))]
-        return [iterations.get(root, i) for i in ids], int(total)
-
-    return _listing(request, page, "iterations", fetch, legacy_limit=30)
-
-
-@app.get("/api/iterations/{iteration_id}")
-def iteration_detail(iteration_id: int) -> dict:
-    try:
-        return iterations.get(_root(), iteration_id)
-    except LookupError as exc:
-        raise _api.not_found(str(exc), iteration_id=iteration_id)
+# /api/iterations and /api/iterations/{id} used to live here, and `iterations`
+# used to be a key on /api/state. The Timeline view that read them is gone; the
+# state key was costing a hydrating query on EVERY dashboard poll for data
+# nothing rendered. The MCP `iteration_status` tool is the surviving read path.
 
 
 @app.post("/api/assets/verify")

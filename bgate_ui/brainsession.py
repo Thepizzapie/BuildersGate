@@ -20,14 +20,15 @@ evidence and was observed not to be: asked to list them at a session whose init
 said `"tools":[]`, it recited the standard fifteen from memory.
 
 THE BUILDERS-GATE MCP SERVER IS DELIBERATELY ABSENT, AND A TWO-TOOL ONE IS NOT.
-bible_read, lore_list and scope_check would each make this a better partner, and
+bible_read, lore_list and seat_brief would each make this a better partner, and
 registering the server is one call to runners.mcp_overrides(). It is not made,
 because that helper registers the WHOLE server: queue_add, bible_add,
 lore_update, image_generate (real money) and blender_run (executes a script). An
 allowlist naming eight readers out of a hundred and fifty tools would put the
 room's entire promise on nobody ever mistyping one entry. What those readers
 would have supplied is supplied instead by brainstorm.world_context(), which
-renders the pillars, the cut line and the established canon as prose.
+renders the pillars, the core loop, the constraints and the established canon
+as prose.
 
 What could NOT be supplied that way is the human's own pads, which change while
 the conversation is happening — a partner that cannot see the diagram beside it

@@ -1169,6 +1169,23 @@ def _fit_intent(model: str, wanted: dict) -> tuple[dict, list, str]:
     spec = kie.MODELS.get(model) or {}
     supports = set(spec.get("intent") or {})
     intent, dropped = {}, []
+
+    # MUTUALLY EXCLUSIVE GROUPS, resolved BEFORE the per-field walk. Some models
+    # accept two settings individually and refuse them together, which no
+    # amount of field-by-field checking can catch: every value is legal, the
+    # payload is not. Seedance is the first — an anchor frame and reference
+    # images are one-or-the-other — and the failure arrived as a 422 after the
+    # anchors had already been uploaded, describing a rule this table had no way
+    # to state. The first group listed wins; the rest are dropped and reported,
+    # never silently, because losing the cast references changes what comes back.
+    for groups in (spec.get("exclusive") or ()):
+        present = [g for g in groups if any(wanted.get(n) for n in g)]
+        for group in present[1:]:
+            for name in group:
+                if wanted.get(name):
+                    wanted = {k: v for k, v in wanted.items() if k != name}
+                    dropped.append(name)
+
     for name, value in wanted.items():
         if value is None or value == "" or value == []:
             continue

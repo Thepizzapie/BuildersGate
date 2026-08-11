@@ -79,29 +79,6 @@ class TestQueueAdd:
         assert got["source"] == "manual"
         assert got["source_ref"] == ""
 
-    def test_scope_tier_id_is_forwarded(self, client, monkeypatch):
-        """queue.add grew a scope_tier_id; the handler has to actually pass it —
-        a dropped tier files work under a cut line that was meant to refuse it."""
-        seen: dict = {}
-
-        def _capture(root, seat, title, **kwargs):
-            seen.update(kwargs, seat=seat, title=title)
-            return {"id": 1, "seat": seat, "title": title, **kwargs}
-
-        monkeypatch.setattr(ui_app._queue, "add", _capture)
-        client.post("/api/queue", json={
-            "seat": "tech", "title": "in tier", "scope_tier_id": 4,
-            "source": "qa-gate", "source_ref": "9", "brief": "b", "priority": 2})
-        assert seen["scope_tier_id"] == 4
-        assert (seen["source"], seen["source_ref"]) == ("qa-gate", "9")
-        assert (seen["brief"], seen["priority"]) == ("b", 2)
-
-    def test_garbage_scope_tier_is_400(self, client):
-        got = client.post("/api/queue", json={
-            "seat": "tech", "title": "x", "scope_tier_id": "later"})
-        assert got.status_code == 400
-        assert "scope_tier_id" in got.json()["error"]["message"]
-
 
 # ---------------------------------------------------------------------------
 # 5. queue_wait — bounded, and holding no worker
@@ -429,7 +406,6 @@ class TestOneErrorConvention:
         ("POST", "/api/playtest/items/99999/dismiss", None),
         ("POST", "/api/playtest/items/99999/merge", {"target_id": 1}),
         ("POST", "/api/playtest/items/99999/promote", {}),
-        ("GET", "/api/iterations/99999", None),
         ("GET", "/api/playtest/99999", None),
         ("GET", "/api/preview?rel=nope.png", None),
     ])

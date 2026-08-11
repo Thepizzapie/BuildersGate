@@ -54,15 +54,6 @@ class TestState:
             json={"status": "approved", "note": "ship it"}).json()
         assert reviewed["status"] == "approved"
 
-    def test_iteration_timeline_endpoint(self, client, root):
-        from bgate_core import iterations
-
-        created = iterations.create(root, "Validate the loop")
-        state = client.get("/api/state").json()
-        assert state["iterations"][0]["goal"] == "Validate the loop"
-        detail = client.get(f"/api/iterations/{created['id']}").json()
-        assert detail["events"][0]["stage"] == "snapshot"
-
 
 class TestActivity:
     def test_incremental_polling(self, client, root):

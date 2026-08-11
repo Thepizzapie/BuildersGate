@@ -86,7 +86,6 @@
         <button class="rail-item" data-view="assets" onclick="setWorkspace('assets',this)"><span class="ic" data-icon="assets"></span><span class="lb">Assets</span></button>
         <button class="rail-item" data-view="atlas" onclick="setWorkspace('atlas',this)"><span class="ic" data-icon="atlas"></span><span class="lb">Atlas</span></button>
         <button class="rail-item" data-view="world" onclick="setWorkspace('world',this)"><span class="ic" data-icon="world"></span><span class="lb">World bible</span></button>
-        <button class="rail-item" data-view="timeline" onclick="setWorkspace('timeline',this)"><span class="ic" data-icon="timeline"></span><span class="lb">Timeline</span></button>
       </div>
       <div class="rail-foot">
         <div class="vrow"><span class="vlamp waiting" id="lamp"></span> <span id="lamptext">connecting…</span></div>
@@ -143,8 +142,19 @@
         <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance - live agents, the queue, the build.</p></div>
         <div class="ov-stats" id="ov-stats"></div>
         <div class="col2" style="margin-bottom:16px">
-          <div class="dcard"><h3>Running now <span class="tag" id="ov-run-n"></span></h3><div id="ov-running"><div class="empty">nothing dispatched</div></div></div>
-          <div class="dcard"><h3>Recent activity</h3><div class="ledger" id="ov-activity" style="max-height:240px"><div class="empty">quiet</div></div></div>
+          <!-- .spanel + .sec-h, the shared section pattern (app.css, "sections").
+               Both of these are readouts - nothing in either is a control - so
+               both take .k-read. The icons are resolved by BGIcon.upgrade(). -->
+          <div class="spanel k-read">
+            <div class="sec-h"><span data-icon="run" data-icon-size="15"></span>
+              <h3 class="sec-t">Running now</h3><span class="sec-n" id="ov-run-n"></span></div>
+            <div id="ov-running"><div class="empty">nothing dispatched</div></div>
+          </div>
+          <div class="spanel k-read">
+            <div class="sec-h"><span data-icon="timeline" data-icon-size="15"></span>
+              <h3 class="sec-t">Recent activity</h3></div>
+            <div class="ledger" id="ov-activity" style="max-height:240px"><div class="empty">quiet</div></div>
+          </div>
         </div>
       </section>
 
@@ -380,7 +390,10 @@
         </div>
 
         <div id="agents-board" hidden>
-        <div class="orch-composer">
+        <div class="orch-composer spanel">
+          <div class="sec-h"><span data-icon="task" data-icon-size="15"></span>
+            <h3 class="sec-t">Add work</h3>
+            <span class="sec-sub">files a queue item - it does not dispatch</span></div>
           <div class="orch-composer-row">
             <select id="q-seat" aria-label="Seat"></select>
             <input type="text" id="q-title" placeholder="Task title - a short imperative…" maxlength="120"
@@ -397,15 +410,23 @@
           </div>
         </div>
 
-        <div class="orch-sec">
-          <div class="orch-sec-head">Active now <span class="n" id="orch-active-n">0</span></div>
+        <!-- .spanel + .sec-h, the same section shape the bible, the seat
+             workspaces and the settings panel wear. These were two bold
+             uppercase LINES with no surface under them, so the board read as
+             one continuous field and "Active now" looked like a caption on the
+             composer above it rather than the lid of its own section. -->
+        <section class="orch-sec spanel k-read">
+          <div class="sec-h"><span data-icon="agents" data-icon-size="15"></span>
+            <h3 class="sec-t">Active now</h3>
+            <span class="sec-n" id="orch-active-n"></span></div>
           <div class="orch-active" id="orch-active"></div>
-        </div>
+        </section>
 
-        <div class="orch-sec">
-          <div class="orch-sec-head">Pipeline</div>
+        <section class="orch-sec spanel k-list">
+          <div class="sec-h"><span data-icon="timeline" data-icon-size="15"></span>
+            <h3 class="sec-t">Pipeline</h3></div>
           <div class="orch-pipeline" id="orch-pipeline"></div>
-        </div>
+        </section>
 
         <div class="orch-foot">
           <div class="orch-seats" id="floor"></div>
@@ -520,12 +541,49 @@
             <div class="playhint" id="play-controls">Controls come from your game's own input map - F1 opens live tuning over the running build.</div>
           </div>
         </div>
-        <div class="orch-sec-head">Recorded sessions</div>
-        <div class="dcard"><div class="compact-list" id="sessions"></div></div>
+        <div class="spanel k-read">
+          <div class="sec-h"><span data-icon="playtests" data-icon-size="15"></span>
+            <h3 class="sec-t">Recorded sessions</h3></div>
+          <div class="compact-list" id="sessions"></div>
+        </div>
       </section>
 
       <section class="deck-view" id="view-assets">
-        <div class="view-heading"><div><span class="eyebrow">Library</span><h2>Assets</h2></div><div style="display:flex;gap:8px"><button class="qbtn small ghost" onclick="SpriteEdit.pick()">sprite editor</button><button class="qbtn small ghost" onclick="AudioLab.pick()">audio lab</button><button class="qbtn small ghost" onclick="ModelEdit.pick()">3D viewer</button><button class="qbtn small ghost" onclick="fullAudit()">run integrity audit</button></div></div>
+        <!-- WHAT WILL THIS BUTTON DO. "run integrity audit" carried no title, no
+             description and no relation to the "vault N to reconcile" badge in
+             the status bar that it is the only control for - the owner's words
+             were "no idea what these do". A title attribute is not the fix on its
+             own: hover is a thing you do to a control you have already decided to
+             risk pressing. So the actions are split by what they touch (open an
+             editor vs go and do work), the work ones say their effect in the
+             sentence below them, and the audit is now named after the number it
+             clears and carries that number on its face. -->
+        <div class="view-heading"><div><span class="eyebrow">Library</span><h2>Assets</h2></div>
+          <div class="act-cluster">
+            <div class="act-row">
+              <span class="act-lab">open</span>
+              <button class="qbtn small ghost" onclick="SpriteEdit.pick()" title="Pick a sprite sheet and open it in the pixel and rig editor">sprite editor</button>
+              <button class="qbtn small ghost" onclick="AudioLab.pick()" title="Pick a sound or track and open it in the audio lab">audio lab</button>
+              <button class="qbtn small ghost" onclick="ModelEdit.pick()" title="Pick a 3D model and open it in the viewer">3D viewer</button>
+            </div>
+            <div class="act-row">
+              <span class="act-lab">check</span>
+              <!-- rescan LIVES HERE, not in the filter rail below. It walks the
+                   whole project off disk, and as a pill among fifteen family
+                   filters it was the same shape and colour as `tiles` - nothing
+                   said it would go and do something. -->
+              <button class="qbtn small ghost" onclick="AssetLib.refresh()" title="Walk the project off disk again and rebuild the library below. Reads only.">rescan library</button>
+              <!-- The count is written by renderVault() every poll: a button
+                   named after the badge but silent about it is still a button
+                   nobody connects to the badge. -->
+              <button class="qbtn small ghost" id="asset-audit" onclick="fullAudit()" title="Re-hash every tracked binary and compare it with the hash on record, then report what changed, went missing, or was never hashed. Reads and reports only - it does not touch your files.">reconcile vault</button>
+            </div>
+            <p class="act-note"><b>rescan library</b> re-reads the project from disk.
+              <b>reconcile vault</b> re-hashes tracked files and reports what drifted -
+              it is what clears the vault count in the status bar. Neither one writes
+              to your game.</p>
+          </div>
+        </div>
         <div id="asset-lib-root"><div class="empty">reading the library…</div></div>
         <details class="asset-vault" style="margin-top:16px"><summary>Review queue · generated candidates by logical name</summary>
           <div class="asset-toolbar">
@@ -548,7 +606,7 @@
       </section>
 
       <section class="deck-view" id="view-world">
-        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible, hold the cut line, and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
+        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
         <div class="seat-subnav" id="world-subnav"></div>
         <div id="world-root"><div class="empty">loading world…</div></div>
       </section>
@@ -563,10 +621,6 @@
         <div id="atlas-code" hidden></div>
       </section>
 
-      <section class="deck-view" id="view-timeline">
-        <div class="view-heading"><div><span class="eyebrow">Causal history</span><h2>Iteration timeline</h2></div><p>Goal, snapshot, assets, evidence, decisions, and outcome per iteration.</p></div>
-        <div class="iteration-list" id="iterations"><div class="empty">the first recorded playtest creates an iteration</div></div>
-      </section>
 
     </div>
   </div>
@@ -837,7 +891,7 @@ function toast(message, kind){
 const DECK_CRUMB = {
   overview:"Overview", agents:"Agents", settings:"Settings", studio:"Studio",
   seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
-  world:"World bible", timeline:"Timeline",
+  world:"World bible",
   spriteedit:"Sprite editor", audiolab:"Audio lab", modeledit:"3D viewer",
 };
 /* Hand the view to whichever module owns it.
@@ -1206,9 +1260,37 @@ function renderAssetWorkspace(groups){
   }
 }
 
+/* WHAT THE ASSET PANELS SHOW RIGHT NOW, as a short string.
+ *
+ * pollState() runs every 3 seconds and hands /api/state's asset_groups straight
+ * to renderAssetWorkspace, which rewrote #asset-grid, the open drawer and the
+ * vault table from innerHTML every single time — twenty rebuilds a minute of a
+ * page that had not changed. That is not merely wasteful. Every
+ * <img loading="lazy"> in the grid was destroyed and restarted before it
+ * finished decoding, the grid's scroll position jumped back, the user's text
+ * selection in the vault vanished, and the drawer's <details> folds (the
+ * generation prompt, the work note, the review decision) snapped shut while
+ * they were being read — a fold you cannot keep open for three seconds is a
+ * fold nobody can use.
+ *
+ * Same fix as seats/cinematic.js's _signature(): only the fields a repaint
+ * would actually SHOW go into the string, so a free-running timestamp cannot
+ * defeat it. The filters and the open drawer are in it too, which is what lets
+ * every explicit caller (search, filter chip, drawer open) still repaint.
+ */
+let _assetGridSig = null, _assetDrawerSig = null, _vaultSig = null;
+function assetGridSig(){
+  return [assetFilter, assetSearch, assetDrawerName || ""].concat(
+    assetGroupsState.map(g => [g.logical_name, groupStatus(g), groupThumb(g) || "",
+      (g.candidates || []).length, (g.revisions || []).length].join(":"))).join("|");
+}
+
 function renderAssetGrid(){
   const box = document.getElementById("asset-grid");
   if (!box) return;
+  const sig = assetGridSig();
+  if (sig === _assetGridSig && box.firstChild) return;
+  _assetGridSig = sig;
   let groups = assetGroupsState.slice();
   if (assetFilter !== "all") groups = groups.filter(g => groupStatus(g) === assetFilter);
   if (assetSearch) groups = groups.filter(g => g.logical_name.toLowerCase().includes(assetSearch));
@@ -1259,6 +1341,10 @@ function openAssetDrawer(name){
 }
 function closeAssetDrawer(){
   assetDrawerName = null;
+  // Forget the drawer's signature with it, or reopening the same asset while
+  // nothing about it has changed would skip the repaint and open on the
+  // previous asset's markup.
+  _assetDrawerSig = null;
   const d = document.getElementById("asset-drawer");
   const b = document.getElementById("drawer-backdrop");
   d.classList.remove("open"); b.classList.remove("open");
@@ -1270,6 +1356,14 @@ function renderAssetDrawer(){
   if (!d || !assetDrawerName) return;
   const g = assetGroupsState.find(x => x.logical_name === assetDrawerName);
   if (!g){ closeAssetDrawer(); return; }
+  // The same guard as the grid, and it matters more here — see assetGridSig().
+  // The revision list carries the id AND the status because approving one is a
+  // status change on a row that is already in the list.
+  const drawerSig = [assetDrawerName, assetSelections[g.logical_name] || "",
+    g.approved ? g.approved.id : "", (g.feedback || []).length,
+    g.revisions.map(r => r.id + ":" + r.status + ":" + (r.path || "")).join(",")].join("|");
+  if (drawerSig === _assetDrawerSig && d.firstChild) return;
+  _assetDrawerSig = drawerSig;
   const st = groupStatus(g);
   const selectedId = assetSelections[g.logical_name];
   const selected = g.revisions.find(r => r.id === selectedId)
@@ -1346,19 +1440,83 @@ async function regenerateArtifact(id){
   if (!r.ok) return;
   pollState(); pollQueue();
 }
+/* THE AUDIT REPORTED ITS OWN SUCCESS AS FAILURE, and did so on exactly the
+   projects that need it. It went through mutate(), which treats `ok:false` in a
+   payload as a refused request - but this endpoint's `ok` is the VAULT's verdict
+   ("nothing has drifted"), not the request's. Any project with a single drifted
+   file therefore got "audit failed" in the status bar, and pollState() was never
+   reached, so the count never refreshed. Measured on this project: 196 drifted
+   files, audit completed in under 120ms, button said "audit failed - try again".
+   So this talks to the endpoint directly and keeps the two meanings of "ok"
+   apart: HTTP status is whether the audit RAN, the payload is what it FOUND. */
 async function fullAudit(){
   const chip = document.getElementById("sb-vault");
   const b = chip && chip.querySelector("b");
+  // FEEDBACK WHERE THE PRESS HAPPENED. Re-hashing every tracked binary takes
+  // seconds on a real project, and the only sign it had started was a word in
+  // the status bar at the other end of the window - so the button read as dead
+  // and got pressed again.
+  const audit = document.getElementById("asset-audit");
+  const label = audit ? audit.innerHTML : null;
   if (b) b.textContent = "hashing…";
-  const r = await mutate("/api/assets/verify", {ok:"integrity audit complete"});
-  if (!r.ok){ if (b) b.textContent = "audit failed"; return; }
-  pollState();
+  if (audit){ audit.disabled = true; audit.textContent = "hashing…"; }
+  let payload = null, failed = null;
+  try{
+    const r = await fetch("/api/assets/verify", {method:"POST"});
+    if (!r.ok) failed = `the integrity audit could not run · ${r.status}`;
+    else payload = await r.json();
+  }catch(e){ failed = "backend unreachable - is the dashboard still running?"; }
+  if (audit) audit.disabled = false;
+  if (failed){
+    if (b) b.textContent = "audit failed";
+    if (audit && label != null) audit.innerHTML = label;
+    toast(failed);
+    return;
+  }
+  const c = (payload && payload.counts) || {};
+  const off = (c.modified || 0) + (c.missing || 0) + (c.pending || 0);
+  toast(off
+    ? `${off} tracked file(s) no longer match their record - ${c.modified || 0} `
+      + `changed, ${c.missing || 0} missing, ${c.pending || 0} never hashed`
+    : "integrity audit clean - every tracked file matches its record",
+    off ? "" : "ok");
+  pollState();   // renderVault rewrites the button with the fresh count
 }
 
 function renderVault(assetsData, verify){
   const drifted = new Set(verify.modified.map(m => m.path));
   const missing = new Set(verify.missing);
   const pending = new Set(verify.untracked_hash || []);
+  // THE BADGE AND ITS BUTTON, WEARING THE SAME NUMBER. "vault 197 to reconcile"
+  // sat in the status bar with nothing on any screen saying which control acts
+  // on it. Written before the signature check below, because the count moves on
+  // an audit even when the file table has not changed a row.
+  const audit = document.getElementById("asset-audit");
+  if (audit){
+    const c = (verify.counts || {});
+    const off = (c.modified || 0) + (c.missing || 0) + (c.pending || 0);
+    audit.innerHTML = off
+      ? `reconcile vault <span class="n">${off}</span>`
+      : `reconcile vault`;
+    audit.title = off
+      ? `${off} tracked file(s) no longer match the hash on record `
+        + `(${c.modified || 0} changed, ${c.missing || 0} missing, `
+        + `${c.pending || 0} never hashed). This re-hashes every tracked binary `
+        + `and reports what it finds - it reads and reports, it does not touch `
+        + `your files.`
+      : "Every tracked file matches its recorded hash. Re-hashes them all and "
+        + "reports - it reads and reports, it does not touch your files.";
+  }
+  // Third instance of the 3s-poll rebuild described at assetGridSig(). A table
+  // is cheap to redraw, but redrawing it is still what takes the path you were
+  // half way through selecting to paste into a terminal.
+  const vaultSig = assetsData.map(a =>
+    [a.path, a.kind, a.bytes, a.lock_seat || "",
+     drifted.has(a.path) ? "d" : missing.has(a.path) ? "m"
+       : pending.has(a.path) ? "p" : ""].join(":")).join("|");
+  const vaultBox = document.getElementById("vault");
+  if (vaultSig === _vaultSig && vaultBox && vaultBox.firstChild) return;
+  _vaultSig = vaultSig;
   const rows = assetsData.map(a => {
     let state = `<span class="chip">clean</span>`;
     if (a.lock_seat) state = `<span class="chip held" style="background:${color(a.lock_seat)};border-color:${color(a.lock_seat)}">${esc(a.lock_seat)}</span>`;
@@ -1373,50 +1531,11 @@ function renderVault(assetsData, verify){
     (rows || `<tr><td colspan="4" style="color:var(--text-3)">nothing tracked yet - asset_track / asset_lock</td></tr>`);
 }
 
-/* The World view is a WRITE surface now (bible editor, draggable cut line, lore
- * graph) and lives in static/world.js — the read-only chip list that used to be
- * rendered here was the producer's whole complaint. */
+/* The World view is a WRITE surface now (bible editor, lore graph) and lives in
+ * static/world.js — the read-only chip list that used to be rendered here was
+ * the producer's whole complaint. It also carried a draggable cut line until
+ * the tier system came out; see world.js. */
 
-function renderIterations(items){
-  const box = document.getElementById("iterations");
-  if (!items.length){
-    box.innerHTML = `<div class="empty">the first recorded playtest creates an iteration</div>`;
-    return;
-  }
-  box.innerHTML = items.map(item => {
-    const outcome = item.outcome || {};
-    const compare = outcome.versus_previous || {};
-    const delta = outcome.snapshot_delta || {};
-    return `<article class="iteration-card">
-      <div class="iteration-summary">
-        <span class="eyebrow">Iteration ${item.id} · ${esc(item.status)}</span>
-        <h3>${esc(item.goal)}</h3>
-        <div class="health-row">
-          <span class="chip">${item.sessions.length} playtest${item.sessions.length===1?"":"s"}</span>
-          <span class="chip">${item.active_artifact_ids.length} active assets</span>
-          <span class="chip">${esc(item.tests?.status || "tests unknown")}</span>
-          <span class="chip">telemetry schema v${item.telemetry_schema_version}</span>
-        </div>
-        <div class="iteration-fingerprint">
-          commit ${esc((item.source_commit || "unversioned").slice(0,12))}<br>
-          dirty ${esc((item.dirty_fingerprint || "none").slice(0,12))}<br>
-          source ${esc((item.source_fingerprint || "none").slice(0,12))}<br>
-          export ${esc((item.export_hash || "missing").slice(0,12))}
-        </div>
-        ${outcome.session_id ? `<div class="iteration-fingerprint">
-          outcome · ${outcome.feedback} feedback · ${outcome.telemetry_events} events
-          ${Object.keys(compare).length ? `<br>vs previous · feedback ${compare.feedback>=0?"+":""}${compare.feedback} · events ${compare.telemetry_events>=0?"+":""}${compare.telemetry_events}` : ""}
-          ${Object.keys(delta).length ? `<br>${delta.build_changed?"new build":"same build"} · ${delta.source_changed?"source changed":"same source"} · ${delta.active_assets_changed?"assets changed":"same assets"}` : ""}
-        </div>` : ""}
-      </div>
-      <div class="causal-track">${item.events.map(event =>
-        `<div class="causal-event"><b>${esc(event.stage.replaceAll("_"," "))}</b>
-          <span>${esc(event.summary || `${event.ref_type} ${event.ref_id}`)}<br>${esc((event.created_at || "").slice(5,16))}</span>
-        </div>`).join("") || `<div class="empty">snapshot captured; waiting for evidence</div>`}
-      </div>
-    </article>`;
-  }).join("");
-}
 
 function renderSessions(sessions){
   document.getElementById("sessions").innerHTML = sessions.length
@@ -1440,9 +1559,9 @@ function closeReview(){
   activeReviewSession = null;
   activeReviewOffset = 0;
 }
-function options(values,current){
-  return values.map(v => `<option value="${v}" ${v===current?"selected":""}>${v}</option>`).join("");
-}
+/* options() lived here to build the seat and kind <select>s on every feedback
+ * card. Those selects are refinements now and are built, lazily, by ptreview.js
+ * only for the row whose drawer is open. */
 async function openSession(id){
   activeReviewSession = id;
   const overlay = document.getElementById("review-overlay");
@@ -1488,6 +1607,15 @@ async function openSession(id){
         `<button class="timeline-marker" style="left:${Math.min(100,marker.t/duration*100)}%" title="${esc(marker.kind)} · ${esc(marker.text)}" onclick="seekReview(${marker.t})"></button>`
       ).join("")}</div>
     </div>` : ""}
+    <!-- TRIAGE SITS DIRECTLY UNDER THE RECORDING, above the telemetry readout.
+         Deciding what to do with the feedback is the reason this overlay opens;
+         it used to be the fifth thing down, under two summaries, a hash dump
+         and a settings log, so the reader scrolled past everything they were
+         not there for to reach the only part with actions on it.
+         Triage is its own surface now: static/ptreview.js. It was 60 lines of
+         template here that put nine controls and three badges at one weight
+         around a single sentence, with no primary action anywhere on the row. -->
+    <div id="pt-triage"></div>
     <div class="tele-panel">
       <h2>What the recording captured</h2>
       <div class="tele-kinds">
@@ -1511,78 +1639,22 @@ async function openSession(id){
       <div class="moment-track">${T.moments.map(m =>
         `<button class="moment-dot k-${esc(m.kind)}" style="left:${Math.min(100,m.t/duration*100)}%" title="${esc(m.kind)} @ ${fmtT(m.t)}" onclick="seekReview(${Number(m.t)})"></button>`).join("")}</div>` : ""}
     </div>
-    <div class="feedback-list">${d.items.map(item => {
-      // A merged item is NOT a dismissed one: it was folded into a live item and
-      // its evidence still counts. They used to render identically — same grey
-      // "dismissed" chip — so the whole record of what was merged was invisible.
-      const mergedInto = item.merged_into_id || null;
-      const state = mergedInto ? "merged" : item.status;
-      return `
-      <div class="feedback-card st-${esc(state)}" id="feedback-${item.id}">
-        ${item.frame_rel ? `<img src="/api/preview?rel=${encodeURIComponent(item.frame_rel)}" alt="feedback frame">`
-                         : `<div class="empty">no frame</div>`}
-        <div class="feedback-main">
-          <div class="feedback-text">${esc(item.text)}</div>
-          <div class="feedback-confidence">
-            ${item.source === "typed" ? `<span class="chip">typed note · not transcribed</span>` : ""}
-            <span class="chip">director recommends ${esc(item.director_recommendation || "review")}</span>
-            <span class="chip">classifier ${Math.round(Number(item.classification?.confidence || 0) * 100)}% · ${esc(item.classification?.kind || item.kind)}</span>
-            ${item.transcript_confidence != null
-              ? `<span class="chip">speech confidence ${Number(item.transcript_confidence).toFixed(2)}</span>` : ""}
-          </div>
-          ${(() => {
-            const near = (item.events||[]).filter(e => e.kind !== "fps");
-            if (!near.length) return "";
-            return `<div class="feedback-events">while saying this: ${near.map(e =>
-              e.kind === "setting_changed"
-                ? `<span class="chip" style="background:var(--accent-soft)">${esc(e.data?.prop || e.data?.key || "setting")} → ${fmtV(e.data?.value)}</span>`
-                : `<span class="chip">${esc(e.kind)}</span>`).join("")}</div>`;
-          })()}
-          <div class="feedback-controls">
-            ${mergedInto
-              ? `<span class="chip merged">merged into
-                   <a href="#feedback-${mergedInto}"
-                      onclick="jumpToFeedback(${mergedInto});return false">#${mergedInto}</a></span>`
-              : `<span class="chip st-${esc(item.status)}">${esc(item.status)}</span>`}
-            <select id="seat-${item.id}" class="${item.seat === "unassigned" ? "unrouted" : ""}"
-              >${options(["unassigned", ...Object.keys(SEATS)],item.seat)}</select>
-            <select id="kind-${item.id}">${options(["like","fix","add","change","question","note"],item.kind)}</select>
-            ${item.status === "new" ? `<button class="qbtn small" onclick="promoteFeedback(${item.id})">promote</button>
-              <button class="qbtn small ghost" onclick="dismissFeedback(${item.id})">dismiss</button>
-              <select id="merge-${item.id}" aria-label="Merge target">
-                <option value="">merge into…</option>
-                ${d.items.filter(target => target.id !== item.id && target.status !== "dismissed").map(target =>
-                  `<option value="${target.id}">#${target.id} ${esc(target.text.slice(0,42))}</option>`).join("")}
-              </select>
-              <button class="qbtn small ghost" onclick="mergeFeedback(${item.id})">merge</button>` : ""}
-          </div>
-          ${item.assets?.length ? `<div class="feedback-events">linked assets · ${item.assets.map(a =>
-            `<span class="chip">${esc(a.logical_name)}</span>`).join("")}</div>` : ""}
-          ${d.asset_options?.length ? `<div class="feedback-controls">
-            <select id="asset-link-${item.id}" aria-label="Link asset">
-              ${d.asset_options.map(asset =>
-                `<option value="${asset.artifact_id}">${esc(asset.logical_name)}</option>`).join("")}
-            </select>
-            <button class="qbtn small ghost" onclick="linkFeedbackAsset(${item.id})">link asset</button>
-          </div>` : ""}
-          ${item.work ? `<div class="work-link">
-            <b>queue #${item.work.id}</b>
-            <span>${esc(item.work.seat)} · ${esc(item.work.status)}</span>
-            ${item.work.result ? `<span class="work-result">${esc(item.work.result)}</span>` : ""}
-            <button class="qbtn small ghost" onclick="closeReview();document.getElementById('work-${item.work.id}')?.scrollIntoView({behavior:'smooth',block:'center'})">show work</button>
-          </div>` : item.status === "promoted"
-            ? `<div class="work-link"><span>promoted · queue item is being created</span></div>` : ""}
-        </div>
-      </div>`;
-    }).join("") || `<div class="empty">no feedback items were extracted</div>`}</div>
     <div><h2 style="margin-top:4px">Transcript</h2>
       <div class="transcript" id="review-transcript">${(d.transcript||[]).map((s,index) =>
         `<div class="transcript-line" id="transcript-${index}" data-start="${Number(s.t_start)}" data-end="${Number(s.t_end)}" onclick="seekReview(${Number(s.t_start)})"><span style="color:var(--text-3)">${Number(s.t_start).toFixed(1)}s</span> ${esc(s.text)}
           ${s.source === "typed" ? `<span class="chip">typed</span>` : ""}
-          ${s.confidence != null ? `<span class="chip">confidence ${Number(s.confidence).toFixed(2)}</span>` : ""}</div>`).join("")
+          ${(() => {
+            // NOT "confidence -1.17". It is whisper's avg_logprob, always <= 0,
+            // and a negative confidence teaches a human nothing. One translation
+            // in one place (PtReview.heard) so the chip here and the tag on the
+            // triage row can never drift apart.
+            const h = window.PtReview ? PtReview.heard(s.confidence) : null;
+            return h ? `<span class="chip" title="${esc(h.tip)}">${esc(h.word)}</span>` : "";
+          })()}</div>`).join("")
         || "no transcript"}</div>
     </div>`;
   document.getElementById("review-video")?.addEventListener("timeupdate", syncTranscript);
+  PtReview.mount(document.getElementById("pt-triage"), d, {seek:seekReview});
 }
 /* Session time vs video time. The capture starts a beat after the session does,
  * so every timestamp the backend stores (transcript, markers, telemetry) is in
@@ -1610,72 +1682,15 @@ function syncTranscript(){
     if (active) line.scrollIntoView({block:"nearest"});
   });
 }
-function jumpToFeedback(id){
-  const card = document.getElementById(`feedback-${id}`);
-  if (!card) return;
-  card.scrollIntoView({behavior:"smooth", block:"center"});
-  card.classList.add("flash");
-  setTimeout(() => card.classList.remove("flash"), 1400);
-}
-async function promoteFeedback(id){
-  const seatEl = document.getElementById(`seat-${id}`);
-  const seat = seatEl ? seatEl.value : "";
-  // An unrouted bug stays visibly unrouted. The dropdown used to omit
-  // 'unassigned' entirely, so the browser silently selected the first option
-  // (director) and every unrouted bug was filed under the director.
-  if (!seat || seat === "unassigned"){
-    if (seatEl){
-      seatEl.classList.add("needs-seat");
-      seatEl.focus();
-      setTimeout(() => seatEl.classList.remove("needs-seat"), 2500);
-    }
-    toast("this item is unrouted - pick the seat that owns it before promoting");
-    return;
-  }
-  const r = await mutate(`/api/playtest/items/${id}/promote`, {
-    body:{seat, kind:document.getElementById(`kind-${id}`).value},
-    ok:`item ${id} promoted to ${seat}`});
-  if (!r.ok) return;
-  openSession(activeReviewSession); pollState(); pollQueue();
-}
-async function dismissFeedback(id){
-  const r = await mutate(`/api/playtest/items/${id}/dismiss`, {ok:`item ${id} dismissed`});
-  if (!r.ok) return;
-  openSession(activeReviewSession); pollState();
-}
-async function mergeFeedback(id){
-  const select = document.getElementById(`merge-${id}`);
-  const target = select ? select.value : "";
-  if (!target){
-    toast("pick the item to merge this one into first");
-    if (select) select.focus();
-    return;
-  }
-  // Merging is one-way on the backend (it writes status='dismissed' plus
-  // merged_into_id and there is no unmerge endpoint), so it gets a confirm
-  // rather than a silent single click.
-  const label = select.options[select.selectedIndex]?.text || `#${target}`;
-  const go = await askConfirm({
-    title:`Merge item #${id} into ${label}?`,
-    body:`#${id} stops being actionable on its own and its text lives on `
-       + `under the target. There is no undo yet - this cannot be reversed `
-       + `from the dashboard.`,
-    ok:"merge", danger:true,
-  });
-  if (!go) return;
-  const r = await mutate(`/api/playtest/items/${id}/merge`, {
-    body:{target_id:Number(target)}, ok:`item ${id} merged into #${target}`});
-  if (!r.ok) return;
-  openSession(activeReviewSession); pollState();
-}
-async function linkFeedbackAsset(itemId){
-  const artifactId = document.getElementById(`asset-link-${itemId}`)?.value;
-  if (!artifactId){ toast("pick an asset to link"); return; }
-  const r = await mutate(`/api/artifacts/${artifactId}/feedback/${itemId}`, {
-    body:{}, ok:"asset linked"});
-  if (!r.ok) return;
-  openSession(activeReviewSession); pollState();
-}
+/* jumpToFeedback() moved into ptreview.js, where it can do the thing this
+ * version could not: the target of a "merged into #57" link is usually a
+ * SETTLED item, which now lives in a folded group, and scrollIntoView on a row
+ * inside a closed <details> scrolls to nothing. */
+/* promote / dismiss / merge / link moved to static/ptreview.js. They read DOM
+ * ids (seat-<n>, kind-<n>, merge-<n>, asset-link-<n>) that no longer exist, and
+ * each one ended with openSession(), which rebuilt the whole overlay — throwing
+ * away the <video> mid-playback every time you triaged one line. PtReview
+ * repaints only its own subtree. */
 
 function showOffline(reason){
   // Blocker: the header must resolve to a DEFINITE state — never a permanent
@@ -1785,7 +1800,6 @@ async function pollState(){
     renderVault(s.assets, v);
     renderSessions(s.sessions);
     const rcP = document.getElementById("rc-pt"); if (rcP) rcP.textContent = (s.sessions||[]).length;
-    renderIterations(s.iterations || []);
     document.getElementById("foot").textContent =
       `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
   }catch(e){ showOffline("backend unreachable"); }
@@ -1983,7 +1997,12 @@ function renderActive(items, liveSet, acts){
   const nEl = document.getElementById("orch-active-n");
   if (!box) return;
   const liveItems = items.filter(i => liveSet.has(i.id));
-  if (nEl){ nEl.textContent = liveItems.length; nEl.className = "n" + (liveItems.length ? " live" : ""); }
+  // .sec-n is the shared count chip (app.css). Empty when nothing is running,
+  // because an empty .sec-n hides itself and a pill reading "0" is furniture.
+  if (nEl){
+    nEl.textContent = liveItems.length || "";
+    nEl.className = "sec-n" + (liveItems.length ? " live" : "");
+  }
   if (!liveItems.length){
     box.innerHTML = `<div class="empty-card">No agents running. Dispatch a queued item below, or add work above and send it to a seat.</div>`;
     return;
@@ -2363,6 +2382,13 @@ function bootFrame(sessionId=null){
 
 /* ── playtest recording ──────────────────────────────────────────────── */
 let ptReady = false, ptRecording = false;
+/* Who owns #pt-msg right now. renderPreflight() writes the resting line (and
+   parks a copy in _ptIdleHTML, as HTML, because its not-ready branch embeds the
+   "what do I install?" button); ptPoll() writes over it while a session is
+   recording, processing or broken, and hands it back when none of those is true.
+   Declared here rather than beside ptPoll because renderPreflight is defined
+   above it and a `let` below its first caller is a temporal-dead-zone trap. */
+let _ptIdleHTML = "", _ptTransient = false;
 
 /* The literal thing to install, per check. "not ready: transcriber (unavail…"
  * truncated at 60 characters told nobody what to do, and the Record button sat
@@ -2398,10 +2424,12 @@ function renderPreflight(p){
   if (ptReady){
     msg.textContent = "playtest ready - record, play, talk";
     if (why){ why.hidden = true; why.innerHTML = ""; }
+    _ptIdleHTML = msg.innerHTML;
     return;
   }
   msg.innerHTML = `record unavailable · ${bad.length} check${bad.length === 1 ? "" : "s"} failing `
     + `<button class="qbtn small ghost" onclick="togglePtWhy()">what do I install?</button>`;
+  _ptIdleHTML = msg.innerHTML;
   if (!why) return;
   /* No window list here. It printed the title of every window open on the
    * desktop — mail, chat, whatever — into a panel about installing ffmpeg. The
@@ -2523,37 +2551,84 @@ async function toggleRecord(){
 }
 
 async function ptPoll(){
+  const msg = document.getElementById("pt-msg");
+  const btn = document.getElementById("pt-btn");
+  let s = null;
   try{
     const r = await fetch("/api/playtest/status");
-    const s = await r.json();
-    const btn = document.getElementById("pt-btn");
-    if (s.recording){
-      ptRecording = true;
-      document.getElementById("pt-lamp").className =
-        "lamp" + (s.recording.telemetry_events > 0 ? "" : " waiting");
-      const frame = document.getElementById("gameframe");
-      if (!s.recording.native &&
-          (!frame || !frame.src.includes(`bgate_session=${s.recording.id}`))){
-        bootFrame(s.recording.id);
-      }
-      btn.disabled = false;
-      btn.textContent = "■ stop";
-      btn.classList.add("recording");
-      document.getElementById("pt-msg").textContent =
-        `RECORDING session ${s.recording.id} - ${s.recording.telemetry_events} telemetry events`;
-      return;
+    s = await r.json();
+    if (!r.ok || !s || typeof s !== "object") throw new Error(apiError(s, r.status));
+  }catch(e){
+    /* NOT an empty catch. This poller is the only thing on the page that
+       notices a recording has started, stopped or died, so a dead backend or a
+       changed shape used to take the whole panel silent — the same failure the
+       partition below fixes, arriving by a different door. Say it once and keep
+       polling; the next good tick puts the real state back. */
+    if (msg && !_ptTransient){
+      _ptTransient = true;
+      msg.textContent = "could not read the recorder - "
+        + ((e && e.message) || "no response");
     }
-    if (ptRecording){
-      ptRecording = false;
-      btn.textContent = "● record";
-      btn.classList.remove("recording");
+    return;
+  }
+  if (!btn || !msg) return;
+
+  if (s.recording){
+    ptRecording = true;
+    _ptTransient = true;
+    const lamp = document.getElementById("pt-lamp");
+    if (lamp) lamp.className =
+      "lamp" + (s.recording.telemetry_events > 0 ? "" : " waiting");
+    const frame = document.getElementById("gameframe");
+    if (!s.recording.native &&
+        (!frame || !frame.src.includes(`bgate_session=${s.recording.id}`))){
+      bootFrame(s.recording.id);
     }
-    const busy = (s.processing || []).filter(v => v.stage !== "failed");
-    if (busy.length){
-      document.getElementById("pt-msg").textContent =
-        `${busy[0].stage || "processing"} session ${busy[0].id}…`;
-    }
-  }catch(e){}
+    btn.disabled = false;
+    btn.textContent = "■ stop";
+    btn.classList.add("recording");
+    msg.textContent =
+      `RECORDING session ${s.recording.id} - ${s.recording.telemetry_events} telemetry events`;
+    return;
+  }
+  if (ptRecording){
+    ptRecording = false;
+    btn.textContent = "● record";
+    btn.classList.remove("recording");
+  }
+
+  /* PARTITION, DO NOT FILTER. A session whose post-processing failed was the
+     one thing this list could hold that mattered, and it was the one thing
+     thrown away: `filter(v => v.stage !== "failed")` left `busy` empty, the
+     `if` below never ran, and #pt-msg kept whatever the recording branch had
+     written. You pressed stop, transcription died, and the panel went on
+     saying "RECORDING session 12" until the page was reloaded. The server has
+     been writing processing_error for exactly this moment - read it, and give
+     the retry that renderSessions already offers a place next to the button
+     the user is actually looking at. */
+  const proc = s.processing || [];
+  const failed = proc.filter(v => v.stage === "failed");
+  const busy = proc.filter(v => v.stage !== "failed");
+  if (failed.length){
+    const f = failed[0];
+    _ptTransient = true;
+    msg.innerHTML = `session ${f.id} failed to process`
+      + (f.error ? ` - ${esc(f.error)}` : "")
+      + ` <button class="qbtn small ghost" onclick="retrySession(${f.id})">retry</button>`;
+    return;
+  }
+  if (busy.length){
+    _ptTransient = true;
+    msg.textContent = `${busy[0].stage || "processing"} session ${busy[0].id}…`;
+    return;
+  }
+  // Nothing recording and nothing processing: the panel is about the Record
+  // button again. Hand it back the preflight's own line rather than leaving a
+  // finished session's status up as if it were still happening.
+  if (_ptTransient){
+    _ptTransient = false;
+    msg.innerHTML = _ptIdleHTML;
+  }
 }
 
 syncThemeButtons();
@@ -2635,6 +2710,11 @@ setInterval(pollQueue, 3500);
 <script src="/static/wf_steps_world.js"></script>
 <script src="/static/wf_steps_3d.js"></script>
 <script src="/static/wf_steps_agent.js"></script>
+<script src="/static/wf_steps_tools.js"></script>
+<!-- LAST of the wf_steps_* files: it registers the templates for the tool-node
+     families and replaces WF._renderLibrary with the panelled one, so it has to
+     see every step and template the others contributed. -->
+<script src="/static/wf_steps_templates.js"></script>
 <!-- The brainstorm workspace (chat + writing pad + drawing pad + a two-step
      Deploy). Above the seat modules because the director and narrative seats
      mount it with Brainstorm.mount(el, {seat}); it registers window.Brainstorm
@@ -2650,6 +2730,10 @@ setInterval(pollQueue, 3500);
 <script src="/static/seats/qa.js"></script>
 <script src="/static/seats/narrative.js"></script>
 <script src="/static/atlas.js"></script>
+<!-- The shared "put it in the game" panel. Loaded once, opened by the sprite
+     editor, the audio lab and the 3D model editor — after atlas.js because it
+     uses the scan as its reference picker. -->
+<script src="/static/handoff.js"></script>
 <script src="/static/sceneview.js"></script>
 <script src="/static/scenebuild.js"></script>
 <!-- The editor's engine, then its modes. simple.js must precede
@@ -2684,16 +2768,22 @@ setInterval(pollQueue, 3500);
 {"imports": {"three": "/static/vendor/three/build/three.module.min.js"}}
 </script>
 <script type="module" src="/static/modeledit.js"></script>
+<script type="module" src="/static/modeledit_tools.js"></script>
 <script src="/static/assetlib.js"></script>
 <!-- The playtest notepad + live frame grab. Self-contained: injects its own
      style, mounts its own slide-out, and installs its hotkey INTO the game
      iframe (a parent-document listener never fires while the build has focus). -->
 <script src="/static/ptnotes.js"></script>
+<!-- Triage for a recorded session. Owns the feedback surface inside the review
+     overlay: injects its own style, mounts into #pt-triage, repaints only that
+     subtree so a triage action never restarts the video you are watching. -->
+<script src="/static/ptreview.js"></script>
 <script src="/static/world.js"></script>
 <!-- The Work history panel. Self-contained: it injects its own style and
      mounts itself into #view-overview, so nothing above needs to know it
      exists. -->
 <script src="/static/overview_history.js"></script>
+<script src="/static/bible_refs.js"></script>
 <script>
   // If the dashboard restored the seats view on load, build its sub-nav once
   // modules have registered.

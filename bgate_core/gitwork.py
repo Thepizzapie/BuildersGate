@@ -397,13 +397,13 @@ def revert(root: str | os.PathLike[str], base: str, *,
 # Optional worktree isolation
 # ---------------------------------------------------------------------------
 
-def isolation_enabled() -> bool:
-    """Off by default: a worktree moves the agent's cwd, which is a bigger
-    change to the run than most projects want. base_commit + diff + revert work
-    identically without it."""
-    return os.environ.get("BGATE_GIT_ISOLATION", "").strip().lower() in {
-        "1", "true", "yes", "on"}
-
+# Isolation is OFF by default: a worktree moves the agent's cwd, which is a
+# bigger change to the run than most projects want, and base_commit + diff +
+# revert work identically without it. The switch is read through the settings
+# registry (`dispatch.isolation`, which declares BGATE_GIT_ISOLATION as its
+# supplying variable) at dispatch.py's call site — this module used to carry a
+# second `isolation_enabled()` that read the bare variable and so ignored the
+# stored value. Nothing called it; the registry is the one read path.
 
 def worktree_paths(root: str | os.PathLike[str], item_id: int) -> tuple[Path, str]:
     return Path(root) / ".bgate" / "work" / f"item-{item_id}", f"bgate/item-{item_id}"
@@ -433,6 +433,11 @@ def make_worktree(root: str | os.PathLike[str], item_id: int, *,
 
 
 def remove_worktree(root: str | os.PathLike[str], item_id: int) -> dict:
+    """Drop an isolated run's private checkout. Called from ``/api/queue/{id}
+    /revert`` once a FULL revert has landed, which is the only point where the
+    worktree is provably worth nothing — see that route for why run-finish is
+    the wrong home (the agent's work is uncommitted in there, and diff/peek/
+    preview resolve a finished item's files through it)."""
     path, branch = worktree_paths(root, item_id)
     ok, _, err = _run(root, ["worktree", "remove", "--force", str(path)],
                       timeout=60)

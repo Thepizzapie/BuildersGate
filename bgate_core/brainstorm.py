@@ -493,8 +493,9 @@ _CHAT_COMMON = (
 
 _CHAT_SEAT = {
     "director": (
-        "You hold the DIRECTOR seat: pillars, scope and the cut line. You care "
-        "what gets built, what it costs, and what is deliberately left out."),
+        "You hold the DIRECTOR seat: the pillars, the core loop and the "
+        "priorities. You care what gets built, what it costs, and what is "
+        "deliberately left out."),
     "narrative": (
         "You hold the NARRATIVE seat: canon, lore, character and the world's "
         "internal consistency. You care what is TRUE in this world and whether "
@@ -572,17 +573,17 @@ def session_context(session: dict, msgs: list[dict]) -> str:
 def world_context(root: str | os.PathLike[str], seat: str) -> str:
     """What is already settled, so a proposal does not contradict it.
 
-    A synthesis without this proposes work the project has already cut and canon
-    that already exists under another name — and it does it CONFIDENTLY, which is
-    worse than refusing, because the human is reading a plan that looks informed.
+    A synthesis without this proposes work the project has already ruled out and
+    canon that already exists under another name — and it does it CONFIDENTLY,
+    which is worse than refusing, because the human is reading a plan that looks
+    informed.
 
     Each seat gets what its own decisions are made against and nothing else:
 
-        director   the pillars and the CUT LINE. Proposing work below the cut
-                   line is the one thing the director seat exists to refuse, and
-                   ``queue.add`` will reject it at deploy time anyway — finding
-                   that out after a human confirmed the plan is finding out too
-                   late.
+        director   the pillars, the core loop and the constraints. A plan that
+                   contradicts one of those is wrong in a way the conversation
+                   cannot see, and finding that out after a human confirmed it
+                   is finding out too late.
         narrative  the canon that is already written. "Does this contradict
                    something established" is not a question that can be answered
                    from the conversation alone.
@@ -632,16 +633,20 @@ def _director_world(root: str | os.PathLike[str]) -> str:
                for s in view["pillars"][:WORLD_SECTIONS]]
     if pillars:
         parts.append("PILLARS\n" + "\n".join(pillars))
-    if view["in_scope"]:
-        parts.append("IN SCOPE\n" + "\n".join(
-            f"- {s['title']}" for s in view["in_scope"][:WORLD_SECTIONS]))
-    if view["cut"]:
-        # Named explicitly rather than merely omitted: a tier the project has
-        # DECIDED against reads to a model like an obvious gap it should fill.
-        parts.append("BELOW THE CUT LINE — do not propose work for these\n"
-                     + "\n".join(f"- {s['title']}"
-                                 for s in view["cut"][:WORLD_SECTIONS]))
-    return ("PROJECT SCOPE\n\n" + "\n\n".join(parts)) if parts else ""
+    # This used to add IN SCOPE and BELOW THE CUT LINE off the tier list, which
+    # was the sharpest half of the block: a tier the project had DECIDED against
+    # reads to a model like an obvious gap it should fill. The tiers are gone,
+    # so the loop and the constraints carry it — they are what a proposal has to
+    # not contradict, and unlike the tier list, projects actually write them.
+    if view["loop"]:
+        parts.append("CORE LOOP\n" + "\n".join(
+            f"- {s['title']}: {str(s['body'] or '')[:200]}"
+            for s in view["loop"][:WORLD_SECTIONS]))
+    if view["constraints"]:
+        parts.append("CONSTRAINTS — a proposal that breaks one of these is wrong\n"
+                     + "\n".join(f"- {s['title']}: {str(s['body'] or '')[:200]}"
+                                 for s in view["constraints"][:WORLD_SECTIONS]))
+    return ("WHAT IS ALREADY SETTLED\n\n" + "\n\n".join(parts)) if parts else ""
 
 
 def _narrative_world(root: str | os.PathLike[str]) -> str:

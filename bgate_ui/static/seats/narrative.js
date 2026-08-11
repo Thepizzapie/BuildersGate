@@ -46,6 +46,7 @@
     _counter: 0,
     _saveTimer: null,
     _drag: null,          // active drag context
+    _lastSaveErr: "",     // last save refusal, so autosave toasts it once
     _lore: [],            // GET /api/lore — canon entities a panel can bind to
 
     render: function (container, bg) {
@@ -144,9 +145,18 @@
       this._root.innerHTML =
         '<style>' + this._css() + "</style>" +
         // Unlike the other seats this is one full-bleed tool, not a stack of
-        // panels, so it gets landmarks rather than invented section headings —
-        // a heading per button would be structure that isn't there.
-        '<section class="nar-wrap" aria-label="Storyboard">' +
+        // panels, so it gets ONE section rather than invented headings - a
+        // heading per button would be structure that isn't there. It still
+        // wears .spanel + .sec-h, because the alternative is the one view in
+        // the app whose surface belongs to nothing: an unlabelled toolbar over
+        // an unlabelled canvas, with the seat's own tab four pixels above it
+        // as the only thing naming either.
+        '<section class="spanel s-narrative k-doc nar-wrap" aria-label="Storyboard">' +
+          '<div class="sec-h">' + BGICON("narrative") +
+            '<h3 class="sec-t">Storyboard</h3>' +
+            '<span class="sec-n" id="nar-count"></span>' +
+            '<span class="sec-sub" id="nar-status"></span>' +
+          "</div>" +
           '<div class="nar-toolbar" role="toolbar" aria-label="Storyboard tools">' +
             '<button class="nar-btn nar-primary" data-act="add">+ Panel</button>' +
             '<button class="nar-btn" data-act="link">→ Link mode</button>' +
@@ -157,7 +167,6 @@
             '<button class="nar-btn" data-act="sync" title="Every board arrow between two bound panels becomes a lore edge">⛓ Sync links</button>' +
             '<button class="nar-btn" data-act="work" title="Turn this panel into a work item a seat can be dispatched on">→ Queue work</button>' +
             '<button class="nar-btn" data-act="save">↺ Save</button>' +
-            '<span class="nar-status" id="nar-status"></span>' +
             '<span class="nar-hint" id="nar-hint">drag a panel header to move · scroll / drag empty canvas to pan</span>' +
           "</div>" +
           '<div class="nar-scroll" id="nar-scroll">' +
@@ -268,8 +277,18 @@
       this._setStatus("saving…");
       this._bg.post("/api/workspace/narrative/storyboard", { data: this._serialize() })
         .then(function (r) {
-          if (r && (r.ok || r.seat)) self._setStatus("saved " + self._clock());
-          else { self._setStatus("save failed", true); if (explicit) self._bg.toast("save failed", true); }
+          if (r && (r.ok || r.seat)) { self._lastSaveErr = ""; self._setStatus("saved " + self._clock()); return; }
+          // bg.post hands a refusal BACK rather than throwing, so this branch
+          // is the one a 4xx lands in — and it used to drop the server's
+          // sentence on the floor and print a flat "save failed". The workspace
+          // store refuses a lost update with a 409 that names what it is about
+          // to erase; that is precisely the thing worth reading. Autosave runs
+          // every second, so the toast fires once per distinct reason instead
+          // of once per attempt.
+          var err = self._err(r) || "save failed";
+          self._setStatus("save failed - " + err.slice(0, 60), true);
+          if (explicit || err !== self._lastSaveErr) self._bg.toast(err, true);
+          self._lastSaveErr = err;
         })
         .catch(function (e) {
           console.warn("narrative save", e);
@@ -372,6 +391,10 @@
       for (var i = 0; i < old.length; i++) old[i].remove();
       var panels = this._state.panels;
       if (empty) empty.hidden = panels.length > 0;
+      // The section band's count. An empty .sec-n hides itself, so a blank
+      // board shows no pill rather than a zero.
+      var n = this._root.querySelector("#nar-count");
+      if (n) n.textContent = panels.length ? String(panels.length) : "";
       for (var j = 0; j < panels.length; j++) canvas.appendChild(this._buildPanel(panels[j]));
       this._drawEdges();
       this._paintLinkState();
@@ -720,10 +743,16 @@
         body.innerHTML =
           '<div class="nar-verdict v-' + bg.esc(d.verdict || "ok") + '">verdict: ' +
             bg.esc(d.verdict || "ok") + "</div>" + self._flagHtml(flags) +
-          (Array.isArray(d.entities) && d.entities.length
-            ? '<div class="nar-consulted">canon consulted: ' +
-              bg.esc(d.entities.map(function (e) { return e.slug || e.name || e; }).join(", ")) + "</div>"
-            : "");
+          // The checker answers {verdict, mentions, canon, flags} — there is no
+          // `entities` key and never was, so this line rendered for nobody:
+          // "which canon did you actually check me against" was the one
+          // question the panel could answer and silently didn't.
+          (function (seen) {
+            return seen.length
+              ? '<div class="nar-consulted">canon consulted: ' +
+                bg.esc(seen.map(function (e) { return e.slug || e.name || e; }).join(", ")) + "</div>"
+              : "";
+          })(Array.isArray(d.mentions) ? d.mentions : []);
       }).catch(function (e) {
         var body = overlay.querySelector(".nar-modal-body");
         if (body) body.innerHTML = '<div class="nar-flag hard">canon check failed: ' + bg.esc(e && e.message) + "</div>";
@@ -901,26 +930,35 @@
     _num: function (v, d) { var n = Number(v); return isFinite(n) ? n : d; },
     _clock: function () { var d = new Date(); return d.toTimeString().slice(0, 5); },
     _setStatus: function (msg, bad) {
+      // The status line lives in the section band now, as the .sec-sub beside
+      // the panel count. It keeps .nar-bad for the refused case.
       var s = this._root.querySelector("#nar-status");
-      if (s) { s.textContent = msg; s.className = "nar-status" + (bad ? " nar-bad" : ""); }
+      if (s) { s.textContent = msg; s.className = "sec-sub" + (bad ? " nar-bad" : ""); }
     },
     _setHint: function (msg) { var h = this._root.querySelector("#nar-hint"); if (h) h.textContent = msg; },
     _selectAll: function (input) { try { input.setSelectionRange(0, input.value.length); } catch (e) {} },
 
     _css: function () {
       return "" +
+      /* .spanel supplies the surface, the hairline and the radius; what is
+         left here is the one thing it cannot know - this pane is a viewport
+         and has to claim a height rather than growing to its content. */
       ".nar-wrap{display:flex;flex-direction:column;height:calc(100vh - 220px);min-height:440px;color:var(--text)}" +
-      ".nar-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;background:var(--surface-1);border:1px solid var(--line);border-radius:12px;margin-bottom:10px}" +
-      ".nar-btn{padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}" +
+      ".nar-toolbar{display:flex;align-items:center;gap:var(--s-4);flex-wrap:wrap;padding:var(--s-4) var(--s-5);background:var(--surface-1);border:1px solid var(--line);border-radius:var(--r-md);margin-bottom:var(--s-5)}" +
+      /* inline-flex: BGIcon renders display:block, so the icon on "Lore…"
+         stacked itself above the label and that one button was two lines tall
+         in a row of one-line buttons. */
+      ".nar-btn{display:inline-flex;align-items:center;gap:var(--s-3);padding:var(--s-4) var(--s-5);background:var(--surface-3);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--text);font:inherit;font-size:var(--fs-sm);cursor:pointer;transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease)}" +
       ".nar-btn:hover{border-color:var(--accent)}" +
       ".nar-primary{background:var(--accent-soft);border-color:var(--accent);color:var(--text)}" +
       ".nar-danger:hover{border-color:var(--bad-line);color:var(--bad)}" +
       ".nar-btn.nar-active{background:var(--accent);border-color:var(--accent);color:var(--accent-soft);font-weight:var(--fw-semi)}" +
       ".nar-sep{flex:1}" +
-      ".nar-status{font-size:12px;color:var(--text-3);min-width:70px}" +
-      ".nar-status.nar-bad{color:var(--bad)}" +
+      /* The save/refusal line moved into the section band as its .sec-sub, so
+         all that is left of .nar-status is the refused colour. */
+      ".sec-sub.nar-bad{color:var(--bad)}" +
       ".nar-hint{font-size:11px;color:var(--text-3);width:100%;order:9;margin-top:2px}" +
-      ".nar-scroll{position:relative;flex:1;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:12px;" +
+      ".nar-scroll{position:relative;flex:1;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-md);" +
         "background-image:radial-gradient(var(--surface-2) 1px,transparent 1px);background-size:26px 26px;cursor:grab}" +
       ".nar-scroll.nar-panning{cursor:grabbing}" +
       ".nar-canvas{position:relative}" +

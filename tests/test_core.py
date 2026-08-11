@@ -39,21 +39,6 @@ class TestBible:
         with pytest.raises(ValueError, match="kind"):
             bible.add(root, "vibes", "nope")
 
-    def test_cut_line_partitions_scope(self, root):
-        bible.add(root, "scope_tier", "Core loop", rank=1)
-        bible.add(root, "scope_tier", "One enemy type", rank=2)
-        bible.add(root, "cut_line", "--- ship it ---", rank=3)
-        bible.add(root, "scope_tier", "Multiplayer", rank=4)
-
-        view = bible.overview(root)
-        assert [s["title"] for s in view["in_scope"]] == ["Core loop", "One enemy type"]
-        assert [s["title"] for s in view["cut"]] == ["Multiplayer"]
-        assert bible.in_scope(root, 2) is True
-        assert bible.in_scope(root, 9) is False
-
-    def test_everything_in_scope_without_cut_line(self, root):
-        assert bible.in_scope(root, 999) is True
-
     def test_update_reindexes_search(self, root):
         section = bible.add(root, "loop", "placeholder")
         bible.update(root, section["id"], title="Scavenge, craft, survive")

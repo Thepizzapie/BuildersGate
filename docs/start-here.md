@@ -17,7 +17,7 @@ what this does about each one.
 | Problem | What this does |
 |---|---|
 | A new session knows nothing about your game. You re-explain the premise, the art style and last week's decisions every time. | Design decisions live in a database in the project, not in the chat. Any session reads the same bible and lore. |
-| You ask for a save system and get a save system, an achievement framework and a settings menu. | Work is tagged with a scope tier and there is a cut line. Anything below it is refused when queued, not argued about later. |
+| You ask for a save system and get a save system, an achievement framework and a settings menu. | Work is filed as items with a written brief and an acceptance test. What is not in the brief is not the job, and the seat that wants to widen it has to file that separately, where you see it. |
 | It writes a jump, reports the jump works, and has never run the game. | `godot_run` runs the project headless and `godot_screenshot` captures a frame. A seat can look at what it built. |
 | Sprite frame one and frame four are different characters. | References are pinned as files. Generation conditions on them, and a consistency check scores frames against the pinned anchor before anything ships. |
 | Two sessions edit the same file for opposite reasons and one silently loses. | Seats take write locks on files. A PreToolUse hook refuses the second writer. |
@@ -82,9 +82,9 @@ is a database row. Filing one costs nothing and starts nothing.
 **Dispatch.** Turning a queued work item into a *running agent*. This is where
 money gets spent, and it is where the refusals live. See below.
 
-**The cut line.** A marker in your design bible dividing what you are building
-from what you are not. Everything at or below it is explicitly not being built.
-This is the single most useful thing in the tool and the one people skip.
+**Chain.** Work items filed as one ordered group, each waiting on the last.
+Filed with `queue_add_chain` when the pieces have an order, which they usually
+do. Nothing in a chain dispatches ahead of its predecessor.
 
 ---
 
@@ -93,9 +93,9 @@ This is the single most useful thing in the tool and the one people skip.
 Worth reading before you run anything, because "dispatch" sounds abstract and is
 not. When you click Dispatch on a work item, `bgate_ui/dispatch.py` does this:
 
-1. Re-checks the **cut line** against the item's scope tier. The line moves; an
-   item filed legitimately on Tuesday can be out of scope by Thursday, and
-   spending an agent on it is the exact gold-plating tiers exist to stop.
+1. Refuses to start a **chain link** whose predecessor has not landed. Priority
+   is an ordering, not a dependency; this is what stops the agent that needs a
+   scene starting alongside the one that creates it.
 2. Checks the **concurrency cap** (default 4). The dashboard's "dispatch all"
    loops every queued item with no cap of its own, and twenty queued items would
    otherwise be twenty Claude trees on one laptop.
@@ -171,9 +171,9 @@ persist and are re-applied at boot.
 bgate serve          # http://127.0.0.1:7788
 ```
 
-Ten views over the same database: the queue, live agents you can steer, the seat
-workspaces, the world bible, assets, playtests, the iteration timeline, and
-**Settings**. No build step, no node, no CDN.
+A dozen views over the same database: the queue, live agents you can steer, the
+seat workspaces, the world bible, assets, playtests, and **Settings**. No build
+step, no node, no CDN.
 
 Mutations require a per-project bearer token from `.bgate/ui-token`, because
 127.0.0.1 is not a security boundary. Any page in your browser can POST to
@@ -212,24 +212,25 @@ session.
 `hook-status` is the only thing that proves enforcement is actually live; it
 exits 1 if it is not.
 
-### 4. Draw the cut line before you build anything
+### 4. Write the bible before you build anything
 
 This is the step everyone skips and the one that pays for itself fastest. In a
 Claude session, or in the dashboard's World Bible view:
 
-- Write your pillars: the three or four things the game is actually about.
-- Write your scope tiers, ranked. "Core loop", "first vertical slice", "polish",
-  "post-launch dreams".
-- Put the **cut line** between two of them.
+- Write your **pillars**: the three or four things the game is actually about.
+- Write the **core loop**: what the player does, over and over.
+- Write your **constraints**: the art rules, the platform limits, the things
+  that are settled and are not up for a fresh opinion every session.
+- Write down what you are **not** building, and why. An unsaid no gets built.
 
-From that moment on, `queue_add` refuses to file work under a cut tier, and
-dispatch re-checks before spawning. This is the only mechanism in the tool that
-reliably stops an agent fleet building things nobody asked for.
+Every seat reads this before it starts work - it arrives in the brief, and the
+art constraints are assembled into the image prompts. An agent that has read
+your pillars proposes different work than one that has not.
 
-Untiered work is deliberately let through and loudly flagged. Refusing it would
-make the first cut line anyone draws reject their entire existing queue, and the
-predictable next step would be turning the gate off, which is how a gate stops
-gating.
+There was a ranked tier list and a cut line here once, with a gate that refused
+work below the line. It never refused anything; see
+[design-notes.md](design-notes.md). What survived is the part that was doing the
+work: writing the decision down where the fleet reads it.
 
 ### 5. Do one thing, end to end
 
@@ -239,7 +240,7 @@ Watch it in the Agents view. When it says it is done, look at the diff.
 The loop the tool is built around, once you are past the first hour:
 
 ```text
-DIRECTOR    bible_add: pillars, the core loop, the scope tiers, the cut line
+DIRECTOR    bible_add: pillars, the core loop, constraints, references
 NARRATIVE   lore_add / lore_fact; canon_check gates every narrative write
 ART         ref_pin an approved reference FIRST, then generate against it;
             asset_lock before touching a binary, asset_release after

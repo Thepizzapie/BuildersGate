@@ -129,6 +129,7 @@ window.AtlasCode = (() => {
         <div class="ac-main">
           <div class="ac-bar">
             <button class="ac-b go" id="ac-save">save</button>
+            <span id="ac-save-state"></span>
             <button class="ac-b" id="ac-revert">revert</button>
             <button class="ac-b" id="ac-check">check project</button>
             <button class="ac-b" id="ac-play-t">play ▸</button>
@@ -215,6 +216,17 @@ window.AtlasCode = (() => {
       try { await Atlas.ensure(); } catch (e) {}
     }
     const map = atlasMap();
+    /* THE SCAN REFUSES IN A SENTENCE, AND THIS PANEL BINNED IT. /api/screenmap
+       answers 200 {"error": "no project.godot found at root or one level down"}
+       for a project with no Godot tree, and Atlas keeps that object as its map
+       (see its load()). Everything below then read `map.screens` as undefined
+       and rendered "no scenes found" — a generic empty state printed directly
+       over the one sentence that names what to do about it. Read the error out
+       instead; it costs a line and it is the difference between "this editor is
+       broken" and "scaffold the game first". */
+    const scanError = !map ? ""
+      : typeof map.error === "string" ? map.error
+      : (map.error && map.error.message) || "";
     mainScene = (map && map.main_scene) || null;
     const screens = ordered((map && map.screens) || []);
     const sel = document.getElementById("ac-scene");
@@ -226,7 +238,7 @@ window.AtlasCode = (() => {
     if (document.activeElement !== sel){
       sel.innerHTML = screens.length
         ? screens.map(s => `<option value="${E(s.id)}"${s.id === scene ? " selected" : ""}>⊞ ${E(s.label)}</option>`).join("")
-        : `<option value="">no scenes found</option>`;
+        : `<option value="">${E(scanError || "no scenes found")}</option>`;
       if (!sel.dataset.blurBound){
         sel.dataset.blurBound = "1";
         sel.addEventListener("blur", () => { if (!AtlasCode.dirty || true) activate(); });
@@ -234,6 +246,14 @@ window.AtlasCode = (() => {
     }
     if (!scene && screens.length) await pickScene(screens[0].id);
     else if (scene) renderFiles();
+    else {
+      // With no scenes and no scene picked, pickScene() never runs and the file
+      // rail keeps the build's placeholder forever — the second place the scan's
+      // refusal was swallowed. Say it here too; this is the pane people look at.
+      const files = document.getElementById("ac-files");
+      if (files) files.innerHTML = `<div class="ac-h">files</div><div class="ac-via">${
+        E(scanError || "no scenes in this project yet")}</div>`;
+    }
     refreshPlay();
   }
 
@@ -344,16 +364,36 @@ window.AtlasCode = (() => {
   function renderState(){
     const t = tabs[active];
     const n = tabs.filter(x => x.dirty).length;
-    document.getElementById("ac-state").textContent =
-      !t ? "" : `${t.rel}${n ? ` · ${n} unsaved` : ""}`;
+    document.getElementById("ac-state").textContent = !t ? "" : t.rel;
     document.getElementById("ac-save").disabled = !t || !t.dirty;
     document.getElementById("ac-revert").disabled = !t || !t.dirty;
+    paintSaveState();
+  }
+
+  /* "· 2 unsaved" appended to a right-aligned, ellipsised, 9.5px path was the
+     only persistent save state in this editor, and it was the first thing the
+     ellipsis ate. See SaveState in seats/_core.js. The count of OTHER dirty
+     tabs stays in the detail line, because a saved file in a project with two
+     unsaved tabs is not a saved project. */
+  function paintSaveState(){
+    if (!window.SaveState) return;
+    const el = document.getElementById("ac-save-state");
+    if (!el) return;
+    const t = tabs[active];
+    if (!t) return SaveState.set(el, {state:"saved", at:0, detail:""});
+    const others = tabs.filter(x => x !== t && x.dirty).length;
+    const more = others ? `${others} other tab${others === 1 ? "" : "s"} unsaved` : "";
+    if (t.saving)    return SaveState.set(el, {state:"saving"});
+    if (t.saveError) return SaveState.set(el, {state:"error", detail:t.saveError});
+    if (t.dirty)     return SaveState.set(el, {state:"dirty", detail:more || "Ctrl+S"});
+    SaveState.set(el, {state:"saved", at:t.savedAt || 0, detail:more});
   }
 
   /* ── save / revert ────────────────────────────────────────────────────── */
   async function save(){
     const t = tabs[active];
     if (!t || !t.dirty) return;
+    t.saving = true; t.saveError = null; renderState();
     const text = t.doc.getValue();
     const body = { rel: t.rel, text, base_sha: t.sha };
     let r = await mutate("/api/godot/file", { body, quiet: true });
@@ -364,13 +404,23 @@ window.AtlasCode = (() => {
       r = await mutate("/api/godot/file", { body: {...body, force: true}, quiet: true });
     }
     if (!r.ok && r.status === 409){
+      t.saving = false;
+      t.saveError = String(r.error || "changed on disk").slice(0, 120);
+      renderState();
       say(r.error, "bad");
       if (confirm(`${r.error}\n\nReload it from disk? Your edits in this tab are lost.`))
         await reload(active);
       return;
     }
-    if (!r.ok) return say(r.error, "bad");
+    if (!r.ok) {
+      t.saving = false;
+      t.saveError = String(r.error || "the server refused the write").slice(0, 120);
+      renderState();
+      return say(r.error, "bad");
+    }
+    t.saving = false; t.saveError = null;
     t.sha = r.data.sha; t.base = text; t.dirty = false;
+    t.savedAt = Date.now();
     renderTabs(); renderState();
     say(r.data.unchanged ? "no change" : `saved ${t.name}`, "ok");
     if (!r.data.unchanged) refreshPlay();
@@ -382,6 +432,7 @@ window.AtlasCode = (() => {
     const d = await readJSON(fileURL(t.rel), null);
     if (!d || d.__error) return say((d && d.__error) || "reload failed", "bad");
     t.doc.setValue(d.text); t.base = d.text; t.sha = d.sha; t.dirty = false;
+    t.saving = false; t.saveError = null;
     renderTabs(); renderState();
   }
 

@@ -214,16 +214,6 @@ def ladder(kind: str) -> list[dict]:
     return [resolve(kind, t) for t in TIERS]
 
 
-def cheapest_capable(kind: str) -> dict:
-    """The least you can spend and still get a usable result for this kind."""
-    for tier in TIERS:
-        try:
-            return resolve(kind, tier)
-        except NoSuchTier:
-            continue
-    raise NoSuchTier(f"no tier of {kind!r} resolves to a capable model")
-
-
 def estimate(kind: str, tier: str = DEFAULT_TIER, count: int = 1) -> float:
     """What `count` generations of this kind cost at this tier."""
     return round(resolve(kind, tier)["usd"] * max(0, int(count)), 4)

@@ -20,15 +20,15 @@ same time. A local dashboard shows what each one is doing and is where you
 dispatch work and approve output.
 
 Your own Claude session uses the same tools and the same database. Asking it what
-is left before the vertical slice reads the queue and the scope tiers, not the
+is left before the vertical slice reads the queue and the design bible, not the
 chat history.
 
 `bgate init` creates a project with a runnable Godot game in it. `bgate adopt`
 points it at a game you already have.
 
-There are limits enforced in code: work outside the current scope tier is
-refused, generation stops at a spend ceiling, files locked by one seat cannot be
-written by another, and no agent can approve its own art.
+There are limits enforced in code: generation stops at a spend ceiling, files
+locked by one seat cannot be written by another, and no agent can approve its
+own art.
 
 Local-first. No daemon, no cloud, no build step in the frontend.
 
@@ -268,7 +268,7 @@ orchestrator fan out one agent per seat, each adopting its role via `BGATE_SEAT`
 ```text
 1  bgate init <name>       .bgate/game.db + a runnable game, path printed
 2  godot_scaffold          (or, into an existing project: the same runnable slice)
-3  DIRECTOR seat           bible_add: pillars, the core loop, scope tiers, the CUT LINE
+3  DIRECTOR seat           bible_add: pillars, the core loop, constraints, references
 4  NARRATIVE seat          lore_add / lore_fact; canon_check on every narrative write
 5  ART seat                ref_pin approved references first, then blender_sprites /
                            image_sprites / image_generate; asset_lock before touching
@@ -281,9 +281,10 @@ orchestrator fan out one agent per seat, each adopting its role via `BGATE_SEAT`
 ```
 
 Four rules make multi-agent work safe. Check `seat_can_write` before writing
-outside your obvious lane. Lock binaries before editing. Leave a `seat_post_note`
-when your work changes another seat's world. Call `scope_check(rank)` before
-building anything new.
+outside your obvious lane. Lock binaries before editing. Run `canon_check`
+before any narrative write lands. And when another seat has to DO something
+because of your work, `queue_add` it - a note is a bulletin, a queue item is a
+job.
 
 `seat_brief(role)` returns everything a seat needs to start: mission, lanes,
 bible, canon, pinned reference anchors, promoted feedback, and who holds which
@@ -310,7 +311,7 @@ explicitly whenever more than one project could be in play.
 |---|---|
 | [setup.md](docs/setup.md) | Requirements, API keys, `adopt`, project switching, MCP registration, platform support |
 | [reference.md](docs/reference.md) | Every surface in detail: dashboard, seats, locks, Blender to Godot, templates, publishing, playtest, layout |
-| [design-notes.md](docs/design-notes.md) | The cut line, budgets, human-only approval, canon, and the technology choices |
+| [design-notes.md](docs/design-notes.md) | Budgets, human-only approval, canon, why the cut line was removed, and the technology choices |
 | [gotchas.md](docs/gotchas.md) | GPU cold starts, stdio deadlocks, whisper segmentation, telemetry clocks |
 
 **Findings**

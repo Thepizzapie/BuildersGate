@@ -841,23 +841,58 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
                                            task_kind=task_kind,
                                            tileable=tileable)
         elif provider == "kie":
-            # kie WALKS THROUGH THIS DOOR TOO, but it is the first provider that
-            # cannot take the anchors with it. Every image field kie documents
-            # is a URI and its reference says nothing about base64 data URIs, so
-            # a pinned ref on disk has nowhere to go — the adapter refuses one
-            # rather than encoding it on a guess. Refusing HERE, before the
-            # generation, is the difference between "kie cannot do anchored
-            # work, use krea" and an unanchored image that was paid for and
-            # looks nothing like the character.
+            # kie's image fields ARE URIs, and a pinned ref is a local file — so
+            # this used to refuse anchored work outright and tell the caller to
+            # use krea. That was wrong, and it cost a project its storyboard:
+            # kie.upload_file already mints a hosted URL for a local file and is
+            # exactly what the VIDEO path uses for first_frame, so the anchors
+            # had somewhere to go the whole time. A seat whose only funded
+            # account is kie was being told its own provider could not do the
+            # work.
+            #
+            # Still refuse rather than silently drop: an unanchored image that
+            # was PAID FOR and looks nothing like the character is the outcome
+            # the old refusal existed to prevent, and that reasoning holds. The
+            # difference is that now the upload is tried first.
+            chosen_model = model or kie.DEFAULT_IMAGE_MODEL
+            image_urls: list[str] = []
             if ref_paths:
-                return {"ok": False, "provider": provider, "model": model,
-                        "error": "kie cannot condition on the pinned refs — its "
-                                 "image fields take public URLs only, and every "
-                                 "anchor here is a local file. Use provider "
-                                 "'krea' for anchored work, or drop the refs."}
+                # THE DEFAULT TAKES NO REFERENCES. nano-banana declares none, so
+                # defaulting to it and then asking for anchored work refuses
+                # every time — which is indistinguishable, from the outside,
+                # from kie not supporting anchors at all. When the caller did
+                # not name a model and anchors are present, pick one that can
+                # actually hold them; an explicit model is still obeyed and
+                # still refused, because overriding a stated choice silently is
+                # how you buy the wrong thing.
+                if not model and not kie.image_ref_cap(chosen_model):
+                    fits = [m for m in kie.IMAGE_MODELS if kie.image_ref_cap(m)]
+                    fits.sort(key=kie.image_ref_cap, reverse=True)
+                    if fits:
+                        chosen_model = fits[0]
+                cap = kie.image_ref_cap(chosen_model)
+                if not cap:
+                    return {"ok": False, "provider": provider,
+                            "model": chosen_model,
+                            "error": f"{chosen_model} takes no reference images, "
+                                     "so it cannot be anchored on the pinned "
+                                     "refs. Use provider 'krea', or pick a kie "
+                                     "image model that declares references "
+                                     f"({[m for m in kie.IMAGE_MODELS if kie.image_ref_cap(m)]})."}
+                for path in list(ref_paths)[:cap]:
+                    try:
+                        image_urls.append(kie.upload_file(path, root=root)["url"])
+                    except Exception as exc:                     # noqa: BLE001
+                        return {"ok": False, "provider": provider,
+                                "model": chosen_model,
+                                "error": f"could not upload the anchor {path}: "
+                                         f"{type(exc).__name__}: {exc}. "
+                                         "Refusing rather than buying an "
+                                         "unanchored frame."}
             result = kie.generate_image(prompt, str(out_path),
-                                        model=model or kie.DEFAULT_IMAGE_MODEL,
+                                        model=chosen_model,
                                         size=size, seed=seed,
+                                        image_urls=image_urls or None,
                                         task_kind=task_kind, tileable=tileable,
                                         timeout=timeout, root=root,
                                         logical_name=logical_name,

@@ -58,8 +58,11 @@ because holding the subject is not what it does. `nano-banana-2` uses the same
 `image_urls` edit contract as `nano-banana-pro` at a quarter of the price, keeps
 `styles` so a trained LoRA still rides alongside, and at a flat $0.06 is
 marginally cheaper than krea-2-large's $0.065-with-references. Scoped to the
-`anchor` and `animation` kinds only — an item, a prop, a decal or a VFX key frame
-has no pose continuity to preserve.
+character kinds — an item, a prop, a decal or a VFX key frame has no pose
+continuity to preserve. (`sprite`, `sheet` and `portrait` were missing from that
+list when this was written, which meant the pin did not bite on the kind people
+generate most; corrected 2026-08-10, and the bake-off that settled it is in
+[reference.md](reference.md#the-art-providers-and-what-routes-where).)
 
 That pin exposed a second thing worth fixing: `image_sprites` priced every run
 off the gpt-image quality table whichever provider was named, so the spend gate
@@ -381,7 +384,8 @@ three reasons that should be resolved before it is:
   forced to 1080p/4k.
 - **It uploads the user's art to a third party.** kie's image fields take public
   URLs, and kie ships a file-upload API (`/api/file-base64-upload`, same bearer
-  token, files deleted after 24 hours) that turns a local anchor into one. That
+  token, on a different host, files dead after three days — `UPLOAD_TTL_DAYS`)
+  that turns a local anchor into one. That
   makes it possible — it does not make it automatic. It should be an explicitly
   invoked tool that says plainly what it uploads and for how long, never a
   silent default inside `image_sprites`.
@@ -390,11 +394,11 @@ Worth noting for the economics: kie prices video at "typically 100–500 credits
 against "10–50" for images, so this is **not** reliably a cost saving. What it
 buys is continuity, not cheapness.
 
-The same upload endpoint also retires a refusal that is now too strong.
-`chroma.generate` tells callers that "kie cannot condition on the pinned refs —
+The same upload endpoint also retired a refusal that was too strong.
+`chroma.generate` told callers that "kie cannot condition on the pinned refs —
 its image fields take public URLs only, and every anchor here is a local file."
-The first half is true; the conclusion is not, now that there is a documented way
-to make a local file into one of those URLs.
+The first half is true; the conclusion was not, and the upload path is wired in
+now — see [gotchas.md](gotchas.md) on kie's default image model.
 
 ---
 
@@ -493,7 +497,7 @@ Generation side:
 - [Sprite Sheet Diffusion](https://arxiv.org/html/2412.03685v2) — reference features via spatial attention, pose via a separate guider, temporal stability via a motion module: identity and pose as distinct conditioning channels.
 - [Seed behaviour in diffusion pipelines](https://getimg.ai/guides/guide-to-seed-parameter-in-stable-diffusion) and [character consistency guidance](https://thinkpeak.ai/stable-diffusion-character-consistency-tutorial/) — why seed locking is brittle across prompt changes and is not the tool for pose variation.
 - [Video-model in-betweening for sprite work](https://neatforge.com/guides/how-to-create-sprite-sheets-from-video-for-game-devs/) and [Scenario's spritesheet workflow](https://help.scenario.com/en/articles/create-spritesheets-with-scenario/) — image-to-video, extract frames, chroma key at every step; independently arrives at `#FF00FF`.
-- [kie.ai file upload API](https://docs.kie.ai/file-upload-api/upload-file-base-64) — base64 upload, 24-hour retention; what makes a local anchor into the public URL kie's image fields require.
+- [kie.ai file upload API](https://docs.kie.ai/file-upload-api/upload-file-base-64) — base64 upload, three-day retention; what makes a local anchor into the public URL kie's image fields require.
 
 Assembly side:
 

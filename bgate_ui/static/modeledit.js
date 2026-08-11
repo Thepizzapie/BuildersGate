@@ -126,10 +126,17 @@ window.ModelEdit = (() => {
       ".me-hud{position:absolute;left:10px;bottom:10px;font-family:var(--mono);font-size:10px;color:var(--ash2);background:rgba(10,11,14,.8);border:1px solid var(--seam);border-radius:6px;padding:4px 8px;pointer-events:none;white-space:pre;line-height:1.5}",
       ".me-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--ash2);font-size:12px;text-align:center;padding:20px}",
       ".me-loading{position:absolute;inset:0;display:grid;place-items:center;color:var(--ash2);font-family:var(--mono);font-size:11px}",
-      ".me-side{width:300px;flex:none;background:var(--iron);border-left:1px solid var(--seam);overflow-y:auto;padding:12px;display:flex;flex-direction:column}",
-      ".me-h{font-family:var(--mono);font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ash2);margin:16px 0 7px;display:flex;align-items:center;gap:6px}",
-      ".me-h:first-child{margin-top:0}",
-      ".me-h .n{margin-left:auto;color:var(--text-3);font-variant-numeric:tabular-nums}",
+      ".me-side{width:300px;flex:none;background:var(--iron);border-left:1px solid var(--seam);overflow-y:auto;padding:var(--s-4);display:flex;flex-direction:column;gap:var(--s-5)}",
+      /* The sidebar's sections are .spanel + .sec-h out of app.css now (see
+         sec() below), so nothing here restyles a header. What IS needed is the
+         column they sit in: .me-side is a flex column, and without flex:none a
+         panel with a 240px-tall outliner in it stretches or squashes its
+         neighbours instead of scrolling the sidebar. The last-child rule kills
+         the trailing gap every .me-row and .me-sock leaves behind, which
+         otherwise reads as an uneven panel bottom on the three sections whose
+         last element is a row rather than a tree. */
+      ".me-side > .spanel{flex:none;min-width:0}",
+      ".me-side > .spanel > :last-child{margin-bottom:0}",
       ".me-row{display:flex;align-items:center;gap:7px;margin-bottom:7px}",
       ".me-row label{font-family:var(--mono);font-size:10px;color:var(--ash2);flex:none}",
       ".me-in{flex:1;min-width:0;background:var(--void);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font:inherit;font-size:11.5px;padding:5px 7px}",
@@ -154,7 +161,11 @@ window.ModelEdit = (() => {
       ".me-sock .node{font-size:9px;color:var(--ash2)}",
       ".me-sock .x{flex:none;color:var(--ash2);padding:0 3px;cursor:pointer}",
       ".me-sock .x:hover{color:var(--bad)}",
-      ".me-empty-note{font-size:11px;color:var(--ash2);padding:6px 2px}",
+      // overflow-wrap: the res:// path in the engine readout is one unbroken
+      // token, and inside a .spanel an unbreakable string hangs out over the
+      // panel's own right edge rather than just widening a column nobody
+      // measured.
+      ".me-empty-note{font-size:11px;color:var(--ash2);padding:6px 2px;overflow-wrap:anywhere}",
       ".me-note{width:100%;min-height:64px;background:var(--void);border:1px solid var(--seam);border-radius:6px;color:var(--bone);font:inherit;font-size:11.5px;padding:6px 8px;resize:vertical}",
       ".me-note:focus{outline:none;border-color:var(--ember)}",
       ".me-modes{display:flex;flex-wrap:wrap;gap:4px}",
@@ -190,6 +201,15 @@ window.ModelEdit = (() => {
               " have not been saved.",
         ok: "discard", danger: true}))
       return;
+    // The previous model's renderer, released before the next one is built.
+    // `S` is replaced wholesale below, so opening a second model left the first
+    // one's WebGLRenderer alive with no reference anything could reach: the rAF
+    // loop stops (it compares S.three against the block it captured) but the GL
+    // context, its textures and its framebuffers do not go anywhere. Browsers
+    // cap live contexts — Chromium at ~16 — and force-lose the OLDEST when the
+    // cap is hit, so a session spent browsing the picker eventually starts
+    // killing contexts to make room for the one being looked at.
+    if (S && S.three) teardownThree();
     mount();
     $.stage.querySelector(".me-empty")?.remove();
     const loading = document.createElement("div");
@@ -259,9 +279,26 @@ window.ModelEdit = (() => {
         '<div class="me-pick-list" id="me-pick-list"><div class="me-empty-note">searching…</div></div>' +
       '</div>';
     box.querySelector("#me-pick-q").focus();
-    const r = await fetch("/api/model3d/list?limit=200" +
-      (q ? "&q=" + encodeURIComponent(q) : ""));
-    const d = await r.json();
+    // A REFUSAL AND AN EMPTY PROJECT MUST NOT LOOK THE SAME.
+    // This read the body without ever checking the status, so /api/model3d/list
+    // answering 4xx/5xx — the envelope carries {error}, not {models} — landed on
+    // `d.models || []` and painted "no 3D models found in this project." A
+    // scanner that fell over therefore reported itself as a finished scan of a
+    // project with nothing in it, and there was no unhandled rejection to see
+    // either: a dropped connection threw out of this function and left the list
+    // saying "searching…" for the rest of the session.
+    let d = null;
+    try {
+      const r = await fetch("/api/model3d/list?limit=200" +
+        (q ? "&q=" + encodeURIComponent(q) : ""));
+      d = await r.json();
+      if (!r.ok) throw new Error((d && d.error && d.error.message) || r.statusText);
+    } catch (e) {
+      const el = document.getElementById("me-pick-list");
+      if (el) el.innerHTML = '<div class="me-empty-note">could not list this ' +
+        'project\'s models - ' + E(e.message || e) + '</div>';
+      return;
+    }
     const list = document.getElementById("me-pick-list");
     if (!list) return;
     const models = d.models || [];
@@ -308,13 +345,18 @@ window.ModelEdit = (() => {
     $.back.innerHTML =
       '<div class="me-bar">' +
         '<span class="me-title">Model</span>' +
-        `<span class="me-sub" title="${S ? E(S.rel) : ""}">${S ? E(S.rel) + (dirty ? " *" : "") : "nothing open"}</span>` +
+        `<span class="me-sub" title="${S ? E(S.rel) : ""}">${S ? E(S.rel) : "nothing open"}</span>` +
+        // A " *" on the end of a path is not a save state. See SaveState in
+        // seats/_core.js for what replaced it and why the toast was not it.
+        (S ? '<span id="me-save-state"></span>' : "") +
         '<span class="me-spacer"></span>' +
         `<button class="me-btn" onclick="ModelEdit.pick()">${I("model")} open…</button>` +
         (S && S.viewable ? `<button class="me-btn" onclick="ModelEdit.fit()">${I("fit")} frame</button>` : "") +
         (S && S.viewable ? `<button class="me-btn" onclick="ModelEdit.snapshot()">${I("export_image")} snapshot</button>` : "") +
         (S ? `<button class="me-btn" onclick="ModelEdit.resetLabels()">${I("undo")} reset labels</button>` : "") +
         (S ? `<button class="me-btn go" onclick="ModelEdit.save()" ${dirty ? "" : "disabled"}>${I("export")} save</button>` : "") +
+        (S ? '<button class="me-btn" onclick="ModelEdit.handoff()" title="Import it into the engine, ' +
+             'instance it in a scene, or hand it to an agent">' + I("gate") + " put in game</button>" : "") +
         '<button class="me-closebtn" onclick="ModelEdit.close()" title="Close">✕</button>' +
       '</div>' +
       '<div class="me-body">' +
@@ -381,48 +423,81 @@ window.ModelEdit = (() => {
   }
 
   // ── side panel ────────────────────────────────────────────────────────
+  /* ONE SHAPE FOR EVERY LID IN THIS SIDEBAR, and it is the app's, not a local
+     invention: .spanel + .sec-h out of app.css, the same construction
+     settingsview.js and every seat workspace uses.
+     What it replaced was `.me-h` — nine px of letter-spaced grey with no rule
+     and no surface under it. Six of those in one 300px column meant "outliner",
+     "sockets" and "notes" were three labels floating in one undifferentiated
+     stack: nothing said where a section started, so the socket list read as a
+     continuation of the node tree above it.
+     NO `s-<seat>` CLASS. That variant tints the header glyph with a seat's hue
+     and belongs to the seat workspaces, where a panel really is one seat's. The
+     3D viewer is a tool, not a seat, and modeledit_tools.js mounts ITS panels
+     into the same .me-body with a plain .spanel — tinting one column's icons
+     art-pink and not the other's reads as a rendering fault, not a signal. The
+     left edge carries KIND instead, which is the thing that actually varies
+     here: a tree you edit, a readout you cannot. */
+  function sec(icon, title, body, o){
+    o = o || {};
+    const n = (o.n === undefined || o.n === null || o.n === "")
+      ? "" : `<span class="sec-n${o.tone ? " " + o.tone : ""}">${E(o.n)}</span>`;
+    return `<section class="spanel ${o.kind || ""}">` +
+      `<div class="sec-h">${I(icon, 15)}<h3 class="sec-t">${E(title)}</h3>${n}` +
+      (o.note ? `<span class="sec-sub">${E(o.note)}</span>` : "") +
+      (o.actions ? `<span class="sec-a">${o.actions}</span>` : "") +
+      `</div>${body}</section>`;
+  }
+
   function renderSide(){
     if (!$.side || !S) return;
     const nodes = [...S.nodeIndex.entries()];
     $.side.innerHTML =
-      '<div class="me-h">shading<span class="n">' + (S.viewable ? S.model.display.mode : "") + '</span></div>' +
-      '<div class="me-modes">' + DISPLAY_MODES.map(m =>
-        `<button class="me-mode ${S.model.display.mode === m.id ? "on" : ""}" ` +
-        `onclick="ModelEdit.setDisplayMode('${m.id}')">${E(m.label)}</button>`).join("") +
-      '</div>' +
-      '<div class="me-row"><label>bg</label>' +
-      `<input type="color" value="${E(S.model.display.background || "#14161b")}" ` +
-      'onchange="ModelEdit.setBackground(this.value)">' +
-      `<button class="me-btn" onclick="ModelEdit.setBackground(null)">reset</button></div>` +
+      sec("lighting", "Shading",
+        '<div class="me-modes">' + DISPLAY_MODES.map(m =>
+          `<button class="me-mode ${S.model.display.mode === m.id ? "on" : ""}" ` +
+          `onclick="ModelEdit.setDisplayMode('${m.id}')">${E(m.label)}</button>`).join("") +
+        '</div>' +
+        '<div class="me-row"><label>bg</label>' +
+        `<input type="color" value="${E(S.model.display.background || "#14161b")}" ` +
+        'onchange="ModelEdit.setBackground(this.value)">' +
+        `<button class="me-btn" onclick="ModelEdit.setBackground(null)">reset</button></div>`,
+        { note: S.viewable ? S.model.display.mode : "" }) +
 
       (S.clips.length ? animSection() : "") +
 
-      `<div class="me-h">outliner<span class="n">${nodes.length}</span></div>` +
-      (nodes.length
-        ? '<div class="me-tree">' + nodes.map(([name, obj]) => nodeRow(name, obj)).join("") + '</div>'
-        : '<div class="me-empty-note">no named nodes.</div>') +
+      sec("outline", "Outliner",
+        (nodes.length
+          ? '<div class="me-tree">' + nodes.map(([name, obj]) => nodeRow(name, obj)).join("") + '</div>'
+          : '<div class="me-empty-note">no named nodes.</div>'),
+        { kind: "k-list", n: nodes.length }) +
 
       selInspector() +
 
-      `<div class="me-h">sockets<span class="n">${S.model.sockets.length}</span></div>` +
-      '<div class="me-row">' +
-        `<select class="me-sel" id="me-slot">` +
-        KNOWN_SLOTS.map(s => `<option value="${E(s)}" ${s === S.placeSlot ? "selected" : ""}>${E(s)}</option>`).join("") +
-        `<option value="__custom" ${!KNOWN_SLOTS.includes(S.placeSlot) ? "selected" : ""}>custom…</option>` +
-        '</select>' +
-      '</div>' +
-      (S.tool === "socket"
-        ? '<div class="me-empty-note">click the model to place / move "' + E(S.placeSlot) + '".</div>'
-        : "") +
-      (S.model.sockets.length
-        ? S.model.sockets.map(sk => socketRow(sk)).join("")
-        : '<div class="me-empty-note">no attachment sockets yet — pick a slot above, choose the socket tool, then click the mesh.</div>') +
+      sec("anchor", "Sockets",
+        '<div class="me-row">' +
+          `<select class="me-sel" id="me-slot">` +
+          KNOWN_SLOTS.map(s => `<option value="${E(s)}" ${s === S.placeSlot ? "selected" : ""}>${E(s)}</option>`).join("") +
+          `<option value="__custom" ${!KNOWN_SLOTS.includes(S.placeSlot) ? "selected" : ""}>custom…</option>` +
+          '</select>' +
+        '</div>' +
+        (S.tool === "socket"
+          ? '<div class="me-empty-note">click the model to place / move "' + E(S.placeSlot) + '".</div>'
+          : "") +
+        (S.model.sockets.length
+          ? S.model.sockets.map(sk => socketRow(sk)).join("")
+          : '<div class="me-empty-note">no attachment sockets yet — pick a slot above, choose the socket tool, then click the mesh.</div>'),
+        { kind: "k-list", n: S.model.sockets.length }) +
 
-      '<div class="me-h">notes</div>' +
-      `<textarea class="me-note" id="me-notes" placeholder="anything a teammate should know about this model…" ` +
-      `oninput="ModelEdit.notesField(this.value)">${E(S.model.notes || "")}</textarea>` +
+      sec("note", "Notes",
+        `<textarea class="me-note" id="me-notes" placeholder="anything a teammate should know about this model…" ` +
+        `oninput="ModelEdit.notesField(this.value)">${E(S.model.notes || "")}</textarea>`,
+        { kind: "k-doc" }) +
 
-      (S.resPath ? `<div class="me-empty-note" style="margin-top:10px">${E(S.resPath)}</div>` : "");
+      (S.resPath
+        ? sec("gate", "In the engine",
+            `<div class="me-empty-note">${E(S.resPath)}</div>`, { kind: "k-read" })
+        : "");
 
     const slotSel = document.getElementById("me-slot");
     if (slotSel) slotSel.onchange = () => {
@@ -435,9 +510,12 @@ window.ModelEdit = (() => {
     };
   }
 
+  /* The count chip is FILLED (.sec-n.live) while a clip is running, which is
+     the one piece of live state in this sidebar: the viewport can be showing a
+     model mid-walk-cycle with the panel scrolled off, and a hollow pill said
+     nothing about that. */
   function animSection(){
-    const idx = S.clips.indexOf(S.activeClipName);
-    return '<div class="me-h">animation<span class="n">' + S.clips.length + '</span></div>' +
+    return sec("animation", "Animation",
       '<div class="me-anim-row">' +
         `<select class="me-sel" onchange="ModelEdit.setClip(this.value)">` +
         S.clips.map(c => `<option value="${E(c)}" ${c === S.activeClipName ? "selected" : ""}>${E(c)}</option>`).join("") +
@@ -445,7 +523,8 @@ window.ModelEdit = (() => {
         `<button class="me-btn" onclick="ModelEdit.togglePlay()">${I(S.playing ? "pause" : "run", 14)}</button>` +
       '</div>' +
       '<div class="me-anim-row"><input type="range" min="0" max="1" step="0.001" value="0" ' +
-        'id="me-scrub" oninput="ModelEdit.scrub(this.value)"></div>';
+        'id="me-scrub" oninput="ModelEdit.scrub(this.value)"></div>',
+      { kind: "k-list", n: S.clips.length, tone: S.playing ? "live" : "" });
   }
 
   function nodeRow(name, obj){
@@ -473,30 +552,43 @@ window.ModelEdit = (() => {
     if (S.selectedSocket) {
       const sk = S.model.sockets.find(s => s.name === S.selectedSocket);
       if (!sk) return "";
-      return '<div class="me-h">selected socket</div>' +
+      return sec("pin", "Selected socket",
         row("name", `<input class="me-in" value="${E(sk.name)}" onchange="ModelEdit.renameSocket('${E(sk.name)}', this.value)">`) +
-        row("pos", vec3(sk.position, v => `ModelEdit.socketField('${E(sk.name)}','position',${v})`)) +
-        row("rot°", vec3(sk.rotation, v => `ModelEdit.socketField('${E(sk.name)}','rotation',${v})`)) +
-        row("note", `<input class="me-in" value="${E(sk.note || "")}" onchange="ModelEdit.socketNote('${E(sk.name)}', this.value)">`);
+        row("pos", vec3(sk.position, sk.name, "position")) +
+        row("rot°", vec3(sk.rotation, sk.name, "rotation")) +
+        row("note", `<input class="me-in" value="${E(sk.note || "")}" onchange="ModelEdit.socketNote('${E(sk.name)}', this.value)">`));
     }
     if (S.selectedNode) {
       const name = S.selectedNode;
       const ov = S.model.nodes[name] || {visible: true, color: null};
-      return '<div class="me-h">selected node</div>' +
+      return sec("select", "Selected node",
         row("name", `<span class="me-in" style="border:0;background:none;padding:5px 0">${E(name)}</span>`) +
         row("tint", `<input type="color" value="${ov.color || "#9fd0ff"}" onchange="ModelEdit.nodeColor('${E(name)}', this.value)">` +
           `<button class="me-btn" onclick="ModelEdit.nodeColor('${E(name)}', null)">clear</button>`) +
         row("opacity", `<input type="range" min="0" max="1" step="0.05" value="${ov.opacity != null ? ov.opacity : 1}" ` +
-          `oninput="ModelEdit.nodeOpacity('${E(name)}', this.value)">`);
+          `oninput="ModelEdit.nodeOpacity('${E(name)}', this.value)">`),
+        { n: (ov.visible === false) ? "hidden" : "", tone: "warn" });
     }
     return "";
     function row(label, html){
       return `<div class="me-row"><label>${E(label)}</label>${html}</div>`;
     }
-    function vec3(v, fn){
+    /* ONE AXIS PER FIELD, and deliberately NOT the whole vector.
+     *
+     * Each of the three boxes used to bake the OTHER two components into its
+     * own onchange as literals, so the handler was only correct for as long as
+     * nothing moved the socket after it was rendered. That was survivable only
+     * because every write path called renderSide() immediately afterwards and
+     * re-baked all three — which is exactly the full-panel rebuild the gizmo
+     * drag can no longer afford (see the objectChange listener). Take the
+     * rebuild away and the stale literals become a socket that silently jumps
+     * back to where it was two edits ago on the two axes you did not touch.
+     * Sending the index instead means no field ever carries a value it does
+     * not own. */
+    function vec3(v, name, key){
       return '<div class="me-vec3">' + [0, 1, 2].map(i =>
         `<input class="me-in num" type="number" step="0.01" value="${v[i].toFixed(3)}" ` +
-        `onchange="${fn(`[${[0,1,2].map(j => j===i ? "this.value" : v[j]).join(",")}]`)}">`
+        `onchange="ModelEdit.socketAxis('${E(name)}','${key}',${i},this.value)">`
       ).join("") + '</div>';
     }
   }
@@ -509,7 +601,23 @@ window.ModelEdit = (() => {
     const save = $.back && $.back.querySelector(".me-btn.go");
     if (save) save.disabled = !(S && S.dirty);
     const sub = $.back && $.back.querySelector(".me-sub");
-    if (sub && S) sub.textContent = S.rel + (S.dirty ? " *" : "");
+    if (sub && S) sub.textContent = S.rel;
+    paintSaveState();
+  }
+
+  /* The one place that answers "is my work on disk". Every state a save has
+     is here, including the two nobody rendered before: in flight, and failed.
+     `at: 0` on a freshly-opened clean model is deliberate — it IS on disk, but
+     it was not saved by this session, and stamping it "saved just now" would
+     be a made-up fact. */
+  function paintSaveState(){
+    if (!window.SaveState || !S || !$.back) return;
+    const el = $.back.querySelector("#me-save-state");
+    if (!el) return;
+    if (S.saving)         SaveState.set(el, {state:"saving"});
+    else if (S.saveError) SaveState.set(el, {state:"error", detail:S.saveError});
+    else if (S.dirty)     SaveState.set(el, {state:"dirty"});
+    else                  SaveState.set(el, {state:"saved", at:S.savedAt || 0});
   }
 
   // ── field handlers ────────────────────────────────────────────────────
@@ -568,12 +676,37 @@ window.ModelEdit = (() => {
     S.selectedSocket = name;
     markDirty(); rebuildSocketObjects(); renderSide();
   }
-  function socketField(name, key, value){
+  function socketAxis(name, key, i, value){
     if (!S) return;
     const sk = S.model.sockets.find(s => s.name === name);
-    if (!sk) return;
-    sk[key] = value.map(Number);
-    markDirty(); syncSocketObject(sk); renderSide();
+    if (!sk || !Array.isArray(sk[key])) return;
+    const n = parseFloat(value);
+    sk[key][i] = isFinite(n) ? n : 0;
+    markDirty(); syncSocketObject(sk); syncSocketInputs(sk);
+  }
+
+  /* Write a socket's numbers into the inspector's own six boxes, in place.
+   *
+   * The alternative — and what the gizmo's objectChange used to do — is
+   * renderSide(), which replaces $.side.innerHTML wholesale. On a drag that
+   * fires per pointermove, so the outliner's scroll position was thrown away
+   * on every frame, the slot <select> and any open colour picker under the
+   * cursor were torn off their elements, and a row per named node was rebuilt
+   * dozens of times a second on a model that has hundreds of them. Same
+   * reasoning as renderBar(): touch the fields that moved, leave the panel
+   * that did not. A field the operator is typing in is skipped, because
+   * overwriting the caret's own box mid-edit is its own bug. */
+  function syncSocketInputs(sk){
+    if (!$.side || !sk) return;
+    const groups = $.side.querySelectorAll(".me-vec3");
+    [sk.position, sk.rotation].forEach((vec, g) => {
+      if (!groups[g] || !Array.isArray(vec)) return;
+      const inputs = groups[g].querySelectorAll("input");
+      for (let i = 0; i < inputs.length && i < 3; i++){
+        if (document.activeElement !== inputs[i])
+          inputs[i].value = Number(vec[i]).toFixed(3);
+      }
+    });
   }
   function socketNote(name, v){
     const sk = S && S.model.sockets.find(s => s.name === name);
@@ -685,8 +818,7 @@ window.ModelEdit = (() => {
       const e = obj.rotation;
       sk.rotation = [THREE.MathUtils.radToDeg(e.x), THREE.MathUtils.radToDeg(e.y), THREE.MathUtils.radToDeg(e.z)];
       markDirty();
-      const posInputs = $.side && $.side.querySelectorAll(".me-vec3")[0];
-      if (posInputs) renderSide();
+      syncSocketInputs(sk);
     });
     scene.add(transform.getHelper());
 
@@ -1148,6 +1280,7 @@ window.ModelEdit = (() => {
   async function save(){
     if (!S) return;
     saveCameraBookmark();
+    S.saving = true; S.saveError = null; renderBar();
     try {
       const r = await fetch("/api/model3d/save", {
         method: "POST", headers: {"Content-Type": "application/json"},
@@ -1157,9 +1290,16 @@ window.ModelEdit = (() => {
       if (!r.ok) throw new Error((body.error && body.error.message) || r.statusText);
       S.model = body.data.model;
       S.dirty = false;
+      S.savedAt = Date.now();
+      S.saving = false; S.saveError = null;
       renderBar();
       say("saved " + S.rel, "ok");
     } catch (e) {
+      // The corner toast is 2.6 seconds long and the eye is on the canvas.
+      // A failed save has to STAY on screen, next to the button that failed.
+      S.saving = false;
+      S.saveError = String((e && e.message) || e).slice(0, 120);
+      renderBar();
       say("could not save: " + (e.message || e), "err");
     }
   }
@@ -1180,6 +1320,7 @@ window.ModelEdit = (() => {
       if (!r.ok) throw new Error((body.error && body.error.message) || r.statusText);
       S.model = body.data.model;
       S.selectedNode = null; S.selectedSocket = null; S.dirty = false;
+      S.savedAt = Date.now(); S.saving = false; S.saveError = null;
       applyNodeOverrides(); applyDisplayMode(); applyDisplayToggles(); rebuildSocketObjects();
       renderChrome();
       say("labels reset", "ok");
@@ -1239,12 +1380,31 @@ window.ModelEdit = (() => {
     return true;
   }
 
+  /* THE STEP AFTER "SAVED", shared with the sprite editor and the audio lab so
+     that learning it in one teaches it in all three. A .glb cannot be wired
+     into a scene directly — Godot imports it as a PackedScene and the thing a
+     level instances is that scene — so for a model the panel's first exit is
+     two steps: deliver into the engine (local, free, godot_deliver_asset), then
+     instance the scene it wrote. The second exit files a work item that already
+     names the model, the target scene and the Atlas references. */
+  function handoff(){
+    if (!window.Handoff){ say("the handoff panel did not load", true); return; }
+    Handoff.fromEditor(S, {
+      editor: "model",
+      meta: {
+        dirty: !!(S && S.dirty),
+        sockets: (S && S.model && S.model.sockets || []).map(s => s.name).filter(Boolean),
+      },
+    });
+  }
+
   return {
     open, close, pick, pickSearch, closePick, fit, save, resetLabels, snapshot,
+    handoff,
     embed, unembed, activate,
     setTool, toggleDisplay, setDisplayMode, setBackground,
     selectNode, toggleNode, nodeColor, nodeOpacity,
-    selectSocket, deleteSocket, renameSocket, socketField, socketNote,
+    selectSocket, deleteSocket, renameSocket, socketAxis, socketNote,
     setClip, togglePlay, scrub, notesField,
     get state(){ return S; },
   };

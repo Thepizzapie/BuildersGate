@@ -95,8 +95,10 @@ window.OverviewHistory = (() => {
     el.id = "ovh-style";
     el.textContent = [
       ".ovh{margin-bottom:16px}",
-      ".ovh-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}",
-      ".ovh-head .n{font-family:var(--mono);font-size:10px;color:var(--text-3)}",
+      /* .sec-h in app.css does the header now — band, icon, label, count. The
+         one line left is the word after the count ("finished"), which is this
+         panel's own and not part of the shared shape. */
+      ".ovh-head .n{font-family:var(--mono);font-size:var(--fs-3xs);letter-spacing:var(--track-label);text-transform:uppercase;color:var(--text-3)}",
       ".ovh-spacer{flex:1 1 auto}",
 
       /* The honesty line. It sits above the rows because a reader must know
@@ -169,6 +171,13 @@ window.OverviewHistory = (() => {
       ".ovh-x:hover{border-color:var(--accent);color:var(--text)}",
       ".ovh-dv{margin:10px 0 0;padding:8px 11px;border:1px solid var(--line);border-left:2px solid var(--line);border-radius:var(--r-sm,8px);background:var(--solid-1,var(--surface-1));font-size:12px;color:var(--text-2);line-height:1.5}",
       ".ovh-dv.good{border-left-color:var(--good)} .ovh-dv.bad{border-left-color:var(--bad)}",
+      // The one control that puts a stopped agent BACK to work. It sits above
+      // the verdict because the verdict is where you learn it stopped.
+      ".ovh-respawn{display:flex;align-items:center;gap:9px;margin:10px 0 0}",
+      ".ovh-btn{background:var(--accent);color:var(--bg);border:1px solid var(--accent);border-radius:var(--r-sm,3px);cursor:pointer;font:inherit;font-size:11.5px;font-weight:600;padding:5px 12px}",
+      ".ovh-btn:hover{filter:brightness(1.08)}",
+      ".ovh-btn:disabled{opacity:.55;cursor:default}",
+      ".ovh-respawn-note{font-size:10.5px;color:var(--text-3)}",
       ".ovh-dv.warn{border-left-color:var(--warn)} .ovh-dv.none{border-left-color:var(--text-3)}",
       ".ovh-dv.live{border-left-color:var(--accent)}",
       ".ovh-dbody{flex:1 1 auto;overflow:auto;padding:14px 16px}",
@@ -241,7 +250,9 @@ window.OverviewHistory = (() => {
     if (!view) return false;
     injectStyle();
     host = document.createElement("div");
-    host.className = "dcard ovh";
+    // .spanel + .k-list: the shared section surface (app.css, "sections"),
+    // and the kind that says the rows in here are ones you act on.
+    host.className = "spanel k-list ovh";
     host.id = "ovh";
     // APPENDED, not inserted. Running now and Recent activity keep the exact
     // position they had; this grows the page downward instead of pushing the
@@ -381,8 +392,10 @@ window.OverviewHistory = (() => {
       body = state.items.map(row).join("");
     }
     host.innerHTML = `
-      <h3 class="ovh-head">${icon("timeline", 16)} Work history
-        <span class="n">${page.total || 0} finished</span></h3>
+      <div class="sec-h ovh-head">${icon("timeline", 15)}
+        <h3 class="sec-t">Work history</h3>
+        <span class="sec-n">${page.total || 0}</span>
+        <span class="n">finished</span></div>
       ${gateLine()}
       ${chips()}
       <div class="ovh-list">${body}</div>
@@ -783,6 +796,13 @@ window.OverviewHistory = (() => {
           <span title="${E(stampTitle(it.updated_at || listed.updated_at))}">${
             E(when(it.updated_at || listed.updated_at))}</span>
         </div>
+        ${["failed", "cancelled", "done"].includes(status) ? `
+        <div class="ovh-respawn">
+          <button class="ovh-btn" id="ovh-respawn" type="button"
+            title="Reopen this item and spawn a fresh agent on it. What it already produced stays registered - the new run is told to resume, not to redo.">
+            respawn agent</button>
+          <span class="ovh-respawn-note">picks up where this left off; already-registered work is kept</span>
+        </div>` : ""}
         <div class="ovh-dv ${tone}">
           <b>Verdict: ${E(v.label || "-")}</b> — ${E(v.why || "")}${
             v.gate_item ? ` <span style="font-family:var(--mono);font-size:10px;color:var(--text-3)">(QA gate run #${v.gate_item}${
@@ -802,6 +822,55 @@ window.OverviewHistory = (() => {
     wireDrawer();
   }
 
+  /* PUT A STOPPED AGENT BACK TO WORK, from the panel where you find out it
+   * stopped. There was no way to do this in the UI at all: an item that ended —
+   * killed by a restart, cancelled by a misclick, or failed on its last step —
+   * could only be revived by hand through the API, so the only thing a person
+   * could actually press was the button that ended it.
+   *
+   * It RESUMES rather than restarts. Everything the previous attempt registered
+   * is still on the board and still paid for, so the reopen reason tells the
+   * next agent to look at what exists and make only what is missing. Re-running
+   * a 24-sheet art item from zero is not a retry, it is buying it twice. */
+  async function respawn(id) {
+    const btn = document.getElementById("ovh-respawn");
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = "respawning…";
+    // window.BGWS is the seat shell's helper and Overview can paint before it
+    // loads, so this file cannot assume it exists.
+    const post = window.BGWS ? window.BGWS.post : async (path, body) => {
+      const r = await fetch(path, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      return r.json().catch(() => ({ ok: r.ok }));
+    };
+    try {
+      await post(`/api/queue/${id}/reopen`, {
+        reason: "RESPAWNED BY A HUMAN from the history panel. The previous "
+              + "attempt ended without finishing; whatever it already produced "
+              + "is registered and paid for. RESUME: check what exists before "
+              + "you make anything, and produce only what is missing. Do not "
+              + "redo work that is already on the board.",
+      });
+      const out = await post(`/api/queue/${id}/dispatch`, {});
+      const data = (out && out.data) || out || {};
+      if (data.ok === false) throw new Error(data.error || "dispatch refused");
+      btn.textContent = "respawned";
+      if (window.toast) toast(`#${id} respawned`);
+      closeLog();
+    } catch (e) {
+      // The server writes a readable refusal (autopilot off, a live agent
+      // already holds it, the item is not in a reopenable state). Showing
+      // "failed" instead of that sentence is what makes a button feel dead.
+      btn.disabled = false;
+      btn.textContent = "respawn agent";
+      const why = String((e && e.message) || e);
+      if (window.toast) toast(why); else window.alert(why);
+    }
+  }
+
   let lqTimer = 0;
   function wireDrawer() {
     const back = document.getElementById("ovh-back");
@@ -809,6 +878,7 @@ window.OverviewHistory = (() => {
     const l = log, d = l.data;
     const on = (id, fn) => { const el = back.querySelector(id); if (el) el.onclick = fn; };
     on("#ovh-close", closeLog);
+    on("#ovh-respawn", () => respawn(l.id));
     on("#ovh-files", () => { l.files = !l.files; paintDrawer(); });
     on("#ovh-diff", () => {
       if (l.diffOpen) { l.diffOpen = false; paintDrawer(); } else fetchDiff();

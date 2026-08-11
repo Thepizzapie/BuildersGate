@@ -176,7 +176,7 @@ rather than to add a 79th tool an agent has to remember to call.
 **What it checks.** An optional `acceptance` field on `bible_section`,
 surfaced in `bible_read` and in `seat_brief`'s bible view. Not enforced —
 a constraint with no mechanical acceptance test is a legitimate thing to
-record. But `scope_check` and the qa workflow could both cite it, and a
+record. But `canon_check` and the qa workflow could both cite it, and a
 constraint with an acceptance line is the one an agent can actually close.
 
 **What already half-does it.** `bible_section` has `kind`, `title`, `body`,

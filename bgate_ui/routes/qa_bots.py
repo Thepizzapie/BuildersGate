@@ -1,11 +1,21 @@
 """QA bot playtest endpoints — drive the real game headless and report.
 
 The reliable QA method for this project is a RUNTIME PROBE: a headless GDScript
-that instances the fight scene, drives it one deterministic sim tick at a time
-while pressing real Input actions on a scripted schedule, samples the two
-fighters' positions / hp / stamina every few ticks, and prints one JSON line.
-That is the ground truth a bot match reports on — not static reasoning about the
-code, but what the running engine actually did with the inputs.
+that instances a scene, drives it one deterministic tick at a time while
+pressing real Input actions on a scripted schedule, samples declared node
+properties every few ticks, and prints one JSON line. That is the ground truth a
+bot match reports on — not static reasoning about the code, but what the running
+engine actually did with the inputs.
+
+WHAT IT DRIVES IS DECLARED, NOT ASSUMED. The probe used to be a 2D fighter with
+the serial numbers filed off: it only accepted a scene containing child nodes
+literally named Player and Opponent, sampled player_hp / opponent_hp /
+player_stamina whether the game had such a thing or not, and called sim_tick()
+on the scene root. Every other game got "no scene with both a Player and an
+Opponent node was found" and a bot that could not fail because it sampled
+nothing. bgate_core.qaprobe now holds a per-project CONTRACT — scene, actors,
+sample keys, tick authority — derived from the real scene when nobody has
+declared one, and this module assembles the probe from it.
 
 A run used to end there: samples, and no verdict. It could not fail, so it could
 not gate — the QA seat rendered a green "drove the game" for a match that proved
@@ -31,7 +41,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from bgate_adapters import godot as _godot
-from bgate_core import db, jobs
+from bgate_core import db, jobs, qaprobe
+from bgate_core import workspace as _ws
 from bgate_ui import api
 from bgate_ui.deps import root
 from bgate_ui.routes import jobs as jobs_api
@@ -58,21 +69,32 @@ def _game_dir():
 
 # --- the probe -------------------------------------------------------------
 # extends SceneTree so it owns the main loop headless. _initialize() instances
-# the fight scene; _process() runs once per real engine frame — which is what
-# keeps Godot's Input "just_pressed" edge working (it clears each real frame) —
-# and drives EXACTLY one deterministic fight.sim_tick() per frame, so one frame
-# == one sim tick == the schedule's tick units. Fighters already set_process
-# (false) on themselves; fight.sim_tick() advances both of them in fixed order.
+# the contract's scene; _process() runs once per real engine frame — which is
+# what keeps Godot's Input "just_pressed" edge working (it clears each real
+# frame) — and advances EXACTLY one deterministic step per frame, so one frame
+# == one tick == the schedule's tick units.
+#
+# The step is the contract's business. When it names a method the probe becomes
+# the tick authority and calls it (and set_process(false) on the node that owns
+# it, so the engine does not ALSO advance it each frame — double-ticking a fixed
+# step is a whole class of samples that look like a physics bug). When it does
+# not, the engine processes normally and a tick is simply a frame. Saying which
+# one happened is why the summary carries `tick_mode`.
 _PROBE_TEMPLATE = r"""
 extends SceneTree
 
 const SCHEDULE_JSON := %SCHEDULE_JSON%
+const CONTRACT_JSON := %CONTRACT_JSON%
 const MAX_TICKS := %MAX_TICKS%
 const SAMPLE_EVERY := %SAMPLE_EVERY%
 
-var _fight: Node = null
-var _player: Node = null
-var _opponent: Node = null
+var _contract := {}
+var _scene_root: Node = null
+var _tick_node: Node = null
+var _tick_method := ""
+var _tick_mode := "frames"
+var _actors := {}          # contract actor key -> Node
+var _missing: Array = []   # actor keys the scene did not contain
 var _schedule: Array = []
 var _active := {}          # action -> tick at which to release
 var _tick := 0
@@ -80,68 +102,119 @@ var _samples: Array = []
 var _notes: Array = []
 var _done := false
 
-func _num(obj, prop):
-	# Best-effort numeric property read; null if the fighter doesn't expose it.
-	if obj == null:
+func _read(node, prop):
+	# Best-effort numeric read. A dotted property ("position.x") goes through
+	# get_indexed, so a contract can name a sub-property without the probe
+	# knowing anything about Vector2. Anything the node does not expose, or
+	# exposes as a non-number, samples as null rather than killing the match.
+	if node == null:
 		return null
-	var v = obj.get(prop)
+	var v = null
+	if prop.find(".") >= 0:
+		v = node.get_indexed(NodePath(prop.replace(".", ":")))
+	else:
+		v = node.get(prop)
 	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
 		return v
 	return null
 
-func _load_fight() -> void:
-	var candidates: Array = ["res://scenes/main.tscn"]
-	var main_scene := str(ProjectSettings.get_setting("application/run/main_scene", ""))
-	if main_scene != "" and not candidates.has(main_scene):
-		candidates.append(main_scene)
-	for path in candidates:
-		if not ResourceLoader.exists(path):
+func _load_scene() -> void:
+	var path := str(_contract.get("scene", ""))
+	if path == "":
+		_notes.append("the probe contract names no scene, so there is nothing to drive")
+		return
+	if not ResourceLoader.exists(path):
+		_notes.append("the probe contract names " + path + ", which does not exist in this project")
+		return
+	var packed = load(path)
+	if packed == null or not (packed is PackedScene):
+		_notes.append(path + " is not a PackedScene")
+		return
+	var inst = packed.instantiate()
+	if inst == null:
+		_notes.append(path + " could not be instanced")
+		return
+	get_root().add_child(inst)
+	_scene_root = inst
+	_notes.append("loaded " + path)
+
+	for entry in _contract.get("actors", []):
+		if typeof(entry) != TYPE_DICTIONARY:
 			continue
-		var packed = load(path)
-		if packed == null or not (packed is PackedScene):
-			continue
-		var inst = packed.instantiate()
-		if inst == null:
-			continue
-		get_root().add_child(inst)
-		var pl = inst.find_child("Player", true, false)
-		var op = inst.find_child("Opponent", true, false)
-		if pl != null and op != null:
-			_fight = inst
-			_player = pl
-			_opponent = op
-			_notes.append("loaded fight scene: " + path)
-			# We are the tick authority — stop the engine from ALSO auto-ticking
-			# the controller each frame; we call sim_tick() ourselves.
-			if _fight.has_method("set_process"):
-				_fight.set_process(false)
-			return
-		# Wrong scene (no two fighters) — drop it and try the next candidate.
-		get_root().remove_child(inst)
-		inst.free()
-	_notes.append("no scene with both a Player and an Opponent node was found")
+		var key := str(entry.get("key", ""))
+		var node_path := str(entry.get("path", ""))
+		var find_name := str(entry.get("find", ""))
+		var node: Node = null
+		if node_path != "":
+			node = inst.get_node_or_null(NodePath(node_path))
+		if node == null and find_name != "":
+			node = inst.find_child(find_name, true, false)
+		if node == null:
+			_missing.append(key)
+			_notes.append("actor '" + key + "' is not in " + path + " (looked for path '" + node_path + "' and name '" + find_name + "')")
+		else:
+			_actors[key] = node
+
+	var tick = _contract.get("tick", {})
+	if typeof(tick) == TYPE_DICTIONARY and str(tick.get("mode", "frames")) == "method":
+		var want := str(tick.get("method", ""))
+		var owner_path := str(tick.get("node", ""))
+		var owner: Node = inst if owner_path == "" else inst.get_node_or_null(NodePath(owner_path))
+		if owner != null and want != "" and owner.has_method(want):
+			_tick_node = owner
+			_tick_method = want
+			_tick_mode = "method"
+			# We are the tick authority now — stop the engine from ALSO
+			# advancing it each frame.
+			owner.set_process(false)
+		else:
+			_notes.append("the contract's tick method '" + want + "' is not on that node, so the probe let the engine run its own frames instead")
 
 func _initialize() -> void:
+	var parsed_contract = JSON.parse_string(CONTRACT_JSON)
+	if parsed_contract is Dictionary:
+		_contract = parsed_contract
+	else:
+		_notes.append("the probe contract did not parse; nothing was driven")
 	var parsed = JSON.parse_string(SCHEDULE_JSON)
 	if parsed is Array:
 		_schedule = parsed
 	else:
 		_notes.append("schedule did not parse to an array; running an idle match")
 	# Wrap scene loading so a broken game can't crash the probe with no output.
-	_load_fight()
+	_load_scene()
 
 func _sample() -> void:
-	if _player == null or _opponent == null:
+	if _actors.is_empty():
 		return
-	_samples.append({
-		"tick": _tick,
-		"player_x": snappedf(_player.position.x, 0.01),
-		"opponent_x": snappedf(_opponent.position.x, 0.01),
-		"distance": snappedf(absf(_player.position.x - _opponent.position.x), 0.01),
-		"player_hp": _num(_player, "hp"),
-		"opponent_hp": _num(_opponent, "hp"),
-		"player_stamina": _num(_player, "stamina"),
-	})
+	var row := {"tick": _tick}
+	for entry in _contract.get("samples", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		var node = _actors.get(str(entry.get("actor", "")), null)
+		var v = _read(node, str(entry.get("property", "")))
+		var step := float(entry.get("round", 0.0))
+		if v != null and step > 0.0:
+			v = snappedf(float(v), step)
+		row[str(entry.get("key", ""))] = v
+	for entry in _contract.get("derived", []):
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		if str(entry.get("kind", "")) != "abs_diff":
+			continue
+		var of = entry.get("of", [])
+		if typeof(of) != TYPE_ARRAY or of.size() != 2:
+			continue
+		var a = row.get(str(of[0]), null)
+		var b = row.get(str(of[1]), null)
+		var key := str(entry.get("key", ""))
+		if a == null or b == null:
+			row[key] = null
+			continue
+		var step2 := float(entry.get("round", 0.01))
+		var diff := absf(float(a) - float(b))
+		row[key] = snappedf(diff, step2) if step2 > 0.0 else diff
+	_samples.append(row)
 
 func _emit_result() -> void:
 	if _done:
@@ -159,13 +232,21 @@ func _emit_result() -> void:
 		"samples": _samples,
 		"final": final,
 		"notes": _notes,
-		"has_fight": _player != null and _opponent != null,
+		"scene_loaded": _scene_root != null,
+		"actors_found": _actors.keys(),
+		"actors_missing": _missing,
+		"tick_mode": _tick_mode,
+		# Kept under the old name because saved expectations address it: it is
+		# true when the probe actually got hold of everything it was told to
+		# watch, which for the fighting shape is exactly what it used to mean.
+		"has_fight": _scene_root != null and _actors.size() > 0 and _missing.is_empty(),
 	}
 	print("PROBE_JSON:" + JSON.stringify(summary))
 
 func _process(_delta: float) -> bool:
-	# No fight loaded: report once and quit rather than spin.
-	if _player == null or _opponent == null:
+	# Nothing to watch: report once, with the notes saying why, and quit rather
+	# than spin out a green-looking match that sampled nothing.
+	if _scene_root == null or _actors.is_empty():
 		_emit_result()
 		return true
 
@@ -187,9 +268,9 @@ func _process(_delta: float) -> bool:
 				Input.action_release(a)
 			_active.erase(a)
 
-	# Advance exactly one deterministic sim tick.
-	if _fight.has_method("sim_tick"):
-		_fight.sim_tick()
+	# Advance exactly one deterministic step, when the contract names one.
+	if _tick_node != null and _tick_method != "":
+		_tick_node.call(_tick_method)
 
 	if _tick % SAMPLE_EVERY == 0:
 		_sample()
@@ -203,7 +284,17 @@ func _process(_delta: float) -> bool:
 """
 
 
-def _build_probe(actions: list, ticks: int) -> str:
+def _gd_string(payload) -> str:
+    """A JSON blob as a GDScript double-quoted string literal.
+
+    Embedding it as a *string* the GDScript parses at runtime avoids
+    hand-assembling GDScript array and dictionary literals, which is where a
+    quote in a node name would otherwise become a syntax error in the probe.
+    """
+    return '"' + json.dumps(payload).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _build_probe(contract: dict, actions: list, ticks: int) -> str:
     schedule = []
     for a in actions or []:
         if not isinstance(a, dict):
@@ -221,14 +312,12 @@ def _build_probe(actions: list, ticks: int) -> str:
             hold = 1
         schedule.append({"action": act, "at_tick": max(0, at),
                          "hold_ticks": max(1, hold)})
-    # Embed the schedule as a JSON *string* the GDScript parses at runtime —
-    # avoids hand-assembling a GDScript array literal. Escape for a GDScript
-    # double-quoted string literal.
-    schedule_json = json.dumps(schedule)
-    gd_literal = '"' + schedule_json.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    body = {k: contract.get(k) for k in ("scene", "actors", "samples",
+                                         "derived", "tick")}
     return (
         _PROBE_TEMPLATE
-        .replace("%SCHEDULE_JSON%", gd_literal)
+        .replace("%SCHEDULE_JSON%", _gd_string(schedule))
+        .replace("%CONTRACT_JSON%", _gd_string(body))
         .replace("%MAX_TICKS%", str(int(ticks)))
         .replace("%SAMPLE_EVERY%", str(_SAMPLE_EVERY))
     )
@@ -315,7 +404,8 @@ COMPARATORS = {
 }
 
 # Fields of the summary (not of a sample) an expectation may address.
-_SUMMARY_FIELDS = {"ticks", "requested_ticks", "sample_count", "has_fight"}
+_SUMMARY_FIELDS = {"ticks", "requested_ticks", "sample_count", "has_fight",
+                   "scene_loaded", "tick_mode"}
 
 
 def sample_at(summary: dict, at_tick: Optional[int]) -> dict:
@@ -341,9 +431,13 @@ def _resolve(summary: dict, prop: str, at_tick: Optional[int]):
         return sample[prop], sample, ""
     if prop in _SUMMARY_FIELDS:
         return summary.get(prop), sample, ""
+    keys = sorted(k for k in sample if k != "tick")
     return None, sample, (
-        f"the probe never sampled '{prop}' — the fighter does not expose it, "
-        f"or the run produced no samples")
+        f"the probe never sampled '{prop}' — "
+        + (f"this run sampled {', '.join(keys)}. Add it to the probe contract, "
+           f"or point the expectation at one of those"
+           if keys else
+           "this run sampled nothing at all, so no expectation can be checked"))
 
 
 def normalise_expectations(raw) -> list[dict]:
@@ -408,14 +502,23 @@ def evaluate(summary: Optional[dict], expectations: list[dict]) -> list[dict]:
     return results
 
 
-def verdict_of(expectations: list[dict], results: list[dict], ran_ok: bool) -> str:
+def verdict_of(expectations: list[dict], results: list[dict], ran_ok: bool,
+               summary: Optional[dict] = None) -> str:
     """pass / fail / error / unknown.
 
     ``unknown`` is the load-bearing one: a bot with no expectations asserts
     nothing, and reporting that as a pass is exactly the green-for-free the audit
     called out.
+
+    A run that produced NO SAMPLES is an ``error``, not a pass, even when the
+    engine exited cleanly and the expectations happen to address summary fields.
+    Once the probe stopped being hardcoded to one game, "the scene loaded and
+    every declared actor was missing" became a shape a real project can hit, and
+    a probe that watched nothing has not verified anything.
     """
     if not ran_ok:
+        return "error"
+    if summary is not None and not (summary.get("samples") or []):
         return "error"
     if not expectations:
         return "unknown"
@@ -460,15 +563,42 @@ def diff_baseline(baseline: Optional[dict], summary: Optional[dict],
     Compares the two final samples numerically and pairs expectations by label,
     so "the fight is the same but expectation X flipped" reads differently from
     "everything drifted".
+
+    IT ONLY DIFFS KEYS BOTH RUNS PRODUCED. The probe contract is editable, so a
+    baseline can predate a change to what is sampled at all, and diffing a key
+    the old run never had would report a "change" that is really a schema edit.
+    Keys that appeared or vanished are reported as such, and a baseline with no
+    key in common with this run is declared incomparable rather than diffed.
     """
     if baseline is None:
         return None
-    was_final = sample_at(baseline.get("samples") or {}, None)
+    base_summary = baseline.get("samples") or {}
+    was_final = sample_at(base_summary, None)
     now_final = sample_at(summary or {}, None)
+    was_keys = {k for k in was_final if k != "tick"}
+    now_keys = {k for k in now_final if k != "tick"}
+    shared = was_keys & now_keys
+    was_contract = base_summary.get("contract") if isinstance(base_summary, dict) else None
+    now_contract = (summary or {}).get("contract")
+    contract_changed = bool(
+        was_contract and now_contract
+        and qaprobe.fingerprint(was_contract) != qaprobe.fingerprint(now_contract))
+
+    note = ""
+    if not shared and (was_keys or now_keys):
+        note = ("this run and the baseline have no sample key in common, so "
+                "they cannot be compared. The probe contract changed under "
+                "this bot; re-run it once to lay down a baseline that means "
+                "something.")
+    elif was_keys - now_keys or now_keys - was_keys:
+        note = ("the probe contract changed since the baseline, so only the "
+                "keys both runs produced are compared.")
+    elif contract_changed:
+        note = ("the probe contract changed since the baseline (scene or tick "
+                "authority), even though the sample keys did not.")
+
     changed = []
-    for key in sorted(set(was_final) | set(now_final)):
-        if key == "tick":
-            continue
+    for key in sorted(shared):
         was, now = was_final.get(key), now_final.get(key)
         if _cmp_eq(was, now):
             continue
@@ -494,6 +624,11 @@ def diff_baseline(baseline: Optional[dict], summary: Optional[dict],
         "regressed": baseline.get("verdict") == "pass" and verdict in {"fail", "error"},
         "changed": changed,
         "flipped": flipped,
+        "comparable": bool(shared) or not (was_keys or now_keys),
+        "contract_changed": contract_changed or bool(was_keys ^ now_keys),
+        "keys_added": sorted(now_keys - was_keys),
+        "keys_removed": sorted(was_keys - now_keys),
+        "note": note,
     }
 
 
@@ -519,12 +654,13 @@ def record_run(root_dir, bot: str, verdict: str, expectations: list[dict],
 
 # --- running ---------------------------------------------------------------
 
-def _probe(project, actions: list, ticks: int, timeout: int) -> dict:
+def _probe(project, contract: dict, actions: list, ticks: int,
+           timeout: int) -> dict:
     """Drive the game once. Returns the flat run payload the seat JS reads."""
     if not (project / "project.godot").exists():
         return {"ok": False, "error": f"no Godot project at {project}",
                 "summary": None, "stdout": "", "stderr": "", "errors": []}
-    script = _build_probe(actions, ticks)
+    script = _build_probe(contract, actions, ticks)
     try:
         result = _godot.run_script(script, str(project), timeout=timeout)
     except _godot.GodotNotFound as exc:
@@ -536,10 +672,20 @@ def _probe(project, actions: list, ticks: int, timeout: int) -> dict:
 
     stdout = result.get("stdout", "")
     summary = _parse_probe_json(stdout)
+    if summary is not None:
+        # The contract rides with the samples into qa_bot_run.samples_json, so a
+        # baseline recorded a month ago can still say what it was measuring.
+        # There is no column for it and there does not need to be one.
+        summary["contract"] = {k: contract.get(k) for k in
+                               ("scene", "actors", "samples", "derived", "tick")}
+        issues = [i for i in (contract.get("issues") or []) if i]
+        if issues:
+            summary["notes"] = list(summary.get("notes") or []) + issues
     ran_ok = bool(result.get("ok")) and summary is not None and bool(summary.get("has_fight"))
     return {
         "ok": ran_ok,
         "summary": summary,
+        "contract": contract,
         "stdout": stdout,
         "stderr": result.get("stderr", ""),
         "errors": result.get("errors", []),
@@ -578,12 +724,21 @@ def _clamp_probe_timeout(raw) -> int:
     return max(5, min(value, 600))
 
 
-def run_bot(root_dir, spec: dict) -> dict:
+def contract_for(root_dir) -> dict:
+    """The probe contract this project runs under, derived if never declared."""
+    return qaprobe.load(root_dir, _game_dir())
+
+
+def run_bot(root_dir, spec: dict, contract: Optional[dict] = None) -> dict:
     """One bot, end to end: drive, judge, persist, diff. The single place a
     verdict is produced, so /run and /run-all cannot disagree."""
-    run = _probe(_game_dir(), spec["actions"], spec["ticks"], spec["timeout"])
+    if contract is None:
+        contract = contract_for(root_dir)
+    run = _probe(_game_dir(), contract, spec["actions"], spec["ticks"],
+                 spec["timeout"])
     results = evaluate(run.get("summary"), spec["expect"])
-    verdict = verdict_of(spec["expect"], results, bool(run.get("ok")))
+    verdict = verdict_of(spec["expect"], results, bool(run.get("ok")),
+                         run.get("summary"))
     baseline = baseline_for(root_dir, spec["bot"])
     diff = diff_baseline(baseline, run.get("summary"), verdict, results)
     run_id = record_run(root_dir, spec["bot"], verdict, spec["expect"], results,
@@ -596,6 +751,11 @@ def run_bot(root_dir, spec: dict) -> dict:
         "results": results,
         "failures": [r for r in results if not r.get("ok")],
         "baseline_diff": diff,
+        # What the probe was told to drive, and what it could not work out. A
+        # run that watched nothing has to say what was missing rather than
+        # leaving the seat to infer it from an empty table.
+        "contract": contract,
+        "contract_issues": list(contract.get("issues") or []),
     })
     return run
 
@@ -603,8 +763,9 @@ def run_bot(root_dir, spec: dict) -> dict:
 @router.post("/api/qa-bots/run")
 def qa_bots_run(request: Request, payload: Optional[dict] = None,
                 async_: int = Query(0, alias="async")):
-    """Run one bot match: assemble the probe from the bot's action schedule,
-    drive the real fight headless, judge it against the bot's expectations.
+    """Run one bot match: assemble the probe from the project's contract and the
+    bot's action schedule, drive the real game headless, judge it against the
+    bot's expectations.
 
     Keeps its flat (non-enveloped) shape — the QA seat reads ``ok``/``summary``/
     ``stdout`` off the top level — and adds ``verdict``/``results``/
@@ -663,6 +824,10 @@ def qa_bots_run_all(request: Request, payload: Optional[dict] = None,
     root_dir = root()
 
     def execute(job_id: Optional[int] = None) -> dict:
+        # One contract for the whole roster. Deriving it per bot would let a
+        # concurrent edit land mid-roster and produce two verdicts about two
+        # different games under one aggregate.
+        contract = contract_for(root_dir)
         runs = []
         for i, spec in enumerate(specs):
             if job_id is not None:
@@ -670,7 +835,7 @@ def qa_bots_run_all(request: Request, payload: Optional[dict] = None,
                     return jobs_api.cancelled_result(f"after {i} of {len(specs)} bots")
                 jobs.progress(root_dir, job_id, fraction=i / len(specs),
                               stage=f"{spec['bot']} ({i + 1}/{len(specs)})")
-            runs.append(run_bot(root_dir, spec))
+            runs.append(run_bot(root_dir, spec, contract))
         verdicts = [r["verdict"] for r in runs]
         return {
             "ok": True,
@@ -679,7 +844,10 @@ def qa_bots_run_all(request: Request, payload: Optional[dict] = None,
                        for v in ("pass", "fail", "error", "unknown")},
             "regressions": [r["bot"] for r in runs
                             if (r.get("baseline_diff") or {}).get("regressed")],
-            "runs": [{k: v for k, v in r.items() if k != "stdout"} for r in runs],
+            "contract": contract,
+            "contract_issues": list(contract.get("issues") or []),
+            "runs": [{k: v for k, v in r.items()
+                      if k not in ("stdout", "contract")} for r in runs],
         }
 
     if jobs_api.wants_async(payload, async_):
@@ -741,15 +909,19 @@ def _run_summary(run: dict) -> dict:
 @router.get("/api/qa-bots/actions")
 def qa_bots_actions() -> dict:
     """The game's own input action names (project.godot [input] section), so the
-    UI can offer a dropdown of real actions. Best-effort — returns a sensible
-    default list if the file can't be read."""
-    default = ["move_left", "move_right", "jump", "jab", "hook",
-               "block", "duck", "kick_light", "kick_heavy"]
+    UI can offer a dropdown of real actions.
+
+    It used to fall back to a hardcoded boxing moveset — jab, hook, duck,
+    kick_heavy — for any project it could not read, which offered every other
+    game a dropdown of actions its InputMap has never heard of and a bot whose
+    every press was silently discarded. An empty list is the honest answer.
+    """
+    default: list[str] = []
     try:
         pg = _game_dir() / "project.godot"
         text = pg.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return {"actions": default, "source": "default"}
+        return {"actions": default, "source": "none"}
 
     actions: list[str] = []
     in_input = False
@@ -766,5 +938,61 @@ def qa_bots_actions() -> dict:
             if not _BUILTIN_ACTIONS.match(name) and name not in actions:
                 actions.append(name)
     if not actions:
-        return {"actions": default, "source": "default"}
+        return {"actions": default, "source": "none"}
     return {"actions": actions, "source": "project.godot"}
+
+
+# --- the probe contract -----------------------------------------------------
+
+@router.get("/api/qa-bots/contract")
+def qa_bots_contract() -> dict:
+    """What the probe drives on this project, derived if nobody declared it.
+
+    ``source`` says which: ``declared`` (a human or an agent wrote it),
+    ``derived`` (read off the real scene and persisted so it can be edited), or
+    ``none`` (nothing could be worked out, and ``issues`` says what is missing).
+    """
+    contract = contract_for(root())
+    contract["sample_keys"] = qaprobe.sample_keys(contract)
+    return api.ok(contract)
+
+
+@router.post("/api/qa-bots/contract")
+def qa_bots_contract_set(payload: Optional[dict] = None) -> dict:
+    """Store a hand-edited contract.
+
+    A contract with complaints is still stored: the seat shows the complaints
+    beside it, and refusing the write would leave the human editing a document
+    they cannot save halfway through.
+    """
+    body = (payload or {}).get("data", payload) or {}
+    if not isinstance(body, dict):
+        raise api.bad_request("the contract must be an object")
+    contract, issues = qaprobe.normalise(body)
+    # Carry the version the editor loaded, so a second tab's save is a 409
+    # rather than a silent overwrite (same precondition the bot roster uses).
+    contract[_ws.VERSION_KEY] = str(body.get(_ws.VERSION_KEY, "") or "")
+    try:
+        saved = qaprobe.save(root(), contract)
+    except _ws.StaleWrite as exc:
+        raise api.conflict(str(exc), expected=exc.expected, actual=exc.actual)
+    contract[_ws.VERSION_KEY] = saved.get(_ws.VERSION_KEY, "")
+    contract["source"] = "declared"
+    contract["issues"] = issues
+    contract["sample_keys"] = qaprobe.sample_keys(contract)
+    return api.ok(contract)
+
+
+@router.post("/api/qa-bots/contract/derive")
+def qa_bots_contract_derive() -> dict:
+    """Re-read the project and replace the stored contract with what it says.
+
+    The explicit version of what a fresh project gets for free, for when the
+    game has moved on: a scene renamed, actors added, a sim_tick() introduced.
+    """
+    contract = qaprobe.derive(_game_dir())
+    if contract.get("actors"):
+        saved = qaprobe.save(root(), contract)
+        contract[_ws.VERSION_KEY] = saved.get(_ws.VERSION_KEY, "")
+    contract["sample_keys"] = qaprobe.sample_keys(contract)
+    return api.ok(contract)

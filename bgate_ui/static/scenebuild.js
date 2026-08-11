@@ -521,12 +521,6 @@ window.SceneBuild = (() => {
     treeOpen.has(path) ? treeOpen.delete(path) : treeOpen.add(path);
     renderTree();
   }
-  function treeExpandAll(){
-    (data.nodes || []).forEach(n => {
-      if ((kidsOf.get(n.path) || []).length) treeOpen.add(n.path);
-    });
-    renderTree();
-  }
   function treeCollapseAll(){
     treeOpen = new Set(["."]);
     renderTree();
@@ -612,6 +606,35 @@ window.SceneBuild = (() => {
     return { nodes, edges };
   }
 
+  /* res:// -> the project-relative path the SERVER wants.
+   *
+   * res:// is addressed from the Godot directory; /api/audio/file and
+   * AudioLab.open both take a path relative to the PROJECT root, and the
+   * prefix between the two is whatever `_godot_dir` resolved to server-side.
+   * That is not guessable from a single string, but it is derivable exactly:
+   * `data.scene` is the res:// address of the very file `data.rel` names from
+   * the project root, so the part of `rel` that `scene` does not account for
+   * IS the Godot directory - "game/" on this project, "" on one whose
+   * project.godot sits at the root.
+   *
+   * Both callers used to guess, differently, and each was right only for one
+   * shape of project: the node card took rel.split("/")[0] (correct only when
+   * the Godot dir is exactly one level down) and editAudio() took rel minus
+   * its last two segments (correct only when the scene is exactly two levels
+   * inside it - on this project that turns res://audio/x.ogg into
+   * game/assets/audio/x.ogg). A player control that 404s into a dead widget
+   * and a lab that opens on a file that was never there are the same bug
+   * wearing two different wrong prefixes. */
+  function projectPath(resPath){
+    const res = String(resPath || "").replace(/^res:\/\//, "");
+    if (!res) return "";
+    const rel = String((data && data.rel) || "");
+    const tail = String((data && data.scene) || "").replace(/^res:\/\//, "");
+    const gd = tail && rel.length > tail.length && rel.endsWith(tail)
+      ? rel.slice(0, rel.length - tail.length) : "";
+    return gd + res;
+  }
+
   function renderBody(node){
     const n = node.data || {};
     const res = (n.resources || []).filter(r => r.property !== "script");
@@ -624,7 +647,7 @@ window.SceneBuild = (() => {
           <span class="k"><b>${E(r.property)}</b>${E(r.path.split("/").pop())}</span>
         </div>
         ${SND.test(r.path) ? `<audio controls preload="none"
-           src="/api/audio/file?rel=${encodeURIComponent(r.path.replace("res://", (data.rel||"").split("/")[0] + "/"))}"></audio>` : ""}
+           src="/api/audio/file?rel=${encodeURIComponent(projectPath(r.path))}"></audio>` : ""}
       `).join("")}
       ${!res.length && !n.script ? `<div style="color:var(--ash2)">no assets</div>` : ""}
       <div class="acts">
@@ -1114,7 +1137,6 @@ window.SceneBuild = (() => {
 
   function overview(){
     const roles = data.roles || {};
-    const noScript = data.nodes.filter(n => !n.script && n.role === "controller").length;
     const missing = data.nodes.flatMap(n => n.resources.filter(r => !r.exists));
     return `<div class="sb-h">${E(data.root || "scene")}</div>
       <div class="sb-note"><b>${data.nodes.length}</b> node${data.nodes.length===1?"":"s"} ·
@@ -1285,9 +1307,10 @@ window.SceneBuild = (() => {
   }
   function editAudio(resPath){
     if (!window.AudioLab) return say("the audio lab did not load");
-    // res:// is relative to the Godot dir; the lab wants a project-relative path.
-    const gd = (data.rel || "").split("/").slice(0, -2).join("/");
-    AudioLab.open((gd ? gd + "/" : "") + resPath.replace("res://", ""));
+    // res:// is relative to the Godot dir; the lab wants a project-relative
+    // path. See projectPath() for why that difference is measured rather than
+    // sliced off by segment count.
+    AudioLab.open(projectPath(resPath));
   }
 
   /* ── modal ────────────────────────────────────────────────────────────── */

@@ -286,7 +286,30 @@ CHARACTER_MODEL = "nano-banana-2"
 # of pose". Deliberately narrow: an item, a prop, a decal or a VFX key frame has
 # no pose continuity to preserve, so none of them needs an edit model and none of
 # them should silently change provider behaviour because this constant exists.
-CHARACTER_KINDS = frozenset({"anchor", "animation"})
+#
+# `sprite`, `sheet` and `portrait` WERE MISSING, and the gap is the whole reason
+# this pin was not working. chroma.KEYED_KINDS has always treated them as
+# character art, but they were absent here, so every sprite and every sheet fell
+# through model_for() to DEFAULT_MODEL — the style model this comment block was
+# written to route AWAY from. The measured failure above ("a FACE in seven of
+# eight frames when four were specified as back views") was therefore not fixed
+# by pinning nano-banana-2; it just stopped being visible on the two kinds that
+# named it, and kept happening on the kind people actually generate most.
+#
+# Re-measured 2026-08-10 on a 16-frame NE/SE walk sheet from a pinned character,
+# same prompt and reference through every reference-capable model on both
+# providers: krea-2-large (the default this bypasses) FAILED the alpha audit at
+# 14% hollow interior — the key colour landed inside the figure and was cut out
+# of it — and drew six near-identical frames per row with no direction change.
+# nano-banana-2 returned eight frames per row, correct back-view and front-view
+# rows, and a clean key.
+CHARACTER_KINDS = frozenset({
+    "anchor",     # the canonical character every later frame derives from
+    "animation",  # pose frames
+    "sprite",     # a character sprite is a character, whatever it is called
+    "sheet",      # a sheet is many poses of one identity — the hardest case
+    "portrait",   # a face that has to stay the same face
+})
 
 
 def model_for(task_kind: str = "") -> str:
@@ -427,13 +450,27 @@ def price_for(model: str = DEFAULT_MODEL, *, style_refs: int = 0,
 
 
 def _request(path: str, key: str, *, payload: Optional[dict] = None,
-             method: str = "GET", timeout: float = 60.0) -> dict:
+             method: str = "GET", timeout: float = 60.0,
+             extra_headers: Optional[dict] = None) -> dict:
+    """One call, with the error advice every Krea endpoint should get.
+
+    ``extra_headers`` exists for the ONE caller that needs a header this does
+    not send — submit_3d's webhook. It used to hand-roll its own urlopen for
+    that, and the copy diverged where it mattered rather than where it differed:
+    its handler dropped the response body and every one of the code-specific
+    messages below, so a 402 through the webhook path read "Krea HTTP 402" and
+    said nothing about the API balance being billed separately from a
+    subscription — which is the single most confusing failure this provider has.
+    Same provider, same auth, two different error surfaces for no stated reason
+    is exactly the shape that hid kie's 1010 for a release.
+    """
     url = path if path.startswith("http") else API_BASE + path
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data=body, method=method, headers={
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
+        **(extra_headers or {}),
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -971,6 +1008,43 @@ def download(url: str, out_path: str, *, timeout: float = 120.0,
     return len(data)
 
 
+def _account(result: dict, root: Any, *, task_kind: str = "",
+             logical_name: str = "", work_item_id: Optional[int] = None,
+             detail: str = "") -> None:
+    """Write this generation to the spend ledger. Best-effort by construction:
+    losing a ledger row must never lose the image that was paid for.
+
+    KREA HAS NEVER WRITTEN ONE. There was no spend.record anywhere in this
+    module, and chroma.generate — the door every sprite goes through — does not
+    write one either. spend.check compares its ceilings against the SUM of
+    spend_event, so the per-day and per-project budgets could not be reached by
+    Krea spend at all: the ledger read $0.00 while the money left. That is worse
+    than an unenforced ceiling, because the number shown is confident and wrong.
+    Character work now ROUTES here by default (providers.provider_for), so this
+    was the gap under the busiest paid path in the product.
+
+    An UNKNOWN cost is recorded as 0.0 and said so in the detail rather than
+    skipped: a row that exists with an honest note is recoverable, and one that
+    was never written cannot be found at all.
+    """
+    if not root or not result.get("ok"):
+        return
+    try:
+        from bgate_core import spend
+
+        usd = result.get("estimated_usd")
+        note = detail or f"krea {result.get('model', '')}"
+        if usd is None:
+            note += " (cost unknown - Krea publishes no price for this call)"
+        spend.record(root, float(usd or 0.0),
+                     kind="mesh" if task_kind == "mesh" else "image",
+                     work_item_id=work_item_id,
+                     logical_name=logical_name or "", detail=note,
+                     model=str(result.get("model") or ""))
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
 def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
              size: str = "1024x1024", seed: Optional[int] = None,
              style_refs: Optional[list[dict]] = None, image_url: str = "",
@@ -1003,9 +1077,13 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
 
     size = size_for(size, task_kind=task_kind)
     refs = list(style_refs or [])
+    job_id = ""
     try:
         refs += refs_from_paths(ref_paths, ref_strength)
     except KreaError as exc:
+        # NOTHING WAS SUBMITTED — a bad reference file is caught before the
+        # network. Zero is the true cost here, and it is the only failure in
+        # this function that can honestly say so.
         return {"ok": False, "error": str(exc), "provider": "krea",
                 "model": model, "seconds": round(time.monotonic() - started, 2),
                 "estimated_usd": 0.0}
@@ -1014,7 +1092,7 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
                      style_refs=refs or None, image_url=image_url,
                      strength=strength, creativity=creativity,
                      quality=quality, styles=styles, root=root)
-        job_id = job.get("job_id") or job.get("id")
+        job_id = str(job.get("job_id") or job.get("id") or "")
         if not job_id:
             raise KreaError(f"Krea did not return a job id: {str(job)[:200]}")
         done = poll(str(job_id), root=root, timeout=timeout)
@@ -1023,9 +1101,28 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
             raise KreaError("Krea reported completed with no image URL")
         written = download(urls[0], out_path)
     except KreaError as exc:
+        # CARRY THE JOB, AND DO NOT PRICE IT AT ZERO. generate_3d learned both
+        # of these from a live call that failed at the DOWNLOAD, after the job
+        # had completed and been charged for — and then this function, the one
+        # the whole 2D pipeline runs through, kept doing exactly what that fix
+        # was written about. Once there is a job_id the generation is accepted
+        # and may already be paid for: dropping the id makes a finished image
+        # unrecoverable, and reporting estimated_usd 0.0 tells a spend ledger a
+        # charge that happened did not.
+        #
+        # None, not the quote: it is not known whether this one billed, and this
+        # module's rule about zeros applies to every number a gate might read.
         return {"ok": False, "error": str(exc), "provider": "krea",
-                "model": model, "seconds": round(time.monotonic() - started, 2),
-                "estimated_usd": 0.0}
+                "model": model, "job_id": job_id,
+                "seconds": round(time.monotonic() - started, 2),
+                "estimated_usd": None if job_id else 0.0,
+                "recover": (f"the job may be done and paid for — poll "
+                            f"/jobs/{job_id} and download from its result")
+                           if job_id else "",
+                "cost_note": ("this failed after Krea accepted the job, so the "
+                              "cost is UNKNOWN rather than zero — it would have "
+                              f"quoted ${price_for(model, style_refs=len(refs)):.4f}")
+                             if job_id else ""}
     result = {
         "ok": True, "path": str(out_path), "bytes": written,
         "provider": "krea", "model": model,
@@ -1033,6 +1130,9 @@ def generate(prompt: str, out_path: str, *, model: str = DEFAULT_MODEL,
         "seconds": round(time.monotonic() - started, 2),
         "estimated_usd": price_for(model, style_refs=len(refs)),
     }
+    _account(result, root, task_kind=task_kind,
+             detail=f"krea {model} {size}"
+                    + (f" +{len(refs)} ref" if refs else ""))
     if tileable:
         # After the download, never instead of it: the image is already paid
         # for, so a post-pass that cannot run must degrade to a note.
@@ -1236,24 +1336,18 @@ def submit_3d(prompt: str = "", *, model: str = DEFAULT_MODEL_3D,
     if not key:
         raise KreaError(available(root)["reason"])
 
-    path = spec["path"]
+    # A webhook is a HEADER, and this used to be a hand-rolled second urlopen
+    # because _request had no hook for one. The duplicate then diverged where it
+    # mattered: it dropped the response body and all of _request's per-code
+    # advice, so the same 402 that tells a webhook-less caller "the API balance
+    # is billed separately from a subscription" told a webhook caller nothing at
+    # all. One code path now, one extra header.
     if not webhook:
-        return _request(path, key, payload=payload, method="POST", timeout=timeout)
-    # A webhook is a HEADER, and _request has no header hook. One narrow
-    # duplicate beats widening the shared helper for a single caller.
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(API_BASE + path, data=body, method="POST",
-                                 headers={"Authorization": f"Bearer {key}",
-                                          "Content-Type": "application/json",
-                                          "Accept": "application/json",
-                                          "X-Webhook-URL": webhook})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8") or "{}")
-    except urllib.error.HTTPError as exc:
-        raise KreaError(f"Krea HTTP {exc.code} on POST {path}") from exc
-    except urllib.error.URLError as exc:
-        raise KreaError(f"could not reach Krea ({exc.reason})") from exc
+        return _request(spec["path"], key, payload=payload, method="POST",
+                        timeout=timeout)
+    return _request(spec["path"], key, payload=payload, method="POST",
+                    timeout=timeout,
+                    extra_headers={"X-Webhook-URL": webhook})
 
 
 def _model_url(result: dict) -> str:
@@ -1360,9 +1454,15 @@ def generate_3d(out_path: str, *, prompt: str = "", images=(),
                 "recover": (f"the job is done and paid for — poll /jobs/{job_id} "
                             "and download from its result") if job_id else "",
                 "seconds": round(time.monotonic() - started, 2)}
-    return {**base, "ok": True, "path": str(out_path), "bytes": written,
-            "job_id": str(job_id), "url": url,
-            "seconds": round(time.monotonic() - started, 2),
+    out = {**base, "ok": True, "path": str(out_path), "bytes": written,
+           "job_id": str(job_id), "url": url,
+           "seconds": round(time.monotonic() - started, 2)}
+    # Krea publishes no 3D price, so estimated_usd is None here and _account
+    # writes a 0.00 row that SAYS the cost is unknown. A mesh costing roughly
+    # $0.30-0.60 that leaves no trace at all is how a project discovers its
+    # spend on an invoice instead of on its own ledger.
+    _account(out, root, task_kind="mesh", detail=f"krea 3d {model}")
+    return {**out,
             "next_steps": ("merge and clean the shells",
                            "scale to the project's unit convention",
                            "orient forward", "weight to a skeleton",

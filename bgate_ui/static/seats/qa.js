@@ -1,11 +1,19 @@
 /* QA seat workspace — a bot playtest environment.
  *
  * The reliable QA method here is driving the REAL game headless: a bot is a
- * scripted sequence of Input actions (jab @ tick 20, move_right held 30 ticks,
- * ...) that the backend replays against the fight scene via a runtime probe,
- * then reports the two fighters' positions / hp / stamina each few ticks. This
- * workspace lets you author bots, run a match, and read what actually happened
- * — plus record a live human/agent playtest and watch the live qa agent.
+ * scripted sequence of Input actions (move_right held 30 ticks, jab @ tick 20,
+ * ...) that the backend replays against a scene via a runtime probe, then
+ * reports the sampled node properties each few ticks. This workspace lets you
+ * author bots, run a match, and read what actually happened — plus record a
+ * live human/agent playtest and watch the live qa agent.
+ *
+ * WHAT THE PROBE DRIVES IS A CONTRACT, not an assumption. It used to be
+ * hardcoded to a 2D fighter (a scene with Player and Opponent, sampling
+ * player_hp / opponent_hp / player_stamina), so every other game got an inert
+ * bot. The contract panel below is that config: scene, actors, sample keys,
+ * tick authority. It is derived from the real scene on first look and editable
+ * after, and the sample keys it lists are exactly what an expectation can
+ * address.
  *
  * Contract: window.SeatWS.qa = { label, glyph, render(container,bg), refresh() }
  * bg = window.BGWS. Never throws uncaught; every fetch is guarded.
@@ -15,6 +23,13 @@ window.SeatWS.qa = {
   label: "QA",
   glyph: (window.BGIcon ? BGIcon("qa", { size: 15 }) : ""),
 
+  // Section-header glyph. Guarded on has() because an unknown name must not
+  // take the whole shell down with it.
+  _icon(n) {
+    return (window.BGIcon && (!BGIcon.has || BGIcon.has(n)))
+      ? BGIcon(n, { size: 15 }) : "";
+  },
+
   // --- module state -------------------------------------------------------
   _bg: null,
   _container: null,
@@ -22,37 +37,57 @@ window.SeatWS.qa = {
   _editing: null,       // { index, bot } while the editor is open, else null
   _lastRun: null,       // last bot match result
   _running: false,
-  _actions: ["move_left", "move_right", "jump", "jab", "hook",
-             "block", "duck", "kick_light", "kick_heavy"],
+  // Empty until /api/qa-bots/actions answers. It used to default to a boxing
+  // moveset, which offered every non-fighting project a dropdown of actions its
+  // InputMap has never heard of and a bot whose every press went nowhere.
+  _actions: [],
+  _contract: null,      // /api/qa-bots/contract — what the probe drives
+  _editingContract: false,
   _items: [],           // active qa work items
   _gates: [],           // qa-gate verify runs (source='qa-gate'), newest first
   _selItem: null,       // selected qa work item id
   _playtest: null,      // last playtest status payload
   _preflight: null,     // /api/playtest/preflight — same gate the overview uses
+  _ptSig: "",           // last painted recording-panel signature (see _paintPlaytest)
+  _ptMsg: "",           // the record panel's status line, kept across repaints
+  _ptBad: false,
   _runs: [],            // /api/qa-bots/runs — recorded verdicts, newest first
+  _actSig: "",          // last painted agent-activity signature (see _loadActivity)
   _comparators: ["eq", "ne", "lt", "lte", "gt", "gte", "between", "contains"],
 
-  _DEFAULT_BOT: {
-    name: "aggressive rushdown",
-    ticks: 240,
-    actions: [
-      { action: "move_right", at_tick: 0, hold_ticks: 30 },
-      { action: "jab", at_tick: 20, hold_ticks: 1 },
-      { action: "jab", at_tick: 40, hold_ticks: 1 },
-      { action: "hook", at_tick: 60, hold_ticks: 1 },
-      { action: "move_right", at_tick: 72, hold_ticks: 20 },
-      { action: "jab", at_tick: 96, hold_ticks: 1 },
-      { action: "kick_heavy", at_tick: 120, hold_ticks: 1 },
-      { action: "jab", at_tick: 150, hold_ticks: 1 },
-      { action: "hook", at_tick: 180, hold_ticks: 1 },
-      { action: "jab", at_tick: 210, hold_ticks: 1 },
-    ],
-    // A bot that asserts nothing cannot pass — the server answers "unknown"
-    // for an empty expect list, so the built-in ships with a real assertion.
-    expect: [
-      { property: "opponent_hp", comparator: "lt", value: 100,
-        label: "the rushdown actually lands damage" },
-    ],
+  /* The bot a project starts with, built from what this game actually has.
+   *
+   * It used to be a hardcoded boxing rushdown asserting opponent_hp < 100.
+   * On any game that is not that fighter every one of its presses was an
+   * action the InputMap does not define and its one assertion addressed a
+   * sample key nothing produces, so the seeded bot reported a FAIL about
+   * nothing. Now the schedule comes from the project's own input actions and
+   * the assertion comes from the contract.
+   *
+   * A bot that asserts nothing cannot pass — the server answers "unknown" for
+   * an empty expect list — so the seed always ships with one real check. For a
+   * game with no obvious vital to assert on, that check is has_fight: it fails
+   * the moment the probe's scene or an actor is renamed out from under it,
+   * which is a control, not a participation trophy.
+   */
+  _seedBot() {
+    const acts = this._actions || [];
+    const keys = (this._contract && this._contract.sample_keys) || [];
+    const fight = keys.indexOf("opponent_hp") !== -1;
+    const schedule = [];
+    acts.slice(0, 4).forEach((a, i) => {
+      schedule.push({ action: a, at_tick: i * 30, hold_ticks: i === 0 ? 30 : 1 });
+    });
+    return {
+      name: fight ? "aggressive rushdown" : "first pass",
+      ticks: 240,
+      actions: schedule,
+      expect: fight
+        ? [{ property: "opponent_hp", comparator: "lt", value: 100, at_tick: null,
+             label: "the rushdown actually lands damage" }]
+        : [{ property: "has_fight", comparator: "eq", value: true, at_tick: null,
+             label: "the probe got hold of the scene and every declared actor" }],
+    };
   },
 
   // --- entry point --------------------------------------------------------
@@ -60,9 +95,17 @@ window.SeatWS.qa = {
     this._bg = bg;
     this._container = container;
     container.innerHTML = this._shellHTML();
+    // Switching seats builds a FRESH container, so the strip's repaint guard
+    // has to be cleared or an unchanged tally would skip the first paint and
+    // leave every stage body hidden.
+    const strip = this._$("qa-stages");
+    if (strip) strip._bgsSig = "";
+    this._renderStages();
     // Paint sections async so a slow/failed fetch never blanks the workspace.
-    this._loadActions();
-    this._loadBots();
+    // The seeded bot is built out of the project's own actions and sample keys,
+    // so those two land before the roster does.
+    Promise.all([this._loadActions(), this._loadContract()])
+      .then(() => this._loadBots());
     this._loadPlaytest();
     this._loadPreflight();
     this._loadRuns();
@@ -76,6 +119,7 @@ window.SeatWS.qa = {
     this._loadPlaytest();
     this._loadGates();  // verdicts only — never repaints the agent panel (would clobber a steer being typed)
     if (this._selItem != null) this._loadActivity();
+    this._renderStages();
   },
 
   async _loadGates() {
@@ -85,6 +129,7 @@ window.SeatWS.qa = {
         this._gates = r.items.filter(it => it.seat === "qa" && it.source === "qa-gate")
           .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
         this._paintVerdicts();
+        this._renderStages();
       }
     } catch (e) { /* keep last verdicts */ }
   },
@@ -140,38 +185,195 @@ window.SeatWS.qa = {
         .qa-hist .when{color:var(--text-3);font-size:11px;margin-left:auto}
       </style>
       <div class="qa-wrap">
-        <div class="qa-card">
-          <div class="qa-row qa-sp"><h3 style="margin:0">Bot roster</h3>
-            <div class="qa-row">
-              <button class="qa-btn small pri" onclick="SeatWS.qa.runAll()"
-                title="Run every bot in sequence and take one verdict for the set - one failure fails it, anything unproven is unknown">▶ run all</button>
-              <button class="qa-btn small" onclick="SeatWS.qa.newBot()">+ new bot</button>
-            </div></div>
-          <div id="qa-roster"><div class="qa-empty">loading bots…</div></div>
-          <div id="qa-editor"></div>
-          <div id="qa-runall"></div>
-        </div>
-        <div class="qa-card">
-          <h3>Verdicts — automatic QA-gate runs</h3>
-          <div id="qa-verdicts"><div class="qa-empty">loading verdicts…</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Match result</h3>
-          <div id="qa-result"><div class="qa-empty">run a bot to see how the fight played out.</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Bot run history — recorded verdicts</h3>
-          <div id="qa-runs"><div class="qa-empty">loading run history…</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Live playtest recording</h3>
-          <div id="qa-playtest"><div class="qa-empty">loading…</div></div>
-        </div>
-        <div class="qa-card">
-          <h3>Live QA agent</h3>
-          <div id="qa-agent"><div class="qa-empty">loading…</div></div>
+        <div class="bg-stagewrap" id="qa-wrap">
+          <div id="qa-stages"></div>
+          <div id="qa-lede"></div>
+
+          <div class="bg-stagebody" data-stagebody="bots" hidden>
+            <div class="spanel s-qa k-read">
+              <div class="sec-h">${this._icon("outline")}<h3 class="sec-t">Probe contract - what a bot drives</h3>
+                <span class="sec-n" id="qa-n-contract"></span>
+                <span class="sec-a">
+                  <button class="qa-btn small" onclick="SeatWS.qa.deriveContract()"
+                    title="Re-read the project's scenes and replace this contract with what they say">re-derive</button>
+                  <button class="qa-btn small" onclick="SeatWS.qa.editContract()">edit</button>
+                </span></div>
+              <div id="qa-contract"><div class="qa-empty">loading the probe contract…</div></div>
+            </div>
+            <div class="spanel s-qa k-list">
+              <div class="sec-h">${this._icon("qa")}<h3 class="sec-t">Bot roster</h3>
+                <span class="sec-n" id="qa-n-bots"></span>
+                <span class="sec-a">
+                  <button class="qa-btn small pri" onclick="SeatWS.qa.runAll()"
+                    title="Run every bot in sequence and take one verdict for the set - one failure fails it, anything unproven is unknown">▶ run all</button>
+                  <button class="qa-btn small" onclick="SeatWS.qa.newBot()">+ new bot</button>
+                </span></div>
+              <div id="qa-roster"><div class="qa-empty">loading bots…</div></div>
+              <div id="qa-editor"></div>
+            </div>
+          </div>
+
+          <div class="bg-stagebody" data-stagebody="run" hidden>
+            <div class="spanel s-qa k-read">
+              <div class="sec-h">${this._icon("run")}<h3 class="sec-t">Match result</h3></div>
+              <div id="qa-runall"></div>
+              <div id="qa-result"><div class="qa-empty">run a bot to see what the game actually did.</div></div>
+            </div>
+            <div class="spanel s-qa">
+              <div class="sec-h">${this._icon("record")}<h3 class="sec-t">Live playtest recording</h3></div>
+              <div id="qa-playtest"><div class="qa-empty">loading…</div></div>
+            </div>
+          </div>
+
+          <div class="bg-stagebody" data-stagebody="verdict" hidden>
+            <div class="spanel s-qa k-read">
+              <div class="sec-h">${this._icon("gate")}<h3 class="sec-t">Verdicts - automatic QA-gate runs</h3>
+                <span class="sec-n" id="qa-n-gates"></span></div>
+              <div id="qa-verdicts"><div class="qa-empty">loading verdicts…</div></div>
+            </div>
+            <div class="spanel s-qa">
+              <div class="sec-h">${this._icon("agents")}<h3 class="sec-t">Live QA agent</h3></div>
+              <div id="qa-agent"><div class="qa-empty">loading…</div></div>
+            </div>
+          </div>
+
+          <div class="bg-stagebody" data-stagebody="history" hidden>
+            <div class="spanel s-qa k-read">
+              <div class="sec-h">${this._icon("timeline")}<h3 class="sec-t">Bot run history - recorded verdicts</h3>
+                <span class="sec-n" id="qa-n-runs"></span></div>
+              <div id="qa-runs"><div class="qa-empty">loading run history…</div></div>
+            </div>
+          </div>
         </div>
       </div>`;
+  },
+
+  /* --- the four stages ---------------------------------------------------
+   * QA's brief is a LOOP with a fixed order, and it is written down in
+   * bgate_core/seats.py: author what has to be proven, drive the real thing,
+   * take a verdict ("PASS only if it genuinely matches the ref and every check
+   * is clean … Almost is a FAIL"), and keep it so a regression has a date.
+   * These are those four steps, and every panel that was in the old stack
+   * belongs to exactly one of them.
+   *
+   * The stack it replaces put a bot roster, a verdict wall, a match result, a
+   * run history, a recorder and a live agent feed in one column, in that
+   * order, with nothing saying which one you were supposed to be looking at.
+   */
+  _tally() {
+    const bots = this._bots || [];
+    const mute = bots.filter(b => !(b.expect || []).length).length;
+    const gates = this._gates || [];
+    let fail = 0, pass = 0, reviewing = 0, unknown = 0;
+    gates.forEach(g => {
+      const v = this._verdictOf(g);
+      if (v === "FAIL" || v === "ERROR") fail++;
+      else if (v === "PASS") pass++;
+      else if (v === "UNKNOWN") unknown++;
+      else reviewing++;
+    });
+    const rec = this._playtest && this._playtest.recording;
+    return {
+      bots: bots.length, mute, gates: gates.length, fail, pass, reviewing, unknown,
+      runs: (this._runs || []).length,
+      recording: !!rec,
+      last: this._lastRun
+        ? String(this._lastRun.pending
+            ? "running"
+            : (this._lastRun.verdict || (this._lastRun.ok ? "unknown" : "error"))).toLowerCase()
+        : null,
+    };
+  },
+
+  _stageSpec() {
+    const t = this._tally();
+    const lastTone = { pass: "good", fail: "bad", error: "bad", unknown: "warn" };
+    return [
+      { id: "bots", label: "Bots",
+        hint: "Author the schedule and the expectations it has to prove.",
+        done: t.bots > 0 && !t.mute,
+        tone: t.mute ? "warn" : "",
+        note: !t.bots
+          ? "no bots yet"
+          : (t.mute
+              ? `${t.mute} of ${t.bots} cannot pass`
+              : `${t.bots} bot${t.bots === 1 ? "" : "s"} armed`) },
+      { id: "run", label: "Run",
+        hint: "Drive the real game - headless bot match, or a recorded session.",
+        done: !!t.last && t.last !== "running",
+        tone: t.recording ? "bad" : (t.last ? (lastTone[t.last] || "") : ""),
+        note: t.recording
+          ? "recording now"
+          : (t.last ? `last match: ${t.last}` : "nothing run yet") },
+      { id: "verdict", label: "Verdict",
+        hint: "PASS only if every check is clean. Almost is a FAIL.",
+        done: t.gates > 0 && !t.fail && !t.reviewing,
+        tone: t.fail ? "bad" : (t.reviewing ? "warn" : (t.gates ? "good" : "")),
+        note: !t.gates
+          ? "no gate runs yet"
+          : (t.fail
+              ? `${t.fail} failing`
+              : (t.reviewing
+                  ? `${t.reviewing} waiting on a verdict`
+                  : `${t.pass} passing${t.unknown ? ` · ${t.unknown} undecided` : ""}`)) },
+      { id: "history", label: "History",
+        hint: "Every recorded verdict, so a regression has a date.",
+        done: t.runs > 0,
+        tone: "",
+        note: t.runs
+          ? `${t.runs} run${t.runs === 1 ? "" : "s"} recorded`
+          : "nothing recorded yet" },
+    ];
+  },
+
+  _LEDE: {
+    bots: "A bot is a scripted sequence of inputs replayed against the REAL " +
+      "game. Its expectations are what turn a run into a verdict - a bot that " +
+      "asserts nothing can only ever report unknown, and unknown is not a pass.",
+    run: "Drive the real thing. A bot match replays the schedule headless and " +
+      "samples what the probe contract declares; a recording captures a human " +
+      "or agent playing the current build, with the mic and the telemetry " +
+      "attached to it.",
+    verdict: "PASS only if it genuinely matches the reference and every check " +
+      "is clean - otherwise a blunt, ranked nitpick list. A gate run that " +
+      "finished without writing a verdict line decided nothing.",
+    history: "Every recorded verdict, newest first, measured against the " +
+      "baseline. This is what makes \"when did this start failing\" a question " +
+      "with an answer rather than an opinion.",
+  },
+
+  _renderStages() {
+    const host = this._$("qa-stages");
+    if (!host || !window.SeatStage) return;
+    const at = SeatStage.paint(host, {
+      key: "qa",
+      stages: this._stageSpec(),
+      onPick: () => this._renderStages(),
+    });
+    this._stage = at;
+    SeatStage.show(this._$("qa-wrap"), at);
+    SeatStage.lede(this._$("qa-lede"), this._LEDE[at] || "");
+    const t = this._tally();
+    const put = (id, text, cls) => {
+      const el = this._$(id);
+      if (!el) return;
+      el.textContent = text == null ? "" : String(text);
+      el.className = "sec-n" + (cls ? " " + cls : "");
+    };
+    put("qa-n-bots", t.bots || "", t.mute ? "warn" : "");
+    put("qa-n-gates", t.gates || "", t.fail ? "bad" : (t.reviewing ? "warn" : "good"));
+    put("qa-n-runs", t.runs || "", "");
+  },
+
+  // Pressing run has to TAKE YOU to where the answer appears. Writing a match
+  // result into a stage nobody is looking at is the dead-button complaint in
+  // another costume.
+  _goStage(id) {
+    if (!window.SeatStage) return;
+    SeatStage.select("qa", id);
+    const host = this._$("qa-stages");
+    if (host) host._bgsSig = "";
+    this._renderStages();
   },
 
   _$(id) { return this._container ? this._container.querySelector("#" + id) : null; },
@@ -184,6 +386,122 @@ window.SeatWS.qa = {
     } catch (e) { /* keep the default action list */ }
   },
 
+  /* --- the probe contract ------------------------------------------------
+   * Not a settings page: four lines saying what the probe will drive, the
+   * complaints derivation could not resolve, and the raw document for when the
+   * derived guess is wrong. Everything here is one document in the workspace
+   * store, the same place the bot roster lives.
+   */
+  async _loadContract() {
+    let r = null;
+    try { r = await this._bg.get("/api/qa-bots/contract"); } catch (e) { /* keep last */ }
+    const d = this._data(r);
+    if (d && typeof d === "object") this._contract = d;
+    this._paintContract();
+    return this._contract;
+  },
+
+  _paintContract() {
+    const host = this._$("qa-contract");
+    if (!host) return;
+    const bg = this._bg;
+    const c = this._contract;
+    const n = this._$("qa-n-contract");
+    if (!c) {
+      host.innerHTML = '<div class="qa-empty">the probe contract could not be read.</div>';
+      if (n) { n.textContent = ""; n.className = "sec-n"; }
+      return;
+    }
+    const keys = c.sample_keys || [];
+    const issues = c.issues || [];
+    if (n) {
+      n.textContent = keys.length ? keys.length + " keys" : "nothing sampled";
+      n.className = "sec-n" + (issues.length || !keys.length ? " warn" : "");
+    }
+    const tick = c.tick || {};
+    const tickText = tick.mode === "method"
+      ? `${bg.esc(tick.node || "the scene root")}.${bg.esc(tick.method)}() once per frame`
+      : "plain engine frames - this game declares no fixed step method";
+    if (this._editingContract) {
+      const doc = {
+        scene: c.scene, actors: c.actors, samples: c.samples,
+        derived: c.derived, tick: c.tick, _version: c._version || "",
+      };
+      host.innerHTML = `
+        <div class="meta" style="color:var(--text-3);margin-bottom:6px">
+          scene, actors (key + node name or path), samples (key + actor + property),
+          derived, tick. Every sample key here is a property an expectation can address.</div>
+        <textarea class="qa-in qa-contract-doc" spellcheck="false"
+          style="width:100%;min-height:220px;font-family:ui-monospace,Consolas,monospace;font-size:11px"
+          >${bg.esc(JSON.stringify(doc, null, 2))}</textarea>
+        <div class="qa-row" style="margin-top:8px">
+          <button class="qa-btn small" onclick="SeatWS.qa.cancelContract()">cancel</button>
+          <button class="qa-btn small pri" onclick="SeatWS.qa.saveContract()">save contract</button>
+        </div>`;
+      return;
+    }
+    host.innerHTML = `
+      <div class="qa-row" style="gap:10px;margin-bottom:8px">
+        <span class="qa-tag">${bg.esc(c.source || "unknown")}</span>
+        <b>${bg.esc(c.scene || "(no scene)")}</b>
+      </div>
+      ${c.why ? `<div class="meta" style="color:var(--text-3);margin-bottom:8px">${bg.esc(c.why)}</div>` : ""}
+      <div class="meta" style="color:var(--text-3);margin-bottom:4px">actors</div>
+      <div style="margin-bottom:8px">${(c.actors || []).length
+        ? (c.actors || []).map(a => `<span class="qa-tag">${bg.esc(a.key)} = ${
+            bg.esc(a.path || a.find)}</span>`).join("")
+        : '<span class="qa-unknown">none - the probe would sample nothing</span>'}</div>
+      <div class="meta" style="color:var(--text-3);margin-bottom:4px">sample keys</div>
+      <div style="margin-bottom:8px">${keys.length
+        ? keys.map(k => `<span class="qa-tag">${bg.esc(k)}</span>`).join("")
+        : '<span class="qa-unknown">none - a run of this contract cannot pass or fail</span>'}</div>
+      <div class="meta" style="color:var(--text-3)">tick: ${tickText}</div>
+      ${(c.alternatives || []).length
+        ? `<div class="meta" style="color:var(--text-3);margin-top:6px">other scenes with actors in them: ${
+            bg.esc((c.alternatives || []).join(", "))}</div>` : ""}
+      ${issues.length
+        ? issues.map(i => `<div class="qa-fail" style="margin-top:7px">${bg.esc(i)}</div>`).join("")
+        : ""}`;
+  },
+
+  editContract() { this._editingContract = true; this._paintContract(); },
+  cancelContract() { this._editingContract = false; this._paintContract(); },
+
+  async saveContract() {
+    const el = this._$("qa-contract") &&
+      this._$("qa-contract").querySelector(".qa-contract-doc");
+    if (!el) return;
+    let doc;
+    try { doc = JSON.parse(el.value); }
+    catch (e) { this._bg.toast("contract NOT saved - that is not valid JSON: " + e.message, true); return; }
+    let r;
+    try { r = await this._bg.post("/api/qa-bots/contract", { data: doc }); }
+    catch (e) { r = { ok: false, error: { message: String((e && e.message) || e) } }; }
+    const err = this._err(r);
+    if (err) { this._bg.toast("contract NOT saved - " + err, true); return; }
+    this._contract = this._data(r);
+    this._editingContract = false;
+    this._paintContract();
+    const issues = (this._contract && this._contract.issues) || [];
+    this._bg.toast(issues.length
+      ? `contract saved with ${issues.length} problem(s) - see the panel`
+      : "contract saved", !!issues.length);
+  },
+
+  async deriveContract() {
+    let r;
+    try { r = await this._bg.post("/api/qa-bots/contract/derive", {}); }
+    catch (e) { r = { ok: false, error: { message: String((e && e.message) || e) } }; }
+    const err = this._err(r);
+    if (err) { this._bg.toast("re-derive failed - " + err, true); return; }
+    this._contract = this._data(r);
+    this._editingContract = false;
+    this._paintContract();
+    this._bg.toast(this._contract && this._contract.scene
+      ? "re-derived from " + this._contract.scene
+      : "nothing in this project could be probed - see the panel", !(this._contract || {}).scene);
+  },
+
   async _loadBots() {
     let bots = null;
     try {
@@ -191,17 +509,20 @@ window.SeatWS.qa = {
       if (r && Array.isArray(r.data)) bots = r.data;
     } catch (e) { /* fall through to seed */ }
     if (!bots || !bots.length) {
-      // Seed with the built-in so a match works out of the box (not yet saved).
-      bots = [JSON.parse(JSON.stringify(this._DEFAULT_BOT))];
+      // Seed from this project's contract so a match works out of the box
+      // (not yet saved).
+      bots = [this._seedBot()];
     }
     this._bots = bots.map(b => this._normBot(b));
     this._paintRoster();
+    this._renderStages();
   },
 
   _normBot(b) {
     b = b || {};
+    const fallback = this._actions[0] || "";
     const actions = Array.isArray(b.actions) ? b.actions.map(a => ({
-      action: String((a && a.action) || "jab"),
+      action: String((a && a.action) || fallback),
       at_tick: Math.max(0, parseInt((a && a.at_tick) || 0, 10) || 0),
       hold_ticks: Math.max(1, parseInt((a && a.hold_ticks) || 1, 10) || 1),
     })) : [];
@@ -243,7 +564,11 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._bots || !this._bots.length) {
-      host.innerHTML = '<div class="qa-empty">no bots yet - click “+ new bot”.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no bots on this project yet",
+        "A bot is a schedule of inputs plus the expectations it has to prove. " +
+        "\"+ new bot\" above starts one; it runs against the real game the " +
+        "moment it is saved.");
       return;
     }
     host.innerHTML = this._bots.map((b, i) => `
@@ -263,16 +588,31 @@ window.SeatWS.qa = {
       </div>`).join("");
   },
 
+  /* Returns whether the roster actually reached the server.
+   *
+   * bg.post() does NOT throw on a 4xx - it hands the body back. So the old
+   * bare try/catch caught nothing a refusal could ever throw, and saveEdit()
+   * went on to toast "saved <bot>" over the top of a write the server had
+   * declined (a 409 stale write from a second tab, a 400 on a malformed
+   * expectation). The roster was gone on the next reload and the UI had said
+   * it was fine. Read the answer, and say so when it is no. */
   async _saveBots() {
-    try {
-      await this._bg.post("/api/workspace/qa/bots", { data: this._bots });
-    } catch (e) { this._bg.toast("save failed", true); }
+    let r;
+    try { r = await this._bg.post("/api/workspace/qa/bots", { data: this._bots }); }
+    catch (e) { r = { ok: false, error: { message: String((e && e.message) || e) } }; }
+    const err = this._err(r);
+    if (err) { this._bg.toast("bot roster NOT saved - " + err, true); return false; }
+    return true;
   },
 
   newBot() {
-    this._editing = { index: -1, bot: { name: "new bot", ticks: 240, actions: [
-      { action: this._actions[0] || "jab", at_tick: 0, hold_ticks: 1 }],
-      expect: [{ property: "opponent_hp", comparator: "lt", value: 100, at_tick: null, label: "" }] } };
+    // Seeded from the project, not from a fighting game: its first input
+    // action, and its first sample key as the property to assert on.
+    const key = ((this._contract && this._contract.sample_keys) || [])[0] || "has_fight";
+    const rows = this._actions.length
+      ? [{ action: this._actions[0], at_tick: 0, hold_ticks: 1 }] : [];
+    this._editing = { index: -1, bot: { name: "new bot", ticks: 240, actions: rows,
+      expect: [{ property: key, comparator: "eq", value: "", at_tick: null, label: "" }] } };
     this._paintEditor();
   },
 
@@ -300,8 +640,11 @@ window.SeatWS.qa = {
     const bot = this._editing.bot;
     const opts = a => this._actions.map(n =>
       `<option value="${bg.esc(n)}"${n === a ? " selected" : ""}>${bg.esc(n)}</option>`).join("");
-    const props = ["player_x", "opponent_x", "distance", "player_hp", "opponent_hp",
-                   "player_stamina", "tick", "ticks", "sample_count", "has_fight"];
+    // What an expectation can actually address: this project's sample keys,
+    // plus the summary fields the probe always reports. The hardcoded fighting
+    // list this replaces offered opponent_hp to games that have no opponent.
+    const props = ((this._contract && this._contract.sample_keys) || []).concat(
+      ["tick", "ticks", "sample_count", "has_fight", "scene_loaded", "tick_mode"]);
     const expRows = (bot.expect || []).map((e, j) => `
       <div class="qa-exp" data-e="${j}">
         <input class="qa-in qa-x-prop" list="qa-props" style="width:130px" placeholder="property" value="${bg.esc(e.property || "")}">
@@ -378,7 +721,12 @@ window.SeatWS.qa = {
 
   addAction() {
     this._syncEditor();
-    this._editing.bot.actions.push({ action: this._actions[0] || "jab", at_tick: 0, hold_ticks: 1 });
+    if (!this._actions.length) {
+      this._bg.toast("this project's project.godot declares no input actions - " +
+        "there is nothing for a bot to press", true);
+      return;
+    }
+    this._editing.bot.actions.push({ action: this._actions[0], at_tick: 0, hold_ticks: 1 });
     this._paintEditor();
   },
 
@@ -401,22 +749,25 @@ window.SeatWS.qa = {
     this._paintEditor();
   },
 
-  saveEdit() {
+  async saveEdit() {
     this._syncEditor();
     const bot = this._normBot(this._editing.bot);
     if (this._editing.index >= 0) this._bots[this._editing.index] = bot;
     else this._bots.push(bot);
     this._editing = null;
-    this._saveBots();
     this._paintRoster();
     this._paintEditor();
-    this._bg.toast("saved " + bot.name);
+    // Only claim it is saved once the store says so - _saveBots toasts the
+    // server's refusal itself when it is not.
+    if (await this._saveBots()) this._bg.toast("saved " + bot.name);
   },
 
   // --- run a bot match ----------------------------------------------------
   async runBot(i) {
     const bot = this._bots && this._bots[i];
     if (!bot) return;
+    // Take the reader to where the answer will appear.
+    this._goStage("run");
     this._running = true;
     this._lastRun = { pending: true, name: bot.name };
     this._paintResult();
@@ -430,12 +781,19 @@ window.SeatWS.qa = {
     this._running = false;
     this._lastRun = Object.assign({ name: bot.name }, res || {});
     this._paintResult();
+    this._renderStages();
     this._loadRuns();
     // `ok` only means the probe drove the game. The VERDICT is the server's.
     const v = (res && res.verdict) || (res && res.ok ? "unknown" : "error");
     if (v === "pass") this._bg.toast(`${bot.name}: PASS`);
-    else this._bg.toast(`${bot.name}: ${v.toUpperCase()}` +
-      ((res && res.error) ? " - " + res.error : ""), v !== "pass");
+    else {
+      // /api/qa-bots/run answers a flat `error` string when the probe failed,
+      // but a refused REQUEST (a 400 on a malformed expectation) comes back as
+      // the {ok:false, error:{code,message}} envelope. Concatenating that
+      // object printed "[object Object]" where the reason should have been.
+      const why = this._err(res);
+      this._bg.toast(`${bot.name}: ${v.toUpperCase()}` + (why ? " - " + why : ""), true);
+    }
   },
 
   /* One verdict for the whole roster — the shape a gate can consume. The
@@ -443,6 +801,7 @@ window.SeatWS.qa = {
    * unproven is unknown rather than green. */
   async runAll() {
     if (!this._bots || !this._bots.length) { this._bg.toast("no bots to run", true); return; }
+    this._goStage("run");
     const host = this._$("qa-runall");
     if (host) host.innerHTML = `<div class="qa-empty">running ${this._bots.length} bot(s) against the live game…</div>`;
     this._running = true;
@@ -508,6 +867,7 @@ window.SeatWS.qa = {
     const d = this._data(r);
     if (Array.isArray(d)) this._runs = d;
     this._paintRuns();
+    this._renderStages();
   },
 
   _paintRuns() {
@@ -515,7 +875,11 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._runs.length) {
-      host.innerHTML = '<div class="qa-empty">no bot runs recorded yet - run a bot and its verdict is kept here, so "when did this start failing" has an answer.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no bot run has been recorded",
+        "Every run from the Run stage is kept with its verdict and its failed " +
+        "checks, and compared against the baseline - that history is what " +
+        "turns \"when did this start failing\" into a date.");
       return;
     }
     host.innerHTML = this._runs.map(r => `
@@ -535,7 +899,7 @@ window.SeatWS.qa = {
     const bg = this._bg;
     const r = this._lastRun;
     if (!r) {
-      host.innerHTML = '<div class="qa-empty">run a bot to see how the fight played out.</div>';
+      host.innerHTML = '<div class="qa-empty">run a bot to see what the game actually did.</div>';
       return;
     }
     if (r.pending) {
@@ -551,7 +915,7 @@ window.SeatWS.qa = {
       <div class="qa-row" style="gap:10px">
         <span class="qa-vbadge" style="${this._vstyle(verdict)}">${bg.esc(verdict.toUpperCase())}</span>
         <b>${bg.esc(r.name || "match")}</b>
-        <span class="meta" style="color:var(--text-3)">${r.ok ? "drove the game" : bg.esc(r.error || "the probe failed")}</span>
+        <span class="meta" style="color:var(--text-3)">${r.ok ? "drove the game" : bg.esc(this._err(r) || "the probe failed")}</span>
       </div>
       <span class="meta" style="color:var(--text-3)">${r.seconds != null ? r.seconds + "s" : ""}</span></div>`;
     if (verdict === "unknown") {
@@ -578,39 +942,57 @@ window.SeatWS.qa = {
         `${f.label}: ${f.was_ok ? "passing → failing" : "failing → passing"}`).join(" · ");
       const moved = (diff.changed || []).slice(0, 6).map(c =>
         `${c.property} ${c.was} → ${c.now}`).join(" · ");
+      // A contract edit makes old samples incomparable. The server says so
+      // rather than diffing mismatched keys, and hiding that here would put the
+      // silence straight back.
+      const keyNote = [
+        (diff.keys_removed || []).length ? "no longer sampled: " + diff.keys_removed.join(", ") : "",
+        (diff.keys_added || []).length ? "new: " + diff.keys_added.join(", ") : "",
+      ].filter(Boolean).join(" · ");
       html += `<div class="qa-verdict" style="margin-bottom:8px">
         <div class="meta" style="color:var(--text-3)">vs baseline #${bg.esc(diff.baseline_id)} (${bg.esc(diff.verdict_was || "?")} → ${bg.esc(diff.verdict_now || "?")})${
           diff.regressed ? ' - <b class="qa-bad">REGRESSION</b>' : ""}</div>
+        ${diff.note ? `<div class="qa-unknown" style="font-size:12px;margin-top:4px">${bg.esc(diff.note)}</div>` : ""}
+        ${keyNote ? `<div class="meta" style="color:var(--text-3);margin-top:4px">${bg.esc(keyNote)}</div>` : ""}
         ${flips ? `<div class="qa-bad" style="font-size:12px;margin-top:4px">${bg.esc(flips)}</div>` : ""}
         ${moved ? `<div class="meta" style="color:var(--text-3);margin-top:4px">${bg.esc(moved)}</div>` : ""}
       </div>`;
     }
 
-    if (s && s.final) {
+    /* The columns are the run's own sample keys, in contract order. They used
+     * to be seven hardcoded fighting columns, so a game with a player_hp and a
+     * gold count rendered six empty dashes and hid the two numbers it had. */
+    const cols = (r.contract && Array.isArray(r.contract.samples))
+      ? (r.contract.samples || []).map(x => x.key)
+          .concat((r.contract.derived || []).map(x => x.key))
+      : (s && s.final ? Object.keys(s.final).filter(k => k !== "tick") : []);
+    const shown = cols.filter(k => s && s.final && k in s.final);
+
+    if (s && s.final && shown.length) {
       const f = s.final;
-      const kv = (label, val, cls) => `<div><span>${label}</span><b class="${cls || ""}">${val == null ? "-" : val}</b></div>`;
-      html += `<div class="qa-kv">
-        ${kv("player x", f.player_x)}
-        ${kv("opponent x", f.opponent_x)}
-        ${kv("distance", f.distance)}
-        ${kv("player hp", f.player_hp, "qa-good")}
-        ${kv("opponent hp", f.opponent_hp, f.opponent_hp != null && f.opponent_hp < 100 ? "qa-good" : "")}
-        ${kv("player stamina", f.player_stamina)}
-      </div>`;
+      html += `<div class="qa-kv">${shown.map(k =>
+        `<div><span>${bg.esc(k.replace(/_/g, " "))}</span><b>${
+          f[k] == null ? "-" : bg.esc(f[k])}</b></div>`).join("")}</div>`;
     }
 
-    if (s && Array.isArray(s.samples) && s.samples.length) {
-      html += `<table class="qa-t"><thead><tr>
-        <th>tick</th><th>player x</th><th>opp x</th><th>dist</th><th>player hp</th><th>opp hp</th><th>stamina</th>
-        </tr></thead><tbody>` +
-        s.samples.map(sm => `<tr>
-          <td>${sm.tick}</td><td>${sm.player_x}</td><td>${sm.opponent_x}</td><td>${sm.distance}</td>
-          <td>${sm.player_hp == null ? "-" : sm.player_hp}</td>
-          <td>${sm.opponent_hp == null ? "-" : sm.opponent_hp}</td>
-          <td>${sm.player_stamina == null ? "-" : sm.player_stamina}</td></tr>`).join("") +
+    if (s && Array.isArray(s.samples) && s.samples.length && shown.length) {
+      html += `<table class="qa-t"><thead><tr><th>tick</th>${shown.map(k =>
+        `<th>${bg.esc(k.replace(/_/g, " "))}</th>`).join("")}</tr></thead><tbody>` +
+        s.samples.map(sm => `<tr><td>${bg.esc(sm.tick)}</td>${shown.map(k =>
+          `<td>${sm[k] == null ? "-" : bg.esc(sm[k])}</td>`).join("")}</tr>`).join("") +
         `</tbody></table>`;
     } else if (r.ok) {
-      html += '<div class="qa-empty">the probe ran but sampled no fighter state.</div>';
+      html += '<div class="qa-empty">the probe ran but sampled nothing. ' +
+        'Check the probe contract above - it names the actors and properties ' +
+        'this run was told to watch.</div>';
+    }
+
+    // What the probe could not work out about this project, verbatim. A run
+    // that watched nothing has to say what was missing.
+    const gaps = Array.isArray(r.contract_issues) ? r.contract_issues : [];
+    if (gaps.length) {
+      html += gaps.map(g => `<div class="qa-fail" style="margin-top:7px">
+        <span class="lbl">probe contract</span><div>${bg.esc(g)}</div></div>`).join("");
     }
 
     if (s && Array.isArray(s.notes) && s.notes.length) {
@@ -631,6 +1013,7 @@ window.SeatWS.qa = {
     try { st = await this._bg.get("/api/playtest/status"); } catch (e) { /* keep last */ }
     this._playtest = st;
     this._paintPlaytest();
+    this._renderStages();
   },
 
   async _loadPreflight() {
@@ -639,6 +1022,15 @@ window.SeatWS.qa = {
     try { this._preflight = await this._bg.get("/api/playtest/preflight?native=false"); }
     catch (e) { this._preflight = null; }
     this._paintPlaytest();
+  },
+
+  // The record panel's status line. It lives on the module, not in the DOM,
+  // because the DOM node it writes into is thrown away by the next poll.
+  _setPtMsg(text, bad) {
+    this._ptMsg = String(text || "");
+    this._ptBad = !!bad;
+    const m = this._$("qa-pt-msg");
+    if (m) { m.textContent = this._ptMsg; m.className = "meta " + (this._ptBad ? "qa-bad" : ""); }
   },
 
   _paintPlaytest() {
@@ -677,6 +1069,35 @@ window.SeatWS.qa = {
           return !(c.ok != null ? c.ok : c.available);
         }).map(k => `${k} (${String((p.checks[k] || {}).reason || "unavailable").slice(0, 60)})`)
       : [];
+
+    /* This panel is rebuilt from a 3s poll and it carries a text input (the
+     * session name) and a status line. Repainting it unconditionally wiped
+     * whatever was half-typed into the name box and erased the sentence
+     * startPlaytest() had just written — "recording - play the build…" lasted
+     * under three seconds. Same two defences cinematic.js settled on:
+     *
+     *   a SIGNATURE of only what a repaint would actually show, so an idle
+     *   panel is not rebuilt at all, and
+     *   carrying the typed name, the caret, the focus and the status line
+     *   across the repaints that do have something new to say.
+     *
+     * telemetry_events is in the signature on purpose - it is the number the
+     * user is watching during a take, not a free-running clock. */
+    const sig = [
+      st ? "st" : "-", rec ? rec.id : "-", rec ? rec.name : "",
+      rec ? rec.telemetry_events : "", rec ? String(rec.native) : "",
+      rec ? JSON.stringify(rec.level || null) : "",
+      st && st.processing ? st.processing.length : "",
+      notReady ? "blocked" : (p ? "ready" : "unknown"), blockers.join("|"),
+    ].join("~");
+    if (sig === this._ptSig && host.firstChild) return;
+    this._ptSig = sig;
+    const nameEl = host.querySelector(".qa-pt-name");
+    const kept = nameEl
+      ? { value: nameEl.value, focus: document.activeElement === nameEl,
+          at: nameEl.selectionStart }
+      : null;
+
     host.innerHTML = `
       <div class="qa-row qa-sp">
         <div>${statusHtml}</div>
@@ -692,7 +1113,18 @@ window.SeatWS.qa = {
           ? `<span class="qa-bad">not ready: ${bg.esc(blockers.join(" · ") || "preflight failed")}</span>`
           : "records a live human/agent play session - the same path as the overview's record button: preflight, rebuild a stale build, then boot the telemetry frame."
       }</div>
-      <div class="meta" id="qa-pt-msg" style="color:var(--text-3);margin-top:4px"></div>`;
+      <div class="meta ${this._ptBad ? "qa-bad" : ""}" id="qa-pt-msg" style="color:var(--text-3);margin-top:4px">${bg.esc(this._ptMsg)}</div>`;
+
+    if (kept) {
+      const el = host.querySelector(".qa-pt-name");
+      if (el) {
+        el.value = kept.value;
+        if (kept.focus) {
+          el.focus();
+          try { el.setSelectionRange(kept.at, kept.at); } catch (e) { /* disabled input */ }
+        }
+      }
+    }
   },
 
   /* One record path, not two. The overview rebuilds a stale build, starts the
@@ -703,7 +1135,7 @@ window.SeatWS.qa = {
     const bg = this._bg;
     const el = this._$("qa-playtest") && this._$("qa-playtest").querySelector(".qa-pt-name");
     const name = (el && el.value.trim()) || "qa session";
-    const msg = (t, bad) => { const m = this._$("qa-pt-msg"); if (m) { m.textContent = t; m.className = "meta " + (bad ? "qa-bad" : ""); } };
+    const msg = (t, bad) => this._setPtMsg(t, bad);
     try {
       const p = await bg.get("/api/playtest/preflight?native=false").catch(() => null);
       this._preflight = p;
@@ -717,13 +1149,17 @@ window.SeatWS.qa = {
         msg("rebuilding the current build before recording…");
         const rebuilt = await bg.post("/api/play/rebuild", {});
         if (!rebuilt || !rebuilt.ok) {
-          msg("record blocked: current build failed - " + ((rebuilt && rebuilt.error) || "?"), true);
+          msg("record blocked: current build failed - " + (this._err(rebuilt) || "?"), true);
           return;
         }
       }
       const r = await bg.post("/api/playtest/start", { name });
       if (!r || r.error || r.ok === false) {
-        msg("start failed: " + ((r && (r.error || (r.error && r.error.message))) || "?"), true);
+        // A refusal is `{ok:false, error:{code,message}}` on the enveloped
+        // path and a bare `error` string on this one. Both used to be pasted
+        // into the sentence raw, and the envelope rendered "[object Object]" -
+        // the server had written a reason and the panel showed noise.
+        msg("start failed: " + (this._err(r) || "?"), true);
         bg.toast("could not start recording", true);
         return;
       }
@@ -742,10 +1178,10 @@ window.SeatWS.qa = {
   },
 
   async stopPlaytest() {
-    const msg = (t, bad) => { const m = this._$("qa-pt-msg"); if (m) { m.textContent = t; m.className = "meta " + (bad ? "qa-bad" : ""); } };
+    const msg = (t, bad) => this._setPtMsg(t, bad);
     try {
       const r = await this._bg.post("/api/playtest/stop", {});
-      if (r && r.ok === false) { msg("stop failed: " + (r.error || "?"), true); this._bg.toast("stop failed", true); }
+      if (r && r.ok === false) { msg("stop failed: " + (this._err(r) || "?"), true); this._bg.toast("stop failed", true); }
       else {
         msg(`session ${(r && r.session_id) || ""} transcribing - a director triage item lands in the queue when it finishes`);
         if (typeof window.bootFrame === "function") { try { window.bootFrame(); } catch (e) {} }
@@ -772,6 +1208,7 @@ window.SeatWS.qa = {
     }
     this._paintVerdicts();
     this._paintAgent();
+    this._renderStages();
     if (this._selItem != null) this._loadActivity();
   },
 
@@ -792,7 +1229,12 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._gates.length) {
-      host.innerHTML = '<div class="qa-empty">no QA-gate runs yet - when a maker seat completes a work item, an automatic verify run lands here with a PASS/FAIL verdict.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no QA-gate run has reported yet",
+        "Completing a maker-seat work item on the board spawns an independent " +
+        "verify run, and its PASS/FAIL verdict lands here with the nitpick " +
+        "list. Nothing here means nothing has been gated, not that everything " +
+        "passed.");
       return;
     }
     const style = {
@@ -853,7 +1295,10 @@ window.SeatWS.qa = {
     if (!host) return;
     const bg = this._bg;
     if (!this._items.length) {
-      host.innerHTML = '<div class="qa-empty">no qa work items in the queue. Art-QA reviews and other qa tasks show up here once dispatched.</div>';
+      host.innerHTML = SeatStage.nothing(
+        "no qa work item is in the queue",
+        "An art-QA review, a gate run or anything queued to this seat appears " +
+        "here while it is live, with its transcript and a steer box.");
       return;
     }
     const opts = this._items.map(it =>
@@ -872,6 +1317,7 @@ window.SeatWS.qa = {
 
   selectItem(v) {
     this._selItem = parseInt(v, 10) || null;
+    this._actSig = "";   // a different item is always a repaint
     this._loadActivity();
   },
 
@@ -882,6 +1328,15 @@ window.SeatWS.qa = {
     const feed = this._$("qa-feed");
     if (!feed) return;
     const bg = this._bg;
+    // This runs on the 3s poll and replaces the feed's innerHTML, which resets
+    // its scrollbox to the top: scrolling back to read an earlier step was
+    // undone before you could finish the line. Only rebuild when the transcript
+    // actually moved — the same dedupe the gameplay seat's feed uses.
+    const sig = this._selItem + "|" + (act && act.running) + "|" +
+      ((act && act.step_count) != null ? act.step_count : (act && act.steps || []).length) +
+      "|" + ((act && act.final && act.final.subtype) || "");
+    if (sig === this._actSig && feed.firstChild) return;
+    this._actSig = sig;
     if (!act || !Array.isArray(act.steps) || !act.steps.length) {
       feed.innerHTML = `<div class="qa-empty">${act && act.running ? "agent running - no steps yet." : "no activity recorded for this item."}</div>`;
       if (act && act.final) feed.innerHTML += `<div class="qa-step"><span class="k">result</span>${bg.esc(act.final.text || "")}</div>`;

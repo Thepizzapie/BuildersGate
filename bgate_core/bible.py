@@ -1,9 +1,17 @@
-"""The design bible — pillars, core loop, scope tiers, and the cut line.
+"""The design bible — pillars, core loop, constraints, references.
 
-Sections are typed rather than free prose so the Director seat can answer "is
-this in scope?" mechanically. The important one is ``cut_line``: everything
-ranked below it is explicitly NOT being built, which is the only thing that
-reliably stops an agent fleet from gold-plating.
+Sections are typed rather than free prose so a reader can find the pillars
+without reading the whole document, and so the seat brief can quote the parts
+that bound the work.
+
+SCOPE TIERS AND THE CUT LINE USED TO LIVE HERE, as two more kinds plus a
+``cut_line()`` lookup and a reassign-or-untier cascade on delete, all of it in
+service of a queue gate that in practice never refused anything. It was three
+panels of the World view and a chunk of every brief for a mechanism nobody
+filed work against. Removed 2026-08-10. Sections of the old kinds may still
+exist in an older project's database — nothing here creates or lists them, and
+the readers below tolerate them rather than crashing on a kind they no longer
+know.
 """
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ import os
 from . import activity, db, search
 from .util import rows
 
-KINDS = ("pillar", "loop", "scope_tier", "cut_line", "constraint", "reference")
+KINDS = ("pillar", "loop", "constraint", "reference")
 
 
 class StaleWrite(ValueError):
@@ -63,8 +71,8 @@ def update(root: str | os.PathLike[str], section_id: int, *, title: str | None =
     """Edit a section. A partial edit is a read-modify-write, so it is done
     under the write lock and, when the caller says what it was editing
     (``expected_version``, from :func:`version_of`), refused if the section has
-    moved since. Without that the second of two editors silently wins: pillars
-    and the cut line are the last place in the product where that is acceptable.
+    moved since. Without that the second of two editors silently wins, and the
+    pillars are the last place in the product where that is acceptable.
     """
     with db.tx(root) as conn:
         # The lock must be taken BEFORE the read the merge is based on.
@@ -91,62 +99,31 @@ def update(root: str | os.PathLike[str], section_id: int, *, title: str | None =
     return get(root, section_id)
 
 
-def dependents(root: str | os.PathLike[str], section_id: int) -> list[dict]:
-    """Work items filed under this section. The FK is ON DELETE SET NULL, so a
-    plain delete would quietly untier live work and every one of those items
-    would stop being checkable against the cut line — silently in scope."""
-    conn = db.connect(root)
-    return rows(conn.execute(
-        "SELECT id, seat, title, status FROM work_item WHERE scope_tier_id = ? "
-        "ORDER BY id", (section_id,)))
+def remove(root: str | os.PathLike[str], section_id: int) -> dict:
+    """Delete a section, and the search row that pointed at it.
 
-
-def remove(root: str | os.PathLike[str], section_id: int, *,
-           reassign_to: int | None = None, force: bool = False) -> dict:
-    """Delete a section. Work items pointing at it must be dealt with first.
-
-    Three ways, all explicit: nothing points at it and it just goes; pass
-    ``reassign_to`` and the work moves to another tier; pass ``force`` and the
-    work is untiered on purpose, which is recorded rather than assumed.
+    THIS USED TO BE A NEGOTIATION. work_item carried a scope_tier_id pointing
+    here, so deleting a tier had to first move that work somewhere
+    (``reassign_to``) or untier it on the record (``force``), and refuse until
+    the caller picked. The column is gone with the cut line, nothing references
+    a section any more, and a delete is a delete.
     """
     section = get(root, section_id)
-    linked = dependents(root, section_id)
-    if linked and reassign_to is None and not force:
-        raise ValueError(
-            f"{len(linked)} work item(s) are filed under {section['title']!r} "
-            f"(ids {[i['id'] for i in linked]}) — pass reassign_to to move them "
-            "to another tier, or force to untier them deliberately"
-        )
-    if reassign_to is not None:
-        target = get(root, reassign_to)
-        if target["kind"] != "scope_tier":
-            raise ValueError(
-                f"reassign_to must be a scope_tier, not a {target['kind']}")
-        if target["id"] == section_id:
-            raise ValueError("cannot reassign work to the section being deleted")
     with db.tx(root) as conn:
-        if reassign_to is not None:
-            conn.execute("UPDATE work_item SET scope_tier_id = ?, "
-                         "updated_at = datetime('now') WHERE scope_tier_id = ?",
-                         (reassign_to, section_id))
         conn.execute("DELETE FROM bible_section WHERE id = ?", (section_id,))
         search.drop(conn, _ref(section_id))
-    if linked:
-        where = f"moved to section {reassign_to}" if reassign_to is not None else "untiered"
-        activity.log(root, "bible",
-                     f"deleted {section['kind']} {section['title'][:60]!r}; "
-                     f"{len(linked)} work item(s) {where}",
-                     ref=str(section_id))
-    return {"deleted": section, "work_items": linked,
-            "reassigned_to": reassign_to, "untiered": bool(linked and reassign_to is None)}
+    activity.log(root, "bible",
+                 f"deleted {section['kind']} {section['title'][:60]!r}",
+                 ref=str(section_id))
+    return {"deleted": section}
 
 
 def reorder(root: str | os.PathLike[str], kind: str, order: list[int]) -> list[dict]:
     """Rewrite the ranks of one kind to the given id order, 1..N, atomically.
 
-    Rank order IS the scope decision for tiers and the cut line, so a half-applied
-    reorder is a wrong cut line, not a cosmetic glitch. BEGIN IMMEDIATE takes the
-    write lock before the read that validates the ids, so two concurrent reorders
+    Rank order is the reading order of a design document, so a half-applied
+    reorder is a bible that argues with itself. BEGIN IMMEDIATE takes the write
+    lock before the read that validates the ids, so two concurrent reorders
     serialize instead of each rewriting from a stale view.
     """
     if kind not in KINDS:
@@ -197,37 +174,20 @@ def list_sections(root: str | os.PathLike[str], kind: str | None = None) -> list
     return listed
 
 
-def in_scope(root: str | os.PathLike[str], rank: int) -> bool:
-    """True when ``rank`` sits above the cut line (lower rank = higher priority).
-
-    With no cut line set, everything is in scope — an unset cut line means the
-    team hasn't made the scope call yet, not that the scope is infinite.
-    """
-    line = cut_line(root)
-    return True if line is None else rank < line["rank"]
-
-
-def cut_line(root: str | os.PathLike[str]) -> dict | None:
-    conn = db.connect(root)
-    row = conn.execute(
-        "SELECT * FROM bible_section WHERE kind = 'cut_line' ORDER BY rank LIMIT 1"
-    ).fetchone()
-    return dict(row) if row else None
-
-
 def overview(root: str | os.PathLike[str]) -> dict:
-    """The whole bible, grouped — what a seat reads before starting work."""
+    """The whole bible, grouped — what a seat reads before starting work.
+
+    setdefault rather than a fixed four keys: a project that authored scope
+    tiers before the cut line was removed still has rows of a kind KINDS no
+    longer names, and reading the bible must not be the thing that breaks on
+    them. They land in their own bucket, which no caller asks for.
+    """
     grouped: dict[str, list[dict]] = {k: [] for k in KINDS}
     for section in list_sections(root):
-        grouped[section["kind"]].append(section)
-    line = cut_line(root)
-    scope = grouped["scope_tier"]
+        grouped.setdefault(section["kind"], []).append(section)
     return {
         "pillars": grouped["pillar"],
         "loop": grouped["loop"],
         "constraints": grouped["constraint"],
         "references": grouped["reference"],
-        "cut_line": line,
-        "in_scope": [s for s in scope if line is None or s["rank"] < line["rank"]],
-        "cut": [] if line is None else [s for s in scope if s["rank"] >= line["rank"]],
     }

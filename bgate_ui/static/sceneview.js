@@ -2737,7 +2737,5 @@ window.SceneView = (() => {
            get list(){ return list; }, get selected(){ return sel; },
            get selection(){ return [...multi]; },
            get scene(){ return scene; },
-           get canUndo(){ return history.length; },
-           get canRedo(){ return redoStack.length; },
            get pending(){ return pendingCount(); } };
 })();

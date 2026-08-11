@@ -245,6 +245,52 @@ def by_id(provider_id: str) -> Provider:
         + ", ".join(p.id for p in PROVIDERS))
 
 
+def provider_for(task_kind: str = "", *, asked: str = "") -> str:
+    """Which image provider this KIND of work goes to. Not merely a default.
+
+    2D CHARACTER WORK GOES TO KREA WHENEVER KREA IS CONFIGURED, and it is a
+    routing rule rather than a preference because the alternative was measured
+    and it is not close. On a 16-frame NE/SE walk sheet generated from one
+    pinned character, the same prompt and reference through every
+    reference-capable model on both providers:
+
+      nano-banana-2 (krea)  eight frames a row, correct back-view and
+                            front-view rows, clean key
+      krea-2-large          FAILED the alpha audit at 14% hollow interior —
+                            the key colour landed inside the figure and was
+                            cut out of it — six near-identical frames a row
+      gpt-image (openai)    refuses sheet prompts outright at this layer
+
+    The general auto-select order (openai, then krea, then kie) is right for a
+    plate, a concept pass or a prop, and wrong for a character: it hands sprite
+    work to whichever key happens to be set first, which is how the best model
+    for the job sat configured and unused. So identity work is ROUTED, and
+    everything else keeps the historical order.
+
+    An explicit `asked` always wins, including when its key is missing — the
+    caller gets that provider's own error naming the key to set, rather than a
+    silent substitution that bills them for a model they did not choose.
+    """
+    if (asked or "").strip():
+        return asked.strip().lower()
+
+    from bgate_adapters import krea
+
+    if str(task_kind or "").strip().lower() in krea.CHARACTER_KINDS:
+        if (os.environ.get("KREA_API_KEY") or "").strip():
+            return "krea"
+    if (os.environ.get("OPENAI_API_KEY") or "").strip():
+        return "openai"
+    if (os.environ.get("KREA_API_KEY") or "").strip():
+        return "krea"
+    if (os.environ.get("KIE_API_KEY") or "").strip():
+        return "kie"
+    # None configured: the historical default, so the error a caller sees is the
+    # familiar "OPENAI_API_KEY not set" rather than a surprise about a provider
+    # they never mentioned.
+    return "openai"
+
+
 def ids() -> tuple[str, ...]:
     return tuple(p.id for p in PROVIDERS)
 

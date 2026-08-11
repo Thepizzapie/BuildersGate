@@ -90,3 +90,7 @@ bgate_shot_*.png
 
 # Build outputs from local wheel checks.
 dist*/
+
+# Pulsiron work-tracking agent scratch state. Machine-local, and it carries
+# workspace ids that mean nothing in anyone else's checkout.
+.pulsiron/

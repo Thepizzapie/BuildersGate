@@ -4,22 +4,27 @@
 worth defending. [reference.md](reference.md) describes what each surface does.
 [gotchas.md](gotchas.md) records what went wrong.
 
-## The cut line
+## The cut line, and why it is gone
 
-Scope tiers are ranked. The `cut_line` section marks where shipping stops.
-Anything ranked at or below it is explicitly not being built. This is the only
-mechanism that reliably stops an agent fleet from gold-plating. `scope_check(rank)`
-answers "should I build this?" without a judgment call.
+Scope tiers were ranked bands of ambition in the bible, with a `cut_line`
+section marking where shipping stopped, `queue.add` refusing to file work under
+a cut tier, and the dispatcher re-checking before spawning. It read as the
+sharpest gate in the product.
 
-It is a refusal, not advice. `queue.add` will not FILE work under a cut tier, and
-the dispatcher re-checks at the last possible moment before spawning a process.
-The line moves, so an item queued legitimately can be retroactively out of scope
-by the time anyone runs it, and spending an agent on that is the exact
-gold-plating the tiers exist to stop.
+It never refused anything, and it could not have. Untiered work had to be
+allowed through - refusing it would make the first cut line anyone drew reject
+that project's entire existing queue, and the predictable fix would be to turn
+the gate off, which is how a gate stops gating. So untiered work was flagged and
+passed, and because filing under a tier was optional and inconvenient, no work
+item was ever filed under one. Measured on a real project after months of use:
+two tiers, nothing cut, seven untiered open items, zero refusals in the gate's
+entire life. The cost was three panels of the World view, a rule in every seat
+brief, an MCP tool, and a column on the busiest table in the schema.
 
-Untiered work is deliberately allowed through, loudly flagged. Refusing it would
-make the first cut line anyone draws reject the entire existing queue. The
-predictable fix would be to turn the gate off, which is how a gate stops gating.
+Removed 2026-08-10. A gate that cannot fail is worse than no gate: it teaches
+everyone reading the rules that the rules are decoration. What replaces it is
+the thing that was doing the work anyway - a director who writes down what the
+project is not building, in the bible, in words.
 
 ## Money and wall clock
 

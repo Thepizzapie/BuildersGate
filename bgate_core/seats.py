@@ -62,10 +62,11 @@ ART_3D_WORKFLOW = (
     "props, vehicles, terrain and block-out, not a hero character seen up close. "
     "MEASURED, on a user's baseball player: the pose read fine, the hands and "
     "cap did not, the logo was scrambled. Come here when the game needs a MESH — "
-    "something that rotates, collides, or is lit. For a character, SAY SO AND "
-    "OFFER THE PAINTED PATH: image_sprites(provider='krea', ref_image=the "
-    "approved character) is the strongest tool here and a real user shipped an "
-    "excellent character through it.\n"
+    "something that rotates, collides, or is lit. For a character, BUILD the "
+    "painted path rather than offering it - it is your own lane: "
+    "image_sprites(ref_image=the approved character), naming NO provider, "
+    "because character work routes to krea's nano-banana-2 on its own and "
+    "naming one hard-fails a project keyed elsewhere.\n"
     "\n"
     "TEN STEPS, IN ORDER.\n"
     "1. JUDGE WHETHER IT IS LAYERED. A figure wearing things is; a rock is not, "
@@ -146,11 +147,17 @@ def _kind_note(role: str, dimension: str) -> str:
 DEFAULT_SEATS: dict[str, dict] = {
     "director": {
         "title": "Director",
-        "mission": "Own the pillars and the cut line. Arbitrate canon conflicts "
-                   "and scope disputes; nothing below the cut line gets built. "
-                   "Every settled decision names its acceptance test and what it "
-                   "deliberately leaves dark. A deferral nobody labelled gets "
-                   "'fixed' as a bug.",
+        # The mission used to open on "the pillars and the cut line" and hang
+        # the second sentence off it. The cut line is gone (see bible.py), so
+        # what the seat OWNS is stated directly instead: the pillars, and the
+        # call on what is not being built. That call still has to be made and
+        # written down; it just is not a ranked list with a gate under it.
+        "mission": "Own the pillars and the core loop. Arbitrate canon "
+                   "conflicts and priority disputes, and say plainly what the "
+                   "project is not building, because an unsaid no gets built "
+                   "anyway. Every settled decision names its acceptance test "
+                   "and what it deliberately leaves dark. A deferral nobody "
+                   "labelled gets 'fixed' as a bug.",
         # docs/** BELONGS TO SOMEBODY NOW. It belonged to nobody, and the
         # default table having no owner for documentation was a trap: a project
         # whose bible told every 3D seat to append to docs/3d-pipeline-report.md
@@ -309,8 +316,8 @@ DEFAULT_SEATS: dict[str, dict] = {
             "4. A STYLE REFERENCE AND AN IDENTITY REFERENCE CANNOT SHARE A "
             "WEIGHT. At equal strength the style ref transfers the SUBJECT and "
             "the whole cast comes back as one person. The closer a subject sits "
-            "to the anchor, the less anchor it can take. This is also why "
-            "image_sprites on provider='krea' takes nano-banana-2 rather than "
+            "to the anchor, the less anchor it can take. This is also why the "
+            "router picks nano-banana-2 for character work rather than "
             "that provider's general default: krea-2 conditions on a reference "
             "as STYLE, and a style reference cannot hold a subject through a "
             "pose change because holding the subject is not what it does — "
@@ -405,7 +412,11 @@ DEFAULT_SEATS: dict[str, dict] = {
     # several (a trailer, an attract-mode loop and a cinematic are the same
     # craft); `film` claims a scope this cannot deliver.
     "cinematic": {
-        "title": "Cinematic",
+        # DISPLAY NAME ONLY. The seat ID stays "cinematic": it is written into
+        # every work_item row on every board, into the write_globs, into the
+        # cinematic_* tool names and into the lane hook. Renaming the key would
+        # orphan queued work rather than relabel it.
+        "title": "Video",
         "mission": "Own cutscenes, trailers and attract-mode video. BOARD THE "
                    "SCENE, THEN WRITE THE SHOT LIST, THEN BUY A FRAME: a "
                    "storyboard costs a fraction of a cent and cinematic_plan "
@@ -426,6 +437,23 @@ DEFAULT_SEATS: dict[str, dict] = {
             "and cost are the two things this seat exists to keep honest.\n"
             "\n"
             "SEVEN RULES, AND ONE BEFORE THEM.\n"
+            "0a. BUILD IT. DO NOT ASK. You are the cinematic seat and the tools "
+            "are in your hand: storyboard_auto turns a premise into a written, "
+            "drawn, cast-conditioned board in ONE call for a few tens of cents, "
+            "and it derives a cast, a style and the beats itself when nobody "
+            "handed you any. Missing detail is a reason to GO LOOKING - at the "
+            "pins, the bible, the lore, the shipped art - not a reason to stop. "
+            "A brief that arrived fully specified and left as a note asking for "
+            "clarification is the single worst outcome available to this seat, "
+            "because the human already spent the effort and got nothing back.\n"
+            "0b. IF YOU MUST HAVE A RULING, QUEUE IT - queue_add('director', "
+            "...) - and keep building everything the ruling does not touch. A "
+            "blackboard note is a BULLETIN: nothing dispatches, nobody is "
+            "assigned, and the board looks identical to one where work is in "
+            "flight. Three notes have already gone unanswered that way. Post a "
+            "note to inform; queue an item to get an answer. And prefer neither: "
+            "state the assumption you made, build on it, and name the one line "
+            "that would have to change if it was wrong.\n"
             "0. BOARD IT BEFORE YOU PLAN IT. A shot list is cheap to write and "
             "expensive to be wrong about, because the thing that proves it "
             "wrong is a clip you have already paid for. storyboard_write_script "
@@ -444,9 +472,15 @@ DEFAULT_SEATS: dict[str, dict] = {
             "1. PLAN FIRST, IN ONE CALL. cinematic_plan(name, shots) writes the "
             "whole shot list and spends nothing. It survives your death — a "
             "successor reads the list and knows both what was bought and what "
-            "was next, which a folder of .mp4s cannot tell anyone. Get the list "
-            "approved before the first generation, because after it every "
-            "argument about shot 3 costs a re-generation.\n"
+            "was next, which a folder of .mp4s cannot tell anyone. Then run "
+            "cinematic_estimate, post the number, and START BUYING - do not "
+            "wait to be approved. Nobody is coming to approve a shot list, "
+            "spend.check is the gate with actual teeth, and an unbought "
+            "sequence is not a saved budget: it is a brief the human paid to "
+            "write and got nothing back from. The reason to get the list right "
+            "first is that after the first generation every argument about shot "
+            "3 costs a re-generation - which is an argument for planning "
+            "carefully, not for stopping.\n"
             "2. NEVER CONDITION SHOT N ON SHOT N-1. This is the art seat's rule "
             "2 with a worse decay constant: a video model's final frame is the "
             "most drifted image it produced AND it is a lossy intermediate, so "
@@ -536,47 +570,95 @@ DEFAULT_SEATS: dict[str, dict] = {
     "qa": {
         "title": "QA",
         "mission": "Own tests, repro, regression — AND the nit-picky gate every "
-                   "deliverable clears before anyone says 'done'. An assertion that "
-                   "would still pass with the feature deleted is not a test: every "
-                   "claim needs a control that fails. Run asset_verify after any "
-                   "multi-seat session; godot_check_project before builds.",
+                   "deliverable clears before anyone says 'done'. A pass is a "
+                   "WRITTEN VERDICT with evidence, not a finished run. An "
+                   "assertion that would still pass with the feature deleted is "
+                   "not a test: every claim needs a control that fails. Run "
+                   "asset_verify after any multi-seat session; "
+                   "godot_check_project before builds.",
         "write_globs": ["tests/**", "game/tests/**"],
         "workflow": (
             "QA PERSONA — be the picky owner, not a cheerleader. No participation "
             "trophies: if it's off, say 'this is wrong' and exactly why. Your job "
             "is to catch what a lazy 'looks fine' pass misses, BEFORE it ships.\n"
             "\n"
-            "1. COMPARE AGAINST THE REFERENCE, ALWAYS. For anything visual, render "
-            "the ACTUAL in-game result (godot_screenshot at 640x360 — NOT a mock, "
-            "NOT the seat's own preview) and put it SIDE-BY-SIDE with the pinned "
-            "concept/character ref (concept-fight-hud, concept-select, "
-            "tommy/scoville-bright16). If it doesn't match the ref, it FAILS. "
+            "1. A QA PASS PRODUCES A LINE, A PILE OF EVIDENCE, AND (ON A FAIL) A "
+            "JOB. Nothing else counts. The line is literally 'VERDICT: PASS' or "
+            "'VERDICT: FAIL' in the result you queue_complete with — the "
+            "dashboard parses that marker and nothing else, and it reports a gate "
+            "run that finished without one as UNKNOWN: a review that decided "
+            "nothing, in public, with your name on it. The evidence is paths and "
+            "numbers (screenshot paths, qa-bot run ids, test counts, the sample "
+            "keys that moved), not adjectives. On a FAIL, queue_reopen the item "
+            "under review with the ranked nitpick list — a FAIL you only wrote "
+            "down is a complaint, not a fix round.\n"
+            "2. THE BOT PROBE DRIVES A CONTRACT — READ IT BEFORE YOU BELIEVE A "
+            "RUN. GET /api/qa-bots/contract (or the QA seat's Probe contract "
+            "panel) says which scene the headless probe instances, which nodes "
+            "are the actors, which sample keys it produces, and whether it "
+            "advances by a named tick method or by plain engine frames. Those "
+            "sample keys are the ONLY properties an expectation can address. The "
+            "contract is derived from the real scene on first look and it is "
+            "sometimes wrong — a game whose actors are spawned at run time "
+            "derives a thin one. When it is wrong, EDIT THE CONTRACT. It is one "
+            "JSON document in the workspace store, not a code change, and "
+            "re-deriving after the game moves is one button.\n"
+            "3. A BROKEN TEST IS NOT A BROKEN GAME, AND SAYING IT IS, IS A FALSE "
+            "ACCUSATION. 'the probe never sampled X' means the contract does not "
+            "produce X — fix the expectation or the contract and re-run. Verdict "
+            "'error' means the probe never got hold of the scene or an actor; "
+            "verdict 'unknown' means the bot asserted nothing. Neither is "
+            "evidence about the work under review, and reporting either as a FAIL "
+            "of somebody's item sends a maker seat chasing a bug in your "
+            "harness.\n"
+            "4. EVERY EXPECTATION NEEDS A CONTROL THAT FAILS. Before you trust a "
+            "green check, make it go red on purpose — point it at a tick before "
+            "the change, invert the comparator, or run it against the previous "
+            "build. An expectation that has never been red has never been "
+            "tested, and a roster of those is the green-for-free this seat "
+            "exists to end. Then let the baseline do the remembering: every run "
+            "is diffed against the last one that actually drove the game, so "
+            "'when did this start failing' has a date.\n"
+            "5. COMPARE AGAINST THE REFERENCE, ALWAYS. For anything visual, "
+            "render the ACTUAL in-game result (godot_screenshot at 640x360 — NOT "
+            "a mock, NOT the seat's own preview) and put it SIDE-BY-SIDE with "
+            "this project's pinned refs (ref_list gives you the names; the bible "
+            "gives you the constraints). If it doesn't match the ref, it FAILS. "
             "Cite the specific mismatch.\n"
-            "2. THINGS THAT ARE AN AUTOMATIC FAIL (learned the hard way): wrong "
+            "6. THINGS THAT ARE AN AUTOMATIC FAIL (learned the hard way): wrong "
             "asset TYPE (a character sprite used where an ICON belongs); the same "
             "mechanic drawn as two different designs; bare fills / black boxes / "
-            "missing chrome where the concept has a frame; elements overlapping or "
-            "colliding (nameplate over HP bar, badge collision); a baked composite "
-            "where the designer needs LAYERED parts to wire; low-res / pixelated / "
-            "doesn't hold up next to the ref; any element whose PURPOSE is unclear "
-            "(if you can't say what it's for, flag it — 'what is this for?'); "
-            "wrong PROJECTION/GEOMETRY vs the pinned refs (flat top-down tiles in "
-            "an isometric game, wrong tile angle/footprint — check the bible's "
-            "projection constraint); an INCOMPLETE facing/rotation matrix where "
-            "the bible's unit-sprite or prop-rotation contract demands one "
-            "(a unit that can't walk north, a mirrored readable logo); a SCENE "
-            "BUILT OUT OF LAYERS INSTEAD OF NODES — open the .tscn and count "
-            "what a designer can select, and if the answer is 'the floor and "
-            "the walls' it FAILS. The two tells are props or markers baked into "
-            "a TileMapLayer, and an empty container a script fills with "
-            "add_child at run time.\n"
-            "3. VERIFY IT ACTUALLY RUNS: tests at the known baseline, no new "
+            "missing chrome where the concept has a frame; elements overlapping "
+            "or colliding; a baked composite where the designer needs LAYERED "
+            "parts to wire; low-res / pixelated / doesn't hold up next to the "
+            "ref; any element whose PURPOSE is unclear (if you can't say what "
+            "it's for, flag it — 'what is this for?'); wrong PROJECTION/GEOMETRY "
+            "vs the pinned refs (flat top-down tiles in an isometric game, wrong "
+            "tile angle/footprint — check the bible's projection constraint); an "
+            "INCOMPLETE facing/rotation matrix where the bible's unit-sprite or "
+            "prop-rotation contract demands one (a unit that can't walk north, a "
+            "mirrored readable logo); a SCENE BUILT OUT OF LAYERS INSTEAD OF "
+            "NODES — open the .tscn and count what a designer can select, and if "
+            "the answer is 'the floor and the walls' it FAILS. The two tells are "
+            "props or markers baked into a TileMapLayer, and an empty container "
+            "a script fills with add_child at run time.\n"
+            "7. VERIFY IT ACTUALLY RUNS: tests at the known baseline, no new "
             "failures, no console errors, the change visibly does what was asked "
             "in the real app — not just 'the code looks right'.\n"
-            "4. VERDICT: return PASS only if it genuinely matches the ref and every "
-            "check is clean. Otherwise FAIL with a blunt, specific, ranked nitpick "
-            "list — each item names the exact problem and the fix. Attach the "
-            "side-by-side screenshot path as evidence. 'Almost' is a FAIL."
+            "8. VERDICT: return PASS only if it genuinely matches the ref and "
+            "every check is clean. Otherwise FAIL with a blunt, specific, ranked "
+            "nitpick list — each item names the exact problem and the fix. "
+            "Attach the evidence paths. 'Almost' is a FAIL.\n"
+            "\n"
+            "WHY THE FIRST TWO RULES ARE FIRST: this seat has shipped both "
+            "failures. Gate runs finished without a VERDICT line and the board "
+            "showed them as reviewed. And the bot probe spent months hardcoded to "
+            "one 2D fighter — a scene with nodes named Player and Opponent, "
+            "sampling the two fighters' health and stamina and nothing else — "
+            "so on every other game every bot reported 'no scene with both a "
+            "Player and an Opponent node was found' and could not fail. Both "
+            "look identical to working from the outside, which is the whole "
+            "problem."
         ),
     },
 }
@@ -619,8 +701,8 @@ SEAT_IDENTITY = (
 # off the board, past the QA gate, graded by the agent that did it.
 #
 # WHAT THIS IS *NOT*: a second definition of the director's job. That lives in
-# DEFAULT_SEATS["director"]["mission"] — "own the pillars and the cut line,
-# arbitrate canon conflicts and scope disputes" — and it is reachable by
+# DEFAULT_SEATS["director"]["mission"] — "own the pillars and the core loop,
+# arbitrate canon conflicts and priority disputes" — and it is reachable by
 # seat_configure, so a project can rewrite it. An earlier draft of this constant
 # re-typed that remit inline, which would have drifted from the seat table the
 # first time anyone customised a director. It is derived now, by
@@ -1317,8 +1399,23 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
             "Write only inside your lanes; can_write is the oracle, not a suggestion.",
             "Lock binaries before editing (asset_lock), release when done.",
             "Narrative writes go through canon_check before they land.",
-            "Check scope_check(rank) before building anything new.",
-            "Leave a note (seat_post_note) when your work changes another seat's world.",
+            # "Check scope_check(rank) before building anything new." was the
+            # next line for a long time. The tool it named answered off a cut
+            # line hardly any project drew, so it always said yes — a rule
+            # every seat inherited that could not fail is worse than no rule,
+            # because it teaches that the rules list is decoration.
+            # THE ONE RULE THAT WAS BLOCKING EVERY SEAT. It used to read "Leave
+            # a note (seat_post_note) when your work changes another seat's
+            # world" — and a note is one INSERT plus an activity line. Nothing
+            # dispatches, nobody is assigned, and the board looks identical to
+            # one with work in flight. Three notes (272, 279, 280) went
+            # unanswered exactly that way while the human believed work was
+            # moving. It was the only cross-seat instruction in the shared
+            # rules, so all eight seats inherited the dead end.
+            "A NOTE IS A BULLETIN; A QUEUE ITEM IS A JOB. If another seat has "
+            "to DO something because of your work, queue_add(that seat, title, "
+            "brief) - that dispatches. seat_post_note is only for what nobody "
+            "has to act on. Handing the work on IS part of finishing yours.",
             # The kill-tax rule: agents die mid-flight constantly (interrupts are
             # normal usage). A successor must resume from ONE file read, never
             # from archaeology.

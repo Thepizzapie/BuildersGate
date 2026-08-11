@@ -714,12 +714,31 @@ window.PX = (function () {
     var shot = document.getElementById("lookShot");
     var t = document.getElementById("lookTitle"); t.innerHTML = "";
     if (!L) {
+      /* display:none as well as removing src. Dropping the src alone leaves an
+         <img> that is still display:block, which paints as the browser's
+         broken-image box - on camera, an empty bordered rectangle under the
+         words NOBODY LOOKING. drawCritique has always paired the two; this
+         board only ever set display and never cleared it. */
       shot.removeAttribute("src");
+      shot.style.display = "none";
       PX.paint(document.getElementById("lookWho"), "NOBODY LOOKING");
       PX.paint(document.getElementById("lookItem"), "");
       return;
     }
-    shot.src = "/api/preview?rel=" + encodeURIComponent(L.rel);
+    /* item_id IS NOT OPTIONAL HERE. A dispatched agent usually runs in its own
+       worktree, and the file it is looking at exists THERE and not yet at the
+       project root. /api/preview takes item_id to resolve exactly that (it
+       shares _peek_base with /api/peek for the purpose) and without it every
+       worktree frame 404s - so the one board whose whole job is "what is on the
+       agent's screen right now" showed nothing precisely when an agent was
+       busiest. The failure is silent: an <img> that 404s just does not paint.
+
+       Only appended when it is actually a number: item_id is typed int on the
+       endpoint, so a stray "undefined" would 422 the request and break the
+       root-relative case that used to work. */
+    var look = "/api/preview?rel=" + encodeURIComponent(L.rel);
+    if (/^\d+$/.test(String(L.item || ""))) look += "&item_id=" + L.item;
+    shot.src = look;
     shot.style.display = "block";
     var who = L.seat ? (window.agentName ? window.agentName(L.seat) : L.seat) : "AGENT";
     PX.paint(document.getElementById("lookWho"), who);
