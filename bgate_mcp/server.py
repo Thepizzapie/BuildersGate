@@ -8237,6 +8237,7 @@ def cinematic_options() -> dict:
 @_tool
 def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
                    style_note: str = "", style_refs: Optional[list] = None,
+                   locations: Optional[list] = None,
                    model: str = "", aspect_ratio: str = "16:9",
                    resolution: str = "720p", audio_track: str = "",
                    audio_gain_db: float = 0.0, fade_in: float = 0.0,
@@ -8245,7 +8246,11 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
 
     `shots` is a list of objects, in cut order. Each takes:
       action       REQUIRED. What happens in this shot.
-      camera       framing/movement ("slow push in on", "low angle wide")
+      camera       the MOVE and the prose ("slow push in", "low angle, handheld")
+      shot_size    the framing, from a fixed list: establishing, wide, full,
+                   medium, medium_close, close, extreme_close, over_shoulder,
+                   insert, cutaway. Fixed so coverage can be COUNTED.
+      location     the slug of one of this sequence's `locations`
       dialogue     a spoken line, quoted into the prompt as speech
       duration     4-15 seconds, default 5. Write 5-10; past that expect drift.
       first_frame  a repo-relative path to an APPROVED still to open on
@@ -8284,6 +8289,28 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
     to its own house look, which differs per model and per version. plan() says
     so rather than letting it pass.
 
+    THE SET IS THE THIRD RAIL AND IT IS THE ONE THAT WAS MISSING. `locations` is
+    a list of objects — slug, description, optional label and plates (repo-
+    relative images of the set) — and each shot names one. That description is
+    injected into EVERY shot filmed there, identically, in a fixed position.
+    Without it the room lives inside each shot's own action prose, and four
+    differently-worded descriptions of one office are four different offices:
+    measured on real sequences, cast and style held across every shot and the
+    SET drifted between all of them.
+
+    GENERATE GROUPED BY LOCATION, NOT DOWN THE LIST. Two shots of one set agree
+    with each other less the further apart they were generated, so buy a
+    location's shots together — `generation_order` in the returned sequence is
+    that order. The CUT is unaffected: cinematic_assemble joins by shot index.
+
+    COVER THE BEATS TIGHT. Wides are both the flattest editorial choice and the
+    most drift-prone thing to buy, because a wide shows the whole set and
+    therefore shows every way the model disagreed with itself about it. A
+    close-up contains almost no set to be inconsistent about. This returns
+    advisory warnings when nothing is tighter than medium, when three shots in a
+    row are the same size, and when a multi-location sequence establishes none
+    of them.
+
     model picks which video model buys this sequence (cinematic_options lists
     what is registered and the exact ranges each accepts). It lives on the
     SEQUENCE because a cutscene generated half on one model does not cut
@@ -8310,7 +8337,8 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
 
         return _cine.plan(_root(), name, list(shots or []), logline=logline,
                           style=style, style_note=style_note,
-                          style_refs=list(style_refs or []), model=model,
+                          style_refs=list(style_refs or []),
+                          locations=list(locations or []), model=model,
                           aspect_ratio=aspect_ratio, resolution=resolution,
                           audio_track=audio_track,
                           audio_gain_db=float(audio_gain_db),
@@ -8342,7 +8370,7 @@ def cinematic_sequences(name: str = "") -> dict:
 @_tool
 def cinematic_generate_shot(name: str, idx: int, model: str = "",
                             generate_audio: bool = False,
-                            overwrite: bool = False,
+                            overwrite: bool = False, previs_ok: bool = False,
                             timeout: float = 1800.0) -> dict:
     """Buy ONE shot of a planned sequence. Costs real credits. Runs in minutes.
 
@@ -8366,6 +8394,7 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
         result = _cine.generate_shot(_root(), name, int(idx), model=model,
                                      generate_audio=bool(generate_audio),
                                      overwrite=bool(overwrite),
+                                     previs_ok=bool(previs_ok),
                                      timeout=float(timeout),
                                      work_item_id=_work_item_id())
         if result.get("ok"):
@@ -8735,6 +8764,71 @@ def cinematic_continuity(name: str) -> dict:
         from bgate_core import cinematic as _cine
 
         return _cine.check_continuity(_root(), name)
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _animatic_images(result: dict) -> list[str]:
+    """The panels, handed back as pictures.
+
+    A reel is a video and an agent cannot watch one. The panels ARE the edit,
+    in order, so returning them is the difference between a tool that reports a
+    runtime and a tool whose output can actually be reviewed.
+    """
+    out = []
+    for path in ((result or {}).get("panel_files") or [])[:12]:
+        if path and _Path(path).exists():
+            out.append(str(path))
+    return out
+
+
+@_tool(images=_animatic_images)
+def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
+                       burn_captions: bool = True) -> dict:
+    """Cut the storyboard panels together at their planned timings. FREE — calls
+    no model and spends nothing.
+
+    CALL THIS BEFORE cinematic_generate_shot. EVERY TIME. Between planning a
+    sequence and buying it there was nothing at all, which means the first human
+    to see the EDIT saw it after every second of it had been paid for. By then
+    the only cheap change left is deleting shots. This is the stage that makes
+    the scene wrong in a place where being wrong is free.
+
+    That is not a nicety borrowed from film school, it is the arithmetic. Hand
+    animation runs at about one finished second per animator-hour, which is why
+    nobody animates an unproven edit — they cut the boards together first and fix
+    it there. Generated video costs MORE per second than that, and this pipeline
+    had no previs at all.
+
+    WHAT COMES BACK, AND WHAT TO DO WITH IT:
+      average_shot_s   read this first. Modern films sit at 4-6s. Under 4 and
+                       the cut is a montage nobody follows; over 6 and it is a
+                       slideshow of stills. It is one number and it tells you
+                       whether the edit reads.
+      runtime_s / measured_s   what the shot list adds up to, and what the file
+                       actually is. They disagree only when something is wrong,
+                       and captions are timed off the first one.
+      placeholders     beats with no still yet. They are rendered as slate cards
+                       held for their full duration, never skipped — a gap in
+                       the edit is information, and a reel that quietly ran
+                       short would read as finished.
+      warnings         untimed shots, two consecutive shots describing the same
+                       beat, pacing outside the window. All advisory.
+
+    `source` is "auto" (the planned sequence if there is one, else the board),
+    "sequence" or "board". The sequence is preferred because that is the row
+    money is spent against and the only one carrying transitions.
+
+    The reel is an .mp4 under design/cinematics/animatics/ — H.264, not the
+    Theora the shipped cutscene uses, because this is watched by a person in a
+    browser and never by the engine. The panels come back as images so you can
+    look at the edit rather than reading a runtime.
+    """
+    try:
+        from bgate_core import animatic as _anim
+
+        return _anim.build(_root(), name, source=str(source or "auto"),
+                           fps=int(fps), burn_captions=bool(burn_captions))
     except Exception as exc:
         return _fail(exc)
 

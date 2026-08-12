@@ -42,6 +42,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Optional
+from . import ffmpegbin as _ffmpegbin
 
 # Windows: never flash a console window out of a background health check.
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -245,7 +246,7 @@ def _probe_art_key() -> dict:
 
 
 def _probe_ffmpeg() -> dict:
-    exe = shutil.which("ffmpeg")
+    exe = _ffmpegbin.resolve()
     if not exe:
         return _missing("ffmpeg",
                         "ffmpeg not found on PATH — needed for screen capture, "
@@ -268,6 +269,18 @@ def _probe_ffmpeg() -> dict:
     # one row wider than the other eleven, which every consumer of this report
     # would have to special-case. So it rides in the version string, where it is
     # visible in the doctor table and costs nothing.
+    #
+    # A BROKEN libtheora IS THE OTHER CASE AND IT DOES GO RED, which is not an
+    # inconsistency with the paragraph above — it is the same rule applied to a
+    # different fact. An ABSENT libtheora removes a capability this row never
+    # promised, and it announces itself: the encode fails loudly with "Unknown
+    # encoder". A libtheora that is present and writes files nothing can decode
+    # announces nothing at all. It exits 0, the file is the right size, and the
+    # cutscene is flat green rectangles in the shipped game — which is exactly
+    # what happened, for the entire life of this product, while this row was
+    # green (GyanD/codexffmpeg issue #200; cinematic.ffmpeg_status carries the
+    # measurement and the remedy). Silent corruption is the one thing a health
+    # check exists for, and no other row here would ever say a word about it.
     try:
         from bgate_core import cinematic as _cine
 
@@ -279,6 +292,19 @@ def _probe_ffmpeg() -> dict:
         if encoder.get("probed") and not encoder.get("theora"):
             version += " (no libtheora — cannot write the Ogg Theora Godot " \
                        "plays, so generated cutscenes cannot be delivered)"
+        elif encoder.get("theora") and not encoder.get("ok") \
+                and (encoder.get("roundtrip") or {}).get("ran"):
+            # `ran` is required: an encoder we could not exercise is UNKNOWN,
+            # and telling somebody to replace a build we never managed to test
+            # is the same mistake as claiming it has no libtheora.
+            errors = int((encoder.get("roundtrip") or {}).get("errors") or 0)
+            return _row(
+                available=False, path=exe,
+                version=f"{version} (libtheora present but BROKEN — "
+                        f"{errors} decode error(s) round-tripping one second of "
+                        "video)",
+                min_required=MIN_REQUIRED.get("ffmpeg", ""),
+                reason=encoder.get("reason", ""))
     except Exception:                                            # noqa: BLE001
         pass    # a probe that cannot answer must not take the doctor down
     return _finish("ffmpeg", exe, version)

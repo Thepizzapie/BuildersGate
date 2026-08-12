@@ -84,6 +84,7 @@ def cinematic_plan(payload: dict) -> dict:
             style=str(body.get("style") or ""),
             style_note=str(body.get("style_note") or ""),
             style_refs=list(body.get("style_refs") or []),
+            locations=list(body.get("locations") or []),
             model=str(body.get("model") or ""),
             aspect_ratio=str(body.get("aspect_ratio") or "16:9"),
             resolution=str(body.get("resolution") or "720p"),

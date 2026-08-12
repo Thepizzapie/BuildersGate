@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
+from bgate_core import ffmpegbin as _ffmpegbin
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
@@ -148,7 +149,7 @@ def probe_mic(device: Optional[int] = None, seconds: float = 1.5) -> dict:
 
 
 def find_ffmpeg() -> str:
-    exe = shutil.which("ffmpeg")
+    exe = _ffmpegbin.resolve()
     if not exe:
         raise RecorderError("ffmpeg not found on PATH — needed for screen capture")
     return exe

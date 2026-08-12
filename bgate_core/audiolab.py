@@ -34,13 +34,13 @@ import io
 import json
 import os
 import re
-import shutil
 import struct
 import subprocess
 import time
 import wave
 from pathlib import Path
 from typing import Iterable, Optional
+from . import ffmpegbin as _ffmpegbin
 
 AUDIO_SUFFIXES = frozenset({".wav", ".ogg", ".mp3"})
 # What the editor can WRITE. mp3 is playable and readable but never a write
@@ -180,7 +180,7 @@ def validate_wav(blob: bytes) -> dict:
 # Encoding
 # ---------------------------------------------------------------------------
 def ffmpeg_path() -> Optional[str]:
-    return shutil.which("ffmpeg")
+    return _ffmpegbin.resolve()
 
 
 def encode_ogg(wav_bytes: bytes, out_path: str | os.PathLike[str], *,

@@ -1678,6 +1678,76 @@ _MIGRATIONS: list = [
     ALTER TABLE spend_event ADD COLUMN seat TEXT NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS idx_spend_seat ON spend_event(seat, created_at);
     """,
+    # 0035 — THE SET GETS A RAIL, and a shot gets a SIZE.
+    #
+    # WHAT WAS MEASURED. 0027 gave a sequence a LOOK rail (style, style_note,
+    # style_refs — three columns, deliberately separated) and a shot a CAST rail
+    # (refs, first_frame, last_frame). Nothing anywhere carried the LOCATION. So
+    # a sequence set in "the office" had that word living only inside four
+    # differently-worded free-prose `action` strings, and the model correctly
+    # drew four different offices. On the two real sequences this was found on,
+    # character identity and art style held across every shot and the SET drifted
+    # completely between all of them. The rail that was missing is the one that
+    # failed; the two that existed did not.
+    #
+    # A TABLE RATHER THAN COLUMNS ON cine_sequence, for the reason cine_shot is a
+    # table: a sequence has SEVERAL locations, they are edited independently, and
+    # a shot has to point at one. Three columns called `location_*` would model
+    # exactly one set per cutscene, which is one fewer than the smallest scene
+    # anybody writes.
+    #
+    # THE SAME THREE-PART SPLIT AS style, AND FOR THE SAME REASON.
+    #   slug        what a shot names, and the grouping key generation runs on
+    #   description the prose injected VERBATIM into every shot filmed here
+    #   plates      images of the set, which beat prose exactly as style refs do
+    # Folded into one string none of that is recoverable: the plates are paths
+    # that have to survive a re-plan, and the description has to be byte-identical
+    # across every shot at this location or it is not a rail, it is four
+    # paraphrases again.
+    #
+    # `cine_shot.location` HOLDS THE SLUG, NOT A FOREIGN KEY id. Deliberate, and
+    # it is the same call `audio_track` made: a shot list is authored as text —
+    # by a human in a form, by an agent through cinematic_plan — and plan()
+    # rewrites every shot row on every call. A numeric id would have to be
+    # resolved by the writer, which means the writer can get it wrong in a way
+    # nothing reads back. cinematic._clean_shots refuses a slug no location on
+    # this sequence declares, which is where the integrity actually lives.
+    #
+    # `shot_size` IS A SEPARATE COLUMN FROM `camera` AND REPLACES NOTHING. camera
+    # is the move and the prose ("slow push in", "low angle, handheld") and it
+    # stays exactly as it is. The size is the one part of framing that is a fixed
+    # vocabulary, and it is a column because a fixed vocabulary is CHECKABLE:
+    # measured across two real sequences of nine shots there was one close shot,
+    # one medium, six wides, no over-the-shoulder and no reverse, and one
+    # sequence was push-in / push-in / push-in / static. None of that was
+    # visible while framing was free prose. Wides are simultaneously the flattest
+    # editorial choice and the most drift-prone thing to buy, because a wide
+    # shows the whole set — the century-old film fix for a continuity error is to
+    # cut tighter, and it is also the cheapest fix for generative set drift,
+    # because a close-up contains almost no set to be inconsistent about.
+    #
+    # NO CHECK CONSTRAINT ON shot_size, matching `transition` one migration up:
+    # the vocabulary lives in cinematic.SHOT_SIZES where the warnings that read
+    # it live, and a CHECK here would be a second copy of it that a migration has
+    # to rewrite every time an editor names one more framing. Empty means "not
+    # stated", which is honest and is what every historical row is.
+    """
+    CREATE TABLE cine_location (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        sequence_id  INTEGER NOT NULL
+                         REFERENCES cine_sequence(id) ON DELETE CASCADE,
+        slug         TEXT NOT NULL,
+        label        TEXT NOT NULL DEFAULT '',
+        description  TEXT NOT NULL DEFAULT '',
+        plates_json  TEXT NOT NULL DEFAULT '[]',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (sequence_id, slug)
+    );
+    CREATE INDEX idx_cine_location_seq ON cine_location(sequence_id);
+    ALTER TABLE cine_shot ADD COLUMN location TEXT NOT NULL DEFAULT '';
+    ALTER TABLE cine_shot ADD COLUMN shot_size TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

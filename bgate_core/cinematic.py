@@ -69,6 +69,8 @@ metadata as PROVENANCE ONLY, stamped with the date they die.
 """
 from __future__ import annotations
 
+import datetime as _dt
+
 import json
 import os
 import re
@@ -77,6 +79,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
+from bgate_core import ffmpegbin as _ffmpegbin
 
 from . import activity, artifacts, assets, cinecut, db
 from .util import rows, slugify
@@ -297,6 +300,192 @@ def resolve_style(style: str = "", note: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# THE SET — the third rail, and the one that was missing
+# ---------------------------------------------------------------------------
+#
+# WHAT WAS MEASURED, BECAUSE IT NAMES THE WHOLE PROBLEM. A sequence carried a
+# LOOK rail (style/style_note/style_refs, above) and a shot carried a CAST rail
+# (refs/first_frame/last_frame). Nothing carried the LOCATION. On the two real
+# sequences this was found on, identity held and style held and THE SET DRIFTED
+# COMPLETELY between every shot — because "the office" existed only inside four
+# differently-worded free-prose `action` strings, and four different descriptions
+# of an office are four different offices. The model was not wrong. It was asked
+# four times.
+#
+# THE FIX IS THE STYLE FIX, APPLIED TO THE SET, and the shape is deliberately
+# identical because the failure was identical: ONE description, applied to EVERY
+# shot at that location, AUTOMATICALLY, byte for byte, in one place. A location
+# whose prose is re-typed per shot is not a rail — it is the bug with a column
+# name on it.
+#
+# THE SECOND HALF IS ORDER, AND IT IS FREE. Cross-shot consistency degrades with
+# RECURRENCE DISTANCE: the further apart two shots of the same set are in the
+# generation run, the less they agree. Narrative order scatters a location's
+# shots through the sequence; :func:`generation_order` groups them, which is the
+# practitioner rule "generate all the shots in one location together" and costs
+# nothing but the order of a loop. The CUT stays in narrative order — see
+# :func:`assemble`, which reads `ORDER BY idx` and always will.
+
+
+def location_text(loc: dict) -> str:
+    """One location as the sentence every shot filmed there carries.
+
+    A function rather than the raw column so that the joined form is defined
+    ONCE — the same argument :func:`prompt_for` makes about style. If a card, a
+    warning and a generation each assembled this themselves they would drift,
+    and drift is the entire thing this rail exists to stop.
+    """
+    label = str((loc or {}).get("label") or "").strip()
+    body = str((loc or {}).get("description") or "").strip()
+    if label and body:
+        return f"{label}: {body}".rstrip(".")
+    return (body or label).rstrip(".")
+
+
+# ---------------------------------------------------------------------------
+# SHOT SIZE — framing as a vocabulary, because prose cannot be counted
+# ---------------------------------------------------------------------------
+#
+# THIS REPLACES NOTHING. `camera` is the MOVE and the prose ("slow push in",
+# "low angle, handheld, drifting") and it stays exactly as it is. This is the
+# one part of framing that has been a fixed vocabulary for a century, and it is
+# a field because a fixed vocabulary can be COUNTED — which is how the following
+# was found across two real sequences, nine shots: one close, one medium, six
+# wides, no over-the-shoulder, no reverse, and one sequence that was push-in /
+# push-in / push-in / static. Every one of those is visible in a table and
+# invisible in nine free-prose camera strings.
+#
+# WIDES ARE THE EXPENSIVE HABIT, and it is worth saying why twice over. A wide
+# is the flattest editorial choice — it holds the audience at arm's length and
+# gives an editor nothing to cut to — AND it is the most drift-prone thing this
+# pipeline can buy, because a wide shows the whole set and therefore shows every
+# way the model disagreed with itself about the set. The century-old fix for a
+# continuity error is the same as the fix for generative drift: cut tighter. A
+# close-up contains almost no set to be inconsistent about.
+#
+# `tight` IS THE FLAG THE WARNINGS READ, and it is a flag rather than a number
+# on purpose. Framings do not sit on one honest axis — an over-the-shoulder is
+# a coverage choice, an insert is an object, a cutaway is a different subject
+# entirely — so ranking them 0..9 would invent a precision that would then get
+# compared. The only question the warnings ask is "does this shot get us close
+# enough to stop showing the set", and that is a yes or a no.
+SHOT_SIZES: dict[str, dict] = {
+    "establishing": {
+        "label": "Establishing",
+        "prompt": "establishing wide shot, the whole location legible, figures "
+                  "small in the frame",
+        "tight": False,
+        "note": "Says where we are. One per location is usually all a cutscene "
+                "can afford — it is the most expensive framing to hold and the "
+                "one an audience needs exactly once.",
+    },
+    "wide": {
+        "label": "Wide",
+        "prompt": "wide shot, full figures with the space around them visible",
+        "tight": False,
+        "note": "Shows the whole set, which means it shows every way the model "
+                "disagreed with itself about the set. Buy few.",
+    },
+    "full": {
+        "label": "Full",
+        "prompt": "full shot, the subject head to toe filling the frame height",
+        "tight": False,
+        "note": "The framing for physical action — what the body does reads, "
+                "what the face does not.",
+    },
+    "medium": {
+        "label": "Medium",
+        "prompt": "medium shot, the subject from the waist up",
+        "tight": False,
+        "note": "The workhorse. Carries dialogue and still shows the room, "
+                "which is why it is not counted as tight coverage.",
+    },
+    "medium_close": {
+        "label": "Medium close",
+        "prompt": "medium close-up, the subject from the chest up, background "
+                  "soft and secondary",
+        "tight": True,
+        "note": "The cheapest real coverage there is: enough face to act with, "
+                "little enough set to drift.",
+    },
+    "close": {
+        "label": "Close",
+        "prompt": "close-up, the subject's face filling the frame, background "
+                  "reduced to soft tone",
+        "tight": True,
+        "note": "Where a beat actually lands, and the most drift-resistant "
+                "framing available — there is almost no set left in it.",
+    },
+    "extreme_close": {
+        "label": "Extreme close",
+        "prompt": "extreme close-up on a single detail filling the frame",
+        "tight": True,
+        "note": "Use it for the one detail the scene turns on. Two in a row "
+                "reads as a mistake rather than emphasis.",
+    },
+    "over_shoulder": {
+        "label": "Over the shoulder",
+        "prompt": "over-the-shoulder shot, the near figure's shoulder and head "
+                  "framing the far figure across from them",
+        "tight": True,
+        "note": "How a conversation is covered, and it was absent from every "
+                "measured sequence. Two of these plus a reverse is a scene; "
+                "three wides of two people talking is a diagram of one.",
+    },
+    "insert": {
+        "label": "Insert",
+        "prompt": "insert shot, a close detail of an object or a hand, no faces "
+                  "in frame",
+        "tight": True,
+        "note": "The editor's repair kit. An insert cut into a join hides a "
+                "continuity error for the price of the cheapest shot on the "
+                "list.",
+    },
+    "cutaway": {
+        "label": "Cutaway",
+        "prompt": "cutaway to a detail elsewhere in the scene, away from the "
+                  "main subject",
+        "tight": False,
+        "note": "Buys time and covers a jump, but it shows somewhere else — so "
+                "it does not count as covering the beat tight.",
+    },
+}
+
+# The sizes that mean "close enough that the set is no longer the thing on
+# screen". Derived rather than retyped, so a new entry cannot be added to the
+# table and forgotten by the warning that reads it.
+TIGHT_SIZES = frozenset(key for key, spec in SHOT_SIZES.items() if spec["tight"])
+
+
+def shot_sizes() -> dict:
+    """The framing vocabulary as data, for a form, a tool or a brief."""
+    return {key: {"key": key, **spec} for key, spec in SHOT_SIZES.items()}
+
+
+def _size_key(given: Any) -> str:
+    """A shot_size value normalised to a table key, or '' if it names none.
+
+    Hyphens, spaces and casing are all accepted — 'over-the-shoulder',
+    'Over The Shoulder' and 'over_shoulder' are one framing, and a vocabulary
+    that refuses two of the three spellings a human will type is a vocabulary
+    nobody fills in.
+    """
+    key = str(given or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if key in SHOT_SIZES:
+        return key
+    # The spellings that are the same framing under a different house name.
+    aliases = {
+        "over_the_shoulder": "over_shoulder", "ots": "over_shoulder",
+        "medium_closeup": "medium_close", "medium_close_up": "medium_close",
+        "mcu": "medium_close", "cu": "close", "closeup": "close",
+        "close_up": "close", "ecu": "extreme_close",
+        "extreme_close_up": "extreme_close", "extreme_closeup": "extreme_close",
+        "master": "establishing", "long": "wide", "wide_shot": "wide",
+    }
+    return aliases.get(key, "")
+
+
+# ---------------------------------------------------------------------------
 # What can be asked for
 # ---------------------------------------------------------------------------
 
@@ -341,6 +530,20 @@ def options(root: str | os.PathLike[str]) -> dict:
             "a cutscene is by generating this sequence's keyframes through the "
             "art path first, then anchoring every shot on those approved "
             "frames.",
+        # THE FRAMING VOCABULARY AND THE SET RAIL, served as data for the same
+        # reason the styles are: a form or a brief that retypes either drifts
+        # from the table the warnings are actually computed against.
+        "shot_sizes": shot_sizes(),
+        "tight_sizes": sorted(TIGHT_SIZES),
+        "location_hint":
+            "A sequence's LOCATIONS are the third rail, beside the look and the "
+            "cast, and it is the one that was missing. A location's description "
+            "is injected identically into every shot filmed there; without it "
+            "the set lives inside each shot's own action prose and the model "
+            "draws a different room every time. Plates beat prose, exactly as "
+            "style refs do. Shots are generated grouped by location rather than "
+            "in list order — two shots of one set agree less the further apart "
+            "they were bought — while the CUT stays in narrative order.",
         "install_dir": _install_dir(root, create=False).as_posix(),
         "candidate_dir": CANDIDATE_DIR.as_posix(),
         "shot_seconds": list(SHOT_SECONDS),
@@ -362,17 +565,164 @@ def options(root: str | os.PathLike[str]) -> dict:
     }
 
 
-def ffmpeg_status() -> dict:
-    """Is there an encoder, and can it actually make a Theora file?
+# ---------------------------------------------------------------------------
+# DOES THE ENCODER WORK — which is not the question `-encoders` answers
+# ---------------------------------------------------------------------------
+#
+# THE FINDING THIS EXISTS FOR, AND IT COST EVERY CUTSCENE THIS PRODUCT EVER
+# SHIPPED. The installed `intro-shrink_shot06.ogv` of a real game decoded 14 of
+# its 193 frames; the other 179 threw `error in unpack_block_qpis` and extracted
+# as flat green rectangles. The encoder had exited 0. The file was the right
+# size, played in the dashboard's gallery as a first frame, and was a green
+# rectangle in the game.
+#
+# The cause is not this code and not the content: `ffmpeg` on that machine was
+# Gyan.FFmpeg 8.1.1 from winget, whose libtheora writes malformed bitstreams —
+# GyanD/codexffmpeg issue #200. The SAME VERSION built by BtbN is fine. Ruled
+# out by experiment before this was written, so nobody re-litigates it: a plain
+# synthetic `testsrc2` corrupts identically (176 errors, so it is not pixel-art
+# content), `-q:v 10` still gives 65 (not quality), `-threads 1` is identical
+# (not encoder threading), frame size makes no difference, and Godot 4.4.1
+# already carries the decoder fix in PR #101958.
+#
+# THE DEFECT IN OUR CODE IS THAT NOTHING COULD NOTICE. ffmpeg_status() decided
+# the build was usable with `"libtheora" in listed` — it asked whether the
+# encoder EXISTS, never whether it WORKS — so `bgate doctor` was green for the
+# entire life of the bug and every gate downstream of it was green too.
+#
+# So the check is a ROUND TRIP: encode one second of synthetic video, then decode
+# what was written and read the decoder's stderr. A build that cannot survive its
+# own output cannot be trusted with a paid clip. ANY decoder stderr at all is a
+# failure — a healthy libtheora round-trips this in total silence, and the broken
+# one produces 35 lines for one second of picture.
+_PROBE_SOURCE = "testsrc2=size=320x240:rate=24:duration=1"
 
-    TWO QUESTIONS, NOT ONE, and the second is the one that bites. ffmpeg on PATH
-    is necessary and not sufficient: libtheora and libvorbis are OPTIONAL build
-    flags, several distributions and at least one popular Windows build ship
-    without them, and such a build fails at the encode with "Unknown encoder
-    'libtheora'" after the whole clip has been paid for and generated. Asking
-    `-encoders` costs milliseconds and moves that discovery to before the spend.
+# One second at 320x240 is the smallest thing that exercises the encoder for
+# real: several frames, motion between them, and the block-quantiser path that
+# is what actually corrupts. Measured at 256ms end to end on the machine the bug
+# was found on, which is cheap enough to run before a spend and far too slow to
+# run on every call — hence the cache below.
+_PROBE_TIMEOUT = 60.0
+
+# PER RESOLVED EXECUTABLE PATH, NOT GLOBAL, and that distinction is the whole
+# design of this cache. A global flag would be wrong the moment PATH changes
+# inside one process — which is exactly what happens when somebody follows the
+# remedy this module prints, drops a working build in front of the broken one
+# and asks the running dashboard again. Keyed on the path, a new build is a new
+# key and gets its own probe; the old answer stays true of the old binary.
+#
+# Not invalidated by mtime or by time: a process replacing an ffmpeg.exe
+# IN PLACE, at the same path, mid-session, is rare enough to be worth a restart
+# and not worth re-encoding a second of video on every status call to catch.
+_ROUNDTRIP: dict[str, dict] = {}
+
+
+def _decode_errors(exe: str, path: str | os.PathLike[str],
+                   timeout: float = _PROBE_TIMEOUT) -> tuple[list[str], str]:
+    """Decode a file to nowhere and hand back what the decoder complained about.
+
+    ``-f null -`` is the decode-and-discard sink: every frame is actually
+    demuxed and decoded, nothing is written, and anything the decoder could not
+    read arrives on stderr. ``-v error`` drops the banner and the progress lines,
+    so a healthy file produces NO output at all and each line that does arrive is
+    one thing the engine will not be able to draw.
+
+    Returns ``(lines, failure)``. A non-empty ``failure`` means the decode could
+    not be performed — a different fact from "the file is bad", and callers must
+    not report one as the other.
     """
-    exe = shutil.which("ffmpeg")
+    try:
+        proc = subprocess.run(
+            [exe, "-v", "error", "-i", str(path), "-f", "null", "-"],
+            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return [], f"the decode of {Path(path).name} did not finish in {timeout:.0f}s"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"{exe} would not run to decode {Path(path).name}: {exc}"
+    lines = [ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()]
+    return lines, ""
+
+
+def _theora_roundtrip(exe: str) -> dict:
+    """Encode a second of video with this build and decode it back. Cached.
+
+    The result is ``{ran, ok, errors, detail}``. ``ran`` is False when the probe
+    itself could not be carried out, which is NOT the same claim as "this build
+    is broken" — see ffmpeg_status's `probed` for the same distinction one level
+    up. Refusing to ship cutscenes is right in both cases; telling somebody their
+    encoder is corrupt when we never managed to run it is not.
+    """
+    cached = _ROUNDTRIP.get(exe)
+    if cached is not None:
+        return cached
+
+    import tempfile
+
+    result: dict
+    with tempfile.TemporaryDirectory(prefix="bgate-theora-") as tmp:
+        out = Path(tmp) / "probe.ogv"
+        try:
+            enc = subprocess.run(
+                [exe, "-y", "-v", "error", "-f", "lavfi", "-i", _PROBE_SOURCE,
+                 "-c:v", "libtheora", "-q:v", str(DEFAULT_QUALITY), str(out)],
+                capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+                stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        except (OSError, subprocess.SubprocessError) as exc:
+            result = {"ran": False, "ok": False, "errors": 0,
+                      "detail": f"the probe encode would not run: {exc}"}
+        else:
+            if enc.returncode != 0 or not out.is_file():
+                # THE OLD FAILURE, still real. A build with no libtheora fails
+                # here rather than at the decode, and it is a different remedy
+                # from a build whose libtheora lies, so it keeps its own branch.
+                result = {"ran": True, "ok": False, "errors": 0,
+                          "detail": (enc.stderr or "").strip()[-300:] or
+                                    f"the probe encode exited {enc.returncode} "
+                                    "and wrote no file"}
+            else:
+                lines, failure = _decode_errors(exe, out)
+                if failure:
+                    result = {"ran": False, "ok": False, "errors": 0,
+                              "detail": failure}
+                else:
+                    result = {"ran": True, "ok": not lines,
+                              "errors": len(lines),
+                              "detail": "; ".join(lines[:3])[:300]}
+    # ONLY A PROBE THAT RAN IS WORTH REMEMBERING. `ran: False` means we never
+    # got an answer — a timeout under load, a binary busy behind a virus
+    # scanner, a temp dir that would not open. Caching that would let one bad
+    # second mark the encoder unusable for the life of the process, and this
+    # process is a long-running MCP server: the next honest answer would not be
+    # asked for until somebody restarted it. Re-probing costs a quarter of a
+    # second and only happens while the answer is still unknown.
+    if result["ran"]:
+        _ROUNDTRIP[exe] = result
+    return result
+
+
+def ffmpeg_status() -> dict:
+    """Is there an encoder, and can it actually make a Theora file that reads?
+
+    THREE QUESTIONS, NOT ONE, AND THEY WANT THREE DIFFERENT SENTENCES because
+    they send the reader three different places:
+
+      1. NO ffmpeg AT ALL. Install one.
+      2. AN ffmpeg WITHOUT libtheora. libtheora and libvorbis are OPTIONAL build
+         flags and several distributions ship without them; such a build fails
+         at the encode with "Unknown encoder 'libtheora'" after the whole clip
+         has been paid for. Install a fuller build.
+      3. AN ffmpeg WHOSE libtheora IS PRESENT AND BROKEN. This is the one that
+         cost every cutscene this product shipped — see the block above. It
+         cannot be fixed with a flag, a quality setting or a smaller frame; the
+         only remedy is a different build. Asking `-encoders` cannot see it,
+         which is precisely why this function now round-trips.
+
+    `-encoders` costs milliseconds, the round trip costs about a quarter of a
+    second once per executable per process, and both together move every one of
+    those discoveries to before the spend.
+    """
+    exe = _ffmpegbin.resolve()
     if not exe:
         return {"ok": False, "ffmpeg": "", "theora": False, "probed": True,
                 "reason": "ffmpeg not found on PATH — it is what converts a "
@@ -395,17 +745,54 @@ def ffmpeg_status() -> dict:
         return {"ok": False, "ffmpeg": exe, "theora": False, "probed": False,
                 "reason": f"ffmpeg found at {exe} but would not run: {exc}"}
     theora = "libtheora" in listed
+    base = {"ffmpeg": exe, "theora": theora, "probed": True,
+            "vorbis": "libvorbis" in listed}
+    if not theora:
+        return {
+            **base, "ok": False, "roundtrip": None,
+            "reason": f"the ffmpeg at {exe} was built without libtheora, so it "
+                      "cannot write the only format Godot plays. Install a full "
+                      "build (BtbN or gyan.dev 'full' on Windows, ffmpeg from "
+                      "your distribution's multimedia repo on Linux).",
+        }
+
+    # THE ENCODER EXISTS. That was the whole test until a build shipped whose
+    # libtheora exists and produces files nothing can read, so the presence
+    # answer is now only half of it.
+    trip = _theora_roundtrip(exe)
+    if trip["ok"]:
+        return {**base, "ok": True, "roundtrip": trip, "reason": ""}
+    if not trip["ran"]:
+        # Same distinction `probed` makes above, one level down: we did not
+        # measure a bad encoder, we failed to measure. Cutscenes still cannot be
+        # shipped through an encoder we cannot exercise, so ok stays False — but
+        # nobody is told to replace a build that may well be fine.
+        return {
+            **base, "ok": False, "probed": False, "roundtrip": trip,
+            "reason": f"the ffmpeg at {exe} lists libtheora, but the round-trip "
+                      f"probe could not be carried out: {trip['detail']}. "
+                      "Whether this build can write a readable Ogg Theora is "
+                      "therefore UNKNOWN, and keeping a shot is refused rather "
+                      "than gambling a paid clip on it.",
+        }
     return {
-        "ok": theora,
-        "ffmpeg": exe,
-        "theora": theora,
-        "probed": True,
-        "vorbis": "libvorbis" in listed,
-        "reason": "" if theora else
-                  f"the ffmpeg at {exe} was built without libtheora, so it "
-                  "cannot write the only format Godot plays. Install a full "
-                  "build (gyan.dev 'full' on Windows, ffmpeg from your "
-                  "distribution's multimedia repo on Linux).",
+        **base, "ok": False, "roundtrip": trip,
+        "reason":
+            f"the ffmpeg at {exe} HAS libtheora and it produces broken files. "
+            "Measured just now: one second of synthetic video encoded to Ogg "
+            f"Theora and decoded back gave {trip['errors']} decoder error(s) "
+            + (f"({trip['detail']}) " if trip["detail"] else "")
+            + "— a healthy build round-trips this in total silence, and every "
+            "one of those errors is a frame the game would draw as a flat "
+            "green rectangle. THIS IS NOT A SETTINGS PROBLEM: quality, frame "
+            "size, GOP and encoder threading were all ruled out by experiment, "
+            "and it is not the content either. It is the BUILD — the Windows "
+            "Gyan.FFmpeg packages (winget's Gyan.FFmpeg, 8.1.1 among them) "
+            "carry a libtheora that writes malformed bitstreams, GyanD/"
+            "codexffmpeg issue #200, and the identical version built by BtbN "
+            "is fine. Install a different build (BtbN's gpl release on "
+            "Windows, your distribution's ffmpeg package on Linux) and put it "
+            "ahead of this one on PATH. Nothing else will fix it.",
     }
 
 
@@ -415,7 +802,8 @@ def ffmpeg_status() -> dict:
 
 def plan(root: str | os.PathLike[str], name: str, shots: list, *,
          logline: str = "", style: str = "", style_note: str = "",
-         style_refs: Optional[list] = None, model: str = "",
+         style_refs: Optional[list] = None, locations: Optional[list] = None,
+         model: str = "",
          aspect_ratio: str = "16:9", resolution: str = "720p",
          audio_track: str = "", audio_gain_db: float = 0.0,
          fade_in: float = 0.0, fade_out: float = 0.0,
@@ -423,8 +811,9 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     """Write (or rewrite) a sequence's shot list. Costs nothing, spends nothing.
 
     ``shots`` is a list of dicts: ``action`` is required, and ``camera``,
-    ``dialogue``, ``duration``, ``first_frame``, ``last_frame`` and ``refs`` are
-    optional. Order in the list is order in the cut.
+    ``shot_size``, ``location``, ``dialogue``, ``duration``, ``first_frame``,
+    ``last_frame`` and ``refs`` are optional. Order in the list is order in the
+    cut.
 
     THE PLAN IS SEPARATE FROM THE SPEND ON PURPOSE, and this is the cheapest
     thing in the module for the same reason it is the most important. A sequence
@@ -440,6 +829,16 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     automatically, in :func:`prompt_for` — the one place, because a style applied
     per shot by hand is a style that goes missing on shot 6 and a sequence that
     changes look halfway through.
+
+    ``locations`` IS THE SAME MECHANISM FOR THE SET, and it exists because the
+    set was the rail that was missing. Each entry is a dict with ``slug``,
+    ``description`` and optional ``label`` and ``plates``; a shot names one in
+    its ``location`` field, and that location's description is injected into
+    EVERY shot filmed there, identically, in a fixed position — see
+    :func:`prompt_for`. Before this, "the office" lived only inside four
+    differently-worded ``action`` strings, and the model drew four offices.
+    Measured: cast and style held across every shot; the set drifted between all
+    of them.
 
     REPLANNING PRESERVES WHAT WAS ALREADY BOUGHT. A shot whose action text is
     unchanged keeps its artifact, its status and its task id, so re-running plan()
@@ -462,7 +861,9 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     if not shots:
         raise CinematicError("a sequence with no shots is not a plan")
 
-    cleaned, warnings = _clean_shots(root, shots)
+    places = _clean_locations(root, locations or [])
+    cleaned, warnings = _clean_shots(root, shots, places)
+    warnings.extend(_coverage_warnings(cleaned, places))
 
     # The model is validated here, at planning time, because the shot list is
     # written against ITS limits — a 15-second shot is legal on one model and
@@ -515,6 +916,25 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
         seq_id = int(conn.execute(
             "SELECT id FROM cine_sequence WHERE name = ?", (stem,)).fetchone()[0])
 
+        # THE SET IS SUBJECT TO THE SAME RULE AS THE LOOK, one level down. A
+        # clip bought when "the office" was described one way is not a rendering
+        # of it described another way — that is the whole premise of the
+        # location rail — so a location whose description or plates CHANGED
+        # invalidates the shots filmed there, and only those. Per location
+        # rather than per sequence because re-wording the corridor must not
+        # throw away five paid shots of the office.
+        moved = {row["slug"] for row in conn.execute(
+            "SELECT slug, description, plates_json FROM cine_location "
+            "WHERE sequence_id = ?", (seq_id,))
+            if _location_changed(row, places)}
+        conn.execute("DELETE FROM cine_location WHERE sequence_id = ?", (seq_id,))
+        for place in places:
+            conn.execute(
+                "INSERT INTO cine_location (sequence_id, slug, label, "
+                "description, plates_json) VALUES (?, ?, ?, ?, ?)",
+                (seq_id, place["slug"], place["label"], place["description"],
+                 json.dumps(place["plates"])))
+
         # What survives a replan, keyed by the text that defines the shot.
         previous = {}
         for row in conn.execute(
@@ -522,7 +942,7 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
             previous[(row["action"] or "").strip()] = dict(row)
         conn.execute("DELETE FROM cine_shot WHERE sequence_id = ?", (seq_id,))
 
-        kept_rows, dropped = 0, 0
+        kept_rows, dropped, relocated = 0, 0, 0
         for index, shot in enumerate(cleaned, start=1):
             carried = previous.get(shot["action"])
             if carried and restyled:
@@ -530,18 +950,27 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
                 if carried["status"] in ("generated", "kept"):
                     dropped += 1
                 carried = None
+            if carried and (shot["location"] in moved
+                            or (carried["location"] or "") != shot["location"]):
+                # The text matches; the SET it was rendered in does not —
+                # either this shot was moved to another location, or the
+                # location it is in has been re-described.
+                if carried["status"] in ("generated", "kept"):
+                    relocated += 1
+                carried = None
             if carried:
                 kept_rows += 1
             conn.execute(
                 """
                 INSERT INTO cine_shot (sequence_id, idx, slug, action, camera,
-                                       dialogue, duration, first_frame,
-                                       last_frame, refs_json, transition,
-                                       transition_s, vo, artifact_id,
-                                       task_id, status, note)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       shot_size, location, dialogue, duration,
+                                       first_frame, last_frame, refs_json,
+                                       transition, transition_s, vo,
+                                       artifact_id, task_id, status, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (seq_id, index, shot["slug"], shot["action"], shot["camera"],
+                 shot["shot_size"], shot["location"],
                  shot["dialogue"], shot["duration"], shot["first_frame"],
                  shot["last_frame"], json.dumps(shot["refs"]),
                  shot["transition"], shot["transition_s"], shot["vo"],
@@ -572,6 +1001,16 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
                     "shot(s) were reset to planned — a clip rendered in the old "
                     "look is not a rendering of the new one. Re-generating them "
                     "costs money again."}
+    if relocated:
+        # Same rule, same reason it can never be silent: this is paid work being
+        # thrown away because the set it was filmed in was re-described.
+        out["relocated"] = {
+            "shots": relocated,
+            "note": f"{relocated} already-generated shot(s) were reset because "
+                    "their location changed or was re-described. A clip filmed "
+                    "in the old description of a room is not a rendering of the "
+                    "new one — that is the whole point of the location rail. "
+                    "Re-generating them costs money again."}
     if kept_rows:
         out["carried"] = {
             "shots": kept_rows,
@@ -581,10 +1020,76 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     return out
 
 
-def _clean_shots(root: str | os.PathLike[str],
-                 shots: list) -> tuple[list[dict], list[str]]:
+def _clean_locations(root: str | os.PathLike[str],
+                     locations: list) -> list[dict]:
+    """Validate the set list. Slugs are unique, plates are contained, prose is
+    whatever the project wants to say.
+
+    THE PLATES GO THROUGH ``project_path`` LIKE EVERY OTHER PATH HERE, and for
+    the reason that function documents at length: these are not merely read,
+    they are UPLOADED to the generation provider, so a plate pointing outside
+    the project is exfiltration off the machine rather than a local file read.
+    A location plate is exactly as reachable by an agent as a first_frame is,
+    so it gets exactly the same gate.
+
+    MISSING IS NOT REFUSED, ESCAPING IS — the same split ``_style_refs`` makes.
+    Writing the shot list before the plates have been generated is the normal
+    order of the work; naming a file that is not yours to read is not.
+    """
+    out, used = [], set()
+    for index, raw in enumerate(locations or [], start=1):
+        if not isinstance(raw, dict):
+            raise CinematicError(
+                f"location {index} is {type(raw).__name__}, not an object with "
+                "a 'slug' and a 'description'")
+        slug = slugify(str(raw.get("slug") or raw.get("name")
+                           or raw.get("label") or ""))
+        if not slug or slug == "unnamed":
+            raise CinematicError(
+                f"location {index} has no slug — a location a shot cannot name "
+                "is a location no shot is filmed in")
+        if slug in used:
+            raise CinematicError(
+                f"two locations are called {slug!r}. A shot naming it would get "
+                "whichever description was written last, which is the drift this "
+                "rail exists to stop.")
+        used.add(slug)
+        description = str(raw.get("description") or "").strip()
+        if not description:
+            raise CinematicError(
+                f"location {slug!r} has no description. An empty location is a "
+                "worse rail than none: every shot names it, nothing is injected, "
+                "and the shot list LOOKS anchored to a set it never describes.")
+        out.append({
+            "slug": slug,
+            "label": str(raw.get("label") or "").strip(),
+            "description": description,
+            "plates": [project_path(root, p, what="location plate")
+                       for p in (raw.get("plates") or []) if str(p).strip()],
+        })
+    return out
+
+
+def _location_changed(row: Any, places: list[dict]) -> bool:
+    """Is this stored location described differently in the list being written?
+
+    A location that VANISHED from the list counts as changed: shots that pointed
+    at it either moved somewhere else or lost their set entirely, and neither
+    leaves a paid clip that is still a rendering of what the list now says.
+    """
+    for place in places:
+        if place["slug"] == row["slug"]:
+            return (place["description"] != (row["description"] or "")
+                    or place["plates"] != json.loads(row["plates_json"] or "[]"))
+    return True
+
+
+def _clean_shots(root: str | os.PathLike[str], shots: list,
+                 locations: Optional[list] = None) -> tuple[list[dict], list[str]]:
     """Validate a shot list, and say what is unwise rather than refusing it."""
     from bgate_adapters import kie
+
+    known = {place["slug"] for place in (locations or [])}
 
     lo, hi = kie.MODELS[kie.DEFAULT_VIDEO_MODEL]["ranges"]["duration"]
     cleaned, warnings, used = [], [], set()
@@ -631,9 +1136,36 @@ def _clean_shots(root: str | os.PathLike[str],
                 f"shot {index} is {duration}s with a {hold}s {transition} — a "
                 "transition cannot be as long as the shot it joins. Shorten the "
                 "handle or lengthen the shot.")
+        # A LOCATION THAT NAMES NOTHING IS REFUSED, exactly like a transition
+        # that names nothing, and for a sharper version of the same reason. A
+        # bad transition name would produce no filter; a bad location name
+        # produces a shot list that LOOKS anchored to a set — the field is
+        # filled in, the card shows a room name — while nothing at all is
+        # injected into the prompt. That is the original bug wearing the fix's
+        # clothes, so it is caught here and it names the slugs that do exist.
+        location = slugify(str(raw.get("location") or "")) if raw.get(
+            "location") else ""
+        if location == "unnamed":
+            location = ""
+        if location and location not in known:
+            raise CinematicError(
+                f"shot {index} is set in {location!r}, which this sequence does "
+                f"not declare. Known: {sorted(known) or 'none — pass locations='}"
+                ". The description is what gets injected into the prompt, so a "
+                "location nothing declares injects nothing and the set drifts "
+                "exactly as it did before.")
+        size = _size_key(raw.get("shot_size"))
+        if raw.get("shot_size") and not size:
+            raise CinematicError(
+                f"shot {index} asks for a {str(raw['shot_size'])!r} shot; the "
+                f"vocabulary is {sorted(SHOT_SIZES)}. It is a fixed list so that "
+                "coverage can be counted — free prose about framing is what "
+                "`camera` is for, and it still takes anything.")
         cleaned.append({
             "slug": _unique_slug(raw.get("slug"), index, used),
             "action": action,
+            "shot_size": size,
+            "location": location,
             "transition": transition,
             "transition_s": hold if transition != "cut" else 0.0,
             "vo": project_path(root, raw.get("vo"), what="voice-over"),
@@ -647,12 +1179,85 @@ def _clean_shots(root: str | os.PathLike[str],
             "refs": refs,
         })
     if not any(s["first_frame"] or s["refs"] for s in cleaned):
+        # THIS WARNING USED TO STOP ONE NOUN SHORT. It said the cast would drift
+        # and said nothing about the set, which is the half that was measured
+        # drifting on every real sequence — identity and style held, the room
+        # changed between all four shots. Both halves are the same failure:
+        # anything the shots do not share, the model invents per shot.
         warnings.append(
             "NOT ONE SHOT IS ANCHORED. Every shot is text-only, so the model "
             "invents the cast fresh each time and no two shots will agree on "
-            "what anyone looks like. Give each shot a first_frame (a still this "
-            "project generated and approved) or refs naming pinned references.")
+            "what anyone looks like — and it invents THE SET fresh each time "
+            "too, so no two shots will agree on what the room looks like "
+            "either. Give each shot a first_frame (a still this project "
+            "generated and approved) or refs naming pinned references, and put "
+            "the room on a location with a description and plates rather than "
+            "re-describing it inside each action line.")
     return cleaned, warnings
+
+
+def _coverage_warnings(shots: list[dict], places: list[dict]) -> list[str]:
+    """Everything true and unwise about how this sequence is COVERED.
+
+    Advisory throughout, like every other warning here. Coverage is a director's
+    call and the seat is allowed to make it; what it is not allowed to do is
+    make it without being told what was measured. Every number below came off
+    two real sequences — nine shots, one close, one medium, six wides, no
+    over-the-shoulder, no reverse, and one sequence that was push-in / push-in /
+    push-in / static.
+    """
+    out = []
+    sized = [s for s in shots if s["shot_size"]]
+    if not sized:
+        # Not silence. An unsized list is one where NONE of the checks below can
+        # run, and the difference between "well covered" and "unmeasurable"
+        # matters to whoever reads the warnings and sees none.
+        if len(shots) > 1:
+            out.append(
+                "NO SHOT STATES ITS SIZE, so coverage cannot be checked at all. "
+                "shot_size takes one of "
+                f"{sorted(SHOT_SIZES)} and is separate from `camera`, which "
+                "keeps the move and the prose. Without it a sequence that is "
+                "six wides in a row looks exactly like one that is not.")
+        return out
+
+    if not any(s["shot_size"] in TIGHT_SIZES for s in sized):
+        out.append(
+            "EVERY SHOT IS WIDE OR MEDIUM. Wides are the hardest framing for the "
+            "model to hold — a wide shows the whole set, so it shows every way "
+            "the model disagreed with itself about the set — and the flattest "
+            "to cut, because an editor has nothing to go in on. Cover the beats "
+            "tight: a medium-close, a close, an over-the-shoulder or an insert "
+            "carries almost no set and is therefore both the cheaper shot and "
+            "the better one.")
+
+    # THREE IN A ROW IS THE THRESHOLD, and it is where a pattern stops reading
+    # as a choice. Two matching sizes is a shot/reverse pair; three is a
+    # sequence that has stopped cutting and started repeating.
+    run_size, run_len, flagged = "", 0, []
+    for shot in shots:
+        if shot["shot_size"] and shot["shot_size"] == run_size:
+            run_len += 1
+        else:
+            run_size, run_len = shot["shot_size"], 1
+        if run_len == 3 and run_size:
+            flagged.append(SHOT_SIZES[run_size]["label"].lower())
+    for label in dict.fromkeys(flagged):
+        out.append(
+            f"three or more shots in a row are the same size ({label}). At three "
+            "the audience stops reading it as staging and starts reading it as "
+            "the camera being stuck. Vary the size between adjacent beats — that "
+            "is what makes a cut a cut rather than a jump.")
+
+    if len(places) > 1 and not any(s["shot_size"] == "establishing"
+                                  for s in sized):
+        out.append(
+            f"this sequence moves between {len(places)} locations and not one "
+            "shot is marked establishing. An audience that is never shown where "
+            "it is spends the next shot working it out instead of watching it, "
+            "and a generated sequence has no second chance to explain itself. "
+            "Mark the first shot in each new set establishing.")
+    return out
 
 
 def _resolve_model(model: str = "") -> str:
@@ -860,10 +1465,27 @@ def sequence(root: str | os.PathLike[str], name: str) -> dict:
     look = resolve_style(out.get("style", ""), out.get("style_note", ""))
     out["style_resolved"] = look
     out["model"] = out.get("model") or ""
-    out["shots"] = [_shot_view(root, dict(s), look["text"])
+    # THE SET, resolved once for the same reason the look is: every shot filmed
+    # here must carry the SAME sentence, and the only way to guarantee that is
+    # for there to be one sentence, built in one place, handed to all of them.
+    out["locations"] = []
+    for place in rows(conn.execute(
+            "SELECT * FROM cine_location WHERE sequence_id = ? ORDER BY id",
+            (out["id"],))):
+        place["plates"] = json.loads(place.pop("plates_json", "") or "[]")
+        place["text"] = location_text(place)
+        out["locations"].append(place)
+    prose = {place["slug"]: place["text"] for place in out["locations"]}
+    out["shots"] = [_shot_view(root, dict(s), look["text"],
+                               prose.get(s["location"] or "", ""))
                     for s in conn.execute(
         "SELECT * FROM cine_shot WHERE sequence_id = ? ORDER BY idx",
         (out["id"],))]
+    # WHAT ORDER TO BUY THEM IN, which is NOT the order they are listed in.
+    # Consistency between two shots of one set degrades with how far apart they
+    # were generated, so shots sharing a location are grouped. The list above
+    # stays in narrative order and so does the cut; only the buying order moves.
+    out["generation_order"] = _generation_order(out["shots"])
     out["runtime_s"] = sum(s["duration"] for s in out["shots"])
     out["generated"] = sum(1 for s in out["shots"]
                            if s["status"] in ("generated", "kept"))
@@ -890,24 +1512,29 @@ def sequences(root: str | os.PathLike[str], limit: int = 100) -> list[dict]:
         row["style_refs"] = json.loads(row.pop("style_refs_json", "") or "[]")
         row["style_label"] = resolve_style(row.get("style", ""),
                                            row.get("style_note", ""))["label"]
+        places = int(conn.execute(
+            "SELECT COUNT(*) FROM cine_location WHERE sequence_id = ?",
+            (row["id"],)).fetchone()[0])
         out.append({**row, "shot_count": counts["n"] or 0,
                     "kept": counts["kept"] or 0,
+                    "location_count": places,
                     "runtime_s": counts["secs"] or 0})
     return out
 
 
 def _shot_view(root: str | os.PathLike[str], shot: dict,
-               style: str = "") -> dict:
+               style: str = "", location: str = "") -> dict:
     """One shot row, plus whatever is true of the clip it points at.
 
-    ``prompt`` is the FULL text this shot would be generated with, style
-    included — not the action alone. A card that shows a prompt shorter than the
-    one that gets sent is a card that hides where the look comes from, and the
-    review of a shot list is the only cheap review there is.
+    ``prompt`` is the FULL text this shot would be generated with, style AND
+    location included — not the action alone. A card that shows a prompt shorter
+    than the one that gets sent is a card that hides where the look and the set
+    come from, and the review of a shot list is the only cheap review there is.
     """
     shot["refs"] = json.loads(shot.get("refs_json") or "[]")
     shot.pop("refs_json", None)
-    shot["prompt"] = prompt_for(shot, style)
+    shot["location_text"] = location
+    shot["prompt"] = prompt_for(shot, style, location)
     art_id = shot.get("artifact_id")
     if art_id:
         try:
@@ -929,19 +1556,33 @@ def _shot_view(root: str | os.PathLike[str], shot: dict,
     return shot
 
 
-def prompt_for(shot: dict, style: str = "") -> str:
+def prompt_for(shot: dict, style: str = "", location: str = "") -> str:
     """The stored fields joined into what the model is actually sent.
 
     ONE PLACE, so that a re-generation cannot drift from the original by
-    assembling the parts in a different order — and so that STYLE cannot be
-    forgotten on a shot. Every caller that builds a prompt for a shot comes
-    through here; there is deliberately no second path.
+    assembling the parts in a different order — and so that STYLE and LOCATION
+    cannot be forgotten on a shot. Every caller that builds a prompt for a shot
+    comes through here; there is deliberately no second path.
 
     THE ORDER IS LOAD-BEARING, and it is not the order a human would write.
-      * CAMERA FIRST. A video model reads the opening of a prompt as the framing
-        and the rest as content; a camera instruction buried after two sentences
-        of action gets averaged away.
-      * ACTION SECOND. The thing that happens.
+      * SIZE, THEN CAMERA, FIRST. A video model reads the opening of a prompt as
+        the framing and the rest as content; a camera instruction buried after
+        two sentences of action gets averaged away. The size leads the move
+        because it is the more literal of the two — "medium close-up" is a crop
+        and "slow push in" is what the crop then does.
+      * LOCATION THIRD, AND THIS IS THE POSITION THAT WAS MISSING. It goes after
+        the framing and before the action because that is what it is: the
+        framing says how we are looking, the location says what we are looking
+        AT, and the action says what happens there. It cannot go last with the
+        style — trailing text modifies the whole prompt, which is right for a
+        look that is constant across the sequence and wrong for a set that
+        changes between shots; a trailing "the office" would style the prompt
+        office-ish rather than put the scene in one room. And it cannot go
+        inside the action, because that is precisely where it used to live: four
+        differently-worded action strings describing one office produced four
+        offices. What makes this a RAIL rather than prose is that the text is
+        byte-identical and in the same slot for every shot at that location.
+      * ACTION FOURTH. The thing that happens.
       * DIALOGUE QUOTED. An unquoted line reads as narration and comes back as a
         character silently doing the thing the line says.
       * STYLE LAST, AND ALWAYS. Trailing style text applies to the whole prompt
@@ -951,8 +1592,13 @@ def prompt_for(shot: dict, style: str = "") -> str:
         sequence, in the same position, which is what keeps the beats matching.
     """
     parts = []
+    size = SHOT_SIZES.get(_size_key(shot.get("shot_size")))
+    if size:
+        parts.append(size["prompt"])
     if shot.get("camera"):
         parts.append(str(shot["camera"]).strip().rstrip("."))
+    if str(location or "").strip():
+        parts.append(str(location).strip().rstrip("."))
     parts.append(str(shot.get("action") or "").strip())
     if shot.get("dialogue"):
         parts.append(f'The character says: "{str(shot["dialogue"]).strip()}"')
@@ -961,14 +1607,137 @@ def prompt_for(shot: dict, style: str = "") -> str:
     return ". ".join(p for p in parts if p)
 
 
+def _generation_order(shots: list[dict]) -> list[int]:
+    """Shot indices in the order they should be BOUGHT: grouped by location.
+
+    NOT THE ORDER THEY ARE LISTED IN, AND NOT THE ORDER THEY ARE CUT IN. The
+    thing being defended against is RECURRENCE DISTANCE: how far apart two shots
+    of the same set are generated predicts how much they disagree about it, and
+    narrative order scatters a location's shots through the sequence — office,
+    corridor, office, corridor is four generations between the two offices.
+    Grouping them is the practitioner rule "generate all the shots in one
+    location together", it is the cheapest fix available anywhere in this module
+    (it changes the order of a loop and buys exactly the same shots), and it is
+    the second half of the location rail — the description makes every shot ASK
+    for the same room, this makes them ask CLOSE TOGETHER.
+
+    NARRATIVE ORDER IS PRESERVED INSIDE EACH GROUP, and the groups themselves
+    run in order of first appearance. So a sequence that is already contiguous
+    by location comes back completely unchanged, which is the property that lets
+    a caller use this unconditionally rather than deciding whether to.
+
+    Shots with no location sort into their own group and stay in order. They are
+    LAST because a shot that names no set is one the model is inventing a set
+    for anyway; nothing is gained by generating it near anything.
+
+    :func:`assemble` does not read this and must not. The CUT is narrative order
+    — ``ORDER BY idx`` — for as long as this module exists.
+    """
+    groups: dict[str, list[int]] = {}
+    for shot in shots:
+        groups.setdefault(shot.get("location") or "", []).append(int(shot["idx"]))
+    unplaced = groups.pop("", [])
+    out = [idx for group in groups.values() for idx in group]
+    return out + unplaced
+
+
+def generation_order(root: str | os.PathLike[str], name: str) -> dict:
+    """The buying order for a sequence, and why it is not the listed order.
+
+    The caller here is whoever iterates a sequence to generate it — an agent
+    holding the cinematic seat, or a human going down the list — and there is
+    deliberately still no ``generate_all``. This tells them which index to buy
+    next; it does not buy anything.
+    """
+    seq = sequence(root, name)
+    live = [s for s in seq["shots"] if s["status"] != "cut"]
+    order = _generation_order(live)
+    narrative = [int(s["idx"]) for s in live]
+    return {
+        "sequence": seq["name"],
+        "order": order,
+        "narrative": narrative,
+        "regrouped": order != narrative,
+        "by_location": {
+            place["slug"]: [int(s["idx"]) for s in live
+                            if s.get("location") == place["slug"]]
+            for place in seq["locations"]},
+        "pending": [idx for idx in order
+                    if next(s["status"] for s in live
+                            if int(s["idx"]) == idx) in ("planned", "failed")],
+        "note": ("generate in this order, not in list order: two shots of one "
+                 "set agree with each other less the further apart they were "
+                 "generated, so a location's shots are bought together. The CUT "
+                 "is unaffected — assemble() joins by shot index, always."
+                 if order != narrative else
+                 "every location's shots are already contiguous, so the buying "
+                 "order is the list order"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Generating
 # ---------------------------------------------------------------------------
 
+def previs_state(root: str | os.PathLike[str], seq: dict) -> dict:
+    """Has this sequence's EDIT been looked at, and is what was looked at current?
+
+    ``{ok, built, stale, path, built_at, planned_at, note}``. Costs nothing and
+    reads two mtimes.
+
+    STALENESS IS THE HALF THAT MATTERS. "An animatic exists" is a weak claim —
+    one built before three shots were re-ordered and two re-timed describes a
+    scene nobody is buying any more, and it is worse than none, because it is
+    the reason somebody thinks the edit has been checked. So the reel has to be
+    NEWER than the last edit to the shot list, and the sequence already stamps
+    ``updated_at`` on every plan() call, which is exactly that timestamp.
+
+    A sequence with fewer than two shots is exempt. There is no EDIT in a single
+    shot — no order, no rhythm, nothing an animatic could show that reading the
+    row does not — and gating it would be the audit-that-fires-on-everything the
+    art brief's eighth rule says gets switched off.
+    """
+    shots = [s for s in seq.get("shots") or []]
+    if len(shots) < 2:
+        return {"ok": True, "built": False, "stale": False, "path": "",
+                "built_at": None, "planned_at": seq.get("updated_at"),
+                "note": "a one-shot sequence has no edit to preview"}
+
+    reel = Path(root) / "design" / "cinematics" / "animatics" / f"{seq['name']}.mp4"
+    if not reel.is_file():
+        return {"ok": False, "built": False, "stale": False,
+                "path": str(reel), "built_at": None,
+                "planned_at": seq.get("updated_at"),
+                "note": "no animatic has ever been built for this sequence"}
+
+    # NAIVE UTC, matching what sqlite's datetime('now') writes into
+    # updated_at. Comparing a tz-aware value against that stamp raises, and
+    # `utcfromtimestamp` is deprecated — so build it explicitly and drop the
+    # tzinfo, which is the only shape both sides of the comparison share.
+    built_at = _dt.datetime.fromtimestamp(
+        reel.stat().st_mtime, _dt.timezone.utc).replace(tzinfo=None)
+    planned = str(seq.get("updated_at") or "").strip()
+    stale = False
+    if planned:
+        try:
+            stale = built_at < _dt.datetime.fromisoformat(planned)
+        except ValueError:
+            # An unparseable stamp is not evidence of staleness, and refusing to
+            # spend over a date format would be a worse failure than the one
+            # this guards.
+            stale = False
+    return {"ok": not stale, "built": True, "stale": stale, "path": str(reel),
+            "built_at": built_at.isoformat(timespec="seconds"),
+            "planned_at": planned,
+            "note": ("the animatic predates the current shot list — it shows an "
+                     "edit that has since been changed" if stale else
+                     "the animatic is current with the shot list")}
+
+
 def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
                   model: str = "", generate_audio: bool = False,
                   timeout: float = 1800.0, on_progress: Any = None,
-                  overwrite: bool = False,
+                  overwrite: bool = False, previs_ok: bool = False,
                   work_item_id: Optional[int] = None) -> dict:
     """Buy one shot of a sequence and register it as a candidate revision.
 
@@ -1015,7 +1784,47 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
                          "Fix the encoder first; nothing has been charged.",
                 "encoder": encoder, "sequence": seq["name"], "idx": idx}
 
-    frames = keyframes_for(root, shot, style_refs=seq.get("style_refs"))
+    # AND THE EDIT IS WATCHED BEFORE IT IS BOUGHT. Same shape as the encoder
+    # check above and placed beside it deliberately: both refuse for something
+    # that is free to fix now and expensive to fix later, and both belong before
+    # the first dollar rather than after the last one.
+    #
+    # The stage this closes had NOTHING in it. plan() wrote a shot list,
+    # generate_shot bought a clip, and the first time a human saw the ORDER, the
+    # rhythm, or that the scene ran ninety seconds against a thirty-second brief
+    # was after every second of it had been paid for — at which point the only
+    # cheap edit left is deleting shots. The industry answer is previs, and its
+    # arithmetic is that hand animation ran about one finished second per hour,
+    # so nobody animated an unproven cut. Generated video costs more per second
+    # than that did.
+    #
+    # `previs_ok=True` is the deliberate override and it is a real one — a
+    # re-roll of a single shot in a sequence already watched should not have to
+    # rebuild the reel. It is a parameter rather than a config setting so that
+    # skipping previs is a thing somebody TYPED on this call.
+    if not previs_ok:
+        previs = previs_state(root, seq)
+        if not previs["ok"]:
+            return {
+                "ok": False, "stage": "previs", "previs": previs,
+                "sequence": seq["name"], "idx": idx,
+                "error": (
+                    f"{previs['note']}. Build one with cinematic_animatic("
+                    f"{seq['name']!r}) — it calls no model, spends nothing and "
+                    "takes seconds — then WATCH IT before buying the shots. It "
+                    "cuts the panels together at their planned durations with "
+                    "the planned transitions, so it shows the one thing a shot "
+                    "list cannot: what this actually plays like. Pass "
+                    "previs_ok=True to generate anyway. Nothing has been "
+                    "charged."),
+            }
+
+    # The plates of the set THIS shot is filmed in — not every location's, which
+    # would condition an office shot on the corridor as hard as on the office.
+    plates = next((p["plates"] for p in seq.get("locations") or []
+                   if p["slug"] == (shot.get("location") or "")), [])
+    frames = keyframes_for(root, shot, style_refs=seq.get("style_refs"),
+                           plates=plates)
     if frames["missing"]:
         return {"ok": False, "stage": "anchors",
                 "error": "conditioning frames named by this shot are not on "
@@ -1075,7 +1884,8 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
         _set_shot(root, shot["id"], task_id=str(task_id or ""))
 
     result = kie.generate_video(
-        prompt_for(shot, seq["style_resolved"]["text"]), str(out_path),
+        prompt_for(shot, seq["style_resolved"]["text"],
+                   shot.get("location_text", "")), str(out_path),
         model=chosen, root=root, logical_name=stem, on_submit=remember,
         work_item_id=work_item_id, timeout=float(timeout), **intent)
 
@@ -1123,6 +1933,34 @@ def generate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
                     "the sequence's setting could not be applied and the model "
                     "used its own. The clip is still usable; check it matches "
                     "the other shots before keeping it."}
+    # A DROPPED `refs` IS A DIFFERENT EVENT FROM AN UNSUPPORTED ONE, AND SAYING
+    # IT THE SAME WAY IS A LIE THAT COSTS THE SET.
+    #
+    # Seedance takes an anchor frame OR reference images, never both — its own
+    # words on the 422: "The reference image and the first and last frames are
+    # mutually exclusive." _fit_intent resolves that by keeping first_frame,
+    # which is right for the CAST (a composed still already has the characters
+    # in it) and is exactly wrong for the SET, because `refs` is the only slot a
+    # location plate can ever occupy. So the better a shot is anchored on a
+    # storyboard still, the more completely it loses the ability to be told what
+    # room it is in — and the generic "no parameter for refs" note above reads
+    # as a model limitation rather than as a trade that was just made on the
+    # caller's behalf. It is not a limitation: the model HAS the parameter.
+    if "refs" in dropped and plates:
+        out["set_reference_evicted"] = {
+            "location": shot.get("location") or "",
+            "plates": list(plates),
+            "note": f"{len(plates)} plate(s) of "
+                    f"{shot.get('location') or 'this location'} were NOT sent. "
+                    f"{chosen} accepts an anchor frame or reference images, "
+                    "never both, and this shot's first_frame won — so the set "
+                    "was described to the model in prose only, which is the "
+                    "condition the location rail exists to fix. If the set "
+                    "drifts in this clip that is why. Either drop the "
+                    "first_frame so the plates can go (the plates carry the "
+                    "room, the still carries the framing) or accept prose for "
+                    "the set on this shot and check it against the plates "
+                    "before keeping it."}
     return out
 
 
@@ -1323,7 +2161,8 @@ def recover_shot(root: str | os.PathLike[str], name: str, idx: int,
 
 
 def keyframes_for(root: str | os.PathLike[str], shot: dict,
-                  style_refs: Optional[list] = None) -> dict:
+                  style_refs: Optional[list] = None,
+                  plates: Optional[list] = None) -> dict:
     """This shot's conditioning frames as things the adapter can send.
 
     Returns ``{first, last, refs, missing}`` — local paths are handed through as
@@ -1335,6 +2174,14 @@ def keyframes_for(root: str | os.PathLike[str], shot: dict,
     the character frames lead and the look frames follow. This is the mitigation
     for the weight-sharing problem plan() warns about — it does not solve it, and
     nothing at this layer can, which is why the warning exists.
+
+    THE LOCATION'S PLATES GO BETWEEN THEM, and the middle is the argued position
+    rather than a leftover. Cast first, because a stranger delivering the story
+    beat is the worst failure available. Set second, because the set was the one
+    measured drifting on every real sequence and a plate beats prose about a room
+    exactly as a style ref beats prose about a look. Style last, because it is
+    the lever that survives being outweighed — a look carried in words still
+    partly lands, a face carried in words does not.
 
     WHAT THIS DOES NOT DO IS THE POINT. It never reaches into the previous shot's
     video for a frame. See the module docstring: that is the chain the art seat
@@ -1356,7 +2203,8 @@ def keyframes_for(root: str | os.PathLike[str], shot: dict,
             continue
         out[field] = str(base / value)
     refs = []
-    for one in list(shot.get("refs") or []) + list(style_refs or []):
+    for one in (list(shot.get("refs") or []) + list(plates or [])
+                + list(style_refs or [])):
         text = project_path(root, one, what="reference")
         if not text:
             continue
@@ -1509,6 +2357,14 @@ def transcode(source: str | os.PathLike[str], destination: str | os.PathLike[str
     RAISES on failure and says what ffmpeg said. A silent best-effort here would
     leave the caller unable to distinguish "converted" from "wrote nothing", which
     is the difference between a cutscene and a black rectangle.
+
+    AND THE OUTPUT IS DECODED BEFORE THIS RETURNS, which is that same rule one
+    level down. The failure that shipped was not "wrote nothing" — it was a file
+    that appeared, exited 0, was the right size and could not be READ: 179 of 193
+    frames throwing `error in unpack_block_qpis`, and a cutscene of flat green
+    rectangles in the game. An encoder's exit code is its opinion of its own
+    work; the decoder is the only thing that has actually looked at the bytes,
+    and it is one cheap subprocess away.
     """
     # THE SOURCE IS CHECKED FIRST, and the order is the diagnostic. Nothing is
     # spent in here, so there is no "fail before the money moves" argument for
@@ -1546,9 +2402,46 @@ def transcode(source: str | os.PathLike[str], destination: str | os.PathLike[str
             f"ffmpeg could not convert {src.name} to Ogg Theora: "
             + ((proc.stderr or "").strip()[-300:] or
                f"exit {proc.returncode} and no output file"))
+
+    # READ BACK WHAT WAS JUST WRITTEN. ffmpeg_status()'s round trip already
+    # refuses a build known to be broken, and this is not a duplicate of it: that
+    # one asks a question about the BUILD, once, on a synthetic second of video;
+    # this asks about THIS FILE, which is the one being installed into somebody's
+    # game. A build that only mangles certain sizes, a truncated write, a full
+    # disk and a source the encoder choked halfway through all pass the exit code
+    # and fail here.
+    lines, failure = _decode_errors(encoder["ffmpeg"], dst, timeout=timeout)
+    if failure:
+        raise CinematicError(
+            f"{dst.name} was written but could not be verified: {failure}. It "
+            "has NOT been installed — an unverified clip is exactly the thing "
+            "that shipped as a green rectangle.")
+    if lines:
+        broken = len(lines)
+        # The file is removed rather than left looking like a deliverable. A
+        # half-written .ogv sitting at the destination path is what a later run,
+        # or a human reading the directory, would take for a converted clip.
+        try:
+            dst.unlink()
+        except OSError:
+            pass
+        raise CinematicError(
+            f"the Ogg Theora written from {src.name} cannot be decoded: "
+            f"{broken} frame(s) failed to read back"
+            + (f" — first: {lines[0][:160]}" if lines else "")
+            + ". The clip was NOT installed. The encoder exited 0 and produced "
+            "a plausible file, which is how this shipped unnoticed before: in "
+            "the game those frames are flat green rectangles. This is a broken "
+            "ffmpeg build rather than a setting (see ffmpeg_status and "
+            "GyanD/codexffmpeg issue #200) — install a different build and "
+            "re-keep the shot; the source .mp4 is untouched.")
+
     return {"path": str(dst), "bytes": dst.stat().st_size,
             "quality": int(quality), "gop": int(THEORA_GOP),
-            "scaled_to": int(scale_height) or None}
+            "scaled_to": int(scale_height) or None,
+            # WHAT WAS MEASURED, not what was assumed. A caller reporting a
+            # successful keep can say the file was decoded, because it was.
+            "verified": {"decoded": True, "errors": 0}}
 
 
 # ---------------------------------------------------------------------------
@@ -1991,7 +2884,8 @@ def _register(root: str, stem: str, shot: dict, seq: dict, result: dict, *,
         # reproduce the clip beside it — and the whole reason artifacts carry a
         # prompt is that six months later it is the only record of what was
         # asked for.
-        prompt=prompt_for(shot, (seq.get("style_resolved") or {}).get("text", "")),
+        prompt=prompt_for(shot, (seq.get("style_resolved") or {}).get("text", ""),
+                          shot.get("location_text", "")),
         refs=list(shot.get("refs") or []), work_item_id=work_item_id,
         metadata={
             "provider": "kie",

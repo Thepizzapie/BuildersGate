@@ -73,6 +73,11 @@ def everything_present(monkeypatch):
 def nothing_present(monkeypatch):
     """A bare machine: no binaries, no key, no whisper."""
     monkeypatch.setattr("shutil.which", lambda name: None)
+    # A BARE MACHINE HAS NO ~/.bgate/bin EITHER. ffmpegbin.resolve prefers a
+    # binary deliberately placed there over PATH, and it reads the filesystem
+    # rather than shutil.which — so without this the developing machine's own
+    # ffmpeg walks into a test whose entire premise is that there is none.
+    monkeypatch.setattr("bgate_core.ffmpegbin.local_bin", lambda: None)
     monkeypatch.setattr("bgate_adapters.blender.available",
                         lambda: {"available": False, "reason": "Blender not found."})
     monkeypatch.setattr("bgate_adapters.godot.available",

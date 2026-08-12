@@ -50,6 +50,21 @@ def _clip(path, *, seconds=1, size="320x240"):
     return path
 
 
+class _Done:
+    """A finished subprocess.run, for the stubs below. The encoder's exit code
+    is the thing under test in half of them, so it has to be settable."""
+
+    def __init__(self, code=0, out="", err=""):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
+def _decode_noise(count):
+    """What a broken libtheora's output looks like coming back through the
+    decoder. The real message, because the real one is what a reader greps."""
+    return "\n".join(f"[theora @ 0x1] error in unpack_block_qpis frame {i}"
+                      for i in range(count))
+
+
 def _shots(n=2, **over):
     return [{"action": f"beat {i}", "duration": 5, **over} for i in range(1, n + 1)]
 
@@ -450,8 +465,10 @@ class TestGeneratingAShot:
         same path, and shot 2 silently overwrote the clip shot 1 was paid for."""
         self._stub(monkeypatch)
         cinematic.plan(root, "seq", _shots(2))
-        first = cinematic.generate_shot(root, "seq", 1)
-        second = cinematic.generate_shot(root, "seq", 2)
+        # previs_ok: these buy several shots to test GENERATION mechanics,
+        # not the previs gate, which TestPrevisIsWatchedBeforeItIsBought owns.
+        first = cinematic.generate_shot(root, "seq", 1, previs_ok=True)
+        second = cinematic.generate_shot(root, "seq", 2, previs_ok=True)
         assert first["path"] != second["path"]
         assert (root / first["path"]).is_file()
         assert (root / second["path"]).is_file()
@@ -814,7 +831,8 @@ class TestPostProduction:
         TestGeneratingAShot()._stub(monkeypatch)
         seq = cinematic.plan(root, "seq", **plan)
         for shot in seq["shots"]:
-            out = cinematic.generate_shot(root, "seq", shot["idx"])
+            out = cinematic.generate_shot(root, "seq", shot["idx"],
+                                          previs_ok=True)
             cinematic.keep(root, out["artifact_id"], actor="human")
         return cinematic.sequence(root, "seq")
 
@@ -913,7 +931,8 @@ class TestDelivery:
         TestGeneratingAShot()._stub(monkeypatch)
         seq = cinematic.plan(root, "seq", **plan)
         for shot in seq["shots"]:
-            out = cinematic.generate_shot(root, "seq", shot["idx"])
+            out = cinematic.generate_shot(root, "seq", shot["idx"],
+                                          previs_ok=True)
             cinematic.keep(root, out["artifact_id"], actor="human")
         cut = cinematic.assemble(root, "seq")
         cinematic.keep(root, cut["artifact_id"], actor="human")
@@ -1031,7 +1050,8 @@ class TestWhatReachesTheEngineProject:
         TestGeneratingAShot()._stub(monkeypatch)
         cinematic.plan(root, "seq", _shots(2))
         for idx in (1, 2):
-            out = cinematic.generate_shot(root, "seq", idx)
+            out = cinematic.generate_shot(root, "seq", idx,
+                                          previs_ok=True)
             cinematic.keep(root, out["artifact_id"], actor="human")
         cut = cinematic.assemble(root, "seq")
         kept = cinematic.keep(root, cut["artifact_id"], actor="human")
@@ -1150,3 +1170,309 @@ class TestPathContainment:
         (root / "art" / "hero.png").write_bytes(b"\x89PNG")
         assert cinematic.project_path(
             root, "game/../art/hero.png") == "art/hero.png"
+
+
+class TestTheEncoderIsWorkingNotMerelyPresent:
+    """The check that was missing, and the defect it was missing FOR.
+
+    Every cutscene this product ever shipped was a structurally corrupt Ogg
+    Theora file: the installed clip of a real game decoded 14 of its 193 frames
+    and the other 179 threw `error in unpack_block_qpis`, extracting as flat
+    green rectangles. The build was Gyan.FFmpeg 8.1.1 from winget, whose
+    libtheora writes malformed bitstreams (GyanD/codexffmpeg#200); the same
+    version from BtbN is fine.
+
+    Nothing here could notice, because ffmpeg_status() decided the build was
+    usable with `"libtheora" in listed` — presence, never function. So these
+    tests pin FUNCTION, and every subprocess is stubbed on purpose: a test that
+    read the real ffmpeg on this machine would pass for the wrong reason today
+    and silently stop testing anything the day somebody reinstalls it.
+    """
+
+    EXE = "/fake/bin/ffmpeg"
+
+    def _ffmpeg(self, monkeypatch, *, exe="", decode_errors=0,
+                encoders="libtheora libvorbis", encode_ok=True):
+        """Stand in for a whole ffmpeg build, and count what got asked of it.
+
+        ``decode_errors`` is the number of stderr lines the DECODE reports,
+        which is the entire signal: a healthy build round-trips in silence.
+        """
+        exe = exe or self.EXE
+        calls = []
+        monkeypatch.setattr(cinematic, "_ROUNDTRIP", {})
+        monkeypatch.setattr(shutil, "which", lambda name: exe)
+        # AND NO ~/.bgate/bin, WHICH OUTRANKS PATH. `ffmpegbin.resolve` prefers
+        # a binary deliberately placed there, and it finds it by reading the
+        # filesystem rather than through shutil.which — so on a machine that has
+        # one (this feature's whole purpose is that developers WILL have one)
+        # the stub above would be silently outranked and every assertion here
+        # would be about the developer's real ffmpeg instead of the fake.
+        monkeypatch.setattr(cinematic._ffmpegbin, "local_bin", lambda: None)
+
+        def fake_run(cmd, **kw):
+            calls.append(list(cmd))
+            if "-encoders" in cmd:
+                return _Done(0, encoders)
+            if "null" in cmd:
+                return _Done(0, "", _decode_noise(decode_errors))
+            if not encode_ok:
+                return _Done(1, "", "Unknown encoder 'libtheora'")
+            Path(cmd[-1]).write_bytes(b"OggS-not-really")
+            return _Done(0)
+
+        monkeypatch.setattr(cinematic.subprocess, "run", fake_run)
+        return calls
+
+    def _probes(self, calls):
+        return [c for c in calls if "lavfi" in " ".join(c)]
+
+    def test_a_working_build_passes(self, monkeypatch):
+        """The round trip must not fail a healthy encoder — a check that cries
+        wolf gets stubbed out by the first person it inconveniences."""
+        self._ffmpeg(monkeypatch, decode_errors=0)
+        status = cinematic.ffmpeg_status()
+        assert status["ok"] is True
+        assert status["theora"] is True and status["probed"] is True
+        assert status["roundtrip"]["ok"] is True
+        assert not status["reason"]
+
+    def test_a_build_whose_output_will_not_decode_is_refused(self, monkeypatch):
+        """THE DEFECT. libtheora is listed, the encode exits 0, and what comes
+        out cannot be read back. `-encoders` cannot see this, which is why the
+        product shipped green rectangles under a green doctor."""
+        self._ffmpeg(monkeypatch, decode_errors=35)
+        status = cinematic.ffmpeg_status()
+        assert status["ok"] is False
+        # The encoder IS there. Reporting this as "no libtheora" would send the
+        # reader to install something they already have.
+        assert status["theora"] is True and status["probed"] is True
+        assert status["roundtrip"]["errors"] == 35
+
+    def test_the_refusal_names_the_build_and_the_remedy_not_a_setting(
+            self, monkeypatch):
+        """Quality, frame size and encoder threading were all ruled out by
+        experiment. An error that leaves that open costs the reader an evening
+        of tuning knobs that cannot help."""
+        self._ffmpeg(monkeypatch, decode_errors=35)
+        reason = cinematic.ffmpeg_status()["reason"]
+        assert "35" in reason
+        assert "#200" in reason
+        assert "BtbN" in reason
+        assert "not a settings problem" in reason.lower()
+
+    def test_the_three_states_read_differently(self, monkeypatch):
+        """No ffmpeg / no libtheora / libtheora that lies are three different
+        situations wanting three different sentences."""
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        monkeypatch.setattr(cinematic._ffmpegbin, "local_bin", lambda: None)
+        absent = cinematic.ffmpeg_status()["reason"]
+
+        self._ffmpeg(monkeypatch, encoders="libvorbis libx264")
+        unbuilt = cinematic.ffmpeg_status()["reason"]
+
+        self._ffmpeg(monkeypatch, decode_errors=35)
+        broken = cinematic.ffmpeg_status()["reason"]
+
+        assert "not found on PATH" in absent
+        assert "without libtheora" in unbuilt
+        assert "broken files" in broken
+        assert len({absent, unbuilt, broken}) == 3
+
+    def test_a_build_that_cannot_encode_at_all_is_not_called_corrupt(
+            self, monkeypatch):
+        """A failed probe encode is the OLD failure (no usable libtheora), not
+        the new one, and it keeps its own branch rather than being reported as a
+        build that writes files nothing can read."""
+        self._ffmpeg(monkeypatch, encode_ok=False)
+        status = cinematic.ffmpeg_status()
+        assert status["ok"] is False
+        assert status["roundtrip"]["errors"] == 0
+
+    def test_the_probe_is_cached_per_process(self, monkeypatch):
+        """It costs an encode and a decode of a second of video (~256ms). Run on
+        every ffmpeg_status() it would be paid by options(), by every doctor
+        sweep and before every generation."""
+        calls = self._ffmpeg(monkeypatch, decode_errors=0)
+        for _ in range(4):
+            assert cinematic.ffmpeg_status()["ok"] is True
+        assert len(self._probes(calls)) == 1
+
+    def test_the_cache_is_keyed_on_the_executable_not_global(self, monkeypatch):
+        """A global flag would be wrong the moment somebody follows the remedy
+        this module prints, puts a working build ahead of the broken one on
+        PATH, and asks the running dashboard again."""
+        broken = self._ffmpeg(monkeypatch, exe="/fake/broken/ffmpeg",
+                              decode_errors=35)
+        assert cinematic.ffmpeg_status()["ok"] is False
+        assert len(self._probes(broken)) == 1
+
+        # A NEW PATH. The previous binary's answer is left in the cache, still
+        # true of that binary, and the new one is probed on its own account.
+        good = []
+        monkeypatch.setattr(shutil, "which", lambda name: "/fake/good/ffmpeg")
+        monkeypatch.setattr(cinematic._ffmpegbin, "local_bin", lambda: None)
+
+        def fake_run(cmd, **kw):
+            good.append(list(cmd))
+            if "-encoders" in cmd:
+                return _Done(0, "libtheora libvorbis")
+            if "null" in cmd:
+                return _Done(0)
+            Path(cmd[-1]).write_bytes(b"OggS")
+            return _Done(0)
+
+        monkeypatch.setattr(cinematic.subprocess, "run", fake_run)
+        assert cinematic.ffmpeg_status()["ok"] is True
+        assert len(self._probes(good)) == 1
+        assert cinematic._ROUNDTRIP["/fake/broken/ffmpeg"]["ok"] is False
+        assert cinematic._ROUNDTRIP["/fake/good/ffmpeg"]["ok"] is True
+
+
+class TestTranscodeVerifiesItsOwnOutput:
+    """The build-level probe is not enough by itself: it asks one question about
+    the BUILD, once, on synthetic video. transcode() writes the file that is
+    actually installed into somebody's game, and an encoder's exit code is only
+    its opinion of its own work."""
+
+    def _source(self, root):
+        src = Path(root) / ".bgate_out" / "shot.mp4"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"not really an mp4")
+        return src
+
+    def _ffmpeg(self, monkeypatch, *, decode_errors=0):
+        monkeypatch.setattr(cinematic, "ffmpeg_status",
+                            lambda: {"ok": True, "reason": "", "probed": True,
+                                     "theora": True, "ffmpeg": "/fake/ffmpeg"})
+
+        def fake_run(cmd, **kw):
+            if "null" in cmd:
+                return _Done(0, "", _decode_noise(decode_errors))
+            Path(cmd[-1]).write_bytes(b"OggS-output")
+            return _Done(0)
+
+        monkeypatch.setattr(cinematic.subprocess, "run", fake_run)
+
+    def test_a_clip_that_decodes_is_returned_and_says_it_was_verified(
+            self, root, monkeypatch):
+        self._ffmpeg(monkeypatch, decode_errors=0)
+        out = cinematic.transcode(self._source(root), root / "out.ogv")
+        assert out["verified"] == {"decoded": True, "errors": 0}
+        assert (root / "out.ogv").is_file()
+
+    def test_a_corrupt_output_raises_rather_than_being_returned(
+            self, root, monkeypatch):
+        """ffmpeg exits 0 and writes a plausible file. Returning it is how 179
+        unreadable frames reached a shipped game."""
+        self._ffmpeg(monkeypatch, decode_errors=179)
+        with pytest.raises(cinematic.CinematicError) as exc:
+            cinematic.transcode(self._source(root), root / "out.ogv")
+        text = str(exc.value)
+        # What was measured, and what it means for the delivery.
+        assert "179" in text
+        assert "NOT installed" in text
+
+    def test_the_corrupt_file_is_not_left_looking_like_a_deliverable(
+            self, root, monkeypatch):
+        """A half-written .ogv sitting at the destination path is what a later
+        run — or a human reading the directory — takes for a converted clip."""
+        self._ffmpeg(monkeypatch, decode_errors=12)
+        with pytest.raises(cinematic.CinematicError):
+            cinematic.transcode(self._source(root), root / "out.ogv")
+        assert not (root / "out.ogv").exists()
+
+
+class TestPrevisIsWatchedBeforeItIsBought:
+    """The stage that had nothing in it.
+
+    plan() wrote a shot list and generate_shot bought a clip, so the first time
+    anyone saw the EDIT was after paying for all of it. These pin the gate that
+    closes that, including the half that actually matters: an animatic built
+    before the shot list changed describes a scene nobody is buying.
+    """
+
+    def _seq(self, root, shots=2):
+        cinematic.plan(root, "scene", [
+            {"action": f"beat {i}", "duration": 5} for i in range(shots)])
+        return cinematic.sequence(root, "scene")
+
+    def test_generation_is_refused_before_any_animatic_exists(self, root):
+        got = cinematic.generate_shot(root, "scene", 1) if self._seq(root) else None
+        assert got["ok"] is False
+        assert got["stage"] == "previs"
+        assert "cinematic_animatic" in got["error"]
+        # The refusal has to say the money is safe, like every other refusal in
+        # this module — a caller that thinks it was charged re-checks instead of
+        # acting.
+        assert "Nothing has been charged" in got["error"]
+
+    def test_a_one_shot_sequence_is_exempt(self, root):
+        """There is no edit in one shot, and an audit that fires on everything
+        is one somebody switches off."""
+        state = cinematic.previs_state(root, self._seq(root, shots=1))
+        assert state["ok"] is True and state["built"] is False
+
+    def test_an_animatic_older_than_the_shot_list_does_not_count(
+            self, root, tmp_path, monkeypatch):
+        """THE HALF THAT MATTERS. 'An animatic exists' is a weak claim: one
+        built before three shots were re-ordered is worse than none, because it
+        is the reason somebody believes the edit was checked."""
+        import datetime as dt
+
+        seq = self._seq(root)
+        reel = root / "design" / "cinematics" / "animatics" / "scene.mp4"
+        reel.parent.mkdir(parents=True, exist_ok=True)
+        reel.write_bytes(b"reel")
+
+        fresh = cinematic.previs_state(root, seq)
+        assert fresh["ok"] is True and fresh["stale"] is False
+
+        # The shot list is edited AFTER the reel was cut.
+        later = (dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+                 + dt.timedelta(hours=1)).isoformat(" ", "seconds")
+        seq = {**seq, "updated_at": later}
+        stale = cinematic.previs_state(root, seq)
+        assert stale["stale"] is True and stale["ok"] is False
+        assert "since been changed" in stale["note"]
+
+    def test_previs_ok_is_the_deliberate_override(self, root):
+        """A re-roll of one shot in a watched sequence should not have to
+        rebuild the reel — but skipping previs must be something typed."""
+        self._seq(root)
+        got = cinematic.generate_shot(root, "scene", 1, previs_ok=True)
+        assert got.get("stage") != "previs"
+
+    def test_an_unparseable_timestamp_does_not_block_spending(self, root):
+        """Refusing to generate over a date format would be a worse failure
+        than the one this guards."""
+        seq = {**self._seq(root), "updated_at": "not a date"}
+        reel = root / "design" / "cinematics" / "animatics" / "scene.mp4"
+        reel.parent.mkdir(parents=True, exist_ok=True)
+        reel.write_bytes(b"reel")
+        assert cinematic.previs_state(root, seq)["ok"] is True
+
+
+class TestTheSetReferenceEviction:
+    """Seedance takes an anchor frame OR reference images, never both.
+
+    _fit_intent resolves that by keeping first_frame, which is right for the
+    CAST and exactly wrong for the SET: `refs` is the only slot a location plate
+    can occupy, so the better a shot is anchored the more completely it loses
+    the ability to be told what room it is in.
+    """
+
+    def test_a_first_frame_evicts_the_plates(self):
+        wanted = {"seconds": 5, "first_frame": "/x/still.png",
+                  "last_frame": None, "refs": ["/x/plate.png"], "audio": False}
+        intent, dropped, refusal = cinematic._fit_intent("seedance-2", wanted)
+        assert not refusal
+        assert dropped == ["refs"]
+        assert not intent.get("refs")
+        assert intent.get("first_frame")
+
+    def test_without_an_anchor_the_plates_survive(self):
+        wanted = {"seconds": 5, "first_frame": None, "last_frame": None,
+                  "refs": ["/x/plate.png"], "audio": False}
+        intent, dropped, _ = cinematic._fit_intent("seedance-2", wanted)
+        assert dropped == [] and intent.get("refs")
