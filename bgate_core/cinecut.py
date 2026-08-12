@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import assets
+from . import ffmpegbin as _ffmpegbin
 
 # Windows: never flash a console window out of an ffmpeg call. Every other
 # module in this product that spawns a binary does this (doctor, gitwork,
@@ -515,9 +516,8 @@ def duration_of(path: Optional[Path], *, ffmpeg: str = "") -> float:
 
 
 def _ffmpeg() -> str:
-    import shutil as _shutil
 
-    exe = _shutil.which("ffmpeg")
+    exe = _ffmpegbin.resolve()
     if not exe:
         raise CutError("ffmpeg not found on PATH")
     return exe

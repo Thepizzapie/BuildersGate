@@ -128,6 +128,8 @@ NOT_TOOLS = {
     "ref_strength", "source_ref", "style_note", "style_refs", "task_kind",
     "tileable", "transition_s", "unweighted_verts", "use_pinned",
     "work_item_id",
+    # spritekit.row_report finding kinds, quoted by name in the art brief
+    "size_ramp", "sheet_size_ramp",
     # not ours
     "add_child", "one_of",
 }

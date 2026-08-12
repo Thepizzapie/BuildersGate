@@ -804,9 +804,12 @@ def close_partner(root: Any, session_id: int) -> dict:
                   notes and no deploys until it is reopened. Implies a close,
                   because a room nobody may speak in must not still be paying
                   for somebody to listen. Reversible; deletes nothing.
-        deployed  a STATUS, not an action, and not an ending: this session has
-                  put work on the board. A deployed session is usually still
-                  open, and people keep talking in it.
+        deployed  a STATUS, not an action: this session has put work on the
+                  board. It is not an ending — the session stays open and can
+                  take another batch later — but it now IMPLIES a close, because
+                  a room that still answers is a room the next idea goes into,
+                  and that is how one thread quietly accumulates three plans.
+                  Speak in it and it reopens.
 
     Idempotent, and safe on a session that never had a partner.
     """
@@ -1150,10 +1153,37 @@ def file_plan(root: str | os.PathLike[str], session: dict, plan: Any, *,
 
     updated = record_deploy(root, session_id, clean, filed, chain_id=chain_id,
                             by=by)
+    # DEPLOYING ENDS THE PARTNER PROCESS. This used to leave it running, on the
+    # reasoning that a deployed session is one people keep talking in — which is
+    # true of the SESSION and was the wrong conclusion about the PROCESS. A room
+    # that still answers looks exactly like a room that should be spoken to, so
+    # the next idea goes into the same conversation as the one already on the
+    # board, and the thread grows a second and third plan behind a transcript
+    # nobody re-reads. Observed, on this project's own director seat: a chat
+    # opened the next day was still the previous day's conversation, and requests
+    # had been stacking in it unnoticed.
+    #
+    # Nothing is lost and nothing is decided — this is `close`, whose whole
+    # contract is that the transcript, the notes and the drawing are rows in a
+    # table and stay exactly as they are. Saying anything in the room reopens it,
+    # resuming where it left off. The only thing that changes is that continuing
+    # is now a thing somebody chose rather than a thing that did not stop.
+    closed = None
+    try:
+        closed = close_partner(root, session_id)
+    except Exception as exc:                                    # noqa: BLE001
+        # The work is on the board. A partner that would not shut down is worth
+        # reporting and is not worth failing a deploy over — the items are filed
+        # and re-running the deploy would file them twice.
+        closed = {"ok": False,
+                  "note": f"the plan is on the board, but the thinking partner "
+                          f"could not be shut down ({type(exc).__name__}: {exc})"
+                          " — close it from the session view."}
     return {
         "session": updated,
         "chain_id": chain_id,
         "chained": bool(chain_id),
+        "closed": closed,
         "filed": [{"id": int(f["id"]), "seat": f["seat"], "title": f["title"],
                    "status": f["status"], "chain_pos": f.get("chain_pos") or 0,
                    "depends_on": f.get("depends_on")} for f in filed],
