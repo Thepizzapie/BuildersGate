@@ -1322,6 +1322,10 @@
 
 /* ---- chat ---- */
 .bs-thread{flex:1;min-height:0;overflow:auto;padding:14px 14px 4px;display:flex;flex-direction:column;gap:12px}
+.bs-earlier{align-self:center;flex:none;padding:5px 14px;border-radius:20px;cursor:pointer;
+  background:var(--surface-2);border:1px solid var(--line);color:var(--text-2);
+  font:inherit;font-size:11px}
+.bs-earlier:hover{color:var(--text);border-color:var(--accent-line)}
 .bs-msg{max-width:88%;display:flex;flex-direction:column;gap:3px}
 .bs-msg.user{align-self:flex-end;align-items:flex-end}
 .bs-msg .who{font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3)}
@@ -1871,6 +1875,7 @@
       if (a === "micoff") self.stopMic();
       if (a === "tts") self.toggleTts();
       if (a === "partner") self.closePartner();
+      if (a === "earlier") self.showEarlier();
     });
 
     // Escape kills the mic from anywhere in the workspace. A hot mic you cannot
@@ -2036,6 +2041,19 @@
         try { want = Number(localStorage.getItem("bs-last-" + this.seat)) || null; } catch (e) {}
         var pick = this.sessions.filter(function (s) { return s.id === want; })[0]
           || this.sessions.filter(function (s) { return s.status !== "archived"; })[0];
+        // A ROOM YOU DID NOT CHOOSE TO ENTER IS A ROOM YOU DO NOT NOTICE YOU ARE
+        // IN. This used to restore the remembered session unconditionally and
+        // forever, so opening a seat the next morning dropped you into the
+        // middle of yesterday's conversation with no mark to say so — and the
+        // next three requests went into that thread, behind a transcript nobody
+        // scrolls back through, on top of a plan already on the board.
+        //
+        // So the auto-restore now only covers what it was for: picking the
+        // thread back up in the SAME sitting. Anything older, or anything that
+        // has already deployed, lands on the list with the drawer open. The
+        // session is right there and one click away; the only thing that
+        // changed is that continuing it is a decision.
+        if (pick && this.isStale(pick)) pick = null;
         if (pick) this.open(pick.id);
         else { this.toggleDrawer(true); this.renderThread(); }
       }
@@ -2045,6 +2063,24 @@
         '<li class="bs-empty"><b>cannot reach the brainstorm API</b>' + esc(e.message) + "</li>";
       this.toggleDrawer(true);
     }
+  };
+
+  // How long a remembered session stays worth re-opening without being asked
+  // for. Four hours is "the same sitting, including lunch"; the failure it
+  // exists to stop needs only the gap between one evening and the next morning.
+  var RESTORE_WINDOW_MS = 4 * 60 * 60 * 1000;
+
+  Workspace.prototype.isStale = function (s) {
+    if (!s) return true;
+    // Deployed means this thread has already put work on the board. The next
+    // idea is a new thread, not a reply under the plan that is already running.
+    if (s.status === "deployed" || s.status === "archived") return true;
+    var when = Date.parse(String(s.updated_at || "").replace(" ", "T") + "Z");
+    // No timestamp, or one this browser cannot parse: restore it. An unreadable
+    // date is not evidence of age, and refusing to reopen on a parse failure
+    // would break the ordinary case to guard against the rare one.
+    if (!when || isNaN(when)) return false;
+    return (Date.now() - when) > RESTORE_WINDOW_MS;
   };
 
   Workspace.prototype.renderModel = function () {
@@ -2107,6 +2143,10 @@
       var s = await API.read(id);
       if (this.dead) return;
       this.session = s;
+      // A fresh room starts at the bottom. Carrying the last session's expanded
+      // window into this one would render a hundred bubbles of a conversation
+      // you have not opened yet.
+      this.window = THREAD_WINDOW;
       try { localStorage.setItem("bs-last-" + this.seat, String(id)); } catch (e) {}
       this.paint();
       this.renderList();
@@ -2327,7 +2367,24 @@
   };
 
   /* ---- chat ---------------------------------------------------------- */
-  Workspace.prototype.renderThread = function () {
+  // How many messages of a session are on screen before you ask for more.
+  // A brainstorm that reached a plan is routinely a hundred turns long, and all
+  // of it was being rendered on every keystroke-completed turn: an unbounded
+  // scroll to find anything, and a full re-parse of every markdown bubble in
+  // the session each time one new one arrived.
+  var THREAD_WINDOW = 24;
+
+  Workspace.prototype.showEarlier = function () {
+    var thread = this.$(".bs-thread");
+    // Hold the reading position. Expanding upward and then snapping to the
+    // bottom would dump you back where you already were, having read nothing,
+    // which is the failure mode of every "load more" that forgets to do this.
+    var before = thread.scrollHeight - thread.scrollTop;
+    this.window = (this.window || THREAD_WINDOW) + THREAD_WINDOW * 2;
+    this.renderThread({ keep: before });
+  };
+
+  Workspace.prototype.renderThread = function (opts) {
     var thread = this.$(".bs-thread");
     var s = this.session;
     if (!s) {
@@ -2335,9 +2392,18 @@
         esc(this.copy.empty) + "<br><br>Open a session from <b>Sessions</b>, or start a new one.</div>";
       return;
     }
-    var msgs = s.messages || [];
+    var all = s.messages || [];
+    var window_ = this.window || THREAD_WINDOW;
+    var hidden = Math.max(0, all.length - window_);
+    var msgs = hidden ? all.slice(hidden) : all;
     var voice = this.seat;
-    var html = msgs.length ? msgs.map(function (m) {
+    var html = hidden
+      ? '<button class="bs-earlier" data-a="earlier">show ' +
+        Math.min(hidden, THREAD_WINDOW * 2) + ' earlier message' +
+        (Math.min(hidden, THREAD_WINDOW * 2) === 1 ? "" : "s") +
+        (hidden > THREAD_WINDOW * 2 ? " · " + hidden + " above" : "") + "</button>"
+      : "";
+    html += msgs.length ? msgs.map(function (m) {
       return '<div class="bs-msg ' + (m.role === "user" ? "user" : "bot") + '">' +
         '<span class="who">' + (m.role === "user" ? "you" : esc(voice)) + "</span>" +
         '<div class="bub">' + md(m.text) + "</div></div>";
@@ -2356,7 +2422,9 @@
         "</span>" + '<div class="bub">' + esc(this.chatError) + "</div></div>";
     }
     thread.innerHTML = html;
-    thread.scrollTop = thread.scrollHeight;
+    thread.scrollTop = (opts && opts.keep)
+      ? thread.scrollHeight - opts.keep       // stay where you were reading
+      : thread.scrollHeight;                  // a new turn: follow the bottom
   };
 
   Workspace.prototype.send = async function () {

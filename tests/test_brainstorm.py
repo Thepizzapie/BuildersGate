@@ -667,9 +667,49 @@ class TestDeployFilesTheConfirmedPlan:
         assert len(read["deploys"]) == 1
         assert [i["title"] for i in read["deploys"][0]["items"]] == [
             "paint a rain overlay"]
-        # Still writable afterwards: the conversation usually continues.
+        # Still writable afterwards: the SESSION is not ended by deploying, and
+        # a second batch later is legitimate. What deploying ends is the running
+        # partner PROCESS — see test_deploying_shuts_the_partner_down.
         assert client.post(f"/api/brainstorm/{sid}/message",
                            json={"text": "and after that?"}).status_code == 200
+
+    def test_deploying_shuts_the_partner_down(self, client, root, answers,
+                                              no_agents, monkeypatch):
+        """A room that still answers is a room the next request goes into.
+
+        The failure this closes, observed on this project's own director seat: a
+        session deployed one day was still running the next, the seat page
+        reopened it silently, and three more requests stacked in the thread on
+        top of a plan already on the board.
+        """
+        from bgate_core import brainstorm as _bs
+
+        stopped = []
+        monkeypatch.setattr(_bs, "close_partner",
+                            lambda r, sid: stopped.append(int(sid)) or {"ok": True})
+        sid = _new(client)["id"]
+        got = client.post(f"/api/brainstorm/{sid}/deploy", json={"plan": {
+            "items": [{"seat": "art", "title": "t", "brief": "b"}]}})
+        assert got.status_code == 200, got.text
+        assert stopped == [sid]
+        assert got.json()["data"]["closed"] == {"ok": True}
+
+    def test_a_partner_that_will_not_die_does_not_fail_the_deploy(
+            self, client, root, answers, no_agents, monkeypatch):
+        """The items are filed. Re-running the deploy would file them twice."""
+        from bgate_core import brainstorm as _bs
+
+        def boom(root, session_id):
+            raise RuntimeError("the CLI is wedged")
+
+        monkeypatch.setattr(_bs, "close_partner", boom)
+        sid = _new(client)["id"]
+        got = client.post(f"/api/brainstorm/{sid}/deploy", json={"plan": {
+            "items": [{"seat": "art", "title": "t", "brief": "b"}]}})
+        assert got.status_code == 200, got.text
+        assert len(_items(root)) == 1
+        closed = got.json()["data"]["closed"]
+        assert closed["ok"] is False and "wedged" in closed["note"]
 
     def test_deploy_never_re_synthesizes(self, client, answers, no_agents):
         """If it asked the model again, the plan filed would be one nobody read."""
