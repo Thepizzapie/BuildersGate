@@ -1,141 +1,56 @@
 # Start here
 
-2026-07-27. For someone who has never run an MCP server and has never had more
-than one AI agent working on anything.
+For someone who has never run an MCP server and has never had more than one AI
+agent working on anything. If you already know what MCP is, read the
+[README](../README.md) instead.
 
-If you already know what MCP is, read the [README](../README.md) instead.
+Every term below is defined in the [glossary](glossary.md).
 
-There is a [glossary](glossary.md) for every term below.
+## What this is
 
----
+An MCP server is a program that gives an AI assistant extra tools. Claude Code
+can read files, edit files and run shell commands; an MCP server adds verbs.
+You register one once, and every Claude session on your machine can call it.
 
-## The problem this solves
+Builders Gate is one of those, for Godot game development. It runs as a local
+process over stdin and stdout: no network service, no account, no cloud. Close
+to 200 tools, including `godot_run`, `image_sprites`, `bible_add`, `asset_lock`
+and `playtest_start`. Each game gets one SQLite file at `.bgate/game.db` that
+travels with the repo.
 
-Claude writes GDScript fine. These are the things that go wrong after that, and
-what this does about each one.
+What that buys you:
 
 | Problem | What this does |
 |---|---|
-| A new session knows nothing about your game. You re-explain the premise, the art style and last week's decisions every time. | Design decisions live in a database in the project, not in the chat. Any session reads the same bible and lore. |
-| You ask for a save system and get a save system, an achievement framework and a settings menu. | Work is filed as items with a written brief and an acceptance test. What is not in the brief is not the job, and the seat that wants to widen it has to file that separately, where you see it. |
-| It writes a jump, reports the jump works, and has never run the game. | `godot_run` runs the project headless and `godot_screenshot` captures a frame. A seat can look at what it built. |
-| Sprite frame one and frame four are different characters. | References are pinned as files. Generation conditions on them, and a consistency check scores frames against the pinned anchor before anything ships. |
-| Two sessions edit the same file for opposite reasons and one silently loses. | Seats take write locks on files. A PreToolUse hook refuses the second writer. |
-| Image generation quietly costs more than you expected. | Per-project and daily spend ceilings, enforced before the call, not reported after. |
-
-Everything above is one of four things: a database, some gates, a way to run the
-game and look at it, and a discipline for generating art that stays on-model.
+| Every new session re-learns your premise, art style and last week's decisions. | Design decisions live in the project database. Any session reads the same bible and lore. |
+| You ask for a save system and get three other features with it. | Work is filed as items with a written brief and an acceptance test. Widening the job means filing a new item, where you can see it. |
+| An agent reports the jump works and has never run the game. | `godot_run` runs the project headless, `godot_screenshot` captures a frame. |
+| Sprite frame one and frame four are different characters. | References are pinned as files. Generation conditions on them, and `consistency_check` scores frames against the pinned anchor. |
+| Two sessions edit one file and one silently loses. | Seats hold write locks. A PreToolUse hook refuses the second writer. |
+| Image generation costs more than you expected. | Per-item, per-day and per-project spend ceilings, enforced before the call. |
 
 This is more machinery than a small project needs.
 
----
+## The vocabulary
 
-## What an MCP server is
-
-MCP, the Model Context Protocol, is a standard for giving an AI assistant tools
-that live outside itself. Normally Claude Code can read files, edit files, and
-run shell commands. That is its whole vocabulary. An MCP server adds verbs.
-
-You register one, once. From then on, every Claude session on your machine can
-call the tools it exposes, the same way it calls "read a file". A "custom MCP"
-is nothing more exotic than a server somebody wrote for their own domain instead
-of using an off-the-shelf one.
-
-Builders Gate is one of those, for game development. It exposes some 180
-tools: `godot_run`, `image_sprites`, `bible_add`, `asset_lock`,
-`playtest_start`, and so on. It runs on your machine as a local process talking
-over stdin and stdout. There is no network service, no account, no cloud. Each
-game gets one SQLite file at `.bgate/game.db` that travels with the repo.
-
-Concretely: instead of you pasting a design decision into chat for the fortieth
-time, an agent calls `seat_brief("art")` and gets the mission, the design bible,
-the approved references, and who currently holds which files, in one call.
-
----
-
-## The vocabulary, defined once
-
-Six words that mean something specific here. The [glossary](glossary.md) has
-the rest.
-
-**Seat.** A fixed job title an agent adopts for a session. There are eight:
-director, narrative, gameplay, tech, art, audio, cinematic, qa. The roster is
-FIXED, which is the part that matters — the number has moved once, deliberately,
-and there is still no registering a seat per task. A seat is not a process you
-start. It is an identity. A session sets
-`BGATE_SEAT=art` and inherits art's mission and its writable paths. You do not
-create agents. You hand out seats.
-
-**Lane.** The file paths a seat may write, as glob patterns. Art's are
-`game/assets/**`, `blender/**`, `art/**`. Gameplay's are `game/scripts/**` and
-`game/scenes/**`. This is the answer to "won't they stomp each other". A write
-outside your lane is refused, and unknown seats fail closed.
-
-**Lock.** A claim on one binary file. Text merges; a `.blend` does not. An agent
-calls `asset_lock` before editing a binary and `asset_release` after. A lock
-that is already held **errors** rather than queueing, so the second agent gets
-told to go do something else instead of quietly waiting.
-
-**Work item.** One unit of queued work: a seat, a title, a brief, a status. It
-is a database row. Filing one costs nothing and starts nothing.
-
-**Dispatch.** Turning a queued work item into a *running agent*. This is where
-money gets spent, and it is where the refusals live. See below.
-
-**Chain.** Work items filed as one ordered group, each waiting on the last.
-Filed with `queue_add_chain` when the pieces have an order, which they usually
-do. Nothing in a chain dispatches ahead of its predecessor.
-
----
-
-## What actually happens when you dispatch
-
-Worth reading before you run anything, because "dispatch" sounds abstract and is
-not. When you click Dispatch on a work item, `bgate_ui/dispatch.py` does this:
-
-1. Refuses to start a **chain link** whose predecessor has not landed. Priority
-   is an ordering, not a dependency; this is what stops the agent that needs a
-   scene starting alongside the one that creates it.
-2. Checks the **concurrency cap** (default 4). The dashboard's "dispatch all"
-   loops every queued item with no cap of its own, and twenty queued items would
-   otherwise be twenty Claude trees on one laptop.
-3. Checks the **spend ceilings**: per item, per day, per project.
-4. Refuses a **dirty git tree** unless you insist. A run started on top of your
-   uncommitted work produces a diff that cannot tell the agent's edits from
-   yours.
-5. Captures the current commit, so the run is readable as a diff afterwards and
-   undoable with a scoped revert. (A per-item git worktree is available behind
-   `BGATE_GIT_ISOLATION=1`; it is off by default because moving the agent's
-   working directory is a bigger change to a run than most projects want.)
-6. Spawns an actual `claude` process, with `BGATE_SEAT`, `BGATE_ROOT`,
-   `BGATE_WORK_ITEM`, and `BGATE_ACTOR=agent:item-<id>` in its environment. That
-   last one is what makes "approved" mean anything: without it a spawned agent
-   inherits your identity and can approve its own work. It did, until that line
-   was added.
-7. Starts a watchdog that kills the process if it passes its runtime or cost
-   ceiling, and marks the item failed with the reason.
-
-Then you watch it in the dashboard and can type at it mid-run.
-
-An important non-obvious rule: **exit 0 is not success.** A session that exits
-cleanly without a terminal result event is marked failed, because that is what a
-killed or wedged agent looks like from outside.
-
----
+| Term | Meaning |
+|---|---|
+| **Seat** | A fixed job title an agent adopts for a session. Eight of them: director, narrative, gameplay, tech, art, audio, cinematic, qa. A seat is an identity, not a process: a session sets `BGATE_SEAT=art` and inherits art's mission and writable paths. |
+| **Lane** | The glob patterns a seat may write. Art's are `game/assets/**`, `blender/**`, `art/**`; gameplay's are `game/scripts/**`, `game/scenes/**`. Writes outside your lane are refused, and unknown seats fail closed. |
+| **Lock** | A claim on one binary file. Text merges, a `.blend` does not. `asset_lock` before editing, `asset_release` after. A held lock errors instead of queueing, so the second agent goes and does something else. |
+| **Work item** | One unit of queued work: seat, title, brief, status. A database row. Filing one costs nothing and starts nothing. |
+| **Dispatch** | Turning a queued item into a running agent. This is where money gets spent and where the refusals live. |
+| **Chain** | Items filed as one ordered group with `queue_add_chain`, each waiting on the last. Nothing dispatches ahead of its predecessor. |
 
 ## First session
 
 ### 0. What you need
 
-Python 3.11+, Godot 4.x, and an MCP client. Claude Code is what this is
-developed against. Windows is the supported platform; Linux is best-effort and
-macOS is untested. Blender is optional and only matters for the 3D leg. An image
-API key (OpenAI or Krea) is optional and only matters for generated art.
+Python 3.11+, Godot 4.x, and Claude Code. Windows is the supported platform,
+Linux is best-effort, macOS is untested. Blender (3D), ffmpeg (playtest
+capture), whisper (voice) and an image API key are all optional.
 
-Python must be installed and on your `PATH` before any of this — check with
-`python --version`, and if that command is not found, install Python first. A
-virtual environment is optional but recommended, so this install cannot disagree
-with another project's dependencies.
+Check that Python is on your `PATH` with `python --version` before you start.
 
 ```bash
 git clone https://github.com/Thepizzapie/BuildersGate
@@ -144,33 +59,29 @@ pip install -e .
 bgate doctor
 ```
 
-**If `bgate` is "not recognized" on Windows**, nothing is broken: pip put the
-`bgate` shortcut in Python's `Scripts\` directory and that directory is not on
-your `PATH`. Either run `python -m pip install -e .` and then call every command
-the long way — `python -m bgate_cli.main doctor`, `python -m bgate_cli.main
-init`, and so on — or re-run the Python installer, choose Modify, tick **Add
-Python to PATH**, and open a new terminal, because `PATH` is read when the shell
-starts.
+If `bgate` is "not recognized" on Windows, pip put the shortcut in Python's
+`Scripts\` directory and that directory is not on your `PATH`. Either call
+every command the long way (`python -m bgate_cli.main doctor`) or re-run the
+Python installer, choose Modify, tick **Add Python to PATH**, and open a new
+terminal.
 
-### What `bgate doctor` is actually telling you
+### Reading `bgate doctor`
 
-It exits 1 if *anything* on its list is missing, and most of that list is
-optional. The exit code is right for a CI step and alarming for a human. Read the
-rows:
+It exits 1 if anything on its list is missing, and most of the list is
+optional. Read the rows, not the exit code.
 
 | Row | Needed for |
 |---|---|
-| `python`, `godot` | **Required.** Making a project, building it, running it |
-| `blender` | Optional — the 3D leg |
-| `ffmpeg`, `ffprobe` | Optional — playtest capture, cutscene transcoding |
-| `whisper` | Optional — voice transcription while you play |
-| `art_key`, `local_image` | Optional — image generation, rented or local |
-| `imageto3d`, `local_runtimes`, `agent_cli`, `godot_web_templates` | Optional — capability inventory |
+| `python`, `godot` | **Required.** Making, building and running a project |
+| `blender` | The 3D leg |
+| `ffmpeg`, `ffprobe` | Playtest capture, cutscene transcoding |
+| `whisper` | Voice transcription while you play |
+| `art_key`, `local_image` | Image generation, rented or local |
+| `imageto3d`, `local_runtimes`, `agent_cli`, `godot_web_templates` | Capability inventory |
 
-**A red optional row is not a blocker.** If `python` and `godot` are green, go to
-the next step; you can add the rest the day you need it. The `art_key` row covers
-every art provider, so either `OPENAI_API_KEY` or `KREA_API_KEY` turns it green —
-and you can set either one from the dashboard (Settings → Art providers).
+If `python` and `godot` are green, move on. The `art_key` row covers every art
+provider, so either `OPENAI_API_KEY` or `KREA_API_KEY` turns it green. Set
+either from the dashboard's Generators panel (Studio, Generators).
 
 ### 1. Make a project
 
@@ -179,18 +90,17 @@ bgate init emberfall --kind 2d
 cd emberfall
 ```
 
-This creates a **new directory** named after the project, not whatever directory
-you were standing in, containing `.bgate/game.db` and a runnable Godot game. It prints the absolute path it wrote to. `--kind 3d` gives you a
-first-person slice instead; read the 3D answer
-before you commit to that path.
+This creates a **new directory** named after the project, not whatever
+directory you are standing in, containing `.bgate/game.db` and a runnable Godot
+game. It prints the absolute path it wrote to. `--kind 3d` gives you a
+first-person slice instead.
 
-If you already have a Godot game, you do not want `init`. See
-pointing it at an existing game.
+If you already have a Godot game, use `bgate adopt` instead. It never
+scaffolds and never overwrites. See [setup.md](setup.md).
 
-Open the game and press F1 while it runs. Every `@export` in the current scene
-gets a slider bound to the live node, and moving it moves the game. No apply
-button, because the point is to feel the change while you make it. Values
-persist and are re-applied at boot.
+Run the game and press F1. Every `@export` in the current scene gets a slider
+bound to the live node, and moving it moves the game. Values persist and are
+re-applied at boot.
 
 ### 2. Turn on the dashboard
 
@@ -198,26 +108,21 @@ persist and are re-applied at boot.
 bgate serve          # http://127.0.0.1:7788
 ```
 
-A dozen views over the same database: the queue, live agents you can steer, the
-seat workspaces, the world bible, assets, playtests, and **Settings**. No build
-step, no node, no CDN.
+Views over the same database: the queue, live agents you can steer, seat
+workspaces, the world bible, assets, playtests, and Settings.
 
-Mutations require a per-project bearer token from `.bgate/ui-token`, because
-127.0.0.1 is not a security boundary. Any page in your browser can POST to
-localhost.
+Mutations require a per-project bearer token from `.bgate/ui-token`. 127.0.0.1
+is not a security boundary; any page in your browser can POST to localhost.
 
-**The bell** in the header counts what has happened since you last looked —
-agents finishing, work parked for your approval, a chain that has stopped moving,
-a question the director wants answered. It reads the same event log the follow-up
-router does. It can only tell you things while the page is open, though, so if you
-walk away: `bgate app` puts the unread count in the window title, and one optional
-webhook (Settings → Notifications) is the only channel that leaves the machine.
+The bell in the header counts what has happened since you last looked. It only
+works while the page is open, so if you walk away, `bgate app` puts the unread
+count in a window title, and a webhook (Settings, Notifications) is the only
+channel that leaves the machine.
 
-**Settings** is every switch in one place, grouped, each row saying whether its
-value is the default, something you stored, or an environment variable overriding
-both — so a shell profile can never quietly disagree with what the panel shows.
-The two that decide how much runs without you are `autopilot` (does work START
-without you) and the approval gate (does it FINISH without you).
+Settings holds every switch, each row saying whether its value is the default,
+something you stored, or an environment variable overriding both. Two of them
+decide how much runs without you: `autopilot` (does work start without you) and
+the approval gate (does it finish without you).
 
 ### 3. Register the server and install the hook
 
@@ -228,54 +133,38 @@ bgate hook-install .
 bgate hook-status .
 ```
 
-**Restart Claude Code now, before you look for the tools.** A session that was
-already running does not pick up a newly registered MCP server — only a fresh one
-does. Confirm it worked by asking Claude to call `project_status`; if that tool is
-not in its list, the server is not connected and nothing below will work.
+Use the **absolute** python path, from the same environment where
+`pip install -e .` ran. The Claude CLI resolves a bare `python` differently
+than your shell does and reports "failed to connect" for a server that runs
+fine. This is the most common failure on Windows.
 
-Use the **absolute** python path, and get it by running that first line *in the
-same environment where `pip install -e .` ran* — a different environment prints
-a Python that has no Builders Gate in it, and the registration then fails in a way
-that points nowhere near the cause. The Claude CLI's health check resolves a bare
-`python` differently than your shell does, and reports "failed to connect"
-against a server that runs fine.
+**Restart Claude Code before you look for the tools.** A running session does
+not pick up a newly registered server. Confirm by asking Claude to call
+`project_status`; if that tool is not in its list, the server is not connected.
 
-`hook-install` writes a PreToolUse hook into `.claude/settings.json` that asks
-`seat_can_write` before every Bash, Write, or Edit, and blocks out-of-lane or
-lock-violating writes. It is **inert unless a session sets `BGATE_SEAT`**, and it
-fails open on anything unexpected, because a crashing hook must never dam a
-session.
-`hook-status` is the only thing that proves enforcement is actually live; it
+`hook-install` writes a PreToolUse hook into `.claude/settings.json` that calls
+`seat_can_write` before every Bash, Write or Edit and blocks out-of-lane or
+lock-violating writes. It is inert unless a session sets `BGATE_SEAT`, and it
+fails open on anything unexpected. `hook-status` proves enforcement is live and
 exits 1 if it is not.
 
 ### 4. Write the bible before you build anything
 
-This is the step everyone skips and the one that pays for itself fastest. In a
-Claude session, or in the dashboard's World Bible view:
+In a Claude session, or in the dashboard's World Bible view, write down:
 
-- Write your **pillars**: the three or four things the game is actually about.
-- Write the **core loop**: what the player does, over and over.
-- Write your **constraints**: the art rules, the platform limits, the things
-  that are settled and are not up for a fresh opinion every session.
-- Write down what you are **not** building, and why. An unsaid no gets built.
+- Your **pillars**: the three or four things the game is about.
+- The **core loop**: what the player does over and over.
+- Your **constraints**: art rules, platform limits, settled decisions.
+- What you are **not** building. An unsaid no gets built.
 
-Every seat reads this before it starts work - it arrives in the brief, and the
-art constraints are assembled into the image prompts. An agent that has read
-your pillars proposes different work than one that has not.
-
-There was a ranked tier list and a cut line here once, with a gate that refused
-work below the line. It never refused anything; see
-[design-notes.md](design-notes.md). What survived is the part that was doing the
-work: writing the decision down where the fleet reads it.
+Every seat reads this in its brief, and the art constraints are assembled into
+the image prompts.
 
 ### 5. Do one thing, end to end
 
-Pick something small. File it as a work item against `gameplay`. Dispatch it.
-Watch it in the Agents view. When it says it is done, look at the diff.
-
-#### Your first task, spelled out
-
-Ask Claude to file this, or type it into the dashboard's queue form:
+File a small work item, dispatch it from the dashboard, watch it in the Agents
+view, then read the diff. Ask Claude to file this, or type it into the queue
+form:
 
 - **Seat:** `gameplay`
 - **Title:** Add a double jump
@@ -285,22 +174,9 @@ Ask Claude to file this, or type it into the dashboard's queue form:
   height a single jump reaches.
 
 A brief that names what "done" looks like is the difference between one round
-and four. Filing it **files a database row and starts nothing** — the dashboard
-is what dispatches it, so `bgate serve` has to be running or the item just sits
-there looking exactly like work in flight.
-
-The loop the tool is built around, once you are past the first hour:
-
-```text
-DIRECTOR    bible_add: pillars, the core loop, constraints, references
-NARRATIVE   lore_add / lore_fact; canon_check gates every narrative write
-ART         ref_pin an approved reference FIRST, then generate against it;
-            asset_lock before touching a binary, asset_release after
-GAMEPLAY    writes GDScript in its lanes; godot_check_project + godot_run
-            after every change; godot_screenshot to SEE what it did
-QA          headless test scripts via godot_run; asset_verify for drift
-YOU         play the build, talk out loud, promote what becomes work
-```
+and four. Filing files a database row and starts nothing: the dashboard is what
+dispatches it, so `bgate serve` has to be running or the item just sits there
+looking like work in flight.
 
 ### 6. Play it yourself
 
@@ -310,133 +186,130 @@ playtest_start    records the game window and your voice
    ...play, and say what you like and what needs fixing...
 playtest_stop     transcribes, splits per sentence, classifies, routes, aligns
 playtest_brief    what the agents read
-playtest_promote  YOU decide what becomes work
+playtest_promote  you decide what becomes work
 ```
 
-Agents cannot watch video. The mp4 is for you. What they get is the transcript
-plus the frame pulled at each remark plus the game's own telemetry joined on one
-clock, so "the jump feels floaty" arrives sitting next to
-`jump {air_time: 0.94}`. That join is what turns a vibe into a number an agent
-can act on.
+Agents cannot watch video. What they get is the transcript, plus the frame
+pulled at each remark, plus the game's own telemetry joined on one clock, so
+"the jump feels floaty" arrives next to `jump {air_time: 0.94}`.
 
-Items land as `new` and stay there until you promote them. Thinking out loud
-mid-play is not a decision to build.
+Items land as `new` and stay there until you promote them. This needs ffmpeg
+and a microphone; skip it if you have neither.
 
-This requires ffmpeg and a microphone. If you have neither, skip it; everything
-else works without it.
+## The working loop
 
----
+Once you are past the first hour, a day looks like this:
 
-## Stopping agents — the kill switch
+1. Call `project_status`, `queue_list`, `bible_read`, `seat_list` and
+   `pending_decisions` before planning anything. Add `seat_notes` and
+   `handoff_read` for what earlier sessions know, `ref_list` before generating
+   art, and `image_status` or `blender_status` for the backends `bgate_doctor`
+   only summarises.
+2. Split the work. Dependent pieces go in one `queue_add_chain`, not separate
+   `queue_add` calls with different priorities.
+3. Dispatch from the dashboard and watch the Agents view. You can type at a
+   running agent.
+4. Re-read `queue_list` after every `queue_complete`. Closing a chain link
+   releases the next one, so the board moves while you are reading it.
+5. Read the diff. Approve or reject in the dashboard.
+6. Play the build, record it, and promote what should become work.
 
-Agents are real processes spending real money, so there is one control that
-stops all of them and it is never more than one click or one command away.
+What each seat does in that loop:
 
-**From the dashboard:** the red `stop all` button in the Agents console, top
-right of the graph.
+```text
+DIRECTOR    bible_add: pillars, the core loop, constraints, references
+NARRATIVE   lore_add / lore_fact; canon_check gates every narrative write
+ART         ref_pin an approved reference FIRST, then generate against it;
+            asset_lock before touching a binary, asset_release after
+GAMEPLAY    writes GDScript in its lanes; godot_check_project + godot_run
+            after every change; godot_screenshot to see what it did
+QA          headless test scripts via godot_run; asset_verify for drift
+YOU         play the build, talk out loud, promote what becomes work
+```
 
-**From a terminal**, which is what you want when the dashboard itself is wedged
-or was never running:
+Two habits that cost the most when skipped:
+
+- **A green doctor row is a capability, not a tick.** If you decline a
+  capability, say so as a decision.
+- **`usable` means configured, not running.** A local backend lists as usable
+  with no server up. Check `hosted` before reporting a path unavailable.
+
+## What dispatch does
+
+When you dispatch a work item, `bgate_ui/dispatch.py`:
+
+1. Refuses a chain link whose predecessor has not landed.
+2. Checks the concurrency cap (default 4).
+3. Checks the spend ceilings: per item, per day, per project.
+4. Refuses a dirty git tree unless you insist.
+5. Captures the current commit, so the run reads as a diff afterwards. A
+   per-item git worktree is available behind `BGATE_GIT_ISOLATION=1`, off by
+   default.
+6. Spawns a `claude` process with `BGATE_SEAT`, `BGATE_ROOT`,
+   `BGATE_WORK_ITEM` and `BGATE_ACTOR=agent:item-<id>` in its environment. That
+   last one is what stops a spawned agent inheriting your identity and
+   approving its own work.
+7. Starts a watchdog that kills the process if it passes its runtime or cost
+   ceiling, and marks the item failed with the reason.
+
+**Exit 0 is not success.** A session that exits cleanly without a terminal
+result event is marked failed, because that is what a killed or wedged agent
+looks like from outside.
+
+## Stopping agents
+
+One control stops everything, from the dashboard's red `stop all` button in the
+Agents console, or from a terminal when the dashboard is wedged:
 
 ```bash
 bgate panic
 ```
 
-Either one does the same four things, in this order, because any other order
-leaves a gap something restarts through:
+Both do the same four things in this order:
 
-1. **auto-deploy off first** — killing agents while the loop is on just
-   dispatches a replacement into the gap;
-2. every live agent killed **by process tree**, not just the `claude` parent
-   (its MCP children hold the pipe open and outlive it otherwise);
-3. every pid in the project's ledger reaped, including ones a *previous*
-   dashboard spawned — the ledger is on disk and outlives the process that
-   wrote it, which is exactly why orphans happen;
-4. anything still marked `dispatched` settled, so the board stops claiming work
-   is running the moment this returns.
+1. Auto-deploy off first, or killing agents just dispatches replacements.
+2. Every live agent killed by process tree, not just the `claude` parent. Its
+   MCP children hold the pipe open and outlive it otherwise.
+3. Every pid in the project's ledger reaped, including ones a previous
+   dashboard spawned.
+4. Anything still marked `dispatched` settled, so the board stops claiming work
+   is running.
 
-Interrupted items are marked **stopped**, not done: you can see what was cut
-off and re-queue it deliberately.
+Interrupted items are marked **stopped**, not done. You can see what was cut
+off and re-queue it.
 
 ### What stops a run without you
-
-Nothing runs unbounded, and there are three separate backstops because each one
-misses a different failure:
 
 | Backstop | Default | What it catches |
 |---|---|---|
 | Cost ceiling | `$5` per item | a run that keeps paying to go nowhere |
 | Runtime ceiling | 30 min (`max_runtime_s`) | a run that never finishes |
 | Hard runtime cap | 2 h (`BGATE_MAX_RUNTIME_S`) | a budget with its runtime set to 0 |
-| Stall timeout | 25 min (`BGATE_STALL_S`) | a **hung** session: alive, silent, holding a slot |
+| Stall timeout | 25 min (`BGATE_STALL_S`) | a hung session: alive, silent, holding a slot |
 | Concurrency cap | 4 agents (`max_concurrent`) | the whole fleet at once |
 
-Silence is measured against real output — the log *and* files under
-`.bgate_out/` and the game's assets — because a 30-minute atomic image batch
-writes nothing until it returns, and killing those was how healthy agents used
-to die. A session that has produced nothing at all for 25 minutes is wedged, not
-working.
-
-The ceilings live in the project's budget (`/api/spend`); the two environment
-variables are escape hatches for a machine that needs different numbers.
-
-## Inventory before you plan
-
-The stamped `CLAUDE.md` names the calls; this is why they are worth the tokens.
-
-Measured across a week of real builds, the single most expensive habit was not
-running them. Each is one call and each returns a *list* rather than a verdict:
-
-| call | what it enumerates |
-|---|---|
-| `project_status`, `queue_list`, `bible_read`, `seat_list` | the board and the design |
-| `bgate_doctor` | the toolchain — **an inventory, not a pass/fail gate** |
-| `image_status`, `blender_status` | providers, models and backends the doctor only summarises |
-| `pending_decisions` | what is already blocked on a human |
-| `seat_notes`, `handoff_read` | what earlier sessions and sibling agents know |
-| `ref_list` | what is already pinned, before generating anything |
-
-Three failures this prevents, all of them from the same session:
-
-- **A green row is a capability, not a tick.** `imageto3d: {available: true}`
-  was read as "that check passed" and the backend went unused for a week. If you
-  decline a capability, say so as a decision.
-- **`usable` means configured, not running, and not local-only.** A local
-  backend is listed usable with no server up; a hosted one needs only its key. An
-  agent tried the two local image-to-3D backends, got connection refused, and
-  reported the path unavailable — the hosted one worked and had already produced
-  every texture in that build. Check `hosted` before reporting anything down.
-- **A subagent's "X was not available" deserves the same scepticism as its "X
-  worked."** Check which variants it actually tried before repeating that upward.
-
-The board is live while you read it: closing a chain link releases the next one
-to auto-deploy even when the session-start banner said nothing was queued, so
-re-read `queue_list` after every `queue_complete`, and treat a file you did not
-write as evidence of a concurrent writer rather than a curiosity.
+Silence is measured against real output, the log plus files under `.bgate_out/`
+and the game's assets, because a 30-minute image batch writes nothing until it
+returns. The ceilings live in the project's budget; the environment variables
+are escape hatches.
 
 ## Two things that will bite you
 
-**Approval is human-only, on purpose.** An agent records a verdict; it does not
-sign off. An art agent that judged its own frames approved off-style drift three
-times, and a second agent doing the judging is the same failure with an extra
-hop. So a QA reviewer can *fail* a candidate outright, because refusing to ship
-is a call a machine can make alone. A pass only records evidence and leaves the
-revision waiting for a person. If you never look at anything, nothing lands.
+**Approval is human-only.** An agent records a verdict, it does not sign off. A
+QA reviewer can *fail* a candidate outright, because refusing to ship is a call
+a machine can make alone. A pass records evidence and leaves the revision
+waiting for a person. If you never look at anything, nothing lands.
 
-**This is a solo project that has built real games on one machine, and it shows
-in both directions.** The [README's status section](../README.md#project-status)
-says plainly what works, what is half-built, and what is a design note with no
-runtime code. Read it before you plan a weekend around any part of this.
-
----
+**This is a solo project that has built real games on one machine.** The
+[README's status section](../README.md#project-status) says plainly what works,
+what is half-built, and what is a design note with no runtime code. Read it before you plan a weekend around
+any part of this.
 
 ## Where to go next
 
-- [Glossary](glossary.md): every term, one or two sentences each.
+- [Glossary](glossary.md): every term, a sentence or two each.
 - [setup.md](setup.md): setup in full, including `bgate adopt` and API keys.
 - [reference.md](reference.md): every surface in detail.
-- character-consistency.md: the measurements behind
-  the art discipline, including the ones that failed.
-- gap-analysis.md: where this pipeline is weakest, written
-  after a real production run, with what each gap cost.
+- [gotchas.md](gotchas.md): what goes wrong and what to do about it.
+- [design-notes.md](design-notes.md): features that were measured and removed.
 - [README](../README.md): what it is, status, and install.
