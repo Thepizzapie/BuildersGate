@@ -2753,6 +2753,9 @@ setInterval(pollQueue, 3500);
 <script src="/static/vendor/codemirror/jump-to-line.js"></script>
 <script src="/static/atlas_code.js"></script>
 <script src="/static/spriteedit.js"></script>
+<!-- What is making noise, and where it is coming from. Must precede the players
+     so its capture-phase listeners are installed before anything can play. -->
+<script src="/static/nowplaying.js"></script>
 <script src="/static/audiolab.js"></script>
 <script src="/static/beatmaker.js"></script>
 <!-- The 3D model viewer/editor. An ES module (three.js only ships as one) —

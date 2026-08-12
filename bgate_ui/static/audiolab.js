@@ -925,7 +925,9 @@ window.AudioLab = (() => {
    *     and shrinks rather than replacing the arrangement;
    *   · the TRANSPORT is pinned under both and never moves, so play is in one
    *     place whatever you are editing;
-   *   · a RAIL of circular buttons down the right edge opens the panels.
+   *   · a RAIL of circular buttons down the right edge opens the panels. It is
+   *     the ONLY thing that does — the sheet's header used to repeat all six as
+   *     tabs; see sheetTabs().
    *
    * The panels are the old side column, cut along the lines the work actually
    * has: clip / effects / instrument / patterns / mix / export.
@@ -1140,6 +1142,7 @@ window.AudioLab = (() => {
     sizeSheet();
     sizeCanvas();
     renderRail();
+    sheetTabs();
     renderSheet();
     renderHeads();
     applyMaster();
@@ -1159,16 +1162,25 @@ window.AudioLab = (() => {
               title="${E(p.title)}" onclick="AudioLab.setSheet('${p.id}')">
         <i>${ic(p.icon, 17)}</i><s>${E(p.label)}</s></button>`).join("");
   }
+  /* ONE SET OF PANEL BUTTONS, and it is the rail. This bar used to repeat all
+   * six of them as tabs — same PANELS array, same icons, same labels, same
+   * setSheet() call, three inches away from the rail that was already lit. Two
+   * controls for one choice is not a shortcut; it is a question about which one
+   * is authoritative, asked on every glance, and a lit state to keep in sync in
+   * two places.
+   *
+   * What the bar is FOR is the part the rail cannot say: which panel you are
+   * looking at, named in the sheet's own header, and the collapse that gives the
+   * arrangement the sheet's height back. So it keeps the heading and the toggle
+   * and drops the other five buttons. */
   function sheetTabs(){
     if (!$.tabs) return;
     const p = PANELS.find(x => x.id === S.sheet) || PANELS[0];
-    $.tabs.innerHTML = PANELS.map(x => `
-      <button class="ab-tab${x.id === S.sheet ? " on" : ""}"
-              title="${E(x.title)}" onclick="AudioLab.setSheet('${x.id}',true)">
-        ${ic(x.icon, 13)}${E(x.label)}</button>`).join("")
-      + `<span class="ab-spacer"></span>
-         <button class="ab-tg" onclick="AudioLab.toggleSheet()">${
-           S.sheetOpen ? "collapse" : "open"} ${E(p.label)}</button>`;
+    $.tabs.innerHTML = `
+      <span class="ab-tab on" title="${E(p.title)}">${ic(p.icon, 13)}${E(p.label)}</span>
+      <span class="ab-spacer"></span>
+      <button class="ab-tg" onclick="AudioLab.toggleSheet()">${
+        S.sheetOpen ? "collapse" : "open"} ${E(p.label)}</button>`;
   }
   function sizeSheet(){
     if (!$.sheet) return;
@@ -1193,7 +1205,7 @@ window.AudioLab = (() => {
     S.sheet = PANELS.some(p => p.id === id) ? id : "clip";
     S.sheetOpen = true;
     S.mode = S.sheet === "pattern" ? "studio" : S.sheet === "clip" ? "clip" : S.mode;
-    sizeSheet(); renderRail(); renderSheet();
+    sizeSheet(); sheetTabs(); renderRail(); renderSheet();
     requestAnimationFrame(() => { paint(); paintLayers(); paintHead(); });
   }
   function bindGrip(){
@@ -1491,16 +1503,31 @@ window.AudioLab = (() => {
     // is not compositing (a background tab, a pane that is not on screen), and
     // a loop that only chains on rAF freezes the playhead and the clock for the
     // rest of the session. Observed while driving this pane headlessly.
+    //
+    // THE LOSER HAS TO BE CANCELLED, which is what separates this from paint().
+    // paint() is armed on demand and its flag stays down until something asks
+    // again, so its straggler finds _pending false and returns. This loop
+    // RE-ARMS ITSELF, and it raises the flag again before the straggler of the
+    // round it just finished has fired — so that straggler found _tick set,
+    // took the new round's work, and armed two more callbacks of its own. Every
+    // firing then netted one extra pending callback, compounding for as long as
+    // anything played: a minute of playback left thousands of live timers all
+    // repainting the same overlay. The guard cannot catch this on its own
+    // because both callbacks of a round are legitimately armed; only cancelling
+    // the one that lost keeps a round to a single run.
+    let raf = 0, timer = 0;
     const run = () => {
       if (!S || !S._tick) return;
       S._tick = 0;
+      cancelAnimationFrame(raf);
+      clearTimeout(timer);
       _paintSel();
       paintHead();
       syncClock();
       if (S.play || S.lplay) startTick();
     };
-    requestAnimationFrame(run);
-    setTimeout(run, 40);
+    raf = requestAnimationFrame(run);
+    timer = setTimeout(run, 40);
   }
   /* The big readout. Whichever transport is live is what it counts, because
      there is only one of them on screen and it has to mean something. */
@@ -1886,6 +1913,20 @@ window.AudioLab = (() => {
       $.play.title = on ? "Pause (Space)" : "Play (Space)";
       $.play.classList.toggle("go", !on);
       if (window.BGIcon) BGIcon.upgrade($.play);
+    }
+    // Tell the page what it is hearing. This transport plays through WebAudio
+    // and survives leaving the lab's page (see activate), so it is the one
+    // source that can be sounding with no visible control anywhere on screen —
+    // which is exactly what the readout is for. syncPlay() is the chokepoint
+    // every transport change already runs through, so it is the only place that
+    // has to know NowPlaying exists.
+    if (window.NowPlaying){
+      if (on) NowPlaying.claim("audiolab", {
+        label: (S.rel || S.saveAs || "clip").split("/").pop(),
+        kind: S.lplay ? "audio lab · stack" : "audio lab",
+        stop: () => stop(),
+      });
+      else NowPlaying.release("audiolab");
     }
     if (on) startTick(); else syncClock();
   }
