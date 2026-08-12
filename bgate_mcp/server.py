@@ -3045,6 +3045,86 @@ def item_variants(item_class: str, base_name: str, descriptor: str,
         return _fail(exc)
 
 
+def _guide_image(result: dict) -> list[str]:
+    path = (result or {}).get("guides_png_abs")
+    return [path] if path else []
+
+
+@_tool(images=_guide_image)
+def sprite_sheet_check(image: str, columns: int, rows: int = 1,
+                       labels: Optional[list[str]] = None,
+                       row_labels: Optional[list[str]] = None,
+                       guides: bool = True) -> dict:
+    """LOOK AT A GENERATED POSE ROW OR CHARACTER SHEET BEFORE SPENDING ANYTHING
+    ELSE ON IT. Free — calls no model, buys nothing, changes nothing.
+
+    CALL THIS THE MOMENT A MULTI-FIGURE IMAGE COMES BACK, and call it before
+    keying, before slicing, before assembling, and before generating the next
+    row. Everything downstream of this point either hides these faults or
+    multiplies them, and all of it costs money.
+
+    THE PROBLEM IT EXISTS FOR. An image model asked for four figures on one
+    canvas does not draw four frames. It draws ONE picture, left to right, each
+    figure conditioned on the canvas so far — so every small error is inherited
+    by the next figure and added to. The result degrades ACROSS the row and, on a
+    stacked sheet, DOWN the page: the character grows, the feet leave the ground
+    line, a head yaws the wrong way, a necktie appears in row three and is still
+    there in row four. None of it is visible in any single frame, all of it is
+    obvious with a straight edge held against the image, and none of the existing
+    audits can see any of it — they run on frames that have already been sliced
+    and bottom-pinned into their own cells, by which point the evidence has been
+    destroyed rather than fixed.
+
+    WHAT COMES BACK. Named findings, each carrying its own fix: `foot_drift`,
+    `head_drift`, `size_drift`, `size_ramp`, `facing_flip`, `stray_ink`,
+    `empty_cell` within each row; `sheet_size_drift`, `sheet_size_ramp` and
+    `band_palette` across them. Plus — and this is the part to actually read — an
+    ANNOTATED COPY of the image with the ground line, the head line and each
+    figure's true feet and mass anchor drawn on it, returned as an image so you
+    can see what the numbers are talking about.
+
+    READ `size_ramp` AND `sheet_size_ramp` DIFFERENTLY FROM THE REST. Every other
+    finding says "re-roll that figure". Those two say the drift is MONOTONIC,
+    which means it compounds, which means re-rolling buys one better figure and
+    the next attempt does exactly the same thing. The fix is structural: stop
+    asking for a row, and generate each pose as its own image against ONE
+    approved reference — which is what `image_sprites` does, and why it exists.
+
+    `columns` and `rows` are the grid you asked the model for. `labels` names the
+    columns (pose names) and `row_labels` the rows (animation names); both are
+    only there so the findings read as "walk/2" instead of "row1/2".
+
+    Advisory, never a gate — a turnaround SHOULD flip its facing and a size chart
+    SHOULD ramp. It reports; you decide."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, image)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no image at {rel}"}
+        report = _spritekit.row_report(src, int(columns), int(rows),
+                                 labels=labels, row_labels=row_labels)
+        report["image"] = rel
+        if guides:
+            out = src.with_name(f"{src.stem}_guides.png")
+            drawn = _spritekit.draw_guides(src, int(columns), out, int(rows),
+                                     report=report)
+            report["guides_png"] = _assets.normalize_path(root, out)
+            report["guides_png_abs"] = str(out)
+            report["guides_note"] = drawn["note"]
+        if not report["flagged"]:
+            report["note"] = (
+                "nothing measurable is wrong with this sheet: the feet are on a "
+                "line, the draw size holds, no head is yawed against its row and "
+                "there is no ink on the canvas that is not the character. This "
+                "says nothing about whether it is the right CHARACTER — that is "
+                "consistency_check, which asks a model, because identity is not "
+                "arithmetic.")
+        return report
+    except Exception as exc:
+        return _fail(exc)
+
+
 @_tool
 def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
                          frame_size: Optional[list[int]] = None) -> dict:
