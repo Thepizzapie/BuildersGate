@@ -421,13 +421,26 @@ def build(root: str | os.PathLike[str], name: str, *, source: str = "auto",
     length — see :func:`report_notes` for why that last number is the one to
     read first.
     """
-    exe = _ffmpeg(ffmpeg)
+    # WHAT THE CALLER GOT WRONG IS CHECKED BEFORE WHAT THE MACHINE IS MISSING.
+    #
+    # These two guards were the other way round, so a board with every row cut
+    # was told to install ffmpeg. Both refusals are true at once, and the order
+    # decides which one the human reads: the toolchain is a fact about the
+    # machine and takes a minute to fix, while an empty board is a fact about
+    # the work and is the thing they actually did. Answering with the wrong one
+    # sends somebody off to install software they did not need, and they come
+    # back to the same refusal.
+    #
+    # Found by CI, on a runner with no ffmpeg on it, which is exactly the
+    # machine that cannot tell the two apart.
     resolved = resolve(root, name, source=source)
     shots = resolved["shots"]
     if not shots:
         raise AnimaticError(
             f"{resolved['source']} {resolved['name']!r} has no live shots to "
-            "cut — every row on it is marked cut, or it was never populated.")
+            "cut. Every row on it is marked cut, or it was never populated.")
+
+    exe = _ffmpeg(ffmpeg)
 
     size = PANEL_SIZES.get(resolved["aspect_ratio"], PANEL_SIZES["16:9"])
     slug = slugify(resolved["name"])
@@ -603,7 +616,7 @@ def _ffmpeg(given: str = "") -> str:
     if not exe:
         raise AnimaticError(
             "ffmpeg is not on PATH, and an animatic is nothing BUT ffmpeg over "
-            "PNGs — there is no model to fall back to and nothing to spend "
+            "PNGs. There is no model to fall back to and nothing to spend "
             "instead. Install one, or point BGATE_FFMPEG at a binary you "
             "already have, and check the ffmpeg row in `bgate doctor`. "
             "DO NOT install Gyan.FFmpeg on Windows, which an earlier version of "
