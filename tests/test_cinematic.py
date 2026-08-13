@@ -1397,8 +1397,28 @@ class TestPrevisIsWatchedBeforeItIsBought:
             {"action": f"beat {i}", "duration": 5} for i in range(shots)])
         return cinematic.sequence(root, "scene")
 
-    def test_generation_is_refused_before_any_animatic_exists(self, root):
-        got = cinematic.generate_shot(root, "scene", 1) if self._seq(root) else None
+    @pytest.fixture()
+    def working_encoder(self, monkeypatch):
+        """A machine whose ffmpeg is fine, so the ENCODER gate is not what fires.
+
+        generate_shot refuses on the encoder BEFORE it looks at previs, which is
+        the right order (a shot that cannot be delivered should not be bought)
+        and makes every test below depend on the developer having a working
+        libtheora. The first version of this class did not stub it: it passed
+        here, where a known-good binary had just been installed at
+        ~/.bgate/bin, and failed on every CI runner on all three platforms,
+        reporting stage 'encoder' where it asserted 'previs'. A test that
+        depends on the machine is a test that says nothing about the code.
+        """
+        monkeypatch.setattr(cinematic, "ffmpeg_status",
+                            lambda: {"ok": True, "reason": "", "probed": True,
+                                     "theora": True, "vorbis": True,
+                                     "ffmpeg": "/fake/ffmpeg"})
+
+    def test_generation_is_refused_before_any_animatic_exists(
+            self, root, working_encoder):
+        self._seq(root)
+        got = cinematic.generate_shot(root, "scene", 1)
         assert got["ok"] is False
         assert got["stage"] == "previs"
         assert "cinematic_animatic" in got["error"]
@@ -1436,7 +1456,7 @@ class TestPrevisIsWatchedBeforeItIsBought:
         assert stale["stale"] is True and stale["ok"] is False
         assert "since been changed" in stale["note"]
 
-    def test_previs_ok_is_the_deliberate_override(self, root):
+    def test_previs_ok_is_the_deliberate_override(self, root, working_encoder):
         """A re-roll of one shot in a watched sequence should not have to
         rebuild the reel — but skipping previs must be something typed."""
         self._seq(root)
