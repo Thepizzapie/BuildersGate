@@ -9,6 +9,15 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.40] - 2026-08-12
+
+Forty-nine commits. The tool count went from 144 to 196, but the shape of this
+release is not new surfaces: it is the cheap check that goes in front of an
+expensive one. A cutscene now has a reel you watch before you buy it, a pose row
+gets measured before anybody slices it, every paid tool asks the budget, and the
+board stops refusing its own work. Three security fixes and a full documentation
+sweep close it out.
+
 Sprite sheets, in two halves. On the **generation** side, the anchor was the
 weakest reference configuration available and is a model sheet now. On the
 **assembly** side, the painted path could already prove a sheet was *the same
@@ -21,7 +30,7 @@ measurements and with what was deliberately not built, in
 
 - **Machine-wide API keys (`~/.bgate/.env`), and `bgate key` to manage them.**
   A credential belongs to the person, not to one game, and it used to be
-  reachable only through a project root — so the tool you would reach for to
+  reachable only through a project root, so the tool you would reach for to
   diagnose a missing key was the one tool you could not run without a project.
   Keys now resolve through three layers, most specific first: a shell variable
   beats the project `.env`, which beats the machine-wide one. `bgate key` prints
@@ -30,7 +39,7 @@ measurements and with what was deliberately not built, in
   the machine-wide one rather than leaving the provider unset until a restart.
 
   `bgate key set <provider> [--global]` prompts with echo off and takes no key
-  argument at all — the project's own rule has been "never put one on a command
+  argument at all: the project's own rule has been "never put one on a command
   line" since a key was committed once, and a convenience flag would be that
   rule with an exception carved into it. The dashboard's Generators panel has
   the same choice as a tick box. There is deliberately **no MCP tool** that
@@ -46,12 +55,12 @@ measurements and with what was deliberately not built, in
   explicitly from inside a project you would rather not touch.
 
   It is a real project, not an output folder, because everything downstream of a
-  generation needs one — the artifact registry, the spend ledger, `.bgate_out` —
+  generation needs one (the artifact registry, the spend ledger, `.bgate_out`),
   and the first question anyone asks of a loose file is what it cost. It carries
   no game: a tool that needs an engine still says so in its own words. It is
   created on demand, so a user who never generates outside a project never gets
   a directory they did not ask for, and it sits at the BOTTOM of the discovery
-  chain, below the remembered active project — so anyone who has run `bgate
+  chain, below the remembered active project, so anyone who has run `bgate
   init`, `adopt` or `use` keeps landing in their own work, and a mistyped
   directory keeps failing loudly instead of quietly filling a folder nobody
   looks in. Tools that edit game files, run Godot or take locks are unchanged
@@ -60,8 +69,8 @@ measurements and with what was deliberately not built, in
 
 - **The anchor is a model sheet now (`anchor_views`, default 3).** The largest
   single lever found, and it is a reference policy rather than a mechanism. Every
-  reference a sprite run carried was the *same view* of the character — one
-  front-facing idle, plus previous frames that are near-copies of it — which is
+  reference a sprite run carried was the *same view* of the character: one
+  front-facing idle, plus previous frames that are near-copies of it, which is
   the weak configuration: two to three images from *distinct angles* carry far
   more identity than more of the same angle, which is why a model sheet exists
   and why animators keep the profile and three-quarter views on the desk. It
@@ -76,7 +85,7 @@ measurements and with what was deliberately not built, in
 - **Character work on Krea is pinned to `nano-banana-2`.** The provider's general
   default, `krea-2-large`, conditions on a reference as *style*, and a style
   reference cannot be asked to hold a subject through a pose change because
-  holding the subject is not what it does — the adapter already records the
+  holding the subject is not what it does, and the adapter already records the
   measurement, krea-2-medium drawing a face in seven of eight frames when four
   were specified as back views. `nano-banana-2` takes its references as edit
   inputs, keeps `styles` so a trained LoRA still rides alongside, and bills a
@@ -86,7 +95,7 @@ measurements and with what was deliberately not built, in
   still wins.
 
 - **`sprite_plan`, and archetypes for `image_sprites`.** The key poses for ten
-  standard actions, with their timing — a walk as contact / down / passing / up
+  standard actions, with their timing: a walk as contact / down / passing / up
   once per leg, an attack as anticipation / contact / follow-through / recover
   with the impact frame held and the wind-up rushed. `sprite_plan` costs nothing
   and returns the poses and the price; `archetypes=["idle","walk4","attack"]`
@@ -100,14 +109,14 @@ measurements and with what was deliberately not built, in
   carried a relative per-frame `duration` all along and this project wrote a
   literal `1.0` for every frame it ever produced. A uniform hold is the flattest
   reading of any action, and it is why a generated punch read as four pictures of
-  a punch. Loop and fps are now per-animation too — a 6fps idle and a 12fps
+  a punch. Loop and fps are now per-animation too: a 6fps idle and a 12fps
   attack on one sheet is normal, and one sheet-wide speed was a compromise
   between two right answers.
 
 - **Ping-pong cycles.** Three drawings played 0, 1, 2, 1 are a four-step cycle
   that costs three generations and *cannot* have a loop seam, which is what a
   breathing idle or a hovering pickup wants. Godot has no ping-pong loop mode, so
-  it is baked into the frame list — which is where the plan belongs anyway.
+  it is baked into the frame list, which is where the plan belongs anyway.
 
 - **Palette locking (`palette_lock`, default `"auto"`).** The existing gate
   detects palette drift and pays for a re-roll. Quantising each frame to the
@@ -119,24 +128,24 @@ measurements and with what was deliberately not built, in
   structurally cannot see, because all four are perfectly on-model: two frames
   that are the same drawing, two adjacent frames sharing almost no silhouette, a
   cycle whose last frame does not flow into its first, and a figure in more than
-  one piece. Advisory, and surfaced as chips on the art card — a duplicate frame
+  one piece. Advisory, and surfaced as chips on the art card: a duplicate frame
   is fixed by a different pose description, not by re-rolling the same one.
 
 - **A 3D model viewer and editor**, the third page beside the sprite editor and
   audio lab. The Blender/image-to-3D pipeline has generated `.glb` files for a
-  while with nowhere in the dashboard to actually look at one — this closes
+  while with nowhere in the dashboard to actually look at one, and this closes
   that gap: orbit camera with environment lighting, shaded/wireframe/unlit/
   normals display modes, an outliner with per-node visibility and tint, and
   animation clip playback for rigged characters. The editing half is named
-  attachment **sockets** — a 3D position and rotation, optionally hung off a
-  node, placed by clicking the mesh — which is rigmap's sprite slot-anchor
+  attachment **sockets**, a 3D position and rotation, optionally hung off a
+  node, placed by clicking the mesh, which is rigmap's sprite slot-anchor
   system carried into three dimensions and deliberately shares its taxonomy
   (`main_hand`, `off_hand`, `head`, ...): a project that ships both a 2D rig
   and a 3D character does not maintain two vocabularies for "where the sword
-  goes." The mesh's bytes are never rewritten, only a JSON sidecar next to it
-  — a browser cannot safely re-export a `.glb`, so this surface is look, label,
+  goes." The mesh's bytes are never rewritten, only a JSON sidecar next to it,
+  because a browser cannot safely re-export a `.glb`, so this surface is look, label,
   never repaint. Reads Draco-compressed geometry and KTX2/Basis-compressed
-  textures too — Blender's glTF exporter offers Draco as a one-click option,
+  textures too, since Blender's glTF exporter offers Draco as a one-click option,
   and a loader that only handles the uncompressed case would fail on exactly
   the models that used it. three.js is vendored under
   `bgate_ui/static/vendor/three/`, self-contained like the CodeMirror build
@@ -151,8 +160,8 @@ measurements and with what was deliberately not built, in
   it since the column was added.
 
   **Keeping a shot transcodes it, and that is the whole point.** Godot plays Ogg
-  Theora and nothing else in core — H.264 is patent-encumbered and WebM went away
-  in 4.0 — while every video model returns an `.mp4`. An `.mp4` in a Godot project
+  Theora and nothing else in core (H.264 is patent-encumbered and WebM went away
+  in 4.0), while every video model returns an `.mp4`. An `.mp4` in a Godot project
   produces *no import error*: it is simply never loaded, so the scene runs
   perfectly with a blank rectangle where the cutscene was. A pipeline that copied
   its output in, which is exactly what music correctly does for `.mp3`, would put
@@ -162,14 +171,14 @@ measurements and with what was deliberately not built, in
   presets (anime, noir, comic, painterly, pixel, stop-motion, CG, watercolour,
   VHS, silhouette, live action), each carrying the trap it comes with; a style
   note in the project's own wording; and style reference frames, which beat both.
-  Free prose is a first-class style — an unlisted word is treated as prose, not
+  Free prose is a first-class style: an unlisted word is treated as prose, not
   refused. Naming no style is reported as the silent choice it is, because a
   model given no instruction uses its own house look, which differs per model and
   per version. Changing the style resets already-generated shots and says so,
   since a clip rendered in the old look is not a rendering of the new one.
 
 - **More than one video model, without guessing at any of them.** The pipeline
-  speaks intent — seconds, shape, quality, first/last frame, refs, audio — and
+  speaks intent (seconds, shape, quality, first/last frame, refs, audio), and
   each model's table entry says what it calls those. kie's own catalogue does not
   agree with itself: Sora 2 counts `n_frames` and spells its shape "landscape"
   where Seedance takes `duration` and "16:9". `cinematic_register_model` adds a
@@ -180,7 +189,7 @@ measurements and with what was deliberately not built, in
   impossible.** Its docstring said flatly that a local pinned ref cannot reach a
   kie model. True of the generation endpoints, false of kie: there is a file
   upload API on another host that takes base64 and returns a URL those endpoints
-  accept. One missing call, not a missing capability — and it matters far more
+  accept. One missing call, not a missing capability, and it matters far more
   for video than for images, because an anchored still can fall back to Krea and
   an anchored *shot* has nowhere to go.
 
@@ -192,7 +201,7 @@ measurements and with what was deliberately not built, in
 - **Post-production, which is what makes it a cutscene rather than a video.**
   Transitions (cut, fade, dissolve, wipe) at the join, with the cheap concat path
   kept for a sequence of hard cuts. A music bed laid under the picture and muxed
-  into the Ogg — the picture is copied, not re-encoded, because it has been
+  into the Ogg, since the picture is copied, not re-encoded, because it has been
   through Theora once already. Dialogue timed into `.srt` and `.json` captions
   off the shot list, so nothing can drift from it. A continuity check that
   extracts the real frames either side of every join and measures brightness and
@@ -200,10 +209,312 @@ measurements and with what was deliberately not built, in
   the skip and a `finished(skipped)` signal, so gameplay plays a cutscene in
   three lines instead of hand-authoring a video player.
 
+- **An animatic, and a previs gate in front of the money (`cinematic_animatic`,
+  `bgate_core/animatic.py`).** `plan()` wrote a shot list and `generate_shot`
+  bought a clip, with nothing in between, so the first time anyone saw the ORDER,
+  the rhythm, or that a scene ran long was after paying for all of it, when the
+  only cheap edit left is deleting shots. The animatic cuts the storyboard panels
+  together at their planned durations with the planned transitions, calls no
+  model and spends nothing. A beat with no still gets a slate held at full
+  length, because a reel shorter than the scene reads as finished and that is the
+  one outcome which makes previs worse than useless. It reports average shot
+  length, which is the number that says whether an edit reads.
+
+- **A LOCATION rail on every sequence (`cine_location`, plus `location` on
+  `cine_shot`).** A sequence carried a LOOK rail and a shot carried a CAST rail.
+  Nothing anywhere carried the SET, so "the office" lived only inside four
+  differently worded action strings and the model correctly drew four different
+  offices. On the real sequences identity and style held and the set drifted
+  between every shot: the two rails that existed did not fail, the one that was
+  missing did. A location is a table row because a sequence has several sets; the
+  shot holds a slug rather than an id because `plan()` rewrites every row. The
+  description goes into `prompt_for` in a fixed slot, after the framing and
+  before the action, because trailing text modifies the whole prompt, which is
+  right for a look held across a sequence and wrong for a set that changes
+  between shots. Generation is now ordered by location rather than by shot index,
+  which is recurrence distance control and costs nothing: it changes the order of
+  a loop and buys exactly the same shots. The CUT stays in narrative order.
+
+- **A shot size vocabulary, checked at plan time (`shot_size`).** Measured across
+  two real sequences of nine shots: one close, one medium, six wides, no over the
+  shoulder, no reverse, and one sequence that was push in three times running. A
+  wide is simultaneously the flattest edit and the most drift prone thing to buy,
+  because a wide shows the whole set, and the century old film fix for a
+  continuity error, cut tighter, is also the cheapest fix for generative drift.
+  `plan()` now warns on no tight coverage, three same size shots in a row, and
+  multiple locations with nothing marked establishing. A fixed vocabulary is what
+  makes any of that checkable.
+
+- **`bgate_core/ffmpegbin.py`, one place that decides which ffmpeg runs.** Six
+  modules independently called `shutil.which("ffmpeg")`, so there was no way to
+  use a different binary short of uninstalling software. Resolution is explicit
+  argument, then `BGATE_FFMPEG`, then `~/.bgate/bin/ffmpeg`, then PATH. A
+  deliberately placed binary outranks PATH because PATH is usually whatever a
+  package manager installed, and in the case that produced this fix, that was the
+  broken one.
+
+- **Row and sheet auditing, before anybody slices anything
+  (`sprite_sheet_check`, `spritekit` section 6).** Every existing sprite check
+  runs on frames that have already been registered into their own cells, which is
+  the half of the pipeline that works. A row is not four frames: it is ONE
+  drawing containing four figures, drawn left to right with each figure
+  conditioned on the canvas so far, so a row is a chain with the reference pin
+  removed and it degrades across the row exactly as a chain degrades across a
+  sequence. Measured on rows this project generated: `attack_ne` shrinks
+  monotonically at rank correlation -1.0, `idle_ne` has one head yawed against
+  the other three, `walk_ne` has feet wandering 17% of the figure's height off
+  the ground line while the head moves 33%, and `idle_se` and `walk_se` are
+  clean. That last pair matters as much as the first three, because an audit that
+  fires on everything is one somebody switches off.
+
+  The findings are `foot_drift`, `head_drift`, `size_drift`, `size_ramp`,
+  `facing_flip`, `stray_ink` and `empty_cell` within a row, and
+  `sheet_size_drift`, `sheet_size_ramp` and `band_palette` across the bands of a
+  stacked sheet. The two ramps read differently from the rest: they say the drift
+  is monotonic, which means it compounds, which means no re-roll survives it and
+  the fix is structural. It hands back an annotated copy of the image with the
+  ground line, the head line and each figure's true feet and mass anchor drawn on
+  it, because every one of these faults was first spotted by a human holding a
+  straight edge against a screenshot, and an agent given `0.175` has to take on
+  faith what a human sees at a glance. Advisory, never a gate: a turnaround
+  SHOULD flip its facing and a size chart SHOULD ramp.
+
+- **A storyboard, in front of the shot list.** Cutscene planning started where
+  somebody already knows what the scene is, so the only place to work one out was
+  the shot list, where every wrong idea sits one click from a paid generation. A
+  premise now becomes a script and a beat per frame through one cheap text call,
+  and each beat is drawn as an image, two orders of magnitude cheaper than the
+  video shot it stands in for. `cast_refs` resolves the same pinned character
+  files on every frame, stored as pin NAMES rather than paths, so a re-pin moves
+  the pointer instead of leaving the board drawn against a character art has
+  since redrawn. `source` records whether a human or a model put each frame
+  there, because those are not the same evidence for spending video money, and
+  approving a frame with no image is refused outright. `promote()` is the single
+  verb that crosses into paid, and it wires every approved frame in as that
+  shot's `first_frame`, so "anchor on an approved still" holds by construction.
+
+- **A premise compiles to a manifest, and coverage answers what is left.** The
+  brainstorm room was already the front end of a premise to plan compiler and
+  the back end was a pile of loose work items. The manifest names what gets
+  built, the acceptance test that settles it, and its dependencies. Slice rows
+  compile onto the board in dependency order with real `depends_on` links, and
+  everything else stays `spec` on purpose: the board holds the slice, the
+  manifest holds the game. `plan_status` reconciles the two and deliberately does
+  not stop at "built", because a sprite on disk that no scene references is not
+  in the game and neither is a scene no reviewer passed. "Wired" is proved by
+  reading the `.tscn`/`.tres` text rather than by asking the agent that made it.
+  `board_digest` answers "what happened while I was away": finished, failed,
+  awaiting you, spend, coverage, and a `blocked` field that names a dirty tree as
+  the whole board stopper.
+
+- **A worker can claim its own next item (`queue_claim_next`), and dependencies
+  are a graph.** A finished worker's only move was to exit and let the board pay
+  a fresh agent's whole briefing for the next item. The claim is atomic against
+  the dashboard, because there are two dispatchers now and both used to read
+  `queued` and proceed. Separately, `work_item.depends_on` held one parent, so a
+  scene needing the sprite AND the sound AND the script could express one of
+  three; migration 0033 adds `work_item_dep` alongside it, additively, and
+  `queue_cut_dependency` is the repair verb for the board's one state with no
+  exit, a cancelled predecessor blocking its successors permanently.
+
+- **Audio, QA and narrative can execute their own missions.** Three of eight
+  seats had no tool for their own lane. `sfx_generate` synthesizes game sound
+  effects procedurally with no key and no provider, writes the `.synth.json`
+  recipe sidecar dispatch's own audio rule has always demanded, and rebuilds byte
+  identical output from that sidecar alone. `godot_test_run` discovers a
+  project's own test scripts under either layout, runs them headless, and returns
+  per script pass/fail; a SCRIPT ERROR at exit 0 fails the script, and finding no
+  tests returns `no_tests` naming the directory it searched rather than a green.
+  `dialogue_write` writes trees as engine loadable JSON, refusing a dangling
+  goto, an orphan node, a node from which no ending is reachable, and an end node
+  with choices, each by name.
+
+- **Spend answers who spent it, and over which window.** The ledger could say
+  what a project cost and what kind of thing bought it, and nothing else, so
+  "which seat is expensive", the question that decides where a budget actually
+  gets cut, was unanswerable. Migration 0034 adds `spend_event.seat`, filled from
+  the environment inside `record()` so nearly every call site is unchanged, with
+  unattributed rows kept rather than dropped. Windows were lifetime and today;
+  week and month are the two people actually ask about, and someone returning
+  after a break asking what last month cost was told $0.00, which reads as cheap
+  rather than as not measured. Agent runs are reported as their own block,
+  because they bill as subscription and are excluded from the ceilings.
+
+- **A music generation survives the process that started it.** `generate_music`
+  submitted and blocked, and the task id first reached durable storage after a
+  successful absorb, so a crash mid poll lost the only handle to a batch already
+  charged for. It now opens a JSON ticket before the provider call and closes it
+  on absorb, the way cinematic already persisted `task_id` at submit.
+  `music_stuck_tracks` is the twin of `cinematic_stuck_shots`: same states, same
+  result keys, plus the retention deadline inside which a paid track can still be
+  collected.
+
+- **One verb from "saved" to "in the game", in all three editors.** The sprite
+  editor, audio lab and 3D viewer all ended at a saved file that the game knew
+  nothing about. The same button in the same place now offers two exits weighted
+  equally: wire it here, picking a scene, parent node, node type and properties
+  with a dry run before the commit; or hand it to an agent as a work item whose
+  brief carries the asset path, the engine side resource, the target scene and
+  parent, the attached references, a pattern to follow and a per kind "done looks
+  like". `path` is always the file on disk, never the editor buffer, so an
+  unsaved editor is told so rather than quietly wiring the last save.
+
+- **A now-playing readout in the dashboard (`bgate_ui/static/nowplaying.js`).**
+  Sound is the only asset class here with more than one player: the audio seat's
+  library rows, cue rows and music candidates each render an `<audio>`, so do the
+  asset library, peek sheet and scene builder, the lab plays through WebAudio and
+  by design keeps playing when you navigate off its page, and the beat maker
+  schedules its own preview. Browsers do not make `<audio>` exclusive, so two
+  things play at once and nothing on the page NAMED the second one. It is a
+  readout rather than a mute, deliberately: hearing a cue over a music bed is a
+  real thing to want and the lab's mixer exists to play lanes together.
+  Concurrency stays, and what is fixed is that it was invisible.
+
+- **Seat lanes are re-rooted at what the repository actually contains.** Every
+  glob in the default table was written against `<root>/game` and
+  `<root>/design`, but `bgate init` scaffolds straight into `<root>` and an
+  adopted repo has whatever layout its author chose. Run the real matcher against
+  an ordinary Godot repo and `src/player.gd`, `assets/hero.png` and
+  `scenes/level.tscn` are owned by no seat, so with the hook installed every
+  dispatched agent is refused on contact with the source tree, and the refusal
+  reads as "wrong seat" when the truth is "wrong layout". Adopt already computed
+  the top level directories and threw them away. Layout detection now runs from
+  both `adopt` and `init` and is stored as ordinary per project overrides,
+  visible in `seat_list`, editable and reversible.
+
+- **`bgate hook-uninstall` and `bgate un-adopt`,** the two ways back out that did
+  not exist. The uninstall is surgical and leaves other tooling's hooks alone.
+
+- **A QA probe that declares what it drives.** The headless probe hardcoded a 2D
+  fighter in three places, so any other game got "no scene with both a Player and
+  an Opponent node was found" and a bot that watched nothing. `bgate_core.qaprobe`
+  now holds the contract, stored in `workspace_doc` under the qa seat so it needs
+  no migration, with a copy riding along in every run's samples so an old
+  baseline can still say what it was measuring. With nothing declared it derives
+  from the scene the project actually has and says out loud what it settled for.
+
 ### Changed
 
+- **BREAKING: `cinematic_generate_shot` now refuses on a multi-shot sequence
+  with no current animatic.** Anything scripting against `generate_shot` has to
+  either build a reel first with `cinematic_animatic` or pass `previs_ok=True`,
+  or the call returns `ok: False` at `stage: "previs"` with nothing charged. It
+  sits beside the encoder check and is there for the same reason: both are free
+  to fix now and expensive later. Staleness is the half that matters, since a
+  reel cut before the shots were re-ordered is worse than none, because it is why
+  somebody believes the edit was checked. One-shot sequences are exempt, an
+  unparseable timestamp does not block spending, and the override is a parameter
+  rather than a config setting so that skipping previs is something somebody
+  typed on the call.
+
+- **The ffmpeg check round-trips the encoder instead of reading a list.**
+  `ffmpeg_status` decided the encoder was usable with `"libtheora" in listed`,
+  which is presence and not function, so `bgate doctor` was green while every
+  cutscene shipped unreadable. It now encodes and decodes one second of synthetic
+  video, cached per executable and only when the probe actually ran, so a single
+  timeout cannot mark a build unusable for the life of an MCP server. It keeps
+  three distinct answers: no ffmpeg, no libtheora, and libtheora that lies. This
+  supersedes the presence check described in the doctor row at the end of this
+  section.
+
+- **Every paid MCP tool asks the budget.** `_spend_gate` was written for
+  `image_sprites` and called only there, so `image_generate`, `image_edit`,
+  `item_generate`, `item_variants`, `image_talkhead`, `vfx_animate` and
+  `character_generate` all billed first and recorded afterwards, which makes the
+  project budget an invoice on every path except the one it was demonstrated on.
+  `item_variants` was the sharpest: its `limit` capped the count and never the
+  money. `voice_speak` was worse, billed per character, recording its spend, and
+  never once asking. `kie_video_generate` is gated too, and its unknown price
+  case is handled honestly: kie reports an unpriced model as `None` rather than
+  `0.0`, and folding that to zero would read as free for exactly the models whose
+  cost is least predictable, so an unknown price still asks the budget and says
+  so. A test walks the AST and fails if any paid tool ever loses its gate.
+
+- **A spending workflow node cannot be started by a machine.** Every generate
+  node and every registry-paid tool node is now a spending node. `run_one_node`
+  never called `require_human` unlike its sibling routes, and `run_node` accepted
+  an `actor` it ignored, so an agent could POST a paid video or music node
+  directly; generate nodes were worse, since `advance` auto-started them whenever
+  their inputs were satisfied, ignoring the dispatch switch entirely. Both now
+  wait for a human press when dispatch is off, and the guards are mutation
+  checked: disabling either fails ten tests.
+
+- **Deploying a brainstorm closes the thinking partner process.** It used to
+  leave it running, on the reasoning that a deployed session is one people keep
+  talking in. That is true of the SESSION and was the wrong conclusion about the
+  PROCESS: observed on this project's own director seat, a session deployed one
+  day was still live the next, the seat page silently reopened it, and further
+  requests had been stacking in it behind a transcript nobody scrolls back
+  through, on top of a plan already on the board. Nothing is lost, since close is
+  the verb whose whole contract is that the transcript, notes and drawing are
+  rows in a table and stay put, and speaking in the room reopens it. A partner
+  that will not shut down does not fail the deploy, because the items are already
+  filed and re-running would file them twice.
+
+- **The board commits its own work when a run ends.** `dispatch.auto_commit` is
+  on by default and calls `gitwork.commit_paths` with the run's OWN paths, never
+  `commit -a`, so a human's uncommitted work is never swept in and still
+  correctly blocks the next dispatch.
+
+- **The Python floor is 3.11.** `pyproject` refuses to install on 3.10, so
+  doctor's green row there was a false pass. Doctor also gains a project report
+  for the two faults no binary probe can see, lanes that match nothing in this
+  repository and a hook that was never installed, and states which rows the core
+  loop actually needs, because it exits 1 for the optional ones too.
+
+- **A lane refusal now routes the work instead of only naming the wall.** The
+  field evidence was unambiguous: fifteen files carrying LEFTOVERS blocks, seat
+  notes five hours newer than the last item anyone filed, four paid assets
+  orphaned because the note asking for them was never a job, and a 270-line
+  integration script written to route around cross-lane one-liners. The hook now
+  names the seat that owns the path and the `queue_add` call that hands the work
+  over, suggests `depends_on` when the blocker is a work item rather than letting
+  an agent poll a lease, and says plainly when NO seat owns a path that this is a
+  configuration problem.
+
+- **Sectioning across the dashboard.** The `.spanel` plus `.sec-h` pattern with
+  an icon, a seat colour and a count already existed and was live in four views;
+  every other view rendered a flat stack of divs, so everything blended together.
+  Twelve views now use it, including the sprite editor, audio lab and 3D viewer,
+  each of which had invented its own one-off heading class. Seat identity is
+  painted on the header icon only, because inside a seat workspace the seat
+  colour is constant down the whole column and carries no information while kind
+  varies.
+
+- **All fourteen user-facing documents rewritten,** to shorter and plainer prose:
+  302 em dashes to zero, 25 self-aware asides to zero, 32,795 words to 27,828.
+  The style pass was the cheap half. Verifying every claim against source turned
+  up documentation that would have stopped or misled a reader following it:
+  `reference.md` claimed 98 registered tools when there are 196, and said "Nine
+  views" in one place and "Ten views" in another over a nine row table when there
+  are twelve; `setup.md` described the PreToolUse hook as inert without a seat
+  when `DEFAULT_DIRECTOR_MODE` is `collide`, so a seatless session holds the
+  director seat and gets blocked on a collision, meaning somebody would have
+  believed they were unchecked; `screenshots.md` told you to run `bgate serve
+  --port 7801` when the capture script reads `BGATE_URL` at default 7788, so
+  following the instructions captured nothing. Also fixed: doctor described as
+  probing eight dependencies when it probes twelve, a README findings table that
+  was a header with no rows, wheel instructions that failed on paste, links to
+  two files that do not exist, and four tools documented with parameter names
+  they do not take. One number was removed rather than corrected, a batch count
+  attributed to `vfx.py` that exists in no file, branch or history. Three files
+  got longer against the brief, because cutting verified facts to reach a word
+  target is the same failure in the other direction.
+
+- **The setup documentation covers the steps a first run actually fails on.**
+  Python on PATH and what to do on Windows when `bgate` is "not recognized", how
+  to get the absolute interpreter path the MCP registration step demands, and
+  the fact that you must restart Claude Code before the tools appear, which was
+  stated plainly in the `CLAUDE.md` written for an assistant and appeared in no
+  user-facing file, so someone following the guide finished it, saw no tools and
+  concluded the whole thing was broken. Contradictions resolved against the code:
+  eight seats, one tool count, one Python version. The stamped agent briefing's
+  cross-seat section told agents to write a LEFTOVERS comment block and never
+  mentioned `queue_add`, so the product was teaching the dead-ending it was
+  suffering from; it now opens with the queue call.
+
 - `bgate doctor`'s ffmpeg row now says when the build has no libtheora. It stays
-  green — recording and frame extraction work fine without it — but such a build
+  green, since recording and frame extraction work fine without it, but such a build
   cannot write the one format Godot plays, and finding that out after a whole
   sequence has been generated is expensive. The cinematic seat refuses to spend
   anything until the encoder passes.
@@ -214,8 +525,8 @@ measurements and with what was deliberately not built, in
   fighter sideways.** An outstretched limb widens the box on one side, which
   slides the body the other way to compensate. Measured on a synthetic with an
   identical torso in both frames: the torso moved 44.5px under box-centring, 6.0px
-  under the textbook alpha-weighted centroid, and 1.0px under the shipped anchor
-  — the median of the *core* columns, which drops the limbs from the vote and
+  under the textbook alpha-weighted centroid, and 1.0px under the shipped anchor,
+  the median of the *core* columns, which drops the limbs from the vote and
   leaves the torso, which is what an animator means by a centre line.
 
 - **The set's fit scale used the widest bounding box, which quietly undid the
@@ -242,7 +553,7 @@ measurements and with what was deliberately not built, in
 - **Assembled cutscenes shipped silent while three documents said otherwise.**
   The module docstring, the seat brief and the research note all explained that
   generated audio is off because "the audio seat scores the cutscene over the
-  top". There was no bed, no mix and no mux — a sentence that read as a design
+  top". There was no bed, no mix and no mux, a sentence that read as a design
   decision and was an unbuilt feature, which is worse than an admitted gap
   because nobody goes looking for it.
 
@@ -250,12 +561,210 @@ measurements and with what was deliberately not built, in
   game loads the assembled cut, and assembly reads the `.mp4` candidates
   directly. It was a Theora encode per shot and, at 1080p, tens of megabytes each
   of unreferenced files. A cut installs; a shot does not, with an override for
-  the one real case — a single clip used alone as an attract loop or a sting.
+  the one real case, a single clip used alone as an attract loop or a sting.
 
 - **Captions could stack when a transition overlapped two shots.** A dissolve
   pulls the incoming shot back while the outgoing line still owns its own shot's
   full length, so two subtitles were on screen at once and the player showed the
   previous line over the new shot.
+
+- **An empty storyboard was told to install ffmpeg.** `animatic.build()`
+  resolved the encoder before it validated the board, so a board with every row
+  cut refused with "ffmpeg is not on PATH" rather than "no live shots to cut".
+  Both refusals were true at once and the order decided which one a human read.
+  It picked the one about the machine over the one about their work, sending
+  somebody to install software they did not need. Found by CI on a runner with
+  no ffmpeg, which is exactly the machine that cannot tell the two apart.
+
+- **The shipped cutscenes were not badly compressed, they were broken files.**
+  Found by chasing one screenshot of a cutscene playing as coloured blocks in
+  Godot: a shipped `.ogv` decoded 14 of its 193 frames and the rest threw
+  `error in unpack_block_qpis`, with frame 3 extracting as a flat green
+  rectangle. Ruled out one at a time: pixel-art content, the quality setting,
+  encoder threading, frame size, and Godot's own decoder, which already carries
+  the Theora fixes in 4.4. It is the ffmpeg BUILD, and not in the way the obvious
+  summary suggests: 8.1.1-full gives 37 decode errors on a one second probe where
+  7.1-essentials, also a gyan build, gives 0. It is a regression in one build
+  line, so the rule is to prove the build rather than trust its version string.
+  `transcode()` now decodes what it wrote, deletes it and raises rather than
+  installing something unreadable.
+
+- **A `first_frame` silently threw away the location plates on Seedance.** The
+  model takes an anchor OR references and never both, and the code reported that
+  the model "has no parameter for refs", which is false and blamed the model for
+  a trade made on the caller's behalf. Now named, with what was lost and the
+  actual choice.
+
+- **The board deadlocked itself on the first file any agent wrote.** Nothing in
+  this system ever committed anything, and dispatch refuses a dirty tree by
+  default, so the first agent to write a file made the tree dirty and every later
+  dispatch was refused, forever, on a 20 second retry. `dirty_tree` is a FLOOR
+  refusal, so it stopped the whole board rather than one item. Measured: an
+  overnight queue of thirty items finished three.
+
+- **Timeout, stall, cost and expired-OAuth kills produced no event at all.**
+  `_trip`'s ceiling kills wrote `failed` through `set_status`, which never emits,
+  and `_reap` skipped `complete()` because the item was no longer dispatched, so
+  none of those kills raised an `item.failed`: no bell, no webhook, no auto
+  reopen. Separately, a runner failing instantly on every item, which is what an
+  expired login looks like, burned a whole queue to `failed` in ten minutes,
+  because a dispatch that SPAWNS counted as a success and never triggered a
+  cooldown.
+
+- **`queue_reopen` never incremented `attempts`,** which is the round counter the
+  QA gate's cap reads, so the fail and reopen loop the cap exists to stop could
+  never trip it: an unbounded money pump wearing the gate's own uniform. It
+  routes through `queue.reopen` now and carries the harness's record of what the
+  last attempt already wrote, so a fix round continues rather than regenerating.
+
+- **A seat page silently dropped you into the middle of yesterday's brainstorm.**
+  It read `bs-last-<seat>` from `localStorage` unconditionally, with no mark to
+  say so. Auto-restore now covers what it was for, picking a thread back up in
+  the same sitting, and anything older than four hours, deployed or archived
+  lands on the list with the drawer open. The session is one click away, and the
+  only thing that changed is that continuing it is a decision. The thread itself
+  is windowed to twenty-four messages with a "show earlier" control that holds
+  the reading position: a brainstorm that reached a plan is routinely a hundred
+  turns and every one of them was re-rendered, with a full markdown re-parse of
+  the whole session, each time one bubble arrived.
+
+- **A node whose references could not be resolved was marked `passed`.**
+  `_context_output` and `_ref_output` return their failures as `context_error`
+  and `ref_error`, and `advance` only ever inspected `flow_error`, so the failed
+  node carried straight through and the generate node downstream ran with an
+  empty prompt and no style anchor, which is the exact bug `_ref_output`'s own
+  docstring says it was written to fix. All three keys now fail the node.
+
+- **A node left `running` by a crashed worker held its line forever.**
+  `_INFLIGHT` is in-memory and dies with the process, while four user-facing
+  messages told the reader to "reopen the run", a verb that did not exist.
+  `reconcile()` releases them and the messages name it.
+
+- **A stall that never resolved went quiet permanently.** The heartbeat's mark is
+  the subject's own `updated_at`, so a chain that stalled and then genuinely
+  never moved kept matching its mark and was never mentioned again, including
+  across a three week absence, which is exactly when the stall is what the person
+  coming back needs told. Marks now carry `said_at` and re-report after a full
+  window.
+
+- **An unanswered `ask_human` question past the 200 row scan was invisible** to
+  `pending_decisions`, the console and the stale reminder simultaneously. The
+  query already excludes answered questions, so the cap was only ever bounding
+  how many open ones a project may have before the oldest silently vanish.
+
+- **Krea and kie wrote no spend rows at all,** so a budget ceiling could never be
+  reached on either provider. Both now account, and a failed music run carries
+  `accounted: False` explicitly rather than returning no cost keys, which callers
+  reading `credits_consumed` with an `or 0` default scored as free.
+
+- **The reaper shot working agents on every restart.** `_live` is empty at
+  startup, so every recorded pid looked orphaned. A live agent with recent log
+  output is adopted now, not killed.
+
+- **The level template pointed at a tileset no project has ever had.** The card
+  hardcoded `res://assets/tiles/main.tres` and `wall_layout=blob47`, so the one
+  template whose entire promise is that it generates a level died on its third
+  node every time anyone opened it. The tileset is read from the project now, and
+  the layout offer is computed by walking the coordinates a `.tres` actually
+  defines, because a tile COUNT cannot answer it: 50 tiles in the wrong shape
+  fails and 36 in the right shape passes. Source ids travel with `columns`,
+  because the same sheet that fits at its own width runs off the edge at the
+  argument default of 8, silently, drawing nothing exactly where the wall shape
+  is hardest. With no tileset present the field is left empty rather than
+  fabricated.
+
+- **Godot 4.4 reported a failing build for every 3D project containing a glTF.**
+  4.4 grew an editor thumbnail step that renders each imported 3D scene into a
+  viewport and reads it back; under `--headless` the RenderingServer is the dummy
+  stub, which owns no textures, so the readback prints `Parameter "t" is null.`,
+  and `check_project` counts engine error lines rather than the exit code.
+  Upstream godotengine/godot#108994. Classified benign only after measuring that
+  it is content blind, fires only on the pass that reimports, and leaves a
+  correct resource, and matched on the engine source frame as well as the
+  message, so the same words from a real renderer stay fatal.
+
+- **Streamer mode had two caches and the fixture cleared one.** `redact._cache`
+  separately holds "is the filter on at all" for two seconds, so any earlier test
+  leaving it `False` gave the streamer tests a fully unredacted response. It
+  survived only because the suite happened to be slow enough between the two.
+
+- **`nowplaying.js` was untracked while `index.html` already loaded it,** so a
+  fresh clone served a 404 for a script the page loads before every audio player
+  on it. Two packaging tests were red on exactly that.
+
+- **Text to speech required the `websockets` package it never uses.**
+
+- **The ffmpeg concat list was corrupt on Windows, silently.** Inside a quoted
+  concat entry ffmpeg treats a backslash as an ESCAPE character, so a native path
+  is read as escape sequences and a project at `C:\Users\nina\new-game` feeds the
+  demuxer `\n`, making the entry a filename with a newline in it. Forward slashes
+  now, which ffmpeg accepts on Windows. This is the difference between a cut that
+  assembles and one that cannot open its own shots.
+
+- **Six subprocess calls flashed a console window.** Doctor, gitwork, playtest,
+  blender and godot all carry `creationflags=_NO_WINDOW`; the cutscene pipeline
+  carried none and spawns more binaries than any of them, one per shot for
+  continuity, one per join, one per mix, which under a stdio MCP server is a
+  window per ffmpeg. A test walks the AST of both modules and asserts every
+  `subprocess.run` passes `creationflags` and closes stdin.
+
+- **Three tests died instead of skipping on a machine with no ffmpeg,** because
+  `needs_theora` guarded the tests that encode while the helpers were used by
+  tests that only need a file to exist. Verified by moving ffmpeg and ffprobe out
+  of `/usr/bin` and running the whole suite: 4,317 pass with no ffmpeg at all.
+
+- **Every board collapsed onto one sequence called "unnamed".** `slugify("")`
+  returns the truthy string `"unnamed"`, so the empty check had to test the raw
+  name.
+
+- **Icons inside buttons stacked above their labels.** `BGIcon` renders
+  `display:block`, so "Run", "generate" and "Lore" were two lines tall.
+
+### Security
+
+- **A real path traversal, found by attacking the containment check rather than
+  trusting it.** Eleven shapes were tried against the check every caller-supplied
+  path goes through; ten were refused and one was not. `normalize_path` resolved
+  the path as given, verified it sat inside the project, and THEN rewrote
+  backslashes to forward slashes on the way out. On Windows that is harmless,
+  since both characters are separators and `resolve()` had already seen any
+  traversal. On POSIX a backslash is an ordinary filename character, so
+  `..\..\outside\secret.png` is one legal filename: it resolved to a harmless non
+  existent child of the project, passed containment, and was handed back as
+  `../../outside/secret.png`, which every caller then joins to the root and
+  follows straight out of the project. Separators are normalised BEFORE the
+  resolve now, so containment is verified against the same interpretation the
+  caller gets back. This is shared code, so every registry key, artifact path and
+  asset lookup in the product goes through it.
+
+- **Six caller-supplied paths in the cinematic pipeline were joined to the root
+  unchecked:** `style_refs`, `first_frame`, `last_frame`, `refs`, `vo` and
+  `audio_track`. These paths are not merely read: a conditioning frame is handed
+  to the provider's file upload API, which POSTs the bytes to a third party, so a
+  path escaping the project root is exfiltration off the machine rather than
+  local file disclosure. The callers are the dashboard body and MCP tool
+  arguments, which means an agent, and constraining what an agent can reach is
+  the entire premise of the seat and lane system. Reproduced before fixing. All
+  six now go through `project_path()`, which reuses `assets.normalize_path`
+  rather than reimplementing containment, refused at PLAN time because the shot
+  list is what a human reviews, and checked again in `keyframes_for` and
+  `assemble` because a row can be written by something other than `plan()`. It
+  refuses by DESTINATION, not by shape, so `game/../art/hero.png` is still kept.
+
+- **No exception-derived text reaches a response body.** `safe_error` is a
+  constant now, not even the exception type name, since `type(exc).__name__` is
+  an attribute read on a caught exception and would have been the third failed
+  attempt rather than a fix. Two earlier attempts are on the record: scrubbing
+  the message, which a taint tracker does not count as sanitising, and logging it
+  instead, which traded a MEDIUM for a HIGH by writing a possibly secret bearing
+  string to stdout. What this costs is bounded, and that bound is the only reason
+  it is acceptable: `safe_error` is reached only from an `except` around an
+  unexpected failure, while every deliberate refusal in the product raises
+  `ApiError` with a message written as a literal in this repository's own source,
+  and those are unchanged. Two tests pin that the deliberate refusals still
+  explain themselves. The replacement message says detail was withheld and that
+  the traceback is on the server, because a blank panel is the failure `api.py`
+  exists to prevent.
 
 ## [0.1.35] - 2026-08-09
 
@@ -1856,7 +2365,8 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.32...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.40...HEAD
+[0.1.40]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.35...v0.1.40
 [0.1.32]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.29...v0.1.30
