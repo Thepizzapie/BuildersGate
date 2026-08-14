@@ -9,6 +9,30 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.412]
+
+The app opened a black window if you had ever renamed a project.
+
+### Fixed
+
+- **A folder registered under two names blanked the whole interface.** The
+  project list is keyed by name, and names are unique, but two names can point
+  at one folder. Renaming a project is exactly how that happens: the new name
+  gets registered and the old one is never retired.
+
+  Everything that offers you a project turns that list into choices keyed by
+  the folder, and the picker refuses a repeated one by throwing rather than
+  drawing it twice. A failure while the page is drawing takes the whole page
+  with it, so the app opened its window, painted nothing, and sat there black
+  while the server behind it answered every request normally. No error was
+  written anywhere, and every build and every automated check passed, because
+  the fault was in one machine's saved list of projects rather than in the
+  program.
+
+  One folder now appears once, however many names it was saved under, with
+  paths compared the way Windows compares them. The picker also drops repeats
+  on its own, so a bad list can cost you a missing row and never the app.
+
 ## [0.1.411]
 
 The installer, which 0.1.41 built and then forgot to publish.
