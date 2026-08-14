@@ -570,8 +570,41 @@ def health() -> dict:
     """
     root = _root_or_none()
     return {"ok": True, "service": "builders-gate",
+            "version": _version(),
+            "source": _source_root(),
             "root": str(root) if root else "",
             "project": Path(root).name if root else ""}
+
+
+def _version() -> str:
+    """The version of the CODE THIS PROCESS IMPORTED, not of any install record.
+
+    importlib.metadata reports whatever a wheel or an editable install was BUILT
+    at, which for `pip install -e .` is frozen at install time and goes stale the
+    moment the checkout moves — a tree at 0.1.40 was reporting 0.1.0 because the
+    metadata predated forty releases. pyproject.toml beside the imported package
+    is the version of the code actually running, so it is read first and the
+    metadata is only the fallback for a real wheel that has no pyproject.
+    """
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        for line in pyproject.read_text(encoding="utf-8").splitlines():
+            if line.startswith("version"):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    try:
+        from importlib.metadata import version as _md_version
+        return _md_version("builders-gate")
+    except Exception:
+        return "unknown"
+
+
+def _source_root() -> str:
+    """Where the running code was imported from. An editable install and a wheel
+    answer /api/health identically otherwise, and "which tree is this serving"
+    is the question a stale dashboard makes people ask."""
+    return str(Path(__file__).resolve().parent.parent)
 
 
 def _inject_token(html: str) -> str:
@@ -1044,6 +1077,16 @@ def queue_stop(item_id: int) -> dict:
 def queue_steer(item_id: int, payload: dict) -> dict:
     """Inject a live course-correction into a running agent (no restart)."""
     return _dispatch.steer(str(_root()), item_id, payload.get("text", ""))
+
+
+@app.post("/api/queue/steer-all")
+def queue_steer_all(payload: dict) -> dict:
+    """Say one thing to every agent running right now.
+
+    Reports per item, refusals included: a broadcast that half landed and said
+    "ok" is worse than one that failed, because the operator stops watching.
+    """
+    return _dispatch.steer_all(str(_root()), payload.get("text", ""))
 
 
 @app.post("/api/queue/import-orbit")
