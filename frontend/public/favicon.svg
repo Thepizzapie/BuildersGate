@@ -13,15 +13,15 @@
        carries its own background for exactly this reason; the tab strip is not
        ours to theme. -->
   <rect width="64" height="64" rx="14" fill="#fff"/>
-  <g transform="translate(32 32) scale(0.0433) translate(-749.67 -750.01)">
+  <g transform="translate(32 32) scale(0.0433) translate(-759.15 -749.99)">
     <g fill="#1800ad">
-      <path d="M266.46 150H379.2v1200.02H266.46Z"/>
-      <path d="M1120.5 150h112.37v526.79H1120.5Z"/>
-      <path d="M1120.5 823.21h112.37v526.81H1120.5Z"/>
+      <path d="M225.93 150L398.12 150L398.12 1349.98L225.93 1349.98Z"/>
+      <path d="M1120.18 150L1292.38 150L1292.38 628.92L1120.18 628.92Z"/>
+      <path d="M1120.18 871.07L1292.38 871.07L1292.38 1349.98L1120.18 1349.98Z"/>
     </g>
     <g fill="#ff751f">
-      <path d="M584.04 499.5 655.55 428 950.75 723.2 879.25 794.7Z"/>
-      <path d="M879.15 651.2 950.65 722.7 655.42 1018 583.92 946.4Z"/>
+      <path d="M621.77 507.67L694.62 434.82L989.74 729.93L916.89 802.79Z"/>
+      <path d="M916.88 659.39L989.73 732.24L694.61 1027.36L621.76 954.5Z"/>
     </g>
   </g>
 </svg>
