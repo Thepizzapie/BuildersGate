@@ -52,6 +52,7 @@ be a plan nobody read, and the confirmation step would be theatre.
 """
 from __future__ import annotations
 
+import threading
 from typing import Optional
 
 from fastapi import APIRouter
@@ -61,6 +62,27 @@ from bgate_ui import api
 from bgate_ui.deps import root, safe_under
 
 router = APIRouter()
+
+# WHICH ROOMS ARE MID-ROUND, so a second message cannot start a second round in
+# the same room while the first is still taking turns.
+#
+# THE ROUND USED TO RUN INSIDE THE REQUEST, and with four seats and a discussion
+# round that is up to ten sequential CLI turns on one POST — minutes of a
+# spinner, a composer nobody could type into, and a page that had to be
+# reloaded to send anything else. The transcript was already polled, so the
+# answers were being delivered twice: once as they landed in the poll, and once
+# more as the return value of a request nobody could still be waiting for.
+#
+# Now the human's message is stored, the round is handed to a thread, and the
+# poll shows each voice as it answers. `_answering` is what the UI reads to say
+# "the room is thinking" without disabling anything.
+_answering: set[int] = set()
+_answering_lock = threading.Lock()
+
+
+def answering(session_id: int) -> bool:
+    with _answering_lock:
+        return int(session_id) in _answering
 
 # The shared implementation, under this module's old names. Aliases rather than
 # re-exports with a wrapper: `_ask` has to stay a module GLOBAL that the
@@ -134,10 +156,23 @@ def read_session(session_id: int) -> dict:
     its raw transcript. That is what the workspace header chip reads (it used to
     be hardcoded to a model name this room no longer talks to) and what a
     terminal view of the session will tail.
+
+    And ``participants`` — the roster. One row per invited seat: its state, who
+    invited it and when, what it has cost, whether a process is live for it
+    right now, and its own ``thinker`` in the same shape as the header's. The
+    room's own partner is NOT in this list: it is ``thinker``, it was always
+    here, and it has no invitation to show.
     """
     project = root()
-    return api.ok({**_session(project, session_id),
-                   "thinker": _thinker(project, session_id)})
+    session = _session(project, session_id)
+    return api.ok({**session,
+                   "thinker": _thinker(project, session_id),
+                   # Whether a round is in flight RIGHT NOW. The poll is how the
+                   # room's answers arrive, so this is what lets the page say
+                   # "the seats are answering" instead of going quiet between a
+                   # sent message and the first reply.
+                   "answering": answering(session_id),
+                   "participants": session.get("participants") or []})
 
 
 @router.patch("/api/brainstorm/{session_id:int}")
@@ -170,11 +205,14 @@ def update_session(session_id: int, payload: dict) -> dict:
             _bs.set_drawing(project, session_id, payload.get("drawing"),
                             png=None if png is None else str(png))
             touched.append("drawing")
+        if payload.get("discuss_rounds") is not None:
+            _bs.set_discuss(project, session_id, payload["discuss_rounds"])
+            touched.append("discuss_rounds")
     except ValueError as exc:
         raise api.bad_request(str(exc), session_id=session_id)
     if not touched:
-        raise api.bad_request("nothing to change — send title, notes, drawing "
-                              "or drawing_png")
+        raise api.bad_request("nothing to change — send title, notes, drawing, "
+                              "drawing_png or discuss_rounds")
     return api.ok({**_session(project, session_id), "changed": touched})
 
 
@@ -210,18 +248,42 @@ def close_session(session_id: int) -> dict:
     return api.ok(_close(project, session_id))
 
 
+@router.post("/api/brainstorm/{session_id:int}/reset")
+def reset_session(session_id: int, payload: Optional[dict] = None) -> dict:
+    """WIPE THE THREAD, KEEP THE ROOM. Stops the partner and drops the transcript.
+
+    The motion close/archive/delete all failed to cover: the conversation has
+    gone stale or circular and the human wants a clean head without losing the
+    notes and diagram they have spent an hour on. close resumes where it left
+    off; delete takes the pads with it.
+
+    ``keep_pads`` defaults true. Send it false for "same room, nothing in it".
+    """
+    project = root()
+    _session(project, session_id)
+    body = payload or {}
+    keep = body.get("keep_pads", True)
+    return api.ok(_bs.reset(project, session_id,
+                            keep_pads=bool(keep) if keep is not None else True))
+
+
 @router.get("/api/brainstorm/{session_id:int}/feed")
-def session_feed(session_id: int, cursor: int = 0) -> dict:
+def session_feed(session_id: int, cursor: int = 0, seat: str = "") -> dict:
     """THE TERMINAL CHANNEL — what the spawned session actually emitted.
 
     Polled from a byte cursor by the transcript view. Deliberately separate from
     the chat pane: this carries tool calls, their results and run boundaries,
     where the chat pane carries the conversation. Reading this one out loud is
     what the spoken channel must never do.
+
+    ``seat`` tails an INVITED participant's own transcript instead of the room
+    partner's. Each voice writes its own log, so each has its own cursor — one
+    cursor over two interleaved streams cannot be resumed.
     """
     project = root()
     _session(project, session_id)
-    return api.ok(_feed(project, session_id, cursor=int(cursor or 0)))
+    return api.ok(_feed(project, session_id, cursor=int(cursor or 0),
+                        seat=str(seat or "")))
 
 
 @router.delete("/api/brainstorm/{session_id:int}")
@@ -232,6 +294,69 @@ def delete_session(session_id: int) -> dict:
     project = root()
     _session(project, session_id)
     return api.ok(_bs.delete(project, session_id))
+
+
+# ---------------------------------------------------------------------------
+# The roster — inviting a seat into the room
+# ---------------------------------------------------------------------------
+# ANY SEAT MAY BE INVITED, AND EVERY ONE OF THEM ARRIVES WITHOUT ITS TOOLS.
+# The spawn goes through the same read-only path as the room's own partner
+# (bgate_core.brainstorm.invite -> brainsession.start -> the one _spawn), so a
+# guest is read-only by construction rather than by a check somebody has to
+# remember to write. What it says is an opinion and nothing here turns an
+# opinion into work; Deploy still does that, and a human still presses it.
+
+@router.post("/api/brainstorm/{session_id:int}/invite")
+def invite(session_id: int, payload: dict) -> dict:
+    """Invite one seat into the room. ``{"seat": "art"}``.
+
+    Each refusal is a different HTTP code because each is a different thing for
+    the human to do about it:
+
+        400  not a seat, or the project disabled it, or the room is full
+        409  that seat is already here (including the owner, whose partner IS
+             the room's own voice)
+        503  nothing can be spawned — the runner declares no read-only mode, or
+             its CLI is not on this machine. The row is written anyway and the
+             seat sits in 'invited': they asked for it, and the roster must not
+             disagree with what they did.
+    """
+    project = root()
+    session = _session(project, session_id)
+    _writable(session)
+    try:
+        out = _bs.invite(project, session_id,
+                         str((payload or {}).get("seat") or ""))
+    except _bs.AlreadyHere as exc:
+        raise api.conflict(str(exc), session_id=session_id)
+    except ValueError as exc:
+        raise api.bad_request(str(exc), session_id=session_id)
+    if out.get("error"):
+        # 503 rather than 502, same reasoning as synthesize: "this cannot work
+        # here" wants a settings link and "it failed this time" wants a retry.
+        raise api.ApiError(503, f"the {out['participant'].get('seat')} seat is "
+                                f"in the room but nothing started: {out['error']}",
+                           code="participant_not_started",
+                           detail={"session_id": int(session_id),
+                                   "participant": out["participant"]})
+    return api.ok({**out, "participants": _bs.participants(project, session_id)})
+
+
+@router.delete("/api/brainstorm/{session_id:int}/invite/{seat}")
+def leave(session_id: int, seat: str) -> dict:
+    """A seat leaves the room. Its process stops; its row and its spend stay.
+
+    Not a delete of the record: the messages that seat wrote are still in the
+    transcript, and a roster that could not name the seat beside them would
+    leave half the conversation attributed to nobody.
+    """
+    project = root()
+    _session(project, session_id)
+    try:
+        out = _bs.leave(project, session_id, seat)
+    except _bs.Missing as exc:
+        raise api.not_found(str(exc), session_id=session_id, seat=seat)
+    return api.ok({**out, "participants": _bs.participants(project, session_id)})
 
 
 # ---------------------------------------------------------------------------
@@ -249,33 +374,163 @@ def message(session_id: int, payload: dict) -> dict:
     the call fails. Losing what somebody typed because a key was missing or a
     request timed out is the worst outcome available here, and it is the one a
     naive "ask, then save both" ordering produces.
+
+    ``to`` ADDRESSES ONE SEAT. Without it everyone in the room answers, which in
+    this codebase means one blocking CLI turn each, in invite order, owner's
+    partner first — there is no background worker in this path, so a fan-out is
+    literally a loop (see brainstorm.answerers, which says why that is the
+    honest reading and not a placeholder). Each answer lands as its own message
+    row as it completes, so a room of four costs four turns on one sentence and
+    ``to`` is the motion for "I only want the art seat's view".
     """
     project = root()
     session = _session(project, session_id)
     _writable(session)
+    try:
+        speaking = _bs.answerers(project, session_id,
+                                 str((payload or {}).get("to") or ""))
+    except ValueError as exc:
+        # Refused BEFORE the message is stored, on purpose: an addressed message
+        # whose addressee is not here has not been said to anybody, and storing
+        # it would leave a question in the transcript that nothing will answer.
+        raise api.bad_request(str(exc), session_id=session_id)
     try:
         said = _bs.append_message(project, session_id, "user",
                                   str(payload.get("text") or ""))
     except ValueError as exc:
         raise api.bad_request(str(exc), session_id=session_id)
 
-    # session_id is what makes this a CONVERSATION rather than forty unrelated
-    # questions: the spawned session is held open between messages and this turn
-    # is its next one. The whole transcript window still goes down; the partner
-    # sends only what that process has not already heard (brainsession._delta),
-    # so a resumed room after a dashboard restart re-seeds itself and a live one
-    # does not pay for its own history twice.
-    turns = _bs.transcript(project, session_id)
-    answer = _ask(project, _bs.chat_system(session["seat"]), turns,
-                  session_id=session_id)
-    reply = None
-    if answer.get("ok"):
-        reply = _bs.append_message(project, session_id, "assistant",
-                                   answer["text"][:_bs.MAX_MESSAGE])
-    # 200 even when the model failed: the message IS saved, and the client needs
-    # to render it next to an error rather than an exception page that loses it.
-    return api.ok({"message": said, "reply": reply, "model": answer,
-                   "thinker": _thinker(project, session_id)})
+    replies, answers = [], []
+    # What each voice said last, for the length of this round. A follow-up round
+    # re-asks everyone, and a voice with nothing new to read tends to answer
+    # with its previous message again, near-verbatim — the room's partner posted
+    # the same paragraph twice in a row that way.
+    spoke_last: dict[str, str] = {}
+
+    def _round(voices: list[str], *, discuss: bool) -> int:
+        """One pass over the room. Returns how many voices actually spoke."""
+        spoke = 0
+        for seat in voices:
+            # session_id is what makes this a CONVERSATION rather than forty
+            # unrelated questions: the spawned session is held open between
+            # messages and this turn is its next one. The whole transcript
+            # window still goes down; the partner sends only what that process
+            # has not already heard (brainsession._delta), so a resumed room
+            # after a dashboard restart re-seeds itself and a live one does not
+            # pay for its own history twice.
+            #
+            # The transcript is built PER SEAT: each voice sees its own turns as
+            # its own and every other voice's labelled by seat, or it answers
+            # the art seat's opinion as though the human had said it. On a
+            # DISCUSSION round that relabelling is the entire delivery mechanism:
+            # the new rows this seat has not heard are the other seats' replies,
+            # so it is handed the argument and nothing synthetic is injected.
+            turns = _bs.transcript(project, session_id, for_seat=seat)
+            system = (_bs.participant_system(project, seat, discuss=discuss)
+                      if seat
+                      else _bs.chat_system(session["seat"], discuss=discuss,
+                                           root=project))
+            answer = _ask(project, system, turns, session_id=session_id,
+                          seat=seat)
+            answer["seat"] = seat
+            answer["discuss"] = bool(discuss)
+            _bs.record_turn(project, session_id, seat, answer)
+            # A PASS is billed (the turn happened) and recorded in `answers` so
+            # the round is auditable, but it is NOT a message: four seats saying
+            # "PASS" in the transcript is the room's silence written down.
+            passed = discuss and answer.get("ok") and _bs.is_pass(answer.get("text"))
+            # A VOICE REPEATING ITSELF IS SILENCE, NOT A TURN.
+            #
+            # A follow-up round re-asks every voice, and a voice with nothing
+            # genuinely new to read often answers with its previous message
+            # again, near-verbatim — the room's partner posted the same
+            # "amended #41" paragraph twice in a row that way. Treated as a
+            # pass: the turn was taken and is billed, and it is not written
+            # into the transcript a second time.
+            said = " ".join(str(answer.get("text") or "").split()).lower()
+            if discuss and answer.get("ok") and not passed:
+                passed = said == spoke_last.get(seat)
+            if answer.get("ok") and not passed:
+                spoke_last[seat] = said
+            answer["passed"] = bool(passed)
+            answers.append(answer)
+            if answer.get("ok") and not passed:
+                spoke += 1
+                replies.append(_bs.append_message(
+                    project, session_id, "assistant",
+                    answer["text"][:_bs.MAX_MESSAGE], seat=seat))
+        return spoke
+
+    def _whole_round() -> int:
+        """Everything the room says in answer to one message."""
+        _round(speaking, discuss=False)
+        return _discussion()
+
+    # FREE DISCUSSION — the room answering itself, bounded three ways.
+    #
+    #   the room's setting   discuss_rounds is 0 by default and is the off
+    #                        switch the human owns (see migration 0039)
+    #   more than one voice  a "discussion" with one voice is that voice talking
+    #                        to itself, billed
+    #   nobody had anything  a round where every voice PASSed ends it, which is
+    #                        the usual way it ends well before the cap
+    #
+    # `to` NARROWS THIS TOO, and deliberately: asking one seat a direct question
+    # gets one seat's answer, not a debate the human did not open. `speaking` is
+    # already that narrowed list, so the len() check does both jobs.
+    def _discussion() -> int:
+        rounds = _bs.discuss_rounds(session)
+        discussed = 0
+        if rounds and len(speaking) > 1:
+            for _ in range(rounds):
+                discussed += 1
+                if not _round(speaking, discuss=True):
+                    break
+        return discussed
+
+    # THE ROUND RUNS IN A THREAD AND THE REQUEST RETURNS NOW.
+    #
+    # A room with four seats and one discussion round is up to ten sequential
+    # CLI turns, each of which can take a minute. Held inside the request that
+    # was a spinner nobody could cancel and a composer nobody could type into
+    # until they reloaded the page — and the answers were already arriving by
+    # poll while the caller sat there, so the wait bought nothing at all.
+    #
+    # A SECOND MESSAGE INTO A ROOM MID-ROUND IS REFUSED, not queued. Two rounds
+    # over one transcript interleave their turns, and a seat would answer a
+    # question that had been superseded halfway through its own reply.
+    with _answering_lock:
+        if session_id in _answering:
+            raise api.conflict(
+                "this room is still answering — its seats take a turn each, and "
+                "a second round over the same transcript would interleave with "
+                "the first", session_id=session_id)
+        _answering.add(session_id)
+
+    def _run() -> None:
+        try:
+            _whole_round()
+        except Exception:
+            # A round that dies must not wedge the room shut. The human's
+            # message is stored either way, and the transcript shows what did
+            # land; nothing here can report to a request that has already
+            # returned, so swallowing is the honest end of this path.
+            pass
+        finally:
+            with _answering_lock:
+                _answering.discard(session_id)
+
+    threading.Thread(target=_run, name=f"brainstorm-{session_id}",
+                     daemon=True).start()
+
+    # 202-shaped, 200-coded: the message IS stored, and the client renders it
+    # immediately and lets the poll bring the answers in as each voice finishes.
+    return api.ok({"message": said,
+                   "answering": True,
+                   "spoke": speaking,
+                   "discuss_rounds": _bs.discuss_rounds(session),
+                   "thinker": _thinker(project, session_id),
+                   "participants": _bs.participants(project, session_id)})
 
 
 # ---------------------------------------------------------------------------

@@ -293,18 +293,30 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
 #                           process is a replay, not a continuation. The trade
 #                           is stated rather than hidden.
 #
-# WHAT THE ROOM'S PROMISE NOW RESTS ON, in one sentence, because two flags left
-# and one arrived and it should be possible to check without reading all of the
-# above: the process holds exactly two tools, both of which write to one row of
-# one table in this project's own database, and neither of which can file work,
-# run a command or touch a file.
+# WHAT THE ROOM'S PROMISE NOW RESTS ON, in one sentence, because flags have come
+# and gone and it should be possible to check without reading all of the above:
+# the process holds exactly the tools named below, every one of which reads or
+# writes a row in THIS PROJECT'S OWN DATABASE, and not one of which can file
+# work, dispatch an agent, run a command or touch a file in the game.
+#
+# THE CANON TOOLS ARE NEW AND THE LINE THEY DO NOT CROSS IS THE SAME LINE. A
+# seat can now read the bible and write to it, because a room asked to settle
+# what this world is and then forbidden to write it down made the human the
+# transport for their own decision. Writing canon is not filing work: the board
+# is still reached only by a human pressing Deploy on a plan they have read.
 
 # The two tools the pad server exposes, by their full CLI-side names. Imported
 # from nowhere on purpose: bgate_mcp.padserver pulls in the MCP SDK, and this
 # module is loaded by every dispatch on a machine that may not have it. The
 # names are asserted equal to padserver.TOOL_NAMES in the tests, which is where
 # a drift between the two belongs.
-PAD_TOOLS = ("mcp__pads__pad_read", "mcp__pads__pad_draw")
+PAD_TOOLS = ("mcp__pads__pad_read", "mcp__pads__pad_draw",
+             "mcp__pads__board_read", "mcp__pads__canon_read",
+             "mcp__pads__bible_write", "mcp__pads__lore_write",
+             "mcp__pads__lore_fact", "mcp__pads__lore_link",
+             "mcp__pads__dialogue_list", "mcp__pads__dialogue_read",
+             "mcp__pads__project_files", "mcp__pads__file_read",
+             "mcp__pads__scene_tree", "mcp__pads__room_post")
 
 _CLAUDE_READONLY = ["--tools", "", "--strict-mcp-config",
                     "--setting-sources", "", "--disable-slash-commands",

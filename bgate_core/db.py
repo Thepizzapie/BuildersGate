@@ -1748,6 +1748,218 @@ _MIGRATIONS: list = [
     ALTER TABLE cine_shot ADD COLUMN location TEXT NOT NULL DEFAULT '';
     ALTER TABLE cine_shot ADD COLUMN shot_size TEXT NOT NULL DEFAULT '';
     """,
+    # 0036 — WHO ELSE IS IN THE BRAINSTORM ROOM.
+    #
+    # The room had exactly one other voice — the director's (or narrative's) own
+    # thinking partner — and no way to ask anybody else. The thing a human
+    # actually wants at the point of "what if the hub had weather" is the seat
+    # that would have to BUILD it, saying whether it is cheap or a fortnight.
+    # That was unavailable, so the answer was guessed by the seat that does not
+    # build anything.
+    #
+    # A ROW PER SEAT PER SESSION, AND THE STATE IS THE POINT. invited/live/left
+    # are three different facts a roster has to draw differently: a seat asked
+    # for and not yet spawned, a seat with a process holding a pipe right now,
+    # and a seat that was here and is not (whose spend still happened and must
+    # not be erased by its leaving). A `left` row is kept rather than deleted
+    # for exactly that reason — deleting it would make a session's cost
+    # unaccountable the moment somebody tidied the roster.
+    #
+    # UNIQUE (session_id, seat) because "who is in the room" is a set. Re-inviting
+    # a seat that left updates this row rather than growing a second one, so the
+    # spend column keeps summing across the whole session instead of resetting
+    # every time somebody rejoins.
+    #
+    # spent_usd IS PER PARTICIPANT AND IS A SECOND COPY ON PURPOSE. The spend
+    # ledger already gets a row per turn (spend.record, seat-stamped since 0034)
+    # and that is the money's own record. This column is the ROSTER's number:
+    # readable in one query alongside the seat and its state, and it survives the
+    # process the live counter dies with. Summing the ledger per seat per
+    # brainstorm would need a work_item_id these turns do not have.
+    #
+    # brainstorm_message.seat IS WHO SAID IT, AND EMPTY IS NOT A BACKFILL GAP.
+    # Every row written before this migration was said either by the human
+    # (role='user') or by the room's OWN partner (role='assistant'), and neither
+    # of those is an invited seat. '' means exactly that — "the room's own
+    # partner", not "unknown" — so writing a seat name into the historical rows
+    # would be inventing an attendee who was never there. Readers must treat ''
+    # as the owner's partner rather than as missing data.
+    """
+    CREATE TABLE brainstorm_participant (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  INTEGER NOT NULL
+                        REFERENCES brainstorm_session(id) ON DELETE CASCADE,
+        seat        TEXT NOT NULL,
+        state       TEXT NOT NULL DEFAULT 'invited'
+                        CHECK (state IN ('invited','live','left')),
+        invited_by  TEXT NOT NULL DEFAULT '',
+        invited_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        left_at     TEXT NOT NULL DEFAULT '',
+        turns       INTEGER NOT NULL DEFAULT 0,
+        spent_usd   REAL NOT NULL DEFAULT 0,
+        UNIQUE (session_id, seat)
+    );
+    CREATE INDEX idx_brainstorm_participant
+        ON brainstorm_participant(session_id, state);
+    ALTER TABLE brainstorm_message ADD COLUMN seat TEXT NOT NULL DEFAULT '';
+    """,
+    # 0037 — THE DECISION REGISTER, AND THE LIST OF THINGS THIS GAME IS NOT
+    # BUILDING.
+    #
+    # The director seat's mission has said, in every brief this product has ever
+    # shipped, that "every settled decision names its acceptance test and what it
+    # deliberately leaves dark" and that "an unsaid no gets built anyway" — and
+    # nothing in the product could record either sentence. The seat's central
+    # panel read them out of the generic per-seat document store
+    # (/api/workspace/director/decisions): a JSON blob with no schema, no state,
+    # no author and no timestamp, which no MCP tool can append one row to without
+    # rewriting the whole document and losing whatever a concurrent session had
+    # just put in it. In practice the panel was empty on every project, and the
+    # two most expensive facts a project owns lived in chat scrollback.
+    #
+    # WHY THE ACCEPTANCE TEST AND THE LEFT-DARK ARE COLUMNS RATHER THAN PROSE.
+    # Both are NOT NULL here and refused-when-blank in bgate_core/decisions.py,
+    # for the same reason plan_row.acceptance is a column: a decision with no
+    # test is an opinion, and once both are a paragraph a reader cannot tell
+    # which one it is holding. As fields, the UI can put them side by side, an
+    # agent can ask "what does this ruling NOT cover" without parsing English,
+    # and a missing one is a validation error at the moment of writing instead of
+    # a discovery six weeks later.
+    #
+    # WHY not_building IS ITS OWN TABLE AND NOT state='refused' ON decision. A
+    # refusal has no acceptance test — there is nothing to verify, which is the
+    # entire point of refusing it. Folded into `decision` it would mean two NOT
+    # NULL columns that are empty for half the rows, and a reader that cannot
+    # distinguish "settled but nobody named a test" (a defect) from "refused, no
+    # test applies" (correct). The two are written by different verbs, read by
+    # different panels, and answer different questions.
+    #
+    # `state` IS THE PROPOSAL GATE. 'open' is a proposal, which is what an agent
+    # may file; 'settled' is a ruling, which only a human may make. The route and
+    # the MCP tool enforce that split and this column is the thing they enforce
+    # it on. 'superseded' rather than a delete, with `superseded_by` pointing at
+    # whatever replaced it: a register you can quietly erase is not a register,
+    # and "we changed our mind, and here is what we changed it to" is the single
+    # most useful row one can hold.
+    #
+    # SET NULL on both links, matching plan_row: a decision outlives the work
+    # item that prompted it and the brainstorm room it came out of. Deleting an
+    # abandoned item must not take the ruling about it along with it.
+    """
+    CREATE TABLE decision (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        title         TEXT NOT NULL,
+        acceptance    TEXT NOT NULL,
+        leaves_dark   TEXT NOT NULL,
+        state         TEXT NOT NULL DEFAULT 'settled'
+                          CHECK (state IN ('settled','open','superseded')),
+        actor         TEXT NOT NULL DEFAULT '',
+        work_item_id  INTEGER REFERENCES work_item(id) ON DELETE SET NULL,
+        session_id    INTEGER REFERENCES brainstorm_session(id) ON DELETE SET NULL,
+        superseded_by INTEGER REFERENCES decision(id) ON DELETE SET NULL,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_decision_state ON decision(state, id);
+    CREATE INDEX idx_decision_item ON decision(work_item_id);
+
+    CREATE TABLE not_building (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        text        TEXT NOT NULL,
+        reason      TEXT NOT NULL,
+        tag         TEXT NOT NULL DEFAULT '',
+        actor       TEXT NOT NULL DEFAULT '',
+        decision_id INTEGER REFERENCES decision(id) ON DELETE SET NULL,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_not_building_tag ON not_building(tag, id);
+    """,
+    # 0038 — QUESTS.
+    #
+    # The narrative seat's mission has always read "own the lore graph, QUESTS,
+    # and dialogue", the seat page has always drawn a Quests tab, and lore.py has
+    # entities, facts and links and nothing that is a quest. So the tab rendered
+    # a sentence saying quests are not modelled and the third of the seat's three
+    # nouns did not exist. This is that noun.
+    #
+    # WHY `done_when` IS NOT NULL AND REFUSED WHEN BLANK. It is the same column
+    # as decision.acceptance and plan_row.acceptance, and it is here for the same
+    # reason. A step that reads "talk to the accounting wizard" cannot be
+    # finished by anything — not the player, who does not know what counts, and
+    # not the engine, which has nothing to test. A step names the OBSERVABLE that
+    # closes it or it is a note. Making it a column means a step without one is a
+    # refusal at the moment of writing rather than a discovery when somebody
+    # tries to implement the quest.
+    #
+    # WHY STEPS ARE ROWS AND NOT A JSON BLOB ON `quest`. The dialogue trees are
+    # JSON files because Godot loads them; a quest is read and edited by people
+    # and agents one step at a time, and a blob is the shape that cannot be
+    # appended to without rewriting — which is precisely what made the old
+    # per-seat document store useless (see migration 0037). Rows also let `ord`
+    # carry the ordering explicitly, so "step 3" means the same thing to the
+    # panel, the agent and the engine.
+    #
+    # `optional` EXISTS SO THAT "EVERY STEP OPTIONAL" IS DETECTABLE. A quest
+    # whose steps are all optional has no completion condition at all, which is
+    # the quest-shaped version of dialogue's node-with-no-way-out. quests.py
+    # reports it; the column is what makes it reportable.
+    #
+    # giver_id SET NULL, matching decision.work_item_id: a quest outlives the
+    # entity that handed it out. Retiring a character must not delete the quest
+    # they gave, or the register loses the work rather than the giver.
+    """
+    CREATE TABLE quest (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug       TEXT NOT NULL UNIQUE,
+        title      TEXT NOT NULL,
+        premise    TEXT NOT NULL DEFAULT '',
+        reward     TEXT NOT NULL DEFAULT '',
+        state      TEXT NOT NULL DEFAULT 'draft'
+                       CHECK (state IN ('draft','active','done','cut')),
+        giver_id   INTEGER REFERENCES lore_entity(id) ON DELETE SET NULL,
+        actor      TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_quest_state ON quest(state, id);
+    CREATE INDEX idx_quest_giver ON quest(giver_id);
+
+    CREATE TABLE quest_step (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        quest_id   INTEGER NOT NULL REFERENCES quest(id) ON DELETE CASCADE,
+        ord        INTEGER NOT NULL,
+        text       TEXT NOT NULL,
+        done_when  TEXT NOT NULL,
+        optional   INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (quest_id, ord)
+    );
+    CREATE INDEX idx_quest_step_quest ON quest_step(quest_id, ord);
+    """,
+    # 0039 — LET THE ROOM TALK TO ITSELF, AND LET THE HUMAN TURN THAT OFF.
+    #
+    # Every seat in a room already READS every other seat (the transcript is
+    # relabelled per seat), but nothing ever asked a second time: one human
+    # message bought exactly one turn per attendee, in invite order, and the art
+    # seat's objection to what tech had just said went unanswered until the human
+    # typed something. A room of experts that cannot follow up is a survey.
+    #
+    # `discuss_rounds` IS THE WHOLE FEATURE AND ITS OWN OFF SWITCH. 0 means the
+    # old behaviour exactly — one round, then stop — and is the default, because
+    # every extra round is N more billed CLI turns and nobody should discover
+    # that by reading an invoice. 1..DISCUSS_MAX_ROUNDS means "after the first
+    # round, keep going for up to this many more, and stop early when nobody has
+    # anything to add". A COLUMN rather than a setting: two rooms in one project
+    # legitimately want different answers, and the room is where the cost lands.
+    #
+    # BOUNDED IN THE SCHEMA, not only in the UI. The CHECK is the backstop for
+    # every door — dashboard, MCP, a hand-written UPDATE — because the failure
+    # mode of an unbounded value here is not a bad render, it is a room that
+    # spends real money in a loop with no human in it.
+    """
+    ALTER TABLE brainstorm_session ADD COLUMN discuss_rounds INTEGER NOT NULL
+        DEFAULT 0 CHECK (discuss_rounds BETWEEN 0 AND 6);
+    """,
 ]
 
 

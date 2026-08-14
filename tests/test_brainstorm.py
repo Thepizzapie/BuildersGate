@@ -137,12 +137,51 @@ def _plan(*items, chained=False, summary="a plan") -> str:
 # ---------------------------------------------------------------------------
 # A message is a message
 # ---------------------------------------------------------------------------
+
+def _quiet(*_args, **_kwargs) -> None:
+    """Wait until no room is mid-round.
+
+    A message RETURNS as soon as it is stored now: the seats take their turns on
+    a thread and the transcript fills in as each one answers, because holding the
+    request open for a four-seat round meant minutes of a spinner and a composer
+    nobody could type into. The tests want the finished state, so they wait for
+    it here — against the route's own in-flight set rather than a sleep, which
+    is both faster and not a guess.
+
+    Takes any arguments and ignores them: the call sites differ in what they
+    have to hand, and none of them needs to say WHICH room when the suite only
+    ever has one talking.
+    """
+    import time as _time
+
+    for _ in range(500):
+        with _route._answering_lock:
+            if not _route._answering:
+                return
+        _time.sleep(0.01)
+    raise AssertionError("a brainstorm round never finished")
+
+
+@pytest.fixture(autouse=True)
+def _no_round_outlives_its_test():
+    """Wait for any in-flight brainstorm round before the next test starts.
+
+    The round runs on a thread now, so without this a test that sent a message
+    can finish while its seats are still answering — and the thread then calls
+    the NEXT test's stubbed `_ask`, writes into the next test's fixtures, and
+    fails something that had nothing to do with it. Draining here rather than in
+    each test is what makes that impossible to forget.
+    """
+    yield
+    _quiet()
+
 class TestAMessageCannotDispatch:
     def test_no_work_item_and_no_agent(self, client, root, answers, no_agents):
         session = _new(client)
         for text in ("what if the hub had weather", "and a shrine"):
             got = client.post(f"/api/brainstorm/{session['id']}/message",
                               json={"text": text})
+            _quiet()
             assert got.status_code == 200, got.text
         assert _items(root) == []
 
@@ -151,6 +190,7 @@ class TestAMessageCannotDispatch:
         answers["replies"].append("weather is a mood, not a mechanic")
         client.post(f"/api/brainstorm/{session['id']}/message",
                     json={"text": "what if the hub had weather"})
+        _quiet()
         read = client.get(f"/api/brainstorm/{session['id']}").json()["data"]
         assert [(m["role"], m["text"]) for m in read["messages"]] == [
             ("user", "what if the hub had weather"),
@@ -168,11 +208,13 @@ class TestAMessageCannotDispatch:
         session = _new(client)
         got = client.post(f"/api/brainstorm/{session['id']}/message",
                           json={"text": "keep this"})
+        _quiet()
         assert got.status_code == 200, got.text
-        body = got.json()["data"]
-        assert body["reply"] is None
-        assert body["model"]["ok"] is False
-        assert "not found on PATH" in body["model"]["error"]
+        # The POST no longer carries the answer: the round runs on a thread and
+        # the transcript is how it arrives. What this test is about survives
+        # that unchanged — the sentence is stored whether or not anything
+        # answers it, which is the property "ask, then save both" got wrong.
+        assert got.json()["data"]["message"]["text"] == "keep this"
         read = client.get(f"/api/brainstorm/{session['id']}").json()["data"]
         assert [m["text"] for m in read["messages"]] == ["keep this"]
         assert _items(root) == []
@@ -223,16 +265,16 @@ class TestAMessageCannotDispatch:
         assert "--dangerously-skip-permissions" not in argv
 
     def test_the_pad_server_is_the_only_thing_handed_back(self):
-        """WITH pads, the surface is exactly two tools — and nothing else.
+        """WITH pads, the surface is exactly three tools — and nothing else.
 
         The room reversed its "no MCP server at all" position for one reason:
         a partner that cannot see the diagram the human is drawing beside it is
         answering with one eye shut. It did NOT reverse it by letting the
-        builders-gate server through. --mcp-config names a dedicated two-tool
+        builders-gate server through. --mcp-config names a dedicated three-tool
         server, --strict-mcp-config makes that list exhaustive, and
-        --allowedTools names those same two by their full names rather than by
+        --allowedTools names those same three by their full names rather than by
         the `mcp__pads` prefix, so the approval cannot widen if the server ever
-        grows a third tool.
+        grows a fourth tool.
         """
         from bgate_mcp import padserver
 
@@ -244,11 +286,11 @@ class TestAMessageCannotDispatch:
         assert "--strict-mcp-config" in argv
         assert ("--tools", "") in pairs
 
-        allowed = argv[argv.index("--allowedTools") + 1:
-                       argv.index("--allowedTools") + 3]
+        start = argv.index("--allowedTools") + 1
+        allowed = argv[start:start + len(_runners.PAD_TOOLS)]
         assert sorted(allowed) == sorted(_runners.PAD_TOOLS)
         # The prefix form a dispatched agent uses would approve whatever the
-        # server grows. This one names the two.
+        # server grows. This one names them individually.
         assert "mcp__pads" not in argv
 
         # The registration and the server cannot drift apart unnoticed.
@@ -323,6 +365,7 @@ class TestAMessageCannotDispatch:
         sid = session["id"]
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "one"})
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "two"})
+        _quiet()
         assert [a.get("session_id") for a in answers["asked"]] == [sid, sid]
         assert all(a.get("persist", True) for a in answers["asked"])
 
@@ -335,6 +378,7 @@ class TestAMessageCannotDispatch:
         session = _new(client)
         got = client.post(f"/api/brainstorm/{session['id']}/message",
                           json={"text": "   "})
+        _quiet()
         assert got.status_code == 400
         assert got.json()["ok"] is False
 
@@ -402,6 +446,8 @@ class TestFileableAndRetrievable:
 
         blocked = client.post(f"/api/brainstorm/{sid}/message",
                               json={"text": "more"})
+
+        _quiet()
         assert blocked.status_code == 409
 
         back = client.post(f"/api/brainstorm/{sid}/archive",
@@ -442,6 +488,7 @@ class TestFileableAndRetrievable:
         sid = session["id"]
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "an idea"})
         got = client.post(f"/api/brainstorm/{sid}/close")
+        _quiet()
         assert got.status_code == 200, got.text
         body = got.json()["data"]
         assert body["thinker"]["live"] is False
@@ -544,6 +591,7 @@ class TestSynthesizeWritesNothing:
         sid = session["id"]
         client.patch(f"/api/brainstorm/{sid}", json={"notes": "rain on the hub"})
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "weather"})
+        _quiet()
         answers["replies"].append(_plan(
             {"seat": "art", "title": "paint a rain overlay",
              "brief": "a full-screen rain overlay for the hub, 2 frames"},
@@ -568,7 +616,9 @@ class TestSynthesizeWritesNothing:
         client.patch(f"/api/brainstorm/{sid}",
                      json={"notes": "NOTE-MARKER", "drawing": SCENE})
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "weather"})
+        _quiet()
         answers["asked"].clear()
+        _quiet()
         answers["replies"].append(_plan())
         client.post(f"/api/brainstorm/{sid}/synthesize")
         sent = "\n".join(t["content"] for t in answers["asked"][-1]["turns"])
@@ -584,7 +634,9 @@ class TestSynthesizeWritesNothing:
         client.patch(f"/api/brainstorm/{sid}",
                      json={"notes": "NOTE-MARKER", "drawing": SCENE})
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "weather"})
+        _quiet()
         sent = "\n".join(t["content"] for t in answers["asked"][-1]["turns"])
+        _quiet()
         assert "NOTE-MARKER" not in sent
 
     def test_an_empty_session_has_nothing_to_synthesize(self, client, answers):
@@ -598,7 +650,9 @@ class TestSynthesizeWritesNothing:
         session = _new(client)
         sid = session["id"]
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "weather"})
+        _quiet()
         answers["replies"].append("I do not think this is ready to file.")
+        _quiet()
         plan = client.post(f"/api/brainstorm/{sid}/synthesize"
                            ).json()["data"]["plan"]
         assert plan["items"] == []
@@ -622,6 +676,7 @@ class TestSynthesizeWritesNothing:
         session = _new(client)
         client.post(f"/api/brainstorm/{session['id']}/message",
                     json={"text": "weather"})
+        _quiet()
         got = client.post(f"/api/brainstorm/{session['id']}/synthesize")
         assert got.status_code == 503
         assert got.json()["error"]["code"] == "synthesis_failed"
@@ -864,7 +919,9 @@ class TestWorldContext:
         session = _new(client)
         sid = session["id"]
         client.post(f"/api/brainstorm/{sid}/message", json={"text": "weather"})
+        _quiet()
         chat = "\n".join(t["content"] for t in answers["asked"][-1]["turns"])
+        _quiet()
         assert "PILLAR-MARKER" not in chat
 
         answers["replies"].append(_plan())
@@ -877,3 +934,39 @@ class TestWorldContext:
         monkeypatch.setattr("bgate_core.lore.list_entities",
                             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError))
         assert _bs.world_context(root, "narrative") == ""
+
+
+# --- the rail's aggregates -------------------------------------------------
+# The rooms rail draws a dot per seat present and the room's spend, so both ride
+# on list_sessions rather than costing a read per row. These assert the two
+# choices that are easy to get backwards.
+
+def _seed_room(root):
+    from bgate_core import db as _db
+    session = _bs.create(root, "director", "Combat feel")
+    with _db.tx(root) as conn:
+        for seat, state, spent in (("gameplay", "live", 0.28),
+                                   ("art", "invited", 0.19),
+                                   ("audio", "left", 0.06)):
+            conn.execute(
+                "INSERT INTO brainstorm_participant "
+                "(session_id, seat, state, turns, spent_usd) VALUES (?,?,?,1,?)",
+                (session["id"], seat, state, spent))
+    return session
+
+
+def test_listing_names_only_the_seats_still_in_the_room(tmp_path):
+    _seed_room(tmp_path)
+    assert sorted(_bs.list_sessions(tmp_path)[0]["guests"]) == ["art", "gameplay"]
+
+
+def test_listing_spend_keeps_a_seat_that_left(tmp_path):
+    """A room must not get cheaper because somebody tidied the roster."""
+    _seed_room(tmp_path)
+    assert round(_bs.list_sessions(tmp_path)[0]["spent_usd"], 2) == 0.53
+
+
+def test_listing_has_no_guests_when_nobody_was_invited(tmp_path):
+    _bs.create(tmp_path, "director", "Empty")
+    row = _bs.list_sessions(tmp_path)[0]
+    assert row["guests"] == [] and row["spent_usd"] == 0

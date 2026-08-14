@@ -84,8 +84,20 @@ from bgate_ui import runners as _runners
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
-# (project key, session id) -> the live process and what it has been told.
-_live: dict[tuple[str, int], dict] = {}
+# (project key, session id, seat) -> the live process and what it has been told.
+#
+# THE SEAT IS PART OF THE KEY, AND THAT IS WHAT MAKES A ROOM HOLD MORE THAN TWO
+# VOICES. "" is the room's own partner — the one this module shipped with, and
+# the one every existing caller still gets by saying nothing. An INVITED seat
+# (bgate_core.brainstorm.invite) is a second process in the same room: its own
+# conversation, its own resume marker, its own log, and its own turn lock, so
+# two seats answering the same message cannot interleave on one pipe.
+#
+# What it is NOT is a second kind of process. An invited seat is spawned by the
+# same _spawn below, with the same read-only argv, because the room's whole
+# value is that nothing in it can act — a seat that arrived holding its own
+# dispatch tool set would put the board back inside the room.
+_live: dict[tuple[str, int, str], dict] = {}
 _lock = threading.Lock()
 
 # A session nobody has spoken to for this long is not a conversation, it is a
@@ -121,6 +133,22 @@ def _pkey(root) -> str:
         return str(Path(root).resolve())
     except OSError:
         return str(root)
+
+
+def _seat_tag(seat: str) -> str:
+    """A seat name as something safe to put in a filename and a dict key.
+
+    Seat names come from seats.DEFAULT_SEATS and are already plain words, so
+    this is not sanitising hostile input — it is making sure a future seat named
+    with a slash cannot decide where a log file lands. "" stays "", which is the
+    room's own partner throughout this module.
+    """
+    return "".join(c for c in str(seat or "").strip().lower()
+                   if c.isalnum() or c in "-_")[:32]
+
+
+def _key(root, session_id: int, seat: str = "") -> tuple[str, int, str]:
+    return (_pkey(root), int(session_id), _seat_tag(seat))
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +212,7 @@ def _ceiling(root) -> float:
         return 2.0
 
 
-def _scratch(root, session_id: int) -> Path:
+def _scratch(root, session_id: int, seat: str = "") -> Path:
     """The working directory a thinking session is given.
 
     NOT the game project. The tool set is empty, so this is belt rather than
@@ -194,12 +222,18 @@ def _scratch(root, session_id: int) -> Path:
     a file tool would be pointed at a scratch directory instead of at somebody's
     game.
     """
-    path = Path(root) / ".bgate" / "brainstorm" / f"session-{int(session_id)}"
+    # An invited seat gets its OWN scratch directory. Not for isolation — the
+    # tool set is empty either way — but because CLAUDE.md auto-discovery walks
+    # up from the cwd, and two processes sharing one directory would also share
+    # whatever a future feature drops in it.
+    tag = _seat_tag(seat)
+    path = (Path(root) / ".bgate" / "brainstorm"
+            / (f"session-{int(session_id)}" + (f"-{tag}" if tag else "")))
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _sidecar(root, session_id: int) -> Path:
+def _sidecar(root, session_id: int, seat: str = "") -> Path:
     """Where a session remembers WHICH CLI conversation it is.
 
     A file rather than a column, so this ships without a migration and so a
@@ -207,24 +241,27 @@ def _sidecar(root, session_id: int) -> Path:
     id and a fingerprint of the last turn that session heard, which is what lets
     a resume know where to carry on from.
     """
+    tag = _seat_tag(seat)
     return (Path(root) / ".bgate" / "brainstorm"
-            / f"session-{int(session_id)}.json")
+            / (f"session-{int(session_id)}" + (f".{tag}" if tag else "")
+               + ".json"))
 
 
-def _read_sidecar(root, session_id: int) -> dict:
+def _read_sidecar(root, session_id: int, seat: str = "") -> dict:
     try:
-        data = json.loads(_sidecar(root, session_id).read_text(encoding="utf-8"))
+        data = json.loads(
+            _sidecar(root, session_id, seat).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _write_sidecar(root, session_id: int, data: dict) -> None:
+def _write_sidecar(root, session_id: int, data: dict, seat: str = "") -> None:
     """Best effort, always. A brainstorm that cannot write its resume marker
     still works — it replays instead of continuing, which is the fallback this
     whole path is designed around."""
     try:
-        path = _sidecar(root, session_id)
+        path = _sidecar(root, session_id, seat)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data), encoding="utf-8")
     except OSError:
@@ -264,7 +301,7 @@ def _resume_point(turns: list[dict], mark: dict) -> Optional[int]:
     return None
 
 
-def _pad_config(root, session_id: int) -> str:
+def _pad_config(root, session_id: int, seat: str = "") -> str:
     """The --mcp-config document registering the pad server, or "".
 
     Built by the pad server itself so the registration and the module cannot
@@ -276,21 +313,30 @@ def _pad_config(root, session_id: int) -> str:
     try:
         from bgate_mcp import padserver
 
-        return json.dumps(padserver.config(str(root), int(session_id)),
+        return json.dumps(padserver.config(str(root), int(session_id),
+                                          seat=_seat_tag(seat)),
                           separators=(",", ":"))
     except Exception:
         return ""
 
 
-def log_path(root, session_id: int, tag: str = "") -> Path:
+def log_path(root, session_id: int, tag: str = "", seat: str = "") -> Path:
     """Where this session's raw NDJSON goes.
 
     One file per brainstorm, appended across respawns — it is the backing for
     the terminal view this room is meant to grow. A one-shot (a synthesis) gets
     its own file rather than interleaving a different system prompt's turns into
     the conversation somebody is going to read back.
+
+    An invited seat gets its own file for the same reason: two seats answering
+    the same message write concurrently, and a transcript view that had to
+    demultiplex two processes writing NDJSON into one handle would be reading
+    torn lines. Which seat a log belongs to is in its NAME, so the feed reader
+    needs no extra column to find it.
     """
-    name = f"session-{int(session_id)}" + (f".{tag}" if tag else "") + ".log"
+    seat_tag = _seat_tag(seat)
+    name = (f"session-{int(session_id)}" + (f".{seat_tag}" if seat_tag else "")
+            + (f".{tag}" if tag else "") + ".log")
     return Path(root) / ".bgate" / "brainstorm" / name
 
 
@@ -335,16 +381,22 @@ def can_think() -> list[str]:
     return sorted(name for name, r in _runners.RUNNERS.items() if r.chat)
 
 
-def thinker(root, session_id: int) -> dict:
+def thinker(root, session_id: int, seat: str = "") -> dict:
     """What this session's thinking partner IS, for the UI.
 
     Everything the header chip and the (coming) terminal view need in one place:
     which runner, which model, whether a process is live right now, where its
     transcript is on disk, and what this conversation has cost so far.
+
+    ``seat`` asks about an INVITED seat's partner instead of the room's own.
+    Same shape either way, so the roster draws a participant with the code that
+    draws the header chip — including ``tools``/``mcp_servers``, which is the
+    readback that lets a human check the read-only promise for each attendee
+    rather than believing it once for the room.
     """
     ready = available(root)
-    key = (_pkey(root), int(session_id))
-    note = _read_sidecar(root, session_id)
+    key = _key(root, session_id, seat)
+    note = _read_sidecar(root, session_id, seat)
     with _lock:
         entry = _live.get(key)
         live = bool(entry) and entry["proc"].poll() is None
@@ -366,11 +418,13 @@ def thinker(root, session_id: int) -> dict:
     # session with a marker reopens where it left off; one without replays.
     detail["resumable"] = bool(note.get("cli_session_id"))
     return {**ready, **detail, "max_usd": _ceiling(root),
-            "log": str(log_path(root, session_id)),
+            "log": str(log_path(root, session_id, seat=seat)),
+            "seat": _seat_tag(seat),
             "session_id": int(session_id)}
 
 
-def feed(root, session_id: int, cursor: int = 0, limit: int = 400) -> dict:
+def feed(root, session_id: int, cursor: int = 0, limit: int = 400,
+         seat: str = "") -> dict:
     """THE TERMINAL CHANNEL: what the session actually emitted, from a byte cursor.
 
     The other half of the two-channel split in the module docstring. This is the
@@ -390,8 +444,12 @@ def feed(root, session_id: int, cursor: int = 0, limit: int = 400) -> dict:
     real PTY would buy a spinner and colour codes at the cost of a second I/O
     path with different failure modes, for a session that has no interactive
     prompt to drive.
+
+    ``seat`` reads an INVITED seat's transcript instead of the room's own; each
+    participant writes its own log (see log_path) and each carries its own
+    cursor, because one cursor over two interleaved streams cannot be resumed.
     """
-    path = log_path(root, session_id)
+    path = log_path(root, session_id, seat=seat)
     events: list[dict] = []
     try:
         size = path.stat().st_size
@@ -524,17 +582,52 @@ def _kill_tree(pid: int) -> None:
         pass
 
 
-def stop(root, session_id: int) -> dict:
+def stop(root, session_id: int, seat: str = "") -> dict:
     """End this session's thinking process. The conversation is not touched —
     it is rows in the DB, and the next message spawns a fresh partner seeded
-    with it."""
-    key = (_pkey(root), int(session_id))
+    with it.
+
+    ``seat`` stops ONE invited participant. Stopping the room's own partner
+    (seat="") deliberately leaves the participants alone: closing the room is
+    stop_all's job, and a close that silently evicted three invited seats would
+    make "close" and "empty the room" the same button.
+    """
+    key = _key(root, session_id, seat)
     with _lock:
         entry = _live.get(key)
     if entry is None:
         return {"ok": True, "stopped": False}
     _reap(key, entry)
     return {"ok": True, "stopped": True}
+
+
+def stop_session(root, session_id: int) -> dict:
+    """End EVERY process in one room — the owner's partner and every invited seat.
+
+    This is what "close the room" has to mean once a room can hold more than two
+    voices. archive() closes a session on the reasoning that a room nobody may
+    speak in must not still be paying somebody to listen; with participants,
+    stopping only the owner's partner would leave three CLI processes holding
+    pipes for a session the human believes is shut, invisible to the agents
+    table and reachable by nothing but an idle reap half an hour later.
+
+    Returns the seats it stopped, "" meaning the room's own partner. The
+    participant ROWS are not touched: who was invited is a fact about the
+    session, and their state is bgate_core.brainstorm's to move.
+
+    Every stop goes through :func:`stop` rather than reaping the entries here,
+    so there is ONE verb that ends a thinking process — the place a test stands
+    in front of, and the place a future "log what was closed" belongs.
+    """
+    want = (_pkey(root), int(session_id))
+    with _lock:
+        seats = [k[2] for k in _live if k[:2] == want and k[2]]
+    out = stop(root, int(session_id))
+    stopped = [s for s in seats if stop(root, int(session_id),
+                                        seat=s).get("stopped")]
+    return {"ok": True,
+            "stopped": bool(out.get("stopped")) or bool(stopped),
+            "seats": ([""] if out.get("stopped") else []) + stopped}
 
 
 def stop_all(root=None) -> dict:
@@ -569,8 +662,15 @@ def _evict_if_crowded() -> None:
 
 def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
            register: bool = True, tag: str = "", resume: str = "",
-           pads: bool = True) -> dict:
+           pads: bool = True, seat: str = "") -> dict:
     """Start one read-only thinking session.
+
+    THE ONE PLACE A THINKING PROCESS IS BUILT, and an invited seat comes through
+    here too. That is the whole mechanism behind "seats enter without their
+    tools": there is no second spawner with a seat's dispatch flags to be
+    reached by accident, so a participant is read-only by construction rather
+    than by a check somebody has to remember. ``seat`` changes the cwd, the log
+    name and the resume marker — never the argv.
 
     ``register`` is what separates the room from a one-shot: a persistent
     session is held in ``_live`` and answers the next message too, where a
@@ -588,11 +688,21 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
     change the drawing mid-synthesis would make the plan a human reads describe
     a board that no longer exists.
     """
+    if runner.chat is None:
+        # A RUNNER THAT HAS NOT DECLARED A READ-ONLY MODE IS REFUSED, NEVER
+        # STARTED WITH THE DISPATCH FLAGS. Without this the next line would be
+        # an AttributeError on runner.chat.build_args, and the tempting "fix"
+        # for that is to fall back to runner.build_args — which is the argv that
+        # grants Write, Bash and the whole builders-gate server. Said as a
+        # sentence here so the fix is never needed.
+        raise Unavailable(
+            f"{runner.name} has no read-only conversational mode here — a "
+            "brainstorm may not run on a runner that could write to the project")
     exe = runner.find()
     if not exe:
         raise Unavailable(f"{runner.name} CLI not found on PATH")
-    cwd = _scratch(root, session_id)
-    path = log_path(root, session_id, tag)
+    cwd = _scratch(root, session_id, seat)
+    path = log_path(root, session_id, tag, seat=seat)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "ab")
     # A run boundary, for the same reason dispatch writes one: the log appends
@@ -602,12 +712,16 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
     # back", which is a thing a person actually wants to see in a transcript.
     handle.write((json.dumps({"type": "bgate_brainstorm_start",
                               "session_id": int(session_id),
+                              "seat": _seat_tag(seat),
                               "runner": runner.name,
                               "resumed": bool(resume),
                               "ts": time.time()}) + "\n").encode("utf-8"))
     handle.flush()
     start_pos = handle.tell()
-    mcp_config = _pad_config(root, session_id) if pads else ""
+    # The seat goes into the pad server's own environment: it is what stamps
+    # the canon this voice writes, and an unattributed bible edit is one nobody
+    # can trace back to whose opinion it was.
+    mcp_config = _pad_config(root, session_id, seat) if pads else ""
     args = runner.chat.build_args(exe, system=system, model=_model_for(root),
                                   max_usd=_ceiling(root),
                                   mcp_config=mcp_config, resume=resume)
@@ -615,9 +729,18 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
     # session is nobody's seat and holds no work item, and leaving BGATE_SEAT
     # set would let anything that reads it (the hook, an env-sniffing tool a
     # future runner does have) treat this room as a dispatched agent.
+    #
+    # AN INVITED SEAT IS STRIPPED TOO, AND THAT IS NOT AN OVERSIGHT. It is
+    # ANSWERING AS the art seat; it is not HOLDING the art seat. Stamping
+    # BGATE_SEAT=art would make the hook treat the room as that seat's dispatch
+    # and would put its lanes and its lock discipline back in a conversation
+    # whose entire value is that nothing in it can act. What the seat says here
+    # is an opinion, and an opinion needs no lane. Which seat is speaking rides
+    # in BGATE_ACTOR instead, which nothing enforces against.
     env = {k: v for k, v in os.environ.items()
            if k not in ("BGATE_SEAT", "BGATE_WORK_ITEM", "BGATE_LOCK_OWNER")}
-    env["BGATE_ACTOR"] = f"brainstorm:{int(session_id)}"
+    env["BGATE_ACTOR"] = (f"brainstorm:{int(session_id)}"
+                          + (f":{_seat_tag(seat)}" if _seat_tag(seat) else ""))
     try:
         proc = subprocess.Popen(args, cwd=str(cwd), env=env,
                                 stdin=subprocess.PIPE, stdout=handle,
@@ -630,12 +753,12 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
              "sent": [], "turns": 0, "spent_usd": 0.0,
              "cli_session_id": str(resume or ""),
              "runner": runner.name, "system": system, "pads": bool(mcp_config),
-             "resumed": bool(resume), "tools": [],
+             "resumed": bool(resume), "tools": [], "seat": _seat_tag(seat),
              "started_at": time.monotonic(), "last_at": time.monotonic(),
              "turn_lock": threading.Lock()}
     if register:
         with _lock:
-            _live[(_pkey(root), int(session_id))] = entry
+            _live[_key(root, session_id, seat)] = entry
     return entry
 
 
@@ -885,7 +1008,7 @@ def _resume_failed(entry: dict, got: dict) -> bool:
 
 def ask(root, session_id: int, system: str, turns: list[dict], *,
         persist: bool = True, timeout: float = TURN_TIMEOUT_S,
-        detail: str = "", tag: str = "") -> dict:
+        detail: str = "", tag: str = "", seat: str = "") -> dict:
     """One turn with the thinking partner. Text in, text out, nothing written.
 
     ``persist`` is the difference between the ROOM and a ONE-SHOT. The room is
@@ -899,6 +1022,10 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
     estimated_usd}`` or ``{ok: False, error}`` — because a failure here is
     RETURNED rather than raised: the caller has already stored the human's
     sentence and must not lose it to a CLI that would not start.
+
+    ``seat`` addresses an INVITED participant's own process rather than the
+    room's partner. It changes which conversation the turn lands in and nothing
+    about how that process was built.
     """
     started = time.monotonic()
     ready = available(root)
@@ -907,7 +1034,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
                 "estimated_usd": 0.0, "runner": ready["runner"]}
     runner = runner_for(root)
     ceiling = _ceiling(root)
-    key = (_pkey(root), int(session_id))
+    key = _key(root, session_id, seat)
 
     with _lock:
         entry = _live.get(key) if persist else None
@@ -929,13 +1056,13 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
         if persist:
             _evict_if_crowded()
         entry = _start(root, session_id, runner, system, turns,
-                       persist=persist, tag=tag)
+                       persist=persist, tag=tag, seat=seat)
         if isinstance(entry, dict) and entry.get("failed"):
             return {"ok": False, "error": entry["failed"], "seconds": 0.0,
                     "estimated_usd": 0.0, "runner": runner.name}
 
     got, cost = _turn(root, key, entry, turns, session_id, timeout, detail,
-                      persist)
+                      persist, seat=seat)
 
     # THE RESUME FALLBACK. A --resume can fail for reasons nothing in this
     # process controls: the CLI pruned its session store, the machine changed,
@@ -946,14 +1073,14 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
     # human would be talking to a partner that has forgotten the last hour and
     # would not be told.
     if _resume_failed(entry, got) and persist:
-        _forget_resume(root, session_id)
+        _forget_resume(root, session_id, seat)
         entry = _start(root, session_id, runner, system, turns,
-                       persist=persist, tag=tag, allow_resume=False)
+                       persist=persist, tag=tag, allow_resume=False, seat=seat)
         if isinstance(entry, dict) and entry.get("failed"):
             return {"ok": False, "error": entry["failed"], "seconds": 0.0,
                     "estimated_usd": round(cost, 4), "runner": runner.name}
         again, more = _turn(root, key, entry, turns, session_id, timeout,
-                            detail, persist)
+                            detail, persist, seat=seat)
         got, cost = again, cost + more
         got["replayed"] = True
 
@@ -968,6 +1095,7 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
     return {"ok": True, "text": got["text"],
             "model": got.get("model") or ready["model"],
             "runner": runner.name, "seconds": seconds,
+            "seat": _seat_tag(seat),
             "estimated_usd": round(cost, 4),
             "resumed": bool(entry.get("resumed")),
             "replayed": bool(got.get("replayed")),
@@ -975,7 +1103,8 @@ def ask(root, session_id: int, system: str, turns: list[dict], *,
 
 
 def _start(root, session_id: int, runner, system: str, turns: list[dict], *,
-           persist: bool, tag: str, allow_resume: bool = True):
+           persist: bool, tag: str, allow_resume: bool = True,
+           seat: str = ""):
     """Spawn, resuming the real CLI conversation where that is possible.
 
     Returns the entry, or ``{"failed": reason}`` — a sentinel rather than an
@@ -990,7 +1119,8 @@ def _start(root, session_id: int, runner, system: str, turns: list[dict], *,
     to be findable in the current window; if it is not (the 40-turn window slid
     past it), this replays instead, which is correct and merely more expensive.
     """
-    note = _read_sidecar(root, session_id) if (persist and allow_resume) else {}
+    note = (_read_sidecar(root, session_id, seat)
+            if (persist and allow_resume) else {})
     resume, seeded = "", []
     if note.get("cli_session_id") and note.get("runner") == runner.name \
             and note.get("system_sha") == _sha(system):
@@ -1000,24 +1130,49 @@ def _start(root, session_id: int, runner, system: str, turns: list[dict], *,
             seeded = list(turns[:at + 1])
     try:
         entry = _spawn(root, session_id, runner, system, register=persist,
-                       tag=tag, resume=resume, pads=persist)
+                       tag=tag, resume=resume, pads=persist, seat=seat)
     except Unavailable as exc:
         return {"failed": str(exc)}
     entry["sent"] = seeded
     return entry
 
 
-def _forget_resume(root, session_id: int) -> None:
+def _forget_resume(root, session_id: int, seat: str = "") -> None:
     """Drop the resume marker. Called when the CLI could not honour it, so the
     next message does not pay for the same failed resume again."""
-    note = _read_sidecar(root, session_id)
+    note = _read_sidecar(root, session_id, seat)
     note.pop("cli_session_id", None)
     note.pop("last_turn", None)
-    _write_sidecar(root, session_id, note)
+    _write_sidecar(root, session_id, note, seat)
+
+
+def start(root, session_id: int, system: str, seat: str = "") -> dict:
+    """Spawn a partner NOW, without asking it anything. What an invite does.
+
+    An invite that only wrote a row would leave the roster showing a seat that
+    is present with no process behind it, and the human would find out it never
+    started when they addressed it and waited. Spawning here means the failure —
+    no CLI, a runner with no read-only mode, a budget refusal — is reported at
+    the moment somebody pressed Invite, next to the button they pressed.
+
+    Raises :class:`Unavailable` with the reason, which is the caller's refusal
+    text. Nothing is billed: no turn is taken, so the process sits on stdin
+    until the first message reaches it.
+    """
+    ready = available(root)
+    if not ready.get("available"):
+        raise Unavailable(str(ready.get("reason") or "no thinking partner here"))
+    _evict_if_crowded()
+    entry = _start(root, session_id, runner_for(root), system, [],
+                   persist=True, tag="", seat=seat)
+    if isinstance(entry, dict) and entry.get("failed"):
+        raise Unavailable(str(entry["failed"]))
+    return thinker(root, session_id, seat)
 
 
 def _turn(root, key, entry: dict, turns: list[dict], session_id: int,
-          timeout: float, detail: str, persist: bool) -> tuple[dict, float]:
+          timeout: float, detail: str, persist: bool,
+          seat: str = "") -> tuple[dict, float]:
     """Deliver one message and read back one reply. Returns (result, cost)."""
     # Two browser tabs on one session would otherwise interleave two questions
     # on one pipe and each read the other's answer.
@@ -1045,11 +1200,16 @@ def _turn(root, key, entry: dict, turns: list[dict], session_id: int,
             # total_cost_usd is the API-equivalent price of a run a plan already
             # covers, and summing it into real money is the mistake
             # spend.totals was fixed to stop making.
+            # seat= is passed through so an invited participant's turns land
+            # against that seat in the ledger. It is left EMPTY for the room's
+            # own partner, which is honest: that partner is nobody's seat.
             _spend.record(root, cost, kind="agent",
                           model=str(got.get("model") or ""),
                           tokens=got.get("tokens") or {},
+                          seat=_seat_tag(seat),
                           detail=(detail
-                                  or f"brainstorm session {session_id} turn"))
+                                  or f"brainstorm session {session_id} turn"
+                                  + (f" ({_seat_tag(seat)})" if seat else "")))
         if got.get("ok"):
             # SUCCESSFUL turns, counted apart from billed ones. `turns` goes up
             # whenever tokens were spent, which includes a resume that failed on
@@ -1065,7 +1225,7 @@ def _turn(root, key, entry: dict, turns: list[dict], session_id: int,
                     "runner": entry.get("runner") or "",
                     "system_sha": _sha(entry.get("system") or ""),
                     "last_turn": _mark(turns[-1]),
-                    "turns": int(entry["turns"]), "ts": time.time()})
+                    "turns": int(entry["turns"]), "ts": time.time()}, seat)
         if not persist or got.get("dead"):
             _reap(key, entry)
     return got, cost
