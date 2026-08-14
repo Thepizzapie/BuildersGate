@@ -274,25 +274,58 @@ class TestNoGameSpecificHardcoding:
 
 
 # ---------------------------------------------------------------------------
-# 6. The record button says what to install
+# 6. The record button says what is MISSING — and never what to type
+# ---------------------------------------------------------------------------
+# These tests used to require the opposite: that the panel print
+# `pip install -e ".[stt,record]"` and point at `bgate doctor`. That was right
+# when the dashboard was only ever run from a source checkout. It is wrong now
+# that the product ships as an installer: somebody who ran BuildersGate-setup.exe
+# has no checkout to run pip in, and telling them to get one tells them the
+# install they chose was a mistake. Anything the app can fetch for itself is a
+# button (bgate_core/toolbin), and the only instructions left are the genuinely
+# human steps — plug in a microphone, start the game.
 # ---------------------------------------------------------------------------
 class TestPreflightIsActionable:
     def test_the_reason_is_no_longer_truncated(self, page):
         assert "slice(0, 60)" not in page and "slice(0,60)" not in page
 
-    def test_each_failing_check_carries_a_literal_fix(self, page):
+    def test_the_human_steps_still_carry_a_sentence(self, page):
+        """What a person must do themselves is still spelled out."""
         assert "const PT_FIXES = {" in page
-        for check in ("ffmpeg", "transcriber", "mic", "window", "native_game"):
-            assert f"{check}:" in page.split("const PT_FIXES = {")[1].split("};")[0]
+        fixes = page.split("const PT_FIXES = {")[1].split("};")[0]
+        for check in ("mic", "window", "native_game"):
+            assert f"{check}:" in fixes
 
-    def test_it_names_the_install_commands_and_the_doctor(self, page):
-        assert 'pip install -e ".[stt,record]"' in page
-        assert "bgate doctor" in page
+    def test_the_app_installs_what_it_can_instead_of_instructing(self, page):
+        """ffmpeg is fetchable, so it is a button and not a sentence."""
+        assert "const PT_INSTALLABLE = {" in page
+        installable = page.split("const PT_INSTALLABLE = {")[1].split("};")[0]
+        assert "ffmpeg" in installable
+        assert "function ptInstall(" in page
+
+    def test_it_never_tells_a_packaged_user_to_open_a_terminal(self, page):
+        """THE REGRESSION GUARD. These strings were on the Playtests screen of
+        an app distributed as a .exe.
+
+        COMMENTS ARE STRIPPED FIRST, deliberately. The rules that removed these
+        instructions explain themselves by quoting them, so a raw substring
+        search over the file matches the very comments describing why the text
+        is gone. What matters is whether a USER can read it, which is the code
+        with the commentary taken out.
+        """
+        code = re.sub(r"/\*.*?\*/", "", page, flags=re.S)          # JS block
+        code = re.sub(r"<!--.*?-->", "", code, flags=re.S)          # HTML
+        for forbidden in ("pip install", "bgate doctor", "source checkout"):
+            assert forbidden not in code, (
+                f"{forbidden!r} is back on the playtest panel — a packaged user "
+                f"cannot act on it")
 
     def test_the_detail_panel_exists_and_is_reachable(self, page):
         assert 'id="pt-why"' in page
         assert "function togglePtWhy(" in page
-        assert "what do I install?" in page
+        # "what do I install?" presumed the answer was always an install. It is
+        # "what is missing?" now, because the answer is often a button.
+        assert "what is missing?" in page
 
     def test_doctor_really_can_answer_without_a_microphone(self):
         from bgate_core import doctor

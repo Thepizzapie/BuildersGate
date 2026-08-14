@@ -61,18 +61,20 @@ ENV_VAR = "BGATE_FFMPEG"
 
 
 def local_bin() -> Optional[str]:
-    """``~/.bgate/bin/ffmpeg``, if somebody put one there. Absolute path or None.
+    """``~/.bgate/bin/ffmpeg``, if there is one. Absolute path or None.
 
     Beside the global ``.env`` and for the same reason: a fact about this
     machine that every project on it should inherit, in a directory that is not
     a repository and so has nothing to leak into.
+
+    DELEGATES TO bgate_core.toolbin, which generalised this directory into the
+    place the app INSTALLS tools rather than only the place a person may have
+    put one. The resolution order below is unchanged and was the model for it;
+    what changed is that the app can now fill the directory itself, so "ffmpeg
+    is missing" is a button rather than a paragraph of instructions.
     """
-    home = os.path.expanduser("~")
-    for name in ("ffmpeg.exe", "ffmpeg"):
-        candidate = os.path.join(home, ".bgate", "bin", name)
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+    from bgate_core import toolbin
+    return toolbin.local("ffmpeg")
 
 
 def resolve(given: str = "") -> Optional[str]:

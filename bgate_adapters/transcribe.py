@@ -43,20 +43,69 @@ def whisper_python() -> str:
     override = os.environ.get("BGATE_WHISPER_PYTHON")
     if override:
         return override
+    # FROZEN, THIS RETURNS "" AND THAT IS DELIBERATE. sys.executable is
+    # BuildersGate.exe in a frozen build, and this value is read by callers
+    # that treat it as a PYTHON INTERPRETER — `[exe, "-c", ...]`. Handing them
+    # the app means every probe launches another copy of the whole
+    # application: it is exactly how a single /api/doctor call once put
+    # thirteen windows on screen, and returning sys.executable here briefly
+    # reintroduced it (ten windows, observed).
+    #
+    # The bundled runner is still reachable, just not through this function —
+    # runner_cmd() spells the app + subcommand out explicitly, which cannot be
+    # mistaken for an interpreter by anything else.
     return "" if frozen() else sys.executable
 
 
+def runner_cmd(args: list[str]) -> list[str]:
+    """The command line that runs the whisper runner, frozen or from source.
+
+    Frozen there is no interpreter to hand a script path to, so the app calls
+    itself with a subcommand. From source it is the ordinary
+    ``python _whisper_runner.py ...``.
+    """
+    if frozen():
+        # sys.executable directly, NOT whisper_python() — that returns "" when
+        # frozen precisely so nothing else can spawn the app as an interpreter.
+        return [sys.executable, "whisper", *args]
+    return [whisper_python(), str(RUNNER), *args]
+
+
 def available() -> dict:
-    """Can we transcribe at all? Checked without loading a model."""
+    """Can we transcribe at all? Checked without loading a model.
+
+    FROZEN IS CHECKED FIRST. whisper_python() answers "" in a frozen build by
+    design (it must never hand the app out as an interpreter), so asking it
+    before asking whether the bundle carries faster-whisper would report the
+    feature missing on the one build that actually ships it.
+    """
+    if frozen():
+        # No interpreter to probe with, and none needed: faster-whisper is IN
+        # the bundle, so the question is simply whether it imports.
+        try:
+            import faster_whisper                                # noqa: F401
+            from importlib.metadata import version
+            return {"available": True, "python": "(bundled)",
+                    "version": version("faster-whisper")}
+        except Exception as exc:                                 # noqa: BLE001
+            return {"available": False, "python": "",
+                    "reason": f"speech-to-text is not in this build ({exc})"}
+
     exe = whisper_python()
     if not exe:
         return {
             "available": False,
             "python": "",
-            "reason": "speech-to-text needs a Python with faster-whisper "
-                      "installed; the packaged app does not bundle one. Set "
-                      "BGATE_WHISPER_PYTHON to an interpreter that has it, or "
-                      "run Builders Gate from a source checkout.",
+            # NO INSTALL INSTRUCTIONS HERE. This used to read "set
+            # BGATE_WHISPER_PYTHON to an interpreter that has it, or run
+            # Builders Gate from a source checkout" — advice a packaged user
+            # cannot act on, telling them the install they chose was the wrong
+            # one. Speech-to-text is genuinely not in the download (it is torch
+            # and CUDA, hundreds of MB, for a transcript), so the honest
+            # statement is what is unavailable and what still works.
+            "reason": "speech-to-text is not included in the app download. "
+                      "Recording still captures video and audio — there will "
+                      "just be no searchable transcript.",
         }
     probe = ("import importlib.metadata as m;"
              "print(m.version('faster-whisper'))")
@@ -95,8 +144,7 @@ def transcribe(wav_path: str, *, model: str = DEFAULT_MODEL, device: str = "auto
     if Path(wav_path).stat().st_size < 1024:
         return {"ok": False, "error": "audio file is empty — nothing was recorded"}
 
-    cmd = [whisper_python(), str(RUNNER), str(wav_path), model, device,
-           compute_type, language or "-"]
+    cmd = runner_cmd([str(wav_path), model, device, compute_type, language or "-"])
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                               stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
