@@ -270,7 +270,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: RELEASE_NOTES.md
+          # THE INSTALLER GOES FIRST BECAUSE IT IS THE DEFAULT DOWNLOAD, and it
+          # has to be in this list at all: v0.1.41 built the setup.exe, signed
+          # nothing, checksummed it, uploaded it as a CI artifact that expires
+          # in 30 days -- and then published a release without it, because this
+          # list named only the zip. The build log said "setup: 75 MB" and the
+          # release page had no installer on it. Nothing failed; the file was
+          # simply not asked for.
+          #
+          # fail_on_unmatched_files below is what makes that unrepeatable: any
+          # artifact named here and missing now fails the publish instead of
+          # shipping a release quietly short of one.
           files: |
+            dist/BuildersGate-setup.exe
+            dist/BuildersGate-setup.exe.sha256
             dist/BuildersGate-windows.zip
             dist/BuildersGate-windows.zip.sha256
           fail_on_unmatched_files: true
