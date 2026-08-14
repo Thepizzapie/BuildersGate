@@ -63,7 +63,16 @@ def _git_snapshot(root: Path) -> tuple[str, str]:
 def _source_fingerprint(root: Path) -> str:
     parts: list[bytes] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or any(part in _SKIP_DIRS for part in path.parts):
+        # Skipped by the path INSIDE the project: matching the absolute parts
+        # lets a directory above the root empty the fingerprint. See _walk in
+        # plumbing.py, which had the same bug and the Linux failure to show it.
+        if not path.is_file():
+            continue
+        try:
+            inside = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(part in _SKIP_DIRS for part in inside.parts):
             continue
         try:
             rel = str(path.relative_to(root)).replace("\\", "/")

@@ -48,9 +48,22 @@ _TILE_TYPES = {"TileMap", "TileMapLayer"}
 
 
 def _walk(root: Path, suffix: str):
-    """Every file with `suffix` under `root`, skipping the trees above."""
+    """Every file with `suffix` under `root`, skipping the trees we never audit.
+
+    THE SKIP LIST IS MATCHED AGAINST THE PATH *INSIDE* THE PROJECT, and that is
+    the whole of this function's care. Matching the absolute path's parts meant
+    a directory ABOVE the root could silently empty the scan: a project living
+    under /tmp, or under any folder called build, dist, export or node_modules,
+    audited zero files and reported a clean bill of health. It surfaced as the
+    Linux suite failing where Windows passed, because pytest's tmp_path is
+    /tmp/... there and ...\AppData\Local\Temp\... here.
+    """
     for path in root.rglob(f"*{suffix}"):
-        if any(part in _SKIP for part in path.parts):
+        try:
+            inside = path.relative_to(root)
+        except ValueError:      # a symlink out of the project
+            continue
+        if any(part in _SKIP for part in inside.parts):
             continue
         yield path
 
