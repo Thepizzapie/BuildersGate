@@ -306,7 +306,39 @@ async def _coi_headers(request, call_next):
     response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
     return response
 
-_STATIC = Path(__file__).with_name("static")
+def _static_dir() -> Path:
+    """Where the dashboard's files are, populating it from source if they are not.
+
+    `bgate_ui/static/` is GENERATED: `npm run build` copies `frontend/public/`
+    into it and emits the React bundle under `dist/`. Only `dist/` is committed,
+    because it is the one artefact that needs node and tracking the rest would
+    store every module twice.
+
+    WHICH LEAVES THE FRESH CLONE, and it is the case the README promises works:
+    `pip install -e .` with no toolchain, then `bgate serve`. That checkout has
+    `dist/` and no `index.html`, so the dashboard would start and 404 its own
+    page. Copying is not a build — the classic modules are plain files and the
+    bundle is already committed — so the missing half is filled in here, once,
+    from the source tree next door.
+
+    A wheel, an exe, or a built checkout already has everything and never
+    reaches the copy.
+    """
+    built = Path(__file__).with_name("static")
+    if (built / "index.html").is_file():
+        return built
+    source = Path(__file__).resolve().parents[1] / "frontend" / "public"
+    if not (source / "index.html").is_file():
+        # Neither present: let StaticFiles report the missing directory rather
+        # than inventing an empty one that 404s every asset with no explanation.
+        return built
+    import shutil
+    built.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, built, dirs_exist_ok=True)
+    return built
+
+
+_STATIC = _static_dir()
 
 # Only ever serve images, and only from inside the project. The preview endpoint
 # takes root-relative paths; anything that escapes the root is refused.

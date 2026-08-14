@@ -98,6 +98,11 @@ for you and for nobody else.
 the page is served by FastAPI, not by Vite). `npm run typecheck` is the gate on
 the TypeScript.
 
+A fresh clone has no `bgate_ui/static/` beyond `dist/`, because only the bundle
+is committed. The server populates it on first run by copying `frontend/public`
+into it, so `pip install -e .` and `bgate serve` work with no node installed.
+Running `npm run build` does the same thing and adds a rebuilt bundle.
+
 ## Changing anything the wheel ships
 
 That means the built front end under `bgate_ui/static/`, anything in
