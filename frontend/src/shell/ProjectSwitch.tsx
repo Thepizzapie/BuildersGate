@@ -49,6 +49,9 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
   const [doc, setDoc] = useState<ProjectDoc | null>(null);
   const [busy, setBusy] = useState("");
   const host = useRef<HTMLDivElement>(null);
+  /* The portalled menu. It is NOT a descendant of `host`, so the
+     click-outside handler has to be told about it explicitly — see below. */
+  const menu = useRef<HTMLDivElement>(null);
   /* Where to put the portalled menu: beside the rail button, aligned to its
      bottom. Read on open, because the rail does not move while it is open. */
   const [anchor, setAnchor] = useState<{ left: number; bottom: number } | null>(null);
@@ -65,7 +68,17 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => {
-      if (host.current && !host.current.contains(e.target as Node)) setOpen(false);
+      /* THE BUG THIS FIXES: "clicking a project does nothing".
+         The menu is portalled to <body>, so it is not inside `host`. This
+         handler runs on MOUSEDOWN, decided the press was outside, and closed
+         the menu — unmounting the button before its CLICK could fire. choose()
+         was never called once. Same fault as the notification drawer's, which
+         became a sibling of its host at the same time.
+         Both containers are checked now. */
+      const t = e.target as Node;
+      if (host.current?.contains(t)) return;
+      if (menu.current?.contains(t)) return;
+      setOpen(false);
     };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     document.addEventListener("mousedown", away);
@@ -135,7 +148,7 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
           measured rect because it no longer shares a coordinate space with
           it. */}
       {open && anchor && createPortal(
-        <div className="bg4-projmenu" role="menu"
+        <div className="bg4-projmenu" role="menu" ref={menu}
              style={{ left: anchor.left, bottom: anchor.bottom }}>
           <div className="bg4-projhead">Projects on this machine</div>
           {known.length === 0 && <div className="bg4-projempty">none registered yet</div>}

@@ -18,8 +18,8 @@ def _no_dashboard_auth(monkeypatch):
     monkeypatch.setenv("BGATE_NO_AUTH", "1")
 
 
-@pytest.fixture(autouse=True)
-def _isolated_user_dir(tmp_path_factory, monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_user_dir(tmp_path_factory):
     """Keep the suite out of the developer's real ~/.bgate.
 
     project.init() registers every project it makes, and `bgate use` writes an
@@ -27,9 +27,28 @@ def _isolated_user_dir(tmp_path_factory, monkeypatch):
     test run rewrites the machine's registry, and — worse — a stale pointer left
     by an earlier run silently satisfies a require_root() the test expected to
     fail. BGATE_HOME exists precisely so that redirect is one env var.
+
+    SESSION-SCOPED, AND THAT MATTERS. This was function-scoped, using
+    monkeypatch — which is itself function-scoped — so it could not possibly be
+    in effect while a SESSION-scoped fixture ran. `_seed_project` below is
+    session-scoped and calls project.init(), so every full run of this suite
+    registered its seed projects in the developer's real registry: `test-game`
+    and `smoke-test`, pointing into pytest-of-<user>/pytest-NNNN/, appeared in
+    the app's project switcher as things you could open, and stopped resolving
+    as soon as pytest recycled the directory.
+
+    os.environ directly rather than monkeypatch, because there is no
+    session-scoped monkeypatch; the value is restored on the way out.
     """
-    monkeypatch.setenv("BGATE_HOME",
-                       str(tmp_path_factory.mktemp("bgate_home")))
+    import os
+
+    previous = os.environ.get("BGATE_HOME")
+    os.environ["BGATE_HOME"] = str(tmp_path_factory.mktemp("bgate_home"))
+    yield
+    if previous is None:
+        os.environ.pop("BGATE_HOME", None)
+    else:
+        os.environ["BGATE_HOME"] = previous
 
 
 @pytest.fixture()
