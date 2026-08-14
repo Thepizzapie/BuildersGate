@@ -6,8 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Dev streams on Twitch](https://img.shields.io/badge/twitch-thepizzzapie-9146FF)](https://twitch.tv/thepizzzapie)
 
-**An MCP server for building games with Claude Code.** It gives Claude close to
-200 tools scoped to one game project: a design database, a work queue,
+**An MCP server for building games with Claude Code.** It gives Claude 211
+tools scoped to one game project: a design database, a work queue,
 reference-pinned art and music generation, Godot and Blender adapters, and
 playtest capture. All state lives in one SQLite file inside the project.
 
