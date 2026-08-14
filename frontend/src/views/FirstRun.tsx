@@ -14,6 +14,27 @@ declare global {
   }
 }
 
+/* One entry per value, first occurrence winning.
+ *
+ * THIS IS A GUARD, NOT A TIDY-UP, and the bug it exists for cost a whole
+ * release. Mantine's Select THROWS on a duplicate value rather than rendering
+ * it twice, and an exception thrown during render unmounts the React tree
+ * containing it. One folder registered under two names — which is what
+ * renaming a project leaves behind — therefore did not produce a duplicate
+ * menu row. It produced a black window: the packaged app opened, painted
+ * nothing, and sat there while the server behind it answered every request
+ * perfectly, which is the hardest possible version of this to diagnose.
+ *
+ * known_projects() now guarantees uniqueness on the server side, so this is
+ * the second of two locks. It stays because the cost of the list being wrong
+ * must be a missing row, never a missing application.
+ */
+function oncePerValue<T extends { value: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter(({ value }) =>
+    seen.has(value) ? false : (seen.add(value), true));
+}
+
 /* The first-run card — the one screen a new user is guaranteed to meet.
  *
  * Two ways in, and OPENING COMES FIRST because it is the commoner act. This
@@ -146,7 +167,7 @@ export default function FirstRun() {
         <Stack gap="xs">
           <Select label="Open an existing project"
                   placeholder={busy && busy !== "create" ? "opening…" : "pick a project"}
-                  data={known.map(([label, root]) => ({ value: root, label }))}
+                  data={oncePerValue(known.map(([label, root]) => ({ value: root, label })))}
                   disabled={busy !== null}
                   searchable={known.length > 6}
                   leftSection={<Ti name="folder" size={15} />}

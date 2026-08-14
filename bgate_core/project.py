@@ -130,9 +130,37 @@ def known_projects() -> dict[str, str]:
     Filtered on READ rather than pruned on write, deliberately. An unplugged
     external drive is not a reason to forget a project; it is a reason not to
     offer it right now.
+
+    ONE ENTRY PER FOLDER. The keys here are names and are unique by
+    construction; the VALUES are not, and two names pointing at one folder is
+    ordinary — renaming a project registers the new name without retiring the
+    old one, so the same root arrives twice under two labels. Every caller
+    turns this into a list of choices keyed by root, and a repeated root is a
+    repeated key.
+
+    That is not a cosmetic duplicate. The dashboard's project picker is a
+    Mantine Select, which THROWS on a duplicate value rather than rendering it
+    twice, and an exception thrown while rendering unmounts the React tree that
+    contains it -- so the packaged app opened a window, painted nothing, and
+    sat there black with the server behind it answering every request
+    perfectly. One doubly-registered folder took out the whole interface.
+
+    Comparison is normcase+normpath, so C:\\Games\\X and c:/games/x are one
+    folder, which is what Windows thinks too. First registration wins: it is
+    the stable choice, and the alternative (last wins) makes the menu reorder
+    itself when an unrelated project is added.
     """
-    return {name: root for name, root in _read_registry().items()
-            if root and Path(root).is_dir()}
+    seen: set[str] = set()
+    out: dict[str, str] = {}
+    for name, root in _read_registry().items():
+        if not root or not Path(root).is_dir():
+            continue
+        key = os.path.normcase(os.path.normpath(root))
+        if key in seen:
+            continue
+        seen.add(key)
+        out[name] = root
+    return out
 
 
 def init(root: str | os.PathLike[str], name: str, pitch: str = "",
