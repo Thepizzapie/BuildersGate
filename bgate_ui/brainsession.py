@@ -304,17 +304,22 @@ def _resume_point(turns: list[dict], mark: dict) -> Optional[int]:
 def _pad_config(root, session_id: int, seat: str = "") -> str:
     """The --mcp-config document registering the pad server, or "".
 
-    Built by the pad server itself so the registration and the module cannot
-    disagree, imported LAZILY and guarded because it pulls in the MCP SDK: a
-    dashboard whose MCP extra is broken must still be able to hold a
-    conversation. Returning "" degrades to a partner with no tools at all, which
-    is the behaviour this room shipped with — worse, not broken.
+    Built beside the pad server so the registration and the module path cannot
+    disagree. It comes from bgate_mcp.padconfig and NOT from padserver: the
+    latter constructs a FastMCP application at import time, so calling it for
+    this one dict pulled the entire MCP SDK into the dashboard — and, in the
+    frozen build, the optional cloud secret providers behind pydantic_settings
+    with it. padconfig imports nothing but sys.
+
+    Still lazy and still guarded. Returning "" degrades to a partner with no
+    tools at all, which is the behaviour this room shipped with — worse, not
+    broken.
     """
     try:
-        from bgate_mcp import padserver
+        from bgate_mcp import padconfig
 
-        return json.dumps(padserver.config(str(root), int(session_id),
-                                          seat=_seat_tag(seat)),
+        return json.dumps(padconfig.config(str(root), int(session_id),
+                                           seat=_seat_tag(seat)),
                           separators=(",", ":"))
     except Exception:
         return ""

@@ -56,6 +56,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+# Safe to import at module scope BECAUSE padconfig imports no MCP — see the
+# note above PAD_TOOLS below, and padconfig's own docstring.
+from bgate_mcp.padconfig import TOOL_NAMES as PAD_TOOLS
+
 # The MCP server every seat needs whichever CLI it runs on. An art agent that
 # cannot call ref_list, asset_lock, consistency_check or artifact register is
 # not an art seat, it is an image generator with a prompt — the whole point of
@@ -305,18 +309,13 @@ def _codex_args(exe: str, *, permission_mode: str, model: Optional[str],
 # transport for their own decision. Writing canon is not filing work: the board
 # is still reached only by a human pressing Deploy on a plan they have read.
 
-# The two tools the pad server exposes, by their full CLI-side names. Imported
-# from nowhere on purpose: bgate_mcp.padserver pulls in the MCP SDK, and this
-# module is loaded by every dispatch on a machine that may not have it. The
-# names are asserted equal to padserver.TOOL_NAMES in the tests, which is where
-# a drift between the two belongs.
-PAD_TOOLS = ("mcp__pads__pad_read", "mcp__pads__pad_draw",
-             "mcp__pads__board_read", "mcp__pads__canon_read",
-             "mcp__pads__bible_write", "mcp__pads__lore_write",
-             "mcp__pads__lore_fact", "mcp__pads__lore_link",
-             "mcp__pads__dialogue_list", "mcp__pads__dialogue_read",
-             "mcp__pads__project_files", "mcp__pads__file_read",
-             "mcp__pads__scene_tree", "mcp__pads__room_post")
+# PAD_TOOLS is imported at the top of this module now. It USED TO BE A
+# HAND-COPIED DUPLICATE of padserver.TOOL_NAMES, carrying a comment that the
+# real one could not be imported because padserver pulls in the MCP SDK and
+# this module is loaded by every dispatch — including on machines with no MCP
+# extra installed — plus a test asserting the copy had not drifted. The list
+# now lives in bgate_mcp.padconfig, which imports nothing but sys, so the
+# reason for the duplicate is gone and so is the duplicate.
 
 _CLAUDE_READONLY = ["--tools", "", "--strict-mcp-config",
                     "--setting-sources", "", "--disable-slash-commands",
