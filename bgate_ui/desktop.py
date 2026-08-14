@@ -261,8 +261,19 @@ def _start_badge(root, set_title):
     return stop
 
 
+# FRAMELESS BY DEFAULT, with an escape hatch. The app draws its own title bar
+# so the window reads as one surface instead of a dark page wearing a grey
+# Windows hat — but a frameless window is also the kind of thing that can go
+# wrong on a display configuration nobody here has, and losing the ability to
+# move or close the window is not a cosmetic failure. BGATE_NATIVE_FRAME=1 asks
+# for the ordinary system caption back.
+def _want_frameless() -> bool:
+    return str(os.environ.get("BGATE_NATIVE_FRAME", "")).strip() not in ("1", "true", "yes")
+
+
 def _run_native(webview2, port, url, server, thread) -> int:
     """The COM-hosted WebView2 window. Blocks until the user closes it."""
+    frameless = _want_frameless()
     win = webview2.Window(
         WINDOW_TITLE, url,
         width=DEFAULT_SIZE[0], height=DEFAULT_SIZE[1],
@@ -271,10 +282,19 @@ def _run_native(webview2, port, url, server, thread) -> int:
         # a temp dir, so logins and localStorage (the theme choice, the last
         # workspace) survive a restart.
         user_data_dir=str(_profile_dir()),
+        frameless=frameless,
     )
-    stop_badge = _start_badge(_root_or_none(), win.set_title)
-    err = win.run()
-    stop_badge.set()
+    # Hand the window to the API so the page's title-bar buttons can reach it.
+    # Same process, so this is a reference rather than any kind of channel; the
+    # route module owns the "is there even a native window" question.
+    from bgate_ui.routes import window as _window_routes
+    _window_routes.attach(win if frameless else None)
+    try:
+        stop_badge = _start_badge(_root_or_none(), win.set_title)
+        err = win.run()
+        stop_badge.set()
+    finally:
+        _window_routes.attach(None)
     if err:
         return _fallback_to_browser(url, err, server, thread)
 

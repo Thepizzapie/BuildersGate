@@ -46,15 +46,85 @@ from typing import Optional
 # ── Win32 ────────────────────────────────────────────────────────────────────
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
 WS_OVERLAPPEDWINDOW = 0x00CF0000
 WS_VISIBLE = 0x10000000
 CW_USEDEFAULT = -2147483648
 SW_SHOW = 5
+SW_MINIMIZE = 6
+SW_MAXIMIZE = 3
+SW_RESTORE = 9
 WM_DESTROY = 0x0002
 WM_SIZE = 0x0005
+WM_CLOSE = 0x0010
 WM_GETMINMAXINFO = 0x0024
+WM_NCCALCSIZE = 0x0083
+WM_NCHITTEST = 0x0084
+WM_NCLBUTTONDOWN = 0x00A1
 IDC_ARROW = 32512
+
+# Our own message, handled in _wndproc. The page asks for a window drag over
+# HTTP, and the drag MUST be started on the thread that owns the window — see
+# start_drag().
+WM_APP_STARTDRAG = 0x8001
+
+# ── frameless window ────────────────────────────────────────────────────────
+# Hit-test results. The window has no caption of its own, so the wndproc has to
+# answer every one of these itself; DefWindowProc cannot, because as far as it
+# is concerned the whole window is client area.
+HTCLIENT, HTCAPTION = 1, 2
+HTLEFT, HTRIGHT, HTTOP, HTBOTTOM = 10, 11, 12, 15
+HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT = 13, 14, 16, 17
+
+SM_CYCAPTION = 4
+SM_CXSIZEFRAME, SM_CYSIZEFRAME, SM_CXPADDEDBORDER = 32, 33, 92
+
+# How tall the page's own header is, in unscaled pixels, and how much of its
+# right-hand end is buttons. The wndproc needs both to know which part of the
+# top strip is a drag handle — it cannot ask the page, and a round trip per
+# mouse-move would be absurd anyway. THESE MUST MATCH THE CSS in the shell's
+# title bar (frontend/src/shell/TitleBar.tsx); they are asserted equal by
+# tests/test_webview2.py so the two cannot drift into a window you can only
+# drag by half its bar.
+CAPTION_H = 44
+CAPTION_BUTTONS_W = 138          # three 46px buttons
+
+def MAKEINTRESOURCE(i: int):
+    """A numeric resource id where the API's signature says LPCWSTR.
+
+    Win32 overloads these parameters: a string is a name, and a small integer
+    stuffed into the pointer is an ordinal. Python cannot express that — with
+    argtypes declaring LPCWSTR, handing ctypes an int raises
+
+        argument 2: TypeError: 'int' object cannot be interpreted as ctypes.c_wchar_p
+
+    and `wt.LPCWSTR(1)` raises the same thing, because c_wchar_p refuses to be
+    built from an int. Going through c_void_p is the only way to put the ordinal
+    in the pointer slot.
+
+    THIS WAS BROKEN FOR THE LIFE OF THE FILE and nobody saw it, because
+    available() returns False without comtypes, comtypes was declared nowhere,
+    and so _create_window never ran outside a machine that happened to have it.
+    Declaring the dependency is what made this reachable — and immediately
+    fatal, on the first line that loads the window class cursor.
+    """
+    return ctypes.cast(ctypes.c_void_p(i), wt.LPCWSTR)
+
+
+user32.GetSystemMetrics.restype = ctypes.c_int
+user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+user32.ShowWindow.argtypes = [wt.HWND, ctypes.c_int]
+user32.IsZoomed.argtypes = [wt.HWND]
+user32.GetDpiForWindow.restype = wt.UINT
+user32.GetDpiForWindow.argtypes = [wt.HWND]
+user32.ReleaseCapture.restype = wt.BOOL
+user32.SetWindowPos.restype = wt.BOOL
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, wt.UINT]
+gdi32.CreateSolidBrush.restype = wt.HBRUSH
+gdi32.CreateSolidBrush.argtypes = [wt.COLORREF]
 
 # ctypes.wintypes does not size these correctly for 64-bit, and getting them
 # wrong shows up as "OverflowError: int too long to convert" the first time a
@@ -120,6 +190,24 @@ class MINMAXINFO(ctypes.Structure):
 class RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class NCCALCSIZE_PARAMS(ctypes.Structure):
+    """What WM_NCCALCSIZE points lParam at when wParam is TRUE.
+
+    rgrc[0] is the proposed new CLIENT rectangle and is the only field written
+    here: leaving it as the whole window rect is what removes the frame.
+    rgrc[1] and rgrc[2] are the old client and window rects, which Windows uses
+    to decide what to blit while resizing.
+    """
+    _fields_ = [("rgrc", RECT * 3), ("lppos", ctypes.c_void_p)]
+
+
+# ctypes.POINTER, not the bare name: the `from ctypes import POINTER` further
+# down this file has not run yet at module-definition time.
+user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+user32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(RECT)]
+user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(RECT)]
 
 
 def loader_dll() -> Optional[Path]:
@@ -295,19 +383,142 @@ class Window:
 
     def __init__(self, title: str, url: str, width: int = 1480, height: int = 940,
                  min_width: int = 820, min_height: int = 720,
-                 user_data_dir: Optional[str] = None):
+                 user_data_dir: Optional[str] = None, frameless: bool = False):
         self.title, self.url = title, url
         self.width, self.height = width, height
         self.min_width, self.min_height = min_width, min_height
         self.user_data_dir = user_data_dir
+        self.frameless = bool(frameless)
         self.hwnd = None
         self._controller = None
         self._webview = None
         self._handlers = []          # must outlive the async calls
         self._error: Optional[str] = None
 
+    # ---- frameless geometry ------------------------------------------------
+    def _scale(self, px: int) -> int:
+        """A CSS pixel in this window's device pixels.
+
+        The caption height is shared with the page's CSS, which is laid out in
+        CSS pixels; the hit test happens in device pixels. On a 150% display
+        those differ by half again, and getting it wrong means the draggable
+        strip and the drawn header do not line up — the top of the bar drags and
+        the bottom selects text, or worse.
+        """
+        try:
+            dpi = user32.GetDpiForWindow(self.hwnd) or 96
+        except Exception:                                       # noqa: BLE001
+            dpi = 96
+        return int(round(px * dpi / 96.0))
+
+    def _border(self) -> int:
+        """Width of the invisible resize border, in device pixels."""
+        return (user32.GetSystemMetrics(SM_CXSIZEFRAME)
+                + user32.GetSystemMetrics(SM_CXPADDEDBORDER)) or 8
+
+    def _caption_inset(self) -> int:
+        """How much DefWindowProc took off the top for the caption it draws.
+
+        Given back in WM_NCCALCSIZE so the page can draw its own bar there.
+        Measured rather than assumed: it is the system caption height plus the
+        top resize border, and both move with the display's scaling.
+        """
+        return (user32.GetSystemMetrics(SM_CYCAPTION)
+                + user32.GetSystemMetrics(SM_CYSIZEFRAME)
+                + user32.GetSystemMetrics(SM_CXPADDEDBORDER))
+
+    def _hittest(self, lparam) -> int:
+        """Which part of a frameless window the cursor is over.
+
+        With no caption there is nothing for DefWindowProc to find, so every
+        answer — resize edges, corners, and the strip that drags the window —
+        is computed here. Get this wrong and the window cannot be resized or
+        moved at all, which is the failure mode people report as "it froze".
+        """
+        rect = RECT()
+        user32.GetWindowRect(self.hwnd, byref(rect))
+        # lParam is two SIGNED shorts. Masking without sign-extending puts the
+        # cursor at x=65500 the moment it crosses the left edge of the screen.
+        x = ctypes.c_short(lparam & 0xFFFF).value
+        y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+
+        b = self._border()
+        maximized = bool(user32.IsZoomed(self.hwnd))
+        if not maximized:
+            left = x < rect.left + b
+            right = x >= rect.right - b
+            top = y < rect.top + b
+            bottom = y >= rect.bottom - b
+            if top and left:     return HTTOPLEFT
+            if top and right:    return HTTOPRIGHT
+            if bottom and left:  return HTBOTTOMLEFT
+            if bottom and right: return HTBOTTOMRIGHT
+            if top:              return HTTOP
+            if bottom:           return HTBOTTOM
+            if left:             return HTLEFT
+            if right:            return HTRIGHT
+
+        # The drag strip: the page's header, minus the window buttons at its
+        # right-hand end. Returning HTCAPTION here is what gives back the whole
+        # native gesture set for free — drag to move, double-click to maximize,
+        # drag to a screen edge to snap, shake to minimise everything else.
+        if y < rect.top + self._scale(CAPTION_H):
+            if x < rect.right - self._scale(CAPTION_BUTTONS_W):
+                return HTCAPTION
+        return HTCLIENT
+
     # ---- win32 ------------------------------------------------------------
     def _wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == WM_NCCALCSIZE and self.frameless and wparam:
+            # Returning 0 with the rect left alone makes the CLIENT AREA the
+            # whole window: no caption, no visible border, but still a real
+            # top-level window that snaps, animates and casts a shadow. That is
+            # the whole trick, and it is why this is not a WS_POPUP — a popup
+            # loses all of those.
+            #
+            # LETTING DefWindowProc COMPUTE THE RECT AND GIVING BACK ONLY THE
+            # CAPTION DOES NOT WORK, and it is a tempting mistake because it
+            # sounds tidier. WM_NCCALCSIZE decides where the client area IS; it
+            # does not decide what the non-client area PAINTS. Grow the client
+            # up over the caption and Windows draws its caption anyway, on top —
+            # the window ends up wearing two title bars, the system's and ours.
+            # Measured, on screen, exactly once.
+            #
+            # The resize edges this appears to cost are handled in _resize(),
+            # which stops the webview short of them.
+            #
+            # MAXIMIZED IS THE SPECIAL CASE and it is not optional. Windows
+            # sizes a maximized window slightly LARGER than the work area, on
+            # the assumption that the frame it is about to draw will absorb the
+            # difference. With no frame, nothing absorbs it, and the top of the
+            # page — the title bar, the only way to unmaximize — sits offscreen.
+            if user32.IsZoomed(hwnd):
+                params = ctypes.cast(lparam, POINTER(NCCALCSIZE_PARAMS)).contents
+                inset = self._border()
+                params.rgrc[0].left += inset
+                params.rgrc[0].top += inset
+                params.rgrc[0].right -= inset
+                params.rgrc[0].bottom -= inset
+            return 0
+        if msg == WM_NCHITTEST and self.frameless:
+            return self._hittest(lparam)
+        if msg == WM_APP_STARTDRAG and self.frameless:
+            # Runs on the WINDOW'S OWN THREAD, which is the point — see
+            # start_drag(). ReleaseCapture from any other thread is a no-op, and
+            # WM_NCLBUTTONDOWN sent from one enters a modal move loop on the
+            # wrong thread.
+            #
+            # lParam CARRIES THE GRAB POINT and it is not optional: DefWindowProc
+            # anchors the move to it, so passing 0 anchors the drag to the top
+            # left of the primary monitor and the window does not follow the
+            # mouse at all. Read now rather than passed in, because the press
+            # travelled here as an HTTP request and the cursor has moved since.
+            pt = POINT()
+            user32.GetCursorPos(byref(pt))
+            user32.ReleaseCapture()
+            user32.SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION,
+                                (pt.y << 16) | (pt.x & 0xFFFF))
+            return 0
         if msg == WM_SIZE and self._controller:
             self._resize()
             return 0
@@ -321,9 +532,76 @@ class Window:
             return 0
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
+    # ---- window controls, driven by the page -------------------------------
+    # The page reaches these over the loopback API it is already talking to
+    # (see bgate_ui/routes/window.py), NOT over a WebView2 message channel.
+    # Adding one would mean hand-writing another COM handler and pinning
+    # another vtable index by hand, for a button that has a perfectly good HTTP
+    # route available in the same process.
+    #
+    # All three post rather than call: they run on the server's thread, and
+    # every one of these must happen on the thread that owns the window.
+    def minimize(self) -> None:
+        if self.hwnd:
+            user32.PostMessageW(self.hwnd, 0x0112, 0xF020, 0)   # WM_SYSCOMMAND SC_MINIMIZE
+
+    def toggle_maximize(self) -> None:
+        if self.hwnd:
+            cmd = 0xF120 if user32.IsZoomed(self.hwnd) else 0xF030   # SC_RESTORE / SC_MAXIMIZE
+            user32.PostMessageW(self.hwnd, 0x0112, cmd, 0)
+
+    def close(self) -> None:
+        if self.hwnd:
+            user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+
+    def start_drag(self) -> None:
+        """Begin a window move, as if the user had grabbed a real caption.
+
+        THE PAGE CANNOT DRAG THE WINDOW BY ITSELF and neither can the parent's
+        hit test: WebView2 puts a child window over the whole client area, and a
+        child window consumes the mouse before WM_NCHITTEST is ever asked. So
+        the title bar reports its own mousedown over HTTP and the window hands
+        the gesture to Windows, which then runs its ordinary modal move loop —
+        edge snapping, multi-monitor and all — against a mouse button that is
+        already physically down.
+
+        Posted rather than done here: ReleaseCapture only affects the calling
+        thread, and this is called from the server's. The wndproc does the work
+        on the window's own thread.
+        """
+        if self.hwnd:
+            user32.PostMessageW(self.hwnd, WM_APP_STARTDRAG, 0, 0)
+
+    def is_maximized(self) -> bool:
+        return bool(self.hwnd and user32.IsZoomed(self.hwnd))
+
     def _resize(self):
         rect = RECT()
         user32.GetClientRect(self.hwnd, byref(rect))
+        if self.frameless and not user32.IsZoomed(self.hwnd):
+            # STOP THE PAGE SHORT OF THE RESIZE EDGES.
+            #
+            # Frameless means the client area is the whole window, so a webview
+            # filling the client area covers the pixels the resize borders live
+            # in — and a CHILD WINDOW TAKES THE MOUSE BEFORE THE PARENT IS
+            # ASKED, so _hittest never sees them and the window cannot be
+            # resized at all. Reported as "I can't move the window", which was
+            # the same cause: the drag strip is covered too.
+            #
+            # Holding back a border's width on three sides gives those pixels
+            # to the parent, where WM_NCHITTEST answers HTLEFT / HTRIGHT /
+            # HTBOTTOM and the corners. The window background is painted the
+            # app's own ground (see _create_window), so the reserved edge reads
+            # as a thin border rather than as a white seam.
+            #
+            # The TOP is deliberately not inset: the title bar has to reach the
+            # top of the window or there is a gap above it. Top-edge resizing is
+            # the one gesture given up, and it is the least used of the eight.
+            # Dragging is restored separately, over HTTP — see start_drag().
+            b = self._border()
+            rect.left += b
+            rect.right -= b
+            rect.bottom -= b
         put_bounds = _call(self._controller, _CTRL_PUT_BOUNDS, HRESULT, RECT)
         put_bounds(rect)
 
@@ -348,7 +626,7 @@ class Window:
 
         if getattr(sys, "frozen", False):
             # MAKEINTRESOURCE(1): the resource id travels as the pointer value.
-            icon = user32.LoadImageW(hinst, wt.LPCWSTR(1), IMAGE_ICON, cx, cy, 0)
+            icon = user32.LoadImageW(hinst, MAKEINTRESOURCE(1), IMAGE_ICON, cx, cy, 0)
             if icon:
                 return icon
         for ico in self._icon_files():
@@ -371,7 +649,33 @@ class Window:
         if meipass:
             yield Path(meipass) / "icon.ico"
 
+    @staticmethod
+    def _claim_taskbar_identity():
+        """Tell the shell this process is Builders Gate, not whatever launched it.
+
+        THE TASKBAR DOES NOT USE THE WINDOW ICON unless the process has an
+        explicit AppUserModelID. Without one Windows groups the button under the
+        host executable's identity and draws ITS icon — so running from source
+        the taskbar showed python.exe's icon no matter what hIcon and WM_SETICON
+        were set to, and the window's own icon was never wrong.
+
+        Frozen it matters less, because the host executable IS BuildersGate.exe
+        and carries the right icon anyway. It is still set in both cases so the
+        button groups under one identity rather than two, and so a pinned
+        shortcut keeps working across a source/frozen switch.
+
+        Failure is ignored: this is cosmetic, and shell32 is not worth crashing
+        a window over.
+        """
+        try:
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [wt.LPCWSTR]
+            shell32.SetCurrentProcessExplicitAppUserModelID("Thepizzapie.BuildersGate")
+        except Exception:                                       # noqa: BLE001
+            pass
+
     def _create_window(self):
+        self._claim_taskbar_identity()
         self._proc = WNDPROC(self._wndproc)      # strong ref or COM calls freed memory
         cls = WNDCLASSEX()
         cls.cbSize = ctypes.sizeof(WNDCLASSEX)
@@ -381,8 +685,13 @@ class Window:
         small = self._load_icon(cls.hInstance, big=False)
         cls.hIcon = big or 0
         cls.hIconSm = small or 0
-        cls.hCursor = user32.LoadCursorW(None, IDC_ARROW)
-        cls.hbrBackground = 5            # COLOR_WINDOW; repainted by the webview
+        cls.hCursor = user32.LoadCursorW(None, MAKEINTRESOURCE(IDC_ARROW))
+        # THE APP'S OWN GROUND, not COLOR_WINDOW. Frameless holds back a
+        # border's width around the webview for the resize edges (see _resize),
+        # and COLOR_WINDOW painted that reserve white — a bright seam around a
+        # near-black app. gdi32 wants BGR, so #0a0a0c is 0x0c0a0a.
+        cls.hbrBackground = (gdi32.CreateSolidBrush(0x0C0A0A)
+                             if self.frameless else 5)
         cls.lpszClassName = "BuildersGateWebView2"
         if not user32.RegisterClassExW(byref(cls)):
             err = ctypes.get_last_error()
@@ -404,6 +713,24 @@ class Window:
             user32.SendMessageW(self.hwnd, WM_SETICON, ICON_BIG, big)
         if small:
             user32.SendMessageW(self.hwnd, WM_SETICON, ICON_SMALL, small)
+        if self.frameless:
+            # THE CALL WITHOUT WHICH THE WHOLE FRAMELESS PATH IS DEAD CODE.
+            #
+            # CreateWindowEx computes the frame ONCE, and it does so without
+            # ever sending WM_NCCALCSIZE with wParam TRUE — the only form our
+            # handler acts on. So the handler never ran, the client rect kept
+            # its 31px of caption, and the window came up wearing BOTH the
+            # system caption and the page's own title bar. Every other part of
+            # the frameless work was correct and none of it was reachable.
+            #
+            # SWP_FRAMECHANGED forces the recalculation, which delivers the
+            # wParam TRUE message. Measured with a standalone probe: top inset
+            # 31px before this call, 0px after.
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE = 0x0020, 0x0002, 0x0001
+            SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
+            user32.SetWindowPos(self.hwnd, None, 0, 0, 0, 0,
+                                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE
+                                | SWP_NOZORDER | SWP_NOACTIVATE)
         user32.ShowWindow(self.hwnd, SW_SHOW)
 
     # ---- the async creation chain -----------------------------------------
