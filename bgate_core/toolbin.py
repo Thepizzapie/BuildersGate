@@ -58,7 +58,7 @@ import re
 import shutil
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
 #: Where installed tools live. Beside the global provider-key store, for the
@@ -147,19 +147,42 @@ def env_var(name: str) -> str:
     return f"BGATE_{_checked(name).upper()}"
 
 
+#: name -> the exact filenames this app may look for, built from the registry
+#: at import time. See local() for why it is a table rather than a format string.
+def _managed_names() -> dict[str, tuple[str, ...]]:
+    out: dict[str, tuple[str, ...]] = {}
+    for tool in TOOLS.values():
+        out[tool.name] = tuple(tool.exes)
+        # Everything the archive installs is resolvable by its own basename:
+        # the ffmpeg tool also puts ffprobe on disk, and callers ask for it by
+        # that name.
+        for member in tool.members:
+            stem = PurePosixPath(member).name
+            out.setdefault(stem.removesuffix(".exe"), (stem,))
+    return out
+
+
+MANAGED: dict[str, tuple[str, ...]] = _managed_names()
+
+
 def local(name: str) -> Optional[str]:
-    """The copy in ~/.bgate/bin, if there is one. Absolute path or None."""
-    name = _checked(name)
-    tool = TOOLS.get(name)
-    candidates = tool.exes if tool else (f"{name}.exe", name)
-    base = bin_dir().resolve()
-    for exe in candidates:
-        p = (base / exe).resolve()
-        # Belt as well as braces: _checked() already refuses separators, and
-        # this refuses anything that still managed to land outside the folder
-        # the app owns.
-        if not (p == base or base in p.parents):
-            continue
+    """The copy in ~/.bgate/bin, if there is one. Absolute path or None.
+
+    THE FILENAME NEVER COMES FROM THE ARGUMENT. An earlier version built
+    ``bin_dir() / f"{name}.exe"``, which is user data in a path expression --
+    CodeQL flagged it, and it was right about the shape even though the routes
+    only ever pass keys of TOOLS. A guard in front of it did not settle the
+    matter either, because a regex is not something the analysis can recognise
+    as a sanitiser, and "it is checked, trust me" is exactly what every real
+    traversal also claims.
+
+    So the argument is now only a KEY into a table built from the registry's own
+    literals. Whatever is passed, the path is assembled from strings written in
+    this file: an unknown name resolves to nothing rather than to a filename
+    somebody supplied.
+    """
+    for exe in MANAGED.get(_checked(name), ()):
+        p = bin_dir() / exe
         if p.is_file():
             return str(p)
     return None
