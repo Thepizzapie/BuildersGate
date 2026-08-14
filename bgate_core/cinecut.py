@@ -31,8 +31,11 @@ THE FIVE THINGS HERE, AND THE ORDER IS THE ORDER THEY DEPEND ON EACH OTHER.
      the Ogg the engine plays.
   4. :func:`continuity` — whether the shots MATCH. The art seat has real
      detectors for a frame; a cut had "look at it" and nothing else.
-  5. :func:`deliver` — the .tscn, the script, the skip, the finished signal. An
-     .ogv sitting in the project is not a cutscene until something plays it.
+  5. :func:`cutscene_scene_text` — the .tscn source: the video, the caption
+     label, the skip, the finished signal. An .ogv sitting in the project is not
+     a cutscene until something plays it. Only the scene TEXT is built here;
+     :func:`bgate_core.cinematic.deliver` is what writes it into the engine
+     project, because it is the half that knows where the .ogv was installed.
 
 EVERY MEASUREMENT HERE IS ON THE FILE, NEVER ON THE REQUEST. That is the trap
 this repo has already paid for twice (seats.py: "A TOOL REPORTING ITS OWN SUCCESS
@@ -84,12 +87,6 @@ CAPTION_PAD_S = 0.15
 # Below this, a caption cannot be read at all and is better left out than
 # flashed. Two words at normal reading speed.
 CAPTION_MIN_S = 0.8
-
-# Where a delivered cutscene's scene and script are written, relative to the
-# engine project. Beside the .ogv rather than in a scenes/ tree, because the
-# three files are one asset and a designer moving the cutscene should move all
-# of it.
-SCENE_DIRNAME = "cinematics"
 
 # Continuity thresholds, in the units the checks actually produce. Deliberately
 # loose: this exists to catch a shot that does not belong, not to enforce a

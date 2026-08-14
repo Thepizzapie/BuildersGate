@@ -134,6 +134,52 @@ def sprite_open(rel: str) -> dict:
     return _describe(project_root, target)
 
 
+
+# WHAT AN AGENT LEAVES BEHIND IS NOT ALL ART.
+#
+# A seat agent working on one item writes the sheet it was asked for AND a pile
+# of things it made in order to look at its own work: review contact sheets,
+# before/after pairs, chroma checks, comparison strips. They are all .png, they
+# all sit under art/, and to a file walker they are indistinguishable from the
+# deliverable. In a real project that is most of the list — this one has 2,837
+# editable images and several hundred of them are an agent's own screenshots.
+#
+# A picker that mixes them is a picker you scroll. So each row carries a `kind`
+# and the editor defaults to `art`, with the rest one click away rather than
+# gone: a review strip is occasionally exactly the file you want to open, and a
+# filter that cannot be turned off is a file you can no longer reach.
+#
+# PATH AND NAME ONLY, DELIBERATELY. There is no metadata to consult — hand-
+# painted art has no artifact row, which is the whole reason this walks the tree
+# instead of reading the asset table. So the rule is the naming these pipelines
+# already use, and it is conservative: anything unrecognised is `art`, because
+# hiding a real sheet is a worse failure than showing a screenshot.
+_REVIEW_MARKS = ("review", "_check", "check_", "compare", "contact",
+                 "_before", "before_", "_after", "after_", "_qa", "qa_",
+                 "screenshot", "capture", "evidence", "_diff", "diff_",
+                 # Zoomed crops and onion-skin strips: both are a picture OF a
+                 # sheet made to inspect it, never the sheet the engine loads.
+                 "_zoom", "zoom_", "onion_", "_onion")
+_REVIEW_DIRS = {"review", "reviews", "checks", "before", "after", "qa",
+                "compare", "screenshots", "evidence", "_cleared"}
+
+
+def _kind(rel: str) -> str:
+    """`art` | `review` | `test` — what this file is FOR."""
+    parts = rel.lower().split("/")
+    head = parts[0] if parts else ""
+    if head in ("tests", "test"):
+        return "test"
+    # tmp is where everything goes to be looked at once and forgotten.
+    if head == "tmp":
+        return "review"
+    if _REVIEW_DIRS & set(parts[:-1]):
+        return "review"
+    name = parts[-1]
+    if any(m in name for m in _REVIEW_MARKS):
+        return "review"
+    return "art"
+
 @router.get("/api/sprite/list")
 def sprite_list(limit: int = 300, q: Optional[str] = None) -> dict:
     """Every editable sheet in the project, newest first, with rig status.
@@ -178,11 +224,18 @@ def sprite_list(limit: int = 300, q: Optional[str] = None) -> dict:
             "width": size[0], "height": size[1],
             "bytes": stat.st_size, "mtime": int(stat.st_mtime),
             "rigged": rigmap.sidecar_path(path).is_file(),
+            "kind": _kind(rel),
         })
     found.sort(key=lambda d: d["mtime"], reverse=True)
+    kinds: dict = {}
+    for row in found:
+        kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
     return {"sheets": found[:limit], "count": len(found[:limit]),
             "total": len(found), "truncated": len(found) > limit,
-            "query": needle}
+            # The counts are over EVERYTHING found, not over the truncated page:
+            # a picker that says "art 412" while showing a 2000-row slice of a
+            # 2837-row set would be describing a list nobody is looking at.
+            "kinds": kinds, "query": needle}
 
 
 @router.post("/api/sprite/save")

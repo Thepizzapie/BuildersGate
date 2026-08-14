@@ -79,8 +79,10 @@ from bgate_core import canon as _canon
 from bgate_core import chroma as _chroma
 from bgate_core import causal as _causal
 from bgate_core import db as _db
+from bgate_core import decisions as _decisions
 from bgate_core import handoff as _handoff
 from bgate_core import lore as _lore
+from bgate_core import quests as _quests
 from bgate_core import iterations as _iterations
 from bgate_core import items as _items
 from bgate_core import project as _project
@@ -6392,6 +6394,299 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
 
 
 # ---------------------------------------------------------------------------
+# The decision register, and the list of things this project is NOT building
+# ---------------------------------------------------------------------------
+# THE LISTING TOOLS MATTER MORE THAN THE WRITING ONES. The director's mission has
+# always said "an unsaid no gets built anyway", and until now the no was unsaid
+# BY CONSTRUCTION: there was nowhere to write it, so every agent in every session
+# started from a blank sheet and re-proposed whatever had been ruled out. An
+# agent that cannot read the no-list builds the no. Call not_building_list before
+# you file work, and decision_list before you re-litigate something.
+#
+# WRITING SPLITS THE SAME WAY THE HTTP ROUTES DO (see bgate_ui/routes/
+# decisions.py, which argues it at length): a proposal is open to an agent, a
+# ruling is not. A settled decision binds every other seat, and a refusal is read
+# as binding with no acceptance test anyone can check it against — an agent that
+# could write either would be authorising its own work. So a dispatched session
+# gets 'open' and a message naming the verb that IS available to it, rather than
+# a silent downgrade it would never notice.
+
+@_tool
+def decision_add(title: str, acceptance: str, leaves_dark: str,
+                 state: str = "settled", work_item_id: Optional[int] = None,
+                 session_id: Optional[int] = None) -> dict:
+    """File a decision — with its acceptance test and what it leaves dark.
+
+    All three are MANDATORY and the tool refuses without them, because the two
+    that are easy to skip are the two that make the register worth keeping:
+
+      acceptance   how anyone checks the call was honoured. Without one this is
+                   an opinion, and six weeks from now nobody can tell whether it
+                   held. "the hub loads in under 2s on the 3060 box", not "it
+                   should be fast".
+      leaves_dark  what this call deliberately does NOT cover. A deferral nobody
+                   labelled gets 'fixed' as a bug by the next agent that finds
+                   it — naming it here is what stops that.
+
+    state: 'settled' is a ruling and only a human session may file one. 'open' is
+    a PROPOSAL — it lands in the director's "Awaiting a ruling" rail and binds
+    nobody until a human settles it. A dispatched agent asking for 'settled' gets
+    a refusal, not a quiet downgrade.
+
+    work_item_id / session_id link the ruling to the board item or the brainstorm
+    room it came out of. Both optional; both survive the thing they point at
+    being deleted.
+    """
+    if state == "settled" and _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not SETTLE a decision — a "
+            "settled decision binds every other seat, and an agent that settles "
+            "its own decisions authorises its own work. File it with "
+            "state='open' instead: it lands in the director's Awaiting a ruling "
+            "rail with the acceptance test and left-dark you wrote, and a human "
+            "turns it into a ruling."))
+    try:
+        out = _decisions.add(_root(), title, acceptance, leaves_dark,
+                             state=state, work_item_id=work_item_id,
+                             session_id=session_id)
+        _log("decision", f"{out['state']} {out['title'][:60]!r}",
+             ref=f"decision:{out['id']}")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def decision_list(state: Optional[str] = None,
+                  work_item_id: Optional[int] = None) -> dict:
+    """What this project has settled, newest first — each with its test.
+
+    READ THIS BEFORE RE-OPENING AN ARGUMENT. A decision here was made once, with
+    a reason and a test; re-deciding it from scratch is the most expensive thing
+    a fresh session does, and the second most expensive is quietly contradicting
+    it.
+
+    state: settled | open | superseded. No state returns all three, so a reader
+    sees at a glance what is ruled, what is waiting on a human, and what was
+    replaced. A superseded row keeps `superseded_by` pointing at whatever won —
+    that pair is how you learn an idea was already tried.
+    """
+    try:
+        rows = _decisions.list_decisions(_root(), state=state or "",
+                                         work_item_id=work_item_id)
+        return {"decisions": rows, "count": len(rows),
+                "open": sum(1 for r in rows if r["state"] == "open")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def decision_settle(decision_id: int) -> dict:
+    """Turn an open proposal into a ruling. Human sessions only.
+
+    The proposal keeps its acceptance test and its left-dark; what changes is
+    that it now binds the other seats, and `actor` becomes whoever settled it —
+    accountability follows the ruling, not the draft.
+    """
+    if _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not settle decision "
+            f"{decision_id} — settling is the act that binds the other seats, "
+            "and it is a human's. The proposal is already on the director's "
+            "Awaiting a ruling rail, which is where it gets one."))
+    try:
+        out = _decisions.settle(_root(), decision_id)
+        _log("decision", f"settled {out['title'][:60]!r}",
+             ref=f"decision:{decision_id}")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def not_building_add(text: str, reason: str, tag: str = "",
+                     decision_id: Optional[int] = None) -> dict:
+    """Write down something this project is deliberately NOT building.
+
+    Human sessions only, and that restriction is the point of the list rather
+    than an obstacle to it: a refusal is read as binding by every agent that
+    lists it and has no acceptance test anyone could check it against, so an
+    agent-written no is an unreviewable instruction to every future session. An
+    agent that wants to refuse something calls decision_add(state='open') saying
+    so, and a human turns it into a line here.
+
+    reason is mandatory. An unexplained no is re-proposed every few weeks by
+    somebody who cannot see what was wrong with it, and each re-proposal costs
+    the argument again.
+
+    tag is free-form and optional — 'scope', 'engine', 'v2', whatever this
+    project groups its refusals by.
+    """
+    if _caller_is_agent():
+        return _fail(PermissionError(
+            f"{_actor() or 'an agent session'} may not write the no-list — "
+            "every agent reads it as binding and nothing can check it was "
+            "right, so it is a human's list. Call decision_add with "
+            "state='open' to propose the refusal instead."))
+    try:
+        out = _decisions.refuse(_root(), text, reason, tag=tag,
+                                decision_id=decision_id)
+        _log("decision", f"not building {out['text'][:60]!r}",
+             ref=f"not_building:{out['id']}")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def not_building_list(tag: Optional[str] = None) -> dict:
+    """What this project has said no to. CALL THIS BEFORE YOU FILE WORK.
+
+    An unsaid no gets built anyway — this tool is the reason the no is not
+    unsaid. Each row carries the thing refused and WHY, so a proposal that looks
+    obviously good to a session with no history can be checked against the
+    argument that already happened.
+
+    A refusal is not a permanent law; it is the current answer with its reason
+    attached. If the reason no longer holds, say so — do not build the thing and
+    hope nobody notices, and do not silently work around it either, because a
+    workaround for a deliberate no is the no getting built with extra steps.
+    """
+    try:
+        rows = _decisions.list_not_building(_root(), tag=tag or "")
+        return {"not_building": rows, "count": len(rows)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# Quests
+# ---------------------------------------------------------------------------
+# THE THIRD NOUN IN THE NARRATIVE SEAT'S MISSION. "Own the lore graph, quests,
+# and dialogue" — and until now two of those three had tools and the middle one
+# had nothing, so an agent holding the seat could write the world and the
+# conversations in it and had no way to record what the player is asked to DO.
+#
+# THE ONE RULE THESE TOOLS ENFORCE is that every step names the observable that
+# closes it. `done_when` is refused blank, with a sentence saying what to type,
+# for the same reason decision_add refuses a blank acceptance test: a step that
+# nothing can finish is not a step, and the moment to find that out is while
+# writing it rather than while implementing it.
+#
+# CALL canon_check YOURSELF ON THE PREMISE FIRST. The HTTP route runs it on the
+# write path because a browser has no other way to; here you have the tool, and
+# the seat's brief already tells you to run it on every narrative write BEFORE it
+# lands. quest_add does not run it for you, so that a quest deliberately
+# introducing a new character is not fighting the checker.
+
+@_tool
+def quest_add(title: str, steps: list, premise: str = "", reward: str = "",
+              giver: Optional[str] = None, state: str = "draft") -> dict:
+    """Write a quest and its ordered steps.
+
+    steps is a list of {text, done_when, optional?}:
+
+      text       what the player does.
+      done_when  MANDATORY — the observable that closes the step. "the wizard's
+                 signed form is in the player's inventory", not "talk to the
+                 wizard". Without it nothing can finish the step: not the
+                 engine, which has nothing to test, and not the player, who
+                 cannot tell what counted.
+      optional   a step that does not gate completion. If EVERY step is
+                 optional the quest can never be finished, and the verdict on
+                 the returned row says so.
+
+    giver is a lore entity slug or name — the quest hangs off the graph rather
+    than sitting beside it. A giver that names no entity is refused, because
+    that is either a typo or a character nobody wrote down. Omit it for a quest
+    that comes from the world rather than from somebody.
+
+    Steps go in with the quest in ONE call: a quest with no steps is one of the
+    three things the verdict refuses on, so a create-then-append API would make
+    the invalid state the normal first state of every quest.
+
+    The returned row carries `ok` and `problems` — the shape checks, each naming
+    its step.
+    """
+    try:
+        out = _quests.add(_root(), title, steps=steps, premise=premise,
+                          reward=reward, giver=giver, state=state)
+        _log("narrative", f"quest {out['title'][:60]!r}", ref=f"quest:{out['id']}")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def quest_step_add(quest: str, text: str, done_when: str,
+                   optional: bool = False) -> dict:
+    """Append one step to an existing quest. Order continues the sequence."""
+    try:
+        return _quests.add_step(_root(), quest, text, done_when,
+                                optional=optional)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def quest_step_cut(step_id: int) -> dict:
+    """Remove a step and close the gap in the numbering.
+
+    Renumbering is the point: `ord` is what "step 3" means, and a sequence with
+    a hole makes the panel, the agent and whoever implements the quest disagree
+    about which step that is.
+    """
+    try:
+        return _quests.cut_step(_root(), step_id)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def quest_update(quest: str, premise: Optional[str] = None,
+                 reward: Optional[str] = None, state: Optional[str] = None,
+                 giver: Optional[str] = None) -> dict:
+    """Change a quest's own fields. state: draft | active | done | cut.
+
+    There is no delete here on purpose. 'cut' keeps the row — "we are not
+    shipping this, and here is what it was" is the most useful thing the next
+    person to propose it can read, exactly as with a superseded decision.
+    """
+    try:
+        return _quests.update(_root(), quest, premise=premise, reward=reward,
+                              state=state, giver=giver)
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def quest_list(state: Optional[str] = None) -> dict:
+    """Every quest, with its steps and its verdict. READ BEFORE WRITING ONE.
+
+    The verdict travels with the listing so a broken quest is visible without
+    opening it — a rail of eight titles that makes you open each to find the two
+    that do not hold together gets read once.
+
+    state: draft | active | done | cut. No state returns all of them.
+    """
+    try:
+        out = _quests.brief(_root(), state or "")
+        out["count"] = len(out["quests"])
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def quest_read(quest: str) -> dict:
+    """One quest, whole: fields, giver resolved, steps in order, verdict."""
+    try:
+        return _quests.get(_root(), quest)
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
 # Brainstorm — the cheap room, from the other door
 # ---------------------------------------------------------------------------
 # The dashboard grew this room and the tool list did not, which in a system with
@@ -6504,7 +6799,8 @@ def brainstorm_open(session_id: int) -> dict:
 
 
 @_tool
-def brainstorm_say(session_id: int, text: str, reply: str = "") -> dict:
+def brainstorm_say(session_id: int, text: str, reply: str = "",
+                   to: str = "") -> dict:
     """Say something in a brainstorm session. NOTHING ELSE HAPPENS.
 
     No work item, no dispatched agent, no approval gate: a turn here is two rows
@@ -6529,6 +6825,13 @@ def brainstorm_say(session_id: int, text: str, reply: str = "") -> dict:
     Either way the human's sentence is stored BEFORE anything is asked, so a
     dead partner costs a reply and never what was typed.
 
+    `to` ADDRESSES ONE SEAT that has been invited into the room
+    (brainstorm_invite). Leave it empty and everyone present answers — one CLI
+    turn each, in invite order, the room's own partner first — which is what you
+    want for "what does everybody think" and is four times the cost for "what
+    does the art seat think". `to` is ignored when you pass `reply=`, because
+    then YOU are the one answering and there is nobody to address.
+
     Push back in the reply when something does not hold together, and say which
     part. Do not write a task list here — proposing the work is a separate step
     (brainstorm_synthesize) that a human takes when they are ready.
@@ -6537,9 +6840,15 @@ def brainstorm_say(session_id: int, text: str, reply: str = "") -> dict:
         root = _root()
         session = _bs.read(root, int(session_id))
         _bs.ensure_open(session)
-        said = _bs.append_message(root, int(session_id), "user", text)
         answered = str(reply or "").strip()[:_bs.MAX_MESSAGE]
+        # Resolved BEFORE the sentence is stored: a message addressed to a seat
+        # that is not in the room has been said to nobody, and storing it would
+        # leave a question in the transcript that nothing will ever answer.
+        speaking = ([""] if answered
+                    else _bs.answerers(root, int(session_id), to))
+        said = _bs.append_message(root, int(session_id), "user", text)
         model = {"ok": True, "answered_by": "the caller", "estimated_usd": 0.0}
+        replies: list = []
         if not answered and _caller_is_agent():
             model = {"ok": False, "error":
                      "pass reply= — you are a model holding this session "
@@ -6547,23 +6856,117 @@ def brainstorm_say(session_id: int, text: str, reply: str = "") -> dict:
                      "your behalf costs a turn against the subscription for an "
                      "answer you can simply write. The sentence is stored; "
                      "nothing was lost."}
+            speaking = []
         elif not answered:
-            # session_id makes the room a CONVERSATION: one spawned session
-            # answers every message rather than a fresh process per turn.
-            model = _bs.ask(root, _bs.chat_system(session["seat"]),
-                            _bs.transcript(root, int(session_id)),
-                            session_id=int(session_id))
-        if not answered and model.get("ok"):
-            answered = model["text"][:_bs.MAX_MESSAGE]
-        wrote = (_bs.append_message(root, int(session_id), "assistant", answered)
-                 if answered else None)
-        out = {"message": said, "reply": wrote, "model": model,
+            answers = []
+
+            def _round(discuss: bool) -> int:
+                spoke = 0
+                for seat in speaking:
+                    # session_id makes the room a CONVERSATION: one spawned
+                    # session per voice answers every message rather than a
+                    # fresh process per turn. An invited seat's process is built
+                    # by the same read-only spawner as the room's own partner —
+                    # it holds an opinion, never a tool.
+                    system = (_bs.participant_system(root, seat,
+                                                     discuss=discuss) if seat
+                              else _bs.chat_system(session["seat"],
+                                                   discuss=discuss, root=root))
+                    got = _bs.ask(root, system,
+                                  _bs.transcript(root, int(session_id),
+                                                 for_seat=seat),
+                                  session_id=int(session_id), seat=seat)
+                    got["seat"] = seat
+                    got["discuss"] = bool(discuss)
+                    _bs.record_turn(root, int(session_id), seat, got)
+                    passed = (discuss and got.get("ok")
+                              and _bs.is_pass(got.get("text")))
+                    got["passed"] = bool(passed)
+                    answers.append(got)
+                    if got.get("ok") and not passed:
+                        spoke += 1
+                        replies.append(_bs.append_message(
+                            root, int(session_id), "assistant",
+                            got["text"][:_bs.MAX_MESSAGE], seat=seat))
+                return spoke
+
+            _round(False)
+            # FREE DISCUSSION, same three bounds as the dashboard door: the
+            # room's own discuss_rounds setting (0 = off, the default), more
+            # than one voice present, and a round where everybody passed ends
+            # it. Both doors run it because both doors are the same room.
+            rounds = _bs.discuss_rounds(session)
+            if rounds and len(speaking) > 1:
+                for _ in range(rounds):
+                    if not _round(True):
+                        break
+            model = answers[0] if answers else {"ok": False,
+                                                "error": "nobody answered"}
+        wrote = replies[0] if replies else None
+        if answered:
+            wrote = _bs.append_message(root, int(session_id), "assistant",
+                                       answered)
+            replies = [wrote]
+        out = {"message": said, "reply": wrote, "replies": replies,
+               "model": model, "spoke": speaking,
                "session_id": int(session_id)}
         if wrote is None:
             out["note"] = ("the sentence is stored and nothing was lost — pass "
                            "reply= to write the answer yourself, which needs no "
                            "key and spawns nothing")
         return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_invite(session_id: int, seat: str) -> dict:
+    """INVITE A SEAT INTO A BRAINSTORM. It arrives WITHOUT ITS TOOLS.
+
+    The room had two voices — the human and the owning seat's thinking partner —
+    and the question a human actually has ("would weather in the hub be cheap or
+    a fortnight") is one only the seat that would BUILD it can answer. This is
+    how that seat gets asked.
+
+    WHAT AN INVITED SEAT IS. A CLI session spawned by the same read-only path as
+    the room's own partner: an empty built-in tool set, --strict-mcp-config so
+    it cannot inherit the server you are reading this on, and at most the
+    two-tool pad server. It is the seat's JUDGEMENT, not the seat's HANDS. It
+    cannot write a file, run a command, claim work or file anything, and nothing
+    it says becomes work on its own — a human still reads a synthesis and
+    presses Deploy. Compare queue_add, which puts a real agent with real tools
+    on the board; that is the other room and this is deliberately not it.
+
+    Refused, each saying which: a seat that is not a seat, a seat this project
+    has disabled, a seat already in the room (including the seat that OWNS it,
+    whose partner is the room's own voice), a room already at its limit, and a
+    runner that has not declared a read-only mode — that last one is refused
+    rather than started with dispatch flags, which is the whole guarantee.
+    """
+    try:
+        root = _root()
+        out = _bs.invite(root, int(session_id), str(seat or ""))
+        return {**out,
+                "participants": _bs.participants(root, int(session_id))}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_leave(session_id: int, seat: str) -> dict:
+    """A seat leaves a brainstorm room. Its process stops; its record stays.
+
+    The row and its spend are kept rather than deleted: the messages that seat
+    wrote are still in the transcript, and a roster that could not name the seat
+    beside them would leave half the conversation attributed to nobody.
+    Re-inviting the same seat later reuses the row, so its cost keeps summing
+    over the whole session.
+    """
+    try:
+        root = _root()
+        out = _bs.leave(root, int(session_id), str(seat or ""))
+        return {**out,
+                "participants": _bs.participants(root, int(session_id))}
     except Exception as exc:
         return _fail(exc)
 
@@ -6746,6 +7149,48 @@ def brainstorm_close(session_id: int) -> dict:
     """
     try:
         return _bs.close_partner(_root(), int(session_id))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_discuss(session_id: int, rounds: int) -> dict:
+    """How many EXTRA rounds this room talks AMONG ITSELF. 0 turns it off.
+
+    Off by default, and that default is the old behaviour exactly: the human
+    says one thing, every voice present answers once, the room stops. With
+    rounds set, each voice then reads what the others just said and replies only
+    if it has something to add; a round where everybody passes ends it early.
+
+    Every round is one billed turn PER VOICE IN THE ROOM, so four guests at 2
+    rounds is ten turns on one sentence. The ceiling is small on purpose — past
+    it a human should be steering, not buying more of the same argument.
+    """
+    try:
+        return _bs.set_discuss(_root(), int(session_id), int(rounds))
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
+    """START THE THREAD OVER in the same room. Stops the partner, drops the transcript.
+
+    THE FOURTH END-STATE, and the one people reach for most: the conversation
+    has gone circular or is arguing from a premise that stopped being true, and
+    what is wanted is a clean head — NOT a closed process that resumes the same
+    dead thread, and NOT a delete that takes an hour of notes and diagram with
+    it. brainstorm_close resumes where it left off; this one makes the next
+    message the first message.
+
+    The notes and the drawing SURVIVE by default: they are the human's own
+    document, not the conversation. `keep_pads=False` clears those too.
+
+    Deploys are never touched — work already on the board outlives the thread
+    that thought of it.
+    """
+    try:
+        return _bs.reset(_root(), int(session_id), keep_pads=bool(keep_pads))
     except Exception as exc:
         return _fail(exc)
 
@@ -7500,6 +7945,49 @@ def queue_reopen(item_id: int, reason: str) -> dict:
                 f"item {item_id} is {item['status']!r} — only done/failed "
                 "items can be reopened")
         return _q.reopen(root, item_id, (reason or "").strip())
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def agent_steer_all(text: str) -> dict:
+    """Say ONE thing to every agent running right now.
+
+    For the correction that is not about one item: the art direction changed,
+    the file everybody is about to touch is moving, stop writing to the old
+    path. Steering that agent by agent means retyping the same sentence four
+    times and the last one hears it a minute after the first.
+
+    Same delivery as agent_steer — the steer inbox, read by each agent when its
+    current step ends — and the same caps. Returns one row per item it reached,
+    so "who did not get this" is answerable: an item whose runner takes its
+    prompt at launch has no live channel and is reported as refused rather than
+    silently skipped.
+
+    Aim carefully. This reaches seats working on unrelated things, and a
+    sentence that only makes sense to the art seat is noise in the middle of a
+    tech run.
+    """
+    try:
+        from bgate_core import steerbox as _steerbox
+        from bgate_core import queue as _q
+        root = _root()
+        said = str(text or "").strip()
+        if not said:
+            return {"ok": False, "error": "steer text is empty"}
+        running = [it for it in _q.list_items(root, status="dispatched")]
+        if not running:
+            return {"ok": True, "count": 0, "sent": [],
+                    "note": "nothing is running — there was nobody to steer"}
+        sent = []
+        for item in running:
+            posted = _steerbox.post_long(root, int(item["id"]), said,
+                                         by=f"seat:{_seat() or 'director'}")
+            sent.append({"item_id": int(item["id"]), "seat": item.get("seat") or "",
+                         "steer_id": posted["id"]})
+        return {"ok": True, "count": len(sent), "sent": sent,
+                "delivery": "queued for the dashboard to hand over; each agent "
+                            "reads it when its current step ends"}
     except Exception as exc:
         return _fail(exc)
 

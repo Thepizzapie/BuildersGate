@@ -29,7 +29,7 @@ from bgate_ui import api
 from bgate_ui.app import app
 from bgate_ui.routes import node_media
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 STEP_FILES = [STATIC / "wf_steps_asset.js", STATIC / "wf_steps_agent.js",
               STATIC / "wf_steps_world.js", STATIC / "wf_steps_3d.js"]
 WF_JS = STATIC / "wf.js"

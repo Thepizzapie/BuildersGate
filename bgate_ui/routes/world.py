@@ -204,6 +204,27 @@ def lore_list(page: api.Page = Depends(), kind: Optional[str] = None,
     return body
 
 
+@router.get("/api/lore/facts")
+def lore_all_facts(locked: Optional[bool] = None) -> dict:
+    """Every canon fact in the project, each carrying its entity's slug.
+
+    WHY IT IS ITS OWN ROUTE. The narrative room works AGAINST canon: the panel
+    that matters most is the locked facts, because those are the ones a proposal
+    may not contradict at all. Without this, the only way to assemble them was
+    one `/api/lore/{ref}` per entity — 28 loopback requests on this project, and
+    it grows with the fiction. `lore.all_facts` already returns exactly this and
+    was simply not exposed.
+
+    DECLARED BEFORE `/api/lore/{ref}`, and that ordering is load-bearing: FastAPI
+    matches in declaration order, so the wildcard would otherwise swallow
+    "facts" and answer with a 404 for an entity nobody asked for.
+    """
+    facts = _lore.all_facts(root())
+    if locked is not None:
+        facts = [f for f in facts if bool(f.get("locked")) is locked]
+    return api.ok({"facts": facts})
+
+
 @router.get("/api/lore/{ref}")
 def lore_brief(ref: str) -> dict:
     """Everything about one entity — the record, its facts, its edges."""

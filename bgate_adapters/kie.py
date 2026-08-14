@@ -419,11 +419,6 @@ MODELS: dict[str, dict] = {
 VIDEO_INTENT = ("seconds", "shape", "quality", "first_frame", "last_frame",
                 "refs", "audio")
 
-# Canonical shape names, so a caller never has to know whether a model wants a
-# ratio or a word. A model that wants words declares `intent_values`.
-SHAPE_WORDS = {"16:9": "landscape", "9:16": "portrait", "1:1": "square"}
-
-
 def video_input(model: str, **intent: Any) -> dict:
     """Translate intent into one model's own field names and value vocabulary.
 
@@ -1684,17 +1679,6 @@ def _expiry(days: int) -> str:
 
     return (_dt.datetime.now(_dt.timezone.utc)
             + _dt.timedelta(days=days)).strftime("%Y-%m-%d")
-
-
-def upload_all(paths: list, *, root: Any = None,
-               timeout: float = 120.0) -> list[dict]:
-    """Upload several frames, in order, stopping at the first failure.
-
-    Stopping rather than gathering what worked: these are the conditioning
-    frames of ONE shot, and a shot generated against three of its four anchors
-    is not a partial success — it is a full-price generation of the wrong thing.
-    """
-    return [upload_file(one, root=root, timeout=timeout) for one in paths]
 
 
 # ---------------------------------------------------------------------------

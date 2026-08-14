@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 SE = STATIC / "spriteedit.js"
 
 

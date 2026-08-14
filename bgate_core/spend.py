@@ -45,7 +45,6 @@ KINDS = ("agent", "image", "audio", "video", "mesh", "speech", "other")
 #                 afternoon of uncharged agent work was refusing image
 #                 generation that WOULD have cost money.
 API, SUBSCRIPTION = "api", "subscription"
-BILLING = (API, SUBSCRIPTION)
 
 # Agent sessions run on the subscription; everything else buys from a vendor.
 #

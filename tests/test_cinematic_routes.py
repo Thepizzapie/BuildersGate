@@ -39,10 +39,19 @@ class TestTheModuleIsWired:
         """A seat in the roster with no panel file draws an empty workspace."""
         from pathlib import Path
 
-        static = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
-        assert (static / "seats" / "cinematic.js").is_file()
-        index = (static / "index.html").read_text(encoding="utf-8")
-        assert "/static/seats/cinematic.js" in index
+        root = Path(__file__).resolve().parents[1]
+        # index.html's source is frontend/public; bgate_ui/static is build output.
+        index = (root / "frontend" / "public"
+                 / "index.html").read_text(encoding="utf-8")
+        # THE PANEL IS REACT NOW (frontend/src/shell/seats/Cinematic.tsx). The
+        # eight per-seat modules are no longer loaded by the shell — seats/
+        # _core.js still is, because nine unrelated views use its BGWS export.
+        # What this protects is unchanged: the cinematic seat SHIPS, and the
+        # shell mounts the screen that draws it.
+        dist = root / "bgate_ui" / "static" / "dist" / "bgate.js"
+        assert dist.is_file(), "no built bundle — run `cd frontend && npm run build`"
+        assert "cinematic" in dist.read_text(encoding="utf-8", errors="replace")
+        assert 'data-react="seats"' in index
 
 
 class TestOptionsAndStyles:

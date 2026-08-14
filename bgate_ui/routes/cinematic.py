@@ -469,3 +469,114 @@ def _orphan_state(view: dict, job: dict) -> tuple:
     return None, (f"created_at {stamp[:40]!r} is in a format this could not "
                   "read, so whether the job is still live is unknown — not "
                   "resolved. Check /api/cinematic/stuck before waiting on it.")
+
+
+# ---------------------------------------------------------------------------
+# Watching the cut in a browser that cannot decode it
+# ---------------------------------------------------------------------------
+# THE DELIVERY FORMAT AND THE REVIEW FORMAT STOPPED BEING THE SAME FORMAT.
+#
+# This pipeline delivers Ogg Theora because Godot plays Ogg Theora and only Ogg
+# Theora — that rule is correct and is not what changed. What changed is the
+# reviewer's side: Chrome removed its Theora decoder (M123, 2024), so
+# `video.canPlayType('video/ogg; codecs="theora"')` now answers "" in the
+# browser this dashboard runs in. "Watch the cut" opened the delivered .ogv in a
+# tab and got a black player stuck at 0:00 — indistinguishable, to the person
+# looking at it, from a corrupt encode of something they had already paid for.
+#
+# That mattered more than a broken button: watching the assembled cut is the
+# ONLY human gate in the whole cinematic pipeline. cinecheck records the open as
+# the viewing. A gate nobody can pass is a gate that gets routed around.
+#
+# SO THE FILE ON DISK IS UNCHANGED AND A PREVIEW IS TRANSCODED BESIDE IT.
+# Re-encoding the delivered artifact to H.264 would be the obvious fix and the
+# wrong one — the engine's copy must stay Theora, and a "watch" button that
+# silently rewrote the shipped bytes would be a delivery step wearing a review
+# step's label. This writes an H.264/MP4 copy into .bgate_out/preview/ and
+# serves that; the artifact, its hash and its Theora-ness are untouched.
+#
+# CACHED ON (path, mtime, size). A cut is watched more than once and a 1080p
+# encode is not free. Keying on mtime and size rather than only the path means
+# re-assembling the sequence invalidates the preview without anybody having to
+# remember to clear it — a stale preview of a cut you have just re-rendered is
+# the one failure that would make this worse than no button at all.
+
+import hashlib
+import subprocess
+from pathlib import Path
+
+from bgate_core import ffmpegbin as _ffmpeg
+
+# What the reviewer's browser can actually decode. Chrome, Edge and Safari all
+# play H.264 in MP4; it is the one intersection that needs no negotiation.
+PREVIEW_SUFFIX = ".mp4"
+PREVIEW_MIME = "video/mp4"
+# Suffixes a browser already plays. Asked to preview one of these, this endpoint
+# does no work and says so — transcoding an .mp4 to an .mp4 would burn a CPU
+# minute to produce the file it was handed.
+BROWSER_OK = {".mp4", ".m4v", ".webm"}
+
+
+def _preview_path(project: Path, src: Path) -> Path:
+    stat = src.stat()
+    key = f"{src}|{int(stat.st_mtime)}|{stat.st_size}"
+    stamp = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    return project / ".bgate_out" / "preview" / f"{src.stem}-{stamp}{PREVIEW_SUFFIX}"
+
+
+@router.get("/api/cinematic/watchable")
+def cinematic_watchable(rel: str, request: Request = None):
+    """A browser-playable copy of a delivered clip, transcoded on first ask.
+
+    Answers with the same ranged response /api/preview uses, because <video>
+    sends `Range: bytes=0-` and a 200 with the whole body is a player stuck at
+    0:00 — which is the bug this endpoint exists to end, and would be a poor way
+    to reintroduce it.
+    """
+    project = root().resolve()
+    src = (project / rel).resolve()
+    try:
+        src.relative_to(project)
+    except ValueError:
+        raise api.forbidden("path escapes the project root", rel=rel)
+    if not src.is_file():
+        raise api.not_found(f"nothing to watch at {rel}", rel=rel)
+
+    # Already playable: hand back the original rather than a copy of it.
+    if src.suffix.lower() in BROWSER_OK:
+        return _ranged_preview(src, request, PREVIEW_MIME)
+
+    out = _preview_path(project, src)
+    if not out.is_file():
+        exe = _ffmpeg.resolve()
+        if not exe:
+            raise api.bad_request(
+                "this clip is Ogg Theora and no browser still decodes Theora, so "
+                "it has to be transcoded to be watched here — and there is no "
+                "ffmpeg on this machine to do it. `bgate doctor` says where it "
+                "looks; the delivered file itself is fine and Godot will play it.")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".part.mp4")
+        proc = subprocess.run(
+            [exe, "-y", "-loglevel", "error", "-i", str(src),
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-pix_fmt", "yuv420p",          # some players refuse yuv444
+             "-c:a", "aac", "-b:a", "128k",
+             "-movflags", "+faststart",      # so it plays before it finishes
+             str(tmp)],
+            capture_output=True, text=True)
+        if proc.returncode != 0 or not tmp.is_file():
+            # Written to .part and renamed only on success: a half-encoded file
+            # left at the cache path would be served forever as "the preview".
+            tmp.unlink(missing_ok=True)
+            raise api.bad_request(
+                "could not transcode this clip for the browser — "
+                + (proc.stderr or "ffmpeg failed with no message").strip()[:400])
+        tmp.replace(out)
+    return _ranged_preview(out, request, PREVIEW_MIME)
+
+
+def _ranged_preview(target: Path, request, mime: str):
+    """The app's own range-aware sender, borrowed rather than re-derived."""
+    from bgate_ui.app import _ranged
+    return _ranged(target, request, mime)

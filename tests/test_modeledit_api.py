@@ -216,7 +216,7 @@ def test_snapshot_refuses_garbage_base64(client, game):
 # ---------------------------------------------------------------------------
 from pathlib import Path  # noqa: E402
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 
 
 def test_the_editor_is_loaded_by_the_shell():

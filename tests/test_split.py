@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 INDEX = STATIC / "index.html"
 CSS = STATIC / "app.css"
 SPLIT = STATIC / "split.js"
@@ -51,9 +51,21 @@ def stylesheets() -> str:
 
 class TestWiring:
     def test_the_boundaries_exist(self):
-        """The shell, the cockpit, and both of the Atlas scene builder's."""
+        """Atlas's two, and whatever else still has a draggable edge.
+
+        THREE OF THESE WENT WITH THE SHELLS THAT OWNED THEM. `rail` was the old
+        navigation's resize handle — the 4a rail is a fixed 56px icon column and
+        the screen list beside it collapses rather than drags. `cockpit` and
+        `ck-detail` belonged to the classic agents console, which is React now.
+        A handle for a pane that no longer exists is a handle that writes a
+        variable nobody reads, which is the exact failure the rest of this file
+        was written to catch — so they are gone rather than kept for the test.
+
+        Atlas is untouched and still has both of its own.
+        """
         keys = {h.get("data-split") for h in handles()}
-        assert {"rail", "cockpit", "ck-detail", "sb-side", "sv-play"} <= keys
+        assert {"sb-side", "sv-play"} <= keys, (
+            "Atlas lost a boundary — that one is not part of the React migration")
 
     def test_every_handle_names_a_variable_the_css_consumes(self):
         """The silent failure this whole file exists for."""

@@ -90,10 +90,29 @@ class TestMutationsSurfaceTheError:
     @pytest.mark.parametrize("fn, endpoint", [
         ("dispatchItem", "/dispatch"),
         ("stopItem", "/stop"),
-        ("addItem", "/api/queue"),
+        # `addItem` was the old Agents board's queue composer. Both the form and
+        # the function are gone; what files work now is the console
+        # (POST /api/console/say) and the board's deploy-all, and both go
+        # through mutate() — asserted in the React case below.
         ("reviewArtifact", "/review"),
     ])
     def test_every_named_mutation_routes_through_mutate(self, page, fn, endpoint):
+        """Every write goes through mutate(), which is what surfaces the error.
+
+        `reviewArtifact` moved into the React assets view; the rule is the same
+        there and is checked against that source instead of index.html. The
+        others are still classic.
+        """
+        if fn == "reviewArtifact":
+            from pathlib import Path
+
+            src = (Path(__file__).resolve().parents[1] / "frontend" / "src"
+                   / "views" / "assets" / "Assets.tsx").read_text(encoding="utf-8")
+            assert "mutate(" in src, "the assets view writes without mutate()"
+            assert endpoint in src
+            assert "await fetch(" not in src.split("async function audit")[0], (
+                "a raw fetch crept back into the review path")
+            return
         body = _function_body(page, fn)
         assert "mutate(" in body, f"{fn} still calls fetch directly"
         assert endpoint in body
@@ -183,6 +202,23 @@ class TestMergedFeedbackIsDistinct:
 # ---------------------------------------------------------------------------
 # 5. Nothing in the shell is named after one game
 # ---------------------------------------------------------------------------
+def bundle() -> str:
+    """The built React bundle.
+
+    SEVERAL INVARIANTS IN THIS FILE MOVED RATHER THAN DIED. The shell is React
+    now (frontend/src/shell/), so `assetCategory`, the mutation wrappers and the
+    canon-name lookup are no longer text in index.html — but they are still the
+    things this file exists to protect, and asserting them against the bundle
+    keeps that protection rather than deleting it. The bundle is committed, so
+    this needs no build step; a stale dist is itself worth failing on.
+    """
+    from pathlib import Path
+
+    dist = Path(__file__).resolve().parents[1] / "bgate_ui" / "static" / "dist" / "bgate.js"
+    assert dist.is_file(), "no built bundle — run `cd frontend && npm run build`"
+    return dist.read_text(encoding="utf-8", errors="replace")
+
+
 class TestNoGameSpecificHardcoding:
     def test_the_character_names_are_gone(self, page):
         # Two character names from one game used to be substring-matched into
@@ -192,18 +228,31 @@ class TestNoGameSpecificHardcoding:
         code = re.sub(r"/\*.*?\*/", "", lowered, flags=re.S)   # comments may cite them
         assert "tommy" not in code
 
-    def test_there_is_no_fixed_category_order(self, page):
-        assert "CAT_ORDER" not in page
-        assert "function catOrder(" in page
-        assert "GENERIC_CATS" in page
+    def test_there_is_no_fixed_category_order(self):
+        """The buckets are DERIVED, never a list some game shipped with.
 
-    def test_categories_come_from_the_project(self, page):
-        body = _function_body(page, "assetCategory")
-        assert "window._canonNames" in body
-        assert "split(/[_\\-.]/)" in body       # logical-name prefix fallback
+        This moved out of index.html into the React assets view
+        (frontend/src/views/assets/categorise.ts). The invariant did not move:
+        no hardcoded order, and the generic buckets still exist as the tail the
+        project's own entities are sorted in front of.
+        """
+        src = bundle()
+        assert "CAT_ORDER" not in src
+        assert "arenas & world" in src, "the generic buckets went missing"
 
-    def test_canon_names_are_taken_from_state(self, page):
-        assert "s.lore && s.lore.canon" in page
+    def test_categories_come_from_the_project(self):
+        # Canon entities first, else the logical name's own prefix. Neither is
+        # a name this codebase knows.
+        src = bundle()
+        assert r"[_\-.]" in src, "the logical-name prefix fallback went missing"
+
+    def test_canon_names_are_taken_from_state(self):
+        # /api/state ships lore.canon, and the store is what hands it on.
+        from pathlib import Path
+
+        store = Path(__file__).resolve().parents[1] / "frontend" / "src" / "store.ts"
+        text = store.read_text(encoding="utf-8")
+        assert "lore" in text and "canon" in text
 
     def test_the_play_panel_advertises_no_button_the_template_lacks(self, page):
         for absent in ("J/K punch", "U/I kick", "S block", "L duck"):
@@ -483,9 +532,14 @@ class TestTheShellStillParses:
                 f"inline script {index} does not parse:\n{done.stderr}"
 
     def test_the_nav_the_first_run_card_and_the_world_host_all_survive(self, page):
-        for anchor in ('id="rail-nav"', 'id="firstrun"', 'id="world-root"',
+        # THE ANCHOR LIST FOLLOWED THE SHELL. The rail is React (the 4a shell),
+        # so `id="rail-nav"` and the SeatShell owner entry are gone by design;
+        # what still has to be true is that the page mounts the shell, still
+        # owns the workspace switch and the first-run decision, and still hosts
+        # the classic views that were never converted.
+        for anchor in ('data-react="shell"', 'id="firstrun"', 'id="world-root"',
                        'id="view-overview"', "function setWorkspace(",
-                       "function showFirstRun(", "SeatShell", "World.activate"):
+                       "function showFirstRun(", "World.activate"):
             assert anchor in page, f"{anchor} went missing"
 
     def test_the_polling_loop_is_intact(self, page):

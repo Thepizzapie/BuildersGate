@@ -16,7 +16,9 @@ import pytest
 
 from bgate_core import seats as _seats
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+# The frontend SOURCE tree. bgate_ui/static is the Vite build output (these
+# files copied verbatim, plus dist/), so the source is what to assert against.
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 ICONS = STATIC / "icons.js"
 INDEX = STATIC / "index.html"
 
@@ -97,11 +99,23 @@ class TestShell:
         assert (STATIC / "favicon.svg").is_file()
 
     def test_every_rail_item_names_an_icon(self):
-        html = INDEX.read_text(encoding="utf-8")
-        rows = re.findall(r'data-view="(\w+)"[^>]*>\s*<span class="ic"([^>]*)>', html)
-        assert rows, "no rail items found — did the markup move?"
-        for view, attrs in rows:
-            assert 'data-icon="' in attrs, f"{view} still has a bare glyph"
+        """THE RAIL MOVED, THE RULE DID NOT.
+
+        It used to be eleven `<button data-view=… ><span class="ic"
+        data-icon=…>` rows in index.html. The 4a shell renders it from
+        frontend/src/shell/nav.ts — four areas, each with its screens — so the
+        markup this asserted against is gone, but the thing it was protecting is
+        not: every destination NAMES an icon, and nobody pastes a glyph.
+        """
+        nav = (INDEX.parent.parent.parent
+               / "frontend" / "src" / "shell" / "nav.ts").read_text(encoding="utf-8")
+        assert nav.count("AREAS"), "the nav table moved again — find it"
+        labels = re.findall(r'\blabel:\s*"', nav)
+        icons = re.findall(r'\bicon:\s*"', nav)
+        assert labels, "no destinations found — did the table move?"
+        assert len(icons) == len(labels), (
+            f"{len(labels)} destinations but {len(icons)} icons — "
+            "one of them is wearing a glyph or nothing")
 
     def test_no_pictograph_glyphs_left_in_the_shell(self):
         html = INDEX.read_text(encoding="utf-8")

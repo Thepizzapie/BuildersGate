@@ -48,7 +48,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from bgate_ui import runners as _runners
 
@@ -577,10 +577,3 @@ def doctor_row() -> dict:
             for r in installed)
         + " — fix it in Settings → Agent CLIs",
     }
-
-
-def find_optional(runner_id: str) -> Optional[str]:
-    """The resolved CLI path, or None. Thin wrapper so callers do not reach into
-    ``runners.RUNNERS`` for a lookup this module already does."""
-    runner = _runners.RUNNERS.get(runner_id)
-    return runner.find() if runner else None
