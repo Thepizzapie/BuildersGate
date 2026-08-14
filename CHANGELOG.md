@@ -9,35 +9,101 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.41]
+
+Everything in this release is one thing: the app you download now does what the
+app you ran from a source checkout always did.
+
+Several things were broken in every release before this, and none of it showed
+up unless you installed the app and used it. The build only ever checked that
+the code compiled, never that the finished program could open a window, record
+audio, or start the way people actually start it.
+
+### Fixed
+
+- **The app could not start from a shortcut.** A windowed PyInstaller build
+  launched from Explorer or the Start Menu has no stdout, and uvicorn's logger
+  calls `.isatty()` on it while starting up, so the process died before it ever
+  opened a port. It only worked when launched from a terminal. The build now
+  boots the binary with no console attached and fails if it cannot serve a page,
+  which is how the real launch actually happens.
+
+- **The app's own window code had never run.** On Windows there are two ways to
+  open the window and the good one needs `comtypes`, which nothing declared. It
+  happened to be installed on the machine this was written on, so it worked
+  there and silently fell back everywhere else. Declaring it turned up two more
+  faults inside that path, both of which crashed before a window appeared.
+
+- **Playtest recording could not work.** The audio libraries were left out of
+  the bundle as "optional", but the recorder captures the mic through them, so
+  leaving them out did not make audio optional, it made recording impossible.
+  The Playtests screen sat on "record unavailable" and told you to run a `pip`
+  command that a packaged app has no way to run.
+
+- **Speech to text was left out for a reason that was not true.** The build
+  notes said it drags in PyTorch and CUDA for 415 MB. It does not. It runs on
+  something else entirely and costs about 121 MB. It is in the download now.
+
+- **A missing transcriber disabled the Record button.** Transcription decides
+  whether you get a transcript, not whether you can record. Checks now say
+  whether they block recording or just take a feature away.
+
+- **Menus and drawers rendered behind the page.** The notification drawer and
+  the project menu were nested inside chrome that creates its own layer, so they
+  could never sit on top of anything. Both are attached to the page root now.
+
+- **Clicking a project in the switcher did nothing.** The menu closed on mouse
+  down, which destroyed the button before the click landed.
+
+- **"Open Orchestration" went nowhere**, and **brainstorm's reset left every
+  message on screen** even though the reset itself had worked.
+
+- **The test suite wrote into your real project list.** A full run registered
+  its throwaway projects on the machine, and they showed up in the app as
+  projects you could open until the temp folders were deleted underneath them.
+
+### Added
+
+- **An installer.** `BuildersGate-setup.exe` puts the app in your user folder
+  with no admin prompt, adds a Start Menu entry and an uninstaller, upgrades in
+  place, and refuses to install over a running copy. The zip is still there for
+  anyone who prefers it.
+
+- **The window has its own title bar** instead of the grey Windows one, with
+  dragging, snapping and edge resizing intact.
+
+- **A project switcher**, on the rail, with New game and Open an existing game
+  next to it. Switching projects was possible from the API the whole time and
+  had no button anywhere in the app.
+
+- **Missing tools install themselves.** ffmpeg is a button that downloads a
+  pinned, checksummed build into a folder the app owns, instead of a paragraph
+  telling you what to type. Nothing downloads until you ask for a feature that
+  needs it.
+
+- **Settings read like English.** All 42 of them have a name instead of an
+  identifier, and each group has an icon. The identifier is still there,
+  underneath, because that is what you search for.
+
 ### Changed
 
-- **One front-end source tree.** The dashboard had two, and one of them was also
-  the build output: the classic page, `app.css` and forty-one hand-written JS
-  modules were edited in place under `bgate_ui/static/`, while the React shell
-  lived in `frontend/src/` and built *into* that same directory. Nothing about a
-  file's location told you whether a person had written it or a build had, which
-  is the sort of thing that stays survivable right up until someone edits the
-  generated half and loses the change on the next build.
+- **Releases are reproducible.** The build used to pick up whatever happened to
+  be installed on the machine doing the building, so the same commit produced a
+  59 MB download in one place and 37 MB in another. It now builds in a clean
+  environment from a locked list of 69 packages, each checked against a known
+  hash. A swapped dependency stops the build instead of shipping.
 
-  `frontend/` is now the only place front-end source lives. `frontend/public/`
-  holds the classic assets, moved verbatim — `index.html`, `app.css`, the
-  modules, `seats/`, `img/`, `vendor/` and the stream overlay pages — and
-  `frontend/src/` is unchanged. `bgate_ui/static/` is build output: generated by
-  `npm run build` in `frontend/`, and still committed, because the wheel and
-  `BuildersGate.exe` have no node and `pip install -e .` has to remain the whole
-  install.
+- The app no longer loads the MCP toolkit just to build one small config file,
+  which was quietly pulling three unrelated cloud SDKs into the download.
 
-  Served URLs are unchanged (`/static/app.css`, `/static/wf.js`,
-  `/static/dist/bgate.js`), so nothing a browser or a route asks for moved. The
-  one new rule is that `bgate_ui/static/` is not a place you edit.
+- The logo is updated everywhere it appears: the app icon, the installer, both
+  favicons, and the mark drawn in the interface.
 
-### Removed
+### Known
 
-- **`agents_console.js` (2,245 lines) and `settingsview.js` (1,155 lines).**
-  Both had already been replaced — the agents deck by the React island, settings
-  by `frontend/src/shell/settings/` — and were still being shipped and loaded
-  beside their replacements. A dead module that still runs is worse than one that
-  does not: it is the copy you find first when you go looking for the bug.
+Nothing here is code signed, so Windows will still warn you about an unknown
+publisher on first run. That needs a certificate, and there is not one yet. The
+SHA256 of both downloads is published next to them.
 
 ## [0.1.40] - 2026-08-12
 

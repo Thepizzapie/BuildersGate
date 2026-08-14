@@ -106,17 +106,31 @@ jobs:
           npm ci
           npm run build
 
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[desktop]"
-          pip install pyinstaller>=6.14
+      # NO `pip install` STEP. build_exe.py builds inside its own venv holding
+      # exactly what pyproject declares, so the runner's interpreter is not
+      # part of the product and this job and a developer's laptop produce the
+      # same bundle. That was not true before: PyInstaller bundles whatever the
+      # interpreter running it can import, and one developer machine with an
+      # unrelated azure-storage-blob installed shipped azure.core,
+      # opentelemetry, grpc and protobuf inside the release — 59 MB against
+      # this runner's 37 for the same commit.
 
-      - name: Build and smoke-test the app
+      # Inno Setup builds the install wizard. The `innosetup` Chocolatey package
+      # is 6.x, which is what the script needs — it uses directives that do not
+      # exist in 5 (PrivilegesRequiredOverridesAllowed,
+      # ArchitecturesAllowed=x64compatible). Deliberately NOT pinned to a patch
+      # version: a pin to a build Chocolatey later drops fails this job for a
+      # reason that has nothing to do with the release.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build, smoke-test and package the app
         # build_exe.py boots the frozen binary in server mode and fetches real
-        # files out of it, THEN zips. A build that cannot serve /static/app.css
-        # fails here and never gets packaged.
-        run: python packaging/build_exe.py
+        # files out of it, THEN zips, THEN compiles the installer. A build that
+        # cannot serve /static/app.css fails before anything is packaged, which
+        # matters most for the installer: it is a far better way to distribute a
+        # broken build than a zip is.
+        run: python packaging/build_exe.py --installer
 
       # ── signing ────────────────────────────────────────────────────────────
       # Unsigned, this binary is blocked twice over: Defender's ML quarantined
@@ -153,23 +167,60 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Re-zip after signing
+      # ORDER MATTERS FROM HERE DOWN. The zip and the installer both CONTAIN the
+      # binaries, so both have to be rebuilt after those binaries are signed —
+      # a signature applied to dist/BuildersGate/ does not reach a copy made
+      # before it. Sign the app, then re-zip, then re-compile the installer,
+      # then sign the installer itself.
+      - name: Re-package after signing
         if: startsWith(github.ref, 'refs/tags/')
-        # The zip made during the build predates the signatures, so rebuild it
-        # and refresh the checksum. Idempotent when signing was skipped.
-        run: python -c "import sys; sys.path.insert(0,'packaging'); import build_exe; build_exe.package()"
+        # Idempotent when signing was skipped: the same two artifacts are
+        # rebuilt from the same tree, with the checksums refreshed.
+        run: |
+          python -c "import sys; sys.path.insert(0,'packaging'); import build_exe; build_exe.package()"
+          python -c "import sys; sys.path.insert(0,'packaging'); import build_exe; build_exe.installer()"
+
+      - name: Sign the installer
+        # A signed app inside an unsigned installer is the worst of both: the
+        # thing the user actually double-clicks is the setup.exe, and that is
+        # what SmartScreen judges.
+        if: >-
+          startsWith(github.ref, 'refs/tags/') &&
+          env.SIGN_ENDPOINT != ''
+        env:
+          SIGN_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          # dist/ itself, NOT recursed — the only .exe directly in it is the
+          # installer. The app's own binaries are a directory deeper and were
+          # signed by the step above.
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Report what was built
         shell: bash
         run: |
           ls -la dist/
-          echo "zip: $(( $(stat -c%s dist/BuildersGate-windows.zip) / 1048576 )) MB"
+          echo "zip:   $(( $(stat -c%s dist/BuildersGate-windows.zip) / 1048576 )) MB"
+          echo "setup: $(( $(stat -c%s dist/BuildersGate-setup.exe) / 1048576 )) MB"
           cat dist/BuildersGate-windows.zip.sha256
+          cat dist/BuildersGate-setup.exe.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: BuildersGate-windows
           path: |
+            dist/BuildersGate-setup.exe
+            dist/BuildersGate-setup.exe.sha256
             dist/BuildersGate-windows.zip
             dist/BuildersGate-windows.zip.sha256
           if-no-files-found: error

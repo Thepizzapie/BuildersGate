@@ -63,3 +63,23 @@
 .bg4-set .foot b { color: var(--text-2); font-weight: 400 }
 .bg4-set .foot .drift b { color: var(--accent) }
 .bg4-set .foot .env { color: var(--info, #a9b6ff) }
+
+/* ── the row's name, and its identifier ──────────────────────────────────────
+   Rows used to be titled with the settings key. The name leads now; the key
+   sits under it in mono, because it is still what you search for and what an
+   environment override is called. */
+.bg4-set .head .label {
+  font: 450 13px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.bg4-set > .key {
+  display: block; margin: 1px 0 0; font: 400 10px var(--mono);
+  color: var(--text-3); background: none; padding: 0;
+}
+.bg4-set.locked .head .label { color: var(--text-2) }
+
+/* Category rail: glyph, name, count. */
+.bg4-settings-rail button { display: flex; align-items: center; gap: 8px }
+.bg4-settings-rail button .ti { flex: none; color: var(--text-3); font-size: 15px }
+.bg4-settings-rail button.on .ti { color: var(--accent) }
+.bg4-settings-head { display: flex; align-items: center; gap: 7px }

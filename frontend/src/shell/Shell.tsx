@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./shell.css";
 import { Menu } from "@mantine/core";
 import { Ti } from "./Ti";
 import { AREAS, SCREEN_NOTE, SEAT_COLOR, SEAT_ICON, areaOf, byScreen } from "./nav";
 import type { Area } from "./nav";
 import { Inspector } from "./Inspector";
+import { ProjectSwitch } from "./ProjectSwitch";
 import { clock, useFloor } from "./useFloor";
 import type { Floor } from "./useFloor";
 import { useAppState } from "../store";
@@ -229,6 +230,10 @@ export function Shell() {
      when you are not in one, it goes away rather than showing a stale one. The
      collapse preference is untouched, so leaving Settings restores it. */
   const loose = !areaOf(screen);
+  /* The last screen that HAD a column, so the mark can return there from a
+     loose screen instead of being inert. */
+  const lastArea = useRef<string>("overview");
+  useEffect(() => { if (!loose) lastArea.current = screen; }, [screen, loose]);
   const meta = byScreen(screen);
   const state = useAppState();
   const floor = useFloor(6000, true);   // the counters in the rail, always live
@@ -272,10 +277,24 @@ export function Shell() {
             was where your eye already goes. The logo is the fixed point of the
             whole shell — it is in the same place whether the column is open or
             shut — so it is the one thing that can toggle it without moving. */}
-        <button className="bg4-mark" onClick={() => setNavOpen((v) => !v)}
-                aria-expanded={navOpen} aria-controls="bg4-nav"
-                title={navOpen ? "Collapse the screen list" : "Show the screen list"}
-                aria-label={navOpen ? "Collapse the screen list" : "Show the screen list"}
+        {/* ON A LOOSE SCREEN THE TOGGLE DID NOTHING. `loose` is true for any
+            screen with no area — Settings is the one you reach from the rail
+            — and it forces the column shut regardless of navOpen. So clicking
+            the mark on Settings flipped a state variable and changed nothing
+            on screen, which reads as a broken button rather than as a rule.
+            There it goes BACK to the last screen that has a column, and opens
+            it: the control always does the visible thing it looks like it
+            does. */}
+        <button className="bg4-mark"
+                onClick={() => {
+                  if (loose) { setScreen(lastArea.current); setNavOpen(true); }
+                  else setNavOpen((v) => !v);
+                }}
+                aria-expanded={navOpen && !loose} aria-controls="bg4-nav"
+                title={loose ? "Back to the screen list"
+                       : navOpen ? "Collapse the screen list" : "Show the screen list"}
+                aria-label={loose ? "Back to the screen list"
+                            : navOpen ? "Collapse the screen list" : "Show the screen list"}
                 dangerouslySetInnerHTML={{ __html: window.BGIcon?.logo?.({ size: 20 }) || "" }} />
         {AREAS.map((a) => (
           /* CURRENT means "the screen you are on lives here", not "this is the
@@ -295,6 +314,11 @@ export function Shell() {
                 title={state.project
                   ? `${state.project.name} · connected`
                   : "no project — the dashboard is not talking to a server"} />
+          {/* Switching project lives on the RAIL, next to the theme switch,
+              because the nav column beside it collapses to zero width and took
+              the only project control with it. */}
+          <ProjectSwitch name={state.project?.name || "no project"}
+                         connected={!!state.project} />
           <Grounds />
           <button className="bg4-area" title="Settings" aria-label="Settings"
                   aria-current={screen === "settings"}
@@ -328,7 +352,15 @@ export function Shell() {
         <span className="bg4-title">{meta?.label || "Builders Gate"}</span>
         <span className="bg4-note">{SCREEN_NOTE[screen] || ""}</span>
         <div className="bg4-chips">
-          <RunningChip floor={floor} onOpenFloor={() => setScreen("floor")} />
+          <RunningChip floor={floor}
+                       /* "agents", NOT "floor". There is no screen with the id
+                          `floor` — it is a DECK name, used by Work history.
+                          setScreen() with an id that is not in nav.ts matches
+                          nothing, so "Open Orchestration" changed a state
+                          variable and moved nowhere: the menu closed and the
+                          page stayed exactly where it was. Orchestration's
+                          screen id is `agents`. */
+                       onOpenFloor={() => setScreen("agents")} />
           {/* notify.js mounts its bell here. React renders the host and never
               its children — same contract as #asset-lib-root. */}
           <div id="nt-host" />

@@ -194,6 +194,23 @@ def _build_identity(root: str | os.PathLike[str]) -> str:
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
+# The checks that genuinely stop a recording happening. Everything else costs a
+# feature OF the recording and must not disable the button — see the note in
+# preflight().
+#
+# `mic` is here deliberately: a playtest with no audio is a silent video of
+# somebody playing, and the whole point of the capture is what they SAY while
+# they play. `window` is here because with no target ffmpeg records the entire
+# desktop, which is a privacy leak rather than a degraded recording.
+REQUIRED_CHECKS = frozenset({"ffmpeg", "mic", "window", "native_game"})
+
+#: What the user loses when an optional check fails, in their words not ours.
+OPTIONAL_COSTS = {
+    "transcriber": "no speech-to-text — the video and audio are still recorded, "
+                   "you just will not get a searchable transcript",
+}
+
+
 def preflight(mic_device: Optional[int] = None, window_title: Optional[str] = None,
               *, root: Optional[str | os.PathLike[str]] = None,
               native: bool = False) -> dict:
@@ -240,8 +257,32 @@ def preflight(mic_device: Optional[int] = None, window_title: Optional[str] = No
         checks["window"] = {"ok": False, "reason": str(exc),
                             "matches": recorder.list_windows()}
 
-    ready = all(c.get("ok", c.get("available", False)) for c in checks.values())
-    out = {"ready": ready, "checks": checks}
+    # WHAT IS ACTUALLY REQUIRED TO RECORD, and what merely makes the recording
+    # better. `ready` used to be all() over every check, so a missing
+    # transcriber disabled the record button — and the transcriber is not
+    # needed to record anything. It is needed to have a TRANSCRIPT.
+    #
+    # The visible cost of conflating them: a packaged user opened Playtests,
+    # read "record unavailable · 1 check failing", and was told by the fix line
+    # to run `pip install -e ".[stt]"`. The feature they came for — record a
+    # session, watch it back — worked perfectly and they could not press the
+    # button.
+    #
+    # So each check now says whether it BLOCKS or DEGRADES, the button gates on
+    # the first group only, and an unavailable optional tool is reported as the
+    # capability it costs rather than as a failure.
+    for name, check in checks.items():
+        check["required"] = name in REQUIRED_CHECKS
+        if not check["required"]:
+            check.setdefault("costs", OPTIONAL_COSTS.get(name, ""))
+
+    blocking = [n for n, c in checks.items()
+                if c["required"] and not c.get("ok", c.get("available", False))]
+    degraded = [n for n, c in checks.items()
+                if not c["required"] and not c.get("ok", c.get("available", False))]
+
+    out = {"ready": not blocking, "checks": checks,
+           "blocking": blocking, "degraded": degraded}
     out["windows"] = checks["window"].get("matches") or []
     return out
 

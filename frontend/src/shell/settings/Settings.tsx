@@ -43,13 +43,14 @@ declare global {
 }
 
 type Field = {
+  label?: string;
   key: string; group: string; kind: "bool" | "int" | "float" | "string" | "enum" | "list";
   choices: string[]; value: unknown; default: unknown; stored: unknown;
   source: "env" | "stored" | "default"; scope: string; help: string;
   min: number | null; max: number | null; env_vars: string[]; env: string;
   locked: boolean; env_override: string; human_only: boolean; guard: boolean;
 };
-type Group = { name: string; fields: Field[] };
+type Group = { name: string; icon?: string; fields: Field[] };
 type Described = { precedence: string; groups: Group[] };
 
 const EMPTY: Described = { precedence: "", groups: [] };
@@ -149,10 +150,17 @@ export function Settings() {
 
       <div className="bg4-settings-split">
         <nav className="bg4-settings-rail">
+          {/* AN ICON PER CATEGORY. Ten identical text rows are ten things you
+              have to read; a glyph is the thing you actually navigate by once
+              you have been here twice. The name comes from the registry
+              (settings.GROUP_ICONS) so a new group cannot arrive iconless. */}
           {[...groups.map((g) => g.name), GENERATORS].map((name) => (
             <button key={name}
                     className={name === group ? "on" : ""}
                     onClick={() => setGroup(name)}>
+              <Ti name={name === GENERATORS ? "sparkles"
+                        : groups.find((g) => g.name === name)?.icon || "adjustments"}
+                  size={15} />
               <span className="l">{name}</span>
               {name !== GENERATORS && (
                 <span className="n">
@@ -180,6 +188,7 @@ export function Settings() {
               <section key={g.name} className="bg4-settings-group">
                 {q && (
                   <div className="bg4-settings-head">
+                    <Ti name={g.icon || "adjustments"} size={13} />
                     <span>{g.name}</span><span className="n">{g.fields.length}</span>
                   </div>
                 )}
@@ -203,7 +212,12 @@ function Row({ f, onSave }: { f: Field; onSave: (k: string, v: unknown) => void 
   return (
     <div className={`bg4-set ${f.source}${locked ? " locked" : ""}`}>
       <div className="head">
-        <code className="key">{f.key}</code>
+        {/* THE NAME, NOT THE IDENTIFIER. This row used to be titled
+            `dispatch.allow_dirty`, which tells a reader who wrote the code
+            exactly what it does and tells everybody else nothing. The key is
+            still here, under the name — it is what you search for and what an
+            env override is called — it is just no longer the heading. */}
+        <span className="label">{f.label || f.key}</span>
         {f.scope === "machine" && <Badge size="xs" variant="default">machine</Badge>}
         {f.guard && (
           <Badge size="xs" variant="light" color="yellow"
@@ -212,6 +226,7 @@ function Row({ f, onSave }: { f: Field; onSave: (k: string, v: unknown) => void 
         <span className="spacer" />
         <div className="control">{control(f, locked, onSave)}</div>
       </div>
+      <code className="key">{f.key}</code>
       {/* EVERY WORD KEPT. The help is the reason this page is worth reading;
           what changed is that it no longer sits between a label and its own
           control. */}

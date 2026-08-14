@@ -51,6 +51,13 @@
 </script>
 </head>
 <body>
+<!-- THE APP'S OWN TITLE BAR. Empty in a browser tab: the island asks
+     /api/window/state and renders nothing unless it is inside the frameless
+     desktop window, so a browser gets no fake caption and no dead close
+     button. When it DOES render it adds `bg-framed` to <html>, which is what
+     reserves the 44px at the top — see .bg-titlebar in shell.css. Kept first
+     in the body so it is above every deck in both senses. -->
+<div data-react="titlebar"></div>
 <div class="deck">
   <!-- THE 4a SHELL — frontend/src/shell/. Four AREAS on a 56px icon rail, the
        screens of the area you are in on a second column, a header, and a
@@ -1522,20 +1529,71 @@ let _ptIdleHTML = "", _ptTransient = false;
  * truncated at 60 characters told nobody what to do, and the Record button sat
  * dead forever on a stock install. */
 const PT_FIXES = {
-  ffmpeg: 'install ffmpeg and put it on PATH, or point BGATE_FFMPEG at the binary',
-  ffprobe: 'ffprobe ships with ffmpeg - install ffmpeg and put it on PATH',
-  transcriber: 'install the speech extras:  pip install -e ".[stt,record]"',
-  whisper: 'install the speech extras:  pip install -e ".[stt]"',
+  /* NO `pip install` AND NO `source checkout` IN THIS TABLE. Somebody running
+   * the packaged app cannot act on either, and telling them to tells them the
+   * install they chose was wrong. Anything the app can fetch for itself gets a
+   * BUTTON instead — see PT_INSTALLABLE and bgate_core/toolbin. What is left
+   * here is only the genuinely human steps: plug in a microphone, start the
+   * game, make a project. */
   mic: 'no usable input device - connect a microphone and enable it in the OS sound settings',
-  window: 'no game window to capture - boot the build first, then re-check; otherwise the whole desktop gets recorded',
-  native_game: 'no game/project.godot yet - scaffold the game (godot_scaffold), and set BGATE_GODOT if Godot is not on PATH',
-  godot: 'install Godot 4 and put it on PATH, or set BGATE_GODOT',
+  window: 'no game window to capture - start the game first, then re-check; otherwise the whole desktop gets recorded',
+  native_game: 'no game yet - create or open a game project first',
 };
-const ptFix = name => PT_FIXES[name] || "run  bgate doctor  for the full toolchain report";
+/* Checks the app can satisfy on its own, mapped to the toolbin name. The panel
+ * draws "Install (88 MB)" for these rather than a sentence. */
+const PT_INSTALLABLE = { ffmpeg: "ffmpeg", ffprobe: "ffmpeg" };
+const ptFix = name => PT_FIXES[name] || "";
+
+async function ptInstall(tool, btn){
+  if (btn){ btn.disabled = true; btn.textContent = "downloading…"; }
+  try {
+    await mutate(`/api/tools/${tool}/install`, { ok: `installing ${tool}` });
+    /* Poll until it lands, then re-run the preflight so the row goes green
+       without the user hunting for a refresh. */
+    for (let i = 0; i < 300; i++){
+      const s = await readJSON(`/api/tools/${tool}`, {});
+      const st = (s.running || {}).state;
+      if (btn && (s.running || {}).total)
+        btn.textContent = `${Math.round(100 * s.running.done / s.running.total)}%`;
+      if (st === "done" || s.present){ break; }
+      if (st === "failed"){ toast(s.running.error || "install failed", "err"); break; }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (typeof refreshPreflight === "function") refreshPreflight();
+  }
+}
 
 function togglePtWhy(){
   const why = document.getElementById("pt-why");
   if (why) why.hidden = !why.hidden;
+}
+
+/* One row per check that is not satisfied.
+ *
+ * Three shapes, in descending order of how much the reader has to do:
+ *   · the app can fetch it            -> a button with the size on it
+ *   · a human has to do something     -> the one sentence describing it
+ *   · optional and simply unavailable -> what capability is off, no call to
+ *                                        action at all, because there is none
+ *
+ * What is deliberately absent: `bgate doctor`, pip, and any other terminal
+ * instruction. The footer used to send people to a command line to find out
+ * what a panel already knew. */
+function renderPtRows(rows){
+  if (!rows.length) return "";
+  return `<ul class="pt-checks">${rows.map(([name, c]) => {
+    const tool = PT_INSTALLABLE[name];
+    const optional = c.required === false;
+    const action = tool
+      ? `<button class="qbtn small" onclick="ptInstall('${tool}', this)">`
+        + `Install${c.size_mb ? ` (${c.size_mb} MB)` : ""}</button>`
+      : ptFix(name) ? `<span class="fix">→ ${esc(ptFix(name))}</span>` : "";
+    return `<li><b>${esc(name)}</b>${optional ? ' <span class="r">optional</span>' : ""}
+        <span class="r">${esc(optional ? (c.costs || c.reason || "") : (c.reason || "unavailable"))}</span>
+        ${action}</li>`;
+  }).join("")}</ul>`;
 }
 
 function renderPreflight(p){
@@ -1543,30 +1601,47 @@ function renderPreflight(p){
   const btn = document.getElementById("pt-btn");
   const msg = document.getElementById("pt-msg");
   const why = document.getElementById("pt-why");
-  const bad = Object.entries(p.checks || {})
+  const failed = Object.entries(p.checks || {})
     .filter(([, c]) => !(c.ok ?? c.available));
-  ptReady = Boolean(p.ready) && !bad.length;
+  /* BLOCKING ONLY. This used to be `p.ready && !bad.length`, which disabled
+   * Record whenever ANY check failed — including the transcriber, which is not
+   * needed to record and only decides whether you get a transcript. The server
+   * now marks each check required or not (bgate_core/playtest.REQUIRED_CHECKS)
+   * and `ready` already means "nothing blocking", so the extra clause did
+   * nothing but hold the button down. */
+  const bad = failed.filter(([, c]) => c.required !== false);
+  const degraded = failed.filter(([, c]) => c.required === false);
+  ptReady = Boolean(p.ready);
   if (lamp) lamp.className = "lamp" + (ptReady ? "" : " bad");
   if (btn) btn.disabled = !ptReady && !ptRecording;
   if (!msg) return;
   if (ptReady){
+    /* READY IS READY. NOTHING ELSE GOES HERE.
+     *
+     * This used to add a "1 feature off" chip and keep a panel of optional
+     * missing things behind it. Both are wrong on a screen that works: a red
+     * block about speech-to-text is the first thing a new user sees on a
+     * feature they can already use, and it reads as "this app is broken"
+     * rather than "one extra is unavailable". Advertising an absent optional
+     * extra as a warning is how you lose somebody who was about to press
+     * Record.
+     *
+     * Where the transcript's absence DOES belong is on the recording itself,
+     * once there is one to open — at the point it costs the user something,
+     * not before. */
     msg.textContent = "playtest ready - record, play, talk";
     if (why){ why.hidden = true; why.innerHTML = ""; }
     _ptIdleHTML = msg.innerHTML;
     return;
   }
   msg.innerHTML = `record unavailable · ${bad.length} check${bad.length === 1 ? "" : "s"} failing `
-    + `<button class="qbtn small ghost" onclick="togglePtWhy()">what do I install?</button>`;
+    + `<button class="qbtn small ghost" onclick="togglePtWhy()">what is missing?</button>`;
   _ptIdleHTML = msg.innerHTML;
   if (!why) return;
   /* No window list here. It printed the title of every window open on the
    * desktop — mail, chat, whatever — into a panel about installing ffmpeg. The
    * recorder picks its own target; this was never a control, only a leak. */
-  why.innerHTML = `<ul class="pt-checks">${bad.map(([name, c]) => `
-      <li><b>${esc(name)}</b>
-        <span class="r">${esc(c.reason || "unavailable")}</span>
-        <span class="fix">→ ${esc(ptFix(name))}</span></li>`).join("")}</ul>`
-    + `<div class="pt-note">Full toolchain report from a terminal: <code>bgate doctor</code></div>`;
+  why.innerHTML = renderPtRows(bad.concat(degraded));
   why.hidden = false;
 }
 
@@ -1603,7 +1678,16 @@ async function ptPreflight(force){
       _ptDoctorGone = true;
     } else {
       const rows = d.checks || d;
-      const need = native ? ["ffmpeg", "whisper", "godot"] : ["ffmpeg", "whisper"];
+      /* ONLY WHAT ACTUALLY BLOCKS RECORDING. `whisper` used to be in this list,
+         and because this cheap path RETURNS EARLY with a preflight it made up
+         itself, a missing transcriber short-circuited the whole check: the real
+         /api/playtest/preflight — the one that knows transcription is optional
+         and that a mic exists — was never called at all. The panel then showed
+         the doctor's raw reason, with no `required` field on it, so
+         renderPreflight treated it as blocking and disabled Record.
+         Server-side and client-side both have to agree on what is optional, and
+         this line was the half that disagreed. */
+      const need = native ? ["ffmpeg", "godot"] : ["ffmpeg"];
       const missing = need.filter(k => rows[k] && rows[k].available === false);
       if (missing.length){
         renderPreflight({ready:false, checks:Object.fromEntries(

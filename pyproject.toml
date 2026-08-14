@@ -1,6 +1,6 @@
 [project]
 name = "builders-gate"
-version = "0.1.40"
+version = "0.1.41"
 description = "Agentic game development pipeline — design bible, lore canon, and DCC/engine adapters over MCP."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -42,9 +42,20 @@ stt = ["faster-whisper>=1.0"]
 voice = ["websockets>=13"]
 record = ["sounddevice>=0.4", "numpy>=1.26"]
 # `bgate app` — the dashboard in a native window. On Windows this renders
-# through the Edge WebView2 runtime that ships with 11, so the extra is one
-# pure-Python package and no bundled browser.
-desktop = ["pywebview>=5.0"]
+# through the Edge WebView2 runtime that ships with 11, so there is no bundled
+# browser here either way.
+#
+# comtypes IS NOT OPTIONAL AND WAS MISSING. bgate_ui/webview2.py is the primary
+# window on Windows — the hand-written Win32 + COM host that desktop.py tries
+# FIRST and that pywebview only backs up — and its available() check begins by
+# importing comtypes. Nothing declared it. It was present on the machine this
+# was written on because an unrelated package (pyttsx3) depends on it, so the
+# native path worked there and silently failed everywhere else: every clean
+# install and every shipped .exe answered "comtypes is not installed", fell
+# through to pywebview, and nobody saw an error because the fallback opens a
+# window too. The frameless title bar lives on that primary path, which is what
+# finally made the absence visible.
+desktop = ["pywebview>=5.0", "comtypes>=1.2"]
 # Building the downloadable BuildersGate.exe — see packaging/build_exe.py.
 build = ["pyinstaller>=6.14", "pywebview>=5.0"]
 

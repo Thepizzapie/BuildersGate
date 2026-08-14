@@ -276,7 +276,7 @@ class TestAMessageCannotDispatch:
         the `mcp__pads` prefix, so the approval cannot widen if the server ever
         grows a fourth tool.
         """
-        from bgate_mcp import padserver
+        from bgate_mcp import padconfig, padserver
 
         cfg = json.dumps(padserver.config("/tmp/game", 7))
         argv = _runners.RUNNERS["claude"].chat.build_args(
@@ -293,8 +293,16 @@ class TestAMessageCannotDispatch:
         # server grows. This one names them individually.
         assert "mcp__pads" not in argv
 
-        # The registration and the server cannot drift apart unnoticed.
-        assert sorted(_runners.PAD_TOOLS) == sorted(padserver.TOOL_NAMES)
+        # The registration and the server cannot drift apart because THEY ARE
+        # THE SAME OBJECT. This used to compare two hand-maintained copies:
+        # runners could not import the real tuple, because padserver builds a
+        # FastMCP application at import time and runners is loaded by every
+        # dispatch, including where the MCP extra is absent. Both now read
+        # bgate_mcp.padconfig, which imports nothing but sys. Asserting
+        # identity rather than equality is the point — an equality check would
+        # pass again the moment somebody reintroduced the duplicate.
+        assert _runners.PAD_TOOLS is padserver.TOOL_NAMES
+        assert padserver.TOOL_NAMES is padconfig.TOOL_NAMES
         assert set(json.loads(cfg)["mcpServers"]) == {"pads"}
         assert json.loads(cfg)["mcpServers"]["pads"]["args"] == [
             "-m", "bgate_mcp.padserver"]

@@ -1,4 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  Alert, Button, Divider, Group, Paper, Select, Stack, Text, TextInput, Title,
+} from "@mantine/core";
+import { Ti } from "../shell/Ti";
 import { mutate, readJSON } from "../bridge";
 
 declare global {
@@ -109,54 +113,94 @@ export default function FirstRun() {
   }
 
   return (
-    <>
-      <h1>Builders Gate</h1>
-      <p className="fr-hint">{hint}</p>
+    /* MANTINE, like the rest of the shell.
+     *
+     * This card was the last hand-rolled form in the app — bare <input>, <label>
+     * and eight fr-* classes, styled in app.css and drifting from every other
+     * surface: its inputs had a different height, focus ring and disabled state
+     * than the ones three clicks away in Settings. It is also the FIRST screen a
+     * new user meets, so it was the one making the first impression while being
+     * the one piece not using the design system.
+     *
+     * Behaviour is unchanged and deliberately so: the overlay's visibility is
+     * still index.html's (#firstrun[hidden]), both actions still end in
+     * location.reload() because the dashboard token is minted per project, and
+     * the registry still comes from /api/project's `known`. */
+    <Stack gap="md">
+      {/* NO MARK AND NO TERMINAL FOOTER HERE. index.html renders both OUTSIDE
+          this island — the mark above it, the `bgate init` line below — the
+          latter deliberately, so it survives the bundle failing to load.
+          Rendering them again put two of each on the card. */}
+      <div>
+        <Title order={2} fz="xl" fw={600}>Builders Gate</Title>
+        <Text size="sm" c="dimmed" mt={4}>{hint}</Text>
+      </div>
 
+      {/* ONE CONTROL, NOT A LIST. Eight registered projects rendered as eight
+          two-line rows made this card taller than the window, and the fix for
+          that is not a scroller inside a scroller — it is not spending 400px
+          on a list you pick one item from once. A Select is the same choice in
+          40px, and it grows to fifty projects without the card changing size
+          at all. */}
       {known.length > 0 && (
-        <div className="fr-known">
-          <div className="fr-known-h">Open an existing project</div>
-          <div className="fr-known-list">
-            {known.map(([label, root]) => (
-              <button key={root} type="button" className="fr-known-row"
-                      disabled={busy !== null} onClick={() => open(root)}>
-                <b>{busy === root ? "opening…" : label}</b>
-                <span>{root}</span>
-              </button>
-            ))}
-          </div>
-          <div className="fr-or"><span>or start a new one</span></div>
-        </div>
+        <Stack gap="xs">
+          <Select label="Open an existing project"
+                  placeholder={busy && busy !== "create" ? "opening…" : "pick a project"}
+                  data={known.map(([label, root]) => ({ value: root, label }))}
+                  disabled={busy !== null}
+                  searchable={known.length > 6}
+                  leftSection={<Ti name="folder" size={15} />}
+                  onChange={(root) => root && open(root)}
+                  size="md" />
+          <Divider label="or start a new one" labelPosition="center" my={2} />
+        </Stack>
       )}
 
-      <form className="fr-form" onSubmit={create}>
-        <label>
-          Project name
-          <input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)}
-                 placeholder="Ember Run" maxLength={80} autoComplete="off" />
-        </label>
-        <label>
-          Pitch <span className="opt">optional</span>
-          <input value={pitch} onChange={(e) => setPitch(e.target.value)}
-                 placeholder="one line - what is this game?" maxLength={200}
-                 autoComplete="off" />
-        </label>
-        <div className="fr-kinds" role="radiogroup" aria-label="Starting template">
-          {KINDS.map((k) => (
-            <button key={k.id} type="button"
-                    className={k.id === kind ? "fr-kind on" : "fr-kind"}
-                    aria-checked={k.id === kind} role="radio"
-                    onClick={() => setKind(k.id)}>
-              <b>{k.label}</b><span>{k.blurb}</span>
-            </button>
-          ))}
-        </div>
-        <div className="fr-where">{where}</div>
-        <button className="fr-go" type="submit" disabled={busy !== null}>
-          {busy === "create" ? "creating…" : "Create project"}
-        </button>
-        {err && <div className="fr-err">{err}</div>}
+      <form onSubmit={create}>
+        <Stack gap="sm">
+          <TextInput ref={nameRef} label="Project name" value={name}
+                     onChange={(e) => setName(e.currentTarget.value)}
+                     placeholder="Ember Run" maxLength={80} autoComplete="off"
+                     size="md" />
+          <TextInput label="Pitch"
+                     description="optional — one line, what is this game?"
+                     value={pitch} onChange={(e) => setPitch(e.currentTarget.value)}
+                     placeholder="one line - what is this game?" maxLength={200}
+                     autoComplete="off" size="md" />
+
+          {/* Cards rather than a SegmentedControl: each option carries a
+              sentence describing the slice it scaffolds, and that does not fit
+              in a segment. Still a radiogroup to a screen reader. */}
+          <div role="radiogroup" aria-label="Starting template">
+            <Group grow align="stretch" gap="sm">
+              {KINDS.map((k) => (
+                <Paper key={k.id} component="button" type="button" role="radio"
+                       aria-checked={k.id === kind} p="sm" withBorder
+                       className={k.id === kind ? "fr-kind on" : "fr-kind"}
+                       onClick={() => setKind(k.id)}>
+                  <Text size="sm" fw={600} ta="left">{k.label}</Text>
+                  <Text size="xs" c="dimmed" mt={4} ta="left">{k.blurb}</Text>
+                </Paper>
+              ))}
+            </Group>
+          </div>
+
+          {where && (
+            <Text size="xs" c="dimmed" ff="var(--mono)">{where}</Text>
+          )}
+
+          <Button type="submit" size="md" loading={busy === "create"}
+                  disabled={busy !== null}>
+            Create project
+          </Button>
+
+          {err && (
+            <Alert color="red" variant="light" icon={<Ti name="alert-triangle" size={15} />}>
+              {err}
+            </Alert>
+          )}
+        </Stack>
       </form>
-    </>
+    </Stack>
   );
 }

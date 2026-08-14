@@ -1,16 +1,29 @@
 """Build BuildersGate.exe, then prove the thing actually works.
 
-    python packaging/build_exe.py [--skip-smoke]
+    python packaging/build_exe.py [--skip-smoke] [--no-isolate]
 
 A PyInstaller build that "succeeds" tells you almost nothing: the failure mode
 for this app is a binary that starts, serves index.html, and 404s every asset —
 because the data trees are resolved by walking up from __file__ and the bundle
 laid them out somewhere else. So the build is followed by a smoke test that
 boots the real server out of the frozen exe and fetches real files.
+
+THE BUILD RUNS IN ITS OWN VENV. PyInstaller bundles what it can reach from the
+interpreter that runs it, and that interpreter is normally a developer's daily
+one with years of unrelated packages in it. Measured on one such machine: the
+same commit produced a 59 MB zip locally and 37 MB from CI, because an installed
+azure-core dragged in the whole opentelemetry exporter stack and with it grpc
+and protobuf. Nothing in the spec was wrong and nothing looked broken — the
+release was simply 22 MB of somebody else's SDK.
+
+So the default is to build inside build/venv, holding exactly the dependencies
+pyproject.toml declares. `--no-isolate` uses the current interpreter, which is
+faster for iterating on the spec and is NOT what a release should be cut with.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import socket
 import subprocess
@@ -18,6 +31,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,13 +133,117 @@ def check_frontend_built() -> None:
         )
 
 
-def build() -> None:
+VENV = ROOT / "build" / "venv"
+# What the frozen app actually needs: the project, the native window, the
+# builder, and mic capture.
+#
+# `record` IS INCLUDED AND WAS THE BUG. It was left out as "an optional extra",
+# which read as reasonable and was not: bgate_adapters/recorder.py captures
+# playtest audio through sounddevice — not through ffmpeg, deliberately, because
+# ffmpeg's dshow enumeration finds no devices on the machines this was built on.
+# So excluding the extra did not make audio optional, it made PLAYTEST RECORDING
+# IMPOSSIBLE in every packaged build ever shipped. The Playtests screen sat
+# permanently on "record unavailable", advising a `pip install` that a .exe user
+# cannot run.
+#
+# It costs ~27 MB, almost all of it numpy's bundled OpenBLAS. That is the price
+# of a feature with its own screen in the navigation working at all.
+#
+# Still NOT included: `dev` (test-only), `stt` (torch + CUDA, hundreds of MB,
+# and genuinely optional — a recording without a transcript is still a
+# recording), `voice` (websockets, a separate feature).
+#
+# EDITABLE, so the analysis reads the working tree rather than a copy pip made
+# at install time. A non-editable install would freeze bgate_ui/static as it was
+# when the venv was last populated, which is the one directory that changes on
+# every front-end build — and the failure would be a release quietly shipping
+# last week's dashboard.
+VENV_INSTALL = ["-e", ".[desktop,build,record,stt]"]
+LOCK = ROOT / "packaging" / "build-requirements.lock"
+
+
+def venv_python() -> Path:
+    d = VENV / ("Scripts" if sys.platform == "win32" else "bin")
+    return d / ("python.exe" if sys.platform == "win32" else "python")
+
+
+def isolated_python(*, refresh: bool) -> Path:
+    """The interpreter a release is built with: only the declared dependencies.
+
+    Reused across builds — creating it costs a minute of downloads and its
+    contents are pinned by pyproject.toml, not by what happened to be cached.
+    `--refresh-venv` rebuilds it from nothing, which is what to reach for after
+    changing a dependency.
+    """
+    py = venv_python()
+    if refresh and VENV.exists():
+        print(f"removing {VENV.relative_to(ROOT)} …")
+        shutil.rmtree(VENV, ignore_errors=True)
+    if not py.is_file():
+        print(f"creating build venv at {VENV.relative_to(ROOT)} …")
+        venv.create(VENV, with_pip=True, clear=True)
+    # HASH-PINNED, IN TWO STEPS, AND THE ORDER MATTERS.
+    #
+    # The build venv is the only thing that decides what is in the release —
+    # bgate.spec bundles whatever that interpreter can import. Resolving
+    # `.[extras]` against PyPI at build time meant the same commit could
+    # produce different binaries on different days, and a compromised release
+    # of any transitive dependency would be packaged and shipped under our name
+    # with nothing downstream able to notice (the output is unsigned).
+    #
+    # --require-hashes refuses any artifact whose bytes do not match the lock
+    # AND refuses anything not listed at all, so a dependency appearing out of
+    # nowhere fails the build instead of joining the bundle.
+    #
+    # The project itself goes in second with --no-deps: an editable directory
+    # has no artifact to hash, and --require-hashes applies to the whole
+    # command, so the two cannot share an invocation.
+    if not LOCK.is_file():
+        sys.exit(f"missing {LOCK.relative_to(ROOT)} — "
+                 f"run: python scripts/lock_build_deps.py")
+
+    print(f"installing {LOCK.name} (hash-pinned) into the build venv …")
+    r = subprocess.run(
+        [str(py), "-m", "pip", "install", "--quiet", "--require-hashes",
+         "-r", str(LOCK)],
+        cwd=ROOT,
+    )
+    if r.returncode != 0:
+        sys.exit(
+            f"the pinned dependency install failed (pip exit {r.returncode}).\n"
+            "If pyproject.toml changed, regenerate the lock and READ THE DIFF:\n"
+            "    python scripts/lock_build_deps.py")
+
+    print("installing the project itself (--no-deps) …")
+    r = subprocess.run(
+        [str(py), "-m", "pip", "install", "--quiet", "--no-deps", "-e", "."],
+        cwd=ROOT,
+    )
+    if r.returncode != 0:
+        sys.exit(f"could not install the project (pip exit {r.returncode})")
+    return py
+
+
+def report_environment(py: Path) -> None:
+    """Print the dependency closure the bundle will be cut from.
+
+    A build log that does not say what was installed cannot answer the only
+    question that matters when a release comes out unexpectedly large.
+    """
+    r = subprocess.run([str(py), "-m", "pip", "list", "--format=freeze"],
+                       capture_output=True, text=True)
+    names = sorted(line.split("==")[0] for line in r.stdout.splitlines() if line)
+    print(f"build environment: {len(names)} packages")
+    print("  " + ", ".join(names))
+
+
+def build(python: Path) -> None:
     if not SPEC.is_file():
         sys.exit(f"missing spec: {SPEC}")
     check_frontend_built()
     print(f"building from {SPEC.relative_to(ROOT)} …")
     r = subprocess.run(
-        [sys.executable, "-m", "PyInstaller", str(SPEC), "--noconfirm",
+        [str(python), "-m", "PyInstaller", str(SPEC), "--noconfirm",
          "--distpath", str(DIST), "--workpath", str(ROOT / "build" / "pyi")],
         cwd=ROOT,
     )
@@ -157,6 +275,72 @@ def package() -> None:
     h = hashlib.sha256(ZIP.read_bytes()).hexdigest()
     (DIST / "BuildersGate-windows.zip.sha256").write_text(
         f"{h}  {ZIP.name}\n", encoding="utf-8")
+    print(f"sha256 {h}")
+
+
+ISS = ROOT / "packaging" / "installer.iss"
+SETUP = DIST / "BuildersGate-setup.exe"
+
+# Inno Setup's command-line compiler. Never on PATH after any of its installs,
+# so the three places it actually lands are checked before giving up. The
+# LOCALAPPDATA one is not exotic: it is where `winget install
+# JRSoftware.InnoSetup` puts it, because winget prefers a per-user install and
+# the installer obliges. Checking only the two Program Files paths reported "not
+# found" on a machine where it had just been installed successfully.
+_ISCC_CANDIDATES = (
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Inno Setup 6" / "ISCC.exe",
+    Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
+    Path(r"C:\Program Files\Inno Setup 6\ISCC.exe"),
+)
+
+
+def find_iscc() -> Path | None:
+    for p in _ISCC_CANDIDATES:
+        if p.is_file():
+            return p
+    found = shutil.which("iscc") or shutil.which("ISCC")
+    return Path(found) if found else None
+
+
+def project_version() -> str:
+    """The version out of pyproject.toml.
+
+    Read rather than restated so the installer, the wheel and the exe cannot
+    claim three different versions — which matters more than it sounds, because
+    Windows uninstalls and upgrades BY version against a fixed AppId.
+    """
+    import tomllib
+    with (ROOT / "pyproject.toml").open("rb") as fh:
+        return str(tomllib.load(fh)["project"]["version"])
+
+
+def installer() -> None:
+    """Compile dist/BuildersGate-setup.exe from the built app directory."""
+    iscc = find_iscc()
+    if iscc is None:
+        sys.exit(
+            "Inno Setup 6 not found — cannot build the installer.\n"
+            "  winget install JRSoftware.InnoSetup\n"
+            "or drop --installer to publish the zip alone."
+        )
+    if not APPDIR.is_dir():
+        sys.exit(f"nothing to package: {APPDIR} is not there")
+    version = project_version()
+    print(f"compiling installer {version} with {iscc.name} …")
+    r = subprocess.run(
+        [str(iscc), f"/DAppVersion={version}", str(ISS)],
+        cwd=str(ISS.parent),
+    )
+    if r.returncode != 0:
+        sys.exit(f"Inno Setup failed (exit {r.returncode})")
+    if not SETUP.is_file():
+        sys.exit(f"compiler reported success but {SETUP} is not there")
+    import hashlib
+    h = hashlib.sha256(SETUP.read_bytes()).hexdigest()
+    (DIST / "BuildersGate-setup.exe.sha256").write_text(
+        f"{h}  {SETUP.name}\n", encoding="utf-8")
+    print(f"built {SETUP.relative_to(ROOT)} — "
+          f"{SETUP.stat().st_size / (1024 * 1024):.1f} MB")
     print(f"sha256 {h}")
 
 
@@ -223,9 +407,88 @@ def serve_and_fetch(cmd: list[str], cwd: Path, label: str) -> None:
             proc.kill()
 
 
+def smoke_detached() -> None:
+    """Boot the exe THE WAY WINDOWS DOES and prove it still serves.
+
+    Every other check here spawns the binary with subprocess pipes, which hands
+    it a real stdout — and that is exactly the thing a double-click does not do.
+    A console=False build launched from Explorer or a Start Menu shortcut gets
+    ``sys.stdout is None``, and uvicorn's log formatter calls .isatty() on it
+    during startup. The app died there, before binding a port, in both `serve`
+    and window mode. The smoke test passed the whole time, because the harness
+    was supplying the missing handle itself.
+
+    DETACHED_PROCESS is the reproduction: no console, no inherited std handles.
+    Nothing can be read back from the child, so success is measured the only
+    way it can be — the port opens and answers.
+    """
+    if sys.platform != "win32":
+        print("detached smoke: skipped (Windows-only failure mode)")
+        return
+
+    port = free_port()
+    print(f"detached smoke: no console, no std handles, port {port}")
+    proc = subprocess.Popen(
+        [str(EXE), "serve", "--port", str(port)],
+        cwd=str(ROOT),
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+        stdin=subprocess.DEVNULL, stdout=None, stderr=None, close_fds=True,
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                crash = Path(os.environ.get("LOCALAPPDATA")
+                             or Path.home()) / "BuildersGate-crash.log"
+                detail = ""
+                if crash.is_file():
+                    detail = "\n" + crash.read_text(encoding="utf-8",
+                                                    errors="replace")[-1500:]
+                sys.exit(f"detached launch FAILED — exited {proc.returncode} "
+                         f"with no console. This is what a double-click "
+                         f"does.{detail}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/",
+                                            timeout=1) as r:
+                    body = r.read()
+                print(f"  ok   served {len(body):,}B with no stdout at all")
+                return
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+                time.sleep(0.25)
+        sys.exit("detached launch never served within 60s")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def selftest() -> None:
+    """Run the frozen exe's own window-stack check.
+
+    `serve` proves the server and its data trees. It proves NOTHING about the
+    desktop window, which is a separate import graph — pywebview, its
+    EdgeChromium backend, pythonnet, the WebView2 loader DLL — that no HTTP
+    request touches. The excludes in bgate.spec exist to shrink the download
+    and every one of them is a chance to cut that graph instead, so it gets
+    checked rather than reasoned about. See _selftest() in launcher.py.
+    """
+    print(f"selftest: {EXE.name} selftest")
+    r = subprocess.run([str(EXE), "selftest"], cwd=str(ROOT),
+                       capture_output=True, text=True, timeout=120)
+    out = (r.stdout or "").strip()
+    print("  " + "\n  ".join(out.splitlines()[:40]) if out else "  (no output)")
+    if r.returncode != 0:
+        sys.exit(f"selftest FAILED (exit {r.returncode})\n{r.stderr.strip()}")
+    print("selftest passed — the window stack is in the bundle")
+
+
 def smoke() -> None:
     """Boot the frozen exe in server mode and fetch real files out of it."""
     serve_and_fetch([str(EXE)], ROOT, EXE.name)
+    smoke_detached()
+    selftest()
 
 
 def main() -> int:
@@ -233,18 +496,42 @@ def main() -> int:
     ap.add_argument("--skip-smoke", action="store_true",
                     help="build only; do not boot the exe")
     ap.add_argument("--clean", action="store_true",
-                    help="remove build/ and dist/ first")
+                    help="remove build/pyi and dist/ first (keeps the venv)")
+    ap.add_argument("--no-isolate", action="store_true",
+                    help="build with the current interpreter instead of a "
+                         "dedicated venv — faster to iterate on the spec, and "
+                         "bundles whatever else that interpreter can import")
+    ap.add_argument("--refresh-venv", action="store_true",
+                    help="rebuild the build venv from nothing first")
+    ap.add_argument("--installer", action="store_true",
+                    help="also compile dist/BuildersGate-setup.exe "
+                         "(needs Inno Setup 6)")
     a = ap.parse_args()
     if a.clean:
         for d in (ROOT / "build" / "pyi", DIST):
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
-    build()
+
+    if a.no_isolate:
+        python = Path(sys.executable)
+        print("NOT ISOLATED — bundling from the current interpreter. Anything "
+              "installed here that the app can reach ships in the release.")
+    else:
+        python = isolated_python(refresh=a.refresh_venv)
+    report_environment(python)
+
+    build(python)
     # Smoke FIRST, then zip — never package something that could not serve.
     if not a.skip_smoke:
         smoke()
     package()
+    # Installer LAST, and only after the smoke test: an installer is a much
+    # better way to spread a broken build than a zip is.
+    if a.installer:
+        installer()
     print(f"\n{ZIP}")
+    if a.installer:
+        print(SETUP)
     return 0
 
 

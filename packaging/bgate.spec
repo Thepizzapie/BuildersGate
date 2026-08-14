@@ -47,6 +47,8 @@ datas += collect_data_files("webview", includes=["lib/runtimes/**/*.dll"])
 
 # ── hidden imports ──────────────────────────────────────────────────────────
 hiddenimports = [
+    # faster-whisper + CTranslate2 reach their backends by name at run time.
+    "faster_whisper", "ctranslate2", "onnxruntime", "av", "tokenizers",
     # uvicorn picks these at runtime from a string in its config.
     "uvicorn.logging",
     "uvicorn.loops", "uvicorn.loops.auto", "uvicorn.loops.asyncio",
@@ -67,18 +69,28 @@ hiddenimports = [
 # The app's own packages: routes/ and adapters are reached through the router
 # registry rather than by direct import from the entry point.
 #
-# bgate_adapters is filtered, not collected whole. collect_submodules IMPORTS
-# each module to walk it, and bgate_adapters/_whisper_runner.py imports
-# faster_whisper — whose own docstring says "Never import faster_whisper into
-# the server process". Doing it at analysis time dragged in torch, onnxruntime
-# and the CUDA runtime and produced a 415 MB binary. That runner is spawned as
-# a SUBPROCESS and speech-to-text is an optional extra, so it does not belong
-# in the desktop bundle at all.
+# NOTHING IS FILTERED OUT OF bgate_adapters ANY MORE, and the two exclusions
+# that used to be here are the reason two features were dead in every release.
+#
+# `_whisper_runner` was cut because collect_submodules IMPORTS each module to
+# walk it, and importing it pulls faster_whisper — said to drag in torch,
+# onnxruntime and the CUDA runtime for a 415 MB binary. Measured: faster-whisper
+# runs on CTranslate2 and pulls NO torch. The real cost is ~121 MB, and cutting
+# it meant the packaged app could never transcribe anything.
+#
+# `recorder` was cut, and an earlier version of this file filtered it on
+# the reasoning that it "belongs to the record extra and is spawned out of
+# process". Both halves were wrong: bgate_core.playtest imports it IN PROCESS
+# for every preflight, and it is how playtest audio is actually captured. Cutting
+# it took numpy with it and left the Playtests screen permanently unable to
+# record. See VENV_INSTALL in build_exe.py.
+_ADAPTER_SKIP: tuple[str, ...] = ()
+
 for pkg in ("bgate_ui", "bgate_core", "bgate_cli", "bgate_site"):
     hiddenimports += collect_submodules(pkg)
 hiddenimports += [
     m for m in collect_submodules("bgate_adapters")
-    if "whisper" not in m and "transcribe" not in m
+    if not any(s in m for s in _ADAPTER_SKIP)
 ]
 
 a = Analysis(
@@ -94,11 +106,57 @@ a = Analysis(
     # in through faster_whisper (optional STT, which runs out-of-process and
     # needs a model download anyway); pygame arrives via a transitive audio
     # dependency. Leaving them in produced a 415 MB exe.
+    #
+    # THE SECOND GROUP IS THERE FOR A DIFFERENT REASON, and it is the one worth
+    # understanding: none of it is a dependency of this project. It was reaching
+    # the bundle because PyInstaller analyses whatever is installed in the
+    # interpreter that runs it, so a developer machine with unrelated SDKs on it
+    # shipped them. Measured on one: 59 MB zipped locally against 37 MB from
+    # CI's clean venv, same commit. build_exe.py now builds in an isolated venv
+    # so this cannot happen by default; these stay as a backstop for anyone who
+    # passes --no-isolate, because a silently fatter release is not a failure
+    # anybody notices.
     excludes=[
-        "torch", "torchaudio", "torchvision", "onnxruntime", "faster_whisper",
-        "ctranslate2", "transformers", "pygame", "sounddevice", "av",
+        # torch IS still excluded and nothing needs it: faster-whisper runs on
+        # CTranslate2, not PyTorch. The comment this block used to carry said
+        # torch + onnxruntime + CUDA "come in through faster_whisper" and
+        # produced a 415 MB exe — measured today, installing faster-whisper
+        # pulls NO torch at all. That wrong belief is the only reason
+        # speech-to-text was cut from the download.
+        "torch", "torchaudio", "torchvision", "transformers", "pygame",
         "tkinter", "matplotlib", "scipy", "pandas", "IPython", "notebook",
-        "pytest", "numpy.testing", "setuptools._distutils",
+        "pytest", "setuptools._distutils",
+
+        # NEITHER numpy NOR sounddevice IS EXCLUDED, and both used to be.
+        # bgate_adapters/recorder.py captures playtest mic audio through
+        # sounddevice and measures it with numpy, so excluding them did not trim
+        # an optional extra — it made recording impossible in every packaged
+        # build, on the app's own Playtests screen. ~27 MB, mostly numpy's
+        # OpenBLAS, and the feature does not exist without it.
+        # uvicorn's --reload supervisor. A frozen app never reloads.
+        "watchfiles",
+        # Pillow's AVIF codec: a 7.5 MB binary for a format nothing here reads
+        # or writes. Every other Pillow plugin is left alone.
+        "PIL.AvifImagePlugin",
+        # Cloud SDKs that are nobody's dependency here. azure.core drags in the
+        # whole opentelemetry exporter stack, which drags in grpc and protobuf:
+        # 20 MB for tracing this app does not emit.
+        "azure", "opentelemetry", "grpc", "google.protobuf", "google.auth",
+
+        # `cryptography` reaches the bundle through exactly one caller:
+        # pywebview's __generate_ssl_cert(), which builds a self-signed
+        # certificate for its own bottle server when a window is created with
+        # ssl=True. bgate_ui.desktop never passes ssl — the window points at
+        # loopback uvicorn — and pywebview's import is inside that function and
+        # already wrapped in try/ImportError with a message telling you to
+        # install pywebview[ssl]. So the only way to reach it is to add an
+        # argument this app does not use, and the failure would be that
+        # message rather than a crash. 9.5 MB of Rust bindings.
+        #
+        # THIS DOES NOT REMOVE TLS. Python's own _ssl/_hashlib and the OpenSSL
+        # DLLs beside them are untouched, which is what httpx and openai
+        # actually use to reach the network.
+        "cryptography",
     ],
     noarchive=False,
 )

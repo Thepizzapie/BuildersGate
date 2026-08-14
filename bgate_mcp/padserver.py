@@ -92,12 +92,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from bgate_core import brainstorm as _bs
 from bgate_core import queue as _queue
+from bgate_mcp.padconfig import TOOL_NAMES, config      # noqa: F401  (re-export)
 
 # How many elements one call may write. A diagram is a diagram; a model that
 # decides to lay out four hundred boxes has misunderstood the room, and the pad
@@ -378,33 +379,11 @@ def _merge(existing: list[dict], incoming: list[dict]) -> tuple[list, int, int]:
     return merged, added, amended
 
 
-def config(root: str, session_id: int, python: Optional[str] = None,
-           seat: str = "") -> dict:
-    """The ``--mcp-config`` document that registers THIS server and only this one.
-
-    Built here rather than in the spawner so the server and its registration
-    cannot disagree about the module path or the variables it needs. The
-    interpreter is the caller's absolute path for the same reason the install
-    docs insist on one: a bare `python` resolves differently under a spawned CLI
-    than in a shell, and the failure reads as "server not connected" with
-    nothing pointing at the interpreter.
-    """
-    import sys
-
-    # The seat rides in the config rather than being read off the inherited
-    # environment, because whether an MCP child inherits the spawner's env is a
-    # property of the CLI, not something this module can promise. Every canon
-    # row this server writes is attributed with it (see _seat), so an
-    # unattributed write would be a write nobody can trace back to a voice.
-    env = {"BGATE_ROOT": str(root),
-           "BGATE_BRAINSTORM_SESSION": str(int(session_id))}
-    if str(seat or "").strip():
-        env["BGATE_BRAINSTORM_SEAT"] = str(seat).strip()
-    return {"mcpServers": {"pads": {
-        "command": python or sys.executable,
-        "args": ["-m", "bgate_mcp.padserver"],
-        "env": env,
-    }}}
+# config() and TOOL_NAMES LIVE IN padconfig, which imports no MCP. Re-exported
+# here because both are part of this server's public surface and callers have
+# always reached for them by this name — but importing THIS module to reach
+# either of them costs the whole SDK, which is the mistake padconfig's own
+# docstring records. New callers should import bgate_mcp.padconfig.
 
 
 @mcp.tool()
@@ -1013,23 +992,6 @@ def room_post(text: str) -> dict:
         return {"ok": True, "message_id": row.get("id"), "seat": _seat()}
     except Exception as exc:
         return _fail(exc)
-
-
-# The tool names as the CLI will report them in its `system/init` event. Used by
-# the spawner's own verification and by the tests: the point of a small server
-# is worth nothing if nobody checks how small it still is.
-#
-# Every name here is a READ of this project's database, a WRITE to its canon
-# tables, or a message into this one room. There is no name here that files
-# work, runs a command or touches a file in the game, and adding one would end
-# the promise this whole module exists to keep.
-TOOL_NAMES = ("mcp__pads__pad_read", "mcp__pads__pad_draw",
-              "mcp__pads__board_read", "mcp__pads__canon_read",
-              "mcp__pads__bible_write", "mcp__pads__lore_write",
-              "mcp__pads__lore_fact", "mcp__pads__lore_link",
-              "mcp__pads__dialogue_list", "mcp__pads__dialogue_read",
-              "mcp__pads__project_files", "mcp__pads__file_read",
-              "mcp__pads__scene_tree", "mcp__pads__room_post")
 
 
 def main() -> None:

@@ -119,8 +119,20 @@ def register(root: str | os.PathLike[str], name: str = "") -> None:
 
 
 def known_projects() -> dict[str, str]:
-    """{name: root} for every registered project that still exists on disk."""
-    return _read_registry()
+    """{name: root} for every registered project THAT STILL EXISTS ON DISK.
+
+    The docstring said this before the code did: it returned the raw registry,
+    dead entries and all. A registry entry is a breadcrumb, not a promise — the
+    folder can be deleted, renamed or on a drive that is not plugged in — and
+    the project switcher offers this list as things you can open, so a stale
+    row is a menu item that fails when clicked.
+
+    Filtered on READ rather than pruned on write, deliberately. An unplugged
+    external drive is not a reason to forget a project; it is a reason not to
+    offer it right now.
+    """
+    return {name: root for name, root in _read_registry().items()
+            if root and Path(root).is_dir()}
 
 
 def init(root: str | os.PathLike[str], name: str, pitch: str = "",
