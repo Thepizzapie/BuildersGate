@@ -941,3 +941,275 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   background: var(--warn-soft); font: 400 11px/1.55 var(--sans); color: var(--text-2);
 }
 .bg4-chathost { height: 100%; min-height: 0; overflow: auto }
+
+/* ── the app's own window caption ────────────────────────────────────────────
+   Only present inside the frameless desktop window; TitleBar.tsx renders null
+   in a browser tab and never adds .bg-framed there, so none of this applies.
+
+   THE HEIGHT IS SHARED WITH THE WNDPROC. bgate_ui/webview2.py claims the top
+   CAPTION_H device pixels as HTCAPTION so Windows handles dragging, snapping
+   and double-click-to-maximise itself. If this height and that constant
+   disagree, part of the drawn bar stops dragging or part of the page below it
+   starts to — tests/test_webview2.py asserts they match. */
+.bg-framed body,
+html.bg-framed body { padding-top: 44px }
+
+.bg-titlebar {
+  position: fixed; inset: 0 0 auto 0; z-index: 900;
+  display: flex; align-items: stretch;
+  background: var(--solid-2); border-bottom: 1px solid var(--line);
+  /* The strip is a Windows caption as far as input is concerned, so the page
+     must not also try to select text in it on a drag. */
+  user-select: none; -webkit-user-select: none;
+}
+.bg-titlebar-drag { flex: 1; min-width: 0; display: flex; align-items: center; padding: 0 12px }
+.bg-titlebar-name {
+  font: 500 11px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg-titlebar-buttons { display: flex; flex: none }
+.bg-winbtn {
+  width: 46px; display: grid; place-items: center;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--text-2); transition: background .12s ease, color .12s ease;
+}
+.bg-winbtn:hover { background: var(--solid-3); color: var(--text) }
+.bg-winbtn:focus-visible { outline: 1px solid var(--accent); outline-offset: -3px }
+/* The one button whose hover is red on every Windows app, and the one people
+   look for by colour rather than by glyph. */
+.bg-winbtn-close:hover { background: #c42b1c; color: #fff }
+
+/* ── project switcher ────────────────────────────────────────────────────────
+   The nav footer's project name, made into the control that changes project.
+   It was static text and there was no other way to switch, so a second game on
+   the same machine was unreachable from inside the app. */
+.bg4-projswitch { position: relative; display: flex }
+.bg4-projbtn {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+  color: inherit; font: inherit;
+}
+.bg4-projbtn .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis }
+.bg4-projbtn .cv { flex: none; font-size: 9px; color: var(--text-3) }
+.bg4-projbtn:hover .nm { color: var(--text) }
+
+/* Opens UPWARD: the footer sits at the bottom of the rail, so a menu dropping
+   down would render off-screen. */
+.bg4-projmenu {
+  /* FIXED, not absolute: this is portalled to <body> now (see
+     ProjectSwitch.tsx) so it is positioned against the viewport, and `left`
+     and `bottom` come from the rail button's measured rect. */
+  position: fixed; z-index: 950;
+  min-width: 280px; max-width: 420px; max-height: 60vh; overflow: auto;
+  /* The theme's own surface. Orbit frosts this (see app.css); dark and light
+     resolve it to an opaque hex, so it is solid there. */
+  background: var(--solid-2); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .55); padding: 5px;
+}
+.bg4-projhead {
+  padding: 6px 8px 7px; font: 500 9px var(--mono); letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-projempty { padding: 8px; font: 400 11px var(--sans); color: var(--text-3) }
+.bg4-projitem {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 6px; padding: 7px 8px;
+}
+.bg4-projitem:hover:not(:disabled) { background: var(--solid-3) }
+.bg4-projitem:disabled { cursor: default; opacity: .75 }
+.bg4-projitem .nm { display: block; font: 450 12px var(--sans); color: var(--text) }
+.bg4-projitem .pa {
+  display: block; margin-top: 1px; font: 400 10px var(--mono);
+  color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-projitem .cur {
+  display: inline-block; margin-top: 3px; font: 500 9px var(--mono);
+  letter-spacing: .1em; text-transform: uppercase; color: var(--accent);
+}
+.bg4-projsep { height: 1px; margin: 5px 4px; background: var(--line) }
+.bg4-projitem.new .nm { color: var(--accent) }
+.bg4-projwarn {
+  position: absolute; top: 7px; right: 7px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--bad);
+}
+
+/* ── softer chrome ───────────────────────────────────────────────────────────
+   The shell read as hard: every panel edge was a full-strength 1px seam at the
+   same weight as every other, and the composer's focus state landed as a
+   bright rectangle around the one thing you are looking at. Nothing here
+   changes layout — only how loudly the edges speak.
+
+   The rule: STRUCTURE gets --line, everything INSIDE a panel gets --line-soft.
+   A list row and a panel boundary were the same colour, so a list of four rows
+   read as four panels. */
+.bg4-set, .bg4-settings-group, .bg4-row, .bg4-panel > * + * { border-color: var(--line-soft) }
+.bg4-card, .bg4-panel, .bg4-settings-split { border-radius: 12px }
+
+/* The composer, breathing rather than posted.
+   A static 3px ring on a 16px card is a validated form field; this is the
+   thing you type into and it should feel alive when it has focus and inert
+   when it does not. The glow is wide, low-opacity and slow — closer to a lamp
+   coming up than to a border turning on. */
+@keyframes bg4-breathe {
+  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 6%, transparent),
+                         0 8px 34px -14px color-mix(in srgb, var(--accent) 26%, transparent) }
+  50%      { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 9%, transparent),
+                         0 10px 44px -12px color-mix(in srgb, var(--accent) 36%, transparent) }
+}
+.bg4-composer-hero {
+  border-radius: 18px;
+  transition: border-color .28s var(--ease, ease), box-shadow .34s var(--ease, ease);
+}
+.bg4-composer-hero:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  animation: bg4-breathe 4.2s ease-in-out infinite;
+}
+/* Unfocused, it still lifts off the page slightly rather than sitting flat
+   inside a hard outline. */
+.bg4-composer-hero {
+  border-color: var(--line-soft);
+  box-shadow: 0 6px 26px -18px rgba(0, 0, 0, .8);
+}
+.bg4-composer-hero:hover { border-color: var(--line) }
+
+/* THE SUGGESTION CHIPS AND THE CLOSED LIST were four hard-edged boxes under a
+   soft one. Same family now. */
+/* The real class names — an earlier pass guessed `.bg4-sugg` and
+   `.bg4-closed-row`, neither of which exists, so the chips and the closed list
+   kept their hard edges while the composer above them softened. */
+.bg4-suggest {
+  border-color: var(--line-soft) !important;
+  border-radius: 11px !important;
+  background: color-mix(in srgb, var(--solid-2) 70%, transparent) !important;
+}
+.bg4-suggest:hover { border-color: var(--line) !important }
+.bg4-closed {
+  border-color: var(--line-soft);
+  border-radius: 10px;
+  transition: background .18s var(--ease, ease), border-color .18s var(--ease, ease);
+}
+.bg4-closed:hover { background: var(--solid-3); border-color: var(--line) }
+
+/* Somebody who has asked for reduced motion has asked for exactly this. */
+@media (prefers-reduced-motion: reduce) {
+  .bg4-composer-hero:focus-within { animation: none;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 8%, transparent) }
+}
+
+/* ── first-run card, on Mantine ──────────────────────────────────────────────
+   The only bespoke pieces left are the two that Mantine has no component for:
+   a row that opens a registered project, and a template card that behaves as a
+   radio. Everything else is TextInput / Button / Alert / Divider like the rest
+   of the app. */
+.fr-kind {
+  cursor: pointer; text-align: left; background: var(--solid-2);
+  border-color: var(--line-soft) !important;
+  transition: border-color .14s var(--ease, ease), background .14s var(--ease, ease);
+}
+.fr-kind:hover { border-color: var(--line) !important }
+.fr-kind.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line)) !important;
+  background: color-mix(in srgb, var(--accent) 7%, var(--solid-2));
+}
+.fr-mark { display: inline-flex; line-height: 0 }
+/* The registry can be any length; the card should not be. */
+
+/* ── ORBIT'S GLASS, WIRED TO THE SHELL THAT ACTUALLY EXISTS ──────────────────
+   The theme defines --glass-1/2/3 and --glass-filter (blur 28px, saturate
+   165%), and before this exactly three rules in the product consumed them:
+   `.rail-inner`, `.statusbar` and `.nc-node`. The first two are DEAD MARKUP —
+   the rail and the status bar became .bg4-rail and .bg4-head when the shell
+   moved into React, and the glass did not come with them. So the theme whose
+   entire premise is "glass on vanta black" was rendering glass on the graph
+   nodes and nowhere else.
+
+   Everything else in the theme got the alpha fill WITHOUT the blur, which is
+   not glass — it is a hole. Nobody notices on a panel lying flat on the page,
+   because what shows through is #000. It is very visible on anything that
+   floats, because what shows through is the page, sharp and fully legible.
+
+   TWO GROUPS, AND THE SPLIT IS NOT COSMETIC.
+
+     CHROME — the rail, the header, the nav column, the inspector. Fixed
+     furniture the content scrolls under. Glass here is the theme's whole idea.
+
+     FLOATING — drawers, menus, popovers, toasts. These need the blur MORE
+     (they land on text) and they get a heavier fill, because 28px of blur over
+     high-contrast copy still leaves a readable ghost at 84%.
+
+   WHAT IS DELIBERATELY ABSENT: .panel and the other bedded cards. Two reasons.
+   Nothing is behind them but the ground, so the filter costs a compositor
+   layer per panel and buys nothing; and backdrop-filter CREATES A STACKING
+   CONTEXT, so putting it on .panel promoted every panel above the notification
+   drawer and they painted straight through it. Measured, on screen.
+
+   On dark and light this whole block is inert: --glass-filter is `none` there
+   and --glass-* alias the opaque surface ramp, so these resolve to the same
+   paint they already had. Same contract .rail-inner had. */
+:root[data-theme="orbit"] :is(.bg4-rail, .bg4-nav, .bg4-head, .bg4-insp) {
+  background: var(--glass-1);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+
+:root[data-theme="orbit"] :is(
+    .bg4-projmenu, .nt-drawer, .inspector, .asset-drawer, .toast, .bgs-pop,
+    .bs-drawer, .bs-drawer-h, .ask-card, .ask-pickbox, .pk-card, .fr-card,
+    .review-shell, .wl-modal-card,
+    .mantine-Menu-dropdown, .mantine-Popover-dropdown,
+    .mantine-Select-dropdown, .mantine-Combobox-dropdown,
+    .mantine-MultiSelect-dropdown, .mantine-Autocomplete-dropdown,
+    .mantine-HoverCard-dropdown, .mantine-Modal-content,
+    .mantine-Drawer-content) {
+  /* FROSTED. The engine does support backdrop-filter — proven with an
+     isolated probe served from this very app: a page of hard diagonal stripes
+     behind a blurred pane came back as a smooth wash, and
+     CSS.supports("backdrop-filter","blur(4px)") is true.
+
+     It failed HERE for a structural reason, now fixed: this drawer lived
+     inside .bg4-head and the project menu inside .bg4-rail, both of which
+     carry backdrop-filter in orbit. An element with backdrop-filter is a
+     BACKDROP ROOT — a descendant's filter samples only what is inside that
+     root, so these were blurring 42px of header and a 56px strip of rail
+     respectively, which is to say nothing. Both are portalled to <body> now.
+
+     The fill has to stay THIN or the blur is invisible: at --glass-2's .84 the
+     pane is effectively opaque and there is nothing to see through. The rim
+     highlight is what makes it read as a sheet rather than a hole. */
+  background: color-mix(in srgb, var(--glass-2) 66%, transparent);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+  border: 1px solid color-mix(in srgb, rgb(214,224,255) 15%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, rgb(214,224,255) 18%, transparent),
+    0 26px 64px -22px rgba(0, 0, 0, .9);
+}
+
+/* ── THE CHROME HAS TO OWN A LAYER, OR ITS OVERLAYS CANNOT ESCAPE ────────────
+   The bug: in orbit, the notification drawer, the project menu and every
+   dropdown anchored in the chrome rendered UNDERNEATH the stage — panels,
+   cards and buttons painted straight through them.
+
+   It was never a z-index value being too low. `backdrop-filter` CREATES A
+   STACKING CONTEXT, and orbit puts one on .bg4-rail, .bg4-nav, .bg4-head and
+   .bg4-insp. An overlay nested inside one of those is sealed into it: the
+   drawer's z-index:60 ranks it against its siblings in the header, and the
+   header itself then competes with .stage — where BOTH are z-index auto, so
+   the winner is DOM order, and the stage comes later.
+
+   That is also why it looked like an orbit-only bug. On dark and light
+   --glass-filter is `none`, no context is created, and the drawer's 60 is
+   evaluated against the stage directly, where it wins.
+
+   So the chrome is given a layer of its own, above the stage and below the
+   overlay scale (--z-drawer is 60). Every overlay anchored in the chrome now
+   rides above the stage inside it, on every ground — this is not orbit-scoped,
+   because the correct painting order is not a property of the theme. */
+:is(.bg4-rail, .bg4-nav, .bg4-head, .bg4-insp) {
+  /* NO `position` HERE. These are children of the body grid, and a GRID ITEM
+     honours z-index while staying statically positioned — which is the whole
+     reason this works without touching layout. Setting position:relative took
+     .bg4-insp out of whatever positioning it had and dropped it back into the
+     flow, where it claimed its 340px and shoved every column across. */
+  z-index: 40;
+}

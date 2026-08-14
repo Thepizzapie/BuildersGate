@@ -97,6 +97,99 @@ EVENT_KINDS = ("item.done", "item.review", "item.failed", "item.stopped",
                "director.question", "agent.spawned", "agent.exited",
                "file.edited")
 
+
+# ── how a human reads this panel ────────────────────────────────────────────
+# A settings key is an IDENTIFIER — dispatch.allow_dirty, notify.question_stale_h
+# — and identifiers are for the code that reads them. The panel was rendering
+# them as the heading of every row, so the Settings screen read as a config file
+# with checkboxes: a person who had not written this app could not tell what
+# `follow_up.max_age_min` governed without reading three lines of help text.
+#
+# The key still shows, small and mono, underneath — it is what you search for,
+# what an env override is named after, and what a bug report should quote. It is
+# simply no longer the title.
+#
+# EVERY SETTING MUST APPEAR HERE. tests/test_settings_labels.py fails on a key
+# with no label, because the failure mode otherwise is a new switch silently
+# reverting to showing its identifier and nobody noticing for a release.
+LABELS: dict[str, str] = {
+    # Dispatch
+    "autopilot.on": "Start queued work automatically",
+    "dispatch.allow_dirty": "Let agents work on top of your unsaved changes",
+    "dispatch.auto_commit": "Commit each finished task's own files",
+    "dispatch.isolation": "Give each agent its own private copy of the repo",
+    "dispatch.max_concurrent": "How many agents may work at once",
+    "dispatch.model": "Model every seat uses",
+    "dispatch.model_art": "Model the art seat uses",
+    "dispatch.max_turns": "Stop an agent after this many turns",
+    # Gates
+    "gate.mode": "Who signs off finished work",
+    "qa.max_rounds": "How many times work may bounce back for fixes",
+    "qa.gated_seats": "Seats whose work gets checked automatically",
+    "signoff.hours": "How long finished work waits for your sign-off",
+    # Art
+    "art.style_source": "Where the art style comes from",
+    "art.style_dataset": "Reference images the style is trained on",
+    "art.lora_strength": "How strongly the trained style is applied",
+    "art.runner": "Which tool generates images",
+    "art.image_backend": "Image provider",
+    "art.auto_approve": "Accept generated art without review",
+    # Follow-up
+    "followup.director_debrief": "Ask the director to review finished work",
+    "followup.max_per_hour": "Most reviews to raise in an hour",
+    "followup.max_age_min": "Skip reviewing work older than this",
+    "followup.auto_reopen_failures": "Reopen failed tasks automatically",
+    # Notifications
+    "notify.in_app": "Show notifications in the app",
+    "notify.kinds": "What to be notified about",
+    "notify.webhook": "Send notifications to a webhook",
+    "notify.stall_hours": "Warn when work has not moved for this long",
+    "notify.question_stale_h": "Warn about unanswered questions after",
+    "notify.quiet_hours": "Hours to stay silent",
+    # Budget
+    "budget.enforced": "Enforce spending limits",
+    "budget.per_item_usd": "Limit per task",
+    "budget.per_day_usd": "Limit per day",
+    "budget.per_project_usd": "Limit for the whole project",
+    "budget.max_runtime_s": "Stop an agent after this long",
+    # Console
+    "console.poll_live_ms": "Refresh rate while work is running",
+    "console.poll_idle_ms": "Refresh rate when nothing is running",
+    "graph.phase_cap": "Most steps to show per agent on the graph",
+    "brainstorm.runner": "Which assistant the brainstorm room uses",
+    "brainstorm.model": "Model the brainstorm room uses",
+    "brainstorm.max_usd": "Spending limit for one brainstorm",
+    # Privacy
+    "privacy.streamer": "Streamer mode - hide anything private on screen",
+    # Community
+    "chat.capture": "What viewer chat to keep during a stream",
+    "chat.playtest_notes": "Let viewers leave notes on a playtest",
+}
+
+#: One glyph per group, for the category list. Tabler names — see shell/Ti.tsx.
+GROUP_ICONS: dict[str, str] = {
+    "Dispatch": "send",
+    "Gates": "shield-check",
+    "Art": "palette",
+    "Follow-up": "rotate-clockwise",
+    "Notifications": "bell",
+    "Budget": "coin",
+    "Console": "terminal-2",
+    "Privacy": "eye-off",
+    "Community": "users",
+    "Generators": "sparkles",
+}
+
+
+def label_for(key: str) -> str:
+    """The human name for a key, falling back to a readable form of the key."""
+    hit = LABELS.get(key)
+    if hit:
+        return hit
+    tail = key.split(".")[-1].replace("_", " ")
+    return tail[:1].upper() + tail[1:]
+
+
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
 
@@ -967,6 +1060,10 @@ def _field(root, s: Setting) -> dict:
         "stored": stored_raw if stored_present else None,
         "source": src,
         "scope": s.scope,
+        # THE HUMAN NAME, and the reason the panel stopped titling every row
+        # with an identifier. `key` is still here and still shown, because it is
+        # what you search for and what an env override is named after.
+        "label": label_for(s.key),
         "help": s.help,
         "min": s.minimum,
         "max": s.maximum,
@@ -995,6 +1092,7 @@ def describe(root: str | os.PathLike[str]) -> dict:
         groups.setdefault(s.group, []).append(_field(root, s))
     return {
         "precedence": "env > project stored > default",
-        "groups": [{"name": name, "fields": fields}
+        "groups": [{"name": name, "icon": GROUP_ICONS.get(name, "adjustments"),
+                    "fields": fields}
                    for name, fields in groups.items() if fields],
     }

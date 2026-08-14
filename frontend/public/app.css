@@ -79,9 +79,16 @@
     --surface-3:#1e1d22;   /* hover, raised, active fills */
     --surface-4:#26252c;   /* pressed, selected */
 
-    --line:#27262e;        /* default seam — visible at 1px */
-    --line-soft:#1c1b21;   /* internal dividers, list rows */
-    --line-strong:#393842;
+    /* SOFTENED. These were tuned so a 1px seam is unmistakable, and the
+       result was an interface where every edge shouts at the same volume: a
+       panel boundary, a list row and an input all drew the same line, so the
+       eye had nothing to sort by and the whole surface read as hard.
+       Dimmed roughly 12% each, keeping the three-step ladder intact — the
+       point is that they now differ from each other more than they differ
+       from the background. */
+    --line:#232229;        /* default seam — visible at 1px */
+    --line-soft:#191820;   /* internal dividers, list rows */
+    --line-strong:#33323b;
 
     --text:#f4f2ef;        /* 17.7:1 */
     --text-2:#aca8a2;      /*  8.4:1 — secondary copy, values */
@@ -1431,7 +1438,13 @@
   }
   .nt-badge.hidden{display:none}
   .nt-drawer{
-    position:absolute; top:calc(100% + var(--s-3)); right:0; width:400px; max-width:92vw;
+    /* FIXED, against the viewport. The drawer is appended to <body> now
+       (notify.js) rather than to the bell's host in the header — see the note
+       there: a backdrop-filtered header is a backdrop root, and a drawer
+       inside one can neither frost the page nor rise above it. Anchored under
+       the header bar, hard right, which is where it rendered before. */
+    position:fixed; top:calc(var(--bar-h) + var(--s-3)); right:var(--s-5);
+    width:400px; max-width:92vw;
     background:var(--solid-2); border:1px solid var(--line); border-radius:var(--r-lg);
     box-shadow:var(--shadow-3); z-index:var(--z-drawer); overflow:hidden;
     font-size:var(--fs-sm); color:var(--text); text-align:left;
@@ -3496,13 +3509,26 @@
   /* ── first run ─────────────────────────────────────────────────────────── */
   .firstrun{
     position:fixed; inset:0; z-index:var(--z-firstrun); background:var(--bg);
-    display:flex; align-items:center; justify-content:center;
+    display:flex; justify-content:center;
     padding:var(--s-9); overflow:auto;
+    /* NOT align-items:center. A flex item taller than its container overflows
+       its START edge when centred, and the browser gives you no way to scroll
+       to it — so with eight registered projects the top of this card (the mark,
+       the heading, the first two projects) was simply unreachable. `auto`
+       margins centre it while it fits and let it grow downward when it does
+       not, which is the behaviour centring was there for. */
+    align-items:flex-start;
   }
+  .fr-card{margin:auto}
   .firstrun[hidden]{display:none}
   .fr-card{
     width:min(560px,100%); background:var(--solid-2); border:1px solid var(--line);
     border-radius:var(--r-xl); padding:var(--s-9); box-shadow:var(--shadow-4);
+    /* NO SCROLLERS AND NO MAX-HEIGHT. The card was outgrowing the window
+       because the project registry was rendered as one fat row per project;
+       it is a Select now, so the whole thing is a fixed ~560px tall
+       regardless of how many games are registered. A card that fits needs no
+       machinery to survive not fitting. */
   }
   /* Same two-tone mark as the rail — see .rail-brand .mark. */
   .fr-mark{color:var(--brand-post); font-size:var(--fs-2xl); line-height:1}

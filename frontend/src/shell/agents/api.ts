@@ -40,6 +40,8 @@ export type Gate = {
   result?: string; status?: string; created_at?: string;
 };
 export type ConsoleState = {
+  /** Work-item id the current console session starts after. */
+  cleared_before?: number;
   turns: Turn[]; items: Item[]; agents: { item_id: number }[];
   questions: Question[]; gates: Gate[];
   /** Which item produced which — the Graph pane's whole input. */

@@ -13,6 +13,7 @@ import { Agents } from "./shell/agents/Agents";
 import { Room } from "./shell/brainstorm/Room";
 import { Settings } from "./shell/settings/Settings";
 import { Seats } from "./shell/seats/Seats";
+import { TitleBar } from "./shell/TitleBar";
 import { push } from "./store";
 
 /* main.tsx — the island registry.
@@ -52,6 +53,9 @@ const ISLANDS: Record<string, ComponentType> = {
      gameplay's is a table of tunables with what playtests measured beside
      them — a renamed kanban lane was never any of those. */
   seats: Seats,
+  /* The app's own window caption, drawn only inside the frameless desktop
+     window. In a browser tab it mounts and immediately renders null. */
+  titlebar: TitleBar,
 };
 
 const mounted = new WeakMap<Element, Root>();

@@ -14,7 +14,7 @@ import { Composer, type Aim } from "./Composer";
 import { Cat } from "./Cat";
 import { Streamer } from "./Streamer";
 import {
-  EMPTY_CONSOLE, bsCreate, bsList, bsOpen, bsSay, clearConsole, consoleState, say,
+  EMPTY_CONSOLE, bsCreate, bsList, bsOpen, bsReset, bsSay, clearConsole, consoleState, say,
   steerAll, steerItem,
   type BsSession, type ConsoleState, type Item, type Turn,
 } from "./api";
@@ -232,13 +232,48 @@ export function Agents() {
       setAim(null);
   }, [aim, targets, seats]);
 
+  /* CLEAR HAS TO FOLLOW THE MODE, and it did not.
+   *
+   * The transcript is two different things: in dispatch mode it is console
+   * work items, and in brainstorm mode it is one room's messages. `clear` only
+   * ever called /api/console/clear, which moves the cut line over work_item
+   * rows with source='chat' — so pressing it in brainstorm mode archived an
+   * empty range of the wrong table, answered "console cleared", and left every
+   * message on screen. The toast said it worked, so the honest reading was to
+   * press it again; the reported symptom was seven identical toasts stacked up
+   * and a transcript that would not clear.
+   *
+   * In brainstorm mode the equivalent action is the room's own reset, which
+   * stops the partner and empties the thread while keeping the notes and the
+   * drawing. */
+  const clear = async () => {
+    if (mode === "brainstorm") {
+      if (!session) return;
+      const r = await bsReset(session.id);
+      if (!r.ok) return;
+      /* RE-OPEN THE ROOM, do not just refresh().
+         refresh() reloads /api/console/state — the DISPATCH transcript. In
+         brainstorm mode the transcript is rendered from `session`, which only
+         bsOpen() ever writes, so the reset landed on the server and the screen
+         kept showing every message. It looked like Reset did nothing, so it
+         got pressed again, which is the row of identical "thread reset" toasts
+         in the corner. */
+      setSession(await bsOpen(session.id));
+      return;
+    }
+    await clearConsole();
+    await refresh();
+  };
+
   const composer = (variant: "hero" | "foot") => (
     <Composer variant={variant} mode={mode} onMode={setMode}
               value={text} onValue={setText} onSend={() => send()}
               targets={targets} seats={seats} aim={aim} onAim={setAim}
               sending={sending} autoDeploy={autoDeploy}
-              onClear={variant === "foot"
-                ? () => clearConsole().then(refresh) : undefined} />
+              /* No room open means nothing to clear — an enabled button that
+                 cannot act is what produced this bug in the first place. */
+              onClear={variant === "foot" && !(mode === "brainstorm" && !session)
+                ? clear : undefined} />
   );
 
   return (
@@ -413,7 +448,12 @@ function Live({
       <RailGrip />
       <div className="bg4-console-side">
         <Group gap="xs" p="xs" className="bg4-side-head" wrap="nowrap">
-          <SegmentedControl size="xs" value={pane}
+          {/* bg4-modes is what colours the ACTIVE label. Without it the
+              selected segment inherits Mantine's default, which on this ground
+              is dark text on a dark indicator — the option you are ON is the
+              one you cannot read. The composer's mode toggle has always
+              carried this class; this one was added later and did not. */}
+          <SegmentedControl size="xs" value={pane} className="bg4-modes"
                             onChange={(v) => setPane(v as "board" | "graph")}
                             data={[
                               { value: "board",
@@ -451,7 +491,14 @@ function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
   const autoDeploy = !!state.autopilot?.on;
   const [busy, setBusy] = useState(false);
   const queued = open.filter((i) => i.status === "queued");
-  const responses = (state.items || []).filter((i) => i.result);
+  /* THIS SESSION'S RESULTS, not the project's entire history.
+     This listed every work item that has ever carried a result — 400+ rows
+     going back weeks — so the panel beside a five-minute conversation was a
+     wall of runs from another day. The console already keeps a cut line
+     (`cleared_before`, moved by the clear button and exposed by
+     /api/console/state); ids above it are this session's. */
+  const since = state.cleared_before || 0;
+  const responses = (state.items || []).filter((i) => i.result && i.id > since);
 
   /* Deploy what is READY, one at a time. A chain link whose predecessor has not
      landed refuses, and firing twenty at once turns one concurrency refusal

@@ -149,25 +149,58 @@
                 aria-label="Notifications" title="What has happened">
           ${BELL}<span class="nt-badge hidden" id="nt-badge" aria-live="polite"></span>
         </button>
-        <div class="nt-drawer" id="nt-drawer" role="dialog"
-             aria-label="Notifications" hidden></div>`;
+        `;
+
+      /* THE DRAWER IS A CHILD OF <body>, NOT OF THE BELL'S HOST.
+         It used to sit inside #nt-host, which lives in the shell header — and
+         in the orbit ground that header carries a backdrop-filter. An element
+         with backdrop-filter is a BACKDROP ROOT: a descendant's own filter can
+         only sample content inside it, so the drawer's frost had nothing but
+         the 42px header behind it and rendered as a clear pane. The same
+         nesting sealed the drawer into the header's stacking context, which is
+         why the page's panels painted straight over it.
+
+         At body level it frosts the actual page and needs no z-index contest
+         with the stage. It is positioned in CSS against the viewport; the bell
+         stays where it is and still owns the toggle. */
+      const drawer = document.createElement("div");
+      drawer.className = "nt-drawer";
+      drawer.id = "nt-drawer";
+      drawer.setAttribute("role", "dialog");
+      drawer.setAttribute("aria-label", "Notifications");
+      drawer.hidden = true;
+      document.body.appendChild(drawer);
+      this.drawer = drawer;
 
       /* ONE delegated click listener for the whole module. Rows, the mark-read
          button and the reply buttons are all rebuilt on every repaint, so
          per-element handlers would have to be rebound each time and one missed
          rebind is a dead button nobody notices. */
-      host.addEventListener("click", e => {
+      /* BOUND TO BOTH, because the drawer is no longer inside the host.
+         It is appended to <body> (see above), so delegation on the host alone
+         reached the bell and nothing else — every control in the drawer, mark
+         all read and the reply boxes included, was dead. */
+      const onClick = e => {
         try { this._onClick(e); } catch (err) { this._warn(err); }
-      });
+      };
       // A draft answer lives in this.drafts, not in the DOM: the drawer repaints
       // whenever the log moves and a textarea's value would go with it.
-      host.addEventListener("input", e => {
+      const onInput = e => {
         const box = e.target && e.target.closest && e.target.closest("[data-nt-reply]");
         if (box) this.drafts[box.dataset.ntReply] = box.value;
-      });
+      };
+      host.addEventListener("click", onClick);
+      host.addEventListener("input", onInput);
+      drawer.addEventListener("click", onClick);
+      drawer.addEventListener("input", onInput);
       document.addEventListener("click", e => {
         if (!this.open || !this.host) return;
+        // BOTH, for the same reason the handlers above are bound twice: the
+        // drawer is a sibling of the host now, not a child, so testing the
+        // host alone treated every click INSIDE the drawer as a click outside
+        // it and shut the thing the moment you touched it.
         if (this.host.contains(e.target)) return;
+        if (this.drawer && this.drawer.contains(e.target)) return;
         this.close();
       });
       document.addEventListener("keydown", e => {

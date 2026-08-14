@@ -711,6 +711,13 @@ def console_state(steps: bool = True) -> dict:
         "phases": live_phases,
         "collab": _collab(r, conn, active),
         "sessions": list(reversed(doc.get("sessions") or []))[:20],
+        # THE CUT LINE, so the side panel can scope itself to THIS session.
+        # `turns` above is already filtered by it; `items` deliberately is not,
+        # because the board shows live work regardless of when the console was
+        # last cleared. Without this number the Responses tab had no way to
+        # tell one session's results from every result the project has ever
+        # produced, and listed all 400+.
+        "cleared_before": int(doc.get("cleared_before") or 0),
         "autopilot": _autodeploy.state(r),
         "gate": _gatemode.state(r),
         "floor": {
