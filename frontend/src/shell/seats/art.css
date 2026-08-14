@@ -1,0 +1,127 @@
+/* ART seat — rules the shared artaudio.css does not carry.
+ *
+ * SEPARATE FILE ON PURPOSE. artaudio.css is shared with the audio seat; every
+ * rule here is art-only (the frame strip's third state, the per-cell number
+ * table, the pin's provenance line, the lock row's lease column) and putting
+ * them there would make two seats edit one file.
+ */
+
+/* THE STRIP'S THIRD STATE. chroma.audit returns `flags` (hard failures) and
+ * `review` (advisory — "possible hole") as two separate lists, and the strip
+ * used to draw a green "clean" check over a cell that had review notes. A
+ * cell the audit hedged about is not a cell the audit passed. */
+.bga-cell .flag.review {
+  color: var(--warn);
+  background: transparent;
+  border: 1px solid var(--warn-line, var(--warn));
+}
+.bga-cell.reviewed { border-color: var(--warn-line, var(--warn)) }
+.bga-cell .flag .more { opacity: .75; margin-left: 3px }
+
+/* PER-CELL NUMBERS. /api/art/sheet audits every cell and returns dirty_alpha,
+ * white_fringe, soft_alpha and hollow for each one; the strip showed only the
+ * flag, so four measured numbers per frame were fetched and thrown away. This
+ * is the resolution the module exists for — one bad cell in six. */
+.bga-cells {
+  width: 100%;
+  border-collapse: collapse;
+  font: 400 11px var(--mono);
+  margin: 2px 0 10px;
+}
+.bga-cells th {
+  font: 500 10px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-3);
+  text-align: right;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.bga-cells th:first-child, .bga-cells td:first-child { text-align: left }
+.bga-cells td {
+  padding: 3px 8px;
+  text-align: right;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.bga-cells td.over { color: var(--warn); font-weight: 500 }
+.bga-cells td.none { color: var(--text-3) }
+.bga-cells caption {
+  caption-side: bottom;
+  text-align: left;
+  font: 400 10px var(--mono);
+  color: var(--text-3);
+  padding-top: 4px;
+}
+
+/* THE GATE TRAVELS WITH THE NUMBER. A bar with no threshold on it is a colour
+ * the reader has to trust; these print the constant they were judged against
+ * (chroma.py's BORDER_OPAQUE_MAX and friends) beside the value. */
+.bga-measure .gate {
+  font: 400 10px var(--mono);
+  color: var(--text-3);
+  min-width: 66px;
+  text-align: right;
+  padding-left: 6px;
+}
+.bga-measure .v.ungated { color: var(--text-3) }
+.bga-measure .track span.ungated { background: var(--text-3); opacity: .45 }
+
+/* A picker over the families the read already returned. */
+.bga-fam {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font: 400 11px var(--mono);
+  color: var(--text-3);
+}
+.bga-fam select {
+  font: 400 11px var(--mono);
+  color: var(--text-1, var(--text-2));
+  background: var(--bg-2, transparent);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 6px;
+  max-width: 320px;
+}
+.bga-path {
+  font: 400 10px var(--mono);
+  color: var(--text-3);
+  word-break: break-all;
+  margin: 0 0 8px;
+}
+
+/* PIN PROVENANCE. Which pin, which revision, and whether the project has since
+ * re-pinned that name — a sheet conditioned on r1 while the project is on r3
+ * is not conditioned on the reference any more. */
+.bga-pin .prov {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 6px;
+}
+.bga-pin .sub.warn { color: var(--warn) }
+
+/* LOCK ROWS carry a lease and a heartbeat. Path + seat alone cannot tell a live
+ * run from one that died holding the file. */
+.bga-lease {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font: 400 10px var(--mono);
+  color: var(--text-3);
+  padding: 0 6px 6px 26px;
+  margin-top: -4px;
+}
+.bga-lease .warn { color: var(--warn) }
+.bga-lease code {
+  font: inherit;
+  color: var(--text-2);
+  background: var(--bg-2, transparent);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 4px;
+}

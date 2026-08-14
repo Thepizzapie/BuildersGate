@@ -1,0 +1,14 @@
+/* Inter and JetBrains Mono, latin subset, vendored (both SIL OFL 1.1).
+
+   Variable files: one woff2 covers 400-600 for Inter and 400-500 for Mono, and
+   the weight RANGE below is what selects 500 for a label. Latin only — the
+   other subsets Google serves are Cyrillic, Greek and Vietnamese that nothing
+   in this product renders.
+
+   Vendored rather than linked: the dashboard binds to loopback and ships inside
+   a PyInstaller exe, where a CDN is absent — and absent type is a layout change,
+   not a style one. */
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 600;
+           font-display:swap;src:url('./Inter-latin.woff2') format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 500;
+           font-display:swap;src:url('./JetBrainsMono-latin.woff2') format('woff2')}

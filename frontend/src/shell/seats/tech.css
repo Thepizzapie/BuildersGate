@@ -1,0 +1,46 @@
+/* Tech's own two tables.
+ *
+ * Neither is a bgs-table: a convention rule and a generator both carry a line
+ * of prose UNDER the row's headline — the offending nodes, the reason a script
+ * is scored the way it is — and a grid of cells has nowhere to put a sentence
+ * that long without wrapping the whole column to its width. */
+
+.bgt-rule {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); padding: 10px 13px; margin-bottom: 8px;
+}
+.bgt-rule.t-bad { border-color: var(--bad-line) }
+.bgt-rule.t-warn { border-color: var(--warn-line) }
+.bgt-rule .b { flex: 1; min-width: 0 }
+.bgt-rule .t { font: 400 12px/1.5 var(--sans); color: var(--text) }
+.bgt-rule .d {
+  margin-top: 3px;
+  font: 500 10px/1.6 var(--mono); color: var(--text-3);
+}
+/* The examples are the point of the row — a count with no path attached is a
+   number you cannot act on. Monospace because they are file paths. */
+.bgt-rule .ex {
+  display: block; margin-top: 4px;
+  font: 500 10px/1.6 var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgt-rule .n { flex: none; font: 500 11px var(--mono); color: var(--text-3) }
+.bgt-rule.t-good .n { color: var(--good) }
+.bgt-rule.t-bad .n { color: var(--bad) }
+.bgt-rule.t-warn .n { color: var(--warn) }
+
+.bgt-gen {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); padding: 10px 13px; margin-bottom: 8px;
+}
+.bgt-gen.bad { border-color: var(--bad-line) }
+.bgt-gen .h { display: flex; align-items: center; gap: 9px }
+.bgt-gen .p {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 11px var(--mono); color: var(--text);
+}
+.bgt-gen .note {
+  margin-top: 5px;
+  font: 500 10px/1.6 var(--mono); color: var(--text-3);
+}

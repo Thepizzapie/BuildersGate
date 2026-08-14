@@ -1,0 +1,193 @@
+/* Art and audio share a file because they share a discipline and a shape.
+ *
+ * Both seats own BINARIES — a .png and a .wav each fail to merge, each needs a
+ * lease before an edit — and both are judged by a MEASUREMENT taken against a
+ * declared target: art's frames against the pinned reference, audio's files
+ * against -14 LUFS. The furniture that expresses that (a strip of cells with a
+ * flag under the ones that failed, a row of label/bar/value, a lock note) is
+ * the same furniture, so it lives in one place rather than being written twice
+ * and drifting.
+ */
+
+/* ---- the frame strip ---------------------------------------------------- */
+
+/* A sheet is a ROW OF FRAMES and the whole point of showing it as one is that
+   the flag lands on the cell that earned it. The cells are slices of the one
+   PNG — background-position over a background-size of N*100% — because the
+   sheet is a single file and asking the server to cut it into N responses
+   would be N round trips for pixels the browser already has. */
+.bga-strip {
+  display: grid; gap: 8px; margin-bottom: 8px;
+  grid-template-columns: repeat(var(--cells, 6), 1fr);
+}
+.bga-cell {
+  border: 1px solid var(--line); border-radius: 5px; overflow: hidden;
+  background: var(--surface-2); padding: 0; text-align: left;
+  cursor: pointer; font: inherit; color: inherit;
+}
+.bga-cell.flagged { border-color: var(--warn-line) }
+.bga-cell:hover { border-color: var(--accent) }
+/* The checkerboard is not decoration: these are cut-outs, and a flat backdrop
+   hides exactly the failure the alpha audit is looking for. */
+.bga-cell .img {
+  aspect-ratio: 1 / 1; background-repeat: no-repeat;
+  background-color: transparent;
+  box-shadow: inset 0 0 0 100vmax rgba(0, 0, 0, 0);
+}
+.bga-checks {
+  background-image:
+    linear-gradient(45deg, var(--solid-1) 25%, transparent 25%, transparent 75%, var(--solid-1) 75%),
+    linear-gradient(45deg, var(--solid-1) 25%, var(--solid-2) 25%, var(--solid-2) 75%, var(--solid-1) 75%);
+  background-size: 12px 12px; background-position: 0 0, 6px 6px;
+}
+.bga-cell .cap {
+  padding: 4px 6px; text-align: center; border-top: 1px solid var(--line);
+  font: 500 9px var(--mono); color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bga-cell .flag {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 3px 4px; font: 500 9px var(--mono);
+  color: var(--warn); background: var(--warn-soft);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* A cell with nothing wrong says so rather than leaving a gap the eye reads as
+   "not checked" — which is the distinction the whole seat turns on. */
+.bga-cell .flag.clean { color: var(--good); background: var(--good-soft) }
+.bga-cell .flag.unknown { color: var(--text-3); background: transparent }
+
+/* Which tool produced the thing on screen. The seat's brief is an order of
+   operations, so "sprite_plan ran" is the sentence that says which step this
+   sheet is the output of. */
+.bga-ran {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 10px var(--mono); color: var(--good);
+}
+
+/* ---- the measured rows -------------------------------------------------- */
+
+.bga-measure {
+  display: grid; grid-template-columns: 160px 1fr 62px; gap: 12px;
+  align-items: center; padding: 8px 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.bga-measure .lb {
+  font: 500 11px var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bga-measure .track {
+  height: 4px; border-radius: 2px; background: var(--line); overflow: hidden;
+}
+.bga-measure .track span { display: block; height: 100%; background: var(--good) }
+.bga-measure .track span.warn { background: var(--warn) }
+.bga-measure .v {
+  text-align: right; font: 500 11px var(--mono);
+  color: var(--text-2);
+}
+.bga-measure .v.warn { color: var(--warn) }
+
+/* ---- the pinned reference card ----------------------------------------- */
+
+.bga-pin { padding: 14px; border-bottom: 1px solid var(--line) }
+.bga-pin .thumb {
+  display: block; width: 100%; aspect-ratio: 1 / 1; padding: 0;
+  border: 1px solid var(--c-art); border-radius: 6px; overflow: hidden;
+  background: transparent; cursor: pointer;
+}
+.bga-pin .thumb img { width: 100%; height: 100%; object-fit: contain; display: block }
+.bga-pin .nm {
+  margin-top: 8px; font: 500 11px var(--mono);
+  color: var(--text-2); overflow-wrap: anywhere;
+}
+.bga-pin .sub {
+  margin-top: 2px; font: 500 10px var(--mono);
+  color: var(--text-3);
+}
+
+/* ---- audio's hook table ------------------------------------------------- */
+
+/* Not a bgs-table: every row can carry a second line — the call site that asks
+   for the sound, or the reason its loudness is unknown — and a grid of cells
+   has nowhere to put a sentence that long. */
+.bga-hook {
+  display: grid; grid-template-columns: 24px 1fr 200px 132px 92px; gap: 10px;
+  align-items: center; padding: 9px 12px;
+  border: 1px solid var(--line); border-top: 0;
+}
+.bga-hook.head {
+  border-top: 1px solid var(--line); border-radius: 6px 6px 0 0;
+  background: var(--surface-2);
+  font: 500 9px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bga-hook.last { border-radius: 0 0 6px 6px }
+.bga-hook.bad { background: var(--bad-soft) }
+/* Off target is not unbound: the sound plays, it just does not sit in the mix.
+   A different softness for a different failure, so the eye can count them
+   separately without reading the state column. */
+.bga-hook.off { background: var(--warn-soft) }
+.bga-hook .ev {
+  font: 400 12px var(--mono); color: var(--text);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bga-hook .n { color: var(--text-3) }
+.bga-hook .file {
+  font: 500 11px var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl;
+  text-align: left;
+}
+.bga-hook.bad .file { color: var(--text-3) }
+.bga-hook .lufs, .bga-libloud .lufs {
+  font: 500 11px var(--mono); color: var(--text-2);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bga-hook .lufs.warn, .bga-libloud .lufs.warn { color: var(--warn) }
+.bga-hook .lufs.dim, .bga-libloud .lufs.dim { color: var(--text-3); font-size: 10px }
+/* A PEAK IS NOT A LOUDNESS and the cell has to say so in the cell, not in a
+   tooltip: -2.5 dBFS beside a -14 LUFS target invites exactly the subtraction
+   that means nothing. The qualifier rides the number. */
+.bga-hook .lufs em, .bga-libloud .lufs em {
+  font-style: normal; margin-left: 6px; font-size: 9px;
+  letter-spacing: .08em; text-transform: uppercase; opacity: .8;
+}
+.bga-hook .st {
+  text-align: right; font: 500 10px var(--mono);
+  letter-spacing: .12em; text-transform: uppercase; color: var(--good);
+}
+.bga-hook .st.warn { color: var(--warn) }
+.bga-hook .st.bad { color: var(--bad) }
+
+/* The call sites under an unbound row. "Unbound" is a claim about somebody's
+   code and the panel has to be able to point at the line. */
+.bga-sites {
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 12px 9px; border: 1px solid var(--line); border-top: 0;
+  font: 500 10px/1.6 var(--mono); color: var(--text-3);
+}
+.bga-sites .w { flex: 1; min-width: 0 }
+.bga-sites b { font-weight: 400; color: var(--text-2) }
+.bga-sites .done {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  color: var(--good);
+}
+
+/* ---- the play button --------------------------------------------------- */
+
+/* A LIBRARY THAT CANNOT BE HEARD IS A DIRECTORY LISTING. Every row that
+   resolves to a file gets one; a row that resolves to nothing gets a hole the
+   same width, because a table whose first column shifts by 24px between rows is
+   harder to scan than one with a gap in it. */
+.bga-play {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; flex: none;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--text-3); cursor: pointer;
+}
+.bga-play:hover { border-color: var(--accent); color: var(--accent) }
+.bga-play.on { border-color: var(--c-audio); color: var(--c-audio) }
+.bga-play.empty {
+  width: 22px; height: 22px; border: 1px dashed var(--line-soft);
+  border-radius: 4px; cursor: default;
+}
+
+.bga-libloud { min-width: 0 }

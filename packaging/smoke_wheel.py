@@ -45,8 +45,13 @@ REQUIRED_FILES = [
     "bgate_ui/static/app.css",
     "bgate_ui/static/index.html",
     "bgate_ui/static/bgselect.js",
-    "bgate_ui/static/seats/art.js",
-    "bgate_ui/static/agents_console.js",
+    # The seat module that survived: the per-seat panels are React now, and
+    # _core.js is the shared shell nine other views take BGWS from.
+    "bgate_ui/static/seats/_core.js",
+    # The console is React now and ships as the built bundle; agents_console.js
+    # was the 2,245-line classic one and is deleted.
+    "bgate_ui/static/dist/bgate.js",
+    "bgate_ui/static/dist/bgate.css",
     "bgate_ui/static/img/mascot.png",
     # THE DOTFILE. `**/*` does not match it, so it has to be named explicitly in
     # package-data, and without it the project this scaffolds does not ignore

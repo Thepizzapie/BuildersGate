@@ -1,0 +1,117 @@
+/* Director-only furniture: the two authoring forms and the register's footers.
+ *
+ * Everything structural — the split, the rail, the card, the two-column limit
+ * block — is seats.css and is shared. What is here is only what the decision
+ * register needs and no other seat does, which is why it is a file next to the
+ * component rather than four more rules in the shared sheet.
+ *
+ * No hex anywhere. The app ships four themes (dark, light, orbit, system) and a
+ * literal colour breaks three of them.
+ */
+
+.bgd-form {
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); padding: 12px 14px; margin-bottom: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.bgd-form label {
+  display: flex; flex-direction: column; gap: 4px;
+  font: 500 10px/1.4 var(--mono);
+  letter-spacing: .06em; text-transform: uppercase; color: var(--text-3);
+}
+/* THE HINT IS THE FEATURE. Both required fields are the ones a person skips,
+   and a placeholder saying "acceptance test" tells them to type something
+   without telling them what — so the hint carries an actual example. */
+.bgd-form label .hint {
+  text-transform: none; letter-spacing: 0; color: var(--text-3);
+  font: 400 10px/1.5 var(--sans);
+}
+.bgd-form input,
+.bgd-form textarea {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--solid-1); color: var(--text);
+  padding: 6px 8px; resize: vertical;
+  font: 400 11px/1.5 var(--sans);
+}
+.bgd-form input:focus,
+.bgd-form textarea:focus { outline: none; border-color: var(--accent) }
+.bgd-form input::placeholder,
+.bgd-form textarea::placeholder { color: var(--text-3) }
+.bgd-form .row { display: flex; gap: 8px; align-items: center }
+.bgd-form .row .sp { flex: 1 }
+.bgd-form .err {
+  font: 400 10px/1.5 var(--sans); color: var(--bad);
+}
+
+/* Who ruled, and when. Small on purpose: it is provenance, not content — the
+   decision itself is the two limit blocks above it. */
+.bgd-meta {
+  display: flex; gap: 10px; align-items: center; margin-top: 10px;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bgd-meta .sp { flex: 1 }
+
+/* A superseded ruling is kept and shown, because "we tried that" is the most
+   useful thing the register holds — but dimmed, because it is not in force. */
+.bgd-old { opacity: .62 }
+.bgd-old .was {
+  margin-top: 6px; font: 400 10px/1.6 var(--sans);
+  color: var(--text-3);
+}
+
+.bgd-railform { padding: 10px 14px; border-bottom: 1px solid var(--line-soft) }
+.bgd-railform .bgd-form { margin-bottom: 0; padding: 10px 12px }
+
+.bgd-norow-act {
+  display: flex; gap: 8px; align-items: center; margin-top: 4px;
+}
+.bgd-why {
+  font: 400 10px/1.55 var(--sans); color: var(--text-3);
+  margin-top: 2px;
+}
+/* A proposal shows its test AND its left-dark, so each needs its own label —
+   two unlabelled grey paragraphs read as one wrapped sentence. */
+.bgd-why b { font-weight: 500; color: var(--text-2) }
+
+/* THE LINK IS A BUTTON because it changes what the inspector is showing, not
+   where the page is. Styled as text so a dense rail row does not grow a third
+   control-shaped thing next to the two real ones. */
+.bgd-link {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: 500 10px var(--mono); color: var(--accent);
+}
+.bgd-link:hover { text-decoration: underline }
+
+/* An agent's own words back — the result of a claim, or the path of a
+   candidate. Monospace and clamped: it is evidence to glance at before
+   deciding, and a 400-character result must not push the buttons off screen. */
+.bgd-result {
+  margin-top: 6px; padding: 6px 8px;
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface-2);
+  font: 400 10px/1.5 var(--mono); color: var(--text-3);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 120px; overflow: auto;
+}
+
+/* The refs an ask_human question attached — the files it is asking about. */
+.bgd-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px }
+.bgd-refs span {
+  font: 400 9px var(--mono); color: var(--text-3);
+  border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px;
+}
+
+.bgd-answer { margin-top: 6px; display: flex; flex-direction: column; gap: 6px }
+.bgd-answer textarea {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--solid-1); color: var(--text);
+  padding: 6px 8px; resize: vertical;
+  font: 400 11px/1.5 var(--sans);
+}
+.bgd-answer textarea:focus { outline: none; border-color: var(--accent) }
+.bgd-answer .bgd-norow-act .sp { flex: 1 }
+
+/* Why a row that is clearly waiting on a human has no verdict button on it. */
+.bgd-note { font: 400 10px/1.4 var(--sans); color: var(--text-3); flex: 1 }

@@ -1,0 +1,106 @@
+/* gameplay.css — the furniture the gameplay seat needs and no other seat does.
+ *
+ * Three things live here, all of them consequences of this seat's doctrine
+ * rather than decoration:
+ *
+ *   · a FILTER BAR, because this seat's two biggest reads are a 300-row tunable
+ *     table and a 56-item feedback queue of which four items are its own. A
+ *     panel you cannot narrow is a panel nobody reads to the bottom.
+ *   · a DECLARE FORM, because "randomness lives in one declared seeded stream
+ *     or nowhere" was rendered as a permanently-empty list against a document
+ *     nothing in the codebase ever wrote. A rule with no way to comply with it
+ *     is a slogan.
+ *   · a CLASH LIST, because two actions on one key is the input bug that a
+ *     plain list of bindings hides in plain sight.
+ */
+
+/* The filter bar. Toggles, not tabs: every one of them is a claim about what is
+   being hidden, so each says how many rows it dropped. */
+.bgg-bar {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; margin: 8px 0 10px;
+}
+.bgg-bar .sp { flex: 1 }
+.bgg-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border: 1px solid var(--line); border-radius: 5px;
+  background: transparent; cursor: pointer;
+  font: 500 10px var(--mono); color: var(--text-3);
+  letter-spacing: .02em;
+}
+.bgg-toggle:hover { border-color: var(--line-strong); color: var(--text-2) }
+.bgg-toggle.on {
+  border-color: var(--c-gameplay); color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--c-gameplay);
+}
+.bgg-toggle b { font-weight: 500; color: var(--text-2) }
+
+/* The declare form. Deliberately not a modal: declaring the stream is the
+   panel's whole job, so it is the panel's resting state, not a dialog you have
+   to know exists. */
+.bgg-form {
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; margin-top: 10px;
+}
+.bgg-form input {
+  min-width: 0; flex: 1 1 120px;
+  padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px;
+  background: transparent; color: var(--text);
+  font: 500 11px var(--mono);
+}
+.bgg-form input:focus { outline: none; border-color: var(--accent) }
+.bgg-form input::placeholder { color: var(--text-3) }
+.bgg-form .why {
+  flex: 1 0 100%; font: 400 10px/1.6 var(--sans); color: var(--text-3);
+}
+
+/* A declared stream, and the button that undeclares it. Mirrors .bgs-ok's
+   shape so a good stream and a bad one differ only in the colour of the mark
+   and the word beside it. */
+.bgg-stream {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 0; border-bottom: 1px solid var(--line-soft);
+}
+.bgg-stream .sp { flex: 1 }
+.bgg-stream .nm { font: 500 11px var(--mono); color: var(--text) }
+.bgg-stream .sd { font: 500 10px var(--mono); color: var(--text-3) }
+.bgg-stream .x {
+  border: 0; background: transparent; cursor: pointer;
+  color: var(--text-3); padding: 2px 4px; line-height: 1;
+}
+.bgg-stream .x:hover { color: var(--bad) }
+
+/* Contested bindings. One line per key that more than one action claims — the
+   thing the flat list of actions cannot show, because the two rows that fight
+   are usually nowhere near each other. */
+.bgg-clash {
+  margin-top: 8px; padding: 8px 10px;
+  border: 1px solid var(--warn-line); border-radius: 6px;
+  background: var(--warn-soft, transparent);
+}
+.bgg-clash .k { font: 500 11px/1.8 var(--mono); color: var(--warn) }
+.bgg-clash .k b { color: var(--text-2); font-weight: 500 }
+.bgg-clash .hd {
+  font: 500 10px var(--mono); color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;
+}
+
+/* Provenance, on a feedback card. Whisper's guess at what someone said and a
+   sentence somebody typed are not the same evidence, and the card has to say
+   which one it is holding. */
+.bgs-card .stats .guess { color: var(--warn); border-color: var(--warn-line) }
+.bgs-card .stats .bad { color: var(--bad); border-color: var(--bad-line) }
+.bgs-card .stats .seat { color: var(--c-gameplay); border-color: var(--line-strong) }
+
+/* The backend's own next-step text, rendered as the instruction it is instead
+   of being re-written shorter and wronger in the component. */
+.bgg-next { margin-top: 10px }
+.bgg-next .step {
+  display: flex; gap: 8px; padding: 6px 0;
+  border-top: 1px solid var(--line-soft);
+  font: 400 11px/1.7 var(--sans); color: var(--text-2);
+}
+.bgg-next .step .n {
+  flex: none; width: 16px; text-align: right;
+  font: 500 10px/1.9 var(--mono); color: var(--c-gameplay);
+}

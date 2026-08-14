@@ -1,0 +1,1966 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Builders Gate</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<!-- app.css FIRST, and the order is load-bearing. Its opening `@layer` statement
+     is what ranks every layer in the page, and a layer's rank is fixed by the
+     FIRST time the browser sees the name. Loading Mantine's stylesheet ahead of
+     that statement registered `mantine` as layer one — the weakest — and no
+     later statement can move it, so Mantine's controls lost their padding,
+     border and ground to this app's bare-element rules and rendered as
+     library-shaped unstyled elements. -->
+<!-- Tabler, vendored. The prototype linked jsdelivr; this binds to loopback and
+     also ships inside a PyInstaller exe, where a CDN is simply absent — and
+     absent icons are a layout, not a style.
+
+     Type is Inter + JetBrains Mono, vendored beside it. IBM Plex is gone from
+     the tree. -->
+<link rel="stylesheet" href="/static/vendor/type/type.css">
+<link rel="stylesheet" href="/static/vendor/tabler/tabler-icons.min.css">
+<link rel="stylesheet" href="/static/app.css">
+<!-- Mantine's own rules, which land in the `mantine` slot app.css declared:
+     after base and layout, before components. -->
+<link rel="stylesheet" href="/static/dist/bgate.css">
+<!-- CodeMirror 5 (MIT, vendored under static/vendor/codemirror — see its
+     LICENSE). theme-bgate.css is ours: it maps the editor's tokens onto the
+     app's own colour variables so the code pane follows the light/dark switch
+     instead of being the one panel with a fixed palette. -->
+<link rel="stylesheet" href="/static/vendor/codemirror/codemirror.css">
+<link rel="stylesheet" href="/static/vendor/codemirror/dialog.css">
+<link rel="stylesheet" href="/static/vendor/codemirror/theme-bgate.css">
+<script>
+/* Stamp the saved ground before first paint. Doing this from the main script
+   at the bottom of the body means a full frame of dark canvas renders first
+   and then flips - the flash is worse than either theme. "system" stores no
+   attribute at all, which is what lets the prefers-color-scheme block in
+   app.css stay in charge.
+
+   THE LIST IS THE GATE. Anything not named here falls through to the OS, so a
+   ground that is added to setTheme() and not to this array is a ground that
+   flashes the wrong canvas on every load - and on orbit, whose whole premise
+   is a vanta ground, that flash is the most visible one available. */
+(function(){
+  try{
+    var t = localStorage.getItem("bgate-theme");
+    if (["light", "dark", "orbit"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
+  }catch(e){}
+})();
+</script>
+</head>
+<body>
+<div class="deck">
+  <!-- THE 4a SHELL — frontend/src/shell/. Four AREAS on a 56px icon rail, the
+       screens of the area you are in on a second column, a header, and a
+       permanent 340px inspector. It renders with `display:contents`, so its
+       children land directly in the body grid ALONGSIDE .stage below rather
+       than wrapping it — reparenting the stage into a React node would reload
+       every iframe on the page at boot.
+
+       WHAT IT REPLACED: an eleven-destination rail with three unlabelled runs,
+       and a status bar. Eleven peers is not a hierarchy — you had to already
+       know where a thing lived. The rail's own pin, its resize handle and its
+       four theme buttons went with it; the ground is now settings.
+
+       WHAT IT DID NOT REPLACE: the fifteen .deck-view sections below. Every one
+       is still owned by its classic module and still switched by setWorkspace(),
+       which the shell calls. -->
+  <div data-react="shell"></div>
+
+  <div class="stage">
+    <div class="statusbar">
+      <div class="crumb" id="sb-crumb">Overview</div>
+      <div class="spacer"></div>
+      <div class="schip" id="sb-agents" title="Agents currently executing a task."><span class="l"></span> <b>0</b> running</div>
+      <button class="schip" id="sb-vault" onclick="setWorkspace('assets',document.querySelector('.rail-item[data-view=&quot;assets&quot;]'))"><span class="l"></span> vault <b>-</b></button>
+      <!-- THE BELL'S SLOT MOVED TO THE 4a HEADER and must exist exactly once:
+           notify.js and streamer.js both find it with getElementById, which
+           returns the FIRST in document order. With a copy here as well, which
+           one they filled was decided by where the shell island happens to sit
+           in the markup — it worked, by accident, and any reordering would have
+           moved the bell with no error. The header renders it now
+           (frontend/src/shell/Shell.tsx). -->
+    </div>
+    <div class="stage-body">
+
+      <!-- THE FLOOR — one stream of everything the studio is doing, and the
+           director's dispatch box under it. The screen this redesign exists
+           for: what used to be an Overview of five counters, an Agents console,
+           and a board were three places to look for one question. Its four
+           readings (everything / live / needs you / history) are this one deck
+           reading the current screen — four decks would be four polls of the
+           same log. -->
+      <section class="deck-view" id="view-floor"><div data-react="floor"></div></section>
+      <!-- THE BRAINSTORM ROOM (8a). Its own screen rather than a tab on the
+           console's composer: the two modes have different rules, different
+           costs and different exits, and brainstorm's exit is a single door
+           that only a human may open. -->
+      <section class="deck-view" id="view-brainstorm"><div data-react="brainstorm"></div></section>
+
+      <!-- THE BOARD — the same queue, arranged by who is doing it. -->
+      <section class="deck-view" id="view-board"><div data-react="board"></div></section>
+
+      <section class="deck-view active" id="view-overview">
+        <div class="view-heading"><div><span class="eyebrow">Command deck</span><h2>Overview</h2></div><p>The studio at a glance - live agents, the queue, the build.</p></div>
+        <!-- REACT ISLAND — the first one. The body of this deck is
+             frontend/src/views/Overview.tsx, mounted by /static/dist/bgate.js.
+             It renders the same .ov-stats / .spanel markup against the same
+             app.css, reads the same five endpoints on the same 4s cadence, and
+             stops polling when this deck is not the active one. Nothing else on
+             the page knows the difference; the rail, the switch and every other
+             view are still the classic scripts below. -->
+        <div data-react="overview"></div>
+      </section>
+
+      <!-- THE DIRECTOR'S CONSOLE — frontend/src/shell/agents/.
+           Replaces agents_console.js (2,245 lines) and the delegation graph
+           beside it. Three faults are why it is a rewrite and not a patch: the
+           brainstorm RESET button was appended conditionally and could simply
+           not exist, the cockpit was a fixed-height grid that reserved 560px
+           for a three-line conversation, and the graph was delegation-by-seat —
+           which is the Board screen in this shell, maintained once. -->
+      <section class="deck-view" id="view-agents"><div data-react="agents"></div></section>
+
+      <!-- SETTINGS (7b) — frontend/src/shell/settings/. Every word of the help
+           is kept; what changed is that a row is a label beside its own control
+           instead of a card with the control 900px away, and precedence is a
+           left-edge stripe you can read down the page instead of a chip you
+           have to read one row at a time. -->
+      <section class="deck-view" id="view-settings"><div data-react="settings"></div></section>
+
+      <section class="deck-view" id="view-studio">
+        <div class="view-heading" style="margin-bottom:12px"><div><span class="eyebrow">Node studio</span><h2>Studio</h2></div><p>Visual node editors for asset generation, agent orchestration, and the game.</p></div>
+        <!-- Rendered by flows.js from the registered StudioFlows. Hardcoding
+             the tabs here is what hid the asset and agent flows: both modules
+             were fully built and simply never listed. -->
+        <div class="seat-subnav" id="studio-subnav"></div>
+        <div id="studio-body" class="studio-body"><div class="empty">loading studio…</div></div>
+      </section>
+
+      <!-- SEAT WORKSPACES — frontend/src/shell/seats/. One workspace per CRAFT
+           rather than a kanban lane wearing the seat's name: art's is a sheet
+           in progress with its consistency measured against the pin, tech's is
+           godot_check_project's findings, gameplay's is the tunables table with
+           what the playtests measured next to each knob. -->
+      <section class="deck-view" id="view-seats"><div data-react="seats"></div></section>
+
+      <!-- Both editors mount themselves into these hosts. The host is EMPTY in
+           the markup on purpose: the modules own every pixel inside it, and a
+           placeholder here would be painted over on the first mount and shown
+           again on close, which looks like a flash of broken layout.
+
+           `visible(_host)` in both modules keys off the host having boxes, and
+           a non-active .deck-view has none. That is what lets open() from the
+           asset library or the scene builder still raise the overlay when you
+           are on some other page, instead of painting into a hidden div. -->
+      <section class="deck-view" id="view-spriteedit">
+        <div id="se-page" class="editor-page"></div>
+      </section>
+
+      <section class="deck-view" id="view-audiolab">
+        <div id="ab-page" class="editor-page"></div>
+      </section>
+
+      <section class="deck-view" id="view-modeledit">
+        <div id="me-page" class="editor-page"></div>
+      </section>
+
+      <section class="deck-view" id="view-playtests">
+        <div class="view-heading"><div><span class="eyebrow">Evidence</span><h2>Playtests</h2></div><p>Play the current build and record a session - then open a recording for video, transcript, telemetry, and the director's triage.</p></div>
+        <!-- Play &amp; record lives here, next to the recordings it produces.
+             On Overview it sat under the stats and the activity ledger, so the
+             control that creates the evidence was in a different view from the
+             evidence. -->
+        <div class="panel playpanel" style="margin-bottom:20px">
+          <div class="ptbar">
+            <span class="lamp" id="pt-lamp"></span>
+            <span id="pt-msg">checking playtest gear…</span>
+            <input class="pt-goal" id="pt-goal" placeholder="Iteration goal" maxlength="160">
+            <select class="pt-target" id="pt-target" aria-label="Playtest target">
+              <option value="web">web build</option>
+              <option value="native">native Godot</option>
+            </select>
+            <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
+          </div>
+          <!-- What is actually missing, in full, with the command that fixes it. -->
+          <div class="pt-why" id="pt-why" hidden></div>
+          <div id="play-holder">
+            <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
+            <div class="playhint" id="play-controls">Controls come from your game's own input map - F1 opens live tuning over the running build.</div>
+          </div>
+        </div>
+        <div class="spanel k-read">
+          <div class="sec-h"><span data-icon="playtests" data-icon-size="15"></span>
+            <h3 class="sec-t">Recorded sessions</h3></div>
+          <div class="compact-list" id="sessions"></div>
+        </div>
+      </section>
+
+      <!-- REACT ISLAND — frontend/src/views/assets/. The heading actions, the
+           review queue, the tracked-binaries table and the detail drawer are
+           all rendered from there against the same app.css classes.
+
+           TWO NODES INSIDE IT ARE STILL CLASSIC and are created by React with
+           no children so it never diffs what they contain: #asset-lib-root
+           (assetlib.js, which has its own scan endpoint and view state) and
+           #gallery (the shell's renderGallery). Both look themselves up by id
+           on every write, so they neither know nor care who made the element.
+
+           The data is NOT fetched here — pollState() below already reads
+           /api/state for the whole shell and pushes it to the island's store. -->
+      <section class="deck-view" id="view-assets">
+        <div data-react="assets"></div>
+      </section>
+
+      <section class="deck-view" id="view-world">
+        <div class="view-heading"><div><span class="eyebrow">Creative constraints</span><h2>World bible</h2></div><p>Write the bible and keep the fiction honest. Everything here is authored by you - the pipeline reads it.</p></div>
+        <div class="seat-subnav" id="world-subnav"></div>
+        <div id="world-root"><div class="empty">loading world…</div></div>
+      </section>
+
+      <section class="deck-view" id="view-atlas">
+        <div class="view-heading"><div><span class="eyebrow">Project map</span><h2>Atlas</h2></div><p>Build the scene and edit the code behind it, against a live scan of the project's scenes, scripts, and SpriteFrames.</p></div>
+        <div class="atlas-modes" id="atlas-modes">
+          <button class="atlas-mode active" data-m="scene" onclick="setAtlasMode('scene')">scene · build it</button>
+          <button class="atlas-mode" data-m="code" onclick="setAtlasMode('code')">code · edit it</button>
+        </div>
+        <div id="atlas-scene"></div>
+        <div id="atlas-code" hidden></div>
+      </section>
+
+
+    </div>
+  </div>
+</div>
+
+<div class="insp-scrim" id="insp-scrim" onclick="Inspector.close()"></div>
+<aside class="inspector" id="inspector" aria-hidden="true">
+  <div class="insp-head">
+    <div style="min-width:0;flex:1">
+      <div class="ie" id="insp-eyebrow"></div>
+      <div class="it" id="insp-title"></div>
+    </div>
+    <button class="insp-x" onclick="Inspector.close()" aria-label="Close">✕</button>
+  </div>
+  <div class="insp-tabs" id="insp-tabs"></div>
+  <div class="insp-body" id="insp-body"></div>
+</aside>
+
+<div id="lightbox" onclick="this.style.display='none'"><img id="lightimg" alt=""></div>
+<div class="review-overlay" id="review-overlay">
+  <div class="review-shell">
+    <div class="review-head">
+      <h3 id="review-title">Playtest review</h3>
+      <button class="qbtn ghost" onclick="closeReview()">close</button>
+    </div>
+    <div class="review-body" id="review-body"></div>
+  </div>
+</div>
+<!-- First run. The whole shell is meaningless without a project, so this covers
+     it rather than sitting in a panel behind nine empty nav items. -->
+<div class="firstrun" id="firstrun" hidden>
+  <div class="fr-card">
+    <div class="fr-mark" data-icon="logo" data-icon-size="40"></div>
+    <!-- REACT ISLAND — frontend/src/views/FirstRun.tsx. It owns the card's two
+         ways in: open one of the registered projects, or scaffold a new one.
+         WHAT IT DOES NOT OWN IS WHETHER THIS OVERLAY IS UP. pollState() below
+         decides that, exactly as it always did, by toggling #firstrun[hidden];
+         the reason it decided arrives as a bgate:firstrun event. Splitting the
+         boot path's control flow across two runtimes is how a screen ends up
+         shown twice or never. -->
+    <div data-react="firstrun"></div>
+    <!-- OUTSIDE the island on purpose. If the bundle ever fails to load, this
+         line is still on the page and still tells you what to type. -->
+    <p class="fr-alt">Same thing from a terminal: <code>bgate init &lt;name&gt; --kind 2d</code> - it prints the path it created.</p>
+  </div>
+</div>
+<footer id="foot" style="display:none">builders gate · local floor · 127.0.0.1</footer>
+
+<script>
+/* ── colour ground ────────────────────────────────────────────────────────
+   "system" removes the attribute rather than resolving it, so the page keeps
+   tracking the OS if the user changes it while this is open. The <head> script
+   above applies the stored value before first paint; this only handles changes
+   and the pressed state of the buttons. */
+function setTheme(mode){
+  const root = document.documentElement;
+  if (mode === "system") { delete root.dataset.theme; }
+  else { root.dataset.theme = mode; }
+  try { localStorage.setItem("bgate-theme", mode); } catch (e) {}
+  syncThemeButtons();
+  // Anything drawn to a <canvas> reads its colours once, at paint time, and
+  // cannot resolve var() — those modules have to redraw on a ground change.
+  window.dispatchEvent(new CustomEvent("bgate:theme", { detail:{ mode } }));
+}
+/* A <canvas> 2D context cannot resolve var() — assigning "var(--ember)" to
+   fillStyle is a silent no-op that leaves the previous colour in place. Both
+   sceneview.js and spriteedit.js hit that and worked around it by following the
+   dead assignment with a hardcoded hex on the same line, which then froze those
+   canvases to one ground. This resolves a token to its computed value at draw
+   time and forgets everything when the ground changes. */
+const BGTheme = {
+  _cache:{},
+  color(name, fallback){
+    if (name in this._cache) return this._cache[name];
+    let v = "";
+    try { v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+    catch (e) {}
+    return (this._cache[name] = v || fallback || "#888");
+  },
+  flush(){ this._cache = {}; },
+};
+window.addEventListener("bgate:theme", () => BGTheme.flush());
+try{
+  // Also flush when the OS flips while we are on "system".
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    BGTheme.flush();
+    window.dispatchEvent(new CustomEvent("bgate:theme", { detail:{ mode:"system" } }));
+  });
+}catch(e){}
+
+/* ── the navigation rail ──────────────────────────────────────────────────
+   Closed to 64px at rest; hover and focus-within open it, and both of those
+   are pure CSS because a nav that needs script to be readable is a nav that is
+   blank for the first frame after every reload.
+
+   The one thing script owns is the PIN. Pinning trades the overlay for a real
+   grid track - the stage genuinely narrows, and the drag handle appears
+   because there is finally a width worth dragging.
+
+   IT IS DROPPED, NOT FORGOTTEN, BELOW 1180px. At that width a held-open rail
+   is eating the thing that ran out of room. The stored preference survives the
+   resize, so the rail re-pins itself when the window grows back - a window you
+   dragged narrow for a minute must not cost you a setting. */
+const RAIL_PIN_KEY = "bgate-rail-pinned";
+const railNarrow = window.matchMedia("(max-width: 1180px)");
+
+function railPinWanted(){
+  try { return localStorage.getItem(RAIL_PIN_KEY) === "1"; } catch (e) { return false; }
+}
+function syncRailPin(){
+  const rail = document.querySelector(".rail");
+  const btn = document.getElementById("rail-pin");
+  const on = railPinWanted() && !railNarrow.matches;
+  if (rail) rail.classList.toggle("pin", on);
+  if (btn){
+    const label = on ? "Unpin - let the navigation collapse"
+                     : "Keep the navigation expanded";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+  }
+  // Pinning changes the width of the stage, and anything that measured itself
+  // once (canvases, the node graphs, the game frame) has to hear about it.
+  window.dispatchEvent(new Event("resize"));
+}
+function toggleRailPin(){
+  try { localStorage.setItem(RAIL_PIN_KEY, railPinWanted() ? "0" : "1"); } catch (e) {}
+  syncRailPin();
+}
+railNarrow.addEventListener("change", syncRailPin);
+syncRailPin();
+
+function syncThemeButtons(){
+  let saved = "system";
+  try { saved = localStorage.getItem("bgate-theme") || "system"; } catch (e) {}
+  document.querySelectorAll(".themebtn").forEach(b =>
+    b.classList.toggle("on", b.dataset.themeSet === saved));
+}
+
+const SEATS = {
+  director:{g:"director"}, narrative:{g:"narrative"}, gameplay:{g:"gameplay"}, tech:{g:"tech"},
+  art:{g:"art"}, audio:{g:"audio"}, qa:{g:"qa"},
+};
+// Icon by name, safe before icons.js has parsed. SEATS[x].g is a NAME now.
+const ICO = (n, size) => (window.BGIcon && BGIcon.has(n)) ? BGIcon(n, { size: size || 14 }) : "";
+const color = r => getComputedStyle(document.documentElement).getPropertyValue(`--c-${r}`) || "var(--text-2)";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let lastActivityId = 0;
+
+/* ── one path for every mutation ─────────────────────────────────────────
+ * Every mutation in this shell used to be `await fetch(...)` with the response
+ * dropped on the floor, and every read was wrapped in a blanket catch returning
+ * an empty object — which does not even fire on a 500, because an error body is
+ * still valid JSON, so the empty object never happened and the error was simply
+ * never read.
+ * So the backend's perfectly actionable sentence ("claude CLI not found on
+ * PATH") was binned and the failure rendered as nothing happening.
+ *
+ * The backend speaks two shapes and both are handled here:
+ *   {ok:true, data} / {ok:false, error:{code,message,detail}}  — api.py routes
+ *   bare payloads, 200 {ok:false, error:"a sentence"}, {detail} — app.py
+ * mutate() returns {ok, data, error, code, status}; a caller skips its
+ * re-render when ok is false so the operator's selection survives the failure.
+ */
+function apiError(body, status){
+  const e = body && body.error;
+  if (e && typeof e === "object") return e.message || e.code || `request failed · ${status}`;
+  if (typeof e === "string" && e) return e;
+  const d = body && body.detail;
+  if (typeof d === "string" && d) return d;
+  if (d && typeof d === "object" && d.message) return d.message;
+  if (body && typeof body.reason === "string" && body.reason) return body.reason;
+  return `request failed · ${status}`;
+}
+function unwrap(body){
+  return (body && body.ok === true && Object.prototype.hasOwnProperty.call(body, "data"))
+    ? body.data : body;
+}
+async function mutate(path, options){
+  const {method = "POST", body = null, quiet = false, ok = null, button = null} = options || {};
+  const btn = typeof button === "string" ? document.getElementById(button) : button;
+  const wasLabel = btn ? btn.textContent : null;
+  if (btn){ btn.disabled = true; }
+  let response, text = "", payload = null;
+  try{
+    const init = {method};
+    if (body !== null && body !== undefined){
+      init.headers = {"Content-Type":"application/json"};
+      init.body = typeof body === "string" ? body : JSON.stringify(body);
+    }
+    response = await fetch(path, init);
+    text = await response.text();
+  }catch(err){
+    if (btn){ btn.disabled = false; if (wasLabel != null) btn.textContent = wasLabel; }
+    const message = "backend unreachable - is the dashboard still running?";
+    if (!quiet) toast(message);
+    return {ok:false, data:null, body:null, error:message, code:"unreachable", status:0};
+  }
+  if (btn){ btn.disabled = false; if (wasLabel != null) btn.textContent = wasLabel; }
+  try{ payload = text ? JSON.parse(text) : null; }catch(e){ payload = null; }
+  if (!response.ok || (payload && payload.ok === false)){
+    const message = payload
+      ? apiError(payload, response.status)
+      : (text ? trunc(text.trim(), 300) : `request failed · ${response.status}`);
+    const code = (payload && ((payload.error && payload.error.code) || payload.code))
+      || String(response.status);
+    if (!quiet) toast(message);
+    /* THE FAILURE BODY SURVIVES, ON `body`.
+     *
+     * `data` stays null on a refusal — every caller in the app reads it as
+     * "the thing I asked for" and handing back an error envelope there would
+     * make a failed write look like a successful one to code that only checks
+     * for null. But several endpoints put their REAL answer in the failure:
+     * /api/godot/check returns ok:false with the errors, the exit code and the
+     * compiler output; /api/play/rebuild returns the last 500 chars of the
+     * export stderr in `detail`. Dropping it meant the Tech seat's findings
+     * panel — the entire reason that seat exists — was empty on exactly the
+     * path that had something to say, and the screen read "request failed ·
+     * 200". Additive on purpose: nothing that checks .ok/.error/.data changes,
+     * and a caller that wants the detail reads .body. */
+    return {ok:false, data:null, body:payload, error:message, code, status:response.status};
+  }
+  if (ok && !quiet) toast(ok, "ok");
+  return {ok:true, data:unwrap(payload), body:payload, error:null, code:null, status:response.status};
+}
+
+/* Reads. Same two shapes; a failure returns the caller's fallback TAGGED with
+ * __error so a panel can render "backend error" instead of the empty state —
+ * empty and broken must not look identical. */
+async function readJSON(path, fallback){
+  const failed = message => {
+    const out = (fallback && typeof fallback === "object") ? {...fallback} : {};
+    out.__error = message;
+    return out;
+  };
+  let response, body;
+  try{
+    response = await fetch(path);
+    body = await response.json();
+  }catch(e){
+    return failed("backend unreachable");
+  }
+  if (!response.ok || (body && body.ok === false)) return failed(apiError(body, response.status));
+  return unwrap(body);
+}
+
+/* Toasts. The only place a mutation failure becomes visible, so it must not be
+ * possible to miss it: errors linger and have to be dismissed or time out. */
+function toast(message, kind){
+  let host = document.getElementById("toasts");
+  if (!host){
+    host = document.createElement("div");
+    host.id = "toasts";
+    host.className = "toasts";
+    host.setAttribute("role", "status");
+    host.setAttribute("aria-live", "polite");
+    document.body.appendChild(host);
+  }
+  const el = document.createElement("div");
+  el.className = "toast " + (kind === "ok" ? "ok" : "err");
+  el.innerHTML = `<span class="ti">${kind === "ok" ? "✓" : "⚠"}</span>`
+    + `<span class="tmsg">${esc(message)}</span>`
+    + `<button class="tx" aria-label="Dismiss">×</button>`;
+  el.querySelector(".tx").onclick = () => el.remove();
+  host.appendChild(el);
+  setTimeout(() => el.remove(), kind === "ok" ? 3500 : 11000);
+  return el;
+}
+
+const DECK_CRUMB = {
+  floor:"The floor", board:"Board", brainstorm:"Brainstorm",
+  // `agents` is the DECK KEY and stays one — it is what setWorkspace(),
+  // SeatShell.select() and the restored-view localStorage entry all use. Only
+  // the crumb changed, and it has to match frontend/src/shell/nav.ts or the
+  // rail and the breadcrumb name one screen two things.
+  overview:"Overview", agents:"Orchestration", settings:"Settings", studio:"Studio",
+  seats:"Seat workspaces", playtests:"Playtests", assets:"Assets", atlas:"Atlas",
+  world:"World bible",
+  spriteedit:"Sprite editor", audiolab:"Audio lab", modeledit:"3D viewer",
+};
+/* Hand the view to whichever module owns it.
+ *
+ * Kept separate from setWorkspace because of WHEN it has to run. The restore
+ * call fires from an inline script that sits ABOVE the module <script> tags,
+ * so on a reload into Studio (or Seats, Atlas, World) window.Studio did not
+ * exist yet and the guard skipped it silently — the panel sat on "loading
+ * studio…" until you clicked the rail item it was already on. Now the same
+ * function runs again once the modules have registered. */
+function activateWorkspace(name){
+  const owners = { studio: "Studio", atlas: "Atlas",
+                   world: "World", assets: "AssetLib",
+                   spriteedit: "SpriteEdit", audiolab: "AudioLab", modeledit: "ModelEdit" };
+  if (name === "atlas") return setAtlasMode(atlasMode);
+  // Agents needs no owner: the console is a React island now
+  // (frontend/src/shell/agents/) and mounts itself.
+  const mod = window[owners[name]];
+  if (mod && typeof mod.activate === "function") { mod.activate(); return true; }
+  return !owners[name];   // a view with no module is already "activated"
+}
+
+/* The Agents view had a second mode — a delegation GRAPH over the kanban lanes
+   — and a per-browser preference to choose between them. Both are gone with the
+   4a shell: lanes-by-seat is the Board screen now, so it is one screen with one
+   implementation rather than two that drift. agents_graph.js is no longer
+   loaded; nothing else referenced it.
+
+/* Atlas is two editors over one scan: SCENE (build the tree) and CODE (edit the
+ * scripts behind it). They share the cached screenmap, so flipping between them
+ * costs nothing. The choice sticks, because whichever one you were in is the
+ * one you want back on reload.
+ *
+ * `list` and `graph` were removed. A stored preference naming either of them
+ * still exists in the localStorage of every browser that ever opened the old
+ * build, and it must not resolve to a mode that no longer has a tab — hence the
+ * whitelist rather than a bare read. */
+const ATLAS_MODES = ["scene", "code"];
+let atlasMode = (() => {
+  try {
+    const saved = localStorage.getItem("bgate-atlas-mode");
+    return ATLAS_MODES.includes(saved) ? saved : "scene";
+  } catch(e){ return "scene"; }
+})();
+function setAtlasMode(mode){
+  // Leaving the code mode with unsaved buffers is the one switch that can lose
+  // work: the scene builder reads from disk on activate, so nothing it holds is
+  // unique. Ask before the tab is hidden, not after.
+  if (atlasMode === "code" && mode !== "code" && window.AtlasCode && AtlasCode.dirty()
+      && !confirm("You have unsaved edits open in the code editor. Leave anyway?"))
+    return false;
+  if (atlasMode === "code" && mode !== "code" && window.AtlasCode
+      && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
+  // The scene builder runs a playable build too now, and a hidden iframe is
+  // still a running game with an audio context.
+  if (atlasMode === "scene" && mode !== "scene" && window.SceneBuild
+      && typeof SceneBuild.deactivate === "function") SceneBuild.deactivate();
+  atlasMode = ATLAS_MODES.includes(mode) ? mode : "scene";
+  try{ localStorage.setItem("bgate-atlas-mode", atlasMode); }catch(e){}
+  document.querySelectorAll("#atlas-modes .atlas-mode").forEach(b =>
+    b.classList.toggle("active", b.dataset.m === atlasMode));
+  ATLAS_MODES.forEach(id => {
+    const el = document.getElementById("atlas-" + id);
+    if (el) el.hidden = atlasMode !== id;
+  });
+  const mod = { scene: window.SceneBuild, code: window.AtlasCode }[atlasMode];
+  if (!mod) return false;
+  // Both modes name their scenes from the Atlas scan, so make sure that scan
+  // exists before they ask — otherwise the picker opens with one entry.
+  if (window.Atlas && typeof Atlas.ensure === "function"){
+    Atlas.ensure().then(() => mod.activate()).catch(() => mod.activate());
+    return true;
+  }
+  if (typeof mod.activate === "function"){ mod.activate(); return true; }
+  return false;
+}
+
+function setWorkspace(name, trigger){
+  const next = DECK_CRUMB[name] ? name : "overview";
+  // Leaving Atlas entirely has to stop the playable build too, not just
+  // switching modes within it — a hidden deck-view still runs its iframe, and
+  // the only symptom is audio from a panel you can no longer see.
+  if (next !== "atlas" && atlasMode === "code" && window.AtlasCode
+      && typeof AtlasCode.deactivate === "function") AtlasCode.deactivate();
+  if (next !== "atlas" && atlasMode === "scene" && window.SceneBuild
+      && typeof SceneBuild.deactivate === "function") SceneBuild.deactivate();
+  document.querySelectorAll(".deck-view").forEach(view =>
+    view.classList.toggle("active", view.id === `view-${next}`));
+  document.querySelectorAll(".rail-item").forEach(item =>
+    item.classList.toggle("active", item.dataset.view === next));
+  const crumb = document.getElementById("sb-crumb");
+  if (crumb) crumb.textContent = DECK_CRUMB[next];
+  try{ localStorage.setItem("bgate-workspace", next); }catch(e){}
+  // THE SHELL IS NOT THE ONLY CALLER. The vault chip, first-run, Atlas's own
+  // deactivation and the restore on boot all switch decks directly, and a rail
+  // that highlights a screen you are not on is worse than no highlight.
+  window.dispatchEvent(new CustomEvent("bgate:workspace", { detail:{ name: next } }));
+  activateWorkspace(next);
+  // The overview refreshes itself — it is a React island that watches this
+  // deck's .active class and polls only while it is on screen.
+  if (next === "overview"){ ptPreflight(false); }
+  const body = document.querySelector(".stage-body"); if (body) body.scrollTop = 0;
+}
+
+
+document.querySelector(".workspace-tabs")?.addEventListener("keydown", event => {
+  if (!["ArrowLeft","ArrowRight"].includes(event.key)) return;
+  const tabs = [...document.querySelectorAll(".workspace-tab")];
+  const index = tabs.indexOf(document.activeElement);
+  const delta = event.key === "ArrowRight" ? 1 : -1;
+  const next = tabs[(index + delta + tabs.length) % tabs.length];
+  event.preventDefault();
+  setWorkspace(next.dataset.view, next);
+});
+
+/* A seat is "at work" only when it has a LIVE dispatched agent right now
+ * (window._liveSeats is refreshed by pollQueue from /api/agents). The old
+ * "acted in the last 5 minutes" heuristic showed a seat as working long after
+ * its agent finished, and a restart wiped it entirely — both misleading. */
+function isWorking(seat){
+  return !!(window._liveSeats && window._liveSeats.has(seat.role));
+}
+
+function renderFloor(seatsData){
+  window._seats = seatsData;
+  const floor = document.getElementById("floor");
+  if (!floor) return;
+  const load = window._seatLoad || {};
+  floor.innerHTML = seatsData.map(s => {
+    const working = isWorking(s);
+    const n = load[s.role] || 0;
+    const doing = s.last_activity
+      ? `${s.last_activity.kind}: ${s.last_activity.summary}`
+      : "idle - no ledger entries yet";
+    return `<button class="seatpill ${working ? "on" : ""}" style="--sc:${color(s.role)}"
+        onclick="dispatchToSeat('${s.role}')" title="${esc(doing)}${s.locks.length ? " · " + s.locks.length + " locked" : ""}">
+      <span class="sp-glyph">${ICO(SEATS[s.role]?.g, 15)}</span>
+      <span class="sp-name">${esc(s.role)}</span>
+      ${working ? `<span class="sp-dot"></span>` : ""}
+      ${n ? `<span class="sp-load">${n}</span>` : ""}
+    </button>`;
+  }).join("");
+}
+function dispatchToSeat(role){
+  if (seatSelect) seatSelect.value = role;
+  const t = document.getElementById("q-title"); if (t) t.focus();
+}
+
+/* THE LEDGER'S ELEMENT WENT WITH THE OVERVIEW DECK, AND THIS KEPT RUNNING.
+   #ledger was the Overview's activity list; the React floor replaced it and the
+   element with it. This function still ran on a 2s interval, threw on
+   `box.querySelector` against null, and had that throw swallowed by
+   pollActivity's own `catch(e){}` — so nothing was visible and nothing was
+   logged.
+
+   The expensive half is the SECOND-ORDER effect. `lastActivityId` only advanced
+   inside the loop below the throw, so it stayed 0 for the life of the tab and
+   every tick re-requested `/api/activity?after_id=0` — the entire event
+   backlog, every two seconds, growing with the project. On this project that is
+   6000+ rows a tick.
+
+   Kept rather than deleted because the cursor is the useful part: it is what
+   makes the request incremental. It advances whether or not anything is on
+   screen to draw, and the drawing is skipped when there is no host — which
+   there is not, and the floor (frontend/src/shell/Floor.tsx) reads the same
+   endpoint for itself. */
+function renderLedger(events, fresh){
+  if (!events || !events.length) return;
+  for (const e of events) lastActivityId = Math.max(lastActivityId, e.id || 0);
+  const box = document.getElementById("ledger");
+  if (!box) return;
+  if (box.querySelector(".empty")) box.innerHTML = "";
+  for (const e of events.slice().reverse()){
+    const div = document.createElement("div");
+    div.className = "line" + (fresh ? " fresh" : "");
+    const who = e.seat || "-";
+    div.innerHTML = `<span class="t">${esc((e.created_at || "").slice(11,19))}</span>` +
+      `<span class="who" style="color:${e.seat ? color(e.seat) : "var(--text-3)"}">${esc(who)}</span>` +
+      `<span class="what"><b>${esc(e.kind)}</b> ${esc(e.summary)}</span>`;
+    box.prepend(div);
+  }
+  while (box.children.length > 120) box.removeChild(box.lastChild);
+}
+
+let galleryKey = "";
+function renderGallery(previews){
+  const g = document.getElementById("gallery");
+  if (!g || !previews.length) return;
+  // Rebuild ONLY when the set changes: replacing innerHTML on every poll
+  // destroys <img> elements mid-load, so they never finish decoding.
+  const key = previews.map(p => p.rel + ":" + p.mtime).join("|");
+  if (key === galleryKey) return;
+  galleryKey = key;
+  g.innerHTML = previews.map(p => `
+    <div class="shot" onclick="show('${esc(p.rel)}')">
+      <img src="/api/preview?rel=${encodeURIComponent(p.rel)}" alt="${esc(p.name)}">
+      <div class="tag">${esc(p.name)}</div>
+    </div>`).join("");
+}
+function show(rel){
+  document.getElementById("lightimg").src = "/api/preview?rel=" + encodeURIComponent(rel);
+  document.getElementById("lightbox").style.display = "flex";
+}
+
+/* The World view is a WRITE surface now (bible editor, lore graph) and lives in
+ * static/world.js — the read-only chip list that used to be rendered here was
+ * the producer's whole complaint. It also carried a draggable cut line until
+ * the tier system came out; see world.js. */
+
+
+function renderSessions(sessions){
+  document.getElementById("sessions").innerHTML = sessions.length
+    ? sessions.map(s => `<div class="sess" onclick="openSession(${s.id})"><span class="nm">${esc(s.name)}</span>
+        <span>${s.duration_s ? s.duration_s.toFixed(0)+"s" : ""}</span>
+        <span class="st">${esc(s.processing_stage || s.status)}</span>
+        ${(s.status === "failed" || (s.status === "processing" && s.processing_worker === "stalled")) && s.audio_path
+          ? `<button class="qbtn small ghost" onclick="event.stopPropagation();retrySession(${s.id})">retry</button>` : ""}
+        </div>`).join("")
+    : `<div class="empty">no playtests yet - playtest_check, then playtest_start</div>`;
+}
+async function retrySession(id){
+  const r = await mutate(`/api/playtest/${id}/retry`, {ok:`session ${id} re-queued`});
+  if (!r.ok) return;
+  pollState(); ptPoll();
+}
+
+let activeReviewSession = null;
+function closeReview(){
+  document.getElementById("review-overlay").style.display = "none";
+  activeReviewSession = null;
+  activeReviewOffset = 0;
+}
+/* options() lived here to build the seat and kind <select>s on every feedback
+ * card. Those selects are refinements now and are built, lazily, by ptreview.js
+ * only for the row whose drawer is open. */
+async function openSession(id){
+  activeReviewSession = id;
+  const overlay = document.getElementById("review-overlay");
+  const body = document.getElementById("review-body");
+  overlay.style.display = "block";
+  body.innerHTML = `<div class="empty">loading session ${id}…</div>`;
+  const d = await readJSON(`/api/playtest/${id}`, null);
+  if (!d || d.__error){
+    body.innerHTML = `<div class="empty err">could not load session ${id} - `
+      + `${esc((d && d.__error) || "no response")}</div>`;
+    return;
+  }
+  activeReviewOffset = Number(d.session.video_offset_s ?? d.video_offset_s ?? 0) || 0;
+  document.getElementById("review-title").textContent = `Playtest ${id} - ${d.session.name}`;
+  const telemetry = d.telemetry_backed
+    ? `<span class="chip">${d.counts.events} telemetry events</span>`
+    : `<span class="chip drift">no telemetry</span>`;
+  const duration = Math.max(Number(d.session.duration_s || 0), 1);
+  const T = d.telemetry || {by_kind:{}, settings:[], moments:[], fps:null, total:0};
+  const fmtT = t => { const s=Math.max(0,Number(t)||0); return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`; };
+  const fmtV = v => (typeof v==="number") ? (Number.isInteger(v)?String(v):v.toFixed(2)) : esc(String(v));
+  const snapshot = d.iteration;
+  body.innerHTML = `
+    ${d.coverage_warnings?.length ? `<div class="coverage-warnings">${d.coverage_warnings.map(w =>
+      `<span class="coverage-warning">${esc(w.message)}</span>`).join("")}</div>` : ""}
+    <div class="review-summary">
+      <span>${esc(d.session.status)}</span><span>${Number(d.session.duration_s||0).toFixed(1)}s</span>
+      <span>${d.counts.items} feedback items</span><span>build ${esc(d.session.build_ref || "unknown")}</span>${telemetry}
+    </div>
+    ${snapshot ? `<div class="work-link">
+      <b>iteration ${snapshot.id}</b>
+      <span>commit ${esc((snapshot.source_commit || "unversioned").slice(0,12))}</span>
+      <span>dirty ${esc((snapshot.dirty_fingerprint || "none").slice(0,12))}</span>
+      <span>source ${esc((snapshot.source_fingerprint || "none").slice(0,12))}</span>
+      <span>export ${esc((snapshot.export_hash || "missing").slice(0,12))}</span>
+      <span>${snapshot.active_artifact_ids.length} active assets</span>
+      <span>tests ${esc(snapshot.tests?.status || "unknown")}</span>
+      <span>telemetry schema v${snapshot.telemetry_schema_version}</span>
+    </div>` : ""}
+    ${d.has_video ? `<div class="video-stage">
+      <video class="review-video" id="review-video" controls src="/api/playtest/${id}/video"></video>
+      <div class="marker-track">${d.timeline_markers.map(marker =>
+        `<button class="timeline-marker" style="left:${Math.min(100,marker.t/duration*100)}%" title="${esc(marker.kind)} · ${esc(marker.text)}" onclick="seekReview(${marker.t})"></button>`
+      ).join("")}</div>
+    </div>` : ""}
+    <!-- TRIAGE SITS DIRECTLY UNDER THE RECORDING, above the telemetry readout.
+         Deciding what to do with the feedback is the reason this overlay opens;
+         it used to be the fifth thing down, under two summaries, a hash dump
+         and a settings log, so the reader scrolled past everything they were
+         not there for to reach the only part with actions on it.
+         Triage is its own surface now: static/ptreview.js. It was 60 lines of
+         template here that put nine controls and three badges at one weight
+         around a single sentence, with no primary action anywhere on the row. -->
+    <div id="pt-triage"></div>
+    <div class="tele-panel">
+      <h2>What the recording captured</h2>
+      <div class="tele-kinds">
+        ${Object.entries(T.by_kind).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
+          `<span class="chip">${esc(k)} ×${n}</span>`).join("") || `<span class="chip drift">no telemetry - this session was audio only</span>`}
+        ${T.fps ? `<span class="chip">fps ${T.fps.min}–${T.fps.max} · avg ${T.fps.avg}</span>` : ""}
+      </div>
+
+      <h3>Tuning changes you made · ${T.settings.length}</h3>
+      ${T.settings.length ? `<div class="tuning-list">${T.settings.map(s => `
+        <button class="tuning-row" onclick="seekReview(${Number(s.t)})" title="jump to ${fmtT(s.t)} in the video">
+          <span class="tuning-time">${fmtT(s.t)}</span>
+          ${s.group ? `<span class="chip">${esc(s.group)}</span>` : ""}
+          <span class="tuning-key">${esc(s.prop || s.key)}</span>
+          <span class="tuning-delta">${fmtV(s.from)} → <b>${fmtV(s.to)}</b></span>
+          ${s.count > 1 ? `<span class="tuning-count">${s.count} nudges</span>` : ""}
+        </button>`).join("")}</div>`
+        : `<p class="empty" style="margin:0">No settings were changed during this session.</p>`}
+
+      ${T.moments.length ? `<h3>Gameplay moments · ${T.moments.length}</h3>
+      <div class="moment-track">${T.moments.map(m =>
+        `<button class="moment-dot k-${esc(m.kind)}" style="left:${Math.min(100,m.t/duration*100)}%" title="${esc(m.kind)} @ ${fmtT(m.t)}" onclick="seekReview(${Number(m.t)})"></button>`).join("")}</div>` : ""}
+    </div>
+    <div><h2 style="margin-top:4px">Transcript</h2>
+      <div class="transcript" id="review-transcript">${(d.transcript||[]).map((s,index) =>
+        `<div class="transcript-line" id="transcript-${index}" data-start="${Number(s.t_start)}" data-end="${Number(s.t_end)}" onclick="seekReview(${Number(s.t_start)})"><span style="color:var(--text-3)">${Number(s.t_start).toFixed(1)}s</span> ${esc(s.text)}
+          ${s.source === "typed" ? `<span class="chip">typed</span>` : ""}
+          ${(() => {
+            // NOT "confidence -1.17". It is whisper's avg_logprob, always <= 0,
+            // and a negative confidence teaches a human nothing. One translation
+            // in one place (PtReview.heard) so the chip here and the tag on the
+            // triage row can never drift apart.
+            const h = window.PtReview ? PtReview.heard(s.confidence) : null;
+            return h ? `<span class="chip" title="${esc(h.tip)}">${esc(h.word)}</span>` : "";
+          })()}</div>`).join("")
+        || "no transcript"}</div>
+    </div>`;
+  document.getElementById("review-video")?.addEventListener("timeupdate", syncTranscript);
+  PtReview.mount(document.getElementById("pt-triage"), d, {seek:seekReview});
+}
+/* Session time vs video time. The capture starts a beat after the session does,
+ * so every timestamp the backend stores (transcript, markers, telemetry) is in
+ * SESSION time while the video's own clock starts at zero. playtest.py already
+ * subtracts video_offset_s when it extracts a frame; seeking did not, so the
+ * human watched a moment several seconds off from the one the agent was handed.
+ * (Backend still owed: video_offset_s in brief()'s session payload — until it
+ * lands this reads 0 and behaves exactly as before, never worse.) */
+let activeReviewOffset = 0;
+const toVideoTime = t => Math.max(0, (Number(t) || 0) - activeReviewOffset);
+
+function seekReview(t){
+  const video = document.getElementById("review-video");
+  if (!video) return;
+  video.currentTime = toVideoTime(t);
+  video.play().catch(()=>{});
+}
+function syncTranscript(){
+  const video = document.getElementById("review-video");
+  if (!video) return;
+  const at = video.currentTime + activeReviewOffset;   // back into session time
+  document.querySelectorAll(".transcript-line").forEach(line => {
+    const active = at >= Number(line.dataset.start) && at <= Number(line.dataset.end);
+    line.classList.toggle("active",active);
+    if (active) line.scrollIntoView({block:"nearest"});
+  });
+}
+/* jumpToFeedback() moved into ptreview.js, where it can do the thing this
+ * version could not: the target of a "merged into #57" link is usually a
+ * SETTLED item, which now lives in a folded group, and scrollIntoView on a row
+ * inside a closed <details> scrolls to nothing. */
+/* promote / dismiss / merge / link moved to static/ptreview.js. They read DOM
+ * ids (seat-<n>, kind-<n>, merge-<n>, asset-link-<n>) that no longer exist, and
+ * each one ended with openSession(), which rebuilt the whole overlay — throwing
+ * away the <video> mid-playback every time you triaged one line. PtReview
+ * repaints only its own subtree. */
+
+function showOffline(reason){
+  // Blocker: the header must resolve to a DEFINITE state — never a permanent
+  // "connecting…". On failure, say so plainly and offer a retry action.
+  const pl = document.getElementById("projline");
+  if (pl) pl.innerHTML = `<b>Offline</b> · ${esc(reason)} · ` +
+    `<a href="#" onclick="pollState();return false" style="color:var(--ember)">retry</a>`;
+  setConnection(false, "offline - " + reason);
+  setVault(false, null);
+}
+/* ── first run ───────────────────────────────────────────────────────────
+ * The absence case. /api/state answers 200 {project:null,hint} now, so this
+ * branch is REACHABLE — it used to be dead code behind a 503 that only ever
+ * rendered "Offline · server 503" on a machine that had never had a project.
+ * The legacy 404/503 shapes are still handled: an older backend must not fall
+ * through to the offline card either. */
+/* THE CARD ITSELF IS REACT — frontend/src/views/FirstRun.tsx. What stays here
+   is the decision to show it, because that is boot-path control flow and it
+   belongs with pollState() which makes it. The card is told WHY through an
+   event; it fetches its own /api/project for the registry and the target path.
+
+   showFirstRun is still async-shaped and still safe to call repeatedly: the
+   event fires every time so a changing reason reaches the card, and the
+   `hidden` guard below keeps a re-poll from re-triggering anything else. */
+function showFirstRun(hint){
+  const box = document.getElementById("firstrun"); if (!box) return;
+  const pl = document.getElementById("projline");
+  if (pl) pl.textContent = "no project yet";
+  setConnection(false, "no project yet");
+  setVault(false, null);
+  // STICKY, because this races the island. pollState() runs from a classic
+  // script the moment the page is parsed; bgate.js is a module and therefore
+  // deferred, so on a cold boot the "no project" decision is made BEFORE the
+  // card exists to hear about it. An event alone would be dispatched into an
+  // empty room and the card would sit there unarmed, with no registry and no
+  // reason. The component reads this on mount and the event handles every
+  // later change.
+  window.__bgFirstRun = { hint: hint || "" };
+  window.dispatchEvent(new CustomEvent("bgate:firstrun", { detail:{ hint } }));
+  if (!box.hidden) return;
+  box.hidden = false;
+}
+function hideFirstRun(){
+  const box = document.getElementById("firstrun");
+  if (box && !box.hidden) box.hidden = true;
+}
+
+async function pollState(){
+  try{
+    const r = await fetch("/api/state");
+    if (!r.ok){
+      // Never "Offline · server 503" on a fresh machine. Read the body: the
+      // backend already says WHY, and a missing project is a first run, not an
+      // outage. Older backends 404/503 here; newer ones answer 200 project:null.
+      const body = await r.json().catch(() => null);
+      const why = body ? apiError(body, r.status) : `server ${r.status}`;
+      if (r.status === 404 || r.status === 503 || /no \.?bgate|no project/i.test(why)){
+        showFirstRun(/project/i.test(why) ? why : "no project here yet - name one below");
+        return;
+      }
+      showOffline(why);
+      return;
+    }
+    const s = await r.json();
+    if (!s || !s.project){ showFirstRun(s && s.hint); return; }
+    hideFirstRun();
+    // THE PROJECT LINE LIVED IN THE OLD RAIL and the shell renders it now. This
+    // wrote to it unguarded, inside pollState's own try/catch — so the moment
+    // the element went, every poll threw on null.innerHTML, was caught, and
+    // reported as `showOffline("backend unreachable")`. A connected dashboard
+    // said offline and the store was never fed: the whole shell read "no
+    // project" against an /api/state that was answering 200 with one.
+    const projline = document.getElementById("projline");
+    if (projline) projline.innerHTML =
+      `<b>${esc(s.project.name)}</b> · ${esc(s.project.engine)} ${esc(s.project.dimension)} · ${esc(s.root)}`;
+    const v = s.verify;
+    setConnection(true, `connected · ${esc(s.project.name)}`);
+    setVault(v.ok, v.counts);
+    renderFloor(s.seats);
+    renderGallery(s.previews);
+    renderControlsHint(s);
+    // THE ASSETS DECK IS REACT (frontend/src/views/assets/). It does not fetch
+    // /api/state for itself — this poll is already the shell's single reader of
+    // the most expensive endpoint on the server, and a second copy would be a
+    // few hundred milliseconds out of step with the status bar drawn from this
+    // same body. So the payload is pushed, exactly where renderAssetWorkspace()
+    // and renderVault() used to be called.
+    window.BGState?.push(s);
+    // pollQueue() derives its Review lane from the candidates in here, and it
+    // runs on its own timer with no `s` of its own.
+    window._assetGroups = s.asset_groups || [];
+    renderSessions(s.sessions);
+    const rcP = document.getElementById("rc-pt"); if (rcP) rcP.textContent = (s.sessions||[]).length;
+    document.getElementById("foot").textContent =
+      `builders gate · ${s.seats.length} seats · ${s.assets.length} binaries · canon ${s.lore.canon.length} · last poll ${new Date().toLocaleTimeString()}`;
+  }catch(e){ showOffline("backend unreachable"); }
+}
+/* The play panel used to advertise a fighting-game control scheme — punch, kick,
+ * block, duck on six keys — in EVERY project, and the shipped 2D template binds
+ * exactly three actions: move_left, move_right, jump.
+ * The real bindings live in the game's own project.godot [input] section, so the
+ * hint renders whatever the backend reports and otherwise promises nothing.
+ * (Backend still owed: a `controls` list on /api/state or /api/play/status.) */
+function renderControlsHint(state){
+  const el = document.getElementById("play-controls");
+  if (!el) return;
+  const controls = (state && (state.controls
+    || (state.project && state.project.controls))) || null;
+  const line = Array.isArray(controls) && controls.length
+    ? controls.map(c => typeof c === "string" ? c
+        : `${((c.keys || []).join("/")) || "-"} ${String(c.action || "").replace(/_/g, " ")}`)
+        .join(" · ")
+    : "";
+  el.textContent = line
+    ? `${line} · F1 opens live tuning`
+    : "Controls come from your game's own input map - F1 opens live tuning over the running build.";
+}
+
+/* ── two readouts, two facts ───────────────────────────────────────────────
+   These used to be one function writing the same vault state into both the
+   rail foot and the status bar, in two different vocabularies: the foot said
+   "55 drift · 71 missing · 2 pending" and the bar said "vault drift". Same
+   information twice, and nothing anywhere said what "drift" meant.
+
+   The rail foot now owns the CONNECTION (am I talking to the server, is there
+   a project). The status bar owns the VAULT, as one number, with the terms
+   spelled out on hover and a click through to the files themselves. */
+
+function setConnection(ok, text){
+  const l = document.getElementById("lamp");
+  if (l) l.className = "vlamp" + (ok ? "" : " bad");
+  const t = document.getElementById("lamptext");
+  if (t) t.textContent = text;
+}
+
+// counts: {modified, missing, pending, clean, locked} — or null when unknown.
+function setVault(ok, counts){
+  const chip = document.getElementById("sb-vault");
+  if (!chip) return;
+  const dot = chip.querySelector(".l");
+  const b   = chip.querySelector("b");
+  if (!counts){
+    if (dot) dot.className = "l warn";
+    if (b) b.textContent = "-";
+    chip.title = "Vault state unknown - not connected to a project.";
+    return;
+  }
+  const off = (counts.modified || 0) + (counts.missing || 0) + (counts.pending || 0);
+  if (dot) dot.className = "l" + (ok ? "" : " bad");
+  if (b) b.textContent = ok ? "clean" : `${off} to reconcile`;
+  chip.title = ok
+    ? `Every tracked file matches the hash recorded for it. `
+      + `${counts.clean || 0} tracked, ${counts.locked || 0} held by a seat.`
+    : `${off} tracked file(s) no longer match their record:\n`
+      + `· ${counts.modified || 0} changed on disk since the hash was taken\n`
+      + `· ${counts.missing || 0} tracked but no longer on disk\n`
+      + `· ${counts.pending || 0} tracked but never hashed yet\n`
+      + `Click to open Assets → Tracked binaries.`;
+}
+async function pollActivity(){
+  try{
+    const r = await fetch(`/api/activity?after_id=${lastActivityId}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    renderLedger(data.events, lastActivityId > 0);
+  }catch(e){}
+}
+
+/* ── dispatch + play ───────────────────────────────────────────────────
+   THE QUEUE COMPOSER IS GONE and so are the three functions that served it
+   (toggleBrief, addItem, refreshAgentView). They were unreachable — every
+   caller went with the old Agents board — but each one dereferenced a deleted
+   element on its first line, which is the exact shape that bites the moment
+   somebody wires a caller back up. What replaced them is window.BGCompose,
+   published by the React console while it is mounted. */
+/* THE QUEUE COMPOSER WENT WITH THE OLD AGENTS BOARD. This populated its seat
+   <select> at the top level of the script and threw the moment the element was
+   gone — a TypeError at file scope, which skips every statement after it. The
+   function declarations below survive (they hoist), so the page looked fine and
+   the failure was silent: what actually stopped was the initialisation that
+   runs further down. Guarded rather than deleted, because the composer is
+   coming back as a React form and this is where its options come from. */
+const seatSelect = document.getElementById("q-seat");
+if (seatSelect) Object.keys(SEATS).forEach(r => {
+  const opt = document.createElement("option");
+  opt.value = r; opt.textContent = r;
+  seatSelect.appendChild(opt);
+});
+
+
+async function dispatchItem(id){
+  // The most common first-run failure lives here: "claude CLI not found on
+  // PATH" comes back as 200 {ok:false,error} and used to be discarded whole.
+  const r = await mutate(`/api/queue/${id}/dispatch`, {ok:`agent dispatched on item ${id}`});
+  if (!r.ok) return;
+  pollQueue();
+}
+async function stopItem(id){
+  const r = await mutate(`/api/queue/${id}/stop`, {ok:`item ${id} stopped`});
+  if (!r.ok) return;
+  pollQueue();
+}
+
+async function pollQueue(){
+  try{
+    const [qr, ar] = await Promise.all([fetch("/api/queue"), fetch("/api/agents")]);
+    if (!qr.ok) return;
+    const q = await qr.json();
+    const items = q.items || [];
+    const agents = ar.ok ? (await ar.json()).agents : [];
+    const live = agents.filter(a => a.state === "running").map(a => a.item_id);
+    const liveSet = new Set(live);
+    // Steer consumption feedback: the backend now reports how many injected
+    // steers the agent has actually READ (echoed back into its log). Flip the
+    // oldest still-"queued" chips to "applied" so a steer stops looking like
+    // it vanished into a black hole.
+    window._agentMeta = {};
+    agents.forEach(a => {
+      window._agentMeta[a.item_id] = a;
+      const chips = (window._steers && window._steers[a.item_id]) || [];
+      const consumed = (a.steers || 0) - (a.steers_pending || 0);
+      let seen = 0;
+      chips.forEach(c => {
+        if (c.state === "queued" || c.state === "applied"){
+          seen += 1;
+          if (c.state === "queued" && seen <= consumed) c.state = "applied";
+        }
+      });
+      const lat = (a.steer_latency_s || []);
+      if (lat.length) window._steerLat = lat[lat.length - 1];
+    });
+    // Seats that have a live agent right now — drives the floor "at work" dot.
+    window._liveSeats = new Set(items.filter(i => liveSet.has(i.id)).map(i => i.seat));
+    // Per-seat queued load for the seat strip badges.
+    const load = {};
+    items.forEach(i => { if (i.status === "queued") load[i.seat] = (load[i.seat] || 0) + 1; });
+    window._seatLoad = load;
+    if (window._seats) renderFloor(window._seats);   // refresh strip load/dots live
+    const rcA = document.getElementById("rc-agents"); if (rcA) rcA.textContent = live.length;
+    const sbA = document.getElementById("sb-agents");
+    if (sbA){ sbA.querySelector("b").textContent = live.length;
+      sbA.querySelector(".l").className = "l" + (live.length ? " warn" : ""); }
+
+    // Work items whose output is a candidate awaiting review (done → Review lane).
+    const reviewIds = new Set();
+    (window._assetGroups || []).forEach(g => (g.candidates || []).forEach(c => {
+      const wid = c.work_item && c.work_item.id; if (wid) reviewIds.add(wid);
+    }));
+
+    // Fetch live-agent activity (few, so cheap) for the Active-now step tickers.
+    const acts = {};
+    await Promise.all(items.filter(i => liveSet.has(i.id)).map(async i => {
+      try { acts[i.id] = await (await fetch(`/api/agent-activity/${i.id}`)).json(); }
+      catch(e){ acts[i.id] = null; }
+    }));
+
+    renderActive(items, liveSet, acts);
+    renderPipeline(items, liveSet, reviewIds);
+    if (_watching != null) refreshAgentView();
+  }catch(e){}
+}
+
+function _lastStep(act){
+  const steps = (act && act.steps) || [];
+  for (let k = steps.length - 1; k >= 0; k--){
+    const s = steps[k];
+    if (s.kind === "tool") return `${ICO("tech")}<b>${esc(s.name || "tool")}</b> ${esc(s.hint || "")}`;
+    if (s.kind === "result") return `→ ${esc(s.text || "")}`;
+    if (s.kind === "say" || s.kind === "steer") return esc(s.text || "");
+  }
+  return act ? "starting up…" : "connecting…";
+}
+
+function renderActive(items, liveSet, acts){
+  renderActive._last = [items, liveSet, acts];
+  const box = document.getElementById("orch-active");
+  const nEl = document.getElementById("orch-active-n");
+  if (!box) return;
+  const liveItems = items.filter(i => liveSet.has(i.id));
+  // .sec-n is the shared count chip (app.css). Empty when nothing is running,
+  // because an empty .sec-n hides itself and a pill reading "0" is furniture.
+  if (nEl){
+    nEl.textContent = liveItems.length || "";
+    nEl.className = "sec-n" + (liveItems.length ? " live" : "");
+  }
+  if (!liveItems.length){
+    box.innerHTML = `<div class="empty-card">No agents running. Dispatch a queued item below, or add work above and send it to a seat.</div>`;
+    return;
+  }
+  // Preserve whatever the user is typing into a steer box across the 3s poll.
+  const focused = document.activeElement;
+  let keepId = null, keepVal = "", keepCaret = 0;
+  if (focused && focused.classList && focused.classList.contains("steerin") && focused.id.startsWith("steer-inline-")){
+    keepId = focused.id.slice("steer-inline-".length); keepVal = focused.value; keepCaret = focused.selectionStart;
+  }
+  box.innerHTML = liveItems.map(i => {
+    const c = color(i.seat); const act = acts[i.id];
+    return `<div class="ac-card" style="--sc:${c}">
+      <div class="ac-head">
+        <span class="ac-glyph" style="color:${c}">${ICO(SEATS[i.seat]?.g, 14)}</span>
+        <span class="ac-seat" style="color:${c}">${esc(i.seat)}</span>
+        <span class="ac-id">#${i.id}</span>
+        <span class="ac-live">${(() => {
+          const m = (window._agentMeta || {})[i.id];
+          const s = m && m.last_output_s;
+          if (s == null) return "● working";
+          if (s > 300) return `⚠ no output ${Math.floor(s/60)}m`;
+          return `● working · output ${s < 60 ? s + "s" : Math.floor(s/60) + "m"} ago`;
+        })()}</span>
+      </div>
+      <div class="ac-title" title="${esc(i.brief || i.title)}">${esc(i.title)}</div>
+      <div class="ac-step">${_lastStep(act)}</div>
+      <div class="ac-foot">
+        <span class="ac-steps">${(act && act.step_count) || 0} steps</span>
+        <div class="ac-actions">
+          <button class="qbtn small ghost" onclick="watchAgent(${i.id})">expand</button>
+          <button class="qbtn small ghost" onclick="stopItem(${i.id})">stop</button>
+        </div>
+      </div>
+      ${_steerChips(i.id)}
+      <div class="ac-steer">
+        <input class="steerin" id="steer-inline-${i.id}" placeholder="steer this agent…"
+               onkeydown="if(event.key==='Enter')steerInline(${i.id})">
+        <button class="qbtn small" id="steerbtn-${i.id}" onclick="steerInline(${i.id})">steer</button>
+      </div>
+    </div>`;
+  }).join("");
+  if (keepId){
+    const el = document.getElementById(`steer-inline-${keepId}`);
+    if (el){ el.value = keepVal; el.focus(); try { el.setSelectionRange(keepCaret, keepCaret); } catch(e){} }
+  }
+}
+renderActive._refresh = function(){ if (renderActive._last) renderActive.apply(null, renderActive._last); };
+window._steers = window._steers || {};   // id -> [{text, state}]
+function _steerChips(id){
+  const list = (window._steers[id] || []).slice(-4);
+  if (!list.length) return "";
+  return `<div class="ac-pending">${list.map(s => {
+    const ic = s.state === "error" ? "⚠" : s.state === "applied" ? "✓" : s.state === "sending" ? "…" : "🧭";
+    const st = s.state === "sending" ? "sending" : s.state === "error" ? ("failed - " + esc(s.err || "?"))
+             : s.state === "applied" ? ("applied" + (window._steerLat ? ` · ${window._steerLat}s` : ""))
+             : "queued · agent reads it when its current step ends";
+    return `<div class="steerchip ${s.state}"><span class="sc-ic">${ic}</span>`
+         + `<span class="sc-txt" title="${esc(s.text)}">${esc(s.text)}</span>`
+         + `<span class="sc-st">${st}</span></div>`;
+  }).join("")}</div>`;
+}
+async function _sendSteer(id, text, inputEl){
+  text = (text || "").trim();
+  if (!text) return;
+  if (inputEl) inputEl.value = "";
+  const entry = { text, state: "sending" };
+  (window._steers[id] = window._steers[id] || []).push(entry);
+  const btn = document.getElementById(`steerbtn-${id}`); if (btn) btn.textContent = "sent";
+  renderActive._refresh && renderActive._refresh();   // paint the optimistic chip now
+  // Steering already read its response; it goes through mutate() too so the
+  // refusal ("agent is finishing; steer channel closed") reads the same as
+  // every other failure and lands in a toast as well as the chip.
+  const r = await mutate(`/api/queue/${id}/steer`, {body:{text}});
+  entry.state = r.ok ? "queued" : "error";
+  entry.err = r.error;
+  renderActive._refresh && renderActive._refresh();
+  // A queued steer lands at the agent's next turn; clear the chip once that's
+  // almost certainly happened (errors linger a bit so they're seen).
+  const ttl = entry.state === "error" ? 9000 : 18000;
+  setTimeout(() => {
+    const a = window._steers[id]; if (!a) return;
+    const k = a.indexOf(entry); if (k >= 0) a.splice(k, 1);
+    renderActive._refresh && renderActive._refresh();
+  }, ttl);
+  if (window.Inspector && Inspector.el && Inspector.el().classList.contains("open")) Inspector.render();
+}
+function steerInline(id){
+  _sendSteer(id, (document.getElementById(`steer-inline-${id}`) || {}).value,
+             document.getElementById(`steer-inline-${id}`));
+}
+
+function _pchip(i, liveSet, actions){
+  const c = color(i.seat); const isLive = liveSet.has(i.id);
+  return `<div class="pchip ${isLive ? "live" : ""}" id="work-${i.id}" style="--sc:${c}">
+    <div class="pchip-top">
+      <span class="pchip-seat" style="color:${c}">${esc(i.seat)}</span>
+      <span class="pchip-id">#${i.id}${isLive ? " ●" : ""}</span>
+    </div>
+    <div class="pchip-title" title="${esc(i.brief || i.title)}">${esc(i.title)}</div>
+    ${actions ? `<div class="pchip-act">${actions}</div>` : ""}
+  </div>`;
+}
+function _lane(cls, label, laneItems, liveSet, chipActions, cap){
+  cap = cap || 12;
+  const shown = laneItems.slice(0, cap);
+  const body = shown.map(i => _pchip(i, liveSet, chipActions ? chipActions(i) : "")).join("")
+    || `<div class="empty">-</div>`;
+  const more = laneItems.length > cap ? `<div class="lane-more">+${laneItems.length - cap} more</div>` : "";
+  return `<div class="lane ${cls}">
+    <div class="lane-head"><span>${label}</span><span class="lc">${laneItems.length}</span></div>
+    <div class="lane-body">${body}${more}</div>
+  </div>`;
+}
+function renderPipeline(items, liveSet, reviewIds){
+  const box = document.getElementById("orch-pipeline");
+  if (!box) return;
+  const queued  = items.filter(i => i.status === "queued");
+  const running = items.filter(i => liveSet.has(i.id));
+  const doneAll = items.filter(i => i.status === "done" && !liveSet.has(i.id));
+  const review  = doneAll.filter(i => reviewIds.has(i.id));
+  const done    = doneAll.filter(i => !reviewIds.has(i.id));
+  const failed  = items.filter(i => i.status === "failed");
+
+  let lanes = "";
+  lanes += _lane("queued", "Queued", queued, liveSet,
+    i => `<button class="qbtn small" onclick="dispatchItem(${i.id})">dispatch</button>`);
+  lanes += _lane("running", "Running", running, liveSet,
+    i => `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">expand</button>`);
+  lanes += _lane("review", "Review", review, liveSet,
+    i => `<button class="qbtn small ghost" onclick="setWorkspace('assets')">review</button>`);
+  lanes += _lane("done", "Done", done, liveSet,
+    i => `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">log</button>`);
+  if (failed.length) lanes += _lane("failed", "Failed", failed, liveSet,
+    i => `<button class="qbtn small ghost" onclick="watchAgent(${i.id})">log</button>`);
+  box.innerHTML = lanes;
+}
+
+/* ── inspector drawer: full detail + full-scroll history ─────────────── */
+const Inspector = {
+  el(){ return document.getElementById("inspector"); },
+  _poll:null, _tab:0, _tabs:[], _id:null,
+  open(){ this.el().classList.add("open"); this.el().setAttribute("aria-hidden","false");
+    document.getElementById("insp-scrim").classList.add("open"); },
+  close(){ this.el().classList.remove("open"); this.el().setAttribute("aria-hidden","true");
+    document.getElementById("insp-scrim").classList.remove("open");
+    if (this._poll){ clearInterval(this._poll); this._poll=null; } this._id=null; },
+  head(eyebrow,title){ document.getElementById("insp-eyebrow").textContent=eyebrow;
+    document.getElementById("insp-title").textContent=title; },
+  setTabs(tabs){ this._tabs=tabs; this._tab=0;
+    document.getElementById("insp-tabs").innerHTML = tabs.map((t,i)=>
+      `<button class="insp-tab ${i===0?"active":""}" onclick="Inspector.tab(${i})">${esc(t.label)}</button>`).join("");
+    this.render(); },
+  tab(i){ this._tab=i;
+    document.querySelectorAll("#insp-tabs .insp-tab").forEach((b,j)=>b.classList.toggle("active",j===i));
+    this.render(); },
+  render(){ const t=this._tabs[this._tab]; if (t) t.render(document.getElementById("insp-body")); },
+
+  async agent(id){
+    this._id=id; this.open(); this.head("Agent · item #"+id, "loading…");
+    const activity = { label:"Activity", render: async (body)=>{
+      const a = await readJSON(`/api/agent-activity/${id}`, {steps:[],running:false});
+      this.head(`Agent · item #${id}`, a.__error ? "unavailable"
+        : (a.running?"● working":"finished")+` · ${a.step_count||0} steps`);
+      if (a.__error){
+        body.innerHTML = `<div class="empty err">could not read this agent - ${esc(a.__error)}</div>`;
+        return;
+      }
+      const steer = a.running ? `<div class="steerbar" style="margin-bottom:12px">
+          <input id="steer-input" class="steerin" placeholder="steer this agent - e.g. that pose is off-model, regenerate against the ref"
+                 onkeydown="if(event.key==='Enter')steerAgent(${id})">
+          <button class="qbtn small" onclick="steerAgent(${id})">steer</button></div>` : "";
+      const rows = (a.steps||[]).map(s=>{
+        const k = s.kind==="tool"?"k-tool":s.kind==="result"?"k-result":s.kind==="steer"?"k-steer":"k-say";
+        const label = s.kind==="tool"?(s.name||"tool"):s.kind;
+        const txt = s.kind==="tool" ? `<b>${esc(s.name)}</b> <span style="color:var(--ash)">${esc(s.hint||"")}</span>` : esc(s.text||"");
+        return `<div class="insp-step ${k}"><span class="sg">${esc(label)}</span><span class="sx">${txt}</span></div>`;
+      }).join("") || '<div class="empty">no activity yet - the agent is starting up</div>';
+      const fin = a.final ? `<div class="insp-code" style="margin-top:12px;border-color:var(--good)">RESULT (${esc(a.final.subtype||"")}${a.final.cost?` · $${a.final.cost.toFixed(3)}`:""})\n${esc(a.final.text||"")}</div>` : "";
+      const art = await renderArtRail(id, a.running);
+      body.innerHTML = steer + art + `<div class="asteps" style="max-height:none">${rows}</div>` + fin;
+      SpriteAnim.mountAll(body);
+    }};
+    const rawlog = { label:"Raw log", render: async (body)=>{
+      body.innerHTML = '<div class="empty">loading full log…</div>';
+      const d = await readJSON(`/api/agent-log/${id}?tail=2000`, {lines:[]});
+      body.innerHTML = d.__error
+        ? `<div class="empty err">could not read the log - ${esc(d.__error)}</div>`
+        : `<div class="insp-code">${esc((d.lines||[]).join("\n")) || "empty log"}</div>`;
+    }};
+    this.setTabs([activity, rawlog]);
+    if (this._poll) clearInterval(this._poll);
+    this._poll = setInterval(()=>{ if (this._tab===0 && this.el().classList.contains("open")) this.render(); }, 3000);
+  },
+};
+window.Inspector = Inspector;
+
+/* ── live agent activity view ────────────────────────────────────────── */
+let _watching = null;
+function watchAgent(id){ Inspector.agent(id); }
+
+async function steerAgent(id, prefill){
+  const inp = document.getElementById("steer-input");
+  await _sendSteer(id, prefill != null ? prefill : (inp ? inp.value : ""), inp);
+}
+
+/* Like/dislike a produced sprite. Fans out server-side: dispositions the
+   artifact, saves a durable art preference the next agent reads, and (dislike, or
+   any note) steers the live agent to course-correct now. */
+window._reacted = window._reacted || {};
+async function reactArt(artId, verdict, itemId){
+  const noteEl = document.getElementById(`rxnote-${artId}`);
+  const note = noteEl ? noteEl.value.trim() : "";
+  window._reacted[artId] = { verdict, status: "…" };
+  const bar = noteEl ? noteEl.closest(".artreact") : null;
+  if (bar){ bar.classList.add("reacted");
+    bar.querySelectorAll(".rx").forEach(b => b.classList.remove("on"));
+    const b = bar.querySelector(".rx." + (verdict === "like" ? "up" : "down")); if (b) b.classList.add("on"); }
+  const setSt = t => { const s = bar && bar.querySelector(".rx-st"); if (s) s.textContent = t; };
+  setSt("…");
+  const got = await mutate(`/api/artifacts/${artId}/react`,
+                           {body:{verdict, note, item_id: itemId}});
+  if (!got.ok){
+    window._reacted[artId].status = "failed";
+    setSt("failed - " + got.error);
+    return;
+  }
+  const r = got.data || {};
+  const st = r.steered ? "steered + saved" : r.saved_preference ? "saved" : "done";
+  window._reacted[artId].status = st; setSt(st);
+  // if it steered the live agent, surface it as a queued-steer chip on its card
+  if (r.steered && window._steers){
+    (window._steers[itemId] = window._steers[itemId] || []).push({
+      text: (verdict === "dislike" ? "👎 " : "👍 ") + (note || ("feedback on " + (r.artifact||artId))),
+      state: "queued" });
+    renderActive._refresh && renderActive._refresh();
+  }
+  if (noteEl) noteEl.value = "";
+}
+
+/* Sprite-sheet player: plays a horizontal N-frame sheet in place so you can SEE
+   the animation (a static strip tells you nothing). Reusable - mount any element
+   with class .spr-mount and data-rel / data-count / data-fps. */
+const SpriteAnim = {
+  _ivs: [],
+  mountAll(container){
+    if (!container) return;
+    // the container was just re-rendered — kill prior timers before remounting
+    this._ivs.forEach(clearInterval); this._ivs = [];
+    container.querySelectorAll(".spr-mount").forEach(el =>
+      this.mount(el, el.dataset.rel, +el.dataset.fps || 8, +el.dataset.count || 0,
+                 +el.dataset.item || 0));
+  },
+  mount(el, rel, fps, count, item){
+    if (!el || !rel) return;
+    const img = new Image();
+    img.onload = () => {
+      const H = el.clientHeight || 78;
+      const N = count > 1 ? count
+        : Math.max(1, Math.round(img.naturalWidth / img.naturalHeight * 240 / 160));
+      const dispW = Math.round(H * (img.naturalWidth / N) / img.naturalHeight);
+      const play = document.createElement("div");
+      play.className = "spr-play";
+      play.style.cssText = `width:${dispW}px;height:${H}px;`
+        + `background-image:url('${img.src}');background-repeat:no-repeat;`
+        + `background-size:${dispW * N}px ${H}px;`;
+      el.innerHTML = ""; el.appendChild(play);
+      let k = 0;
+      const tick = () => { play.style.backgroundPositionX = (-k * dispW) + "px"; k = (k + 1) % N; };
+      tick();
+      const iv = setInterval(tick, 1000 / Math.max(1, fps));
+      this._ivs.push(iv);
+    };
+    img.onerror = () => { el.style.opacity = ".15"; };
+    img.src = "/api/preview?rel=" + encodeURIComponent(rel)
+            + (item ? "&item_id=" + item : "");
+  },
+};
+window.SpriteAnim = SpriteAnim;
+
+/* Art consistency rail: the renders THIS agent produced, each next to the
+   reference it was drawn against, with a one-click off-model steer. */
+async function renderArtRail(itemId, running){
+  const d = await readJSON("/api/artifacts", {artifacts:[]});
+  if (d.__error) return `<div class="artrail"><div class="artrail-h">renders this agent produced</div>`
+    + `<div class="empty err">could not read artifacts - ${esc(d.__error)}</div></div>`;
+  const arts = (d.artifacts||[]).filter(x => x.work_item_id === itemId);
+  if (!arts.length) return "";
+  arts.sort((a,b)=> (b.id||0)-(a.id||0));
+  const refRel = r => {
+    if (!r) return null;
+    r = String(r).replace(/\\/g,"/");
+    if (r.includes("/")) { const i = r.indexOf(".bgate"); return i>=0 ? r.slice(i) : null; }
+    return `.bgate/refs/${r}.png`;               // bare ref name -> conventional path
+  };
+  const cards = arts.slice(0,12).map(x => {
+    const cand = `/api/preview?rel=${encodeURIComponent(x.path)}`;
+    const rr = refRel((x.refs||[])[ (x.refs||[]).length>1 ? x.refs.length-1 : 0 ]);
+    const refImg = rr ? `<img class="refthumb" src="/api/preview?rel=${encodeURIComponent(rr)}" title="reference: ${esc(String((x.refs||[]).join(', ')))}">` : "";
+    const badge = x.status==="approved" ? "✓" : x.status==="rejected" ? "✕" : "•";
+    // frame count for the animated preview: from the sheet's metadata if present
+    const frames = (x.metadata && x.metadata.frames) || {};
+    const count = Object.keys(frames).length;
+    const offmsg = `Candidate "${x.logical_name}" (rev ${x.revision}) is OFF-MODEL / off-style. Regenerate it against the pinned reference - match silhouette, palette, cel-shaded 16-bit style exactly. Do NOT self-approve; run consistency_check before accepting.`;
+    // Animated player if it's a multi-frame sprite sheet; static image otherwise.
+    const preview = count > 1
+      ? `<div class="candthumb spr-mount" data-rel="${esc(x.path)}" data-count="${count}" data-fps="8" title="${esc(x.logical_name)} · ▶ ${count}f"></div>`
+      : `<img class="candthumb" src="${cand}" title="${esc(x.logical_name)} · ${esc(x.model||'')}">`;
+    return `<div class="artcard">
+      <div class="artpair">
+        ${refImg}
+        ${preview}
+      </div>
+      <div class="artmeta"><span class="artbadge s-${esc(x.status)}">${badge}</span> ${esc(x.logical_name)}${count>1?` <span class="artplay">▶ ${count}f</span>`:""} <span class="artmodel">${esc(x.producer||'')}</span></div>
+      ${(() => { const rx = (window._reacted||{})[x.id];
+        return `<div class="artreact ${rx?'reacted':''}">
+          <button class="rx up ${rx&&rx.verdict==='like'?'on':''}" title="like - keep as reference" onclick="reactArt(${x.id},'like',${itemId})">👍</button>
+          <button class="rx down ${rx&&rx.verdict==='dislike'?'on':''}" title="dislike - course-correct now + save preference" onclick="reactArt(${x.id},'dislike',${itemId})">👎</button>
+          <input class="rx-note" id="rxnote-${x.id}" placeholder="feedback → steers + saves" onkeydown="if(event.key==='Enter')reactArt(${x.id},'dislike',${itemId})">
+          <span class="rx-st">${rx?esc(rx.status||''):''}</span>
+        </div>`; })()}
+    </div>`;
+  }).join("");
+  return `<div class="artrail"><div class="artrail-h">renders this agent produced · ref ▏ candidate (playing)</div>
+    <div class="artscroll">${cards}</div></div>`;
+}
+
+
+async function loadGame(){
+  const holder = document.getElementById("play-holder");
+  // Never serve a stale build — rebuild if the source is newer than the export.
+  const st = await readJSON("/api/play/status", {});
+  if (st.stale){
+    holder.innerHTML = `<div class="playbtn" style="cursor:default">rebuilding current build…</div>
+      <div class="playhint">exporting the game from latest source - a few seconds</div>`;
+    const r = await mutate("/api/play/rebuild", {quiet:true});
+    if (!r.ok){
+      holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error)}</div>
+        <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
+      toast("rebuild failed - " + r.error);
+      return;
+    }
+  }
+  bootFrame();
+}
+function bootFrame(sessionId=null){
+  const session = sessionId ? `&bgate_session=${encodeURIComponent(sessionId)}` : "";
+  document.getElementById("play-holder").innerHTML =
+    `<iframe id="gameframe" src="/play/?t=${Date.now()}${session}" allow="autoplay; fullscreen"></iframe>`;
+}
+
+/* ── playtest recording ──────────────────────────────────────────────── */
+let ptReady = false, ptRecording = false;
+/* Who owns #pt-msg right now. renderPreflight() writes the resting line (and
+   parks a copy in _ptIdleHTML, as HTML, because its not-ready branch embeds the
+   "what do I install?" button); ptPoll() writes over it while a session is
+   recording, processing or broken, and hands it back when none of those is true.
+   Declared here rather than beside ptPoll because renderPreflight is defined
+   above it and a `let` below its first caller is a temporal-dead-zone trap. */
+let _ptIdleHTML = "", _ptTransient = false;
+
+/* The literal thing to install, per check. "not ready: transcriber (unavail…"
+ * truncated at 60 characters told nobody what to do, and the Record button sat
+ * dead forever on a stock install. */
+const PT_FIXES = {
+  ffmpeg: 'install ffmpeg and put it on PATH, or point BGATE_FFMPEG at the binary',
+  ffprobe: 'ffprobe ships with ffmpeg - install ffmpeg and put it on PATH',
+  transcriber: 'install the speech extras:  pip install -e ".[stt,record]"',
+  whisper: 'install the speech extras:  pip install -e ".[stt]"',
+  mic: 'no usable input device - connect a microphone and enable it in the OS sound settings',
+  window: 'no game window to capture - boot the build first, then re-check; otherwise the whole desktop gets recorded',
+  native_game: 'no game/project.godot yet - scaffold the game (godot_scaffold), and set BGATE_GODOT if Godot is not on PATH',
+  godot: 'install Godot 4 and put it on PATH, or set BGATE_GODOT',
+};
+const ptFix = name => PT_FIXES[name] || "run  bgate doctor  for the full toolchain report";
+
+function togglePtWhy(){
+  const why = document.getElementById("pt-why");
+  if (why) why.hidden = !why.hidden;
+}
+
+function renderPreflight(p){
+  const lamp = document.getElementById("pt-lamp");
+  const btn = document.getElementById("pt-btn");
+  const msg = document.getElementById("pt-msg");
+  const why = document.getElementById("pt-why");
+  const bad = Object.entries(p.checks || {})
+    .filter(([, c]) => !(c.ok ?? c.available));
+  ptReady = Boolean(p.ready) && !bad.length;
+  if (lamp) lamp.className = "lamp" + (ptReady ? "" : " bad");
+  if (btn) btn.disabled = !ptReady && !ptRecording;
+  if (!msg) return;
+  if (ptReady){
+    msg.textContent = "playtest ready - record, play, talk";
+    if (why){ why.hidden = true; why.innerHTML = ""; }
+    _ptIdleHTML = msg.innerHTML;
+    return;
+  }
+  msg.innerHTML = `record unavailable · ${bad.length} check${bad.length === 1 ? "" : "s"} failing `
+    + `<button class="qbtn small ghost" onclick="togglePtWhy()">what do I install?</button>`;
+  _ptIdleHTML = msg.innerHTML;
+  if (!why) return;
+  /* No window list here. It printed the title of every window open on the
+   * desktop — mail, chat, whatever — into a panel about installing ffmpeg. The
+   * recorder picks its own target; this was never a control, only a leak. */
+  why.innerHTML = `<ul class="pt-checks">${bad.map(([name, c]) => `
+      <li><b>${esc(name)}</b>
+        <span class="r">${esc(c.reason || "unavailable")}</span>
+        <span class="fix">→ ${esc(ptFix(name))}</span></li>`).join("")}</ul>`
+    + `<div class="pt-note">Full toolchain report from a terminal: <code>bgate doctor</code></div>`;
+  why.hidden = false;
+}
+
+/* Polling. This used to fire every 15 seconds forever — and the full preflight
+ * OPENS THE MICROPHONE for over a second and loads a whisper model to answer.
+ * Now: only while the panel holding the button is on screen, never while
+ * recording, cheapest probe first, and a long back-off once it has come back
+ * ready (a toolchain does not uninstall itself between ticks). */
+const PT_FRESH_MS = 180000;    // 3 min once ready
+const PT_RETRY_MS = 20000;     // floor between probes while broken
+let _ptLastCheck = 0, _ptDoctorGone = false;
+
+function ptPanelVisible(){
+  const view = document.getElementById("view-overview");
+  return Boolean(view && view.classList.contains("active")
+                 && document.visibilityState !== "hidden");
+}
+
+async function ptPreflight(force){
+  if (ptRecording) return;
+  if (!force && !ptPanelVisible()) return;
+  const now = Date.now();
+  if (!force && now - _ptLastCheck < (ptReady ? PT_FRESH_MS : PT_RETRY_MS)) return;
+  _ptLastCheck = now;
+  const native = document.getElementById("pt-target")?.value === "native";
+
+  // Cheap path: bgate_core.doctor probes the binaries WITHOUT opening an audio
+  // device or spawning a whisper probe. If the toolchain itself is missing we
+  // can say exactly what to install and never touch the hardware at all.
+  if (!_ptDoctorGone){
+    const d = await readJSON("/api/doctor", {});
+    if (d.__error){
+      // No such endpoint on this build — stop asking, fall through forever.
+      _ptDoctorGone = true;
+    } else {
+      const rows = d.checks || d;
+      const need = native ? ["ffmpeg", "whisper", "godot"] : ["ffmpeg", "whisper"];
+      const missing = need.filter(k => rows[k] && rows[k].available === false);
+      if (missing.length){
+        renderPreflight({ready:false, checks:Object.fromEntries(
+          missing.map(k => [k === "whisper" ? "transcriber" : k, rows[k]]))});
+        return;
+      }
+    }
+  }
+  // Toolchain is fine (or unknown) — now the expensive check, which is the only
+  // one that can answer "is there a mic" and "what would we capture".
+  const p = await readJSON(`/api/playtest/preflight?native=${native}`, null);
+  if (!p || p.__error){
+    const msg = document.getElementById("pt-msg");
+    if (msg) msg.textContent = "could not check playtest gear - "
+      + ((p && p.__error) || "no response");
+    return;
+  }
+  renderPreflight(p);
+}
+
+async function toggleRecord(){
+  const btn = document.getElementById("pt-btn");
+  if (!ptRecording){
+    const target = document.getElementById("pt-target").value;
+    const buildStatus = target === "web"
+      ? await readJSON("/api/play/status", {}) : {stale:false};
+    if (target === "web" && buildStatus.stale){
+      document.getElementById("pt-msg").textContent = "rebuilding current build before recording…";
+      const rebuilt = await mutate("/api/play/rebuild", {quiet:true});
+      if (!rebuilt.ok){
+        document.getElementById("pt-msg").textContent =
+          "record blocked: current build failed - " + rebuilt.error;
+        toast("record blocked - the current build failed to export: " + rebuilt.error);
+        return;
+      }
+    }
+    const started = await mutate("/api/playtest/start", {
+      body:{
+        name: document.getElementById("pt-goal").value.trim()
+          || "Evaluate current build " + new Date().toLocaleTimeString(),
+        launch_native: target === "native"
+      }});
+    const got = started.ok ? (started.data || {}) : {};
+    if (got.recording){
+      ptRecording = true;
+      if (target === "web") bootFrame(got.session_id);
+      btn.textContent = "■ stop";
+      btn.classList.add("recording");
+      document.getElementById("pt-msg").textContent =
+        target === "native"
+          ? `RECORDING - native Godot launched (pid ${got.native_launch?.pid || "?"})`
+          : "RECORDING - play and say what you like and what needs fixing";
+    } else {
+      const why = started.ok ? (got.error || "the recorder did not start") : started.error;
+      document.getElementById("pt-msg").textContent = "start failed: " + why;
+      if (started.ok) toast("recording did not start - " + why);
+      ptPreflight(true);   // whatever broke, re-check the gear and say what
+    }
+  } else {
+    const stopped = await mutate("/api/playtest/stop", {quiet:true});
+    const got = stopped.ok ? (stopped.data || {}) : {};
+    ptRecording = false;
+    btn.textContent = "● record";
+    btn.classList.remove("recording");
+    const fine = stopped.ok && got.ok !== false;
+    if (fine && document.getElementById("pt-target").value === "web") bootFrame();
+    const why = stopped.ok ? (got.error || "?") : stopped.error;
+    document.getElementById("pt-msg").textContent = fine
+      ? `session ${got.session_id} transcribing - a director triage item will land in the queue`
+      : "stop failed: " + why;
+    if (!fine) toast("stop failed - " + why);
+  }
+}
+
+async function ptPoll(){
+  const msg = document.getElementById("pt-msg");
+  const btn = document.getElementById("pt-btn");
+  let s = null;
+  try{
+    const r = await fetch("/api/playtest/status");
+    s = await r.json();
+    if (!r.ok || !s || typeof s !== "object") throw new Error(apiError(s, r.status));
+  }catch(e){
+    /* NOT an empty catch. This poller is the only thing on the page that
+       notices a recording has started, stopped or died, so a dead backend or a
+       changed shape used to take the whole panel silent — the same failure the
+       partition below fixes, arriving by a different door. Say it once and keep
+       polling; the next good tick puts the real state back. */
+    if (msg && !_ptTransient){
+      _ptTransient = true;
+      msg.textContent = "could not read the recorder - "
+        + ((e && e.message) || "no response");
+    }
+    return;
+  }
+  if (!btn || !msg) return;
+
+  if (s.recording){
+    ptRecording = true;
+    _ptTransient = true;
+    const lamp = document.getElementById("pt-lamp");
+    if (lamp) lamp.className =
+      "lamp" + (s.recording.telemetry_events > 0 ? "" : " waiting");
+    const frame = document.getElementById("gameframe");
+    if (!s.recording.native &&
+        (!frame || !frame.src.includes(`bgate_session=${s.recording.id}`))){
+      bootFrame(s.recording.id);
+    }
+    btn.disabled = false;
+    btn.textContent = "■ stop";
+    btn.classList.add("recording");
+    msg.textContent =
+      `RECORDING session ${s.recording.id} - ${s.recording.telemetry_events} telemetry events`;
+    return;
+  }
+  if (ptRecording){
+    ptRecording = false;
+    btn.textContent = "● record";
+    btn.classList.remove("recording");
+  }
+
+  /* PARTITION, DO NOT FILTER. A session whose post-processing failed was the
+     one thing this list could hold that mattered, and it was the one thing
+     thrown away: `filter(v => v.stage !== "failed")` left `busy` empty, the
+     `if` below never ran, and #pt-msg kept whatever the recording branch had
+     written. You pressed stop, transcription died, and the panel went on
+     saying "RECORDING session 12" until the page was reloaded. The server has
+     been writing processing_error for exactly this moment - read it, and give
+     the retry that renderSessions already offers a place next to the button
+     the user is actually looking at. */
+  const proc = s.processing || [];
+  const failed = proc.filter(v => v.stage === "failed");
+  const busy = proc.filter(v => v.stage !== "failed");
+  if (failed.length){
+    const f = failed[0];
+    _ptTransient = true;
+    msg.innerHTML = `session ${f.id} failed to process`
+      + (f.error ? ` - ${esc(f.error)}` : "")
+      + ` <button class="qbtn small ghost" onclick="retrySession(${f.id})">retry</button>`;
+    return;
+  }
+  if (busy.length){
+    _ptTransient = true;
+    msg.textContent = `${busy[0].stage || "processing"} session ${busy[0].id}…`;
+    return;
+  }
+  // Nothing recording and nothing processing: the panel is about the Record
+  // button again. Hand it back the preflight's own line rather than leaving a
+  // finished session's status up as if it were still happening.
+  if (_ptTransient){
+    _ptTransient = false;
+    msg.innerHTML = _ptIdleHTML;
+  }
+}
+
+syncThemeButtons();
+let initialWorkspace = "overview";
+try{ initialWorkspace = localStorage.getItem("bgate-workspace") || "overview"; }catch(e){}
+if (!DECK_CRUMB[initialWorkspace]) initialWorkspace = "overview";
+setWorkspace(initialWorkspace);
+// The module scripts load below this one, so the restore above could not have
+// reached them. Ask again once they exist.
+document.addEventListener("DOMContentLoaded", () => activateWorkspace(initialWorkspace));
+
+ptPoll().then(() => ptPreflight(true));
+document.getElementById("pt-target")?.addEventListener("change", () => ptPreflight(true));
+// The tick is cheap: ptPreflight self-throttles (3 min once ready, 20s while
+// broken) and returns immediately unless the panel holding the button is on
+// screen. It used to open the microphone every 15 seconds, forever.
+setInterval(() => ptPreflight(false), 30000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") ptPreflight(false);
+});
+setInterval(ptPoll, 4000);
+
+pollState(); pollActivity(); pollQueue();
+setInterval(pollState, 3000);
+setInterval(pollActivity, 2000);
+setInterval(pollQueue, 3500);
+</script>
+
+<!-- askText / askConfirm / askPick. First, because every module below reaches
+     them on window the same way it reaches toast(). -->
+<script src="/static/ask.js"></script>
+<!-- Offers "run anyway" when dispatch refuses on an uncommitted tree. Sits
+     here because it calls askConfirm; it hooks fetch, so it needs no
+     cooperation from the nine modules that post a dispatch. -->
+<script src="/static/dirtygate.js"></script>
+<!-- The file viewer the agent rails open. Above the rails that use it for the
+     same reason ask.js is above everything: it registers window.Peek and one
+     delegated click listener, and the rails only emit data-peek attributes. -->
+<script src="/static/peek.js"></script>
+<!-- Node-editor engine + flows (Studio), then per-seat workspace modules. -->
+<script src="/static/nodecanvas.js"></script>
+<!-- THE DELEGATION GRAPH IS BACK. It was unloaded on the argument that
+     "lanes-by-seat is the Board screen now", and then the Board screen was
+     itself removed — so the replacement outlived the thing it replaced by
+     nothing at all, and the console had no graph for two shells running. The
+     React pane mounts this; see shell/agents/Agents.tsx GraphPane. -->
+<script src="/static/agents_graph.js"></script>
+<script src="/static/flows.js"></script>
+<script src="/static/icons.js"></script>
+<script src="/static/split.js"></script>
+<script src="/static/bgselect.js"></script>
+<!-- Both were written, finished, and never given a script tag — so nothing
+     registered them and the Studio showed two flows instead of four. -->
+<!-- BEFORE the console, which mounts it into the deck's chat page on first
+     draw. Self-registering as window.ChatLive and self-styling; the console
+     guards on its absence anyway, so a load failure costs the chat page and
+     nothing else. -->
+<script src="/static/chatlive.js"></script>
+<!-- The header bell and the Settings view. Below the console for one reason:
+     notify.js hands a click on an event row to AgentsGraph.select, and both
+     reach window.readJSON / mutate / toast, which the inline script above
+     defines. Neither module mounts itself — the bell is mounted from the load
+     handler at the bottom of this file (its slot is in the status bar, so no
+     view would ever do it) and the panel by activateWorkspace(). -->
+<script src="/static/notify.js"></script>
+<!-- The streamer-mode chip. Loaded next to notify.js because it lands in the
+     same status bar slot and for the same reason: it must be on screen in every
+     workspace, not behind a panel. -->
+<script src="/static/streamer.js"></script>
+<!-- THE ONLY SURFACE THAT MAY WRITE AN API KEY. It used to ride
+     SettingsView.activate(); the Settings deck is React now
+     (frontend/src/shell/settings/) and asks ProviderKeys.activate() itself, so
+     this needs settingsview.js no longer. Still self-registering for Studio. -->
+<script src="/static/providerkeys.js"></script>
+<!-- AFTER providerkeys.js, which it wraps: it appends the local half of "what
+     can generate right now" under the hosted half in the Studio tab. Its
+     Settings pane is asked to paint by the React screen, same as above. -->
+<script src="/static/localsetup.js"></script>
+<script src="/static/wf.js"></script>
+<script src="/static/wf_steps_asset.js"></script>
+<script src="/static/wf_steps_model.js"></script>
+<script src="/static/wf_steps_world.js"></script>
+<script src="/static/wf_steps_3d.js"></script>
+<script src="/static/wf_steps_agent.js"></script>
+<script src="/static/wf_steps_tools.js"></script>
+<!-- LAST of the wf_steps_* files: it registers the templates for the tool-node
+     families and replaces WF._renderLibrary with the panelled one, so it has to
+     see every step and template the others contributed. -->
+<script src="/static/wf_steps_templates.js"></script>
+<!-- The brainstorm workspace (chat + writing pad + drawing pad + a two-step
+     Deploy). Above the seat modules because the director and narrative seats
+     mount it with Brainstorm.mount(el, {seat}); it registers window.Brainstorm
+     and mounts nothing by itself. -->
+<script src="/static/brainstorm.js"></script>
+<!-- _core.js ONLY. The eight per-seat modules it used to drive are React now
+     (frontend/src/shell/seats/), but this file is not just their shell: it also
+     exports BGWS — which bible_refs, brainstorm, flows, handoff,
+     overview_history, wf, wf_steps_model, wf_steps_tools and world all use —
+     and SeatStage, which handoff.js uses. Deleting it to tidy up would take
+     nine unrelated views with it. -->
+<script src="/static/seats/_core.js"></script>
+<script src="/static/atlas.js"></script>
+<!-- The shared "put it in the game" panel. Loaded once, opened by the sprite
+     editor, the audio lab and the 3D model editor — after atlas.js because it
+     uses the scan as its reference picker. -->
+<script src="/static/handoff.js"></script>
+<script src="/static/sceneview.js"></script>
+<script src="/static/scenebuild.js"></script>
+<!-- The editor's engine, then its modes. simple.js must precede
+     mode-gdscript.js, which is defined with it. -->
+<script src="/static/vendor/codemirror/codemirror.js"></script>
+<script src="/static/vendor/codemirror/simple.js"></script>
+<script src="/static/vendor/codemirror/mode-gdscript.js"></script>
+<script src="/static/vendor/codemirror/mode-properties.js"></script>
+<script src="/static/vendor/codemirror/mode-javascript.js"></script>
+<script src="/static/vendor/codemirror/matchbrackets.js"></script>
+<script src="/static/vendor/codemirror/closebrackets.js"></script>
+<script src="/static/vendor/codemirror/active-line.js"></script>
+<script src="/static/vendor/codemirror/comment.js"></script>
+<script src="/static/vendor/codemirror/dialog.js"></script>
+<script src="/static/vendor/codemirror/searchcursor.js"></script>
+<script src="/static/vendor/codemirror/search.js"></script>
+<script src="/static/vendor/codemirror/jump-to-line.js"></script>
+<script src="/static/atlas_code.js"></script>
+<script src="/static/spriteedit.js"></script>
+<!-- What is making noise, and where it is coming from. Must precede the players
+     so its capture-phase listeners are installed before anything can play. -->
+<script src="/static/nowplaying.js"></script>
+<script src="/static/audiolab.js"></script>
+<script src="/static/beatmaker.js"></script>
+<!-- The 3D model viewer/editor. An ES module (three.js only ships as one) —
+     the import map below is what lets modeledit.js and every vendored addon
+     under static/vendor/three/examples/jsm write `import ... from "three"`
+     instead of a long relative path to the vendored build. Inlined rather
+     than an external src= file: Chromium only honours an out-of-line import
+     map when it is the very first thing to reference "three", and a src=
+     fetch loses that race often enough in practice to not be worth it. Must
+     sit before the module script that uses it — this is the only import map
+     in the page, so there is nothing earlier to conflict with. -->
+<script type="importmap">
+{"imports": {"three": "/static/vendor/three/build/three.module.min.js"}}
+</script>
+<script type="module" src="/static/modeledit.js"></script>
+<script type="module" src="/static/modeledit_tools.js"></script>
+<script src="/static/assetlib.js"></script>
+<!-- The playtest notepad + live frame grab. Self-contained: injects its own
+     style, mounts its own slide-out, and installs its hotkey INTO the game
+     iframe (a parent-document listener never fires while the build has focus). -->
+<script src="/static/ptnotes.js"></script>
+<!-- Triage for a recorded session. Owns the feedback surface inside the review
+     overlay: injects its own style, mounts into #pt-triage, repaints only that
+     subtree so a triage action never restarts the video you are watching. -->
+<script src="/static/ptreview.js"></script>
+<script src="/static/world.js"></script>
+<!-- The Work history panel. Self-contained: it injects its own style and
+     mounts itself into #view-overview, so nothing above needs to know it
+     exists. -->
+<script src="/static/overview_history.js"></script>
+<script src="/static/bible_refs.js"></script>
+<script>
+  // If the dashboard restored the seats view on load, build its sub-nav once
+  // modules have registered.
+  window.addEventListener("load", () => {
+    // Same for the world view — setWorkspace ran before world.js was parsed.
+    if (window.World &&
+        document.getElementById("view-world")?.classList.contains("active")) World.activate();
+    // THE BELL BELONGS TO NO VIEW, so nothing else would ever mount it. It is
+    // driven by the console's poll (AgentsConsole calls Notify.update) and by
+    // its own slow watchdog when that view has never been opened. mount()
+    // returns false rather than throwing if the slot is missing, so a shell
+    // without #nt-host degrades to no bell instead of a dead page.
+    // (The Settings panel needs no line here: activateWorkspace()'s owners map
+    // mounts it on the DOMContentLoaded restore like every other view module.)
+    if (window.Notify) { try { Notify.mount("nt-host"); } catch (e) {} }
+  });
+</script>
+<script>
+  // Swap every [data-icon] placeholder for real geometry, then keep watching:
+  // panels render markup long after load, and an un-upgraded placeholder is an
+  // empty box rather than a wrong glyph.
+  (function () {
+    let queued = false;
+    const run = () => { queued = false; try { BGIcon.upgrade(document); } catch (e) {} };
+    // Coalesce: upgrade() writes DOM, which re-triggers the observer, and the
+    // panels rerender on a 3s poll. Scanning per mutation would put a full
+    // querySelectorAll on the critical path of every repaint.
+    const queue = () => { if (!queued) { queued = true; requestAnimationFrame(run); } };
+    run();
+    document.addEventListener("DOMContentLoaded", run);
+    new MutationObserver(queue).observe(document.body, { childList: true, subtree: true });
+  })();
+</script>
+<!-- THE REACT ISLANDS. Built from frontend/ by `npm run build`; the OUTPUT is
+     committed, because the dashboard also ships as a wheel and as an .exe and
+     neither of those has node — a `pip install -e .` that needed a JS build
+     would be a new install step for everyone to fix a problem nobody has.
+
+     It is a module, so it is deferred: every classic script above has already
+     run and every window global a component reaches for (readJSON, mutate,
+     toast, watchAgent, BGIcon) exists by the time anything mounts. That is why
+     frontend/src/bridge.ts can call them without a readiness dance.
+
+     A container opts in with data-react="<key>". Views are converted one at a
+     time and the page is the shell throughout; see frontend/README.md. -->
+<script type="module" src="/static/dist/bgate.js"></script>
+</body>
+</html>

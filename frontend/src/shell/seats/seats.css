@@ -1,0 +1,592 @@
+/* 11b · Seat workspaces.
+
+   GEOMETRY AND DENSITY ARE FROM THE DESIGN; COLOUR IS FROM THE APP. The design
+   file is a dark-only mock and hardcodes #171614, #2a2926, #a09c96 everywhere.
+   This app has four themes (dark, light, orbit, system), so every one of those
+   is a token here — a hex would look correct in exactly one of them and would
+   be unreadable in the light theme, which is the failure mode a designer
+   working in one theme cannot see.
+
+   WHOLE PIXELS, AND WEIGHT CARRIES THE LEVELS THE HALF PIXELS USED TO.
+   The design mock specifies 9.5, 10.5, 11.5, 12.5 — and a pass that copied
+   those verbatim made the whole app read rough and thin. A half-pixel font size
+   puts every glyph's stem between two device pixels, so the hinted renderer
+   Windows is good at cannot snap it and the eye reads the blur as grain. It is
+   named as one of the four causes at the top of static/app.css, which had
+   already removed them once.
+
+   So the sizes are 9 / 10 / 11 / 12 / 13, and the levels a reader needs are
+   drawn with the three things that cost no sharpness: WEIGHT (500 for a label,
+   400 for prose), TRACKING (.18em on small caps, none on a sentence) and CASE.
+   Label and hint are both 10px mono here and nobody confuses them.
+
+   SMALL MONO IS 500, NOT 400. JetBrains Mono's 400 at 9–11px, light-on-dark, is
+   the thin, grainy end of this typeface — light text on a dark ground optically
+   erodes its own stems. The vendored file is variable across 400–500 (see
+   static/vendor/type/type.css), so the heavier end costs no extra download.
+   Sans is left at 400: Inter at 12px is not what was thin, and raising body
+   prose would flatten it against its own labels.
+
+   It is smaller than the rest of the app on purpose: a seat workspace is a
+   dense read, and the whole complaint about the old one was that four facts
+   filled a screen. */
+
+/* 210px is the design's, not a round number: the widest seat label ("Cinematic")
+   plus a 17px glyph, a 9px gap and a right-aligned count fits at 210 and
+   ellipses at 190, which is what the first pass shipped. */
+.bgs {
+  display: grid; grid-template-columns: 210px 1fr;
+  height: 100%; min-height: 0; overflow: hidden;
+  font: 400 14px var(--sans);
+}
+
+/* ── the seat picker ─────────────────────────────────────────────────────── */
+.bgs-seats {
+  border-right: 1px solid var(--line); background: var(--surface-1);
+  padding: 14px 10px; display: flex; flex-direction: column; gap: 2px;
+  min-height: 0; overflow-y: auto;
+}
+.bgs-seatslb {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-3); padding: 0 8px 10px;
+}
+.bgs-seat {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: 0; border-radius: 4px; padding: 7px 8px; cursor: pointer;
+  background: transparent; color: var(--text-2);
+  font: 400 12px var(--sans);
+}
+.bgs-seat:hover { background: var(--surface-3) }
+.bgs-seat.on { background: var(--surface-3); color: var(--text) }
+/* A DISABLED SEAT IS STILL LISTED. Hiding it makes "why can nobody do audio"
+   an unanswerable question; dimming it answers it. */
+.bgs-seat.off { opacity: .5 }
+.bgs-seat .lb { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.bgs-seat .n { font: 500 10px var(--mono); color: var(--text-3) }
+.bgs-seat .live {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--good);
+  animation: bgs-throb 1.6s ease-in-out infinite;
+}
+@keyframes bgs-throb { 0%, 100% { opacity: 1 } 50% { opacity: .3 } }
+
+/* ── the seat column ─────────────────────────────────────────────────────── */
+.bgs-col { min-width: 0; display: flex; flex-direction: column; min-height: 0 }
+
+.bgs-topbar {
+  display: flex; align-items: center; gap: 10px; height: 42px; flex: none;
+  padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--surface-1);
+}
+.bgs-topbar .ttl { flex: none; font: 450 13px var(--sans); color: var(--text) }
+.bgs-topbar .sp { flex: 1; min-width: 8px }
+
+.bgs-tabs {
+  display: flex; flex: none; border: 1px solid var(--line);
+  border-radius: 5px; overflow: hidden; margin-left: 6px;
+}
+.bgs-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  white-space: nowrap; padding: 5px 12px; border: 0; cursor: pointer;
+  background: transparent; color: var(--text-2);
+  font: 500 11px var(--mono);
+}
+.bgs-tab:hover { background: var(--surface-3) }
+.bgs-tab.on { background: var(--surface-3) }
+
+.bgs-chipsrow { display: flex; align-items: center; gap: 10px; min-width: 0; overflow: hidden }
+.bgs-hchip {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 4px 10px; border: 1px solid var(--line); border-radius: 9999px;
+  font: 500 11px var(--mono); white-space: nowrap; color: var(--text-2);
+}
+
+/* THE MISSION IS THE SEAT'S OWN BRIEF, verbatim. It reads as prose because it
+   is prose somebody wrote for the agent holding the seat. */
+.bgs-mission {
+  display: flex; align-items: flex-start; gap: 10px; flex: none;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface-2);
+}
+.bgs-mission .m {
+  font: 400 12px/1.6 var(--sans); color: var(--text-2); max-width: 110ch;
+}
+.bgs-mission .sp { flex: 1 }
+.bgs-mission .globs {
+  font: 500 10px var(--mono); color: var(--text-3);
+  flex: none; white-space: nowrap;
+}
+
+.bgs-body { flex: 1; min-height: 0; overflow-y: auto }
+.bgs-pad { padding: 16px 18px 24px }
+
+/* A body that is a main column plus a rail. --rail is set per seat because the
+   rails carry different things: director's refusals need 340px of sentence,
+   art's thumbnails need 300. */
+.bgs-split { display: grid; grid-template-columns: 1fr var(--rail, 320px); min-height: 0; height: 100% }
+.bgs-split.left { grid-template-columns: var(--rail, 260px) 1fr }
+.bgs-split.left .bgs-rail { border-right: 1px solid var(--line); border-left: 0 }
+.bgs-main { min-width: 0; overflow-y: auto; padding: 16px 18px 24px; border-right: 1px solid var(--line) }
+.bgs-split.left .bgs-main { border-right: 0 }
+.bgs-rail {
+  display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
+  background: var(--surface-1);
+}
+.bgs-railhead {
+  display: flex; align-items: center; gap: 9px; padding: 11px 14px;
+  border-bottom: 1px solid var(--line); flex: none;
+}
+.bgs-railhead.top { border-top: 1px solid var(--line) }
+.bgs-railhead .lb {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bgs-railhead .hint, .bgs-railhead .n {
+  margin-left: auto; font: 400 10px var(--mono); color: var(--text-3);
+}
+.bgs-railpad { padding: 12px 14px }
+
+/* ── the shared grammar ──────────────────────────────────────────────────── */
+.bgs-head { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px }
+.bgs-head:first-child { margin-top: 0 }
+/* THE LABEL AND ITS HINT ARE THE SAME SIZE AND STILL NOT THE SAME VOICE.
+   Both 10px mono; the label is 500, tracked .18em and upper-case, the hint is
+   400, untracked and a sentence. The design separated them by half a pixel
+   instead, which is a distinction the renderer cannot draw at this size — it
+   just blurs both. Weight, tracking and case are free and unambiguous. */
+.bgs-head .lb {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bgs-head .hint { font: 400 10px var(--mono); color: var(--text-dim, var(--text-3)) }
+.bgs-head .sp { flex: 1 }
+
+.bgs-nothing {
+  border: 1px dashed var(--line); border-radius: 6px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px;
+}
+.bgs-nothing b { font: 450 12px var(--sans); color: var(--text-2) }
+.bgs-nothing span {
+  font: 400 12px/1.6 var(--sans); color: var(--text-3); max-width: 90ch;
+}
+
+.bgs-tag {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .14em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 3px;
+  border: 1px solid var(--line); color: var(--text-3); white-space: nowrap;
+}
+.bgs-tag.t-good { color: var(--good); border-color: var(--good-line) }
+.bgs-tag.t-warn { color: var(--warn); border-color: var(--warn-line) }
+.bgs-tag.t-bad  { color: var(--bad);  border-color: var(--bad-line) }
+.bgs-tag.t-seat { color: var(--accent); border-color: var(--accent-line) }
+
+.bgs-bar {
+  display: inline-block; vertical-align: middle; width: 100%; max-width: 180px;
+  height: 4px; border-radius: 2px; background: var(--surface-4); overflow: hidden;
+}
+.bgs-bar > span { display: block; height: 100% }
+.bgs-bar > span.t-good { background: var(--good) }
+.bgs-bar > span.t-warn { background: var(--warn) }
+.bgs-bar > span.t-bad  { background: var(--bad) }
+
+.bgs-banner {
+  display: flex; align-items: center; gap: 12px; padding: 11px 14px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  margin-bottom: 16px;
+}
+.bgs-banner.t-warn { border-color: var(--warn-line); background: var(--warn-soft) }
+.bgs-banner.t-bad  { border-color: var(--bad-line);  background: var(--bad-soft) }
+.bgs-banner.t-good { border-color: var(--good-line); background: var(--good-soft) }
+.bgs-banner .b { min-width: 0 }
+.bgs-banner .t { font: 400 12px/1.6 var(--sans); color: var(--text-2) }
+.bgs-banner .t b { color: var(--text); font-weight: 500 }
+.bgs-banner .s { margin-top: 3px; font: 500 10px/1.5 var(--mono); color: var(--text-3) }
+.bgs-banner .sp { flex: 1 }
+.bgs-price { font: 400 18px var(--mono); color: var(--warn); white-space: nowrap }
+
+.bgs-readerr {
+  border: 1px solid var(--bad-line); background: var(--bad-soft); color: var(--bad);
+  border-radius: 6px; padding: 9px 12px; margin-bottom: 10px;
+  font: 500 11px var(--mono);
+}
+.bgs-dim, .dim { color: var(--text-3) }
+
+.bgs-btn {
+  border: 1px solid var(--line); border-radius: 4px; background: transparent;
+  color: var(--text-2); padding: 5px 12px; cursor: pointer;
+  font: 500 10px var(--mono); white-space: nowrap;
+}
+.bgs-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent) }
+.bgs-btn:disabled { opacity: .55; cursor: default }
+
+/* THE ONE FILLED BUTTON ON A PANEL. The design has exactly two button weights
+   and the first pass shipped only the outline one, which left "new room" and
+   "watch the cut" — the two verbs that START something — looking identical to
+   "cancel". Filled is reserved for the action the panel exists to invite, and a
+   panel gets at most one. `--btn` is the seat's own colour, set by the caller,
+   because the filled button is the one place a seat's identity should read as
+   an instruction rather than as decoration. */
+.bgs-btn.go {
+  border: 0; background: var(--btn, var(--accent)); color: var(--btn-fg, var(--accent-fg));
+  padding: 6px 13px; font: 500 10px var(--mono);
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.bgs-btn.go:hover:not(:disabled) {
+  filter: brightness(1.08); color: var(--btn-fg, var(--accent-fg));
+}
+
+/* ── cards, tables, rows ─────────────────────────────────────────────────── */
+.bgs-card {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  padding: 12px 14px; margin-bottom: 10px;
+}
+.bgs-card .h { display: flex; align-items: center; gap: 10px }
+.bgs-card .h .id { font: 500 10px var(--mono); color: var(--text-3) }
+.bgs-card .h .t { font: 450 13px var(--sans); color: var(--text); flex: 1; min-width: 0 }
+.bgs-card .t { font: 450 13px var(--sans); color: var(--text) }
+.bgs-card .p { margin-top: 6px; font: 400 12px/1.7 var(--sans); color: var(--text-2) }
+.bgs-card .q { font: 400 12px/1.6 var(--sans); color: var(--text) }
+.bgs-card .stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px }
+.bgs-card .stats span {
+  font: 500 10px var(--mono); padding: 3px 8px; border-radius: 9999px;
+  border: 1px solid var(--line); color: var(--text-2);
+}
+.bgs-card .stats .ok { color: var(--good); border-color: var(--good-line) }
+.bgs-card .stats .warn { color: var(--warn); border-color: var(--warn-line) }
+.bgs-card .rec {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+  font: 400 11px var(--sans); color: var(--text-3);
+}
+.bgs-card .kv { display: flex; gap: 10px; margin-top: 6px; font: 500 10px/1.6 var(--mono) }
+.bgs-card .kv span { width: 96px; flex: none; color: var(--text-3) }
+.bgs-card .kv b { font-weight: 400; color: var(--text); min-width: 0 }
+.bgs-card .kv b.wrap { word-break: break-word }
+
+/* Two columns of equal weight. `.wide` is the page-level pair; the bare one is
+   the acceptance-test / left-dark pair inside a decision card. */
+.bgs-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px }
+.bgs-two.wide { gap: 20px; margin-top: 20px }
+.bgs-two .lim { border-left: 2px solid var(--line-strong); padding-left: 10px }
+.bgs-two .lim.good { border-left-color: var(--good) }
+.bgs-two .lim .k {
+  font: 500 9px var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--text-3); margin-bottom: 4px;
+}
+.bgs-two .lim.good .k { color: var(--good) }
+.bgs-two .lim .v { font: 400 12px/1.6 var(--sans); color: var(--text-2) }
+
+/* A table is a grid, not a <table>: the columns differ per panel and are set
+   inline as --cols, so the header and the rows cannot drift apart. */
+.bgs-table { border: 1px solid var(--line); border-radius: 6px; overflow: hidden }
+.bgs-table .th, .bgs-table .tr {
+  display: grid; grid-template-columns: var(--cols); gap: 12px; align-items: center;
+  padding: 9px 12px;
+}
+.bgs-table .th {
+  background: var(--surface-2); font: 500 9px var(--mono);
+  letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+}
+.bgs-table .tr { border-top: 1px solid var(--line-soft); font: 400 11px var(--sans); color: var(--text-2) }
+.bgs-table .tr.bad { background: var(--bad-soft) }
+.bgs-table .mono { font: 500 11px var(--mono); color: var(--text); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.bgs-table .mono.dim { color: var(--text-3) }
+.bgs-table .right { text-align: right; justify-self: end }
+.bgs-table em { font-style: normal }
+.bgs-table em.mono { font: 500 10px var(--mono); color: var(--text-3); margin-left: 8px }
+
+.bgs-reasons {
+  margin-top: 10px; font: 400 11px/1.7 var(--sans); color: var(--text-3);
+}
+
+/* One value a tunable has held, and what was played at it. Stacked rather than
+   comma-joined: two values on one line invite reading them as a before/after
+   comparison, which is the one thing the tunable table refuses to assert. */
+.bgs-slot { display: block; font: 500 10px/1.7 var(--mono) }
+.bgs-slot b { color: var(--text-2); font-weight: 500 }
+.bgs-slot b.now { color: var(--text); box-shadow: inset 0 -2px 0 var(--c-gameplay) }
+
+.bgs-reasons b { color: var(--text-2); font-weight: 500; font-family: var(--mono) }
+
+.bgs-verdict {
+  display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  font: 400 11px var(--sans); color: var(--text-2); flex-wrap: wrap;
+}
+.bgs-verdict .sc { font: 400 12px var(--mono); color: var(--text) }
+.bgs-verdict .rs { flex: 1; min-width: 200px }
+.bgs-verdict .ac { font: 500 10px var(--mono); color: var(--text-3) }
+
+.bgs-finding {
+  display: flex; gap: 9px; align-items: flex-start; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2);
+  margin-bottom: 6px; font: 500 11px/1.6 var(--mono); color: var(--text-2);
+  word-break: break-word;
+}
+.bgs-out {
+  margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-1); color: var(--text-3); max-height: 320px; overflow: auto;
+  font: 500 10px/1.6 var(--mono); white-space: pre-wrap;
+}
+.bgs-ok {
+  display: flex; align-items: center; gap: 9px; padding: 11px 13px; margin-bottom: 8px;
+  border: 1px solid var(--good-line); border-radius: 6px; background: var(--good-soft);
+  font: 500 11px var(--mono); color: var(--text);
+}
+.bgs-ok .sp { flex: 1 }
+
+/* ── director ────────────────────────────────────────────────────────────── */
+.bgs-norow {
+  display: flex; gap: 9px; align-items: flex-start; padding: 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.bgs-norow .t { font: 400 12px/1.55 var(--sans); color: var(--text-2) }
+.bgs-norow .tag { margin-top: 3px; font: 500 10px var(--mono); color: var(--text-3) }
+.bgs-rule { padding: 10px 14px; border-bottom: 1px solid var(--line-soft) }
+.bgs-rule .t { font: 400 12px/1.55 var(--sans); color: var(--text) }
+/* ONLY THE LABEL IS SMALL-CAPS. Tracking and uppercasing the whole meta row —
+   which the first pass did — renders "2h" and an actor's name in the same
+   voice as the row's kind, so a timestamp reads as a category. The design
+   uppercases the two seat names and the kind, and leaves the rest alone. */
+.bgs-rule .m {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bgs-rule .m .k, .bgs-rule .m .who {
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.bgs-rule .m .sp { flex: 1 }
+
+/* ── narrative ───────────────────────────────────────────────────────────── */
+.bgs-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 9px 10px; border-bottom: 1px solid var(--line) }
+.bgs-pad > .bgs-chips { border: 0; padding: 0 0 12px }
+.bgs-chip {
+  font: 500 9px var(--mono); letter-spacing: .06em; padding: 3px 8px;
+  border-radius: 9999px; cursor: pointer; border: 1px solid var(--line);
+  background: transparent; color: var(--text-2);
+}
+.bgs-chip.on { border-color: var(--accent-line); color: var(--accent) }
+.bgs-chip .n { opacity: .7; margin-left: 5px }
+.bgs-list { flex: 1; min-height: 0; overflow-y: auto }
+.bgs-lorerow {
+  display: grid; grid-template-columns: 8px 1fr auto; gap: 8px; align-items: center;
+  width: 100%; text-align: left; padding: 9px 12px; cursor: pointer;
+  border: 0; border-top: 1px solid var(--line-soft); background: transparent;
+}
+.bgs-lorerow:hover { background: var(--surface-3) }
+.bgs-lorerow.on { background: var(--surface-3) }
+.bgs-lorerow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--surface-4) }
+.bgs-lorerow .dot.t-good { background: var(--good) }
+.bgs-lorerow .dot.t-warn { background: var(--warn) }
+.bgs-lorerow .slug {
+  font: 500 11px var(--mono); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-lorerow .kind {
+  font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bgs-title { display: flex; align-items: center; gap: 10px }
+.bgs-title h3 { margin: 0; font: 450 17px var(--sans); color: var(--text) }
+.bgs-summary { margin-top: 8px; font: 400 12px/1.7 var(--sans); color: var(--text-2) }
+.bgs-prose {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  padding: 13px 14px; font: 400 13px/1.75 var(--sans);
+  color: var(--text-2); white-space: pre-wrap;
+}
+.bgs-fact {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 9px; align-items: start;
+  padding: 9px 12px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--surface-2); margin-bottom: 6px;
+}
+.bgs-fact.locked { border-color: var(--accent-line) }
+.bgs-fact .t { font: 400 12px/1.6 var(--sans); color: var(--text-2) }
+.bgs-fact .tag {
+  font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bgs-fact .src {
+  grid-column: 2 / -1; font: 500 10px var(--mono); color: var(--text-3);
+}
+
+/* ── art ─────────────────────────────────────────────────────────────────── */
+.bgs-sheet { display: grid; grid-template-columns: 180px 1fr; gap: 14px; margin-bottom: 6px }
+.bgs-sheet .thumb, .bgs-refcard .thumb, .bgs-shot .thumb {
+  border: 1px solid var(--line); border-radius: 5px; padding: 0; cursor: pointer;
+  overflow: hidden; display: grid; place-items: center; background:
+    /* A CHECKERBOARD, BECAUSE ALPHA IS THE BUG. A sprite with a dirty alpha
+       channel is invisible on a flat ground and obvious on this. */
+    linear-gradient(45deg, var(--surface-1) 25%, transparent 25%, transparent 75%, var(--surface-1) 75%) 0 0/12px 12px,
+    linear-gradient(45deg, var(--surface-1) 25%, var(--surface-3) 25%, var(--surface-3) 75%, var(--surface-1) 75%) 6px 6px/12px 12px;
+}
+.bgs-sheet .thumb img, .bgs-refcard .thumb img { max-width: 100%; display: block; image-rendering: pixelated }
+.bgs-sheet .meta .l { display: flex; gap: 8px; flex-wrap: wrap }
+.bgs-sheet .note { margin-top: 8px; font: 400 11px/1.6 var(--sans); color: var(--text-3) }
+.bgs-sheet .conditioned {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bgs-refcard { padding: 14px; border-bottom: 1px solid var(--line) }
+.bgs-refcard .thumb { width: 100%; aspect-ratio: 1/1; border-color: var(--accent-line) }
+.bgs-refcard .nm {
+  margin-top: 8px; font: 500 10px var(--mono); color: var(--text-2);
+  display: flex; justify-content: space-between; gap: 8px;
+}
+.bgs-refcard .rv { color: var(--text-3) }
+.bgs-refcard .kd { font: 500 10px var(--mono); color: var(--text-3); margin-top: 2px }
+.bgs-lockrow {
+  display: flex; align-items: center; gap: 9px; padding: 9px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.bgs-pad > .bgs-lockrow, .bgs-main > .bgs-lockrow { padding-left: 0; padding-right: 0 }
+.bgs-lockrow .p {
+  flex: 1; min-width: 0; font: 500 10px var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-lockrow .by { flex: none; font: 500 10px var(--mono); color: var(--text-3) }
+
+/* ── qa ──────────────────────────────────────────────────────────────────── */
+.bgs-gate {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  padding: 12px 14px; margin-bottom: 10px;
+}
+/* An UNDECIDED run is drawn as loud as a failure on purpose: from across the
+   room "finished" and "passed" look identical, and that resemblance is the
+   whole reason the verdict line exists. */
+.bgs-gate.t-bad { border-color: var(--bad-line); background: var(--bad-soft) }
+.bgs-gate.t-warn { border-color: var(--warn-line) }
+.bgs-gate .h { display: flex; align-items: center; gap: 10px }
+.bgs-gate .h .t {
+  flex: 1; min-width: 0; font: 400 13px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-gate .h .w { font: 500 10px var(--mono); color: var(--text-3) }
+.bgs-gate .ev { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px }
+.bgs-gate .pill {
+  font: 500 10px var(--mono); padding: 3px 8px; border-radius: 9999px;
+  border: 1px solid var(--line); color: var(--text-2);
+}
+.bgs-gate .pill.warn { color: var(--warn); border-color: var(--warn-line) }
+.bgs-gate .note { margin-top: 9px; font: 400 12px/1.6 var(--sans); color: var(--text-3) }
+.bgs-gate .note.loud { color: var(--bad) }
+.bgs-keys { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 14px;
+  display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start }
+.bgs-key {
+  font: 500 10px var(--mono); padding: 3px 8px; border-radius: 9999px;
+  border: 1px solid var(--line); color: var(--text-2);
+}
+
+/* ── cinematic ───────────────────────────────────────────────────────────── */
+.bgs-shot {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  margin-bottom: 8px;
+}
+.bgs-shot.warn { border-color: var(--warn-line) }
+.bgs-shot .n { font: 500 10px var(--mono); color: var(--text-3); width: 26px; flex: none }
+.bgs-shot .thumb { width: 64px; height: 36px; flex: none }
+.bgs-shot .thumb img { width: 100%; height: 100%; object-fit: cover }
+.bgs-shot .thumb.none { color: var(--text-3); background: var(--surface-1) }
+.bgs-shot .b { flex: 1; min-width: 0 }
+.bgs-shot .b .t {
+  font: 400 12px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-shot .b .m {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  font: 500 10px var(--mono); color: var(--text-3);
+  overflow: hidden; white-space: nowrap;
+}
+.bgs-shot .b .m .warn { color: var(--warn) }
+.bgs-shot .dur { flex: none; width: 44px; text-align: right; color: var(--text-2) }
+.bgs-shot .mono { font: 500 10px var(--mono) }
+
+/* ── the shared queue panel ──────────────────────────────────────────────── */
+.bgs-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: 0; border-bottom: 1px solid var(--line-soft); background: transparent;
+  padding: 9px 4px; cursor: pointer;
+}
+.bgs-item:hover { background: var(--surface-3) }
+.bgs-item.on { background: var(--surface-3) }
+.bgs-item .t {
+  flex: 1; min-width: 0; font: 400 12px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-item .m {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+
+@media (max-width: 1180px) {
+  /* The rail becomes a stacked section rather than a 220px sliver of wrapped
+     words. Below this width the split reads worse than the stack. */
+  .bgs-split, .bgs-split.left { grid-template-columns: 1fr; grid-auto-rows: min-content }
+  .bgs-main { border-right: 0; border-bottom: 1px solid var(--line) }
+  .bgs { grid-template-columns: 150px 1fr }
+}
+
+/* The classic brainstorm workspace mounts here and owns every pixel inside it:
+   conversation, writing pad, drawing surface. It expects to fill its host. */
+.bgs-bshost { height: 100%; min-height: 0; display: flex; flex-direction: column }
+.bgs-bshost > * { flex: 1; min-height: 0 }
+
+/* WF mounts its library here and owns every pixel inside — same host contract
+   as the brainstorm room above. It brings its own .wf-lib padding. */
+.bgs-wfhost { height: 100%; min-height: 0; overflow-y: auto }
+
+/* ── the Generate tab ─────────────────────────────────────────────────────
+   Recipes first, the canvas one click away. See Generate.tsx for why that
+   order and not the other one. */
+.bgs-genwrap { display: flex; flex-direction: column; height: 100%; min-height: 0 }
+.bgs-genswitch {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 9px 16px; border-bottom: 1px solid var(--line);
+}
+.bgs-genswitch .hint { font: 400 10px var(--mono); color: var(--text-3) }
+
+.bgs-recipes { display: flex; flex-direction: column; gap: 8px; max-width: 88ch }
+
+.bgs-recipe {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  overflow: hidden;
+}
+.bgs-recipe.on { border-color: var(--accent-line) }
+/* The whole header is the control — a 14px chevron as the only hit target is a
+   row that looks clickable everywhere and is clickable in one place. */
+.bgs-recipe .h {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  border: 0; background: transparent; cursor: pointer; padding: 11px 13px;
+  color: var(--text);
+}
+.bgs-recipe .h:hover { background: var(--surface-3) }
+.bgs-recipe .h .t { flex: none; font: 450 13px var(--sans) }
+.bgs-recipe .h .s {
+  flex: 1; min-width: 0; font: 400 11px var(--sans); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-recipe .b {
+  display: flex; flex-direction: column; gap: 11px;
+  padding: 4px 13px 13px; border-top: 1px solid var(--line-soft);
+}
+.bgs-recipe .b label { display: flex; flex-direction: column; gap: 4px }
+.bgs-recipe .b .k {
+  font: 500 10px var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--text-3);
+}
+/* The field's own sentence, under its label and above the box it explains. */
+.bgs-recipe .b .hint { font: 400 11px/1.5 var(--sans); color: var(--text-3) }
+.bgs-recipe .b input, .bgs-recipe .b textarea, .bgs-recipe .b select {
+  font: 400 12px var(--sans); color: var(--text); background: var(--surface-1);
+  border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px;
+  resize: vertical;
+}
+.bgs-recipe .b input:focus, .bgs-recipe .b textarea:focus,
+.bgs-recipe .b select:focus { outline: 0; border-color: var(--accent-line) }
+.bgs-recipe .b input::placeholder, .bgs-recipe .b textarea::placeholder {
+  color: var(--text-dim, var(--text-3));
+}
+.bgs-recipe .acts { display: flex; align-items: center; gap: 9px; flex-wrap: wrap }
+.bgs-recipe .acts .sp { flex: 1 }
+/* What you get, next to the button that gets it. */
+.bgs-recipe .acts .yield {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 400 10px var(--mono); color: var(--text-3);
+}
