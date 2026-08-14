@@ -9,6 +9,113 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.41]
+
+### Fixed
+
+- **The packaged app could not start from a shortcut, and never could.** A
+  `console=False` PyInstaller build launched from Explorer or the Start Menu
+  gets `sys.stdout is None`, and uvicorn's log formatter calls `.isatty()` on it
+  while configuring itself — so the app died inside `logging.config` before
+  binding a port, in both `serve` and window mode. Every release shipped this;
+  `git log` shows the guard never existed. It survived because the build's smoke
+  test spawns the exe with `subprocess.PIPE`, handing it the one thing the real
+  launch path lacks. `smoke_detached()` now boots the binary with
+  `DETACHED_PROCESS` — no console, no inherited handles — so the harness stops
+  supplying what Windows does not.
+
+- **The app's own window code had never run in a shipped build.**
+  `bgate_ui/webview2.py` is the primary Windows window, with pywebview as its
+  fallback, and its `available()` check begins by importing `comtypes` — which
+  nothing declared. It was present on the machine this was written on because an
+  unrelated package pulled it in, so the native path worked there and silently
+  failed everywhere else, falling through to a fallback that also opens a window.
+  `comtypes` is now a declared dependency of the `desktop` extra, and the frozen
+  build asserts `webview2.available()` in its selftest rather than assuming it.
+
+  Making that path reachable immediately exposed two faults inside it: numeric
+  resource ids were passed where `LPCWSTR` was declared (`LoadCursorW`,
+  `LoadImageW`), which raises before a window exists, and the taskbar showed the
+  host interpreter's icon because the process never set an AppUserModelID.
+
+- **Playtest recording could not work in any packaged build.** `sounddevice` and
+  `numpy` were excluded from the bundle as an optional extra, but
+  `bgate_adapters/recorder.py` captures playtest audio through `sounddevice`
+  deliberately — ffmpeg's dshow enumeration finds no devices on the machines this
+  was built on. Excluding them did not make audio optional; it made the Playtests
+  screen permanently unable to record, while advising a `pip install` a `.exe`
+  user cannot run. Both now ship, and `audio-capture` is a selftest check.
+
+- **Speech-to-text was cut from the download on a false premise.** The spec
+  recorded that `faster-whisper` drags in torch, onnxruntime and the CUDA runtime
+  for a 415 MB binary. Measured: it runs on CTranslate2 and pulls **no torch at
+  all**. The real cost is ~121 MB. It is now bundled, and the frozen app runs the
+  transcriber by calling itself (`BuildersGate.exe whisper …`) rather than
+  needing an interpreter it does not have.
+
+- **A missing transcriber disabled the Record button.** `preflight`'s `ready` was
+  `all(checks)`, so anything failing blocked recording — including speech-to-text,
+  which decides whether you get a transcript, not whether you can record. Checks
+  now declare whether they block or degrade (`REQUIRED_CHECKS`), and the panel
+  gates on the first group only. The client had the same fault independently: a
+  cheap `/api/doctor` path returned a preflight it invented itself whenever
+  whisper was absent, so the server's answer was never consulted.
+
+- **Overlays rendered underneath the page.** `backdrop-filter` makes an element a
+  backdrop root, and the orbit ground puts one on the shell chrome. The
+  notification drawer lived inside the header and the project menu inside the
+  rail, so their own blur could only sample their parent — a 42px strip — and
+  their `z-index` was sealed into their parent's stacking context, letting
+  panels paint straight over them. Both are portalled to `<body>` now.
+
+- **"Open Orchestration" did nothing.** It called `setScreen("floor")`, and
+  `floor` is a deck name, not a screen id; Orchestration is `agents`.
+
+- **Brainstorm's reset left the transcript on screen.** The reset landed on the
+  server, but the handler refreshed the console state — the dispatch transcript —
+  while brainstorm renders from the room session, which only `bsOpen()` writes.
+
+### Changed
+
+- **Releases are built in an isolated, hash-pinned environment.** PyInstaller
+  bundles whatever the interpreter running it can import, so the bundle used to
+  inherit whatever was installed on the builder's machine: the same commit
+  produced a 59 MB zip locally and 37 MB in CI, because an unrelated
+  `azure-storage-blob` dragged in the whole opentelemetry exporter stack, grpc
+  and protobuf. The build now creates its own venv and installs
+  `packaging/build-requirements.lock` with `--require-hashes` — 69 packages
+  pinned by version and SHA-256 — then the project itself with `--no-deps`. Two
+  builds of one commit now contain the same bytes, and a substituted dependency
+  fails the build instead of shipping.
+
+- **There is an installer.** `packaging/installer.iss` builds
+  `BuildersGate-setup.exe`: per-user into `%LOCALAPPDATA%\Programs`, no UAC at
+  any point, Start Menu entry, uninstaller, a fixed `AppId` so upgrades replace
+  rather than accumulate, and a refusal to install over a running copy. The zip
+  is still published. Uninstalling deliberately leaves `~/.bgate` alone.
+
+- **The desktop window draws its own title bar.** Frameless via `WM_NCCALCSIZE`,
+  with `WM_NCHITTEST` restoring drag, snap and edge-resize. `SWP_FRAMECHANGED`
+  after creation is what makes it take effect at all — `CreateWindowEx` never
+  sends the `wParam = TRUE` form the handler acts on, so without that call the
+  window wears both captions.
+
+- **Missing tools are a button, not an instruction.** `bgate_core/toolbin.py`
+  generalises the `~/.bgate/bin` precedence that `ffmpegbin` already used into a
+  place the app installs into: pinned URL, SHA-256 verified before extraction,
+  and only the named binaries kept. ffmpeg is the first entry. Nothing is
+  downloaded until a human presses a button for a feature they are using.
+
+- **Settings reads as English.** All 42 switches carry a human name with the
+  identifier beneath it, and each group has an icon; a test fails the build if a
+  new setting arrives unnamed.
+
+- **The project can be changed from inside the app.** `POST /api/project/select`
+  had existed all along with exactly one caller — the first-run screen, which
+  never shows again once a project is open. There is now a switcher on the rail,
+  with New game and Open an existing game beside it.
+
+
 ### Changed
 
 - **One front-end source tree.** The dashboard had two, and one of them was also
