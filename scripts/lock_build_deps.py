@@ -20,6 +20,15 @@ it afterwards.
 ANYTHING not listed, so a dependency appearing out of nowhere fails the build
 rather than joining the bundle.
 
+EVERY ARTIFACT OF EACH PINNED VERSION IS HASHED, not just the wheel this
+machine happened to resolve. The first version of this recorded one digest per
+package, taken from pip's own report -- and that report describes THIS
+interpreter on THIS platform. CI runs a different Python, needs
+cffi-2.1.1-cp312-...whl where the lock had recorded cp313, and the build died
+on a hash mismatch that was not a tampering signal at all. The hashes come from
+PyPI's release metadata now, so any wheel or sdist of the pinned version is
+accepted and anything outside it is not.
+
 RE-RUN THIS WHEN pyproject.toml CHANGES, and read the diff. A lock file nobody
 regenerates becomes a lock file somebody deletes.
 """
@@ -29,6 +38,8 @@ import json
 import subprocess
 import sys
 import tempfile
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +65,27 @@ HEADER = """\
 """
 
 
+def _release_hashes(pkg: tuple[str, str]) -> tuple[str, str, list[str]]:
+    """Every sha256 PyPI publishes for that exact version.
+
+    ALL of them, not just the wheel this machine resolved. pip's own report
+    describes THIS interpreter on THIS platform, so a lock built from it pins
+    (say) cffi's cp313 wheel — and CI, running 3.12, needs the cp312 wheel and
+    dies on a hash mismatch that is not a tampering signal at all. Taking the
+    hashes from the release metadata means any legitimate artifact of the
+    pinned version is accepted and nothing outside it is.
+    """
+    name, version = pkg
+    url = f"https://pypi.org/pypi/{name}/{version}/json"
+    with urllib.request.urlopen(url, timeout=60) as r:
+        meta = json.load(r)
+    out = sorted({u["digests"]["sha256"] for u in meta.get("urls", [])
+                  if u.get("digests", {}).get("sha256")})
+    if not out:
+        sys.exit(f"PyPI lists no artifacts for {name}=={version}")
+    return name, version, out
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="bgate-lock-") as tmp:
         report = Path(tmp) / "report.json"
@@ -68,27 +100,38 @@ def main() -> int:
 
         data = json.loads(report.read_text(encoding="utf-8"))
 
-    lines: list[str] = []
+    pinned: list[tuple[str, str]] = []
     skipped: list[str] = []
     for item in sorted(data.get("install", []),
                        key=lambda d: d["metadata"]["name"].lower()):
         name = item["metadata"]["name"]
         version = item["metadata"]["version"]
         # A local/editable requirement has no downloadable artifact to hash.
-        digest = (item.get("download_info", {})
-                      .get("archive_info", {})
-                      .get("hashes", {})
-                      .get("sha256"))
-        if not digest:
+        if not (item.get("download_info", {})
+                    .get("archive_info", {})
+                    .get("hashes", {})
+                    .get("sha256")):
             skipped.append(name)
             continue
-        lines.append(f"{name}=={version} \\\n    --hash=sha256:{digest}")
+        pinned.append((name, version))
 
     if skipped:
         print("  not hashable (installed separately): " + ", ".join(skipped))
 
+    print(f"fetching every artifact hash for {len(pinned)} packages …")
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        resolved = list(pool.map(_release_hashes, pinned))
+
+    lines: list[str] = []
+    total = 0
+    for name, version, hashes in resolved:
+        total += len(hashes)
+        joined = " \\\n    ".join(f"--hash=sha256:{h}" for h in hashes)
+        lines.append(f"{name}=={version} \\\n    {joined}")
+
     LOCK.write_text(HEADER + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
-    print(f"wrote {LOCK.relative_to(ROOT)} — {len(lines)} pinned packages")
+    print(f"wrote {LOCK.relative_to(ROOT)} — {len(lines)} packages, "
+          f"{total} artifact hashes")
     return 0
 
 

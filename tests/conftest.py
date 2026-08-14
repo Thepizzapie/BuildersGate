@@ -19,36 +19,49 @@ def _no_dashboard_auth(monkeypatch):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _isolated_user_dir(tmp_path_factory):
-    """Keep the suite out of the developer's real ~/.bgate.
+def _isolated_user_dir_session(tmp_path_factory):
+    """Keep SESSION-scoped fixtures out of the developer's real ~/.bgate.
 
     project.init() registers every project it makes, and `bgate use` writes an
-    active-project pointer that require_root() falls back to. Without this, a
-    test run rewrites the machine's registry, and — worse — a stale pointer left
-    by an earlier run silently satisfies a require_root() the test expected to
-    fail. BGATE_HOME exists precisely so that redirect is one env var.
+    active-project pointer that require_root() falls back to. The per-test
+    fixture below handles the ordinary case — but it cannot help a
+    session-scoped fixture, because monkeypatch is function-scoped and a
+    session fixture is built before any function fixture applies. `_seed_project`
+    is session-scoped and calls project.init(), so every full run of this suite
+    used to register `test-game` and `smoke-test` in the MACHINE's registry,
+    pointing into pytest-of-<user>/pytest-NNNN/. They appeared in the app's
+    project switcher as things you could open and stopped resolving the moment
+    pytest recycled the directory.
 
-    SESSION-SCOPED, AND THAT MATTERS. This was function-scoped, using
-    monkeypatch — which is itself function-scoped — so it could not possibly be
-    in effect while a SESSION-scoped fixture ran. `_seed_project` below is
-    session-scoped and calls project.init(), so every full run of this suite
-    registered its seed projects in the developer's real registry: `test-game`
-    and `smoke-test`, pointing into pytest-of-<user>/pytest-NNNN/, appeared in
-    the app's project switcher as things you could open, and stopped resolving
-    as soon as pytest recycled the directory.
-
-    os.environ directly rather than monkeypatch, because there is no
-    session-scoped monkeypatch; the value is restored on the way out.
+    os.environ directly, because there is no session-scoped monkeypatch; the
+    previous value is restored on the way out.
     """
     import os
 
     previous = os.environ.get("BGATE_HOME")
-    os.environ["BGATE_HOME"] = str(tmp_path_factory.mktemp("bgate_home"))
+    os.environ["BGATE_HOME"] = str(tmp_path_factory.mktemp("bgate_home_session"))
     yield
     if previous is None:
         os.environ.pop("BGATE_HOME", None)
     else:
         os.environ["BGATE_HOME"] = previous
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_dir(tmp_path_factory, monkeypatch):
+    """And give every TEST its own, so they cannot leak into each other.
+
+    The session fixture above is not enough on its own, and the failure is
+    subtle: with one home shared by the whole run, a registry entry or an
+    active pointer written by one test is still there for the next. Tests that
+    assert on the ABSENCE of a project — "no pointer and no project still
+    raises", "projects with none known says what to do" — then pass alone and
+    fail in a full run, depending on collection order.
+
+    Redirected per test, so each starts with an empty ~/.bgate.
+    """
+    monkeypatch.setenv("BGATE_HOME",
+                       str(tmp_path_factory.mktemp("bgate_home")))
 
 
 @pytest.fixture()
