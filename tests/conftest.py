@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from bgate_core import db, project
@@ -35,10 +37,36 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(scope="session")
+def _seed_project(tmp_path_factory):
+    """One initialised project, built once for the whole run.
+
+    A project is a single SQLite file, and almost all of the 56 ms `init` costs
+    is applying the migration list to it. Every test that asks for `root` used
+    to pay that again: measured at ~5,300 tests, a quarter of the suite's
+    wall-clock was rebuilding the same schema.
+
+    Copying the finished file is 2 ms. This fixture is the file; `root` below is
+    the copy, so each test still gets its own project on its own path and
+    nothing is shared between them.
+    """
+    seed = tmp_path_factory.mktemp("seed") / "project"
+    project.init(seed, "Test Game", pitch="a game for tests")
+    # Closed before anything copies it, or Windows hands out a half-flushed
+    # database and the first query in a test reads a schema that is still being
+    # written.
+    db.close_all()
+    return seed
+
+
 @pytest.fixture()
-def root(tmp_path):
-    """A fresh initialized project per test. Connections are per-path, so the
-    cache is dropped afterward to keep tmp dirs from leaking handles on Windows."""
-    project.init(tmp_path, "Test Game", pitch="a game for tests")
+def root(tmp_path, _seed_project):
+    """A fresh project per test, copied from the session's seed.
+
+    Same shape as building one from scratch: its own directory, its own file, no
+    state carried from another test. Connections are per-path, so the cache is
+    dropped afterward to keep tmp dirs from leaking handles on Windows.
+    """
+    shutil.copytree(_seed_project, tmp_path, dirs_exist_ok=True)
     yield tmp_path
     db.close_all()
