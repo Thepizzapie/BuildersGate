@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import zipfile
 from dataclasses import dataclass
@@ -115,17 +116,50 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (FFMPEG,)}
 
 
 # ── resolution ──────────────────────────────────────────────────────────────
+#: A tool name is an identifier, never a path fragment.
+_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def _checked(name: str) -> str:
+    """The tool name, or a refusal. NOTHING joins a name to a path before this.
+
+    `local()` builds `bin_dir() / f"{name}.exe"`, and `name` reaches it from a
+    route parameter (/api/tools/{name}). The routes only accept names that are
+    keys of TOOLS, so nothing malicious got through in practice — but the
+    guarantee lived in the caller rather than here, which is exactly the shape
+    CodeQL flags and exactly the shape that breaks the day somebody adds a
+    second caller. "ffmpeg/../../.ssh/id_rsa" is a name to `str`; it is a
+    traversal to `/`.
+
+    Refuses rather than sanitises. A name that needs cleaning is a bug in the
+    caller, and quietly repairing it hides that.
+    """
+    text = str(name or "")
+    if not _NAME.fullmatch(text):
+        raise ValueError(
+            f"not a tool name: {text!r} — tool names are lowercase "
+            f"identifiers, and this one is used to build a file path")
+    return text
+
+
 def env_var(name: str) -> str:
     """The override variable for a tool: ffmpeg -> BGATE_FFMPEG."""
-    return f"BGATE_{name.upper()}"
+    return f"BGATE_{_checked(name).upper()}"
 
 
 def local(name: str) -> Optional[str]:
     """The copy in ~/.bgate/bin, if there is one. Absolute path or None."""
+    name = _checked(name)
     tool = TOOLS.get(name)
     candidates = tool.exes if tool else (f"{name}.exe", name)
+    base = bin_dir().resolve()
     for exe in candidates:
-        p = bin_dir() / exe
+        p = (base / exe).resolve()
+        # Belt as well as braces: _checked() already refuses separators, and
+        # this refuses anything that still managed to land outside the folder
+        # the app owns.
+        if not (p == base or base in p.parents):
+            continue
         if p.is_file():
             return str(p)
     return None
