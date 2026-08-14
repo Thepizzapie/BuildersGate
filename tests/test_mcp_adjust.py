@@ -118,22 +118,41 @@ async def test_two_slow_tool_calls_overlap_instead_of_serialising(wired,
 @pytest.mark.anyio
 async def test_the_loop_still_answers_while_a_tool_is_blocked(wired, monkeypatch):
     """The failure the user actually reports: the dashboard goes dead while one
-    seat is mid-batch. A cheap call must return while the slow one is running."""
+    seat is mid-batch. A cheap call must return while the slow one is running.
+
+    MEASURED AS A FRACTION OF THE BLOCKING CALL, not against a fixed number of
+    milliseconds. The first version slept 0.5s and demanded an answer inside
+    0.3s, which is 0.2s of headroom on a shared CI runner: it passed everywhere
+    and then failed once on a busy machine at 0.53s, which reads as "the loop
+    blocks" and was really "the runner stalled". A wall-clock budget on shared
+    hardware measures the hardware.
+
+    The property being tested is not a latency figure. It is that the quick
+    call does NOT serialise behind the slow one, so the question worth asking
+    is whether it came back before the blocker finished. Half the sleep is a
+    wide margin for that and needs no tuning: a serialised call lands at 1.0x,
+    a concurrent one at roughly 0.0x, and there is nothing in between to be
+    unlucky about.
+    """
+    BLOCK_FOR = 1.0          # long enough that scheduler noise is not the signal
+
     def slow(*args, **kwargs):
-        time.sleep(0.5)
+        time.sleep(BLOCK_FOR)
         return []
 
     monkeypatch.setattr(server._seats, "read_notes", slow)
 
     slow_call = asyncio.ensure_future(call("seat_notes"))
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.05)          # let the blocking tool actually start
     started = time.monotonic()
     quick = await call("project_status")
     served_in = time.monotonic() - started
     await slow_call
 
     assert quick["project"]["name"] == "Test Game"
-    assert served_in < 0.3, f"the quick call queued behind the slow one ({served_in:.2f}s)"
+    assert served_in < BLOCK_FOR / 2, (
+        f"the quick call queued behind the slow one: {served_in:.2f}s of a "
+        f"{BLOCK_FOR:.1f}s block, so the loop is not answering during it")
 
 
 @pytest.mark.anyio
