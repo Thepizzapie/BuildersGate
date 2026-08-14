@@ -149,6 +149,67 @@ class TestCreateOverHttp:
         assert body["error"]["code"] == "forbidden"
 
 
+class TestOpeningOneThatExists:
+    """The first-run screen could only CREATE.
+
+    Someone with six registered games who opened the dashboard from the wrong
+    directory was told there was no project and invited to make a seventh — and
+    the registry the screen needed was already in the GET's ``known``.
+    """
+
+    @pytest.fixture()
+    def elsewhere(self, tmp_path, monkeypatch):
+        """A real project somewhere the server is NOT pointing."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("BGATE_HOME", str(home))   # registry + active pointer
+        made = tmp_path / "other-game"
+        project.init(made, "Other Game")
+        return made
+
+    def test_a_path_repoints_the_running_server(self, client, elsewhere):
+        got = data(client.post("/api/project/select", json={"root": str(elsewhere)}))
+        assert got["root"] == str(elsewhere)
+        assert got["project"]["name"] == "Other Game"
+        # reload, because the dashboard token is minted per project and this
+        # page was served against the old one.
+        assert got["reload"] is True
+        # and the SERVER now agrees, which is the whole point — the old screen
+        # could not do this at all.
+        assert client.get("/api/state").json()["project"]["name"] == "Other Game"
+
+    def test_a_registry_name_works_too(self, client, elsewhere):
+        got = data(client.post("/api/project/select", json={"name": "other-game"}))
+        assert got["root"] == str(elsewhere)
+
+    def test_the_choice_survives_a_restart(self, client, elsewhere):
+        client.post("/api/project/select", json={"root": str(elsewhere)})
+        assert project.active_root() == elsewhere
+
+    def test_a_directory_with_no_store_is_refused_by_name(self, client, tmp_path):
+        bare = tmp_path / "just-a-folder"
+        bare.mkdir()
+        body = client.post("/api/project/select", json={"root": str(bare)}).json()
+        assert body["ok"] is False
+        assert body["error"]["code"] == "bad_request"
+        # the message has to say what to do, not just what is wrong
+        assert "adopt" in body["error"]["message"]
+
+    def test_an_unregistered_name_lists_what_is_registered(self, client, elsewhere):
+        body = client.post("/api/project/select", json={"name": "nope"}).json()
+        assert body["error"]["code"] == "bad_request"
+        assert body["error"]["detail"]["known"] == ["other-game"]
+
+    def test_an_agent_may_not_repoint_the_dashboard(self, client, elsewhere,
+                                                    monkeypatch):
+        # An agent that can switch projects can write into another game through
+        # every other route on this server.
+        monkeypatch.setenv("BGATE_ACTOR", "agent:item-3")
+        body = client.post("/api/project/select",
+                           json={"root": str(elsewhere)}).json()
+        assert body["error"]["code"] == "forbidden"
+
+
 class TestCli:
     def test_init_prints_the_absolute_root_it_created(self, empty, capsys):
         code = cli.init_project("Ember Run", kind="2d")

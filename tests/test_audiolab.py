@@ -556,10 +556,20 @@ def test_no_beat_is_none_not_an_error(client):
 # The UI ships it
 # ---------------------------------------------------------------------------
 def test_the_audio_lab_is_loaded_and_reachable():
-    static = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+    # Source lives in frontend/public; bgate_ui/static is the Vite build output
+    # (frontend/public copied verbatim, plus dist/).
+    static = Path(__file__).resolve().parents[1] / "frontend" / "public"
     html = (static / "index.html").read_text(encoding="utf-8")
     assert 'src="/static/audiolab.js"' in html
-    assert "AudioLab.pick()" in html, "the lab needs a way in"
+    # THE WAY IN MOVED, THE RULE DID NOT. The "audio lab" button lives on the
+    # React assets deck now (frontend/src/views/assets/Assets.tsx), so the call
+    # is in the built bundle rather than in index.html. A lab with no entry
+    # point is still the failure this asserts against.
+    dist = (Path(__file__).resolve().parents[1]
+            / "bgate_ui" / "static" / "dist" / "bgate.js")
+    assert dist.is_file(), "no built bundle — run `cd frontend && npm run build`"
+    assert "AudioLab" in dist.read_text(encoding="utf-8", errors="replace"), (
+        "the lab needs a way in")
     js = (static / "audiolab.js").read_text(encoding="utf-8")
     for path in ("/api/audio/lab/open", "/api/audio/lab/save",
                  "/api/audio/lab/loop", "/api/audio/lab/session",
@@ -573,7 +583,7 @@ def test_the_audio_lab_is_loaded_and_reachable():
 def test_the_beat_maker_is_loaded_and_renders_through_the_clip_editor():
     """The studio must hand its render to the clip editor rather than owning a
     second save path — one place writes audio, and it takes the backup."""
-    static = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+    static = Path(__file__).resolve().parents[1] / "frontend" / "public"
     html = (static / "index.html").read_text(encoding="utf-8")
     assert 'src="/static/beatmaker.js"' in html
     bm = (static / "beatmaker.js").read_text(encoding="utf-8")

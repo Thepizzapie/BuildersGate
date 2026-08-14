@@ -1,0 +1,943 @@
+/* The 4a shell — areas, subnav, screen, inspector.
+ *
+ * WHAT THIS REPLACES: one 64px rail carrying eleven flat destinations, a status
+ * bar, and a stage. Eleven peers is not a hierarchy; you had to already know
+ * where a thing lived. The prototype splits it in two — four AREAS on an icon
+ * rail, and the screens of the area you are in on a second column — so the rail
+ * answers "what kind of work" and the column answers "which screen", and both
+ * stay visible while you work. The inspector is the third change: what you
+ * selected pops out over the stage and follows every later click, instead of a
+ * modal you had to close before you could look at the next row.
+ *
+ * LAYOUT, TYPE AND DENSITY ARE THE PROTOTYPE'S, TO THE PIXEL. Colour is NOT:
+ * every surface below resolves to this project's existing tokens rather than
+ * the prototype's literal hexes, because the app has four grounds (dark, light,
+ * orbit, and the OS default) and fifteen views that already obey them. Pinning
+ * #0e0d0c into the chrome would have made the light ground a black frame around
+ * a white page. The two palettes differ by about two points of luminance on
+ * every surface anyway.
+ *
+ * Everything is namespaced .bg4-*, and this file is unlayered — it beats
+ * app.css by cascade origin, which is what a shell replacing a shell should do.
+ */
+
+/* BOTH of these have to disappear from layout, not one.
+   The island's container is a real <div> that mountIslands() rendered into, and
+   it is the element the body grid sees — unwrapping only `.bg4` inside it left
+   the rail, the nav, the header and the inspector stacked in a 56px column
+   while `.stage` sat correctly in column three. */
+[data-react="shell"], .bg4 {
+  display: contents;               /* the children ARE the body grid's cells */
+}
+.bg4-rail, .bg4-nav, .bg4-head, .bg4-insp {
+  font-family: var(--sans);
+}
+body:has(.bg4) {
+  display: grid;
+  /* THE MIDDLE TRACK IS `auto`, AND THE NAV'S OWN WIDTH IS WHAT MOVES.
+     The obvious version put the width in the track and transitioned
+     grid-template-columns; the track is resolved from a custom property, and a
+     transition whose endpoints come from a var does not restart when the var
+     changes — measured: the class flipped, --bg4-nav-w computed to 0px, and
+     the used track stayed at 176px. Transitioning a plain `width` on the
+     element itself has none of that ambiguity, and an `auto` track follows it
+     exactly. */
+  grid-template-columns: 56px auto minmax(0, 1fr);
+  grid-template-rows: 42px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── column 1: the areas ──────────────────────────────────────────────────── */
+.bg4-rail {
+  grid-column: 1; grid-row: 1 / -1;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 12px 0;
+  background: var(--solid-2); border-right: 1px solid var(--line);
+}
+/* The mark is a button now. It keeps the mark's own colour and gains only the
+   affordances of one — a hit area, a hover, and a focus ring. */
+.bg4-mark {
+  display: grid; place-items: center; width: 36px; height: 36px;
+  border: 0; border-radius: 6px; background: transparent; cursor: pointer;
+  color: var(--brand-post, #8f7cff); margin-bottom: 14px; padding: 0;
+}
+.bg4-mark:hover { background: rgba(255, 255, 255, .05) }
+.bg4-area {
+  display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-2); cursor: pointer;
+}
+.bg4-area:hover { color: var(--text) }
+.bg4-area[aria-current="true"] { background: var(--accent-soft); color: var(--accent) }
+/* A TINT ALONE IS NOT ENOUGH WHEN THE COLUMN IS SHUT. Open, the screen list
+   says where you are; collapsed, the rail is the only thing that can, and a
+   soft background at 6% is not a position indicator. The bar is anchored to the
+   rail's edge so the eye reads a run of four icons with one of them marked. */
+.bg4-area[aria-current="true"]::before {
+  content: ""; position: absolute; left: -10px; width: 2px; height: 18px;
+  border-radius: 0 2px 2px 0; background: var(--accent);
+}
+.bg4-area { position: relative }
+.bg4-railfoot {
+  margin-top: auto; display: flex; flex-direction: column; gap: 6px; align-items: center;
+}
+/* The connection light. Six pixels, always visible, and the only thing in the
+   chrome that reports the server rather than the project. */
+.bg4-dot {
+  width: 6px; height: 6px; border-radius: 50%; margin-bottom: 4px;
+  background: var(--text-3);
+}
+.bg4-dot.ok { background: var(--good, #4ec98f) }
+.bg4-dot.bad { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent) }
+/* The count in an area pop-out, matching the one in the open column. */
+.bg4-menun { font: 500 10px var(--mono); color: var(--text-3) }
+/* The four grounds live in a pop-out off one button now — see Grounds(). */
+
+/* ── column 2: the screens of the current area ────────────────────────────── */
+.bg4-nav {
+  grid-column: 2; grid-row: 1 / -1;
+  width: 176px; flex: none;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 14px 10px; min-height: 0; overflow: hidden auto;
+  background: var(--solid-1); border-right: 1px solid var(--line);
+  transition: width var(--dur-slow, .24s) var(--ease, ease),
+              padding var(--dur-slow, .24s) var(--ease, ease);
+}
+.bg4.nav-closed .bg4-nav { width: 0 }
+@media (prefers-reduced-motion: reduce) {
+  .bg4-nav, .bg4-nav > *, .bg4-head { transition: none }
+}
+/* SMOOTH BOTH WAYS, and the content has to move with the track or the labels
+   reflow into a 40px column on the way out and read as a stutter. The whole
+   column fades and steps aside over the same duration the track takes. */
+.bg4-nav > * {
+  opacity: 1; transform: none;
+  transition: opacity var(--dur, .16s) var(--ease, ease),
+              transform var(--dur-slow, .24s) var(--ease, ease);
+}
+.bg4.nav-closed .bg4-nav {
+  padding-left: 0; padding-right: 0; border-right-width: 0;
+}
+.bg4.nav-closed .bg4-nav > * { opacity: 0; transform: translateX(-10px) }
+
+.bg4-navhead .bg4-eyebrow { padding: 0 0 0 8px; flex: 1 }
+
+.bg4-eyebrow {
+  font: 500 10px var(--mono);
+  letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+  padding: 0 8px 10px;
+}
+/* A HAIRLINE UNDER THE SECTION, not a gap. Eleven flat items with nothing
+   between the label and the list read as one undifferentiated run; a rule the
+   width of the column is what makes "COMMAND" the heading OF something. */
+.bg4-navhead { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line-soft, var(--line)) }
+.bg4-navhead .bg4-eyebrow { padding-bottom: 0 }
+.bg4-navitem {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: 0; border-radius: 4px; padding: 7px 8px; cursor: pointer;
+  font: 400 12px var(--sans);
+  background: transparent; color: var(--text-2);
+}
+.bg4-navitem:hover { background: rgba(255, 255, 255, .03); color: var(--text) }
+.bg4-navitem[aria-current="true"] { background: rgba(255, 255, 255, .05); color: var(--text) }
+.bg4-navitem i { font-size: 17px; line-height: 1; flex: none }
+.bg4-navitem .n {
+  margin-left: auto; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-navgroup { margin-top: 18px }
+.bg4-navfoot {
+  margin-top: auto; border-top: 1px solid var(--line); padding-top: 10px;
+  font: 500 10px/1.6 var(--mono); color: var(--text-3);
+}
+.bg4-navfoot .ok { color: var(--good, #4ec98f) }
+.bg4-navfoot .bad { color: var(--bad) }
+
+/* ── the screen header ────────────────────────────────────────────────────── */
+.bg4-head {
+  grid-column: 3; grid-row: 1;
+  display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  background: var(--solid-1); border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.bg4-title { font: 450 13px var(--sans); color: var(--text); white-space: nowrap }
+.bg4-note {
+  font: 500 10px var(--mono); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-chips { margin-left: auto; display: flex; align-items: center; gap: 8px }
+/* The header is the other thing that moves when the nav closes — it starts at
+   the stage's left edge, so it travels with the track. Same duration, same
+   curve; two surfaces easing at different rates is what makes a collapse feel
+   loose. */
+.bg4-head { transition: padding var(--dur-slow, .24s) var(--ease, ease) }
+.bg4-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
+  font: 500 10px var(--mono); white-space: nowrap; cursor: pointer;
+}
+.bg4-chip i { font-size: 14px; line-height: 1 }
+/* ── the running chip's list ──────────────────────────────────────────────── */
+.bg4-runtile {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 5px;
+}
+/* ONE LINE, ALWAYS. A three-line brief in a header pop-out turns a glance into
+   reading, and the inspector is one click away for the whole of it. */
+.bg4-runtitle {
+  display: block; font: 400 12px var(--sans);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-runtitle b { font: 500 11px var(--mono); color: var(--text-3) }
+.bg4-runage { font: 500 10px var(--mono); color: var(--text-3) }
+
+/* ── the stage, which is still every existing view ────────────────────────── */
+body:has(.bg4) .deck { display: contents }
+body:has(.bg4) .stage {
+  grid-column: 3; grid-row: 2;
+  min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+body:has(.bg4) .stage-body { flex: 1; min-height: 0; overflow-y: auto }
+body:has(.bg4) .statusbar { display: none }
+
+/* ── the inspector, as a pop-out ──────────────────────────────────────────
+   A COLUMN WAS THE FIRST DRAFT AND IT WAS WRONG for this app: 340px is a
+   third of the board's usable width on a laptop, permanently, whether or not
+   anything is selected — and most of the time nothing is. It pops out now, over
+   the stage, and takes its space back when you close it.
+
+   NO SCRIM AND NO FOCUS TRAP, deliberately. It is not a dialogue: the whole
+   point is to keep clicking rows on the floor and watch this follow. A modal
+   drawer would make inspecting six agents six open-read-close cycles. */
+.bg4-insp {
+  position: fixed; top: 42px; right: 0; bottom: 0; width: min(340px, 92vw);
+  z-index: var(--z-drawer, 60);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--solid-1); border-left: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-4);
+  transform: translateX(100%);
+  transition: transform var(--dur-slow, .24s) var(--ease, ease);
+  visibility: hidden;
+}
+.bg4-insp.open { transform: none; visibility: visible }
+@media (prefers-reduced-motion: reduce) { .bg4-insp { transition: none } }
+.bg4-insp-x {
+  margin-left: auto; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-3); font-size: 16px; line-height: 1; padding: 0 2px;
+}
+.bg4-insp-x:hover { color: var(--text) }
+.bg4-insp-head { padding: 14px 16px; border-bottom: 1px solid var(--line); flex: none }
+.bg4-insp-eyebrow {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-insp-title { margin-top: 8px; font: 450 14px/1.35 var(--sans) }
+.bg4-meter { display: flex; align-items: center; gap: 12px; margin-top: 12px }
+.bg4-meter .big { font: 400 20px/1 var(--mono); color: var(--accent) }
+.bg4-meter .track {
+  flex: 1; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden;
+}
+.bg4-meter .fill { display: block; height: 100%; background: var(--accent) }
+.bg4-meter .small { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-insp-body { padding: 14px 16px 6px; flex: 1; min-height: 0; overflow-y: auto }
+.bg4-insp-foot {
+  display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); flex: none;
+}
+.bg4-act {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 0; border-radius: 4px; cursor: pointer;
+  font: 500 11px var(--mono);
+  border: 1px solid var(--line); background: transparent; color: var(--text-2);
+}
+.bg4-act:hover { border-color: var(--line-strong); color: var(--text) }
+.bg4-act.primary {
+  border: 0; background: var(--accent); color: var(--accent-fg); font-weight: 500;
+}
+.bg4-act:disabled { opacity: .45; cursor: default }
+
+/* the vertical stepper — phases, revisions, triage all share it */
+.bg4-step { display: grid; grid-template-columns: 22px 1fr; gap: 10px }
+.bg4-step .gut { display: flex; flex-direction: column; align-items: center }
+.bg4-step .dot {
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex: none; border-radius: 50%; margin-top: 1px;
+  border: 1px solid var(--line-strong); color: var(--text-3);
+}
+.bg4-step.done .dot { border-color: var(--good, #4ec98f); color: var(--good, #4ec98f) }
+.bg4-step.now .dot {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-soft);
+}
+.bg4-step .rail { flex: 1; width: 1px; background: var(--line); margin: 3px 0 }
+.bg4-step .body { padding-bottom: 12px; min-width: 0 }
+.bg4-step .lab { font: 400 12px var(--sans); color: var(--text-3) }
+.bg4-step.done .lab { color: var(--text-2) }
+.bg4-step.now .lab { color: var(--text) }
+.bg4-step .dur {
+  margin-left: auto; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-step .sub {
+  margin-top: 3px; font: 500 10px var(--mono); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── the floor ────────────────────────────────────────────────────────────── */
+.bg4-floor { display: flex; flex-direction: column; height: 100%; min-height: 0 }
+.bg4-stream { flex: 1; min-height: 0; overflow-y: auto }
+.bg4-row {
+  width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; padding: 10px 16px; cursor: pointer; display: block;
+}
+.bg4-row:hover { background: rgba(255, 255, 255, .02) }
+.bg4-row[aria-selected="true"] { background: rgba(255, 255, 255, .035) }
+.bg4-row .line { display: flex; align-items: center; gap: 12px; min-width: 0 }
+.bg4-row .tile {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex: none; border-radius: 4px;
+}
+.bg4-row .tile i { font-size: 16px; line-height: 1 }
+.bg4-row .t {
+  font: 500 10px var(--mono); color: var(--text-3);
+  width: 40px; flex: none;
+}
+.bg4-row .txt {
+  flex: 1; min-width: 0; font: 400 12px var(--sans);
+  color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-row.live .txt { color: var(--text) }
+.bg4-row .meta { flex: none; font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-row.live .meta { color: var(--accent) }
+.bg4-row.warn .meta { color: var(--warn, #ffbb45) }
+.bg4-bar {
+  display: block; height: 2px; width: 220px; margin: 8px 0 0 38px;
+  background: var(--line); border-radius: 1px; overflow: hidden;
+}
+.bg4-bar span { display: block; height: 100%; background: var(--accent) }
+.bg4-dispatch {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 10px 16px; border-top: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-dispatch input {
+  flex: 1; background: transparent; border: 0; outline: none; color: var(--text);
+  font: 400 12px var(--sans);
+}
+.bg4-send {
+  display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 4px;
+  background: var(--accent); color: var(--accent-fg); padding: 6px 14px;
+  font: 500 10px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; cursor: pointer;
+}
+.bg4-send:disabled { opacity: .5; cursor: default }
+
+/* ── the board ────────────────────────────────────────────────────────────── */
+.bg4-board { padding: 16px; overflow: auto; height: 100% }
+.bg4-lane { display: flex; gap: 20px; align-items: flex-start; margin-bottom: 20px }
+.bg4-lanecard {
+  flex: none; width: 190px; border-radius: 6px; background: var(--solid-2);
+  border: 1px solid var(--line-strong);
+}
+.bg4-lanecard .h {
+  display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.bg4-lanecard .h i { font-size: 17px; line-height: 1 }
+.bg4-lanecard .nm {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase;
+}
+.bg4-lanecard .live {
+  margin-left: auto; font: 500 9px var(--mono); letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-3); border: 1px solid var(--line);
+  border-radius: 9999px; padding: 2px 8px;
+}
+.bg4-lanecard .load {
+  padding: 9px 12px; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-tasks { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 }
+.bg4-task {
+  width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--solid-2); padding: 10px 12px; cursor: pointer;
+}
+.bg4-task.live { border-color: color-mix(in srgb, var(--accent) 35%, transparent) }
+.bg4-task.warn { border-color: color-mix(in srgb, var(--warn, #ffbb45) 40%, transparent) }
+.bg4-task .line { display: flex; align-items: center; gap: 10px; min-width: 0 }
+.bg4-task .line i { font-size: 15px; line-height: 1; flex: none; color: var(--accent) }
+.bg4-task.warn .line i { color: var(--warn, #ffbb45) }
+.bg4-task .ttl {
+  flex: 1; min-width: 0; font: 400 12px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-task .badge {
+  flex: none; font: 500 10px var(--mono); letter-spacing: .12em;
+  text-transform: uppercase; padding: 3px 8px; border-radius: 9999px;
+  color: var(--accent); background: var(--accent-soft);
+}
+.bg4-task.warn .badge {
+  color: var(--warn, #ffbb45);
+  background: color-mix(in srgb, var(--warn, #ffbb45) 12%, transparent);
+}
+.bg4-task .note {
+  margin-top: 6px; font: 500 10px var(--mono); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-task .bg4-bar { margin-left: 0 }
+
+.bg4-empty {
+  padding: 28px 16px; font: 500 11px var(--mono); color: var(--text-3);
+}
+
+/* ── the director's console ───────────────────────────────────────────────
+   TWO COLUMNS THAT BOTH OWN THEIR HEIGHT. The classic cockpit was a fixed
+   two-row grid: a three-line conversation reserved the same 560px as a fifty-
+   line one, and the space under it was dead. Here the transcript scrolls, the
+   composer is pinned under it, and the side panel is its own scroller — so the
+   page is exactly as tall as the deck and never taller. */
+/* A FULL-HEIGHT DECK, WHICH THE STAGE DOES NOT GIVE AWAY BY DEFAULT.
+   .stage-body is a padded scroller and .deck-view is a block, so `height:100%`
+   on the console resolved against an auto-height parent and simply grew to fit
+   its content: measured at 3549px inside a 908px stage, which is the "extended
+   for no reason" the old cockpit was accused of and this rewrite inherited on
+   its first run. The chain has to be unbroken — scroller, view, island
+   container, console — and the stage padding has to go with it, or the last
+   72px lands in overflow. */
+/* ONE LIST, because every screen that owns its own scrolling needs the same
+   unbroken chain and each one that forgets it grows past the stage instead.
+   .stage-body is a padded scroller and .deck-view is a block, so `height:100%`
+   inside resolves against an auto-height parent and simply grows to content —
+   measured at 3549px inside a 908px stage the first time the console shipped.
+   The padding has to go with it or the last 72px lands in overflow.
+
+   A deck is on this list when it manages its own panes (a transcript that
+   scrolls under a pinned composer, a board beside a graph). A deck that is just
+   a long page — assets, playtests, world — is NOT, and should keep the stage's
+   padding and the stage's scrollbar. */
+body:has(.bg4) .stage-body:has(#view-agents.active),
+body:has(.bg4) .stage-body:has(#view-brainstorm.active),
+body:has(.bg4) .stage-body:has(#view-seats.active) { padding: 0; overflow: hidden }
+body:has(.bg4) #view-agents.active,
+body:has(.bg4) #view-brainstorm.active,
+body:has(.bg4) #view-seats.active { height: 100%; min-height: 0 }
+body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
+  height: 100%; min-height: 0;
+}
+
+/* IDLE IS ONE COLUMN, LIVE IS TWO — the same element, re-tracked. The board
+   only exists once there is work in it, so an idle console does not reserve
+   320px for an empty pane. */
+.bg4-console { display: grid; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0 }
+.bg4-console.live { grid-template-columns: minmax(0, 1fr) 340px }
+@media (max-width: 1180px) { .bg4-console.live { grid-template-columns: minmax(0, 1fr) } }
+.bg4-console-main { display: flex; flex-direction: column; min-width: 0; min-height: 0 }
+.bg4-transcript { flex: 1; min-height: 0; padding: 4px 4px 12px }
+.bg4-console-side {
+  border-left: 1px solid var(--line); min-height: 0; overflow-y: auto;
+  background: var(--solid-1);
+}
+@media (max-width: 1180px) { .bg4-console-side { display: none } }
+.bg4-sidecard { cursor: pointer; background: var(--solid-2) }
+.bg4-sidecard:hover { border-color: var(--line-strong) }
+.bg4-sidecard .dot { width: 6px; height: 6px; border-radius: 50%; flex: none }
+
+.bg4-composer {
+  flex: none; border-top: 1px solid var(--line); padding: 10px 12px;
+  background: var(--solid-1);
+}
+.bg4-bsfoot {
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
+}
+
+.bg4-turn { margin-bottom: 10px }
+.bg4-msg { padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; max-width: 900px }
+.bg4-msg .who {
+  display: flex; align-items: center;
+  font: 500 10px var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--text-3); margin-bottom: 5px;
+}
+.bg4-msg .who .steps, .bg4-msg .who .cost { margin-left: 10px; letter-spacing: .08em }
+.bg4-msg .txt {
+  font: 400 12px/1.55 var(--sans); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.bg4-msg.you { background: rgba(255, 255, 255, .04) }
+.bg4-msg.dir { border: 1px solid var(--line); background: var(--solid-2) }
+.bg4-msg.dir.live { border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
+.bg4-msg.dir.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent) }
+.bg4-msg.dir.live .txt, .bg4-msg.dir .txt.thinking { color: var(--text-2) }
+.bg4-spoiler { font: 500 10px var(--mono) }
+
+/* ── 5a · the idle console ────────────────────────────────────────────────
+   The composer IS the page. No panes, no board, no toolbar: there is nothing
+   to look at yet, so nothing is drawn around it except what helps you start. */
+.bg4-idle { display: flex; flex-direction: column; min-height: 0; height: 100% }
+.bg4-idle-inner {
+  flex: 1; min-height: 0; overflow-y: auto;
+  width: min(760px, 100%); margin: 0 auto; padding: 8vh 24px 24px;
+}
+/* ONE BOX, NOT A BOX INSIDE A BOX.
+   The first version framed the card AND let Mantine draw the textarea's own
+   border inside it, so the composer read as a form field posted onto a panel —
+   two rectangles, two radii, a visible seam between the place you type and the
+   controls that send it. It is one surface now: the field is transparent and
+   unbordered, the controls sit on the same ground, and the only edge in the
+   whole thing is the card's.
+
+   Big radius on purpose. 8px is a form control; 16 is an object you address.
+   The padding is generous for the same reason — a chat box that hugs its text
+   reads as a search bar. */
+/* The hero heading and the composer, with nothing perched on it — the mascot
+   that used to overhang this card is gone, and so is the 46px of margin that
+   was reserving room for its head. */
+.bg4-hero { position: relative }
+
+.bg4-composer-hero {
+  border: 1px solid var(--line); border-radius: 16px;
+  background: var(--solid-2); padding: 14px 16px 10px;
+  transition: border-color var(--dur, .16s) var(--ease, ease),
+              box-shadow var(--dur, .16s) var(--ease, ease);
+}
+.bg4-composer-hero:hover { border-color: var(--line-strong) }
+/* The focus state is the border warming, not a ring landing on top of it. A
+   2px accent outline around a 16px card is the thing that makes a soft object
+   look like a validated input. */
+.bg4-composer-hero:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.bg4-composer-hero .mantine-Textarea-input,
+.bg4-composer .mantine-Textarea-input {
+  background: transparent; border: 0; padding: 0; min-height: 0;
+  font: 400 14px/1.6 var(--sans); color: var(--text);
+}
+.bg4-composer-hero .mantine-Textarea-input::placeholder,
+.bg4-composer .mantine-Textarea-input::placeholder { color: var(--text-3) }
+.bg4-composer-bar { margin-top: 12px }
+
+/* TAGGING A RUNNING AGENT FROM THE COMPOSER.
+   Quiet until it is aimed, then loud — because an aimed box does something
+   different from an unaimed one (it interrupts a run instead of filing work)
+   and that has to be visible without reading the placeholder. */
+.bg4-tag {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
+  color: var(--text-2); padding: 3px 10px; font: 500 10px var(--mono);
+  white-space: nowrap;
+}
+.bg4-tag:hover { color: var(--text); border-color: var(--text-3) }
+.bg4-tag.on {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+/* The second line of a menu entry: which run it is, under whose seat. */
+.bg4-tag-sub {
+  display: block; margin-top: 2px;
+  font: 500 9px/1.4 var(--mono); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The banner over the box while it is aimed. Says who hears this and what it
+   does to them; the × puts you back in front of the director. */
+.bg4-aimed {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--accent-line); background: var(--accent-soft);
+  font: 400 11px/1.45 var(--sans); color: var(--text-2);
+}
+.bg4-aimed b { font: 500 10px var(--mono); color: var(--accent) }
+.bg4-aimed span { flex: 1; min-width: 0 }
+.bg4-aimed .x {
+  flex: none; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-3); font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.bg4-aimed .x:hover { color: var(--text) }
+
+/* The mode pills are chrome, not a control panel: no track, no border, and
+   only the chosen one is filled — the same quiet a Chat/Cowork pair has. */
+.bg4-modes.mantine-SegmentedControl-root { background: transparent; padding: 0; gap: 2px }
+.bg4-modes .mantine-SegmentedControl-indicator {
+  background: var(--surface-3); box-shadow: none;
+}
+.bg4-modes .mantine-SegmentedControl-label {
+  color: var(--text-3); padding: 4px 10px; border-radius: 8px;
+}
+.bg4-modes .mantine-SegmentedControl-label[data-active] { color: var(--text) }
+.bg4-modes .mantine-SegmentedControl-control + .mantine-SegmentedControl-control::before {
+  display: none;                    /* the divider between pills */
+}
+.bg4-sendbtn { border-radius: 10px }
+.bg4-suggest { font-weight: 400 }
+.bg4-rule .line { flex: 1; height: 1px; background: var(--line) }
+
+.bg4-closed {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  border: 0; border-bottom: 1px solid var(--line); background: transparent;
+  padding: 9px 2px; cursor: pointer;
+}
+.bg4-closed:hover { background: rgba(255, 255, 255, .02) }
+.bg4-closed .tile {
+  display: grid; place-items: center; width: 26px; height: 26px; flex: none;
+  border-radius: 5px;
+}
+.bg4-closed .ttl {
+  flex: 1; min-width: 0; font: 400 12px var(--sans);
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-closed .st {
+  font: 500 10px var(--mono); letter-spacing: .14em;
+  text-transform: uppercase; color: var(--good, #4ec98f);
+}
+.bg4-closed .st.bad { color: var(--bad) }
+.bg4-closed .age {
+  width: 34px; text-align: right; font: 500 10px var(--mono);
+  color: var(--text-3);
+}
+.bg4-idle-foot {
+  flex: none; padding: 10px 16px; border-top: 1px solid var(--line);
+  background: var(--solid-1); color: var(--text-3);
+}
+
+/* ── 5b · the live console ───────────────────────────────────────────────── */
+.bg4-side-head { border-bottom: 1px solid var(--line); flex: none }
+.bg4-side-tabs { flex: none; padding-top: 8px }
+.bg4-side-body { flex: 1; min-height: 0 }
+.bg4-side-note {
+  flex: none; padding: 8px 12px; border-top: 1px dashed var(--line);
+  color: var(--text-3);
+}
+.bg4-console-side { display: flex; flex-direction: column }
+.bg4-sidecard .tile {
+  display: grid; place-items: center; width: 24px; height: 24px; flex: none;
+  border-radius: 5px;
+}
+.bg4-lineage { padding-left: 10px; border-left: 1px solid var(--line) }
+.bg4-lineage-row .dot { width: 6px; height: 6px; border-radius: 50%; flex: none }
+.bg4-msg .foot {
+  margin-top: 6px; font: 500 10px var(--mono); color: var(--text-3);
+}
+
+/* ═══ MANTINE, WEARING THIS APP'S TOKENS ═══════════════════════════════════
+   ONE BLOCK, AT DOUBLED SPECIFICITY, AND BOTH HALVES OF THAT MATTER.
+
+   This used to be a <style> rendered inside Themed(), i.e. once per island.
+   Every MantineProvider also injects its OWN variables block, unlayered, at
+   `:root[data-mantine-color-scheme="dark"]` — so with seven islands there were
+   fourteen competing blocks at identical specificity and the winner was
+   whichever mounted last. Identical code produced a themed dropdown in one
+   session and a white one on a black page in another. `:root:root` outranks
+   every one of them, and being in a stylesheet rather than a component means it
+   is there before the first island mounts.
+
+   THE DARK SCALE ITSELF, not only the semantic aliases on top of it: Mantine
+   resolves --mantine-color-default and friends FROM the scale, so overriding
+   only the aliases left inputs and panels on Mantine's own #2e2e2e while the
+   buttons beside them sat on this app's ground.
+
+   TYPOGRAPHY IS PAGE-WIDE. Mantine's stylesheet styles the body element, and
+   the mantine layer outranks the base layer that used to own that rule — left
+   at its default the WHOLE dashboard, every classic view included, fell back to
+   Times New Roman at 16px.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root:root,
+:root:root[data-mantine-color-scheme="dark"],
+:root:root[data-mantine-color-scheme="light"] {
+  --mantine-color-dark-0: var(--text);
+  --mantine-color-dark-1: var(--text-2);
+  --mantine-color-dark-2: var(--text-2);
+  --mantine-color-dark-3: var(--text-3);
+  --mantine-color-dark-4: var(--line);
+  --mantine-color-dark-5: var(--solid-2);
+  --mantine-color-dark-6: var(--solid-1);
+  --mantine-color-dark-7: var(--bg);
+  --mantine-color-dark-8: var(--bg);
+  --mantine-color-dark-9: var(--bg);
+  /* Light-scheme surfaces come off --mantine-color-white, not the body colour,
+     so a dropdown on the light ground rendered pure #fff against panels that
+     are #fbfaf8 — a white card floating on off-white paper. */
+  --mantine-color-white: var(--solid-1);
+  --mantine-color-black: var(--text);
+  --mantine-color-body: var(--bg);
+  --mantine-color-text: var(--text);
+  --mantine-color-dimmed: var(--text-3);
+  --mantine-color-bright: var(--text);
+  --mantine-color-default: var(--solid-1);
+  --mantine-color-default-hover: var(--solid-2);
+  --mantine-color-default-color: var(--text);
+  --mantine-color-default-border: var(--line);
+  --mantine-color-placeholder: var(--text-3);
+  --mantine-color-anchor: var(--accent);
+  --mantine-color-error: var(--bad);
+  --mantine-primary-color-filled: var(--accent);
+  --mantine-primary-color-filled-hover: var(--accent-hover);
+  --mantine-primary-color-light: var(--accent-soft);
+  --mantine-primary-color-light-hover: var(--accent-soft);
+  --mantine-primary-color-light-color: var(--accent);
+  --mantine-primary-color-contrast: var(--accent-fg);
+  --mantine-font-family: var(--sans);
+  --mantine-font-family-monospace: var(--mono);
+  --mantine-font-family-headings: var(--sans);
+  --mantine-font-size-xs: var(--fs-xs);
+  --mantine-font-size-sm: var(--fs-sm);
+  --mantine-font-size-md: var(--fs-base);
+  --mantine-font-size-lg: var(--fs-lg);
+  --mantine-font-size-xl: var(--fs-xl);
+  --mantine-line-height: var(--lh);
+}
+
+/* MANTINE'S TOOLTIP IS INVERTED BY DESIGN AND THAT BREAKS ON A THEMED APP.
+   On the dark scheme it paints itself `--mantine-color-gray-2` (a LIGHT box)
+   and writes in `--mantine-color-black` — which this app has redefined to mean
+   "the text colour", i.e. near-white. Result: a white box with white text in
+   it. Every tooltip in the room read as a blank rectangle, which is worse than
+   having none, because a badge with an empty pop-out looks broken rather than
+   undocumented.
+
+   So the tooltip is painted from the app's own surface tokens like every other
+   floating surface, and the arrow with it — an unstyled arrow leaves a light
+   triangle hanging off a dark box. */
+:root:root .mantine-Tooltip-tooltip {
+  background: var(--solid-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  font: 400 11px/1.55 var(--sans);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .38);
+}
+:root:root .mantine-Tooltip-arrow {
+  background: var(--solid-2); border: 1px solid var(--line);
+}
+
+/* ── orbit ────────────────────────────────────────────────────────────────
+   The ONE ground that changes this shell's material rather than its colours.
+   It lives here and not in app.css's `@layer theme` for a mechanical reason:
+   this file is unlayered, so every rule above beats every layer in app.css —
+   and a layered `:root[data-theme="orbit"] .bg4-rail` would lose to the plain
+   `.bg4-rail` twenty lines up, however specific it is. A ground-conditional
+   rule has to sit next to the rule it conditions.
+
+   FROSTED, NOT TINTED. The chrome painted itself with the opaque triplet, so
+   on a vanta ground it was four flat black rectangles. Glass plus the theme's
+   wide blur makes them panes: what is behind them scatters through, which is
+   the only reason a dark surface reads as glass rather than as paint.
+
+   ROUNDED, because the corner is where the eye reads thickness — a square
+   corner cannot look like glass at any blur. The rail and the nav are cut by
+   the viewport rather than floating, so they round only the edge that faces
+   the stage; the inspector and the cards round properly. */
+:root[data-theme="orbit"] :is(.bg4-rail, .bg4-nav, .bg4-head) {
+  background: var(--glass-1);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+:root[data-theme="orbit"] :is(.bg4-insp, .bg4-console-side) {
+  background: var(--glass-2);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+:root[data-theme="orbit"] .bg4-composer-hero {
+  /* No border-radius here — the composer's own 16px is the shape on every
+     ground, and repeating it per theme is how one of them ends up at 12. */
+  background: var(--glass-2);
+  backdrop-filter: var(--glass-filter);
+  -webkit-backdrop-filter: var(--glass-filter);
+}
+:root[data-theme="orbit"] .bg4-sidecard { border-radius: 9px }
+:root[data-theme="orbit"] .bg4-insp { border-radius: 14px 0 0 14px }
+
+/* The bloom a lit bevel throws, and the two-part sheen that turns a flat pane
+   into a curved one. Both are shadows: no new layer, and neither touches the
+   fill, so the surfaces stay black. */
+:root[data-theme="orbit"] :is(
+    .bg4-composer-hero, .bg4-sidecard, .bg4-console-side, .bg4-insp) {
+  box-shadow: var(--iris-bloom), var(--sheen);
+}
+
+/* ── settings: the group rail ─────────────────────────────────────────────
+   ONE GROUP AT A TIME. All ten groups at once is a 9,000px page, and the three
+   Generator panels are whole classic UIs — ~2,500px between them — so rendering
+   them first pushed the first real setting three screens down. The reference
+   has a rail for this reason. Searching still spans every group: a filter that
+   only looks in the group you happen to be standing in is a filter that lies. */
+.bg4-settings-split {
+  flex: 1; min-height: 0; display: grid; grid-template-columns: 190px minmax(0, 1fr);
+}
+.bg4-settings-rail {
+  display: flex; flex-direction: column; gap: 1px; min-height: 0; overflow-y: auto;
+  padding: 10px 8px; border-right: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-settings-rail button {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  border: 0; border-radius: 5px; background: transparent; cursor: pointer;
+  padding: 6px 9px; color: var(--text-2);
+  font: 400 12px var(--sans);
+}
+.bg4-settings-rail button:hover { background: rgba(255, 255, 255, .03); color: var(--text) }
+.bg4-settings-rail button.on { background: rgba(255, 255, 255, .06); color: var(--text) }
+.bg4-settings-rail .l { flex: 1; min-width: 0 }
+.bg4-settings-rail .n {
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+
+/* THE RAIL'S TABS ARE ONE ROW, SCROLLED — five pills do not fit 330px and
+   Mantine wraps them into two ragged lines by default. Scrolling keeps every
+   tab reachable; a "more" menu would hide one of five. */
+.bg4-side-tabs .mantine-Tabs-list { flex-wrap: nowrap }
+.bg4-side-tabs [role="tablist"] {
+  flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+}
+.bg4-side-tabs [role="tablist"]::-webkit-scrollbar { display: none }
+.bg4-side-tabs [role="tab"] { white-space: nowrap; flex: none }
+
+/* The console with a live board and an empty conversation. Not an error and
+   not a void — a sentence saying which of the two it is. */
+.bg4-console-quiet {
+  display: flex; flex-direction: column; gap: 7px;
+  max-width: 62ch; margin: 40px auto; padding: 18px 20px;
+  border: 1px dashed var(--line); border-radius: 8px;
+}
+.bg4-console-quiet b { font: 450 13px var(--sans); color: var(--text-2) }
+.bg4-console-quiet span { font: 400 12px/1.7 var(--sans); color: var(--text-3) }
+
+/* The delegation graph. Scrolls in both axes — a fan-out is whatever shape it
+   is, and squeezing it into the rail's width would make every label unreadable
+   to avoid one scrollbar. */
+.bg4-graph { flex: 1; min-height: 0; overflow: auto; padding: 10px }
+.bg4-graph .nd { cursor: pointer }
+.bg4-graph .nd:hover rect:first-of-type { fill: var(--surface-3) }
+.bg4-graph text { font-family: var(--mono); pointer-events: none }
+.bg4-graph .id { font-size: 9px; fill: var(--text-3) }
+.bg4-graph .ti { font-size: 10px; fill: var(--text) }
+.bg4-graph .st { font-size: 9px }
+
+/* ── the adjustable board rail ───────────────────────────────────────────── */
+.bg4-console.live { grid-template-columns: minmax(0, 1fr) 6px var(--rail, 340px) }
+.bg4-railgrip {
+  cursor: col-resize; background: transparent; position: relative;
+  border-left: 1px solid var(--line); touch-action: none;
+}
+.bg4-railgrip:hover, .bg4-console.dragging .bg4-railgrip {
+  background: var(--accent); border-left-color: var(--accent);
+}
+/* A 6px column is the right hit target and the wrong visual weight, so the
+   line is the border and the grip is the padding around it. */
+.bg4-console.dragging { user-select: none; cursor: col-resize }
+
+/* The graph pane: canvas plus its own detail rail, which agents_graph.js
+   opens by adding .open to it. */
+.bg4-graphwrap { flex: 1; min-height: 0; display: flex; position: relative }
+.bg4-graphwrap .cg-canvas { flex: 1; min-width: 0; min-height: 0; position: relative }
+
+/* THE NODE INSPECTOR IS A DRAWER, and it had no styles at all in this shell.
+   agents_graph.js opens the same element in two consoles: the classic one gives
+   it id="ck-detail", which app.css dresses as an absolutely-positioned drawer,
+   and this one gives it class="cg-detail", which nothing styled. So clicking a
+   node dropped an unstyled block into the flex row: full width, in normal flow,
+   shoving the canvas aside and painting over the tabs above it.
+   The contents are already styled — the .cg-* rules in app.css are in a layer,
+   not scoped to the old console — so only the drawer chrome was missing. */
+.bg4-graphwrap .cg-detail {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 6;
+  width: min(320px, 86%);
+  background: var(--surface-1); border-left: 1px solid var(--line);
+  padding: 14px; overflow-y: auto;
+  /* Parked off-canvas rather than hidden, so it slides the way the classic
+     one does and so an empty rail cannot swallow clicks meant for the graph. */
+  transform: translateX(102%);
+  transition: transform var(--dur, .16s) var(--ease, ease);
+}
+.bg4-graphwrap .cg-detail.open { transform: none }
+
+/* ── drilling into a step ────────────────────────────────────────────────
+   A tool result is one line of JSON. The collapsed row shows the first 160
+   characters — which for a failure is the opening brace and `"ok": false`,
+   with the reason starting exactly where the slice ends. So the row opens. */
+.bg4-steprow {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  border: 0; background: transparent; padding: 0; cursor: pointer;
+  color: inherit; text-align: left;
+}
+.bg4-steprow:disabled { cursor: default }
+.bg4-steprow:hover:not(:disabled) .lab { color: var(--accent) }
+.bg4-steprow .err {
+  font: 500 9px var(--mono); letter-spacing: .12em; text-transform: uppercase;
+  color: var(--bad); border: 1px solid var(--bad-line); border-radius: 3px;
+  padding: 1px 5px;
+}
+/* A failed step reads as failed from the gutter, without opening it — a run
+   that continued past a refusal is the case this exists to surface. */
+.bg4-step.bad .dot { color: var(--bad); border-color: var(--bad-line) }
+
+.bg4-stepfull { position: relative; margin-top: 6px }
+.bg4-stepfull pre {
+  margin: 0; max-height: 340px; overflow: auto;
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--solid-1); color: var(--text-2);
+  font: 400 10px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.bg4-copy {
+  position: absolute; top: 5px; right: 5px;
+  border: 1px solid var(--line); border-radius: 3px; background: var(--solid-2);
+  color: var(--text-3); font: 500 9px var(--mono); padding: 2px 7px;
+  cursor: pointer; text-transform: uppercase; letter-spacing: .1em;
+}
+.bg4-copy:hover { border-color: var(--accent); color: var(--accent) }
+
+/* The graph's own toolbar: the filter, and a fit. Floats over the canvas —
+   a canvas that scrolls should not lose its controls off the top. */
+.bg4-graphbar {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px; border: 1px solid var(--line); border-radius: 5px;
+  background: color-mix(in srgb, var(--solid-1) 88%, transparent);
+}
+.bg4-graphbar .sp { width: 6px }
+.bg4-graphbar button {
+  border: 0; background: transparent; color: var(--text-3); cursor: pointer;
+  font: 500 9px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 3px;
+}
+.bg4-graphbar button:hover { color: var(--text-2) }
+.bg4-graphbar button.on { background: var(--accent-soft); color: var(--accent) }
+
+/* ── the stream panel ────────────────────────────────────────────────────
+   The redaction switch and the six OBS overlays, which were served and linked
+   from nowhere. */
+.bg4-stream { padding: 10px; display: flex; flex-direction: column; gap: 8px }
+
+/* The switch reads as a warning while it is OFF, because off is the state with
+   a cost — full paths, identity and keys in every response. */
+.bg4-stream-sw {
+  display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px;
+  border: 1px solid var(--warn-line); border-radius: 7px;
+  background: var(--warn-soft); color: var(--warn);
+}
+.bg4-stream-sw.on {
+  border-color: var(--good-line); background: var(--good-soft); color: var(--good);
+}
+.bg4-stream-sw .b { flex: 1; min-width: 0 }
+.bg4-stream-sw .t { font: 450 12px var(--sans) }
+.bg4-stream-sw .s {
+  margin-top: 3px; font: 400 11px/1.5 var(--sans); color: var(--text-2);
+}
+.bg4-stream-n {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-stream-n .dim { color: var(--text-dim) }
+.bg4-stream-env { font: 400 10px/1.6 var(--mono); color: var(--text-3) }
+.bg4-stream-env code { color: var(--text-2) }
+.bg4-stream-h {
+  margin-top: 6px; font: 500 9px var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-overlay {
+  display: flex; align-items: center; gap: 8px; padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--solid-2);
+}
+.bg4-overlay .b { flex: 1; min-width: 0 }
+.bg4-overlay .t { font: 450 12px var(--sans); color: var(--text) }
+.bg4-overlay .t .r {
+  margin-left: 7px; font: 500 9px var(--mono); color: var(--text-3);
+}
+.bg4-overlay .s { margin-top: 2px; font: 400 11px/1.5 var(--sans); color: var(--text-3) }
+.bg4-stream-warn {
+  display: flex; align-items: flex-start; gap: 8px; padding: 9px 11px;
+  border: 1px solid var(--warn-line); border-radius: 6px;
+  background: var(--warn-soft); font: 400 11px/1.55 var(--sans); color: var(--text-2);
+}
+.bg4-chathost { height: 100%; min-height: 0; overflow: auto }

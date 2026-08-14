@@ -3,7 +3,7 @@
     python packaging/make_icon.py
 
 This rasterises the ARTWORK rather than reproducing it. An earlier version
-redrew the mark from the geometry in bgate_ui/static/icons.js with colours
+redrew the mark from the geometry in frontend/public/icons.js with colours
 eyeballed off a screenshot; it looked right and was still a guess (the blue was
 #1a0dc2 against the real #1800ad). Parsing the file means the icon is derived
 from the logo, and re-running after a logo edit picks the change up.

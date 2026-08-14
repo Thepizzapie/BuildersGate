@@ -306,7 +306,39 @@ async def _coi_headers(request, call_next):
     response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
     return response
 
-_STATIC = Path(__file__).with_name("static")
+def _static_dir() -> Path:
+    """Where the dashboard's files are, populating it from source if they are not.
+
+    `bgate_ui/static/` is GENERATED: `npm run build` copies `frontend/public/`
+    into it and emits the React bundle under `dist/`. Only `dist/` is committed,
+    because it is the one artefact that needs node and tracking the rest would
+    store every module twice.
+
+    WHICH LEAVES THE FRESH CLONE, and it is the case the README promises works:
+    `pip install -e .` with no toolchain, then `bgate serve`. That checkout has
+    `dist/` and no `index.html`, so the dashboard would start and 404 its own
+    page. Copying is not a build — the classic modules are plain files and the
+    bundle is already committed — so the missing half is filled in here, once,
+    from the source tree next door.
+
+    A wheel, an exe, or a built checkout already has everything and never
+    reaches the copy.
+    """
+    built = Path(__file__).with_name("static")
+    if (built / "index.html").is_file():
+        return built
+    source = Path(__file__).resolve().parents[1] / "frontend" / "public"
+    if not (source / "index.html").is_file():
+        # Neither present: let StaticFiles report the missing directory rather
+        # than inventing an empty one that 404s every asset with no explanation.
+        return built
+    import shutil
+    built.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, built, dirs_exist_ok=True)
+    return built
+
+
+_STATIC = _static_dir()
 
 # Only ever serve images, and only from inside the project. The preview endpoint
 # takes root-relative paths; anything that escapes the root is refused.
@@ -570,8 +602,41 @@ def health() -> dict:
     """
     root = _root_or_none()
     return {"ok": True, "service": "builders-gate",
+            "version": _version(),
+            "source": _source_root(),
             "root": str(root) if root else "",
             "project": Path(root).name if root else ""}
+
+
+def _version() -> str:
+    """The version of the CODE THIS PROCESS IMPORTED, not of any install record.
+
+    importlib.metadata reports whatever a wheel or an editable install was BUILT
+    at, which for `pip install -e .` is frozen at install time and goes stale the
+    moment the checkout moves — a tree at 0.1.40 was reporting 0.1.0 because the
+    metadata predated forty releases. pyproject.toml beside the imported package
+    is the version of the code actually running, so it is read first and the
+    metadata is only the fallback for a real wheel that has no pyproject.
+    """
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        for line in pyproject.read_text(encoding="utf-8").splitlines():
+            if line.startswith("version"):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    try:
+        from importlib.metadata import version as _md_version
+        return _md_version("builders-gate")
+    except Exception:
+        return "unknown"
+
+
+def _source_root() -> str:
+    """Where the running code was imported from. An editable install and a wheel
+    answer /api/health identically otherwise, and "which tree is this serving"
+    is the question a stale dashboard makes people ask."""
+    return str(Path(__file__).resolve().parent.parent)
 
 
 def _inject_token(html: str) -> str:
@@ -1044,6 +1109,16 @@ def queue_stop(item_id: int) -> dict:
 def queue_steer(item_id: int, payload: dict) -> dict:
     """Inject a live course-correction into a running agent (no restart)."""
     return _dispatch.steer(str(_root()), item_id, payload.get("text", ""))
+
+
+@app.post("/api/queue/steer-all")
+def queue_steer_all(payload: dict) -> dict:
+    """Say one thing to every agent running right now.
+
+    Reports per item, refusals included: a broadcast that half landed and said
+    "ok" is worse than one that failed, because the operator stops watching.
+    """
+    return _dispatch.steer_all(str(_root()), payload.get("text", ""))
 
 
 @app.post("/api/queue/import-orbit")

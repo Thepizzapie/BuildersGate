@@ -23,12 +23,6 @@ def user_dir() -> Path:
     return Path(override).expanduser() if override else Path.home() / ".bgate"
 
 
-# Machine-wide registry of every project ever init'ed/selected, so a session
-# whose cwd is NOWHERE NEAR the project (e.g. an MCP server spawned from a
-# different repo) can still find and select it by name. Best-effort JSON —
-# losing it only costs rediscovery, never data.
-REGISTRY_PATH = Path.home() / ".bgate" / "projects.json"  # legacy alias
-
 # Which project `bgate serve` / an MCP session should assume when nothing else
 # says. Separate file from the registry on purpose: the registry is a fact
 # (these projects exist), the pointer is a preference (this is the one I mean),
@@ -37,6 +31,15 @@ ACTIVE_FILENAME = "active.json"
 
 
 def _registry_path() -> Path:
+    """Machine-wide registry of every project ever init'ed/selected, so a session
+    whose cwd is NOWHERE NEAR the project (e.g. an MCP server spawned from a
+    different repo) can still find and select it by name. Best-effort JSON —
+    losing it only costs rediscovery, never data.
+
+    Resolved through :func:`user_dir` rather than ``Path.home()`` so BGATE_HOME
+    moves the registry with everything else — a module-level constant that
+    baked in the home directory used to sit here and silently ignored it.
+    """
     return user_dir() / "projects.json"
 
 

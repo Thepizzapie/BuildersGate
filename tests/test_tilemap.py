@@ -288,7 +288,7 @@ def test_the_client_projection_matches_the_server_one():
     tiles land somewhere the bounds do not cover and framing goes wrong."""
     from pathlib import Path
 
-    js = (Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+    js = (Path(__file__).resolve().parents[1] / "frontend" / "public"
           / "sceneview.js").read_text(encoding="utf-8")
     assert "function cellCenter(" in js
     # The half-cell term has to be on BOTH sides or the tiles land somewhere the

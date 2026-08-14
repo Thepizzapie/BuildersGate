@@ -1,0 +1,203 @@
+/* 9a · the narrative room's right column — canon instead of pads.
+ *
+ * It occupies the same 320px track 11a gives the roster, so the room's grid
+ * does not change when it swaps this in; only the subject of the column does.
+ * Density and type are the frame's (9.5–11px, Plex Mono for the labels and
+ * every machine-written string, Plex Sans for prose). Every colour is a token:
+ * the reference is drawn on #0e0d0c with #2a2926 rules, and hardcoding those
+ * would ship a black panel on three of this app's four themes.
+ *
+ * The verdict block and its chip live here too rather than in room.css, because
+ * <CanonVerdict> is meant to be rendered on a PLAN ROW in the room — one file
+ * that imports it, one stylesheet that comes with it, and no way to get the
+ * component without the styles that make it legible.
+ */
+
+.bg4-canon {
+  display: flex; flex-direction: column; min-height: 0; height: 100%;
+  border-left: 1px solid var(--line); background: var(--solid-1);
+  overflow-y: auto;
+}
+
+/* Same head as the room's pads, deliberately: this column is a swap, not a
+   different kind of furniture, and matching the label rhythm is what keeps it
+   reading as the same room. */
+.bg4-canon-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 11px 12px 9px;
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.bg4-canon-head span:first-of-type { flex: 1 }
+.bg4-canon-head .sub {
+  flex: none; letter-spacing: .06em; text-transform: none; color: var(--text-3);
+}
+.bg4-canon-head.bordered { border-top: 1px solid var(--line); margin-top: 4px }
+
+.bg4-canon-why {
+  flex: none; margin: 0; padding: 0 12px 10px;
+  font: 400 10px/1.55 var(--sans); color: var(--text-3);
+}
+
+/* ---- the locked band --------------------------------------------------- */
+
+/* Pinned, not scrolled. These are the facts a proposal may not contradict at
+   all, and a constraint you have to scroll to find is a constraint that gets
+   contradicted. Capped so a project with forty locked facts cannot eat the
+   column outright — it scrolls within its own band instead. */
+.bg4-canon-locked {
+  flex: none; max-height: 168px; overflow-y: auto; padding: 0 12px 10px;
+}
+.bg4-canon-locked .row {
+  display: flex; gap: 8px; padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.bg4-canon-locked .row:last-child { border-bottom: 0 }
+.bg4-canon-locked .row > i { color: var(--accent); margin-top: 2px; flex: none }
+.bg4-canon-locked .w { min-width: 0 }
+.bg4-canon-locked .s {
+  display: block; font: 400 11px/1.5 var(--sans);
+  color: var(--text);
+}
+.bg4-canon-locked .e {
+  display: block; margin-top: 3px;
+  font: 500 9px var(--mono); color: var(--text-3);
+}
+
+/* ---- the entity list --------------------------------------------------- */
+
+.bg4-canon-scroll { flex: 1 1 auto; min-height: 90px; padding: 0 6px }
+
+.bg4-canonent { border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent) }
+.bg4-canonent:last-child { border-bottom: 0 }
+.bg4-canonent .hd {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 7px 6px; border: 0; background: transparent; cursor: pointer;
+  text-align: left; color: var(--text-2);
+}
+.bg4-canonent .hd:hover { background: rgba(255, 255, 255, .03); color: var(--text) }
+.bg4-canonent.on .hd { color: var(--text) }
+.bg4-canonent .dot { width: 6px; height: 6px; border-radius: 50%; flex: none }
+.bg4-canonent .nm {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font: 400 11px var(--sans);
+}
+.bg4-canonent .kd {
+  flex: none; font: 500 9px var(--mono);
+  letter-spacing: .12em; text-transform: uppercase; color: var(--text-3);
+}
+.bg4-canonent .lk { color: var(--accent); flex: none }
+.bg4-canonent .n {
+  flex: none; min-width: 15px; text-align: right;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-canonent .bd { padding: 2px 8px 10px 20px }
+.bg4-canonent .sm {
+  margin: 0 0 7px; font: 400 10px/1.55 var(--sans);
+  color: var(--text-2);
+}
+.bg4-canonent .ft {
+  display: flex; gap: 7px; padding: 4px 0;
+  font: 400 10px/1.5 var(--sans); color: var(--text-2);
+}
+.bg4-canonent .ft > i { color: var(--text-3); margin-top: 2px; flex: none }
+/* A locked fact reads differently everywhere it appears, because it is the only
+   kind whose contradiction is a refusal rather than a note. */
+.bg4-canonent .ft.lock { color: var(--text) }
+.bg4-canonent .ft.lock > i { color: var(--accent) }
+
+/* ---- the probe --------------------------------------------------------- */
+
+.bg4-canon-probe {
+  flex: none; padding: 0 12px 4px;
+}
+.bg4-canon-probe textarea {
+  font: 400 11px/1.55 var(--sans) !important;
+  color: var(--text);
+}
+
+/* ---- the verdict ------------------------------------------------------- */
+
+.bg4-canonverdict {
+  flex: none; margin: 6px 12px 10px; padding: 9px 10px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--solid-2);
+}
+.bg4-canonverdict.idle {
+  display: flex; align-items: center; gap: 8px; background: transparent;
+  border-style: dashed;
+  font: 500 10px/1.5 var(--mono); color: var(--text-3);
+}
+.bg4-canonverdict.review { border-color: color-mix(in srgb, var(--warn, #ffbb45) 45%, var(--line)) }
+.bg4-canonverdict.conflict {
+  border-color: color-mix(in srgb, var(--bad, #ff7a6b) 55%, var(--line));
+  background: color-mix(in srgb, var(--bad, #ff7a6b) 7%, transparent);
+}
+/* "did not answer" is neither a pass nor a refusal, so it gets neither colour —
+   a grey box that says nothing is exactly the claim being made. */
+.bg4-canonverdict.unknown { border-style: dashed; background: transparent }
+.bg4-canonverdict .h { display: flex; align-items: center; gap: 8px }
+.bg4-canonverdict .h b {
+  font: 500 10px var(--mono); color: var(--text);
+}
+.bg4-canonverdict .h .sp { flex: 1 }
+.bg4-canonverdict .h .m { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-canonverdict.ok .h > i { color: var(--good, #4ec98f) }
+.bg4-canonverdict.review .h > i { color: var(--warn, #ffbb45) }
+.bg4-canonverdict.conflict .h > i,
+.bg4-canonverdict.unknown .h > i { color: var(--bad, #ff7a6b) }
+.bg4-canonverdict > .m {
+  margin: 6px 0 0; font: 400 10px/1.55 var(--sans);
+  color: var(--text-3);
+}
+.bg4-canonverdict .ment {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+  font: 500 10px var(--mono);
+}
+
+.bg4-canonflag {
+  display: flex; gap: 8px; margin-top: 7px; padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+.bg4-canonflag .c {
+  flex: none; font: 500 9px var(--mono);
+  letter-spacing: .06em; color: var(--warn, #ffbb45);
+}
+.bg4-canonflag.conflict .c { color: var(--bad, #ff7a6b) }
+.bg4-canonflag .t {
+  min-width: 0; display: flex; flex-direction: column; gap: 3px;
+  font: 400 10px/1.5 var(--sans); color: var(--text-2);
+}
+/* Both sides of a polarity or numeric flag, quoted. Which of the two is wrong
+   is the seat's call and it cannot be made from the message alone. */
+.bg4-canonflag .q {
+  font: 500 10px/1.45 var(--mono); color: var(--text-3);
+  border-left: 2px solid var(--line); padding-left: 7px;
+}
+.bg4-canonflag .q.canon { border-left-color: var(--accent) }
+
+/* The plan-row form. Sized to sit inline in a row of 11 without changing the
+   row's height. */
+.bg4-canonchip {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line);
+  font: 500 9px var(--mono); letter-spacing: .06em;
+  color: var(--text-3); white-space: nowrap;
+}
+.bg4-canonchip.ok { color: var(--good, #4ec98f); border-color: color-mix(in srgb, var(--good, #4ec98f) 40%, var(--line)) }
+.bg4-canonchip.review { color: var(--warn, #ffbb45); border-color: color-mix(in srgb, var(--warn, #ffbb45) 40%, var(--line)) }
+.bg4-canonchip.conflict { color: var(--bad, #ff7a6b); border-color: color-mix(in srgb, var(--bad, #ff7a6b) 50%, var(--line)) }
+.bg4-canonchip.unknown { border-style: dashed }
+
+/* ---- the rule ---------------------------------------------------------- */
+
+.bg4-canon-rule {
+  display: flex; gap: 10px; flex: none; margin-top: auto;
+  padding: 11px 12px; border-top: 1px solid var(--line);
+  font: 400 10px/1.6 var(--sans); color: var(--text-3);
+}
+.bg4-canon-rule > i { color: var(--text-2); flex: none; margin-top: 1px }
+
+/* The room drops its third column under 1240px (room.css). Canon is the same
+   trade: it is recoverable from the narrative seat page, the conversation is
+   not. Kept as its own rule so this file works if it is ever mounted alone. */
+@media (max-width: 1240px) { .bg4-canon { display: none } }

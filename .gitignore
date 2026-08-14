@@ -88,9 +88,54 @@ export_presets.cfg
 # sweep the author's desktop into the repo.
 bgate_shot_*.png
 
-# Build outputs from local wheel checks.
-dist*/
+# Build outputs from local wheel checks (dist/, dist_smoke/). ROOT-ANCHORED,
+# and the leading slash is the whole point — the same trap the `/build/` rule
+# above documents. As a bare `dist*/` this matched a `dist` directory at ANY
+# depth, which included bgate_ui/static/dist/ — the committed React bundle the
+# wheel and the .exe both serve. It only ever looked fine because those two
+# files were force-added and git never re-consults ignore rules for a tracked
+# path; the moment the frontend emitted a third file, `git add` would silently
+# skip it and the dashboard would ship with a stale bundle.
+/dist*/
 
 # Pulsiron work-tracking agent scratch state. Machine-local, and it carries
 # workspace ids that mean nothing in anyone else's checkout.
 .pulsiron/
+
+# ── frontend: one source tree, one generated tree ──────────────────────────
+# SOURCE is frontend/. Everything a human edits lives there — frontend/src for
+# the React shell, frontend/public for the classic assets (*.js, app.css,
+# *.html, favicon.svg, seats/, img/, vendor/).
+#
+# GENERATED BUT COMMITTED is bgate_ui/static/. `npm run build` copies
+# frontend/public/* into it verbatim and emits dist/bgate.js + dist/bgate.css.
+# Nothing there is hand-edited and every file in it is tracked anyway, because
+# the product ships as a wheel and a PyInstaller .exe and NEITHER HAS NODE — a
+# fresh `pip install -e .` must not need a JS build. So: do not add an ignore
+# rule that matches under bgate_ui/static/ (see the `/dist*/` note above for
+# the one that already did), and do not add one that matches under
+# frontend/public/ either — an ignored source file is an asset that vanishes
+# from the wheel on the next clean checkout.
+#
+# Only the build INPUTS are ignored:
+frontend/node_modules/
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md
+
+# ── the built front end is GENERATED, and only the bundle is committed ──────
+# frontend/ is the source: public/ (classic modules, css, images, vendor) and
+# src/ (the React shell). `npm run build` copies public/ into bgate_ui/static/
+# verbatim and emits the bundle under dist/.
+#
+# TRACKING BOTH COPIES WOULD DOUBLE THE REPO. The copy under bgate_ui/static is
+# byte-identical to frontend/public, so committing it stored every module twice
+# and turned a file move into 60,000 added lines in the diff.
+#
+# dist/ IS THE EXCEPTION and is committed on purpose: it is the one artefact
+# that needs node to produce, and the wheel and the PyInstaller exe must work on
+# a machine that has none. Everything else in there is a plain copy, which
+# bgate_ui.webbuild remakes at startup without a toolchain.
+/bgate_ui/static/*
+!/bgate_ui/static/dist/

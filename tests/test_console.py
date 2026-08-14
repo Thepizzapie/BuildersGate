@@ -64,6 +64,36 @@ def spawned(monkeypatch):
 # ---------------------------------------------------------------------------
 # The fence — the human's own words survive the 80-character title
 # ---------------------------------------------------------------------------
+
+class TestTheStateShowsWhatJustClosed:
+    """LAST CLOSED SHOWED ONLY FAILURES, on a board where plenty had landed.
+
+    The window orders by status — dispatched, review, queued, FAILED, then
+    everything finished — and cuts at 80. With 89 failed items the whole window
+    was failures, so the console's "last closed" list could not show a single
+    done item and the studio looked like it never finished anything.
+    """
+
+    def test_recent_done_work_reaches_the_payload_past_a_wall_of_failures(
+            self, client, root):
+        from bgate_core import queue as _queue
+
+        # More failures than the window holds, so the old ordering fills it.
+        for i in range(_console.BOARD + 5):
+            item = _queue.add(root, "art", f"failed thing {i}")
+            _queue.set_status(root, item["id"], "failed")
+        landed = _queue.add(root, "tech", "the thing that actually landed")
+        _queue.set_status(root, landed["id"], "done")
+
+        items = client.get("/api/console/state").json()["items"]
+        ids = {i["id"] for i in items}
+        assert landed["id"] in ids, (
+            "a done item newer than every failure is missing — the console "
+            "cannot show what just closed")
+        done = [i for i in items if i["status"] == "done"]
+        assert done and done[0]["title"] == "the thing that actually landed"
+
+
 class TestTheMessageSurvives:
     LONG = ("the hub screen feels dead — give it parallax, a day/night tint, and "
             "make the door hum when you can afford to open it, which is the bit "

@@ -1933,6 +1933,42 @@ def steer(root: str, item_id: int, text: str) -> dict:
     return {"ok": True, "item_id": item_id, "steers": len(entry["steers"])}
 
 
+def steer_all(root: str, text: str) -> dict:
+    """Say one thing to EVERY agent running right now.
+
+    The case this exists for is the one where a correction is not about one
+    item: the art direction changed, a file everybody is about to touch is
+    moving, stop writing to the old path. Steering that agent by agent means
+    opening four panels and retyping the same sentence four times, and the last
+    one gets it a minute after the first.
+
+    ONE REPORT PER AGENT, INCLUDING THE REFUSALS, because the failure mode of a
+    broadcast is a partial one that reads as a whole one. A codex run takes its
+    prompt at launch and has no steer channel; an agent finishing has already
+    closed stdin. Both are reported by item, so "who did not get this" is
+    answerable rather than assumed.
+
+    Snapshot the ids under the lock and steer outside it: `steer` takes the same
+    lock, and holding it across a fan-out would serialise every other caller
+    behind the slowest pipe.
+    """
+    said = (text or "").strip()
+    if not said:
+        return {"ok": False, "error": "steer text is empty"}
+    with _lock:
+        ids = [int(i) for i, entry in _live.items()
+               if entry.get("proc") and entry["proc"].poll() is None]
+    sent, refused = [], []
+    for item_id in sorted(ids):
+        got = steer(root, item_id, said)
+        (sent if got.get("ok") else refused).append(
+            {"item_id": item_id, **({} if got.get("ok")
+                                    else {"error": got.get("error") or "refused"})})
+    return {"ok": True, "text": said, "live": len(ids),
+            "sent": sent, "refused": refused,
+            "count": len(sent), "refused_count": len(refused)}
+
+
 def _scan_steer_echoes(entry: dict) -> None:
     """Mark steers consumed by finding their --replay-user-messages echoes.
 

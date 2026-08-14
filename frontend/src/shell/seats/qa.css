@@ -1,0 +1,116 @@
+/* qa.css — the QA seat's own rules.
+ *
+ * Deliberately NOT in cineqa.css: the video seat owns that file and two seats
+ * editing one stylesheet is the collision this split exists to stop. The gate
+ * card's t-unknown rule stays there because it is already there; everything new
+ * is here.
+ *
+ * The whole file exists to make THREE STATES un-mistakable at a glance, because
+ * the seat's doctrine is that they are different and the panel's job is to say
+ * so before anyone has to read a word:
+ *   PASS      a verdict was written and evidence backs it   — solid, green
+ *   FAIL      a verdict was written and it was no           — solid, red
+ *   UNDECIDED it finished and nobody wrote one              — dashed, and the
+ *             dash is the point: a border with a hole in it is what "nothing
+ *             was closed here" looks like.
+ */
+
+/* ── the legend ─────────────────────────────────────────────────────────── */
+.bgq-legend {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  padding: 9px 12px; margin-bottom: 12px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-1);
+}
+.bgq-legend .l { display: flex; align-items: center; gap: 7px }
+.bgq-legend .l span { font: 400 11px var(--sans); color: var(--text-3) }
+.bgq-legend .sw {
+  width: 22px; height: 12px; border-radius: 3px; border: 1px solid var(--line);
+}
+.bgq-legend .sw.pass { border-color: var(--good-line); background: var(--good-soft) }
+.bgq-legend .sw.fail { border-color: var(--bad-line); background: var(--bad-soft) }
+.bgq-legend .sw.none { border-style: dashed; background: transparent }
+
+/* ── filter row ─────────────────────────────────────────────────────────── */
+.bgq-filters {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px;
+}
+.bgq-filters .sp { flex: 1 }
+.bgq-filters .n {
+  font: 500 10px var(--mono); color: var(--text-3); white-space: nowrap;
+}
+.bgs-btn.on { color: var(--text); border-color: var(--text-3); background: var(--surface-3) }
+
+/* ── the ungated card ────────────────────────────────────────────────────
+   NOT the loud red of t-unknown. A gate that RAN and wrote nothing is a broken
+   promise; an item closed under a project with no gate at all is the project's
+   own standing choice, and drawing two hundred of those in alarm red teaches
+   the reader to ignore red. Dashed says "not closed by anyone but its author"
+   without pretending it is news. The banner above says it once, loudly. */
+.bgs-gate.t-ungated {
+  border-style: dashed; background: transparent;
+}
+.bgs-gate.t-ungated .h .t { color: var(--text-2) }
+
+/* ── evidence ───────────────────────────────────────────────────────────── */
+.bgq-acts {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px;
+}
+.bgq-ev {
+  margin-top: 9px; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 5px; background: var(--surface-1);
+  font: 400 11px/1.7 var(--mono); color: var(--text-2);
+  white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto;
+}
+.bgq-ev .cap {
+  display: block; margin-bottom: 6px; font: 500 9px var(--mono);
+  letter-spacing: .14em; text-transform: uppercase; color: var(--text-3);
+}
+.bgq-ev + .bgq-ev { margin-top: 6px }
+.bgq-ev .more { color: var(--text-3) }
+
+/* ── the contract editor ────────────────────────────────────────────────── */
+.bgq-edit { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px }
+.bgq-edit textarea {
+  width: 100%; min-height: 320px; resize: vertical;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--surface-1);
+  color: var(--text); padding: 9px 11px; font: 400 11px/1.6 var(--mono);
+}
+.bgq-edit textarea:focus { outline: none; border-color: var(--accent-line, var(--text-3)) }
+.bgq-edit .row { display: flex; gap: 6px; align-items: center }
+.bgq-edit .why { font: 400 11px/1.6 var(--sans); color: var(--text-3) }
+.bgq-edit .err { color: var(--bad); font: 500 10px/1.5 var(--mono) }
+
+/* ── sample keys, with what they actually address ───────────────────────── */
+.bgq-keyrow {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 5px 0; border-bottom: 1px solid var(--line);
+}
+.bgq-keyrow:last-child { border-bottom: 0 }
+.bgq-keyrow b { font: 500 11px var(--mono); color: var(--text); flex: none }
+.bgq-keyrow span { font: 400 10px var(--mono); color: var(--text-3); text-align: right; flex: 1 }
+.bgq-keyrow span.miss { color: var(--warn) }
+
+/* ── a running job ──────────────────────────────────────────────────────── */
+.bgq-job {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  padding: 9px 12px; border: 1px solid var(--warn-line); border-radius: 6px;
+  background: var(--warn-soft); font: 500 11px var(--mono); color: var(--text-2);
+}
+.bgq-job .sp { flex: 1 }
+
+/* ── failures, with their reasons ───────────────────────────────────────── */
+.bgq-fail {
+  display: flex; gap: 8px; align-items: flex-start; padding: 6px 12px 6px 26px;
+  font: 400 11px/1.6 var(--mono); color: var(--text-3); word-break: break-word;
+}
+.bgq-fail b { color: var(--bad); font-weight: 500; flex: none }
+
+/* ── the suite on disk, clickable ───────────────────────────────────────── */
+.bgs-scripts .s.run { cursor: pointer }
+.bgs-scripts .s.run:hover { color: var(--text); border-color: var(--text-3) }
+.bgs-scripts .s.ctl { border-style: dashed }
+.bgq-note {
+  font: 400 11px/1.6 var(--sans); color: var(--text-3); margin: 0 0 12px;
+  max-width: 90ch;
+}
+.bgq-note b { color: var(--warn); font-weight: 500 }

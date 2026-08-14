@@ -1,0 +1,341 @@
+import { useEffect, useState } from "react";
+import "./shell.css";
+import { Menu } from "@mantine/core";
+import { Ti } from "./Ti";
+import { AREAS, SCREEN_NOTE, SEAT_COLOR, SEAT_ICON, areaOf, byScreen } from "./nav";
+import type { Area } from "./nav";
+import { Inspector } from "./Inspector";
+import { clock, useFloor } from "./useFloor";
+import type { Floor } from "./useFloor";
+import { useAppState } from "../store";
+import { setSelection } from "./selection";
+import { setScreen as publishScreen } from "./screen";
+
+/* The shell: four areas, the screens inside one of them, a header, and the
+ * inspector. Everything BETWEEN those is still the existing stage.
+ *
+ * WHAT MOVED AND WHAT DID NOT. The rail and the status bar are gone from
+ * index.html and are rendered here. The fifteen `.deck-view` sections are
+ * untouched, still owned by the classic modules, still switched by
+ * setWorkspace() — this component calls it and never reaches inside a deck. So
+ * a redesign of the chrome cost the views nothing, and the two new screens
+ * (floor, board) are decks like any other rather than a special case.
+ *
+ * The shell is laid out with `display: contents` so its four children land
+ * directly in the body's grid alongside `.stage`. Reparenting the stage into a
+ * React-owned node was the alternative and it would have reloaded every iframe
+ * on the page at boot.
+ */
+
+const KEY = "bgate-screen";
+const NAV_KEY = "bgate-nav-open";
+
+declare global {
+  interface Window {
+    /* index.html — the classic switch. It also dispatches `bgate:workspace`
+       so this shell can follow a deck change it did not initiate (the vault
+       chip, first-run, Atlas's own deactivation path). */
+    setWorkspace?(name: string, trigger?: Element | null): void;
+    /** index.html — writes data-theme, persists it, and tells the canvases. */
+    setTheme?(mode: string): void;
+  }
+}
+
+/* THE GROUND SWITCH LIVED ON THE OLD RAIL AND NOWHERE ELSE. Replacing that
+   rail deleted the only way to change theme in the whole product — Settings
+   has never carried one — so it came back with it.
+
+   ONE BUTTON, NOT FOUR. A 2×2 of moon/sun/monitor/planet in a 56px rail is
+   four glyphs that look like four destinations; nothing about them says they
+   are one exclusive choice, and the planet in particular reads as a feature.
+   The button wears the ground you are ON and pops the other three out, which
+   is both smaller and self-explaining. */
+const GROUNDS = [
+  { id: "dark", icon: "moon", label: "Always dark" },
+  { id: "light", icon: "sun", label: "Always light" },
+  { id: "system", icon: "device-desktop", label: "Follow the OS setting" },
+  { id: "orbit", icon: "planet", label: "Orbit — glass on vanta black" },
+];
+
+function Grounds() {
+  const [mode, setMode] = useState<string>(() => {
+    try { return localStorage.getItem("bgate-theme") || "system"; } catch { return "system"; }
+  });
+  const current = GROUNDS.find((g) => g.id === mode) || GROUNDS[2];
+  return (
+    <Menu position="right-end" offset={8} withArrow shadow="md" width={210}>
+      <Menu.Target>
+        <button className="bg4-area" title={`Theme · ${current.label}`}
+                aria-label="Colour theme">
+          <Ti name={current.icon} size={18} />
+        </button>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Theme</Menu.Label>
+        {GROUNDS.map((g) => (
+          <Menu.Item key={g.id}
+                     leftSection={<Ti name={g.icon} size={14} />}
+                     rightSection={g.id === mode ? <Ti name="check" size={13} /> : undefined}
+                     onClick={() => { window.setTheme?.(g.id); setMode(g.id); }}>
+            {g.label}
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+/* AN AREA BUTTON HAS TWO JOBS AND ONLY ONE OF THEM WORKED.
+ *
+ * Open, the rail picks the area and the column beside it lists the screens. But
+ * COLLAPSED, that column is zero pixels wide — and clicking an area only ever
+ * jumped to its FIRST screen, so Studio, Narrative, Atlas and the World bible
+ * were unreachable by any route at all. Collapsing the nav quietly removed
+ * eleven of the fifteen destinations from the product.
+ *
+ * So collapsed, the button opens the area's screens as a pop-out: the same
+ * list, the same counts, the same current mark, in the space that exists. Open,
+ * it stays a plain button, because a menu that duplicates a column you can
+ * already see is a second way to do one thing.
+ */
+function AreaButton({ area, current, screen, collapsed, counts, onPick }: {
+  area: Area; current: boolean; screen: string; collapsed: boolean;
+  counts: Record<string, number>; onPick(id: string): void;
+}) {
+  const label = (
+    <>
+      {area.label}
+      <span className="k"> · {area.screens.length} screens</span>
+    </>
+  );
+  const button = (
+    <button className="bg4-area" aria-current={current}
+            aria-label={area.label} title={collapsed ? undefined : area.label}
+            onClick={collapsed ? undefined : () => onPick(area.screens[0].id)}>
+      <Ti name={area.icon} size={19} />
+    </button>
+  );
+  if (!collapsed) return button;
+  return (
+    <Menu position="right-start" offset={8} withArrow shadow="md" width={210}>
+      <Menu.Target>{button}</Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>{label}</Menu.Label>
+        {area.screens.map((s) => (
+          <Menu.Item key={s.id}
+                     leftSection={<Ti name={s.icon} size={14} color={s.accent} />}
+                     rightSection={
+                       s.id === screen ? <Ti name="check" size={13} />
+                       : s.count && counts[s.count] > 0
+                         ? <span className="bg4-menun">{counts[s.count]}</span>
+                         : undefined}
+                     onClick={() => onPick(s.id)}>
+            {s.label}
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+/* THE COUNT WAS THE WHOLE ANSWER AND IT IS NEVER THE QUESTION. "3 running" told
+ * you the board was busy and then made you leave the screen you were on to find
+ * out busy with what. The chip carries the list it is counting now, and a row
+ * goes straight to the inspector — which is a pop-out over the stage, so
+ * glancing at a run costs you nothing you were looking at.
+ *
+ * It reads the shell's existing floor poll rather than opening one of its own.
+ * The rail's counters are already live at 6s whether or not this is open, and a
+ * second poll against the same three endpoints would double the traffic to say
+ * the same thing a beat sooner. */
+function RunningChip({ floor, onOpenFloor }: {
+  floor: Floor; onOpenFloor(): void;
+}) {
+  const byId = new Map(floor.items.map((i) => [i.id, i]));
+  return (
+    <Menu position="bottom-end" offset={8} withArrow shadow="md" width={320}>
+      <Menu.Target>
+        <button className="bg4-chip"
+                style={{ color: floor.counts.live ? "var(--accent)" : "var(--text-3)" }}
+                title="Agents currently executing a task.">
+          <Ti name="player-play" />{floor.counts.live} running
+        </button>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Running now</Menu.Label>
+        {floor.agents.length === 0 && (
+          <Menu.Item disabled>nothing is running</Menu.Item>
+        )}
+        {floor.agents.map((a) => {
+          const it = byId.get(a.item_id);
+          const seat = it?.seat || "";
+          const title = it?.title || `item ${a.item_id}`;
+          const c = SEAT_COLOR[seat] || "var(--text-3)";
+          const age = clock(a.seconds);
+          return (
+            <Menu.Item key={a.item_id}
+                       leftSection={
+                         <span className="bg4-runtile" style={{ background: `${c}22`, color: c }}>
+                           <Ti name={SEAT_ICON[seat] || "point"} size={13} />
+                         </span>}
+                       rightSection={age ? <span className="bg4-runage">{age}</span> : undefined}
+                       onClick={() => setSelection({ key: `i${a.item_id}`, kind: "item",
+                                                     itemId: a.item_id, title, seat })}>
+              <span className="bg4-runtitle">
+                <b>#{a.item_id}</b> {title}
+              </span>
+            </Menu.Item>
+          );
+        })}
+        <Menu.Divider />
+        {/* The chip used to BE this jump, so it stays on offer — the list answers
+            "what is running", Orchestration is still where you act on all of it. */}
+        <Menu.Item leftSection={<Ti name="layout-grid" size={14} />} onClick={onOpenFloor}>
+          Open Orchestration
+        </Menu.Item>
+      </Menu.Dropdown>
+    </Menu>
+  );
+}
+
+export function Shell() {
+  const [screen, setScreen] = useState<string>(() => {
+    try { return localStorage.getItem(KEY) || "floor"; } catch { return "floor"; }
+  });
+  /* The screen column collapses. On a laptop it is 176px of labels you already
+     know by heart, and the rail beside it still names every area — so the
+     labels are worth having open while you learn the app and worth reclaiming
+     once you have. The choice sticks per browser. */
+  const [navOpen, setNavOpen] = useState(() => {
+    try { return localStorage.getItem(NAV_KEY) !== "0"; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(NAV_KEY, navOpen ? "1" : "0"); } catch { /* private mode */ }
+  }, [navOpen]);
+  /* THE COLUMN KEEPS THE AREA YOU WERE IN. Settings belongs to no area, and
+     deriving the column straight from the screen threw you into Command the
+     moment you opened it — you came back from the settings screen to a nav
+     column listing something else than the one you left. */
+  const [areaId, setAreaId] = useState(() => areaOf(screen)?.id || AREAS[0].id);
+  useEffect(() => {
+    const owner = areaOf(screen);
+    if (owner) setAreaId(owner.id);
+  }, [screen]);
+  const area = AREAS.find((a) => a.id === areaId) || AREAS[0];
+  /* A SCREEN WITH NO AREA GETS NO SCREEN COLUMN. Settings belongs to none, and
+     keeping the last area's list beside it meant opening Settings put the
+     COMMAND strip — Orchestration, Brainstorm, Work history — next to a page that has
+     nothing to do with any of them. The column is about the area you are in;
+     when you are not in one, it goes away rather than showing a stale one. The
+     collapse preference is untouched, so leaving Settings restores it. */
+  const loose = !areaOf(screen);
+  const meta = byScreen(screen);
+  const state = useAppState();
+  const floor = useFloor(6000, true);   // the counters in the rail, always live
+
+  // Show the deck this screen owns, through the shell's own switch. On mount
+  // too: the restored screen has to reach setWorkspace or the page opens on
+  // whatever deck index.html marked active in its HTML.
+  useEffect(() => {
+    const deck = byScreen(screen)?.deck;
+    // The floor island reads this to know which of its four questions it is
+    // being asked; the deck switch below is what puts it on screen.
+    publishScreen(screen);
+    if (deck) window.setWorkspace?.(deck);
+    try { localStorage.setItem(KEY, screen); } catch { /* private mode */ }
+  }, [screen]);
+
+  // Follow a deck change this shell did not make.
+  useEffect(() => {
+    const onDeck = (e: Event) => {
+      const deck = (e as CustomEvent<{ name?: string }>).detail?.name;
+      if (!deck) return;
+      setScreen((cur) => (byScreen(cur)?.deck === deck
+        ? cur
+        : AREAS.flatMap((a) => a.screens).find((s) => s.deck === deck)?.id || cur));
+    };
+    window.addEventListener("bgate:workspace", onDeck);
+    return () => window.removeEventListener("bgate:workspace", onDeck);
+  }, []);
+
+  const counts: Record<string, number> = {
+    queued: floor.counts.queued, history: floor.counts.history,
+    playtests: (state.sessions || []).length,
+    assets: state.asset_groups.length,
+  };
+
+  return (
+    <div className={navOpen && !loose ? "bg4" : "bg4 nav-closed"}>
+      <nav className="bg4-rail" aria-label="Areas">
+        {/* THE MARK IS THE TRIGGER. A chevron in the nav header and a second
+            chevron in the rail foot were two controls for one idea, and neither
+            was where your eye already goes. The logo is the fixed point of the
+            whole shell — it is in the same place whether the column is open or
+            shut — so it is the one thing that can toggle it without moving. */}
+        <button className="bg4-mark" onClick={() => setNavOpen((v) => !v)}
+                aria-expanded={navOpen} aria-controls="bg4-nav"
+                title={navOpen ? "Collapse the screen list" : "Show the screen list"}
+                aria-label={navOpen ? "Collapse the screen list" : "Show the screen list"}
+                dangerouslySetInnerHTML={{ __html: window.BGIcon?.logo?.({ size: 20 }) || "" }} />
+        {AREAS.map((a) => (
+          /* CURRENT means "the screen you are on lives here", not "this is the
+             one you last clicked". Those diverge the moment anything else moves
+             the screen — the vault chip, first-run, a deck event — and the rail
+             then points at the wrong area while the column beside it is right. */
+          <AreaButton key={a.id} area={a} collapsed={!navOpen || loose} counts={counts}
+                      screen={screen}
+                      current={a.screens.some((s) => s.id === screen)}
+                      onPick={(id) => { setScreen(id); setAreaId(a.id); setSelection(null); }} />
+        ))}
+        <div className="bg4-railfoot">
+          {/* THE ONLY OFFLINE SIGNAL WAS IN THE NAV FOOTER, which is the part
+              that goes to zero width when you collapse. A dashboard that has
+              lost its server must say so in the chrome that is always there. */}
+          <span className={`bg4-dot ${state.project ? "ok" : "bad"}`}
+                title={state.project
+                  ? `${state.project.name} · connected`
+                  : "no project — the dashboard is not talking to a server"} />
+          <Grounds />
+          <button className="bg4-area" title="Settings" aria-label="Settings"
+                  aria-current={screen === "settings"}
+                  onClick={() => setScreen("settings")}>
+            <Ti name="settings" size={19} />
+          </button>
+        </div>
+      </nav>
+
+      <div className="bg4-nav" id="bg4-nav" aria-hidden={!navOpen}>
+        <div className="bg4-navhead">
+          <span className="bg4-eyebrow">{area.label}</span>
+        </div>
+        {area.screens.map((s) => (
+          <button key={s.id} className="bg4-navitem" aria-current={s.id === screen}
+                  onClick={() => { setScreen(s.id); setSelection(null); }}>
+            <Ti name={s.icon} color={s.accent} />
+            {s.label}
+            {s.count && counts[s.count] > 0 && <span className="n">{counts[s.count]}</span>}
+          </button>
+        ))}
+        <div className="bg4-navfoot">
+          <div>{state.project?.name || "no project"}</div>
+          <div className={state.project ? "ok" : "bad"}>
+            {state.project ? "connected" : "offline"}
+          </div>
+        </div>
+      </div>
+
+      <header className="bg4-head">
+        <span className="bg4-title">{meta?.label || "Builders Gate"}</span>
+        <span className="bg4-note">{SCREEN_NOTE[screen] || ""}</span>
+        <div className="bg4-chips">
+          <RunningChip floor={floor} onOpenFloor={() => setScreen("floor")} />
+          {/* notify.js mounts its bell here. React renders the host and never
+              its children — same contract as #asset-lib-root. */}
+          <div id="nt-host" />
+        </div>
+      </header>
+
+      <Inspector />
+    </div>
+  );
+}

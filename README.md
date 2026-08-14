@@ -6,333 +6,227 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Dev streams on Twitch](https://img.shields.io/badge/twitch-thepizzzapie-9146FF)](https://twitch.tv/thepizzzapie)
 
-**Builders Gate is an MCP server for building games with Claude Code.** It gives
-Claude close to 200 tools scoped to one game project: a design database, a work
-queue, reference-pinned art and music generation, Godot and Blender adapters, and
+**An MCP server for building games with Claude Code.** It gives Claude 211
+tools scoped to one game project: a design database, a work queue,
+reference-pinned art and music generation, Godot and Blender adapters, and
 playtest capture. All state lives in one SQLite file inside the project.
 
-**Who it is for:** people running Claude Code who are building a game and want
-more than one session working on it at once. It is more machinery than a small
-project needs.
+You run several Claude Code sessions at once, each holding a seat: art,
+gameplay, narrative, QA, audio, tech. They share one database, so they do not
+contradict each other, and file locks stop two of them editing the same asset. A
+local dashboard shows what each one is doing and is where you dispatch work and
+approve output.
 
-**Platform:** Windows is supported. Linux is best-effort, because parts of the
-product shell out to Windows tooling and the suite is not kept green there.
-macOS is untested.
-
-Start with [Install and quickstart](#install-and-quickstart), or read
-[`docs/start-here.md`](docs/start-here.md) if the vocabulary is new.
-
-## What it does
-
-You run several Claude Code sessions at once, each assigned a role: art,
-gameplay, narrative, QA, audio, tech. They read and write the same database, so
-they do not contradict each other, and they cannot edit the same files at the
-same time. A local dashboard shows what each one is doing, and is where you
-dispatch work and approve output. Your own Claude session uses the same tools and
-the same database, so asking what is left before the vertical slice reads the
-queue and the design bible, not the chat history.
-
-Three limits are enforced in code: generation stops at a spend ceiling, files
-locked by one seat cannot be written by another, and no agent can approve its own
+Three limits are enforced in code: generation stops at a spend ceiling, a file
+locked by one seat cannot be written by another, and no agent approves its own
 art.
 
-Local-first. No daemon, no cloud, no build step in the frontend.
+**For:** people running Claude Code on a game who want more than one session
+working on it at once. It is more machinery than a small project needs.
+
+**Platform:** Windows. Linux is best-effort and macOS is untested.
 
 <p align="center">
   <img src="docs/screenshots/overview.png" width="820"
-       alt="The Builders Gate dashboard: live agents, the queue, and recent activity">
+       alt="The dashboard: live agents, the queue, and recent activity">
 </p>
 
-<p align="center"><em>The dashboard, running against a real project.
-<a href="docs/screenshots.md">More screenshots →</a></em></p>
+## What is in the repo
 
-### The editors
+| Path | What it holds |
+|---|---|
+| [`bgate_core/`](bgate_core/) | The domain. Database, seats, queue, locks, bible and lore, spend ledger, playtest, quests, decisions |
+| [`bgate_mcp/`](bgate_mcp/) | The MCP server Claude connects to, plus the small read-only server the brainstorm room runs on |
+| [`bgate_ui/`](bgate_ui/) | The dashboard's FastAPI backend: routes, agent dispatch, the steer pump. `static/` is built output |
+| [`frontend/`](frontend/) | The dashboard's whole UI. `src/` is the React shell, `public/` the classic modules it has not replaced yet |
+| [`bgate_cli/`](bgate_cli/) | `bgate init`, `adopt`, `serve`, `doctor`, `publish`, and the PreToolUse hook |
+| [`bgate_adapters/`](bgate_adapters/) | Godot, Blender, and the image, music and speech providers |
+| [`bgate_site/`](bgate_site/) | `bgate publish`: turns the games on a machine into a static arcade |
+| [`templates/`](templates/) | The Godot projects `bgate init` unpacks, 2D and 3D |
+| [`tests/`](tests/) | 5,300 tests. `-m "not slow"` skips the ones that drive real Blender and whisper |
+| [`bgate_engine/`](bgate_engine/) | A design note with schemas and no runtime code. Nothing imports it |
+
+## The screens
+
+Orchestration is where you say what you want. The director answers, splits the
+work across seats and dispatches it, and what closed is listed underneath.
+
+<p align="center">
+  <img src="docs/screenshots/agents.png" width="820"
+       alt="Orchestration: the director's console, with what recently closed beneath it">
+</p>
 
 The scene editor reads the project's real `.tscn` files and writes them back,
-with the playable build beside it, so a change and its result are on one screen.
+with the playable build beside it.
 
 <p align="center">
   <img src="docs/screenshots/atlas.png" width="820"
        alt="Atlas: the node tree, an isometric floor in the viewport, and the inspector">
 </p>
 
-There is also a sprite editor with frame detection, rig labels and per-frame
-regeneration, an audio lab with lanes, clip editing and a step sequencer, and a
-3D viewer for `.glb`, `.gltf` and `.obj` meshes. The viewer's attachment sockets
-use the same slot names (`main_hand`, `head`) as the sprite rig, so gear
-placement means one thing whether the character is 2D or 3D. All of these are
-pages in the dashboard, not a trip out to another program.
+A sprite editor with frame detection, rig labels and per-frame regeneration.
 
 <p align="center">
-  <img src="docs/screenshots/sprite-editor.gif" width="820"
-       alt="The sprite editor: a 15-frame sheet, the radial tool menu, and rig labels">
+  <img src="docs/screenshots/sprite-editor.png" width="820"
+       alt="The sprite editor: a walk sheet at 518%, the radial tool menu, and the animation preview">
 </p>
 
-### Talk it through before dispatching
+A 3D viewer for `.glb`, `.gltf` and `.obj`, which measures scale, orientation
+and origin against the project's units. Its attachment sockets use the same slot
+names as the sprite rig, so `main_hand` means one thing in 2D and 3D.
 
-Brainstorm is a conversation with a writing pad and a drawing pad beside it.
-Nothing is queued until you press Deploy, which turns the session into work items
-you review first.
+<p align="center">
+  <img src="docs/screenshots/model-viewer.png" width="820"
+       alt="The 3D viewer: a glTF newsstand with its scale, orientation and origin measured">
+</p>
+
+An audio lab with lanes, clip editing and a step sequencer.
+
+<p align="center">
+  <img src="docs/screenshots/audio-lab.png" width="820"
+       alt="The audio lab: a stereo clip with a selection, and the cut panel">
+</p>
+
+Every editor ends at the same door: wire the asset into a scene yourself and see
+the exact text that gets added, or file it as a work item with the path, the
+scene and the trigger already in the brief.
+
+<p align="center">
+  <img src="docs/screenshots/put-in-game.png" width="820"
+       alt="Put it in the game: wire it here, or hand it to an agent">
+</p>
+
+Brainstorm is a room you can invite seats into. Each one answers as its craft,
+holding no tools that can write to the game. Nothing is queued until you file a
+plan.
 
 <p align="center">
   <img src="docs/screenshots/brainstorm.png" width="820"
-       alt="Brainstorm: chat, a writing pad and a drawing pad, with a Deploy button">
+       alt="Brainstorm: the transcript, the roster of seats in the room, and one door out">
 </p>
 
-### Three themes
-
-<p align="center">
-  <img src="docs/screenshots/themes.png" width="900"
-       alt="The same view in the dark, light and orbit themes">
-</p>
-
-> **Setting this up with Claude?** Point it at [`CLAUDE.md`](CLAUDE.md) in this
-> repo. It is written for an assistant doing the install on your behalf,
-> including the two mistakes that waste the most time.
->
-> **New to this?** Start at [`docs/start-here.md`](docs/start-here.md), which
-> assumes nothing and defines the vocabulary once. Unfamiliar term?
-> [`docs/glossary.md`](docs/glossary.md).
+[More screenshots](docs/screenshots.md), including the three themes.
 
 ## Requirements
 
 - Python 3.11+
 - An MCP client. [Claude Code](https://claude.com/claude-code) is what it is
   developed against
-- [Godot 4.x](https://godotengine.org). Add the Web export templates if you want
+- [Godot 4.x](https://godotengine.org), plus the Web export templates for
   `bgate publish`
-- Optional: [Blender 4.2+](https://blender.org) for the 3D leg, `ffmpeg` and
-  `ffprobe` for playtest capture, `faster-whisper` and `sounddevice` for
-  transcription
-- Optional: an `OPENAI_API_KEY` or `KREA_API_KEY` for generated art, a
-  `KIE_API_KEY` for generated music, a `DEEPGRAM_API_KEY` for speech. All can be
-  set from the dashboard instead of by editing a file
+- Optional: [Blender 4.2+](https://blender.org), `ffmpeg` and `ffprobe` for
+  playtest capture, `faster-whisper` and `sounddevice` for transcription
+- Optional: `OPENAI_API_KEY` or `KREA_API_KEY` for art, `KIE_API_KEY` for music,
+  `DEEPGRAM_API_KEY` for speech. All can be set from the dashboard
 
-Full detail, including the API key table and the platform notes:
-[`docs/setup.md`](docs/setup.md).
+Detail, including the key table and platform notes: [`docs/setup.md`](docs/setup.md).
 
-## Install and quickstart
-
-You need Python 3.11 or newer on `PATH`. Check with `python --version`. Use a
-virtual environment if you can, because `pip install -e .` otherwise puts
-Builders Gate and its dependencies in your system Python.
+## Install
 
 ```bash
 git clone https://github.com/Thepizzapie/BuildersGate
 cd BuildersGate
 pip install -e .                          # or: pip install -e ".[dev,stt,record]"
 
-bgate doctor                              # python/key/ffmpeg/blender/godot/whisper
+bgate doctor                              # what is installed and what is missing
 bgate init emberfall --kind 2d            # a project AND a runnable game
 cd emberfall
-                                          # optional: drop a .env here with your
-                                          # image key, see .env.example
 bgate serve                               # dashboard on http://127.0.0.1:7788
 ```
 
-`bgate init` creates a NEW directory named after the project, not whatever
-directory you are standing in. It writes `.bgate/game.db`, unpacks the Godot
-template, and prints the absolute path. `bgate serve` with no project shows a
-first-run screen that does the same thing from the browser.
+`bgate init` creates a new directory named after the project rather than
+scaffolding into the one you are standing in. `bgate adopt` points it at a Godot
+project you already have and never rewrites a file you wrote.
 
-**If `bgate` is "not recognized" on Windows**, the install worked and Python's
-`Scripts\` directory is not on your `PATH`. Two ways through:
+`bgate doctor` exits 1 if anything on its list is missing, including rows nobody
+needs on day one. Read the rows, not the exit code: `python` and `godot` green is
+enough to start.
 
-1. Call the CLI as `python -m bgate_cli.main doctor`. Every command works that
-   way; `bgate` is only a shortcut.
-2. Re-run the Python installer, choose Modify, tick **Add Python to PATH**, then
-   open a new terminal, because `PATH` is read at shell start.
-
-### Reading `bgate doctor`
-
-It exits 1 if **anything** on its list is unavailable, including rows nobody
-needs on day one. Read the rows, not the exit code:
-
-| Row | Needed for |
-|---|---|
-| `python`, `godot` | **Required.** The core loop: a project, a build, a run |
-| `blender` | Optional. The 3D leg only |
-| `ffmpeg`, `ffprobe` | Optional. Playtest capture and cutscene transcoding |
-| `whisper` | Optional. Voice transcription during playtest |
-| `art_key`, `local_image` | Optional. Generated art, from a rented key or a local model |
-| everything else | Optional. Capability inventory, not a gate |
-
-A red optional row is a feature you do not have yet, not a broken install. If
-`python` and `godot` are green, keep going.
-
-### Let agents drive it
+### Register it with Claude Code
 
 ```bash
-python -c "import sys; print(sys.executable)"    # <abs-python>, from the env
-                                                 # where pip install -e . ran
+python -c "import sys; print(sys.executable)"    # the env where pip install ran
 claude mcp add builders-gate --scope user -- <abs-python> -m bgate_mcp.server
-bgate hook-install <game-project>         # lane/lock teeth
+bgate hook-install <game-project>                # lane and lock enforcement
 ```
 
-Use the ABSOLUTE python path, which is what the `python -c` line prints. The
-claude CLI's health check resolves a bare `python` differently than your shell
-and reports "failed to connect" against a server that runs fine.
+Use the absolute python path. The claude CLI resolves a bare `python`
+differently than your shell and reports "failed to connect" for a server that
+runs. Restart Claude Code before the tools appear; if `project_status` is not in
+the tool list, the server is not connected.
 
-**Restart Claude Code before the tools appear.** A running session does not pick
-up a newly registered MCP server; a fresh one does. If `project_status` is not in
-the tool list after restarting, the server is not connected.
-
-### Other entry points
-
-Covered in [`docs/setup.md`](docs/setup.md):
+### Commands
 
 | Command | What it does |
 |---|---|
-| `bgate app` | The dashboard in a native window instead of a browser tab |
-| `bgate adopt` | Point it at a Godot project you already have. Additive only, never rewrites a byte you wrote |
-| `bgate projects` | List every known project |
-| `bgate use <name>` | Switch the active project without exporting `BGATE_ROOT` |
-| `bgate publish` | Turn every game on the machine into a static arcade site |
-| `bgate hook-status` | Prove the enforcement hook is live |
+| `bgate serve` | The dashboard in a browser tab |
+| `bgate app` | The same dashboard in a native window (`pip install -e ".[desktop]"`) |
+| `bgate adopt` | Point it at an existing Godot project |
+| `bgate projects` / `bgate use <name>` | List projects, switch the active one |
+| `bgate publish` | Build a static arcade site from every game on the machine |
 | `bgate key set openai --global` | Store an API key outside any repository |
-| `bgate un-adopt <dir>` | Remove `.bgate/` from a project. Needs `--yes` |
+| `bgate hook-status` | Prove the enforcement hook is live |
+| `bgate panic` | Stop every agent on a project |
 
-### Desktop app
-
-`bgate app` runs the same server as `bgate serve` in a native window. On Windows
-that is the Edge WebView2 runtime shipped with Windows 11, so there is nothing
-extra to install:
-
-```bash
-pip install -e ".[desktop]"
-bgate app
-```
-
-It binds to a loopback port the OS picks, so it will not collide with a
-`bgate serve` you already have open, and it shuts the server down when you close
-the window.
-
-### The standalone Windows build, and why it warns
-
-There is a `BuildersGate-windows.zip` on the
+There is also a `BuildersGate-windows.zip` on the
 [releases page](https://github.com/Thepizzapie/BuildersGate/releases) for people
-who do not want Python at all. Unzip it and run `BuildersGate.exe`: double-click
-for the window, or `BuildersGate.exe serve` for the browser dashboard.
-
-The binary is not code signed, so Windows objects in two ways:
-
-- **Defender** flagged the first build as `Trojan:Win32/Sabsik.TE.A!ml`. The
-  `!ml` suffix is a machine-learning guess, not a signature match. That build
-  used PyInstaller's `--onefile`, which unpacks into `%TEMP%` and executes code
-  from it, which looks like a dropper. It ships as a plain folder now, which
-  removes the trigger.
-- **Smart App Control**, default-on for clean Windows 11 installs, refuses to
-  launch unsigned binaries at all: *"we can't confirm who published
-  BuildersGate.exe."* Repackaging does not fix that. It needs an Authenticode
-  certificate, which is
-  [being worked on](https://github.com/Thepizzapie/BuildersGate/issues).
-
-Every release publishes a `.sha256` next to the zip so you can check the download
-against what CI built. Both come from
-[`.github/workflows/release-exe.yml`](.github/workflows/release-exe.yml) on a
-tagged commit.
-
-**If you have Python, `pip install` avoids all of this.** `bgate app` gives you
-the same native window as an ordinary Python process.
-
-To build the standalone yourself:
-
-```bash
-pip install -e ".[desktop]" pyinstaller
-python packaging/build_exe.py
-```
-
-That writes `dist/BuildersGate/`, boots it to check it serves its own assets, and
-only then zips it. The boot check matters: the app finds `static/` and
-`templates/` by walking up from `__file__`, so a bundle that lays them out wrongly
-still starts, still renders the shell, and 404s every stylesheet. A green
-PyInstaller run does not mean a working binary.
+who do not want Python. It is unsigned, so Windows warns about it; each release
+ships a `.sha256` beside the zip. If you have Python, `pip install` avoids this
+and `bgate app` gives you the same window.
 
 ## The working loop
 
-Step 1 is `bgate init`. Everything after it is an MCP tool call, so any Claude
-session with the server registered can drive it. The intended shape: you or an
-orchestrator fan out one agent per seat, each adopting its role via `BGATE_SEAT`.
+After `bgate init`, everything is an MCP tool call, so any Claude session with
+the server registered can drive it. One agent per seat, each adopting its role
+through `BGATE_SEAT`.
 
 ```text
-1  bgate init <name>       .bgate/game.db + a runnable game, path printed
-2  godot_scaffold          (or, into an existing project: the same runnable slice)
-3  DIRECTOR seat           bible_add: pillars, the core loop, constraints, references
-4  NARRATIVE seat          lore_add / lore_fact; canon_check on every narrative write
-5  ART seat                ref_pin approved references first, then blender_sprites /
-                           image_sprites / image_generate; asset_lock before touching
-                           any binary, asset_release after
-6  GAMEPLAY seat           writes code in its lanes; godot_check_project + godot_run
-                           after every change; godot_screenshot to SEE the game
-7  QA seat                 headless test scripts via godot_run; asset_verify for drift
-8  playtest_check/start    play it yourself, talk out loud; feedback lands classified
-                           and joined to telemetry; YOU promote what becomes work
+1  bgate init <name>       .bgate/game.db and a runnable game
+2  DIRECTOR seat           bible_add: pillars, the core loop, constraints
+3  NARRATIVE seat          lore_add / lore_fact, canon_check before a write lands
+4  ART seat                ref_pin first, then generate; asset_lock around binaries
+5  GAMEPLAY seat           code in its lanes; godot_check_project and godot_run
+6  QA seat                 headless tests via godot_run; asset_verify for drift
+7  playtest_start          play it, talk out loud; you promote what becomes work
 ```
 
-Four rules make multi-agent work safe:
+Four rules keep multi-agent work safe: check `seat_can_write` before writing
+outside your lane, lock binaries before editing them, run `canon_check` before a
+narrative write lands, and `queue_add` anything another seat has to do.
 
-1. Check `seat_can_write` before writing outside your obvious lane.
-2. Lock binaries before editing them.
-3. Run `canon_check` before any narrative write lands.
-4. When another seat has to DO something because of your work, `queue_add` it. A
-   note is a bulletin, a queue item is a job.
-
-`seat_brief(role)` returns everything a seat needs to start: mission, lanes,
-bible, canon, pinned reference anchors, promoted feedback, and who holds which
-locks.
-
-Every tool takes an optional `project_dir`. It resolves the project from that,
-then `BGATE_ROOT`, then by walking up from the cwd looking for a `.bgate/`
-directory. Pass it explicitly whenever more than one project could be in play.
+`seat_brief(role)` returns what a seat needs to start: mission, lanes, bible,
+canon, pinned references, and who holds which locks. Every tool takes an optional
+`project_dir`, falling back to `BGATE_ROOT` and then to the nearest `.bgate/`.
 
 ## Project status
 
-2026-07-27, first public release. A solo project that has built real games on one
-machine, which shows in both directions.
+First public release 2026-07-27. A solo project, proven against a small number of
+games on one Windows machine.
 
-| State | What is in it |
+| State | What |
 |---|---|
-| **Works, covered by tests and daily use** | The MCP server and its tools. Seats, lanes, asset locks, the PreToolUse hook. The Godot adapter: headless run and check, import with in-engine inspection, screenshots, scaffolds. Both image providers. The dashboard. Playtest capture through to a joined brief. `bgate publish`. `bgate doctor` |
-| **Works, proven only by hand** | The Blender adapter and the glTF round trip. Tests exist but are `slow`-marked or skip when Blender is absent, so a normal test run says nothing about them. Nothing here generates 3D geometry |
-| **Newer, less travelled** | Music generation through kie.ai's Suno API, run against the live service including failure paths, but days old rather than months. Same for Deepgram speech, the streamer chat integration, and the local-runtime and coding-agent setup panels, which detect what you have installed rather than starting or stopping it |
-| **Half-built, and named as such** | The dashboard's error surfacing is uneven; a failed mutation still sometimes renders as nothing happening. Godot version detection reports "unknown" on some builds |
-| **A proposal, not a product** | [`bgate_engine/`](bgate_engine/) is a design note with JSON schemas and **no runtime code**. Nothing in the repository imports it. Its central claim, a second authoritative simulation in Python, was **withdrawn** after the experiment in its own `DESIGN.md` §16.5 came back negative |
-
-Most of this was proven against a small number of games on one Windows machine.
-It has been through a harsh self-audit, and the top-10 blockers from it have
-since been worked.
+| Covered by tests and daily use | The MCP server and its tools. Seats, lanes, locks, the hook. The Godot adapter. Both image providers. The dashboard. Playtest capture. `bgate publish` |
+| Works, proven by hand | The Blender adapter and the glTF round trip. Its tests are `slow`-marked or skip without Blender. Nothing here generates 3D geometry |
+| Newer | Music through kie.ai, Deepgram speech, the streamer chat integration, the local-runtime panels |
+| Uneven | Error surfacing in the dashboard. Godot version detection reports "unknown" on some builds |
+| Not a product | [`bgate_engine/`](bgate_engine/) is a design note. Its central claim was withdrawn after the experiment in its own `DESIGN.md` came back negative |
 
 ## Docs
 
-[`docs/README.md`](docs/README.md) indexes everything with a line each.
-
-**Start here**
+[`docs/README.md`](docs/README.md) indexes everything.
 
 | Page | What it is |
 |---|---|
 | [start-here.md](docs/start-here.md) | The front door. Assumes nothing |
 | [glossary.md](docs/glossary.md) | Every term this project uses narrowly |
-
-**Reference**
-
-| Page | What it is |
-|---|---|
-| [setup.md](docs/setup.md) | Requirements, API keys, `adopt`, project switching, MCP registration, platform support |
-| [reference.md](docs/reference.md) | Every surface in detail: dashboard, seats, locks, Blender to Godot, templates, publishing, playtest, layout |
-| [design-notes.md](docs/design-notes.md) | Budgets, human-only approval, canon, and the technology choices |
-| [gotchas.md](docs/gotchas.md) | GPU cold starts, stdio deadlocks, whisper segmentation, telemetry clocks |
+| [setup.md](docs/setup.md) | Requirements, keys, adopt, MCP registration, platforms |
+| [reference.md](docs/reference.md) | Every surface in detail |
+| [design-notes.md](docs/design-notes.md) | Budgets, approval, canon, technology choices |
+| [gotchas.md](docs/gotchas.md) | GPU cold starts, stdio deadlocks, telemetry clocks |
 | [screenshots.md](docs/screenshots.md) | The dashboard, view by view |
+| [lessons-from-a-shipped-game.md](docs/lessons-from-a-shipped-game.md) | What a shipped game cost, and the rules that came out of it |
 
-**Findings**
-
-| Page | What it is |
-|---|---|
-| [lessons-from-a-shipped-game.md](docs/lessons-from-a-shipped-game.md) | What a real shipped game cost to make, and the rules that came out of it |
-| [sprite-animation-research.md](docs/sprite-animation-research.md) | Why sprite sheets that passed every gate still animated badly |
-| [cinematic-research.md](docs/cinematic-research.md) | The video-model landscape and the Godot format wall that swallows a finished cutscene |
-| [visual-taste-research.md](docs/visual-taste-research.md) | What is computable about art quality, and what is not |
-
-## Working on Builders Gate itself
+## Working on it
 
 ```bash
 pip install -e ".[dev]"
@@ -340,38 +234,62 @@ ruff check .
 python -m pytest -m "not slow" -q
 ```
 
-Both are merge gates in CI. `-m "not slow"` deselects the tests that drive real
-Blender, real whisper, and the in-suite wheel build. Drop it only if you have
-those installed and want to wait. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-full set of checks.
+Both are merge gates in CI. The front end is built separately and its output is
+committed, so a plain `pip install` needs no toolchain:
 
-## Dev streams
+```bash
+cd frontend && npm install && npm run build
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full set of checks.
+
+## Streams and community
 
 Builders Gate is built on stream at
 [twitch.tv/thepizzzapie](https://twitch.tv/thepizzzapie), using the tool to make
-a game with it, which is how most of these gates get found. Streamer mode
-(Settings → Privacy) hides absolute paths, your username, hostname and any API
-key from the dashboard, the logs and the CLI.
+a game, which is how most of its gates get found.
 
-It also brings the stream's chat into the dashboard and can run a **feedback
-session**: while one is open, chat's reactions and notes are captured against the
-build, and closing it hands the session to the director, which synthesises it
-into notes you can brainstorm from or dispatch a team against. Channel
-configuration is read from the environment, so a public checkout carries the
-feature and none of the account.
+**Streamer mode** (Settings, Privacy) hides absolute paths, your username,
+hostname and every API key from the dashboard, the logs and the CLI, so the
+screen is safe to show.
 
-## Contributing, security, licence
+**Feedback sessions** bring the stream's chat into the dashboard. While one is
+open, chat's reactions and notes are captured against the build you are playing.
+Closing it hands the session to the director, which turns it into notes you can
+brainstorm from or dispatch a team against. Channel configuration is read from
+the environment, so a public checkout carries the feature and none of the
+account.
 
-Feedback is worth more here than patches, especially "it did not run on my
+## Security
+
+The dashboard binds to `127.0.0.1`, and that is not a boundary on its own: any
+page you have open can POST to localhost. Three checks sit on the mutating
+surface. A **host allowlist** that closes DNS rebinding, which the other two
+cannot see. **Same-origin** checks on `sec-fetch-site` and `Origin`. And a
+**per-project bearer token**, minted into `.bgate/ui-token` (0600, gitignored)
+and required on every mutation.
+
+Approval is human-only throughout. A dispatched agent carries
+`BGATE_ACTOR=agent:item-<id>` and is refused the bible, the budget, the revert,
+workflow gates, and promoting a candidate into the build.
+
+What it does not protect against, stated plainly: a hostile local user (anything
+that can read `.bgate/` has the token), a hostile prompt or project (lanes and
+locks are coordination, not a sandbox), exposure to a network (no roles, no
+multi-user model, do not put it behind a proxy), and untrusted input to the
+adapters, since executing the GDScript you hand `godot_run` is the feature.
+
+[SECURITY.md](SECURITY.md) has the whole threat model. Report vulnerabilities
+through GitHub Security Advisories, not a public issue.
+
+The standalone Windows build is unsigned, so Defender and Smart App Control both
+object; only an Authenticode certificate fixes that. Every release ships a
+`.sha256` beside the zip so you can check the download against what CI built.
+
+## Contributing and licence
+
+Feedback is worth more than patches here, especially "it did not run on my
 machine" and "this gate can be walked around". See
-[CONTRIBUTING.md](CONTRIBUTING.md) for what to include in a report, and
-[CHANGELOG.md](CHANGELOG.md) for the release state.
-
-This tool executes arbitrary GDScript, shells out, and spawns agent sessions with
-edit permissions. [SECURITY.md](SECURITY.md) states what the localhost guards do
-protect against (a browser page reaching your dashboard, including via DNS
-rebinding) and what they do not (a hostile local user, a network deployment,
-untrusted input to the adapters). Report vulnerabilities privately through GitHub
-Security Advisories, not a public issue.
+[CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
 
 MIT. See [LICENSE](LICENSE).

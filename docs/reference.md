@@ -63,7 +63,12 @@ with the token injected and `fetch` wrapped to send it same-origin only.
 `BGATE_NO_AUTH=1` opts out for a scripted run. See
 [SECURITY.md](../SECURITY.md).
 
-No build step, no node, no CDN.
+No CDN, and no build step for anyone installing it. The dashboard's source is
+`frontend/` — `frontend/public/` for the classic pages, stylesheet and modules,
+`frontend/src/` for the React parts — and `npm run build` in that directory
+writes `bgate_ui/static/`, which is committed. A wheel install and the packaged
+`.exe` therefore need nothing but Python. `bgate_ui/static/` is build output:
+editing it is editing a file the next build overwrites.
 
 ## Seats
 
@@ -563,7 +568,10 @@ bgate_core/       db, project, bible, lore, canon, scope, spend, queue,
 bgate_mcp/        FastMCP server (stdio), 196 registered tools
 bgate_adapters/   blender, godot, imagegen, krea, kie, localgen, sprites,
                   recorder, transcribe
-bgate_ui/         dashboard backend + routes/ + the single-page static/ front end
+bgate_ui/         dashboard backend + routes/, and static/, which is the built
+                  front end and is generated, not edited
+frontend/         the front end's only source: public/ (the classic page,
+                  app.css and its modules) and src/ (the React shell)
 bgate_site/       `bgate publish`: the static arcade + its theme/
 templates/        Godot project skeletons (2d, 3d, cutout, humanoid, shared)
 bgate_engine/     a design proposal + JSON schemas. No runtime code, nothing

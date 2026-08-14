@@ -1,0 +1,539 @@
+/* 11a · the joinable room. Rooms | conversation | who is in it.
+ *
+ * The third column changed subject between 8a and 11a: it was the pads, and it
+ * is now the ROSTER, because the whole point of one room that seats join is
+ * that who is present is a thing you have to be able to see. The pads did not
+ * lose their billing — they sit under the roster with their labels intact,
+ * above the one paragraph this design exists to state (the toolless rule).
+ *
+ * Colour comes from the app's tokens, never a hex: there are four themes and a
+ * hardcoded colour breaks three of them.
+ */
+
+.bg4-room {
+  display: grid; grid-template-columns: 200px minmax(0, 1fr) 320px;
+  height: 100%; min-height: 0;
+}
+/* UNDER 1240px THE ROSTER STOPS BEING A COLUMN AND BECOMES A DRAWER.
+   It used to be `display: none`, which is not a responsive layout — it is the
+   only panel that says who is in the room, what each seat has cost and how to
+   invite anyone, deleted below a width most laptops sit at, with nothing on
+   screen admitting it was ever there. Now the third track collapses and the
+   same element slides in over the conversation when the header's roster button
+   is pressed, so nothing becomes unreachable at any width. */
+/* The room is the positioning context for that drawer. */
+.bg4-room { position: relative }
+
+/* The header's roster button. Hidden at full width, where the panel it would
+   open is already the third column. */
+.bg4-rosterbtn {
+  display: none; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
+  color: var(--text-2); padding: 3px 9px; font: 500 10px var(--mono);
+}
+.bg4-rosterbtn:hover { color: var(--text); border-color: var(--text-3) }
+.bg4-rosterclose {
+  display: none; position: absolute; top: 8px; right: 10px; z-index: 2;
+  border: 0; background: transparent; cursor: pointer; padding: 2px 4px;
+  color: var(--text-3); font-size: 16px; line-height: 1;
+}
+.bg4-rosterclose:hover { color: var(--text) }
+
+/* AFTER the base rules above, not before: these override them, and at equal
+   specificity the later rule is the one that wins. Written the other way round
+   the drawer button stayed `display: none` at every width — the control that
+   makes the roster reachable was itself unreachable. */
+@media (max-width: 1240px) {
+  .bg4-room { grid-template-columns: 200px minmax(0, 1fr) }
+  .bg4-roster {
+    position: absolute; top: 0; right: 0; bottom: 0; z-index: 8;
+    width: min(320px, 92vw);
+    transform: translateX(102%);
+    transition: transform var(--dur-slow, .24s) var(--ease, ease);
+    box-shadow: var(--shadow-4);
+  }
+  .bg4-roster.open { transform: none }
+  .bg4-rosterbtn { display: inline-flex }
+  .bg4-rosterclose { display: block }
+}
+
+/* ---- rooms ------------------------------------------------------------- */
+
+.bg4-rooms {
+  display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
+  padding: 12px 8px; border-right: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-rooms-head {
+  display: flex; align-items: center; gap: 8px; padding: 0 2px 10px;
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.bg4-rooms-head span { flex: 1 }
+.bg4-mini {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex: none; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: transparent; color: var(--text-2);
+}
+.bg4-mini:hover { color: var(--text); border-color: var(--line-strong, var(--line)) }
+.bg4-roomlist { min-height: 0 }
+.bg4-roomrow {
+  display: block; width: 100%; text-align: left; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text-2); padding: 7px 8px; cursor: pointer;
+}
+.bg4-roomrow:hover { background: rgba(255, 255, 255, .03) }
+.bg4-roomrow.on { background: rgba(255, 255, 255, .05); color: var(--text) }
+.bg4-roomrow .l { display: flex; align-items: center; gap: 6px; min-width: 0 }
+.bg4-roomrow .t {
+  flex: 1; min-width: 0; font: 400 11px var(--sans);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The unread count. Ember on a tint of ember rather than a solid badge: it
+   marks a room worth going back to, not an alarm — and the rail already owns
+   the one solid accent shape on screen. */
+.bg4-roomrow .u {
+  flex: none; padding: 1px 6px; border-radius: 9999px;
+  font: 500 9px var(--mono); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.bg4-roomrow .m {
+  display: flex; align-items: center; gap: 6px; margin-top: 5px;
+  font: 500 9px var(--mono); color: var(--text-3);
+}
+.bg4-roomrow .m i { width: 6px; height: 6px; border-radius: 50%; flex: none }
+.bg4-rooms-foot {
+  margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line);
+  font: 500 10px/1.6 var(--mono); color: var(--text-3);
+}
+
+/* ---- the conversation -------------------------------------------------- */
+
+.bg4-roomtalk { display: flex; flex-direction: column; min-width: 0; min-height: 0 }
+.bg4-roomhead {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-roomhead .t { font: 450 13px var(--sans); color: var(--text) }
+.bg4-roomhead .m { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-roomhead .mantine-Badge-root { margin-left: auto; flex: none }
+.bg4-roomscroll { flex: 1; min-height: 0; padding: 12px 16px }
+
+/* A turn. `them` is anyone who is not you — one partner today, a roster
+   tomorrow — which is why the class is not named after the partner. */
+.bg4-msg { margin: 0 0 16px; max-width: 78ch }
+.bg4-msg .head { display: flex; align-items: center; gap: 9px; margin-bottom: 5px }
+
+/* TELLING THE VOICES APART.
+   --voice is set inline per message from SEAT_COLOR, the same table the roster
+   and the invite chips use. Everything below is that one variable: a rail, a
+   tinted avatar and a tinted name. The rail is what does the work when you are
+   skimming — colour at the left edge is readable at a glance in a way a 10px
+   uppercase label at the top of a block is not. Messages with no seat (you, and
+   the room's own partner) keep the old flat look on purpose, so a guest's turn
+   is visibly a guest's. */
+.bg4-msg.seated {
+  border-left: 2px solid var(--voice, var(--line));
+  padding-left: 11px; margin-left: -13px;
+}
+.bg4-msg.seated .txt { color: var(--text) }
+.bg4-msg .av {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 19px; height: 19px; border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.bg4-msg.seated .av {
+  border-color: color-mix(in srgb, var(--voice) 45%, transparent);
+  background: color-mix(in srgb, var(--voice) 12%, transparent);
+}
+/* The partner's turns are the room's own voice and are the ones you read most,
+   so they get the quietest treatment of the three: an avatar, no rail. */
+.bg4-msg.them:not(.seated) .av { opacity: .7 }
+.bg4-msg .who {
+  font: 500 10px var(--mono); letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.bg4-msg.you .who { color: var(--accent) }
+.bg4-msg .tag {
+  padding: 1px 6px; border: 1px solid var(--line); border-radius: 9999px;
+  font: 500 9px var(--mono); color: var(--text-3);
+}
+.bg4-msg .when {
+  margin-left: auto; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-msg .txt {
+  font: 400 12px/1.65 var(--sans); color: var(--text);
+  white-space: pre-wrap;
+}
+.bg4-msg.you .txt { color: var(--text-2) }
+
+/* The promote control. Deliberately quiet: promotion is a decision, not the
+   obvious next click, and a loud button next to every reply would read as one
+   the room expects you to press. */
+.bg4-msg .acts { display: flex; align-items: center; gap: 10px; margin-top: 8px }
+.bg4-promote {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; background: transparent;
+  color: var(--text-2); padding: 4px 10px;
+  font: 500 10px var(--mono);
+}
+.bg4-promote:hover { color: var(--accent); border-color: var(--accent) }
+.bg4-msg .acts .done {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 10px var(--mono); color: var(--accent);
+}
+.bg4-msg .acts .hint,
+.bg4-msg .acts .touch {
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+/* The lane bound, in the design's place: quiet mono beside the control. It is
+   long — a real glob list — so it takes the remaining width and truncates
+   rather than wrapping the row into two lines. */
+.bg4-msg .acts .touch {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+/* Once promoted, the lane IS the hint — the generic sentence would be saying
+   "an opinion until you promote it" about something already promoted. */
+.bg4-msg .acts .done ~ .hint { display: none }
+
+/* The seat's lane, under its name in the promote menu. Block-level so the entry
+   is two lines — the seat you are choosing and the ground it may write on. */
+.bg4-lane {
+  display: block; margin-top: 2px;
+  font: 500 9px/1.4 var(--mono); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* An event line: what happened between two messages, in the place it happened.
+   Arrivals and departures land here once the backend records them. */
+.bg4-event {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 16px;
+  padding: 5px 10px; border: 1px dashed var(--line); border-radius: 6px;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-event .when { margin-left: auto }
+
+/* ---- the plan waiting at the door -------------------------------------- */
+
+.bg4-plan {
+  margin: 4px 0 8px; border: 1px dashed var(--line-strong, var(--line));
+  border-radius: 10px; padding: 12px 14px; background: var(--surface-1, var(--solid-1));
+}
+.bg4-plan .h { display: flex; align-items: baseline; gap: 10px }
+.bg4-plan .h span:first-child {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.bg4-plan .h .sub { font: 500 10px var(--mono); color: var(--warn) }
+.bg4-plan .why {
+  margin: 8px 0 10px; font: 400 11px/1.55 var(--sans);
+  color: var(--text-3); max-width: 70ch;
+}
+.bg4-plan .sum {
+  margin: 0 0 12px; font: 400 11px/1.6 var(--sans);
+  color: var(--text-2); max-width: 70ch;
+}
+.bg4-plan .row { display: flex; align-items: baseline; gap: 10px; min-width: 0 }
+.bg4-plan .row .n {
+  width: 16px; flex: none; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-plan .row .seat {
+  width: 68px; flex: none; font: 500 10px var(--mono);
+  letter-spacing: .12em; text-transform: uppercase;
+}
+.bg4-plan .row .ttl {
+  font: 400 12px var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-plan .row .note { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-plan .row .cut {
+  margin-left: auto; flex: none; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-3); font: 400 14px/1 var(--mono); padding: 0 4px;
+}
+.bg4-plan .row .cut:hover { color: var(--bad) }
+/* Every repair the parser made, on screen. parse_plan is lenient so a model
+   naming a seat that does not exist costs a visible correction rather than a
+   second bill — that only holds if the correction is actually visible. */
+.bg4-plan .fixes {
+  margin: 10px 0 0; padding-left: 16px;
+  font: 500 10px/1.6 var(--mono); color: var(--warn);
+}
+
+/* ---- composer and door ------------------------------------------------- */
+
+.bg4-roomcomposer {
+  flex: none; display: flex; align-items: flex-end; gap: 10px;
+  padding: 10px 14px; border-top: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-roomcomposer .mantine-Textarea-root { flex: 1; min-width: 0 }
+.bg4-roomcomposer textarea {
+  font: 400 13px/1.6 var(--sans) !important; color: var(--text);
+}
+/* "ask one seat" sits at the composer's left, at the same weight as the
+   placeholder: addressing a question is a variation on saying something, not a
+   second mode with its own button prominence. */
+.bg4-ask {
+  flex: none; align-self: flex-end; display: inline-flex; align-items: center;
+  gap: 6px; cursor: pointer; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 5px; background: transparent;
+  color: var(--text-2); font: 500 11px var(--mono);
+}
+.bg4-ask:hover { color: var(--accent); border-color: var(--accent) }
+
+/* The addressed-to strip. It carries a correction, so it is readable prose at
+   the composer's own width rather than a chip you could take for a routing
+   indicator. */
+.bg4-asked {
+  flex: none; display: flex; align-items: baseline; gap: 8px;
+  padding: 8px 14px; border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 6%, var(--solid-1));
+  font: 500 10px/1.55 var(--mono); color: var(--text-3);
+}
+.bg4-asked b { color: var(--text-2); font-weight: 500 }
+.bg4-asked span { flex: 1; min-width: 0 }
+.bg4-asked .x {
+  flex: none; border: 0; background: transparent; cursor: pointer;
+  color: var(--text-3); font: 400 14px/1 var(--mono); padding: 0 2px;
+}
+.bg4-asked .x:hover { color: var(--text) }
+
+/* THE DOOR. Shut is the resting state and it looks it. */
+.bg4-door {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; border-top: 1px solid var(--line);
+  background: var(--solid-2); color: var(--text-3);
+  transition: background var(--dur-slow, .24s) var(--ease, ease),
+              color var(--dur-slow, .24s) var(--ease, ease);
+}
+.bg4-door .w { flex: 1; min-width: 0 }
+.bg4-door .t { font: 450 12px var(--sans) }
+.bg4-door .n {
+  margin-top: 3px; font: 500 10px/1.5 var(--mono); color: var(--text-3);
+}
+.bg4-door.open {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--solid-2));
+  border-top-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.bg4-door.open .t { color: var(--accent) }
+
+/* ---- the roster -------------------------------------------------------- */
+
+.bg4-roster {
+  display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
+  border-left: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-padhead {
+  display: flex; align-items: center; gap: 9px; flex: none;
+  padding: 11px 14px 8px; color: var(--text-2);
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase;
+}
+.bg4-padhead.bordered { border-top: 1px solid var(--line); margin-top: 4px }
+.bg4-padhead .sub {
+  margin-left: auto; letter-spacing: 0; text-transform: none;
+  color: var(--text-3); font-size: 10px;
+}
+
+/* One participant. The spend column is only ever drawn when the session
+   actually reports a number — an invented $0.00 is the kind of figure people
+   make budget decisions against. */
+.bg4-part {
+  display: flex; align-items: flex-start; gap: 9px; flex: none;
+  padding: 9px 14px; border-top: 1px solid var(--line);
+}
+.bg4-part:first-of-type { border-top: 0 }
+.bg4-part .w { flex: 1; min-width: 0 }
+.bg4-part .l { display: flex; align-items: center; gap: 7px }
+.bg4-part .nm { font: 450 11px var(--sans); color: var(--text) }
+.bg4-part .st {
+  padding: 1px 6px; border: 1px solid var(--line); border-radius: 9999px;
+  font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-part .st.own { color: var(--accent); border-color: var(--accent) }
+.bg4-part .st.live { color: var(--good); border-color: var(--good) }
+.bg4-part .note {
+  margin-top: 3px; font: 500 10px/1.5 var(--mono); color: var(--text-3);
+}
+.bg4-part .spend { font: 500 10px var(--mono); color: var(--text-2) }
+.bg4-part.empty { opacity: .8 }
+
+.bg4-invite { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 12px 12px }
+.bg4-invite .chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
+  color: var(--text-2); padding: 4px 10px;
+  font: 500 10px var(--mono);
+}
+.bg4-invite .chip:hover { color: var(--text); border-color: var(--text-3) }
+/* IN THE ROOM. The chip is the same control both ways — pressing it again is
+   how a seat leaves — so it changes state rather than disappearing, and
+   aria-pressed carries that to anything not reading colour. */
+.bg4-invite .chip.on {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+/* Inert, not disabled: `disabled` would swallow the hover that explains why. */
+.bg4-invite .chip.off { opacity: .45 }
+.bg4-invite .chip.off:hover { opacity: .7 }
+
+/* THE DISCUSSION DIAL. A segmented control rather than four loose chips: these
+   are four values of ONE setting, and the invite chips above are four
+   independent toggles — drawing them the same way would say they behave the
+   same way. */
+.bg4-discuss { padding: 2px 12px 12px }
+.bg4-discuss .steps {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 7px;
+  overflow: hidden;
+}
+.bg4-discuss .b {
+  cursor: pointer; border: 0; background: transparent; color: var(--text-2);
+  padding: 4px 11px; font: 500 10px var(--mono);
+  border-left: 1px solid var(--line);
+}
+.bg4-discuss .b:first-child { border-left: 0 }
+.bg4-discuss .b:hover:not(.on) { color: var(--text); background: var(--surface-2) }
+.bg4-discuss .b.on { color: var(--accent); background: var(--accent-soft) }
+.bg4-discuss .b:disabled { opacity: .4; cursor: default }
+.bg4-discuss .note {
+  margin-top: 7px; font: 400 10.5px/1.5 var(--sans); color: var(--text-3);
+}
+
+/* Send a guest away. Sits at the end of its row and stays quiet until the row
+   is hovered — a × per participant, at full contrast, reads as the primary
+   thing you do to a person in the room. */
+.bg4-part .x {
+  flex: none; border: 0; background: transparent; cursor: pointer; padding: 0 2px;
+  color: var(--text-3); font-size: 13px; line-height: 1; opacity: 0;
+  transition: opacity var(--dur, .16s) var(--ease, ease);
+}
+.bg4-part:hover .x, .bg4-part .x:focus-visible { opacity: 1 }
+.bg4-part .x:hover { color: var(--bad) }
+
+.bg4-notes { padding: 0 14px }
+.bg4-notes textarea {
+  font: 400 12px/1.7 var(--mono) !important; color: var(--text-2);
+}
+/* ---- the sketch panel -------------------------------------------------- */
+
+.bg4-sketch { padding: 0 14px 14px }
+/* Graph paper, from the design. Two repeating gradients over the surface token
+   so the ruling follows the theme instead of being drawn in a dark-mode grey
+   that vanishes on the light one. */
+/* THE PAD ITSELF LIVES HERE NOW. It is brainstorm.js's own surface (.bs-pad),
+   which sizes to its host — so the host is what decides how much room a sketch
+   gets in a 320px column. 240px is two shapes and an arrow at a readable size;
+   "bigger" opens the same scene full width when that stops being enough. */
+.bg4-sketch .live {
+  height: 240px; border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; background: var(--solid-2);
+}
+.bg4-sketch .live .bs-pad { height: 100%; min-height: 0 }
+/* The pad's own toolbar and footer are built for a full-width workspace. In a
+   column they get the same type as the rest of the roster, and the hint — which
+   explains a drag you are already doing — goes. */
+.bg4-sketch .live .bs-pad-hint { display: none }
+.bg4-sketch .live .bs-pad-tools { flex-wrap: wrap; gap: 2px; padding: 4px 5px }
+.bg4-sketch .live .bs-tool { width: 24px; height: 24px }
+
+.bg4-sketch .acts { display: flex; gap: 6px; margin-top: 8px }
+.bg4-sketch .acts .b {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px; padding: 7px 0; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 4px; background: transparent;
+  color: var(--text-2); font: 500 10px var(--mono);
+}
+.bg4-sketch .acts .b:hover:not(:disabled) { color: var(--text); border-color: var(--accent) }
+/* Disabled here is right where it is wrong on the invite chips: "clear" with
+   nothing to clear needs no explanation, and the count above already gives it. */
+.bg4-sketch .acts .b:disabled { opacity: .4; cursor: default }
+
+/* The pad, full size. Mantine's modal body is padded for forms; this one holds
+   a workspace that owns every pixel inside it. */
+.bg4-padmodal .mantine-Modal-body { padding: 0; height: 78vh }
+.bg4-padhost { height: 100%; min-height: 0; overflow: hidden }
+.bg4-padnone {
+  padding: 24px; max-width: 62ch;
+  font: 500 11px/1.7 var(--mono); color: var(--text-3);
+}
+
+/* The rule, at the foot, where the roster ends. It is the sentence the design
+   hangs on, so it gets the space a paragraph gets and not a tooltip. */
+.bg4-rule {
+  margin-top: auto; display: flex; align-items: flex-start; gap: 9px; flex: none;
+  padding: 12px 14px; border-top: 1px solid var(--line);
+  font: 500 10px/1.6 var(--mono); color: var(--text-2);
+}
+.bg4-rule .ti { margin-top: 2px; flex: none; color: var(--text-3) }
+
+/* WHO IS IN THAT ROOM, in the rail — a row of seat-coloured dots above the
+   meta line. Sized to read as a group at a glance rather than as five separate
+   marks; the room's own state dot stays on the meta line below, because "is
+   this room live" and "who is in it" are different questions. */
+.bg4-roomrow .g { display: flex; gap: 3px; margin: 4px 0 0 }
+.bg4-roomrow .g i { width: 5px; height: 5px; border-radius: 50%; flex: none }
+
+/* Per-seat spend on a roster row. Right-aligned against the leave button so a
+   column of numbers lines up and the expensive guest is findable by shape. */
+.bg4-part .spend {
+  flex: none; align-self: flex-start; font: 500 10px var(--mono);
+  color: var(--text-3); white-space: nowrap; margin-left: 6px;
+}
+
+/* ── the voice toggles ────────────────────────────────────────────────────
+   Two buttons, because the mic and the speaker are separate permissions and
+   separate costs. Both stay mounted and disabled when the relay is
+   unavailable — most installs have no Deepgram key, and a button that
+   disappears cannot explain itself. The tooltip carries the reason. */
+/* LABELLED, NOT ICON-ONLY. The first pass drew two 30px squares of dim grey
+   glyph and the owner scanned straight past them — which is the whole failure
+   an affordance has: it was there, it was enabled, and it did not read as
+   something you could press. The classic workspace said `talk` and `Silent` in
+   words beside its glyphs and that was right. --text-2 rather than --text-3 for
+   the same reason: these are available controls, not metadata. */
+.bg4-voice {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex: none; height: 30px; padding: 0 11px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--surface-2); color: var(--text-2);
+  font: 500 11px var(--mono); letter-spacing: .04em; white-space: nowrap;
+}
+.bg4-voice:hover:not(:disabled) {
+  border-color: var(--accent-line); color: var(--accent);
+}
+.bg4-voice:disabled { opacity: .4; cursor: not-allowed }
+/* TTS armed: on, but idle. The accent says "this will happen", not "this is
+   happening" — that is what the mic's hot state is for. */
+.bg4-voice.on { border-color: var(--accent-line); color: var(--accent) }
+/* A LIVE MICROPHONE IS THE LOUDEST THING ON THE SCREEN, deliberately. The
+   failure this guards is a capture nobody notices is running, so it does not
+   merely change colour — it pulses, at a rate slow enough not to be decorative.
+   Matches .bs-mic.hot in the classic workspace, which set this rule. */
+.bg4-voice.hot {
+  border-color: var(--bad-line); background: var(--bad-soft); color: var(--bad);
+  animation: bg4-mic-throb 1.6s ease-in-out infinite;
+}
+@keyframes bg4-mic-throb { 0%, 100% { opacity: 1 } 50% { opacity: .55 } }
+@media (prefers-reduced-motion: reduce) {
+  /* Still unmistakable without the pulse — the colour and the fill carry it. */
+  .bg4-voice.hot { animation: none }
+}
+
+/* THE ROOM IS ANSWERING. Sits at the foot of the transcript, where the next
+   turn will appear, so the eye is already in the right place when it does. */
+.bg4-thinking {
+  display: flex; align-items: center; gap: 10px; margin: 4px 0 16px;
+  font: 400 11px var(--sans); color: var(--text-3);
+}
+.bg4-thinking .dots { display: inline-flex; gap: 3px }
+.bg4-thinking .dots i {
+  width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  animation: bg4-thinkdot 1.1s infinite ease-in-out;
+}
+.bg4-thinking .dots i:nth-child(2) { animation-delay: .16s }
+.bg4-thinking .dots i:nth-child(3) { animation-delay: .32s }
+@keyframes bg4-thinkdot { 0%, 80%, 100% { opacity: .25 } 40% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) {
+  .bg4-thinking .dots i { animation: none; opacity: .6 }
+}

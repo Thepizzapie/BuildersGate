@@ -1,0 +1,209 @@
+/* cineqa.css — what the Video and QA workspaces need and no other seat does.
+ *
+ * The shared grammar (Head, Nothing, Tag, the card, the split) is seats.css and
+ * stays there. What is here is the two things those two seats put on screen that
+ * nothing else has a shape for:
+ *
+ *   * A SHOT IS A PURCHASE, so its row is a table and the last two columns are
+ *     the format and the price. The reference draws them that way for a reason —
+ *     a duration bar against the model's own ceiling and a per-shot cost are the
+ *     two numbers somebody argues a shot out of the list with, and a sentence
+ *     underneath the list is not where an argument happens.
+ *   * A RUN WITH NO VERDICT MUST BE THE LOUDEST THING ON THE SCREEN. seats.css
+ *     gives a failed gate a red border, which is right for a FAIL and wrong for
+ *     an UNKNOWN: a FAIL was decided, an UNKNOWN was not, and drawing them the
+ *     same is exactly the resemblance that lets an undecided run ship.
+ */
+
+/* ── video: the shot table ───────────────────────────────────────────────── */
+.bgs-shot .durbox { width: 118px; flex: none }
+.bgs-shot .durbox .track {
+  height: 3px; border-radius: 2px; background: var(--line); overflow: hidden;
+}
+.bgs-shot .durbox .track > span { display: block; height: 100% ; background: var(--warn) }
+.bgs-shot .durbox .track > span.hot { background: var(--bad) }
+.bgs-shot .durbox .lb {
+  margin-top: 4px; font: 500 10px var(--mono); color: var(--text-3);
+}
+.bgs-shot .durbox .lb.hot { color: var(--bad) }
+
+.bgs-shot .fmt {
+  flex: none; min-width: 46px; text-align: center; padding: 2px 5px; border-radius: 3px;
+  font: 500 9px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  border: 1px solid var(--line); color: var(--text-3);
+}
+.bgs-shot .fmt.ok   { color: var(--good); border-color: var(--good-line) }
+.bgs-shot .fmt.warn { color: var(--warn); border-color: var(--warn-line) }
+.bgs-shot .cost {
+  flex: none; width: 58px; text-align: right; color: var(--text-2);
+  font: 500 11px var(--mono);
+}
+/* An unpriced shot is not a free shot. It reads as a dash in the dim colour and
+   the banner above says how many of them there are and why. */
+.bgs-shot .cost.unknown { color: var(--text-3) }
+
+/* ── video: the delivery footer ──────────────────────────────────────────── */
+.bgs-deliver {
+  display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+}
+.bgs-deliver.warn { border-color: var(--warn-line); background: var(--warn-soft) }
+.bgs-deliver .b {
+  flex: 1; min-width: 0; font: 400 12px/1.6 var(--sans);
+  color: var(--text-2);
+}
+.bgs-deliver .b b { color: var(--text); font-weight: 500 }
+.bgs-deliver .b .why {
+  display: block; margin-top: 4px; font: 500 10px var(--mono);
+  color: var(--text-3);
+}
+/* The filled weight now lives in the shared grammar as `.bgs-btn.go` (seats.css)
+   — this seat only says which colour it wears. It used to hardcode #1a0a05 as
+   the label, which is correct on the ember-orange fill of the dark theme and
+   wrong in the light one, where the same token resolves to a dark brown. */
+.bgs-watch { --btn: var(--c-cinematic, var(--warn)) }
+
+/* ── qa: a run nobody decided ────────────────────────────────────────────── */
+.bgs-gate.t-unknown {
+  border-color: var(--bad-line); background: var(--bad-soft);
+  box-shadow: inset 3px 0 0 var(--bad);
+}
+.bgs-gate.t-unknown .note { color: var(--bad) }
+.bgs-gate .note.loud { color: var(--bad) }
+
+/* ── qa: engine test runs ────────────────────────────────────────────────── */
+.bgs-run {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  margin-bottom: 8px;
+}
+.bgs-run.bad { border-color: var(--bad-line) }
+.bgs-run .t {
+  flex: 1; min-width: 0; font: 500 11px var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bgs-run .w { flex: none; font: 500 10px var(--mono); color: var(--text-3) }
+.bgs-scripts {
+  display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 14px;
+}
+.bgs-scripts .s {
+  font: 500 10px var(--mono); padding: 3px 8px; border-radius: 9999px;
+  border: 1px solid var(--line); color: var(--text-2);
+}
+.bgs-scripts .s.bad { color: var(--bad); border-color: var(--bad-line) }
+.bgs-scripts .s.ok { color: var(--good); border-color: var(--good-line) }
+
+/* ── video: the storyboard ────────────────────────────────────────────────
+   THIS TAB USED TO RENDER THROUGH TWO CLASSES THAT DID NOT EXIST (.bgs-rows,
+   .bgs-row), inside no padding wrapper, over a listing that carried only a
+   name and a count. So it drew "item348-intro-shrink6 frames" flush against
+   the window edge and nothing else — the board's own frames were one endpoint
+   away and never fetched. */
+
+.bgc-logline {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  padding: 12px 14px; margin-bottom: 14px; max-width: 100ch;
+}
+.bgc-logline b { font: 450 13px var(--sans); color: var(--text) }
+.bgc-logline p {
+  margin: 7px 0 0; font: 400 12px/1.7 var(--sans); color: var(--text-2);
+}
+.bgc-logline .m { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap }
+
+/* A BOARD IS A CONTACT SHEET. auto-fill rather than a fixed count so a six-beat
+   board fills a wide window and reflows on a narrow one instead of stranding
+   frames in a column. 200px is the width at which the caption's beat line still
+   reads at 11px. */
+.bgc-board {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.bgc-frame {
+  margin: 0; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-2); overflow: hidden;
+}
+/* AN UNDRAWN FRAME IS A SLOT, NOT AN ABSENCE. The gaps are the work left, so
+   they are dashed and kept in sequence rather than omitted — a board that hid
+   them would report itself complete. */
+.bgc-frame.empty { border-style: dashed; background: transparent }
+.bgc-frame .img {
+  position: relative; aspect-ratio: 16/9; background: var(--surface-1);
+  display: grid; place-items: center; overflow: hidden;
+}
+.bgc-frame .img img {
+  width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in;
+}
+.bgc-frame .img .none { color: var(--text-3) }
+/* The index and the seconds ride ON the still: they belong to the frame, and a
+   caption row for two short numbers would cost a line of height per frame. */
+.bgc-frame .img .n, .bgc-frame .img .d {
+  position: absolute; top: 6px; padding: 2px 6px; border-radius: 3px;
+  font: 500 10px var(--mono); color: var(--text);
+  background: color-mix(in srgb, var(--solid-1) 78%, transparent);
+}
+.bgc-frame .img .n { left: 6px }
+.bgc-frame .img .d { right: 6px; color: var(--text-2) }
+.bgc-frame figcaption {
+  display: flex; flex-direction: column; gap: 5px; padding: 9px 11px;
+}
+.bgc-frame .b { font: 500 10px var(--mono); color: var(--text-2) }
+.bgc-frame .a {
+  font: 400 11px/1.55 var(--sans); color: var(--text-3);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bgc-frame .c {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+
+/* ── video: the shot list's second lines ─────────────────────────────────── */
+/* A shot row is a table and stayed one, but three of the facts on the wire do
+   not fit in a column: the spoken line, the planner's note, and a shot whose
+   parameters the provider will refuse. The last one is not decoration — a shot
+   carrying both an anchor and character refs on a model that declares them
+   exclusive is a shot whose refs are dropped in silence, and the symptom shows
+   up later as "the character has a different face", which gets blamed on the
+   anchor. */
+.bgs-shot .b .m .bgc-conflict, .bgs-shot .b .bgc-conflict {
+  color: var(--bad);
+}
+.bgs-shot .b .bgc-conflict span { color: var(--bad) }
+
+/* The provenance line under the price. Deliberately quieter than the caveat
+   above it: the caveat is what the number means, this is who said so. */
+.bgs-banner .s.bgc-basis {
+  margin-top: 6px; font: 400 11px/1.6 var(--sans); color: var(--text-3);
+  max-width: 92ch;
+}
+.bgc-seqmeta { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap }
+
+/* ── video: a take, and the decisions it is owed ─────────────────────────── */
+/* AN OLDER REVISION IS NOT WORK LEFT TO DO. r1 beside an installed r2 wore the
+   same three red badges as a delivery that had genuinely failed, which is the
+   fastest way to teach somebody to stop reading the badges. It stays on screen
+   — the register keeps it and so should the page — at half weight, with no
+   action buttons, because there is no decision left to take on it. */
+.bgc-take.dead { opacity: .55 }
+.bgc-take.dead:hover { opacity: 1 }
+.bgc-acts { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap }
+
+/* ── video: the storyboard's edges ───────────────────────────────────────── */
+/* A CUT BEAT IS A DECISION AND A DELETED BEAT IS A HOLE. storyboard_frame_cut
+   marks rather than deletes, so the endpoint keeps returning it; the tab used
+   to draw it in the grid and count it, which turned a five-beat board into a
+   six-beat one and made "6 of 6 drawn" a completion claim over a board with a
+   beat pulled out of it. It belongs below the grid, named, uncounted. */
+.bgc-cutrow {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  padding: 8px 11px; border: 1px dashed var(--line); border-radius: 6px;
+  font: 400 11px/1.5 var(--sans); color: var(--text-3);
+}
+.bgc-promoted { margin: 0 0 14px; font: 400 11px/1.5 var(--sans) }
+/* The boarded line, at the weight of a quotation rather than of a caption. */
+.bgc-frame .q {
+  font: 400 11px/1.55 var(--sans); color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bgc-frame figcaption .c { flex-wrap: wrap; gap: 5px }

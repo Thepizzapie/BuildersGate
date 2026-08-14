@@ -197,9 +197,6 @@ IID_UNKNOWN = GUID("{00000000-0000-0000-C000-000000000046}")
 IID_ENV_HANDLER = GUID("{4E8A3389-C9D8-4BD2-B6B5-124FEE6CC14D}")
 IID_CTRL_HANDLER = GUID("{6C4819F3-C9B7-4260-8127-C9F5BDE7F68C}")
 
-LPUNKNOWN = c_void_p
-
-
 def _vtable(*methods):
     """Build a COM vtable struct from (name, prototype) pairs."""
     class VTable(Structure):

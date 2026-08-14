@@ -3080,19 +3080,6 @@ def _stamp(root: str, artifact_id: int, key: str, value: Any) -> None:
 # What it will cost, asked BEFORE it is bought
 # ---------------------------------------------------------------------------
 
-def estimate_shot(root: str | os.PathLike[str], name: str, idx: int, *,
-                  model: str = "") -> dict:
-    """What one planned shot is likely to cost, before anybody buys it.
-
-    Thin over :func:`bgate_adapters.kie.estimate_usd` — what this layer adds is
-    the shot's OWN numbers: its duration, and the sequence's model, resolution
-    and shape, which are the inputs an estimate needs and which live in three
-    different columns.
-    """
-    seq = sequence(root, name)
-    return _shot_estimate(seq, _shot_at(seq, idx), model=model)
-
-
 def _shot_estimate(seq: dict, shot: dict, *, model: str = "") -> dict:
     from bgate_adapters import kie
 

@@ -1,0 +1,584 @@
+/* 10 · lore and dialogue — the narrative SEAT's body.
+
+   LAYOUT AND DENSITY ARE THE DESIGN'S; every colour is a token. The reference
+   frames are drawn on #0e0d0c with #2a2926 rules, and hardcoding those hexes
+   would have shipped a black panel on the light, orbit and system themes —
+   three of the four this app has.
+
+   THESE PANES ONCE OWNED A DECK OF THEIR OWN (#view-seat-narrative) and hung a
+   full-height chain off that id. The deck is gone — the seat workspace is the
+   only narrative surface now — so the chain hangs off .bgs-body instead. The
+   requirement is unchanged and is the reason any of this exists: the graph
+   pane must resolve its height against a definite parent, or it grows and the
+   refusal strip — the one thing here that must be seen — lands below the fold.
+   .bgs-body is `flex:1; min-height:0`, which is definite; its `overflow-y:auto`
+   is not wanted here because both panes carry their own scrollers. */
+.bgs-body:has(> .bg4-narseat) { overflow: hidden }
+
+.bg4-narseat { height: 100%; min-height: 0; display: flex; flex-direction: column }
+.bg4-narseat > * { flex: 1; min-height: 0 }
+
+/* The head slot inside the seat is the tab's chips and nothing else — the
+   seat's own topbar already carries the title and the tabs. With nothing to
+   report it takes no height rather than drawing an empty 34px rule. */
+.bg4-narseathead {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  flex: none; padding: 7px 16px; border-bottom: 1px solid var(--line);
+  background: var(--surface-1, var(--solid-1));
+}
+.bg4-narseathead:not(:has(*)) { display: none }
+
+.bg4-nar-lore,
+.bg4-nar-dlg { display: grid; height: 100%; min-height: 0 }
+.bg4-nar-lore { grid-template-columns: 260px minmax(0, 1fr) }
+.bg4-nar-dlg { grid-template-columns: 240px minmax(0, 1fr) }
+/* Under ~1100px the list column is the half of the split that can be recovered
+   from the header's chips and the graph itself; the material cannot. */
+@media (max-width: 1100px) {
+  .bg4-nar-lore, .bg4-nar-dlg { grid-template-columns: minmax(0, 1fr) }
+  .bg4-narlist { display: none }
+}
+
+/* ── the list column ──────────────────────────────────────────────────────── */
+
+.bg4-narlist {
+  display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-narlist-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 9px 12px; border-bottom: 1px solid var(--line);
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-narlist-head input {
+  flex: 1; min-width: 0; border: 0; background: transparent; padding: 0;
+  color: var(--text); font: 500 10px var(--mono);
+}
+.bg4-narlist-head input::placeholder { color: var(--text-3) }
+.bg4-narlist-head input:focus { outline: none }
+.bg4-narlist-head .ro { color: var(--text-3) }
+
+.bg4-narkinds {
+  display: flex; flex-wrap: wrap; gap: 4px; flex: none;
+  padding: 9px 10px; border-bottom: 1px solid var(--line);
+}
+.bg4-narkinds .k {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 3px; background: transparent;
+  padding: 2px 7px; color: var(--text-3);
+  font: 500 10px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.bg4-narkinds .k span { opacity: .7 }
+.bg4-narkinds .k:hover { border-color: var(--line-strong); color: var(--text-2) }
+.bg4-narkinds .k.on {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
+
+.bg4-narscroll { flex: 1; min-height: 0 }
+
+.bg4-narrow {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  border: 0; border-left: 2px solid transparent; background: transparent;
+  padding: 8px 12px 8px 10px;
+}
+.bg4-narrow:hover { background: rgba(255, 255, 255, .03) }
+.bg4-narrow.on { background: rgba(255, 255, 255, .05); border-left-color: var(--accent) }
+.bg4-narrow .l { display: flex; align-items: center; gap: 8px }
+.bg4-narrow .dot { width: 6px; height: 6px; border-radius: 50%; flex: none }
+.bg4-narrow .s {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 11px var(--mono); color: var(--text);
+}
+.bg4-narrow .k {
+  display: block; margin-top: 3px; padding-left: 14px;
+  font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A sub-line carrying a REASON rather than a label. Uppercase with .1em
+   tracking is legible on "12 NODES · FROM INTRO" and unreadable on a sentence,
+   so the sentence keeps its own case and the row keeps the ellipsis. */
+.bg4-narrow .k.err {
+  text-transform: none; letter-spacing: 0; font-size: 10px;
+  color: var(--bad, #ff7a6b);
+}
+
+/* ── the header bar ───────────────────────────────────────────────────────── */
+
+.bg4-narmain { display: flex; flex-direction: column; min-width: 0; min-height: 0 }
+
+.bg4-narhead {
+  display: flex; align-items: center; gap: 10px; flex: none; height: 42px;
+  padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--solid-1);
+}
+.bg4-narhead .ttl { font: 450 13px var(--sans); color: var(--text) }
+.bg4-narhead .sp { flex: 1 }
+
+.bg4-nartabs {
+  display: flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden;
+  margin-left: 6px;
+}
+.bg4-nartabs button {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  border: 0; background: transparent; color: var(--text-3); padding: 5px 11px;
+  font: 500 10px var(--mono);
+}
+.bg4-nartabs button:hover { color: var(--text-2) }
+.bg4-nartabs button.on { background: var(--solid-2); color: var(--text) }
+
+.bg4-narchip {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-narchip i { width: 6px; height: 6px; border-radius: 50%; flex: none }
+
+/* ── 10a · the entity, opened ─────────────────────────────────────────────── */
+
+.bg4-narbody { flex: 1; min-height: 0 }
+.bg4-narpane { padding: 16px 18px 22px }
+
+.bg4-narttl { display: flex; align-items: center; gap: 10px }
+.bg4-narttl h3 {
+  margin: 0; font: 450 17px var(--sans); color: var(--text);
+}
+.bg4-narttl .st {
+  font: 500 10px var(--mono); letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.bg4-narttl .sp { flex: 1 }
+.bg4-narsum {
+  margin: 8px 0 0; max-width: 82ch;
+  font: 400 12px/1.6 var(--sans); color: var(--text-3);
+}
+
+/* THE SPLIT IS THE POINT — prose left, assertions right, equal width. lore.py
+   keeps them in different tables because you cannot diff a paragraph for
+   contradictions and you can diff a sentence; stacking them would have said
+   they were the same material at two lengths. */
+.bg4-narsplit {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 16px;
+}
+@media (max-width: 1000px) { .bg4-narsplit { grid-template-columns: 1fr } }
+
+.bg4-narlbl { display: flex; align-items: center; gap: 8px; margin-bottom: 8px }
+.bg4-narlbl b {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.bg4-narlbl span { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-narlbl .sp { flex: 1 }
+
+.bg4-narprose {
+  border: 1px solid var(--line); border-radius: 6px; background: var(--solid-2);
+  padding: 13px 14px; white-space: pre-wrap;
+  font: 400 12px/1.75 var(--sans); color: var(--text-2);
+}
+.bg4-narnone {
+  display: block; font: 500 11px/1.6 var(--mono);
+  color: var(--text-3); padding: 4px 0;
+}
+
+.bg4-narfact {
+  display: flex; align-items: flex-start; gap: 9px; margin-bottom: 6px;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--solid-2);
+  padding: 9px 12px;
+}
+/* A locked fact is the only thing on this page that can REFUSE a write, so it
+   is the only thing wearing the accent. */
+/* The status control. It is a <select> and not a badge because status is an
+   input to canon_check, not a decoration — but it must not read as a form
+   field either, so it keeps the badge's shape and takes the status colour from
+   the row it is on. */
+.bg4-narstatus {
+  font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 2px 6px; cursor: pointer;
+}
+.bg4-narstatus:focus { outline: 0; border-color: var(--accent-line) }
+.bg4-narstatus:disabled { opacity: .5; cursor: default }
+
+/* Asserting a fact, inline under the facts it joins. */
+.bg4-narfactform {
+  display: flex; flex-direction: column; gap: 7px; margin-top: 9px;
+  padding: 10px 11px; border: 1px solid var(--accent-line); border-radius: 6px;
+  background: var(--surface-2);
+}
+.bg4-narfactform textarea, .bg4-narfactform input[type=text],
+.bg4-narfactform input:not([type]) {
+  width: 100%; font: 400 12px/1.6 var(--sans); color: var(--text);
+  background: var(--solid-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 7px 9px; resize: vertical;
+}
+.bg4-narfactform textarea:focus, .bg4-narfactform input:focus {
+  outline: 0; border-color: var(--accent-line);
+}
+.bg4-narfactform .r { display: flex; align-items: center; gap: 8px; flex-wrap: wrap }
+.bg4-narfactform .r input:not([type=checkbox]) { flex: 1; min-width: 140px }
+.bg4-narfactform .r .sp { flex: 1 }
+.bg4-narfactform label {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-3); cursor: pointer;
+}
+.bg4-narfactform label input { accent-color: var(--bad, #ff7a6b) }
+.bg4-narfactform .h { font: 500 10px/1.5 var(--mono); color: var(--text-3) }
+.bg4-narfactform .e {
+  font: 400 11px/1.5 var(--sans); color: var(--bad, #ff7a6b);
+  border-top: 1px solid var(--line); padding-top: 7px;
+}
+
+.bg4-narfact.locked { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)) }
+.bg4-narfact .i { flex: none; color: var(--text-3); line-height: 1; padding-top: 2px }
+.bg4-narfact.locked .i { color: var(--accent) }
+.bg4-narfact .t {
+  flex: 1; font: 400 11px/1.6 var(--sans); color: var(--text-2);
+}
+.bg4-narfact .src {
+  flex: none; max-width: 12ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font: 500 9px var(--mono); color: var(--text-3);
+}
+
+/* the gate's answer */
+.bg4-narverdict {
+  margin-top: 16px; border: 1px solid var(--line); border-radius: 6px;
+  padding: 10px 12px; background: var(--solid-2);
+}
+.bg4-narverdict.review { border-color: color-mix(in srgb, var(--warn, #ffbb45) 45%, var(--line)) }
+.bg4-narverdict.conflict {
+  border-color: color-mix(in srgb, var(--bad, #ff7a6b) 55%, var(--line));
+  background: color-mix(in srgb, var(--bad, #ff7a6b) 7%, transparent);
+}
+.bg4-narverdict .h { display: flex; align-items: center; gap: 9px }
+.bg4-narverdict .h b {
+  font: 450 12px var(--sans); color: var(--text);
+}
+.bg4-narverdict .h .sp { flex: 1 }
+.bg4-narverdict .h .m { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-narverdict.ok .h i { color: var(--good, #4ec98f) }
+.bg4-narverdict.review .h i { color: var(--warn, #ffbb45) }
+.bg4-narverdict.conflict .h i { color: var(--bad, #ff7a6b) }
+.bg4-narverdict .f {
+  display: flex; align-items: baseline; gap: 10px; padding: 6px 0 0 26px;
+  font: 400 11px/1.55 var(--sans); color: var(--text-2);
+}
+.bg4-narverdict .f .c {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-narverdict .f.conflict .c { color: var(--bad, #ff7a6b) }
+.bg4-narverdict .f .t { flex: 1 }
+.bg4-narverdict .f .q {
+  flex: none; max-width: 34ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font: 500 10px var(--mono); color: var(--text-3);
+}
+
+.bg4-narband { display: flex; align-items: center; gap: 10px; margin: 22px 0 8px }
+.bg4-narband b {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.bg4-narband .rule { flex: 1; height: 1px; background: var(--line) }
+.bg4-narband .n { font: 500 10px var(--mono); color: var(--text-3) }
+
+.bg4-narrefs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px }
+@media (max-width: 1000px) { .bg4-narrefs { grid-template-columns: 1fr } }
+.bg4-narref {
+  display: flex; align-items: center; gap: 9px; width: 100%; cursor: pointer;
+  padding: 9px 12px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--solid-2); color: var(--text-3); text-align: left;
+}
+.bg4-narref:hover { border-color: var(--line-strong); color: var(--text-2) }
+.bg4-narref .p {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 11px var(--mono);
+}
+.bg4-narref .tag {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+}
+
+/* ── 10b · the graph ──────────────────────────────────────────────────────── */
+
+/* The grid is the design's, rebuilt out of tokens: it says "this is a canvas
+   you can pan", which a flat panel does not. */
+.bg4-narcanvas {
+  flex: 1; min-height: 0; overflow: auto; padding: 16px;
+  background-color: var(--solid-2);
+  background-image:
+    repeating-linear-gradient(0deg, transparent 0 23px,
+      color-mix(in srgb, var(--line) 55%, transparent) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px,
+      color-mix(in srgb, var(--line) 55%, transparent) 23px 24px);
+}
+/* No graph, no ground. See Dialogue.tsx. */
+.bg4-narcanvas.bare {
+  background-image: none; display: grid; place-items: center; padding: 32px;
+}
+
+/* The empty state as the SUBJECT of the canvas rather than a caption dropped in
+   the corner of it: a claim, the paragraph that explains why the screen behaves
+   this way, and the one action that is actually available from here. */
+.bg4-narempty {
+  max-width: 62ch; display: flex; flex-direction: column; gap: 9px;
+  padding: 20px 22px; border: 1px dashed var(--line); border-radius: 8px;
+  background: var(--surface-1);
+}
+.bg4-narempty > b { font: 450 14px var(--sans); color: var(--text-2) }
+.bg4-narempty > span { font: 400 12px/1.7 var(--sans); color: var(--text-3) }
+.bg4-narempty code {
+  font: 500 11px var(--mono); color: var(--text-2);
+  background: var(--surface-3); border-radius: 3px; padding: 1px 5px;
+}
+.bg4-narempty .acts {
+  display: flex; align-items: center; gap: 10px; margin-top: 4px; flex-wrap: wrap;
+}
+.bg4-narempty .acts .hint { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-narempty .bgs-btn.go { --btn: var(--c-narrative, var(--accent)) }
+.bg4-nargraph { display: block }
+.bg4-nargraph text { font: 500 11px var(--mono); fill: var(--text-2) }
+.bg4-nargraph .miss {
+  font: 500 10px var(--mono); fill: var(--bad, #ff7a6b);
+}
+
+.bg4-nargraph .nd { cursor: pointer }
+.bg4-nargraph .nd rect {
+  fill: var(--solid-1); stroke: var(--line-strong); stroke-width: 1;
+}
+.bg4-nargraph .nd:hover rect { stroke: var(--text-3) }
+.bg4-nargraph .nd:focus { outline: none }
+.bg4-nargraph .nd:focus rect { stroke: var(--accent) }
+.bg4-nargraph .nd.start rect { stroke: var(--accent) }
+.bg4-nargraph .nd.end rect { stroke: var(--good, #4ec98f) }
+/* A failing node is drawn as failing, not listed as failing somewhere else. */
+.bg4-nargraph .nd.bad rect {
+  stroke: var(--bad, #ff7a6b); stroke-width: 1.5;
+  fill: color-mix(in srgb, var(--bad, #ff7a6b) 9%, var(--solid-1));
+}
+.bg4-nargraph .nd.on rect { stroke-width: 2 }
+.bg4-nargraph .nd .id { fill: var(--text); font-weight: 500 }
+.bg4-nargraph .nd .badge {
+  font: 500 9px var(--mono); fill: var(--text-3);
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.bg4-nargraph .nd.bad .badge { fill: var(--bad, #ff7a6b) }
+.bg4-nargraph .nd.end .badge { fill: var(--good, #4ec98f) }
+.bg4-nargraph .nd.start .badge { fill: var(--accent) }
+.bg4-nargraph .nd .tx { font-size: 10px; fill: var(--text-2) }
+.bg4-nargraph .nd .tx.dim { fill: var(--text-3); font-size: 10px }
+
+/* the selected node — the walk */
+.bg4-narnode {
+  flex: none; border-top: 1px solid var(--line); background: var(--solid-1);
+  padding: 10px 14px 12px; max-height: 34%; overflow-y: auto;
+}
+.bg4-narnode .h { display: flex; align-items: center; gap: 9px; color: var(--text-3) }
+.bg4-narnode .h b { font: 450 12px var(--mono); color: var(--text) }
+.bg4-narnode .h .sp2 { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-narnode .h .sp { flex: 1 }
+.bg4-narnode .h .x {
+  border: 0; background: transparent; color: var(--text-3); cursor: pointer; line-height: 1;
+}
+.bg4-narnode .t {
+  margin: 8px 0 10px; max-width: 90ch;
+  font: 400 12px/1.7 var(--sans); color: var(--text-2);
+}
+.bg4-narnode .cs { display: flex; flex-direction: column; gap: 5px }
+.bg4-narnode .c {
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  cursor: pointer; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 4px; background: var(--solid-2); color: var(--text-3);
+}
+.bg4-narnode .c:hover { border-color: var(--line-strong); color: var(--text-2) }
+.bg4-narnode .c .l {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 11px var(--sans); color: var(--text-2);
+}
+.bg4-narnode .c .g { flex: none; font: 500 10px var(--mono) }
+/* A choice that cannot be followed here is a choice that cannot be followed in
+   the game either. It gets the colour of the failure, and no hover. */
+.bg4-narnode .c.dead {
+  border-color: color-mix(in srgb, var(--bad, #ff7a6b) 50%, var(--line));
+  color: var(--bad, #ff7a6b); cursor: not-allowed;
+}
+.bg4-narnode .c.dead:hover { border-color: color-mix(in srgb, var(--bad, #ff7a6b) 50%, var(--line)) }
+.bg4-narnode .c.dead .g { color: var(--bad, #ff7a6b) }
+
+/* the refusal — the strip dialogue.write's error message would have been */
+.bg4-narrefuse {
+  flex: none; padding: 11px 14px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--bad, #ff7a6b) 40%, var(--line));
+  background: color-mix(in srgb, var(--bad, #ff7a6b) 7%, transparent);
+  max-height: 40%; overflow-y: auto;
+}
+.bg4-narrefuse.ok {
+  border-top-color: var(--line);
+  background: transparent;
+}
+.bg4-narrefuse .h { display: flex; align-items: center; gap: 10px; color: var(--bad, #ff7a6b) }
+.bg4-narrefuse.ok .h { color: var(--good, #4ec98f) }
+.bg4-narrefuse .h b { font: 450 12px var(--sans) }
+.bg4-narrefuse .h .sp { flex: 1 }
+.bg4-narrefuse .h .m { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-narrefuse .p {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  cursor: pointer; border: 0; background: transparent; padding: 6px 0 6px 27px;
+}
+.bg4-narrefuse .p:hover { background: rgba(255, 255, 255, .03) }
+.bg4-narrefuse .p .n {
+  flex: none; font: 450 10px var(--mono); color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--bad, #ff7a6b) 45%, var(--line));
+  border-radius: 3px; padding: 2px 7px;
+}
+.bg4-narrefuse .p.adj .n { border-color: var(--line-strong) }
+.bg4-narrefuse .p .t {
+  flex: 1; min-width: 0; font: 400 11px/1.5 var(--sans);
+  color: var(--text-2);
+}
+.bg4-narrefuse .p .k {
+  flex: none; font: 500 10px var(--mono); letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-3);
+}
+/* The SERVER's line. Distinct from the client-computed problems below it,
+   because "dialogue.validate said this" and "this screen worked this out" are
+   different claims and only one of them stops a write. */
+.bg4-narrefuse .srv {
+  display: flex; gap: 10px; align-items: baseline; padding: 8px 0 4px 27px;
+}
+.bg4-narrefuse .srv .n {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .12em;
+  text-transform: uppercase; color: var(--bad, #ff7a6b);
+  border: 1px solid color-mix(in srgb, var(--bad, #ff7a6b) 45%, var(--line));
+  border-radius: 3px; padding: 2px 7px;
+}
+.bg4-narrefuse .srv .t { font: 400 11.5px/1.6 var(--sans); color: var(--text-2) }
+.bg4-narrefuse .srv.drift .n {
+  color: var(--warn, #ffbb45);
+  border-color: color-mix(in srgb, var(--warn, #ffbb45) 45%, var(--line));
+}
+
+.bg4-narrefuse .foot {
+  padding: 6px 0 0 27px; font: 500 10px/1.5 var(--mono);
+  color: var(--text-3);
+}
+
+/* ── quests ───────────────────────────────────────────────────────────────
+   The panel reuses the dialogue screen's two-column frame (bg4-nar-dlg) so the
+   seat has one layout and not two; everything below is the step list, which is
+   the part that is genuinely a different shape. */
+.bg4-qbody { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 24px }
+
+.bg4-qhead { display: flex; align-items: center; gap: 10px }
+.bg4-qhead h3 { margin: 0; font: 450 17px var(--sans); color: var(--text) }
+.bg4-qhead .sp { flex: 1 }
+.bg4-qhead .giver {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 9999px;
+  border: 1px solid var(--accent-line); color: var(--c-narrative, var(--accent));
+}
+/* A quest nobody hands out is legitimate — a notice board, a letter, the world.
+   Drawn plainly rather than as a warning, because it is not one. */
+.bg4-qhead .giver.none { border-color: var(--line); color: var(--text-3) }
+.bg4-qstate {
+  font: 500 10px var(--mono); background: var(--surface-2); color: var(--text-2);
+  border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px;
+}
+.bg4-qpremise {
+  margin: 10px 0 0; font: 400 12px/1.75 var(--sans); color: var(--text-2);
+  max-width: 90ch;
+}
+
+.bg4-qrefuse {
+  margin-top: 14px; border: 1px solid var(--bad-line); border-radius: 6px;
+  background: var(--bad-soft); padding: 11px 13px;
+}
+.bg4-qrefuse .h {
+  display: flex; align-items: center; gap: 9px; color: var(--bad);
+  font: 400 12px var(--sans);
+}
+.bg4-qrefuse .p { display: flex; gap: 10px; margin-top: 8px; align-items: baseline }
+.bg4-qrefuse .p .k {
+  flex: none; width: 92px; font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--bad);
+}
+.bg4-qrefuse .p .t { font: 400 12px/1.6 var(--sans); color: var(--text-2) }
+
+.bg4-qlist { margin: 16px 0 10px }
+.bg4-qlist .st {
+  display: flex; gap: 12px; align-items: flex-start; padding: 11px 13px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  margin-bottom: 8px;
+}
+/* Dimmed, not hidden: an optional step is still content somebody has to write. */
+.bg4-qlist .st.opt { opacity: .78 }
+.bg4-qlist .st .n {
+  flex: none; width: 20px; text-align: right;
+  font: 500 11px var(--mono); color: var(--text-3); margin-top: 1px;
+}
+.bg4-qlist .st .b { flex: 1; min-width: 0 }
+.bg4-qlist .st .t { font: 400 12px/1.5 var(--sans); color: var(--text) }
+.bg4-qlist .st .w {
+  margin-top: 5px; font: 500 11px/1.6 var(--mono); color: var(--text-2);
+  display: flex; gap: 8px; align-items: baseline;
+}
+.bg4-qlist .st .w .lb {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--good);
+}
+.bg4-qlist .st .tagopt {
+  flex: none; font: 500 9px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-3);
+  border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px;
+}
+
+.bg4-qadd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+.bg4-qadd input[type=text], .bg4-qadd input:not([type]) {
+  flex: 1; min-width: 180px; font: 400 11px var(--sans); color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 4px; padding: 7px 9px;
+}
+.bg4-qadd label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-qreward {
+  display: flex; align-items: center; gap: 8px; margin-top: 16px;
+  font: 400 12px var(--sans); color: var(--text-2);
+}
+
+/* ── the new-quest form ─────────────────────────────────────────────────── */
+.bg4-qform { display: flex; flex-direction: column; gap: 12px; max-width: 100ch }
+.bg4-qform > label { display: flex; flex-direction: column; gap: 5px }
+.bg4-qform > label > span {
+  font: 500 10px var(--mono); letter-spacing: .18em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-qform input, .bg4-qform textarea, .bg4-qform select {
+  font: 400 12px var(--sans); color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px;
+  resize: vertical;
+}
+.bg4-qform input:focus, .bg4-qform textarea:focus, .bg4-qform select:focus {
+  outline: 0; border-color: var(--accent-line);
+}
+
+/* THE STEP TABLE PUTS done_when IN ITS OWN COLUMN with its own placeholder,
+   because the placeholder is the teaching: an action beside an observable. A
+   single "step" field would collect to-do items. */
+.bg4-qsteps { display: flex; flex-direction: column; gap: 6px }
+.bg4-qsteps .hd, .bg4-qsteps .row {
+  display: grid; grid-template-columns: 1fr 1.3fr 62px 34px;
+  gap: 8px; align-items: center;
+}
+.bg4-qsteps .hd > span {
+  font: 500 9px var(--mono); letter-spacing: .16em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.bg4-qsteps .hd .o, .bg4-qsteps .row .o { text-align: center; justify-self: center }
+.bg4-qsteps .row input[type=checkbox] { accent-color: var(--c-narrative, var(--accent)) }
+
+.bg4-qform .acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap }
+.bg4-qform .acts .sp { flex: 1 }
+.bg4-qform .acts .hint { font: 500 10px var(--mono); color: var(--text-3) }
+.bg4-qform .bgs-btn.go, .bg4-narempty .bgs-btn.go { --btn: var(--c-narrative, var(--accent)) }

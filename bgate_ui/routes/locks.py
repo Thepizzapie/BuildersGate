@@ -44,3 +44,39 @@ def locks() -> dict:
         "waiters": waiting,
         "path_leases": _assets.list_path_leases(r),
     })
+
+
+@router.post("/api/locks/release")
+def lock_release(payload: dict) -> dict:
+    """Drop a lease from the dashboard.
+
+    WHY THIS EXISTS. Both binary seats reached the same wall: the panel could
+    show a lock and could not clear one, because release lived only behind the
+    MCP tool. So a lease left behind by a run that died — the common case, since
+    a killed process never releases — could be cleared only by opening an agent
+    session in another window to unstick a file a human was looking at. Art's
+    audit ended up printing the literal `asset_release path="…"` call for the
+    reader to type somewhere else, which is a UI admitting it is a dead end.
+
+    THE HOLDER RULE IS THE BACKEND'S AND STAYS THERE. `assets.release` refuses a
+    caller that is not the holder, and this does not work around it: a human
+    clearing somebody else's stale lease passes `seat`, and the refusal comes
+    back as a 400 with the holder named. Forcing it open is deliberately not
+    offered here — a lease that is genuinely live belongs to a running agent,
+    and yanking it mid-write is how two processes end up interleaved in one
+    binary, which is the exact failure locks exist to prevent.
+    """
+    path = str((payload or {}).get("path") or "").strip()
+    if not path:
+        raise api.bad_request("which lock? send {path}")
+    seat = str((payload or {}).get("seat") or "").strip()
+    try:
+        out = _assets.release(root(), path, seat or "", owner=str(
+            (payload or {}).get("owner") or ""))
+    except LookupError as exc:
+        raise api.not_found(str(exc))
+    except (PermissionError, ValueError) as exc:
+        # "you are not the holder" is a 400 with the holder's name in it, not a
+        # 500 — it is an answer, and the reader's next move depends on it.
+        raise api.bad_request(str(exc))
+    return api.ok(out)

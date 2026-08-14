@@ -422,14 +422,27 @@ def test_a_project_with_no_artifacts_still_has_a_library(client):
 def test_the_library_panel_is_loaded_and_owns_the_assets_view():
     from pathlib import Path
 
-    static = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+    root = Path(__file__).resolve().parents[1]
+    # Source tree; bgate_ui/static is the build output of frontend/public.
+    static = root / "frontend" / "public"
     html = (static / "index.html").read_text(encoding="utf-8")
     assert 'src="/static/assetlib.js"' in html
-    assert 'id="asset-lib-root"' in html
     assert 'assets: "AssetLib"' in html, "the assets view must activate the panel"
     js = (static / "assetlib.js").read_text(encoding="utf-8")
     assert "/api/assets/library" in js
+
+    # THE HOST MOVED, THE CONTRACT DID NOT. The assets deck is a React island
+    # (frontend/src/views/assets/) and it is what renders #asset-lib-root now —
+    # empty, and never diffed — so assetlib.js still finds the element it has
+    # always written to. Asserted against the BUILT bundle, because a source
+    # tree whose dist/ has not been rebuilt is exactly the failure this catches:
+    # the panel would have no host at runtime.
+    bundle = (root / "bgate_ui" / "static" / "dist"
+              / "bgate.js").read_text(encoding="utf-8")
+    assert 'id="asset-lib-root"' in html or "asset-lib-root" in bundle, \
+        "assetlib.js has nothing to render into"
+    assert 'data-react="assets"' in html, "the assets deck must mount its island"
     # The review queue is still reachable — this replaced the grid, not the
     # approve/reject workflow behind it.
-    assert 'id="asset-grid"' in html
+    assert "asset-grid" in bundle
     assert "openAssetDrawer" in js

@@ -1,0 +1,65 @@
+/* 7b · Settings as a form.
+   The stripe carries precedence; everything else is quiet so the stripe reads. */
+
+.bg4-settings { display: flex; flex-direction: column; height: 100%; min-height: 0 }
+.bg4-settings-bar {
+  flex: none; padding: 10px 16px; border-bottom: 1px solid var(--line);
+  background: var(--solid-1);
+}
+.bg4-settings-body { flex: 1; min-height: 0 }
+.bg4-settings-group { padding: 0 16px }
+.bg4-settings-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 18px 0 8px;
+  font: 500 10px var(--mono);
+  letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+}
+.bg4-settings-head .n { color: var(--text-dim, var(--text-3)) }
+
+.bg4-filterchip {
+  border: 1px solid var(--line); border-radius: 9999px; background: transparent;
+  color: var(--text-3); padding: 4px 12px; cursor: pointer;
+  font: 500 10px var(--mono); white-space: nowrap;
+}
+.bg4-filterchip.on { border-color: var(--accent); color: var(--accent) }
+
+/* ── the row ───────────────────────────────────────────────────────────────
+   NO CARD. A border-left and 12px of padding is the entire chrome, which is
+   what lets forty of these read as one list instead of forty objects. */
+.bg4-set {
+  border-left: 3px solid transparent;
+  padding: 10px 0 12px 12px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+}
+.bg4-set:hover { background: rgba(255, 255, 255, .015) }
+
+/* PRECEDENCE, AS A STRIPE. Ember means this project decided; blue means the
+   environment decided and you cannot; nothing means the default still holds.
+   Read the left edge down the page and you know which layer won on every row
+   without reading a single key. */
+.bg4-set.stored { border-left-color: var(--accent) }
+.bg4-set.env { border-left-color: var(--info, #a9b6ff) }
+.bg4-set.default { border-left-color: transparent }
+.bg4-set.locked { opacity: .62 }
+
+.bg4-set .head { display: flex; align-items: center; gap: 8px; min-height: 28px }
+.bg4-set .key {
+  font: 400 12px var(--mono); color: var(--text);
+  background: none; padding: 0;
+}
+.bg4-set .spacer { flex: 1 }
+/* THE CONTROL IS ON THE LABEL'S LINE. It used to be ~900px away, under a
+   paragraph, which is the whole reason this screen was hard to use. */
+.bg4-set .control { flex: none }
+
+.bg4-set .help {
+  margin: 6px 0 0; max-width: 78ch;
+  font: 400 12px/1.55 var(--sans); color: var(--text-2);
+}
+.bg4-set .foot {
+  display: flex; gap: 14px; margin-top: 6px; flex-wrap: wrap;
+  font: 500 10px var(--mono); color: var(--text-3);
+}
+.bg4-set .foot b { color: var(--text-2); font-weight: 400 }
+.bg4-set .foot .drift b { color: var(--accent) }
+.bg4-set .foot .env { color: var(--info, #a9b6ff) }

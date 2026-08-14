@@ -796,11 +796,6 @@ def _ink_mask(img):
     return mask, note
 
 
-def row_cells(path: Any, frames: int) -> list:
-    """Slice a single-row image into `frames` equal columns. Left to right IS play order."""
-    return grid_cells(path, frames, 1)[0]
-
-
 def grid_cells(path: Any, columns: int, rows: int = 1) -> list[list]:
     """Slice a sheet into `rows` bands of `columns` cells. ``[row][column]``.
 

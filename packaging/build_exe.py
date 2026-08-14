@@ -66,10 +66,16 @@ SMOKE_PATHS = [
     ("/static/app.css", "text/css"),
     ("/static/index.html", "text/html"),
     ("/static/bgselect.js", "javascript"),
-    ("/static/seats/art.js", "javascript"),
-    # The Agents console: two modules and a binary asset, none of which any
-    # other smoke path would touch.
-    ("/static/agents_console.js", "javascript"),
+    # _core.js, not a per-seat panel: the eight seat workspaces are React now
+    # (frontend/src/shell/seats/) and their classic modules are deleted. This
+    # one stayed because it also exports BGWS and SeatStage, which nine other
+    # views use — see the comment above its script tag in index.html.
+    ("/static/seats/_core.js", "javascript"),
+    # The Agents console: the React bundle that renders it, the graph module it
+    # mounts, and a binary asset — none of which any other smoke path touches.
+    # (agents_console.js was the classic console and is deleted; the console is
+    # frontend/src/shell/agents, shipped inside dist/bgate.js.)
+    ("/static/dist/bgate.js", "javascript"),
     ("/static/agents_graph.js", "javascript"),
     ("/static/img/mascot.png", "image/png"),
     ("/api/state", "json"),
@@ -83,9 +89,40 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
+# bgate_ui/static is GENERATED — `npm run build` in frontend/ copies
+# frontend/public/* into it and emits dist/bgate.{js,css}. bgate.spec bundles
+# that directory wholesale, and PyInstaller is perfectly happy to bundle an
+# empty one: the exe then starts, serves nothing, and only the smoke test at
+# the far end of a multi-minute build says so. Check it before spending the
+# build. The list is the smoke paths' on-disk counterparts.
+BUILT_ASSETS = [
+    "app.css",
+    "index.html",
+    "bgselect.js",
+    "seats/_core.js",
+    "agents_graph.js",
+    "img/mascot.png",
+    "dist/bgate.js",
+    "dist/bgate.css",
+]
+
+
+def check_frontend_built() -> None:
+    static = ROOT / "bgate_ui" / "static"
+    missing = [rel for rel in BUILT_ASSETS
+               if not (static / rel).is_file() or (static / rel).stat().st_size == 0]
+    if missing:
+        sys.exit(
+            "bgate_ui/static is not built — missing/empty: " + ", ".join(missing)
+            + "\nThat tree is BUILD OUTPUT (source is frontend/public + frontend/src)."
+            + "\nRun:  cd frontend && npm ci && npm run build"
+        )
+
+
 def build() -> None:
     if not SPEC.is_file():
         sys.exit(f"missing spec: {SPEC}")
+    check_frontend_built()
     print(f"building from {SPEC.relative_to(ROOT)} …")
     r = subprocess.run(
         [sys.executable, "-m", "PyInstaller", str(SPEC), "--noconfirm",

@@ -77,6 +77,44 @@ STATUSES = ("open", "deployed", "archived")
 # lives.
 ROLES = ("user", "assistant")
 
+# WHO ELSE IS IN THE ROOM.
+#
+#   invited  a row exists and no process does — either the spawn failed at
+#            invite time, or the room was closed since. The next message
+#            addressed to this seat starts one.
+#   live     a process is holding a pipe for this seat right now.
+#   left     was here, is not. The row and its spend stay: a session's cost
+#            must not become unaccountable because somebody tidied the roster.
+PARTICIPANT_STATES = ("invited", "live", "left")
+
+# The states that mean "in the room". A seat in one of these cannot be invited
+# again (that is the duplicate refusal) and may answer a message.
+PRESENT = ("invited", "live")
+
+# How many seats one room may hold at once, not counting the owner's own
+# partner. Each is a CLI process, and brainsession.MAX_LIVE caps them at six
+# across every project — a room that invited eight would evict its own earlier
+# guests and the roster would show seats whose process was reaped to make space
+# for the seat below them.
+MAX_PARTICIPANTS = 4
+
+# HOW MANY EXTRA ROUNDS A ROOM MAY TALK AMONG ITSELF, and the sentinel a voice
+# uses to drop out of one. See migration 0039 for why this is per-room and off
+# by default.
+#
+# The ceiling is the schema's (CHECK 0..6) and is small on purpose: a round
+# costs one billed CLI turn per voice present, so a full room at 6 rounds is 30
+# turns on one human sentence. Past that a human should be reading and steering,
+# not buying more of the same argument.
+DISCUSS_MAX_ROUNDS = 6
+
+# WHAT A VOICE SAYS WHEN IT HAS NOTHING TO ADD. Matched case-insensitively on a
+# stripped reply, and such a turn is NOT written to the transcript — a room
+# whose follow-up rounds are four seats saying "PASS" is unreadable, and the
+# whole point of the sentinel is to end the discussion early rather than to
+# record that it could have.
+DISCUSS_PASS = "pass"
+
 # WHAT A SESSION OF EACH SEAT IS ALLOWED TO PROPOSE.
 #
 # A narrative session that proposes an art item is not a narrative session, it
@@ -139,6 +177,25 @@ class AlreadyFiled(Exception):
         super().__init__(
             "this exact plan was already filed from this session as "
             f"{ids or '(no items recorded)'} — pass again to file a second copy")
+
+
+class AlreadyHere(Exception):
+    """That seat is already in this room, or IS this room.
+
+    Its own type because the two doors map it to the same thing (a conflict,
+    not a bad request) and because "already here" is the one invite refusal
+    that is not the caller getting something wrong.
+    """
+
+
+class NoPartner(RuntimeError):
+    """Nothing can be spawned here, and the reason is a sentence.
+
+    Raised by :func:`invite` when the runner has not declared a read-only
+    conversational mode, or its CLI is not on this machine. Deliberately NOT a
+    ValueError: it is a fact about the environment, not about the request, and
+    the two want different HTTP codes and different buttons.
+    """
 
 
 class PartialDeploy(ValueError):
@@ -221,12 +278,33 @@ def list_sessions(root: str | os.PathLike[str], *, seat: Optional[str] = None,
     """The index. Deliberately WITHOUT the notes, drawing or messages — a list
     that ships every session's whole scratch document is a list nobody can
     afford to poll."""
+    # WHO IS IN EACH ROOM, AND WHAT IT HAS COST, ride along as aggregates.
+    #
+    # The rooms rail draws a dot per seat present, so "the room with gameplay
+    # and art in it" is findable without opening four rooms — and a room's spend
+    # belongs in the list for the same reason a work item's does: the number you
+    # need before you click is the one that tells you whether to. Both are one
+    # correlated subquery over an indexed column rather than a per-row read from
+    # the caller, which is what made the old rail need N+1 requests to draw a
+    # dot.
+    #
+    # `guest_seats` is a comma-joined string because SQLite has no array type
+    # and a JSON blob here would be parsed by every reader; the callers split on
+    # ',' and drop the empty. Only PRESENT seats: a seat that left is still in
+    # the spend, correctly, but it is not in the room.
+    present = ",".join("?" * len(PRESENT))
     sql = ("SELECT s.id, s.seat, s.title, s.status, s.created_at, s.updated_at, "
            "       length(s.notes) AS notes_len, "
            "       (SELECT count(*) FROM brainstorm_message m "
-           "        WHERE m.session_id = s.id) AS messages "
+           "        WHERE m.session_id = s.id) AS messages, "
+           "       (SELECT group_concat(p.seat) FROM brainstorm_participant p "
+           f"        WHERE p.session_id = s.id AND p.state IN ({present})) "
+           "           AS guest_seats, "
+           "       (SELECT COALESCE(sum(p.spent_usd), 0) "
+           "          FROM brainstorm_participant p "
+           "         WHERE p.session_id = s.id) AS spent_usd "
            "FROM brainstorm_session s WHERE 1=1")
-    params: list = []
+    params: list = list(PRESENT)
     if seat:
         sql += " AND s.seat = ?"
         params.append(seat)
@@ -237,7 +315,11 @@ def list_sessions(root: str | os.PathLike[str], *, seat: Optional[str] = None,
     sql += (" ORDER BY CASE s.status WHEN 'archived' THEN 1 ELSE 0 END, "
             "s.updated_at DESC, s.id DESC LIMIT ?")
     params.append(max(1, int(limit)))
-    return rows(db.connect(root).execute(sql, params))
+    out = rows(db.connect(root).execute(sql, params))
+    for row in out:
+        row["guests"] = [s for s in str(row.pop("guest_seats", "") or "").split(",")
+                         if s]
+    return out
 
 
 def _touch(conn, session_id: int) -> None:
@@ -255,6 +337,51 @@ def rename(root: str | os.PathLike[str], session_id: int, title: str) -> dict:
                      "updated_at = datetime('now') WHERE id = ?",
                      (title, int(session_id)))
     return get(root, session_id)
+
+
+def set_discuss(root: str | os.PathLike[str], session_id: int,
+                rounds: int) -> dict:
+    """How many EXTRA rounds this room talks among itself. 0 turns it off.
+
+    Refuses out of range rather than clamping. Clamping a 40 to a 6 would look
+    like it worked and quietly bill six rounds to somebody who thought they had
+    asked for forty and would have said "no, never mind" if told.
+    """
+    get(root, session_id)
+    try:
+        want = int(rounds)
+    except (TypeError, ValueError):
+        raise ValueError("rounds must be a whole number of rounds, 0 to "
+                         f"{DISCUSS_MAX_ROUNDS}")
+    if not 0 <= want <= DISCUSS_MAX_ROUNDS:
+        raise ValueError(
+            f"rounds must be between 0 (off) and {DISCUSS_MAX_ROUNDS}; got "
+            f"{want}. Each round is one billed turn per voice in the room.")
+    with db.tx(root) as conn:
+        conn.execute("UPDATE brainstorm_session SET discuss_rounds = ?, "
+                     "updated_at = datetime('now') WHERE id = ?",
+                     (want, int(session_id)))
+    return get(root, session_id)
+
+
+def discuss_rounds(session: dict) -> int:
+    """The room's setting, read defensively. A session dict from an older
+    reader (or a test fixture built by hand) simply has no discussion."""
+    try:
+        return max(0, min(DISCUSS_MAX_ROUNDS,
+                          int(session.get("discuss_rounds") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_pass(text: Any) -> bool:
+    """Did this voice drop out of the round?
+
+    Deliberately strict — the exact word and nothing else, punctuation allowed.
+    A loose match ("nothing to add here, though the tile budget worries me")
+    would delete an opinion the human wanted to read.
+    """
+    return str(text or "").strip().strip(".!").lower() == DISCUSS_PASS
 
 
 def set_notes(root: str | os.PathLike[str], session_id: int, notes: str) -> dict:
@@ -360,17 +487,70 @@ def delete(root: str | os.PathLike[str], session_id: int) -> dict:
     return {"deleted": int(session_id), "title": session["title"]}
 
 
+def reset(root: str | os.PathLike[str], session_id: int, *,
+          keep_pads: bool = True) -> dict:
+    """START THE CONVERSATION OVER in the same room. The FOURTH end-state.
+
+    close/archive/delete (see :func:`close_partner`) are all wrong for the thing
+    people actually want most often: this thread has gone somewhere useless, or
+    the partner has answered from a stale premise three times running, and they
+    want a clean head WITHOUT losing the notes and the diagram they have been
+    building for an hour. Before this there was no motion for it — close reopens
+    where it left off, delete takes the pads with it, and the only workaround
+    was to make a new session and copy the pads across by hand.
+
+    So: the partner is stopped and the TRANSCRIPT is dropped, which is what
+    makes the next turn start from nothing rather than resuming. The notes and
+    the drawing survive by default because they are the human's own document,
+    not the conversation — pass keep_pads=False to clear those too, which is the
+    "same room, nothing in it" motion.
+
+    Deploys are never touched. Work already on the board outlives the thread
+    that thought of it, the same as in :func:`delete`.
+    """
+    session = get(root, session_id)
+    # Stop the process BEFORE dropping its rows, same reason as delete(): a live
+    # partner whose transcript vanished underneath it would discover that on its
+    # next call and answer out of a context nothing else can see.
+    close_partner(root, session_id)
+    with db.tx(root) as conn:
+        cur = conn.execute("DELETE FROM brainstorm_message WHERE session_id = ?",
+                           (int(session_id),))
+        dropped = int(cur.rowcount or 0)
+        if keep_pads:
+            conn.execute("UPDATE brainstorm_session SET updated_at = "
+                         "datetime('now') WHERE id = ?", (int(session_id),))
+        else:
+            conn.execute(
+                "UPDATE brainstorm_session SET notes = '', drawing_json = '{}', "
+                "drawing_png = '', updated_at = datetime('now') WHERE id = ?",
+                (int(session_id),))
+    activity.log(root, "brainstorm",
+                 f"reset brainstorm {session_id}: dropped {dropped} message(s)"
+                 + ("" if keep_pads else ", cleared the pads"),
+                 seat=session["seat"], ref=str(session_id))
+    return {"session_id": int(session_id), "dropped": dropped,
+            "kept_pads": bool(keep_pads),
+            "session": get(root, session_id)}
+
+
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
 
 def append_message(root: str | os.PathLike[str], session_id: int, role: str,
-                   text: str) -> dict:
+                   text: str, seat: str = "") -> dict:
     """One turn of the conversation. A row, and nothing else.
 
     Compare console.console_say, which creates a work item and dispatches it.
     This writes a message. There is no third thing it could do — the module
     cannot reach the queue from here.
+
+    ``seat`` is WHO SAID IT, and "" is not a gap. On a user row it is the human,
+    who holds no seat; on an assistant row it is the ROOM'S OWN partner — the
+    voice this room always had. A named seat means an invited participant
+    answered, which is the only case that needs attributing, because it is the
+    only case where two assistant rows in a row came from different processes.
     """
     get(root, session_id)
     if role not in ROLES:
@@ -383,8 +563,9 @@ def append_message(root: str | os.PathLike[str], session_id: int, role: str,
                          f"holds {MAX_MESSAGE}; the notes pad holds a document")
     with db.tx(root) as conn:
         cur = conn.execute(
-            "INSERT INTO brainstorm_message (session_id, role, text) "
-            "VALUES (?, ?, ?)", (int(session_id), role, text))
+            "INSERT INTO brainstorm_message (session_id, role, text, seat) "
+            "VALUES (?, ?, ?, ?)",
+            (int(session_id), role, text, str(seat or "")[:32]))
         message_id = int(cur.lastrowid)
         _touch(conn, session_id)
     row = db.connect(root).execute(
@@ -400,20 +581,395 @@ def messages(root: str | os.PathLike[str], session_id: int,
 
 
 def read(root: str | os.PathLike[str], session_id: int) -> dict:
-    """A session and everything in it — what opening one from the file returns."""
+    """A session and everything in it — what opening one from the file returns.
+
+    ``participants`` rides here rather than only on the dashboard's own endpoint
+    so both doors see the same room: an agent reading a session through the MCP
+    server is told who else is in it, which is the difference between quoting
+    the art seat's estimate and inventing one.
+    """
     session = get(root, session_id)
     session["messages"] = messages(root, session_id)
+    session["participants"] = participants(root, session_id)
     return session
 
 
 def transcript(root: str | os.PathLike[str], session_id: int,
-               window: int = TRANSCRIPT_WINDOW) -> list[dict]:
-    """The conversation in the shape the model API takes.
+               window: int = TRANSCRIPT_WINDOW, *,
+               for_seat: str = "") -> list[dict]:
+    """The conversation in the shape the model API takes, FROM ONE VOICE'S SEAT.
 
     The tail, not the whole thing: see TRANSCRIPT_WINDOW.
+
+    A room with participants has more than two speakers, and the messages array
+    has only two roles. So ``for_seat`` decides which rows are "yours": rows
+    this seat wrote are ``assistant`` turns and everything else is a ``user``
+    turn, LABELLED with who said it. Without the label a participant reads
+    another seat's opinion as the human's instruction and answers the wrong
+    person; with the rows unrelabelled it would read its own name in the third
+    person and argue with itself.
+
+    for_seat="" is the room's own partner and is byte-identical to what this
+    function returned before participants existed, as long as nobody was ever
+    invited — every historical row has seat='' (see migration 0036).
     """
-    return [{"role": m["role"], "content": m["text"]}
-            for m in messages(root, session_id)[-max(1, int(window)):]]
+    want = str(for_seat or "")
+    out: list[dict] = []
+    for m in messages(root, session_id)[-max(1, int(window)):]:
+        who = str(m.get("seat") or "")
+        if m["role"] == "assistant" and who == want:
+            out.append({"role": "assistant", "content": m["text"]})
+            continue
+        if m["role"] == "assistant":
+            # Another voice in the room. Named, because "somebody said this"
+            # with no name is indistinguishable from the human saying it.
+            label = f"{who.upper()} SEAT" if who else "THE ROOM'S PARTNER"
+            out.append({"role": "user", "content": f"{label}: {m['text']}"})
+            continue
+        out.append({"role": "user", "content": m["text"]})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The roster — who else is in the room
+# ---------------------------------------------------------------------------
+# ONE ROOM, ANY SEAT, AND EVERY SEAT ENTERS WITHOUT ITS TOOLS.
+#
+# The room had two voices: the human, and the owning seat's thinking partner.
+# The question a human actually has at "what if the hub had weather" is one only
+# the seat that would BUILD it can answer, and that seat was not reachable — so
+# the answer was guessed by the seat that builds nothing, confidently.
+#
+# THE GUARANTEE IS WHY THIS IS NOT SIMPLY "DISPATCH THE SEAT". A dispatched
+# agent arrives holding Write, Edit, Bash and the whole builders-gate MCP server
+# including queue_add: put one in this room and the board is back inside the
+# conversation, which is the exact thing the room exists to be free of. An
+# invited seat is therefore spawned through brainsession's ONE spawner, with the
+# same read-only argv as the room's own partner — empty built-in tool set,
+# --strict-mcp-config, no settings sources, and the two-tool pad server or
+# nothing. It is the seat's JUDGEMENT in the room, not the seat's HANDS.
+#
+# WHAT A PARTICIPANT SAYS IS AN OPINION. It lands as a brainstorm message with
+# its seat on it and does nothing else. It cannot file, claim, lock or start
+# anything, and nothing downstream reads these rows as work. Turning any of it
+# into work is still exactly one motion: a human reads a synthesis and presses
+# Deploy.
+
+def _seat_table(root: str | os.PathLike[str]) -> dict:
+    """The project's seats, or the defaults if the table will not read.
+
+    Never raises: a seat_config row that will not parse must not make the room
+    un-openable. Falling back to the defaults is the safe direction — it can
+    only ever offer a seat the project meant to disable, and `invite` re-checks
+    against this same function, so a genuinely disabled seat is refused by the
+    only call that matters.
+    """
+    try:
+        return _seats.roles_for(root)
+    except Exception:
+        return {r: {**cfg, "role": r, "enabled": True}
+                for r, cfg in _seats.DEFAULT_SEATS.items()}
+
+
+def participants(root: str | os.PathLike[str], session_id: int) -> list[dict]:
+    """Who is in this room, what it has cost, and whether it is actually running.
+
+    ``state`` is the RECORD and ``live`` is the OBSERVATION, and they are
+    separate fields because they disagree in a way a roster has to show: a
+    dashboard restart, an idle reap or an LRU eviction kills the process without
+    touching the row, so a seat can legitimately be 'live' in the table with no
+    process behind it. Drawing the row's state alone would show a seat as
+    present that answers nothing; drawing `live` alone would drop a seat that
+    was invited and simply has not been spoken to yet. Both, and let the roster
+    say which it means.
+    """
+    rows_ = rows(db.connect(root).execute(
+        "SELECT * FROM brainstorm_participant WHERE session_id = ? "
+        "ORDER BY invited_at, id", (int(session_id),)))
+    out = []
+    for row in rows_:
+        detail = {}
+        if row["state"] in PRESENT:
+            # Only for seats meant to be here: asking about a seat that left
+            # spawns nothing but does read a sidecar off disk per row.
+            detail = thinker(root, session_id, seat=row["seat"])
+        out.append({**row,
+                    "live": bool(detail.get("live")),
+                    "thinker": detail})
+    return out
+
+
+def participant(root: str | os.PathLike[str], session_id: int,
+                seat: str) -> Optional[dict]:
+    row = db.connect(root).execute(
+        "SELECT * FROM brainstorm_participant WHERE session_id = ? AND seat = ?",
+        (int(session_id), str(seat))).fetchone()
+    return dict(row) if row is not None else None
+
+
+_PARTICIPANT_ROOM = (
+    "You have been INVITED INTO A BRAINSTORM somebody else owns. You are a "
+    "guest with an opinion, not the person running the room.\n"
+    "- You cannot MAKE ANYTHING HAPPEN. No file, no command, no work filed, no "
+    "agent dispatched — nothing you say or write here becomes work. The human "
+    "turns this conversation into work in a separate step, later, by reading a "
+    "plan and pressing Deploy.\n"
+    "- Answer from your seat. The reason you were asked is that you know what "
+    "this costs, what it breaks and what already exists in your area — say "
+    "that, including when the answer is 'that is a fortnight, not an "
+    "afternoon'.\n"
+    "- Do not restate what the others said, and do not write a task list.\n"
+    "- Other seats are speaking in here too; their turns are labelled with "
+    "their seat. Disagree with them by name when you disagree.\n"
+    "- If a question is not yours to answer, say whose it is in one line rather "
+    "than answering it anyway."
+)
+
+
+def participant_system(root: str | os.PathLike[str], seat: str, *,
+                       discuss: bool = False) -> str:
+    """The system prompt an invited seat thinks under.
+
+    Its own MISSION from the seat table (a project that customised it gets its
+    own wording, which is the point of that table) plus the room's rules. It is
+    deliberately NOT seats.brief(): that is the full working brief — lanes,
+    locks, refs, the write oracle — for an agent about to touch the repo, and
+    handing it to a guest that holds no tools would describe a job it cannot do
+    and bill for the tokens.
+    """
+    table = _seat_table(root)
+    cfg = table.get(seat) or _seats.DEFAULT_SEATS.get(seat) or {}
+    title = str(cfg.get("title") or seat).strip()
+    mission = str(cfg.get("mission") or "").strip()
+    head = f"You hold the {title.upper()} seat on this game project."
+    if mission:
+        head += f" Your standing brief: {mission}"
+    # _VOICE and _DISCUSS are defined further down the module; referenced at
+    # call time, not at import time, so the guest and the room's own partner
+    # share one voice rule and one discussion rule.
+    out = f"{head}\n\n{_PARTICIPANT_ROOM}\n\n{_VOICE}\n\n{_TOOLS}"
+    # The world, for the same reason the room's own partner gets it: a guest
+    # seat asked about a character it cannot look up will invent one, and it
+    # will do it in the confident register of somebody who knows.
+    world = room_world(root)
+    if world:
+        out = f"{out}\n\n{world}"
+    return f"{out}\n\n{_DISCUSS}" if discuss else out
+
+
+def invite(root: str | os.PathLike[str], session_id: int, seat: str, *,
+           by: str = "") -> dict:
+    """Bring one seat into the room, READ-ONLY, and record that it is here.
+
+    Every refusal below says WHY in its message, because the caller is a human
+    looking at a roster and "invite failed" tells them nothing about which of
+    four different situations they are in:
+
+        the seat is not a seat        a typo, or a seat this build removed
+        the project disabled it       seat_configure turned it off, and a room
+                                      that ignored that would be a second place
+                                      seats exist
+        it is already here            including the owner, whose partner IS the
+                                      room's own voice — inviting it would put
+                                      two of the same seat in one conversation
+        nothing can be spawned        the runner declares no read-only mode, or
+                                      its CLI is not installed
+
+    THE FOURTH ONE IS THE GUARANTEE. A runner with no ``chat`` entry is REFUSED
+    rather than started with the dispatch argv — see runners.py, where codex has
+    no such entry on purpose and says why. There is no path here that falls back
+    to a runner that could write.
+
+    The row is written BEFORE the spawn and stays if the spawn fails, in state
+    'invited': the human asked for this seat, that is a fact, and losing it
+    because a CLI was missing would make the roster disagree with what they did.
+    """
+    session = get(root, session_id)
+    ensure_open(session)
+    seat = str(seat or "").strip().lower()
+
+    table = _seat_table(root)
+    if seat not in _seats.DEFAULT_SEATS:
+        raise ValueError(f"{seat or '(none)'!r} is not a seat on this project; "
+                         f"seats are {', '.join(sorted(_seats.DEFAULT_SEATS))}")
+    if seat not in table:
+        raise ValueError(
+            f"the {seat} seat is disabled on this project — enable it with "
+            "seat_configure before inviting it, or the room would be a second "
+            "place seats exist")
+    if seat == session["seat"]:
+        raise AlreadyHere(
+            f"the {seat} seat already owns this room — its partner is the "
+            "room's own voice, and a second copy of it would be two of the same "
+            "seat arguing in one conversation")
+    here = participant(root, session_id, seat)
+    if here and here["state"] in PRESENT:
+        raise AlreadyHere(f"the {seat} seat is already in this room "
+                          f"({here['state']}) — say something to it instead")
+    present = [p for p in participants(root, session_id)
+               if p["state"] in PRESENT]
+    if len(present) >= MAX_PARTICIPANTS:
+        raise ValueError(
+            f"this room already holds {len(present)} invited seats, which is "
+            f"the limit ({MAX_PARTICIPANTS}) — each one is a live CLI process, "
+            "and a room over the limit starts evicting its own earlier guests. "
+            "Have one leave first")
+
+    with db.tx(root) as conn:
+        conn.execute(
+            "INSERT INTO brainstorm_participant (session_id, seat, state, "
+            "invited_by, invited_at) VALUES (?, ?, 'invited', ?, datetime('now')) "
+            "ON CONFLICT (session_id, seat) DO UPDATE SET "
+            "  state = 'invited', invited_by = excluded.invited_by, "
+            "  invited_at = excluded.invited_at, left_at = ''",
+            (int(session_id), seat,
+             (by or activity.current_actor() or "")[:120]))
+        _touch(conn, session_id)
+
+    started, error = None, ""
+    try:
+        started = _partner().start(root, int(session_id),
+                                   participant_system(root, seat), seat)
+    except Exception as exc:                                    # noqa: BLE001
+        # Including brainsession.Unavailable, which is the read-only refusal and
+        # the missing-CLI one. Reported rather than raised so the row survives:
+        # see the docstring. The caller decides whether an un-spawned invite is
+        # an error to show — the routes raise 503 on it, the MCP door reports it.
+        error = f"{exc}"[:300]
+    if started:
+        _set_state(root, session_id, seat, "live")
+    activity.log(root, "brainstorm",
+                 f"invited {seat} into brainstorm {session_id}"
+                 + (f" (not started: {error})" if error else ""),
+                 seat=session["seat"], ref=str(session_id))
+    row = participant(root, session_id, seat) or {}
+    return {"participant": {**row, "live": bool((started or {}).get("live")),
+                            "thinker": started or {}},
+            "session_id": int(session_id),
+            "error": error,
+            # Said out loud in the payload, because it is the only reason this
+            # feature is allowed to exist. It is a readback of what the process
+            # was built with, not a promise about how it will behave.
+            "readonly": True,
+            "readonly_by": str((started or {}).get("readonly_by") or "")}
+
+
+def leave(root: str | os.PathLike[str], session_id: int, seat: str) -> dict:
+    """A seat leaves. Its process stops; its row and its spend stay.
+
+    Kept rather than deleted so the session can still say what it cost and who
+    said what — the messages that seat wrote are still in the transcript, and a
+    roster that could not name the seat beside them would leave the conversation
+    attributed to nobody. Re-inviting the same seat reuses this row, so spend
+    keeps summing across the whole session instead of resetting on every
+    rejoin.
+    """
+    get(root, session_id)
+    seat = str(seat or "").strip().lower()
+    row = participant(root, session_id, seat)
+    if row is None:
+        raise Missing(f"the {seat or '(none)'} seat is not in brainstorm "
+                      f"{session_id}")
+    stopped = {}
+    try:
+        stopped = _partner().stop(root, int(session_id), seat=seat)
+    except Exception as exc:                                    # noqa: BLE001
+        stopped = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+    _set_state(root, session_id, seat, "left")
+    return {"participant": participant(root, session_id, seat) or {},
+            "session_id": int(session_id), "stopped": stopped}
+
+
+def _set_state(root: str | os.PathLike[str], session_id: int, seat: str,
+               state: str) -> None:
+    if state not in PARTICIPANT_STATES:
+        raise ValueError(f"state must be one of {PARTICIPANT_STATES}")
+    with db.tx(root) as conn:
+        conn.execute(
+            "UPDATE brainstorm_participant SET state = ?, "
+            "left_at = CASE WHEN ? = 'left' THEN datetime('now') ELSE '' END "
+            "WHERE session_id = ? AND seat = ?",
+            (state, state, int(session_id), str(seat)))
+
+
+def mark_all_idle(root: str | os.PathLike[str], session_id: int) -> None:
+    """Every present seat is 'invited' again, because no process is running.
+
+    Called wherever the room's processes are stopped as a group (close, archive,
+    reset, deploy). A row left saying 'live' after its process was reaped is the
+    roster lying about the one thing it is for; 'invited' is the honest state —
+    the seat is still in the room, and the next message addressed to it starts a
+    process again.
+    """
+    with db.tx(root) as conn:
+        conn.execute("UPDATE brainstorm_participant SET state = 'invited' "
+                     "WHERE session_id = ? AND state = 'live'",
+                     (int(session_id),))
+
+
+def record_turn(root: str | os.PathLike[str], session_id: int, seat: str,
+                answer: dict) -> None:
+    """Bill one answer to the seat that gave it. Never raises.
+
+    The spend ledger already has its own row per turn (brainsession writes it,
+    seat-stamped). This is the ROSTER's copy: the number drawn next to the seat,
+    readable in the same query as its state, and summing across the whole
+    session rather than dying with the process that spent it.
+
+    Swallowed on failure for the same reason spend.record is: losing the
+    accounting must not lose the answer that produced it.
+    """
+    if not seat:
+        return                    # the room's own partner has no roster row
+    try:
+        usd = max(0.0, float(answer.get("estimated_usd") or 0.0))
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE brainstorm_participant "
+                "SET turns = turns + ?, spent_usd = spent_usd + ? "
+                "WHERE session_id = ? AND seat = ?",
+                (1 if answer.get("ok") else 0, usd, int(session_id), str(seat)))
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
+def answerers(root: str | os.PathLike[str], session_id: int,
+              to: str = "") -> list[str]:
+    """WHO ANSWERS THIS MESSAGE. "" in the list means the room's own partner.
+
+    WHAT "EVERYONE MAY ANSWER" MEANS HERE, CONCRETELY. This codebase takes a
+    turn by spawning or writing to a CLI process and BLOCKING until its `result`
+    event — there is no background worker, no queue and no websocket in this
+    path, so "the room answers" is a list of turns taken one after another
+    inside the request, each landing as its own message row as it completes.
+    That is the honest reading of "may answer" in a synchronous room: everybody
+    present gets the message, in invite order, owner's partner first.
+
+    It is also why MAX_PARTICIPANTS is small. Four guests means five sequential
+    CLI turns on one message, which is slow and is billed. A human who wants one
+    answer says ``to``, and that is the motion to reach for — the fan-out is for
+    "what does everyone think", not for every sentence.
+
+    ``to`` names exactly one voice: a seat that is present, or the owner's seat
+    (which addresses the room's own partner, since that is whose voice it is).
+    A seat that is not in the room raises rather than silently falling back to
+    everybody — quietly asking four seats a question meant for one is the
+    expensive kind of wrong.
+    """
+    session = get(root, session_id)
+    present = [p["seat"] for p in participants(root, session_id)
+               if p["state"] in PRESENT]
+    want = str(to or "").strip().lower()
+    if not want:
+        return [""] + present
+    if want in ("", session["seat"], "room", "partner"):
+        return [""]
+    if want not in present:
+        raise ValueError(
+            f"the {want} seat is not in this room — invite it first, or leave "
+            "'to' empty and everyone here answers"
+            + (f" (here now: {', '.join(present)})" if present else ""))
+    return [want]
 
 
 # ---------------------------------------------------------------------------
@@ -480,11 +1036,32 @@ def _bound(binding: Any) -> str:
 # Prompts. Pure string building — no network, no client, no key.
 # ---------------------------------------------------------------------------
 
+# HOW EVERY VOICE IN A ROOM TALKS.
+#
+# One block, shared by the room's own partner and by every invited seat, because
+# a room where the guests write memos and the host writes sentences reads as two
+# different products. Rooms were filling with bolded section headers and
+# six-paragraph position papers on a one-line question — correct content nobody
+# reads. This is the correction, and it is a VOICE rule, not a content rule: say
+# the same thing, say it the way a colleague would say it out loud.
+_VOICE = (
+    "HOW TO TALK IN HERE: casual and straight to the point, like a colleague "
+    "answering across a desk.\n"
+    "- Lead with the answer. No preamble, no restating the question, no "
+    "summarising what you are about to say.\n"
+    "- Under 120 words unless the question genuinely needs more. Most do not.\n"
+    "- No bold headers, no section labels, no numbered write-ups. Plain "
+    "sentences. A short list only when you are actually listing things.\n"
+    "- Plain words over careful ones. 'That is two days, not an afternoon' "
+    "beats a paragraph hedging around it.\n"
+    "- Say the caveat only if it changes the decision. Leave the rest out."
+)
+
 _CHAT_COMMON = (
     "You are talking to the human who owns this game project. This is a "
     "BRAINSTORM, not a work order: nothing you say queues anything, dispatches "
-    "anyone or spends anything, and you have no tools. Think WITH them.\n"
-    "- Short. Two or three paragraphs at most, plain sentences.\n"
+    "anyone or spends anything. Think WITH them.\n"
+    f"\n{_VOICE}\n"
     "- Push back when something does not hold together, and say which part.\n"
     "- Ask the one question that would change the answer, not five.\n"
     "- Do not write a plan or a task list unless they ask for one; the plan is "
@@ -503,9 +1080,81 @@ _CHAT_SEAT = {
 }
 
 
-def chat_system(seat: str) -> str:
-    """The system prompt for one conversational turn."""
-    return f"{_CHAT_SEAT.get(seat, _CHAT_SEAT['director'])}\n\n{_CHAT_COMMON}"
+# THE FOLLOW-UP ROUND'S EXTRA RULE, appended to whichever system prompt this
+# voice thinks under. Only on rounds 2+ — a voice told "answer PASS if you have
+# nothing to add" on the human's own message would use it, and the human would
+# have paid for a room that said nothing.
+#
+# The sentinel is the STOP CONDITION. Without it a discussion runs the full
+# round count every time, because a model asked "anything to add?" can always
+# find something, and the something gets progressively less worth reading.
+_DISCUSS = (
+    "THE ROOM IS STILL TALKING. The turns above that are labelled with a seat "
+    "were said by other people in this room since you last spoke, not by the "
+    "human.\n"
+    "- Reply ONLY if you have something to add, correct or push back on. Name "
+    "the seat you are answering.\n"
+    "- If you agree, or the thread has moved outside your seat, reply with the "
+    "single word PASS and nothing else. Passing is the normal outcome and "
+    "costs the human nothing to read.\n"
+    "- Do not summarise the discussion, do not repeat your own earlier point in "
+    "new words, and do not close with a wrap-up. The human is reading this "
+    "live."
+)
+
+
+# WHAT EVERY VOICE IN THE ROOM CAN ACTUALLY DO.
+#
+# The prompts used to say "you have no tools", which was true when this room was
+# a chat completion and became a lie the day the pad server arrived — so the
+# seats had tools and did not know it, and asked the human to paste in things
+# they could have read. This block is the honest list, and it is written as WHEN
+# TO REACH FOR EACH rather than as an inventory, because a model that is told a
+# tool exists still will not use it if nothing says what question it answers.
+_TOOLS = (
+    "WHAT YOU CAN REACH (mcp__pads__*). Everything here reads or writes this "
+    "project's own database. None of it queues work, dispatches anyone, runs a "
+    "command or touches a file in the game.\n"
+    "- canon_read — the design bible and the lore graph. READ IT BEFORE you "
+    "assert what this world is, what a character or place is, or whether an "
+    "idea contradicts something already established. The transcript is not the "
+    "record; this is.\n"
+    "- bible_write / lore_write / lore_fact / lore_link — write down what the "
+    "room settles. If the human asks you to record, correct or add something to "
+    "the bible or the lore, DO IT rather than describing what should be "
+    "written. Amend the section or entity that already covers it — check with "
+    "canon_read first — instead of adding a near-duplicate.\n"
+    "- room_post — say something to the room without waiting for your turn. "
+    "This is how you hand another seat a concept, flag a collision between two "
+    "seats' plans, or answer a seat that named you. Everyone in the room reads "
+    "it, labelled with your seat.\n"
+    "- pad_read / pad_draw — the human's notes and their sketch. Read them "
+    "before answering a question about 'this'; draw into the sketch when a "
+    "diagram says it faster than a paragraph.\n"
+    "- board_read — what is queued, running and finished. Never guess at the "
+    "state of the work and never ask the human to paste the board in.\n"
+    "Every canon write lands in this transcript under your seat, so the human "
+    "reads what you changed and the other seats can argue with it. Write what "
+    "was decided — not what you are about to decide."
+)
+
+
+def chat_system(seat: str, *, discuss: bool = False, root: Any = None) -> str:
+    """The system prompt for one conversational turn.
+
+    ``discuss`` marks a FOLLOW-UP round — the room answering itself rather than
+    the human — and adds the pass rule that lets the round end early.
+
+    ``root`` adds WHAT THIS WORLD ALREADY SAYS. Optional so a caller with no
+    project (and every existing test) still gets a valid prompt, but a room
+    opened without it is a room arguing about a world it cannot see.
+    """
+    base = f"{_CHAT_SEAT.get(seat, _CHAT_SEAT['director'])}\n\n{_CHAT_COMMON}"
+    base = f"{base}\n\n{_TOOLS}"
+    world = room_world(root) if root is not None else ""
+    if world:
+        base = f"{base}\n\n{world}"
+    return f"{base}\n\n{_DISCUSS}" if discuss else base
 
 
 _SYNTH_COMMON = (
@@ -640,6 +1289,29 @@ def world_context(root: str | os.PathLike[str], seat: str) -> str:
         return _director_world(root)
     except Exception:
         return ""
+
+
+def room_world(root: str | os.PathLike[str]) -> str:
+    """WHAT THIS WORLD ALREADY SAYS, for a voice about to talk about it.
+
+    :func:`world_context` answers the same question for a SYNTHESIS, and splits
+    by seat because a plan is proposed from one seat's point of view. A room
+    does not split: the art seat arguing about a character needs the canon as
+    much as the narrative seat does, and a seat that cannot see the bible
+    contradicts it confidently — which is the failure this exists to stop.
+
+    Both halves, capped, and empty on any failure. A bible that will not read is
+    a thinner prompt, never a room that cannot open.
+    """
+    try:
+        parts = [p for p in (_director_world(root), _narrative_world(root)) if p]
+    except Exception:
+        return ""
+    if not parts:
+        return ""
+    return ("\n\n".join(parts)
+            + "\n\nThat is a SUMMARY. canon_read is the whole of it, and it is "
+              "the tool to reach for before you assert what this world is.")
 
 
 def synthesis_turns(root: str | os.PathLike[str], session: dict) -> list[dict]:
@@ -812,9 +1484,19 @@ def close_partner(root: Any, session_id: int) -> dict:
                   Speak in it and it reopens.
 
     Idempotent, and safe on a session that never had a partner.
+
+    IT CLOSES THE WHOLE ROOM, INVITED SEATS INCLUDED. Each guest is its own CLI
+    process; stopping only the owner's partner would leave them holding pipes
+    for a session the human believes is shut — invisible to the agents table and
+    reaped only by an idle timer half an hour later. Their ROWS are untouched:
+    who was invited is a fact about the session, and they go back to 'invited',
+    which is the honest state for a seat that is in the room with no process
+    behind it.
     """
     try:
-        return {**_partner().stop(root, int(session_id)),
+        stopped = _partner().stop_session(root, int(session_id))
+        mark_all_idle(root, session_id)
+        return {**stopped,
                 "session_id": int(session_id),
                 "thinker": thinker(root, session_id)}
     except Exception as exc:
@@ -822,7 +1504,7 @@ def close_partner(root: Any, session_id: int) -> dict:
                 "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
-def feed(root: Any, session_id: int, cursor: int = 0) -> dict:
+def feed(root: Any, session_id: int, cursor: int = 0, seat: str = "") -> dict:
     """THE TERMINAL CHANNEL: what the spawned session actually emitted.
 
     Everything — run boundaries, the CLI's own init (which is where the tool
@@ -833,34 +1515,43 @@ def feed(root: Any, session_id: int, cursor: int = 0) -> dict:
     and is what lands in the transcript and goes to text-to-speech. The two come
     off the same turn and conflating them would either read tool JSON out loud
     or make this view a duplicate of the chat pane.
+
+    ``seat`` reads an invited participant's own transcript. Each voice in the
+    room writes its own log, so a terminal view of a guest is the same view with
+    a different file behind it.
     """
     try:
-        return _partner().feed(root, int(session_id), cursor=int(cursor or 0))
+        return _partner().feed(root, int(session_id), cursor=int(cursor or 0),
+                               seat=seat)
     except Exception as exc:
         return {"events": [], "cursor": int(cursor or 0), "size": 0,
                 "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
-def thinker(root: Any, session_id: int) -> dict:
+def thinker(root: Any, session_id: int, seat: str = "") -> dict:
     """What THIS session's partner is: runner, model, live or not, what it has
     cost, and where its raw transcript is on disk.
 
     Both doors put this in the session payload. It is what replaced the
     workspace header's `gpt-4o-mini` chip, and it is what a terminal view of the
     session will read to find the log to tail.
+
+    ``seat`` asks about an invited participant instead of the room's own
+    partner, in the same shape, so a roster row draws with the header chip's
+    code.
     """
     try:
-        return _partner().thinker(root, int(session_id))
+        return _partner().thinker(root, int(session_id), seat=seat)
     except Exception as exc:
         return {**available(root), "live": False, "turns": 0,
-                "spent_usd": 0.0, "cli_session_id": "",
+                "spent_usd": 0.0, "cli_session_id": "", "seat": str(seat or ""),
                 "session_id": int(session_id),
                 "reason": f"{type(exc).__name__}: {exc}"[:300]}
 
 
 def ask(root: Any, system: str, turns: list[dict], *, session_id: int = 0,
         persist: bool = True, timeout: float = CHAT_TIMEOUT,
-        usd: float = USD_PER_CHAT, tag: str = "") -> dict:
+        usd: float = USD_PER_CHAT, tag: str = "", seat: str = "") -> dict:
     """One turn with the thinking partner, in the adapters' shared result shape.
 
     ``{ok, text, model, seconds, estimated_usd}`` or ``{ok: False, error}`` — a
@@ -878,12 +1569,17 @@ def ask(root: Any, system: str, turns: list[dict], *, session_id: int = 0,
     server and no permission to write: not as a policy it is asked to respect,
     but as a process built without any of them. Compare a dispatched agent,
     which holds ``queue_add`` from its first token.
+
+    ``seat`` addresses an INVITED participant's own process (see :func:`invite`)
+    rather than the room's partner. It selects which conversation the turn lands
+    in; it does not change how that process was built, and there is no argument
+    here that could.
     """
     started = _time.monotonic()
     try:
         answer = _partner().ask(root, int(session_id or 0), system, turns,
                                 persist=bool(persist and session_id),
-                                timeout=timeout, tag=tag)
+                                timeout=timeout, tag=tag, seat=seat)
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400],
                 "seconds": round(_time.monotonic() - started, 2),

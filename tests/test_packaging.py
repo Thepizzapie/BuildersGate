@@ -28,12 +28,18 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 PYPROJECT = REPO / "pyproject.toml"
 
-# (package dir, extensions that MUST ship). Anything the runtime reads at
-# request/scaffold time and cannot regenerate.
+# (package dir, source tree, path prefix inside the package, extensions that
+# MUST ship). Anything the runtime reads at request/scaffold time and cannot
+# regenerate.
+#
+# bgate_ui/static IS BUILD OUTPUT: the Vite build copies frontend/public into it
+# verbatim and adds dist/bgate.{js,css}. So the files that must be COVERED by
+# package-data are named by the source tree, and land under `static/`.
 SHIPPED_TREES = (
-    ("bgate_ui", REPO / "bgate_ui" / "static", {".js", ".html", ".css", ".svg", ".png"}),
-    ("templates", REPO / "templates", {".gd", ".tscn", ".godot", ".svg", ".cfg"}),
-    ("bgate_engine", REPO / "bgate_engine", {".json", ".md"}),
+    ("bgate_ui", REPO / "frontend" / "public", "static/",
+     {".js", ".html", ".css", ".svg", ".png"}),
+    ("templates", REPO / "templates", "", {".gd", ".tscn", ".godot", ".svg", ".cfg"}),
+    ("bgate_engine", REPO / "bgate_engine", "", {".json", ".md"}),
 )
 
 
@@ -106,7 +112,11 @@ class TestGitCarriesWhatShips:
 
     @pytest.mark.parametrize("tree", [
         REPO / "templates",
-        REPO / "bgate_ui" / "static",
+        # The frontend SOURCE (bgate_ui/static is where the build puts it), plus
+        # the committed bundle: neither has a node step at install time, so both
+        # have to be in the checkout.
+        REPO / "frontend" / "public",
+        REPO / "bgate_ui" / "static" / "dist",
         REPO / "bgate_site" / "theme",
         REPO / "bgate_engine",
     ], ids=lambda p: p.name)
@@ -129,7 +139,7 @@ class TestTheShellsAssetsExist:
     THE GAP THIS CLOSES, and it cost a whole feature. `_untracked` above asks
     "is everything on disk also in git", which cannot see a file that is on
     NEITHER — and that is exactly what happened to the 3D model viewer: a bare
-    `build/` in .gitignore matched bgate_ui/static/vendor/three/build/, so
+    `build/` in .gitignore matched the vendored three/build/ directory, so
     three.js's library file was never committed, never on a fresh clone, and the
     import map pointed at a 404. Eighteen sibling files were tracked, which made
     the tree look vendored. The viewer could not load its own engine and nothing
@@ -140,7 +150,17 @@ class TestTheShellsAssetsExist:
     shell is where the asking is written down.
     """
 
-    SHELL = REPO / "bgate_ui" / "static" / "index.html"
+    # Source shell. A /static/<x> reference resolves to frontend/public/<x>,
+    # except /static/dist/* which the Vite build writes into bgate_ui/static.
+    SHELL = REPO / "frontend" / "public" / "index.html"
+    PUBLIC = REPO / "frontend" / "public"
+    BUILT = REPO / "bgate_ui" / "static"
+
+    @classmethod
+    def _resolve(cls, ref: str) -> Path:
+        rel = ref[len("/static/"):]
+        root = cls.BUILT if rel.split("/", 1)[0] == "dist" else cls.PUBLIC
+        return root / rel
 
     def _referenced(self) -> list[str]:
         import json
@@ -167,9 +187,8 @@ class TestTheShellsAssetsExist:
         assert len(self._referenced()) > 10
 
     def test_every_referenced_asset_is_on_disk(self):
-        static = REPO / "bgate_ui" / "static"
         missing = [ref for ref in self._referenced()
-                   if not (static / ref[len("/static/"):]).is_file()]
+                   if not self._resolve(ref).is_file()]
         assert not missing, (
             "index.html points at files that do not exist, so the browser gets "
             "a 404 and the feature they belong to is silently dead:\n  "
@@ -181,10 +200,9 @@ class TestTheShellsAssetsExist:
             pytest.skip("not a git checkout")
         import subprocess
 
-        static = REPO / "bgate_ui" / "static"
         untracked = []
         for ref in self._referenced():
-            path = static / ref[len("/static/"):]
+            path = self._resolve(ref)
             if not path.is_file():
                 continue        # the test above owns that failure
             found = subprocess.run(
@@ -220,24 +238,24 @@ class TestDeclarations:
         exclude = cfg["tool"]["setuptools"]["packages"]["find"].get("exclude", [])
         assert any(p.startswith("tests") for p in exclude)
 
-    @pytest.mark.parametrize("pkg,tree,exts", SHIPPED_TREES,
+    @pytest.mark.parametrize("pkg,tree,prefix,exts", SHIPPED_TREES,
                              ids=[t[0] for t in SHIPPED_TREES])
-    def test_every_runtime_data_file_is_declared(self, cfg, pkg, tree, exts):
+    def test_every_runtime_data_file_is_declared(self, cfg, pkg, tree, prefix, exts):
         patterns = _package_data(cfg)[pkg]
-        pkg_dir = REPO / pkg
         missed = [
-            str(p.relative_to(pkg_dir)).replace("\\", "/")
+            prefix + str(p.relative_to(tree)).replace("\\", "/")
             for p in tree.rglob("*")
             if p.is_file() and p.suffix in exts and "__pycache__" not in p.parts
-            and not _matches_any(str(p.relative_to(pkg_dir)).replace("\\", "/"),
-                                 patterns)
+            and not _matches_any(
+                prefix + str(p.relative_to(tree)).replace("\\", "/"), patterns)
         ]
         assert not missed, f"{pkg} package-data {patterns} misses: {missed}"
 
     def test_nested_static_seats_covered(self, cfg):
         """The regression that motivated all of this: ``static/*.html`` matched
-        one file and nothing under ``static/seats/``."""
-        seats = list((REPO / "bgate_ui" / "static" / "seats").glob("*.js"))
+        one file and nothing under ``static/seats/``. Named from the source tree
+        (frontend/public/seats), which the build copies to static/seats."""
+        seats = list((REPO / "frontend" / "public" / "seats").glob("*.js"))
         assert seats, "no seat panels found — did the tree move?"
         patterns = _package_data(cfg)["bgate_ui"]
         for p in seats:

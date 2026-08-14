@@ -161,3 +161,76 @@ def project_create(request: Request, payload: dict) -> dict:
         # before the project existed — the client has to reload to get one.
         "reload": True,
     })
+
+
+@router.post("/api/project/select")
+def project_select(request: Request, payload: dict) -> dict:
+    """Point the running dashboard at a project that already exists.
+
+    THE FIRST-RUN SCREEN COULD ONLY CREATE. Every other route into this product
+    — `bgate use`, `bgate adopt`, the MCP project_select tool — has always been
+    able to pick up a project already on disk, but the one screen a new user
+    actually meets offered a name field and a Create button, so someone with six
+    registered games who opened the dashboard from the wrong directory was told
+    there was no project and invited to make a seventh. The registry the screen
+    needs was already in the GET's ``known`` and simply had no button attached.
+
+    Takes ``root`` (a path) or ``name`` (a registry key). The registry is the
+    convenience, not the authority: a path is validated on its own merits, so a
+    project that was never registered can still be opened.
+
+    Two writes, deliberately:
+
+    · ``BGATE_ROOT`` in this process, because deps.root() reads it first and
+      otherwise WALKS UP FROM THE CWD. Without it a server started inside one
+      project — or inside this repository, which has a .bgate of its own —
+      would keep serving that one however hard the user clicked, since the walk
+      wins over the remembered pointer. Same reason project_create sets it.
+    · the machine-wide active pointer, so `bgate use` agrees and the choice
+      survives a restart. Best-effort: a read-only home directory is not a
+      reason to refuse a switch that already worked in memory.
+
+    Human-gated like creation. An agent that can repoint the dashboard at
+    another game can write into it through every other route on the server.
+    """
+    api.require_human(api.current_actor(request), "switch projects")
+
+    raw = (payload.get("root") or "").strip()
+    if not raw:
+        name = (payload.get("name") or "").strip()
+        known = _project.known_projects()
+        if name not in known:
+            raise api.bad_request(
+                f"no project named {name!r} is registered", known=sorted(known))
+        raw = known[name]
+
+    target = Path(raw).expanduser()
+    try:
+        target = target.resolve()
+    except OSError as exc:
+        raise api.bad_request(f"cannot resolve {raw} — {exc}")
+
+    try:
+        _project.set_active(target)
+    except LookupError as exc:
+        # set_active refuses a directory with no store, and its message already
+        # names adopt vs init. That IS the answer for "I typed a game folder
+        # that Builders Gate has never seen"; do not paper over it.
+        raise api.bad_request(str(exc), path=str(target))
+    except OSError:
+        pass  # the pointer is a convenience; the switch below is the feature
+
+    os.environ["BGATE_ROOT"] = str(target)
+
+    try:
+        selected = _project.get(target)
+    except Exception:                                            # noqa: BLE001
+        selected = None
+
+    return api.ok({
+        "root": str(target),
+        "project": selected,
+        # Same as creation: the page was served against the old root, token and
+        # all. Everything on it is now stale.
+        "reload": True,
+    })

@@ -72,12 +72,43 @@ taste, and is explained in `pyproject.toml`. Turning it on found eight dead
 imports, pointless f-strings on `main`, and a `NameError` waiting to happen in an
 unlanded branch.
 
+## Changing the front end
+
+`frontend/` is the only front-end source tree. `frontend/public/` holds the
+classic page, `app.css` and the hand-written modules; `frontend/src/` holds the
+React parts. Build with:
+
+```bash
+cd frontend && npm install && npm run build
+```
+
+That writes `bgate_ui/static/`. **Do not hand-edit anything under
+`bgate_ui/static/`** — it is build output, and the next build overwrites it.
+The served URLs are unchanged (`/static/app.css`, `/static/wf.js`,
+`/static/dist/bgate.js`), so a change in `frontend/public/` lands where it
+always did.
+
+The output is committed, and it has to be: the dashboard ships as a Python
+wheel and as `BuildersGate.exe`, neither of which has node, and `pip install -e .`
+has to keep being the whole install. Commit the rebuilt output with the source
+change that caused it. A `static/` that lags `frontend/` is a change that works
+for you and for nobody else.
+
+`npm run dev` rebuilds on save (reload the browser — there is no HMR, because
+the page is served by FastAPI, not by Vite). `npm run typecheck` is the gate on
+the TypeScript.
+
+A fresh clone has no `bgate_ui/static/` beyond `dist/`, because only the bundle
+is committed. The server populates it on first run by copying `frontend/public`
+into it, so `pip install -e .` and `bgate serve` work with no node installed.
+Running `npm run build` does the same thing and adds a rebuilt bundle.
+
 ## Changing anything the wheel ships
 
-That means JavaScript under `bgate_ui/static/`, anything in `templates/`, or the
-engine schemas. A wheel that quietly ships no JavaScript is a bug this repo has
-already had once. CI covers it in the `wheel-smoke` job, and you can run it
-yourself:
+That means the built front end under `bgate_ui/static/`, anything in
+`templates/`, or the engine schemas. A wheel that quietly ships no JavaScript is
+a bug this repo has already had once. CI covers it in the `wheel-smoke` job, and
+you can run it yourself:
 
 Run it from a bash shell (Git Bash on Windows), because the last two lines rely
 on a glob and on `Scripts/`:

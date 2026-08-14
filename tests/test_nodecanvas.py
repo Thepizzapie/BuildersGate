@@ -1,4 +1,4 @@
-"""Static contract tests over the node-editor ENGINE (bgate_ui/static/nodecanvas.js).
+"""Static contract tests over the node-editor ENGINE (frontend/public/nodecanvas.js).
 
 The canvas is browser JS with no build step, so nothing in Python executes it —
 a regression here is found by a user whose half-typed prompt got eaten. These
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-SRC_PATH = Path(__file__).resolve().parents[1] / "bgate_ui" / "static" / "nodecanvas.js"
+SRC_PATH = Path(__file__).resolve().parents[1] / "frontend" / "public" / "nodecanvas.js"
 SRC = SRC_PATH.read_text(encoding="utf-8")
 
 

@@ -94,6 +94,14 @@ TURNS = 24
 # Board window. Open work first — a project with 400 done items must not ship
 # all of them to a view that draws maybe forty nodes.
 BOARD = 80
+# …AND THE MOST RECENTLY CLOSED WORK, WHICH THE WINDOW ABOVE CANNOT REACH.
+#
+# That ordering ranks `failed` third and everything genuinely finished fourth,
+# so on a board carrying 89 failures the whole 80-row window was failures: the
+# console's "last closed" list could only ever show things that went wrong, and
+# a studio where plenty had landed looked like one where nothing had. This
+# second, small window is by TIME and by nothing else, unioned in below.
+RECENT_CLOSED = 12
 # Steps shown per live agent inside the state payload. The full feed is still
 # one /api/agent-activity call away when a node is opened.
 STEPS = 6
@@ -640,6 +648,18 @@ def console_state(steps: bool = True) -> dict:
         "ELSE 4 END, priority DESC, id DESC LIMIT ?", (BOARD,)).fetchall()
     items = [_card(row) for row in rows]
     seen = {it["id"] for it in items}
+    # The newest finished work, whatever it finished as. Unioned rather than
+    # merged into the query above, because that ordering is what the board and
+    # the graph want and this is a different question — "what just closed" is
+    # never answered by "what is most urgent".
+    closed = conn.execute(
+        "SELECT * FROM work_item WHERE status IN "
+        "('done','cancelled','approved','rejected') "
+        "ORDER BY updated_at DESC, id DESC LIMIT ?", (RECENT_CLOSED,)).fetchall()
+    for row in closed:
+        if row["id"] not in seen:
+            items.append(_card(row))
+            seen.add(row["id"])
     # A running agent's item is always in the payload even if the window cut it
     # — a node that exists on the graph must have something to render.
     missing = [i for i in live_ids if i not in seen]
@@ -706,7 +726,18 @@ def console_state(steps: bool = True) -> dict:
 
 @router.post("/api/console/say")
 def console_say(payload: dict) -> dict:
-    """One message to the director. Creates the turn, then dispatches it."""
+    """One message to the director — or straight to a seat you named.
+
+    `seat` ADDRESSES THE WORK INSTEAD OF THE DIRECTOR. Untagged, this is what it
+    has always been: a turn for the director, which answers and delegates. With
+    a seat, the item is filed for that seat and dispatched to it, because
+    "@narrative — write the dialogue tree" typed into the director got a polite
+    paragraph about what it would delegate, and the work still had to go round
+    the houses to arrive where the human had already pointed it.
+
+    The director is still the default, and still the right answer when you do
+    not know whose job it is. This is for when you do.
+    """
     text = str(payload.get("text") or "").strip()
     if not text:
         raise _api.bad_request("say what?  an empty message has nothing to act on")
@@ -714,9 +745,17 @@ def console_say(payload: dict) -> dict:
         raise _api.bad_request("that message is too long for one turn — "
                                "4000 characters is the cap", length=len(text))
     r = root()
+    seat = str(payload.get("seat") or "").strip().lower() or "director"
+    if seat != "director":
+        from bgate_core import seats as _seats
+        table = _seats.roles_for(r)
+        if seat not in table:
+            raise _api.bad_request(
+                f"{seat!r} is not a seat on this project — "
+                f"known: {', '.join(sorted(table))}", seat=seat)
     title = text.splitlines()[0][:80] or text[:80]
     try:
-        turn = _queue.add(r, "director", title=title,
+        turn = _queue.add(r, seat, title=title,
                           brief="(preparing)", source=CHAT_SOURCE)
     except ValueError as exc:
         # Out-of-scope is a ValueError subclass and reads as a real sentence.
@@ -724,7 +763,18 @@ def console_say(payload: dict) -> dict:
     turn_id = int(turn["id"])
     # The brief names the turn's own id (children stamp it), so it can only be
     # written once the row exists.
-    _queue.update(r, turn_id, brief=_chat_brief(text, turn_id))
+    #
+    # A SEAT GETS THE SENTENCE, NOT THE DIRECTOR'S BRIEF. _chat_brief tells its
+    # reader to answer and delegate, which is the director's job and nobody
+    # else's — handing it to the art seat would have art filing work for other
+    # seats. An addressed turn is the human's own words plus where they came
+    # from.
+    _queue.update(r, turn_id, brief=(
+        _chat_brief(text, turn_id) if seat == "director"
+        else (text + "\n\n---\n"
+              + f"Addressed to the {seat} seat from the director's console. "
+              "This is the human's own wording, not a brief written for you; "
+              "if it is not yours to do, say so rather than doing it anyway.")))
 
     result = _dispatch.dispatch(str(r), turn_id, actor="console")
     if not result.get("ok"):
@@ -734,7 +784,7 @@ def console_say(payload: dict) -> dict:
                 "refusal": {"code": result.get("code") or "refused",
                             "message": result.get("error") or "dispatch refused"}}
     return {"ok": True, "turn_id": turn_id, "dispatched": True,
-            "pid": result.get("pid")}
+            "seat": seat, "pid": result.get("pid")}
 
 
 @router.post("/api/console/clear")

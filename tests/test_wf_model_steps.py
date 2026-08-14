@@ -1,6 +1,6 @@
 """Static contract tests over the MODEL-COMPARISON steps (browser JS).
 
-`bgate_ui/static/wf_steps_model.js` is where the user drives the schedule: fan
+`frontend/public/wf_steps_model.js` is where the user drives the schedule: fan
 one prompt into several models, run just those cards, look at the candidates,
 pick one. None of that is reachable from Python at runtime — the step registry
 lives in the browser — so the contract is asserted against the source:
@@ -28,7 +28,7 @@ import pytest
 
 from bgate_core import tiers
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 MODEL_FILE = STATIC / "wf_steps_model.js"
 WF_FILE = STATIC / "wf.js"
 

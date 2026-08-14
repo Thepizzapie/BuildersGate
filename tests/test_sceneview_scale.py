@@ -30,7 +30,7 @@ import re
 from pathlib import Path
 
 SCENEVIEW = (Path(__file__).resolve().parents[1]
-             / "bgate_ui" / "static" / "sceneview.js")
+             / "frontend" / "public" / "sceneview.js")
 SRC = SCENEVIEW.read_text(encoding="utf-8")
 
 

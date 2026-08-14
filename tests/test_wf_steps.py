@@ -1,6 +1,6 @@
 """Static contract tests over the workflow STEP DEFINITIONS (browser JS).
 
-The step registry lives in the browser (bgate_ui/static/wf_steps_*.js) and the
+The step registry lives in the browser (frontend/public/wf_steps_*.js) and the
 run compiles from it, so a broken step definition is not caught by any Python
 test — it is caught by a user whose workflow silently runs against nothing.
 These tests read the JS as source and assert the contract:
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
 STEP_FILES = [
     STATIC / "wf_steps_asset.js",
     STATIC / "wf_steps_agent.js",

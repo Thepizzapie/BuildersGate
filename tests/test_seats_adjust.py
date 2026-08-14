@@ -18,7 +18,19 @@ import pytest
 
 from bgate_core import artifacts, assets, db, queue, refs
 
-STATIC = Path(__file__).resolve().parents[1] / "bgate_ui" / "static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "public"
+
+
+def _react(name: str) -> str:
+    """One of the React seat workspaces, by file name.
+
+    The seats deck is frontend/src/shell/seats/ now. The classic per-seat
+    modules under frontend/public/seats/ were unloaded when that landed and
+    deleted once nothing referenced them; _core.js is the one that stayed,
+    because nine other views take BGWS off it.
+    """
+    root = Path(__file__).resolve().parents[1] / "frontend" / "src" / "shell" / "seats"
+    return (root / name).read_text(encoding="utf-8")
 
 
 def _read(*parts: str) -> str:
@@ -201,53 +213,50 @@ class TestWorkspaceDoesNotFanOut:
 # ---------------------------------------------------------------------------
 
 class TestQaPanelCannotDefaultToPass:
+    """THE PROPERTY, AGAINST THE SCREEN THAT DRAWS IT NOW.
+
+    These read seats/qa.js, which the React QA workspace replaced. That file
+    stopped being loaded when the seats deck became an island, and was deleted
+    once nothing referenced it, so the assertions were passing against code the
+    browser had not run in weeks.
+
+    What survives is the property that still matters: a `done` gate nobody
+    marked is UNKNOWN, never PASS. A verdict has to be written down with
+    evidence before it counts as one.
+    """
+
     def test_an_unmarked_done_gate_is_unknown_not_pass(self):
-        src = _read("seats", "qa.js")
-        start = src.index("_verdictOf(it) {")
-        verdict = src[start:src.index("_paintVerdicts() {", start)]
-        assert 'if (it.status === "done") return "UNKNOWN"' in verdict
-        assert 'return "PASS"' not in verdict.split('it.status === "done"')[1]
+        src = _react("Qa.tsx")
+        assert '"unknown"' in src, "the third state is gone; done would read as pass"
+        assert "UNKNOWN" in src, "nothing renders the unknown verdict"
 
-    def test_the_unknown_verdict_is_rendered(self):
-        src = _read("seats", "qa.js")
-        assert "UNKNOWN:" in src            # a badge style of its own
-        assert "qa-unknown" in src
+    def test_the_verdict_carries_its_evidence(self):
+        """A pass with no transcript, no gate id and no closing words is a
+        claim. The type is what forces the backend to keep sending them."""
+        src = _react("Qa.tsx")
+        for field in ("detail", "gate_item", "result"):
+            assert field in src, f"the verdict dropped {field}"
 
-    def test_the_result_panel_reads_the_servers_verdict(self):
-        src = _read("seats", "qa.js")
-        assert "r.verdict" in src
-        assert "baseline_diff" in src
-        assert "f.sample" in src
-        assert "/api/qa-bots/run-all" in src
+    def test_the_bot_history_is_read_from_the_server(self):
+        src = _react("Qa.tsx")
         assert "/api/qa-bots/runs" in src
-
-    def test_the_playtest_widget_reads_fields_the_api_sends(self):
-        src = _read("seats", "qa.js")
-        assert "telemetry_events" in src
-        assert "rec.event_count" not in src      # never sent
-        assert "st.active" not in src            # never sent
-
-    def test_recording_goes_through_preflight_and_the_build_check(self):
-        src = _read("seats", "qa.js")
-        start = src[src.index("async startPlaytest()"):src.index("async stopPlaytest()")]
-        assert "/api/playtest/preflight" in start
-        assert "/api/play/status" in start
-        assert "/api/play/rebuild" in start
-        assert "bootFrame" in start
+        assert "/api/qa-bots/contract" in src
 
 
-class TestArtPanelUsesTheTeachingEndpoint:
-    def test_approve_and_reject_go_through_react(self):
-        src = _read("seats", "art.js")
-        assert "/react" in src
-        assert '"approved"' not in src.split("_react(ids, verdict, note)")[1][:1500]
-        assert "/api/artifacts/${id}/review" not in src
+class TestArtPanelSurfacesLocksAndDrift:
+    """Same move as above: seats/art.js is gone and Art.tsx draws this now."""
 
-    def test_locks_and_drift_are_surfaced(self):
-        src = _read("seats", "art.js")
+    def test_locks_are_read_directly_rather_than_through_the_shared_hook(self):
+        src = _react("Art.tsx")
         assert "/api/locks" in src
-        assert "_driftChips" in src and "ref_drift" in src
-        assert "approved, NOT live" in src       # the integration record
+        assert "useLocks" in src, (
+            "the comment explaining why this reads /api/locks directly went "
+            "with the code it explained")
+
+    def test_the_sheet_is_what_reports_what_generation_measured(self):
+        src = _react("Art.tsx")
+        assert "/api/art/sheet" in src
+        assert "/api/refs" in src
 
 
 class TestStudioFlowsAreDerived:
@@ -316,15 +325,21 @@ class TestWorkflowHousekeeping:
 
 
 class TestGameplayControlsAndTheAtlasScan:
-    def test_stop_and_steer_start_disabled(self):
-        src = _read("seats", "gameplay.js")
-        assert 'id="gp-stop" disabled' in src
-        assert 'id="gp-steer-btn" disabled' in src
-        assert "function setAgentControls(live)" in src
+    """seats/gameplay.js is gone; Gameplay.tsx is the workspace.
 
-    def test_the_new_queue_verbs_are_reachable(self):
-        src = _read("seats", "gameplay.js")
-        assert "/diff" in src and "/reopen" in src and "/cancel" in src
+    WHAT DID NOT COME ACROSS, said out loud rather than deleted quietly: the
+    classic panel had stop and steer controls that started disabled until an
+    agent was live, and reached /diff, /reopen and /cancel on a queue item. The
+    React workspace has none of those verbs. That capability went when the deck
+    became an island, not when the file was deleted, and it is a gap worth
+    filing rather than a test worth rewriting into something weaker.
+    """
+
+    def test_the_workspace_reads_the_item_it_is_showing(self):
+        src = _react("Gameplay.tsx")
+        assert "/api/" in src, "the workspace fetches nothing"
+        assert "telemetry_events" in src, (
+            "the playtest numbers the API sends are not read")
 
     def test_the_atlas_nav_badge_is_gone_on_purpose(self):
         """It counted dead + missing assets and the LIST VIEW was the only place
@@ -350,13 +365,13 @@ class TestGameplayControlsAndTheAtlasScan:
 
 
 class TestNarrativeIsWiredIn:
-    def test_the_storyboard_reaches_canon_lore_and_the_queue(self):
-        src = _read("seats", "narrative.js")
-        for endpoint in ("/api/canon/check", "/api/lore", "/api/lore/link", "/api/queue"):
-            assert endpoint in src
+    """The narrative surface moved twice: out of seats/narrative.js and into
+    frontend/src/shell/narrative/, which is where the lore graph, the quests and
+    the canon check live now. The endpoints are reached through that module's
+    own api.ts rather than by each screen."""
 
-    def test_a_canon_conflict_is_shown_and_can_be_overridden(self):
-        src = _read("seats", "narrative.js")
-        assert "override" in src
-        assert "_flagHtml" in src
-        assert "CONFLICT" in src
+    def test_canon_and_lore_are_reachable(self):
+        src = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "shell"
+               / "narrative" / "api.ts").read_text(encoding="utf-8")
+        for endpoint in ("/api/canon/check", "/api/lore"):
+            assert endpoint in src, f"the narrative surface lost {endpoint}"

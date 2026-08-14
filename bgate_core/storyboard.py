@@ -64,6 +64,9 @@ SCRIPT_MODEL = "gpt-4o-mini"
 SCRIPT_USD_PER_CALL = 0.002
 
 FRAME_STATUSES = ("empty", "generating", "drafted", "approved", "cut")
+# Mirrors the CHECK constraint on storyboard.status in db.py — kept as the
+# Python-side statement of the vocabulary even though the writes go through
+# named helpers, so the two cannot drift silently.
 BOARD_STATUSES = ("drafting", "boarded", "promoted", "abandoned")
 SOURCES = ("none", "generated", "uploaded", "pinned")
 

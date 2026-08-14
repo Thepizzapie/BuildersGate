@@ -365,7 +365,7 @@ single clip used alone as an attract loop or a sting. A three-shot demo went fro
 | Shot lists, style, model, locations, sound / transitions / VO | `bgate_core/db.py` migrations 0027, 0028 |
 | The seat, its lane, its workflow and its trap | `bgate_core/seats.py` |
 | Twenty MCP tools (`cinematic_*`) | `bgate_mcp/server.py` |
-| Dashboard endpoints and seat workspace | `bgate_ui/routes/cinematic.py`, `bgate_ui/static/seats/cinematic.js` |
+| Dashboard endpoints and seat workspace | `bgate_ui/routes/cinematic.py`, `frontend/public/seats/cinematic.js` |
 | `video` asset kinds (`.mp4`, `.ogv`, `.webm`, `.mov`) | `bgate_core/assets.py` |
 | libtheora on the ffmpeg row | `bgate_core/doctor.py` |
 

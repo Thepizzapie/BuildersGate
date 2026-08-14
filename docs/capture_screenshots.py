@@ -2,9 +2,20 @@
 
 Drives the installed Edge via Playwright's `channel="msedge"` so nothing has to
 be downloaded. The dashboard is a single-page app whose views are switched by
-setWorkspace()/Studio.select()/SeatShell.select(), so each shot navigates in
-page rather than by URL, waits for the view to actually paint, and only then
-captures.
+setWorkspace()/Studio.select(), so each shot navigates in page rather than by
+URL, waits for the view to paint, and only then captures.
+
+THE SHELL IS REACT NOW, and two things here were written for the old one:
+
+  * `.rail-item[data-view="x"]` no longer exists — the rail is
+    frontend/src/shell. setWorkspace() survives as the deck switch and the
+    React shell follows it, so a shot names the deck and nothing else. The dead
+    selector returned null, which setWorkspace tolerated, so these kept working
+    with a second argument that did nothing.
+  * FITTING TO CONTENT IS WRONG for a full-height shell. The old decks were
+    documents that could be shorter than the viewport; this is a 100vh grid
+    with its own internal scrollers, so measuring the deck and shrinking the
+    window to it cropped the rail and the footer away. Fixed viewport now.
 """
 from __future__ import annotations
 
@@ -26,35 +37,37 @@ OUT = Path(__file__).resolve().parent / "screenshots"
 SHEET = os.environ.get("BGATE_SHEET",
                        "game/assets/characters/compliance_drone_idle.png")
 
+# Which brainstorm room the shot opens, matched against the text of its row in
+# the rooms rail. Every room is titled "brainstorm", so the turn count is what
+# actually distinguishes them.
+ROOM = os.environ.get("BGATE_ROOM", "25 turns")
+
 W, H = 1600, 1000
 
 
-def shot(page, name, setup_js, wait=2200, fit=True):
-    """Capture one view, sized to its content and downscaled for the repo.
+# Which shots to take. Empty means all of them; BGATE_ONLY="world-bible,agents"
+# takes those two and leaves every other file on disk alone, which is what you
+# want when some of the set is hand-taken and must not be overwritten.
+ONLY = {n.strip() for n in os.environ.get("BGATE_ONLY", "").split(",") if n.strip()}
 
-    Two passes matter here. Some views are far shorter than the viewport (the
-    Overview is about 630px), and a screenshot padded with 400px of empty
-    canvas looks like a rendering bug rather than a compact page — so the
-    viewport is resized to the content before shooting. And the capture is at
-    2x device pixels for sharpness, which is 3200px wide; that gets halved
+
+def wanted(name: str) -> bool:
+    return not ONLY or name in ONLY
+
+
+def shot(page, name, setup_js, wait=2200):
+    """Capture one view and downscale it for the repo.
+
+    Captured at 2x device pixels for sharpness, 3200px wide, and halved
     afterwards, because the README never renders these above ~900px and a repo
     does not need 6MB of PNG.
     """
+    if not wanted(name):
+        print(f"  {name:24s} skipped")
+        return
     page.set_viewport_size({"width": W, "height": H})
     page.evaluate(setup_js)
     page.wait_for_timeout(wait)
-
-    if fit:
-        h = page.evaluate("""(() => {
-            const v = document.querySelector('.deck-view.active');
-            const bar = document.querySelector('.statusbar');
-            return Math.ceil((v ? v.getBoundingClientRect().height : 600)
-                   + (bar ? bar.getBoundingClientRect().height : 60) + 96);
-        })()""")
-        h = max(560, min(H, int(h)))
-        if h < H:
-            page.set_viewport_size({"width": W, "height": h})
-            page.wait_for_timeout(700)
 
     path = OUT / f"{name}.png"
     page.screenshot(path=str(path))
@@ -67,19 +80,37 @@ def shot(page, name, setup_js, wait=2200, fit=True):
 
 
 SHOTS = [
-    ("overview", "setWorkspace('overview', document.querySelector('.rail-item[data-view=\"overview\"]'))", 2600),
-    ("agents", "setWorkspace('agents', document.querySelector('.rail-item[data-view=\"agents\"]'))", 2200),
-    ("assets", "setWorkspace('assets', document.querySelector('.rail-item[data-view=\"assets\"]'))", 3200),
-    ("atlas", "setWorkspace('atlas', document.querySelector('.rail-item[data-view=\"atlas\"]'))", 3000),
+    ("overview", "setWorkspace('overview')", 2600),
+    ("agents", "setWorkspace('agents')", 2200),
+    ("assets", "setWorkspace('assets')", 3200),
+    ("atlas", "setWorkspace('atlas')", 3000),
     ("seat-workspaces", """
-        setWorkspace('seats', document.querySelector('.rail-item[data-view="seats"]'));
+        setWorkspace('seats');
         setTimeout(() => { try { SeatShell.select('director'); } catch(e){} }, 600);
      """, 3400),
     ("seat-qa", """
-        setWorkspace('seats', document.querySelector('.rail-item[data-view="seats"]'));
+        setWorkspace('seats');
         setTimeout(() => { try { SeatShell.select('qa'); } catch(e){} }, 600);
      """, 3400),
-    ("playtests", "setWorkspace('playtests', document.querySelector('.rail-item[data-view=\"playtests\"]'))", 2400),
+    ("playtests", "setWorkspace('playtests')", 2400),
+    # THE ROOM. Its own screen since seats became joinable — the transcript,
+    # the roster and the one door out are the three things the shot has to
+    # show, and all three are only on this deck.
+    #
+    # WHICH ROOM IS NOT LEFT TO CHANCE. The deck opens whatever was last read,
+    # which on this machine was a session about the tool rather than about the
+    # game — a fine conversation and a poor advertisement. BGATE_ROOM picks the
+    # room by a string in its rail row (the turn count is the stable one, since
+    # every room is titled "brainstorm").
+    ("brainstorm", """
+        setWorkspace('brainstorm');
+        setTimeout(() => { try {
+          const want = "__ROOM__";
+          const rows = [...document.querySelectorAll('.bg4-roomrow')];
+          const pick = rows.find(r => r.textContent.includes(want)) || rows[0];
+          if (pick) pick.click();
+        } catch (e) {} }, 900);
+     """.replace("__ROOM__", ROOM), 4200),
 ]
 
 
@@ -99,7 +130,7 @@ def main() -> int:
             shot(page, name, js, wait)
 
         # Studio flows — these need activate() to resolve the lazy modules.
-        page.evaluate("setWorkspace('studio', document.querySelector('.rail-item[data-view=\"studio\"]'))")
+        page.evaluate("setWorkspace('studio')")
         page.wait_for_timeout(900)
         page.evaluate("Studio.activate()")
         page.wait_for_timeout(1800)
@@ -141,9 +172,22 @@ def main() -> int:
             } catch(e){} })();
         """, 7000)
 
+        # SHUT THE EDITORS BEFORE MOVING ON. The sprite editor and the audio lab
+        # are FULL-SCREEN overlays, not decks — setWorkspace() switches the deck
+        # underneath and leaves the overlay covering it, so every shot after
+        # this point came out as a picture of the audio lab. Measured: the
+        # world-bible shot was the audio lab, and so were both light-ground
+        # shots.
+        page.evaluate("""(() => {
+            try { AudioLab.close(); } catch (e) {}
+            try { SpriteEdit.close(); } catch (e) {}
+            try { Studio.select('workflows'); } catch (e) {}
+        })()""")
+        page.wait_for_timeout(1200)
+
         # World bible's lore graph is the one that shows off the data.
         shot(page, "world-bible", """
-            setWorkspace('world', document.querySelector('.rail-item[data-view="world"]'));
+            setWorkspace('world');
             setTimeout(() => { try {
               const t = [...document.querySelectorAll('#world-subnav .seat-tab')]
                         .find(b => /lore/i.test(b.textContent));
@@ -156,9 +200,9 @@ def main() -> int:
         page.evaluate("setTheme('light')")
         page.wait_for_timeout(700)
         shot(page, "overview-light",
-             "setWorkspace('overview', document.querySelector('.rail-item[data-view=\"overview\"]'))", 2800)
+             "setWorkspace('overview')", 2800)
         shot(page, "assets-light",
-             "setWorkspace('assets', document.querySelector('.rail-item[data-view=\"assets\"]'))", 3200)
+             "setWorkspace('assets')", 3200)
 
         browser.close()
     print(f"\nwrote to {OUT}")
