@@ -9,6 +9,25 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.411]
+
+The installer, which 0.1.41 built and then forgot to publish.
+
+0.1.41 compiled `BuildersGate-setup.exe`, checksummed it, printed its size in
+the build log and saved it as a temporary build artifact. The step that
+publishes the release then listed only the zip, so the release page went up
+with no installer on it. Nothing failed and nothing said anything was missing.
+The file was simply never asked for.
+
+Releases are frozen once published, so the file could not be added to 0.1.41
+afterwards. This release is the same build with the installer attached.
+
+### Fixed
+
+- **`BuildersGate-setup.exe` is on the release page.** Publishing now names the
+  installer explicitly, and the release fails rather than publishing without it
+  if it is ever absent again.
+
 ## [0.1.41]
 
 Everything in this release is one thing: the app you download now does what the
