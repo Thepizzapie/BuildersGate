@@ -11,140 +11,99 @@ repository at first publication. There is no earlier release history to record.
 
 ## [0.1.41]
 
+Everything in this release is one thing: the app you download now does what the
+app you ran from a source checkout always did.
+
+Several things were broken in every release before this, and none of it showed
+up unless you installed the app and used it. The build only ever checked that
+the code compiled, never that the finished program could open a window, record
+audio, or start the way people actually start it.
+
 ### Fixed
 
-- **The packaged app could not start from a shortcut, and never could.** A
-  `console=False` PyInstaller build launched from Explorer or the Start Menu
-  gets `sys.stdout is None`, and uvicorn's log formatter calls `.isatty()` on it
-  while configuring itself — so the app died inside `logging.config` before
-  binding a port, in both `serve` and window mode. Every release shipped this;
-  `git log` shows the guard never existed. It survived because the build's smoke
-  test spawns the exe with `subprocess.PIPE`, handing it the one thing the real
-  launch path lacks. `smoke_detached()` now boots the binary with
-  `DETACHED_PROCESS` — no console, no inherited handles — so the harness stops
-  supplying what Windows does not.
+- **The app could not start from a shortcut.** A windowed PyInstaller build
+  launched from Explorer or the Start Menu has no stdout, and uvicorn's logger
+  calls `.isatty()` on it while starting up, so the process died before it ever
+  opened a port. It only worked when launched from a terminal. The build now
+  boots the binary with no console attached and fails if it cannot serve a page,
+  which is how the real launch actually happens.
 
-- **The app's own window code had never run in a shipped build.**
-  `bgate_ui/webview2.py` is the primary Windows window, with pywebview as its
-  fallback, and its `available()` check begins by importing `comtypes` — which
-  nothing declared. It was present on the machine this was written on because an
-  unrelated package pulled it in, so the native path worked there and silently
-  failed everywhere else, falling through to a fallback that also opens a window.
-  `comtypes` is now a declared dependency of the `desktop` extra, and the frozen
-  build asserts `webview2.available()` in its selftest rather than assuming it.
+- **The app's own window code had never run.** On Windows there are two ways to
+  open the window and the good one needs `comtypes`, which nothing declared. It
+  happened to be installed on the machine this was written on, so it worked
+  there and silently fell back everywhere else. Declaring it turned up two more
+  faults inside that path, both of which crashed before a window appeared.
 
-  Making that path reachable immediately exposed two faults inside it: numeric
-  resource ids were passed where `LPCWSTR` was declared (`LoadCursorW`,
-  `LoadImageW`), which raises before a window exists, and the taskbar showed the
-  host interpreter's icon because the process never set an AppUserModelID.
+- **Playtest recording could not work.** The audio libraries were left out of
+  the bundle as "optional", but the recorder captures the mic through them, so
+  leaving them out did not make audio optional, it made recording impossible.
+  The Playtests screen sat on "record unavailable" and told you to run a `pip`
+  command that a packaged app has no way to run.
 
-- **Playtest recording could not work in any packaged build.** `sounddevice` and
-  `numpy` were excluded from the bundle as an optional extra, but
-  `bgate_adapters/recorder.py` captures playtest audio through `sounddevice`
-  deliberately — ffmpeg's dshow enumeration finds no devices on the machines this
-  was built on. Excluding them did not make audio optional; it made the Playtests
-  screen permanently unable to record, while advising a `pip install` a `.exe`
-  user cannot run. Both now ship, and `audio-capture` is a selftest check.
+- **Speech to text was left out for a reason that was not true.** The build
+  notes said it drags in PyTorch and CUDA for 415 MB. It does not. It runs on
+  something else entirely and costs about 121 MB. It is in the download now.
 
-- **Speech-to-text was cut from the download on a false premise.** The spec
-  recorded that `faster-whisper` drags in torch, onnxruntime and the CUDA runtime
-  for a 415 MB binary. Measured: it runs on CTranslate2 and pulls **no torch at
-  all**. The real cost is ~121 MB. It is now bundled, and the frozen app runs the
-  transcriber by calling itself (`BuildersGate.exe whisper …`) rather than
-  needing an interpreter it does not have.
+- **A missing transcriber disabled the Record button.** Transcription decides
+  whether you get a transcript, not whether you can record. Checks now say
+  whether they block recording or just take a feature away.
 
-- **A missing transcriber disabled the Record button.** `preflight`'s `ready` was
-  `all(checks)`, so anything failing blocked recording — including speech-to-text,
-  which decides whether you get a transcript, not whether you can record. Checks
-  now declare whether they block or degrade (`REQUIRED_CHECKS`), and the panel
-  gates on the first group only. The client had the same fault independently: a
-  cheap `/api/doctor` path returned a preflight it invented itself whenever
-  whisper was absent, so the server's answer was never consulted.
+- **Menus and drawers rendered behind the page.** The notification drawer and
+  the project menu were nested inside chrome that creates its own layer, so they
+  could never sit on top of anything. Both are attached to the page root now.
 
-- **Overlays rendered underneath the page.** `backdrop-filter` makes an element a
-  backdrop root, and the orbit ground puts one on the shell chrome. The
-  notification drawer lived inside the header and the project menu inside the
-  rail, so their own blur could only sample their parent — a 42px strip — and
-  their `z-index` was sealed into their parent's stacking context, letting
-  panels paint straight over them. Both are portalled to `<body>` now.
+- **Clicking a project in the switcher did nothing.** The menu closed on mouse
+  down, which destroyed the button before the click landed.
 
-- **"Open Orchestration" did nothing.** It called `setScreen("floor")`, and
-  `floor` is a deck name, not a screen id; Orchestration is `agents`.
+- **"Open Orchestration" went nowhere**, and **brainstorm's reset left every
+  message on screen** even though the reset itself had worked.
 
-- **Brainstorm's reset left the transcript on screen.** The reset landed on the
-  server, but the handler refreshed the console state — the dispatch transcript —
-  while brainstorm renders from the room session, which only `bsOpen()` writes.
+- **The test suite wrote into your real project list.** A full run registered
+  its throwaway projects on the machine, and they showed up in the app as
+  projects you could open until the temp folders were deleted underneath them.
 
-### Changed
+### Added
 
-- **Releases are built in an isolated, hash-pinned environment.** PyInstaller
-  bundles whatever the interpreter running it can import, so the bundle used to
-  inherit whatever was installed on the builder's machine: the same commit
-  produced a 59 MB zip locally and 37 MB in CI, because an unrelated
-  `azure-storage-blob` dragged in the whole opentelemetry exporter stack, grpc
-  and protobuf. The build now creates its own venv and installs
-  `packaging/build-requirements.lock` with `--require-hashes` — 69 packages
-  pinned by version and SHA-256 — then the project itself with `--no-deps`. Two
-  builds of one commit now contain the same bytes, and a substituted dependency
-  fails the build instead of shipping.
+- **An installer.** `BuildersGate-setup.exe` puts the app in your user folder
+  with no admin prompt, adds a Start Menu entry and an uninstaller, upgrades in
+  place, and refuses to install over a running copy. The zip is still there for
+  anyone who prefers it.
 
-- **There is an installer.** `packaging/installer.iss` builds
-  `BuildersGate-setup.exe`: per-user into `%LOCALAPPDATA%\Programs`, no UAC at
-  any point, Start Menu entry, uninstaller, a fixed `AppId` so upgrades replace
-  rather than accumulate, and a refusal to install over a running copy. The zip
-  is still published. Uninstalling deliberately leaves `~/.bgate` alone.
+- **The window has its own title bar** instead of the grey Windows one, with
+  dragging, snapping and edge resizing intact.
 
-- **The desktop window draws its own title bar.** Frameless via `WM_NCCALCSIZE`,
-  with `WM_NCHITTEST` restoring drag, snap and edge-resize. `SWP_FRAMECHANGED`
-  after creation is what makes it take effect at all — `CreateWindowEx` never
-  sends the `wParam = TRUE` form the handler acts on, so without that call the
-  window wears both captions.
+- **A project switcher**, on the rail, with New game and Open an existing game
+  next to it. Switching projects was possible from the API the whole time and
+  had no button anywhere in the app.
 
-- **Missing tools are a button, not an instruction.** `bgate_core/toolbin.py`
-  generalises the `~/.bgate/bin` precedence that `ffmpegbin` already used into a
-  place the app installs into: pinned URL, SHA-256 verified before extraction,
-  and only the named binaries kept. ffmpeg is the first entry. Nothing is
-  downloaded until a human presses a button for a feature they are using.
+- **Missing tools install themselves.** ffmpeg is a button that downloads a
+  pinned, checksummed build into a folder the app owns, instead of a paragraph
+  telling you what to type. Nothing downloads until you ask for a feature that
+  needs it.
 
-- **Settings reads as English.** All 42 switches carry a human name with the
-  identifier beneath it, and each group has an icon; a test fails the build if a
-  new setting arrives unnamed.
-
-- **The project can be changed from inside the app.** `POST /api/project/select`
-  had existed all along with exactly one caller — the first-run screen, which
-  never shows again once a project is open. There is now a switcher on the rail,
-  with New game and Open an existing game beside it.
-
+- **Settings read like English.** All 42 of them have a name instead of an
+  identifier, and each group has an icon. The identifier is still there,
+  underneath, because that is what you search for.
 
 ### Changed
 
-- **One front-end source tree.** The dashboard had two, and one of them was also
-  the build output: the classic page, `app.css` and forty-one hand-written JS
-  modules were edited in place under `bgate_ui/static/`, while the React shell
-  lived in `frontend/src/` and built *into* that same directory. Nothing about a
-  file's location told you whether a person had written it or a build had, which
-  is the sort of thing that stays survivable right up until someone edits the
-  generated half and loses the change on the next build.
+- **Releases are reproducible.** The build used to pick up whatever happened to
+  be installed on the machine doing the building, so the same commit produced a
+  59 MB download in one place and 37 MB in another. It now builds in a clean
+  environment from a locked list of 69 packages, each checked against a known
+  hash. A swapped dependency stops the build instead of shipping.
 
-  `frontend/` is now the only place front-end source lives. `frontend/public/`
-  holds the classic assets, moved verbatim — `index.html`, `app.css`, the
-  modules, `seats/`, `img/`, `vendor/` and the stream overlay pages — and
-  `frontend/src/` is unchanged. `bgate_ui/static/` is build output: generated by
-  `npm run build` in `frontend/`, and still committed, because the wheel and
-  `BuildersGate.exe` have no node and `pip install -e .` has to remain the whole
-  install.
+- The app no longer loads the MCP toolkit just to build one small config file,
+  which was quietly pulling three unrelated cloud SDKs into the download.
 
-  Served URLs are unchanged (`/static/app.css`, `/static/wf.js`,
-  `/static/dist/bgate.js`), so nothing a browser or a route asks for moved. The
-  one new rule is that `bgate_ui/static/` is not a place you edit.
+- The logo is updated everywhere it appears: the app icon, the installer, both
+  favicons, and the mark drawn in the interface.
 
-### Removed
+### Known
 
-- **`agents_console.js` (2,245 lines) and `settingsview.js` (1,155 lines).**
-  Both had already been replaced — the agents deck by the React island, settings
-  by `frontend/src/shell/settings/` — and were still being shipped and loaded
-  beside their replacements. A dead module that still runs is worse than one that
-  does not: it is the copy you find first when you go looking for the bug.
+Nothing here is code signed, so Windows will still warn you about an unknown
+publisher on first run. That needs a certificate, and there is not one yet. The
+SHA256 of both downloads is published next to them.
 
 ## [0.1.40] - 2026-08-12
 
