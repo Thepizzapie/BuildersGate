@@ -11,6 +11,7 @@ import { setSelection } from "../selection";
 import { notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { BrainstormFoot } from "./Brainstorm";
 import { Composer, type Aim } from "./Composer";
+import { FloorPane } from "./FloorPane";
 import { type Linked } from "./AssetLink";
 import { Cat } from "./Cat";
 import { Streamer } from "./Streamer";
@@ -412,7 +413,12 @@ function Live({
   onBrainstormReset: () => void;
   onRefresh: () => void;
 }) {
-  const [pane, setPane] = useState<"board" | "graph">("board");
+  /* THREE READINGS OF ONE QUEUE: a list, a dependency graph, and the floor.
+     Floor is the studio seen from above, where a seat is a room and an agent's
+     POSITION is its state. It is a third value here and nothing else: it obeys
+     the same rule the graph does, drawing the queue tab only, so the rail keeps
+     Asked you, Approve, Responses and the rest in all three. */
+  const [pane, setPane] = useState<"board" | "graph" | "floor">("board");
   /* THE TABS BELONG TO THE RAIL, NOT TO THE BOARD PANE.
      They used to live inside BoardPane, so switching to Graph took Asked you,
      Approve, Responses, Chat and Stream off the screen with it — the graph is a
@@ -485,12 +491,14 @@ function Live({
               one you cannot read. The composer's mode toggle has always
               carried this class; this one was added later and did not. */}
           <SegmentedControl size="xs" value={pane} className="bg4-modes"
-                            onChange={(v) => setPane(v as "board" | "graph")}
+                            onChange={(v) => setPane(v as "board" | "graph" | "floor")}
                             data={[
                               { value: "board",
                                 label: <span><Ti name="layout-list" size={12} /> Board</span> },
                               { value: "graph",
                                 label: <span><Ti name="sitemap" size={12} /> Graph</span> },
+                              { value: "floor",
+                                label: <span><Ti name="building" size={12} /> Floor</span> },
                             ]} />
           <span style={{ flex: 1 }} />
           <Badge size="sm" variant="default" leftSection={<Ti name="clock" size={11} />}>
@@ -499,25 +507,31 @@ function Live({
         </Group>
         <BoardPane state={state} open={open} onRefresh={onRefresh}
                    tab={tab} setTab={setTab}
-                   /* The graph draws the QUEUE tab and nothing else: it is a
-                      picture of the board's items and their chains, so it has
-                      nothing to say about Approve or Stream. Picking one of
-                      those with Graph selected shows that list and leaves the
-                      switch where it was, so going back is one click. */
-                   graph={pane === "graph" && tab === "queue"
-                     ? <GraphPane state={state} /> : null} />
+                   /* The graph and the floor draw the QUEUE tab and nothing
+                      else: both are pictures of the board's items, so neither
+                      has anything to say about Approve or Stream. Picking one
+                      of those with Graph or Floor selected shows that list and
+                      leaves the switch where it was, so going back is one
+                      click. */
+                   queueView={tab !== "queue" ? null
+                     : pane === "graph" ? <GraphPane state={state} />
+                     : pane === "floor" ? <FloorPane state={state} />
+                     : null} />
       </div>
     </>
   );
 }
 
-function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
+function BoardPane({ state, open, onRefresh, tab, setTab, queueView }: {
   state: ConsoleState; open: Item[]; onRefresh: () => void;
   tab: string | null; setTab: (v: string | null) => void;
-  /** The graph, when the switch is on it and the queue tab is showing. It
-   *  replaces the queue's card list and nothing else — same tabs above it,
-   *  same auto-deploy note below. */
-  graph: React.ReactNode;
+  /** Whatever is drawing the queue instead of the card list - the graph, or
+   *  the floor - when the switch is on it and the queue tab is showing. It
+   *  replaces the card list and nothing else — same tabs above it, same
+   *  auto-deploy note below. Named for the SLOT rather than for the graph,
+   *  which is what it was called while the graph was the only thing that could
+   *  fill it. */
+  queueView: React.ReactNode;
 }) {
   const autoDeploy = !!state.autopilot?.on;
   const [busy, setBusy] = useState(false);
@@ -603,11 +617,12 @@ function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
         )}
       </Group>
 
-      {/* The graph is its own body: it fills the rail and scrolls itself (it
-          pans), so it must not be wrapped in the card scroller below. */}
-      {graph}
+      {/* The graph and the floor are their own bodies: each fills the rail and
+          scrolls itself (the graph pans, the floor grows downward with the seat
+          count), so neither may be wrapped in the card scroller below. */}
+      {queueView}
 
-      {!graph && (
+      {!queueView && (
       <ScrollArea className="bg4-side-body" type="auto">
         <Stack gap={8} p="xs">
           {tab === "queue" && (open.length

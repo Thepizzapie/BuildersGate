@@ -1,0 +1,179 @@
+/* The studio floor - blockout. Rooms | lounge | rooms, office at the bottom.
+ *
+ * COLOUR COMES FROM TOKENS AND FROM `--seat`, NEVER FROM A HEX. There are four
+ * grounds (dark, light, orbit and the OS default) and a literal breaks three of
+ * them. The one colour that is not a token is the seat's own, and that arrives
+ * on the element from nav.ts's SEAT_COLOR, so a seat is the same pink here as
+ * on the rail and in the graph.
+ *
+ * THERE IS NO 3D TRANSFORM IN THIS FILE, deliberately. The high three-quarter
+ * angle is drawn, not computed: a wall band along the top edge of each room, a
+ * baseboard under it, and floors a shade lighter than the walls. A rotated
+ * container would have made a twelve-room floor scroll diagonally, put the
+ * nameplates on a slant at every zoom, and locked the layout to one camera that
+ * the generated art would then have to match exactly.
+ */
+
+.bg4-floorwrap {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: 12px;
+  /* THE RAIL IS DRAGGABLE, SO WIDTH QUESTIONS ARE ABOUT THIS BOX, NOT THE
+     WINDOW. A @media rule would collapse the floor on a small laptop with the
+     rail dragged wide, and keep three columns in a 300px rail on a 4K monitor -
+     both exactly backwards. The @container rules at the foot ask the element
+     that is actually being resized. */
+  container-type: inline-size;
+}
+
+.bg4-floor {
+  display: grid;
+  /* The lounge is the widest track because it is the only one that has to hold
+     a crowd: every idle agent stands in it at once, while a room holds one. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 12px;
+  min-height: 100%;
+}
+.bg4-floor-col {
+  display: flex; flex-direction: column; gap: 12px;
+  justify-content: flex-start;
+}
+.bg4-floor-left { grid-column: 1; grid-row: 1 }
+.bg4-lounge { grid-column: 2; grid-row: 1 }
+.bg4-floor-right { grid-column: 3; grid-row: 1 }
+/* THE OFFICE SPANS ALL THREE COLUMNS AND SITS UNDER THEM. It is not a fourth
+   column and not a peer of the crafts: the Director is who work is escalated
+   to, and the floor should read as "everyone works across, and up to there". */
+.bg4-floor-office {
+  grid-column: 1 / -1; grid-row: 2;
+  display: flex; justify-content: center;
+}
+/* `flex: none` OR THE OFFICE IS THE WHOLE WIDTH OF THE FLOOR. A room is
+   `flex: 1 1 auto` for the side columns, and inherited here that grow factor
+   beat the width and drew the Director a 685px room across the foot of the
+   building - which reads as a lobby, not an office. */
+.bg4-floor-office .bg4-room { flex: none; width: min(340px, 100%) }
+
+/* ── a room ───────────────────────────────────────────────────────────────── */
+
+.bg4-room {
+  position: relative; display: flex; flex-direction: column;
+  /* A ROOM HAS A SIZE RANGE, NOT A SIZE. Plain `flex: 1` divides the column
+     among however many rooms it holds, which drew 380px-tall empty rooms for a
+     three-seat project and 40px strips for a twelve-seat one - the same rule
+     failing in both directions. The floor of a room only ever has to hold a
+     character and a desk, so past 160px the extra height is nothing but empty
+     carpet. */
+  flex: 1 1 auto; min-height: 84px; max-height: 160px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--solid-1); overflow: hidden;
+}
+/* The back wall. Darker than the floor, tinted by the seat, and carrying the
+   only 2px line in the room so the eye reads it as the far edge. */
+.bg4-room-wall {
+  flex: none; display: flex; align-items: center;
+  height: 26px; padding: 0 8px;
+  background:
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--seat) 14%, var(--solid-2)),
+      var(--solid-2));
+  border-bottom: 1px solid color-mix(in srgb, var(--seat) 34%, var(--line));
+}
+.bg4-room-plate {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 600 10px/1 var(--sans); letter-spacing: .04em; text-transform: uppercase;
+  color: var(--seat);
+}
+/* THE FLOOR OF THE ROOM IS LIT FROM THE BACK WALL FORWARD. One gradient is the
+   whole reason a flat rectangle reads as a floor seen from above rather than as
+   a card: the near edge is the darker one, which is where the light is not. */
+.bg4-room-body {
+  position: relative; flex: 1; min-height: 0;
+  padding: 6px 8px 8px;
+  background:
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--seat) 7%, transparent),
+      transparent 62%);
+}
+.bg4-room-vibe {
+  font: 500 10px/1 var(--mono); color: var(--text-3);
+}
+/* Where the occupants land in a later step. Sized now so adding them does not
+   change the height of a room and reflow the whole floor. */
+.bg4-room-stage {
+  position: absolute; inset: 20px 8px 8px;
+  pointer-events: none;
+}
+
+/* The office reads as a corner room: same construction, one shade heavier, so
+   it is obviously not another craft room in a different colour. */
+.bg4-room-office { border-color: var(--line-strong) }
+.bg4-room-office .bg4-room-wall { height: 30px }
+
+/* ── the lounge ───────────────────────────────────────────────────────────── */
+
+/* OPEN GROUND, NOT A ROOM. No wall band and no nameplate: an agent standing
+   here holds no work, and if the lounge had a room's chrome then "idle" would
+   read as a department of its own. Dashed, because a boundary you can walk
+   through should not be drawn like one you cannot. */
+.bg4-lounge {
+  position: relative; display: flex; flex-direction: column;
+  border: 1px dashed var(--line); border-radius: 10px;
+  background: var(--solid-2);
+  padding: 8px;
+}
+.bg4-lounge-label {
+  /* --text-3, not --text-dim: the dim token is documented NON-TEXT ONLY at
+     3.6:1 and this is a label somebody has to read. */
+  font: 500 10px/1 var(--mono); color: var(--text-3);
+  letter-spacing: .06em;
+}
+.bg4-lounge-stage { position: relative; flex: 1; min-height: 0 }
+
+.bg4-floor-none {
+  padding: 24px; text-align: center;
+  font: 400 12px var(--sans); color: var(--text-3);
+}
+
+/* ── degrading with the seat table ────────────────────────────────────────── */
+
+/* ONE SIDE ROOM, OR NONE. The three-column arrangement needs something on both
+   sides of the lounge to mean anything. With one craft seat the floor becomes a
+   single column - room, lounge, office - which is still the same building read
+   top to bottom, and with none it is the lounge and the office. */
+.bg4-floor[data-sides="1"], .bg4-floor[data-sides="0"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(120px, 1fr) auto;
+}
+.bg4-floor[data-sides="1"] .bg4-floor-left,
+.bg4-floor[data-sides="0"] .bg4-floor-left { grid-column: 1; grid-row: 1 }
+.bg4-floor[data-sides="1"] .bg4-lounge,
+.bg4-floor[data-sides="0"] .bg4-lounge { grid-column: 1; grid-row: 2 }
+.bg4-floor[data-sides="1"] .bg4-floor-right,
+.bg4-floor[data-sides="0"] .bg4-floor-right { display: none }
+.bg4-floor[data-sides="1"] .bg4-floor-office,
+.bg4-floor[data-sides="0"] .bg4-floor-office { grid-row: 3 }
+
+/* A DEEP FLOOR STOPS SQUEEZING AND STARTS SCROLLING. `flex-shrink: 0` is what
+   makes min-height binding inside the column: without it a twelve-seat side
+   column crushes six rooms into 40px strips with a 26px wall on each, and the
+   floor never scrolls because it always "fits". A twelve-seat studio is a
+   taller building, not a flatter one. */
+.bg4-floor-col > .bg4-room { flex-shrink: 0 }
+
+/* Under 460px of RAIL - not of window - the two side columns cannot hold a
+   nameplate and a vibe word side by side, so the floor becomes one column and
+   reads as a section per craft. The lounge keeps its place in the middle of the
+   order, which is the one thing that has to survive: it is where the walking
+   starts and ends. */
+@container (max-width: 460px) {
+  .bg4-floor {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
+  }
+  .bg4-floor-left  { grid-column: 1; grid-row: 1 }
+  .bg4-lounge      { grid-column: 1; grid-row: 2; min-height: 72px }
+  .bg4-floor-right { grid-column: 1; grid-row: 3; display: flex }
+  .bg4-floor-office { grid-row: 4 }
+  .bg4-floor-office .bg4-room { width: 100% }
+}
