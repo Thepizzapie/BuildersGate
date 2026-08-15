@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import assets, db
+from .proc import run as _run
 from .util import rows
 
 TELEMETRY_SCHEMA_VERSION = 1
@@ -30,22 +31,22 @@ def _git_snapshot(root: Path) -> tuple[str, str]:
     commit = ""
     dirty = ""
     try:
-        head = subprocess.run(
+        head = _run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True,
             text=True, timeout=10, stdin=subprocess.DEVNULL)
         if head.returncode == 0:
             commit = head.stdout.strip()
-        state = subprocess.run(
+        state = _run(
             ["git", "status", "--porcelain=v1", "-uall"], cwd=root,
             capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
-        diff = subprocess.run(
+        diff = _run(
             ["git", "diff", "--binary", "HEAD"], cwd=root,
             capture_output=True, timeout=15, stdin=subprocess.DEVNULL)
         dirty_parts = [
             state.stdout.encode("utf-8", errors="replace"),
             diff.stdout or b"",
         ]
-        untracked = subprocess.run(
+        untracked = _run(
             ["git", "ls-files", "--others", "--exclude-standard", "-z"],
             cwd=root, capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
         for raw in (untracked.stdout or b"").split(b"\0"):

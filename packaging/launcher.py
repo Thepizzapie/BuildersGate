@@ -266,6 +266,22 @@ def main() -> int:
         if cmd == "selftest":
             return _selftest()
 
+        if cmd == "mcp":
+            # THE MCP SERVER, HOSTED BY THIS BINARY. A frozen build has no
+            # interpreter to hand `-m bgate_mcp.server` to: sys.executable IS
+            # this .exe. An agent's MCP registration therefore named the app as
+            # its command, the CLI launched it with `-m bgate_mcp.server`, argv
+            # started with a dash, and the dispatch below read that as "no
+            # command" and OPENED THE DESKTOP APP. Inviting a seat into a
+            # brainstorm room put "Builders Gate is already running" on screen
+            # instead of a participant.
+            #
+            # stdio, and nothing else: an MCP server talks over stdin/stdout, so
+            # anything printed here corrupts the protocol.
+            from bgate_mcp.server import main as mcp_main
+            mcp_main()
+            return 0
+
         if cmd == "whisper":
             # The app running its own speech-to-text runner as a subprocess.
             # A frozen build has no interpreter to hand a script path to, so
@@ -282,6 +298,17 @@ def main() -> int:
             # keeps the surface to "read this wav with one of five models",
             # which is all the caller in transcribe.py ever asks for.
             return _whisper(argv[1:])
+
+        # A DASHED ARGUMENT IS NOT A REQUEST FOR A WINDOW. `cmd` is "" both
+        # when there is no argv at all (a double-click, which SHOULD open the
+        # app) and when argv[0] starts with a dash — and the second case is how
+        # `BuildersGate.exe -m bgate_mcp.server` opened a desktop window. Only
+        # the flags the app itself takes may reach run(); anything else falls
+        # through to the usage error below.
+        _APP_FLAGS = {"--port", "--debug"}
+        dashed = [a for a in argv if a.startswith("-")]
+        if cmd == "" and argv and not set(dashed) <= _APP_FLAGS:
+            cmd = argv[0]                      # report it, do not run it
 
         if cmd in ("", "app"):
             from bgate_ui.desktop import run

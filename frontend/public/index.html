@@ -189,7 +189,23 @@
               <option value="web">web build</option>
               <option value="native">native Godot</option>
             </select>
-            <button class="qbtn small" id="pt-btn" onclick="toggleRecord()" disabled>● record</button>
+            <!-- TWO THINGS, TWO CONTROLS. There used to be one button that
+                 said "record", a separate "boot current build" in the middle
+                 of the panel, and a kill button that appeared and disappeared
+                 -- three controls for two ideas, and no way to tell from
+                 looking which of them would end what. Running the build and
+                 recording a session are independent: you can play without
+                 recording, and a recording of a native game does not use the
+                 panel's build at all. So each gets its own start/stop, each
+                 says which of the two it acts on, and neither ever silently
+                 does the other's job. -->
+            <span class="pt-controls">
+              <button class="qbtn small" id="pt-build" onclick="toggleBuild()"
+                      title="Start or stop the game build in this panel">▶ start build</button>
+              <button class="qbtn small" id="pt-btn" onclick="toggleRecord()"
+                      title="Start or stop recording a playtest session"
+                      disabled>● start recording</button>
+            </span>
           </div>
           <!-- What is actually missing, in full, with the command that fixes it. -->
           <div class="pt-why" id="pt-why" hidden></div>
@@ -1513,6 +1529,27 @@ function bootFrame(sessionId=null){
   const session = sessionId ? `&bgate_session=${encodeURIComponent(sessionId)}` : "";
   document.getElementById("play-holder").innerHTML =
     `<iframe id="gameframe" src="/play/?t=${Date.now()}${session}" allow="autoplay; fullscreen"></iframe>`;
+  // Immediately, not on the next poll a second later: the moment there is a
+  // game on screen there has to be a way to end it.
+  syncPtButtons();
+}
+
+/* Tear the game out of the page and put the idle control back.
+ *
+ * NOT bootFrame(). bootFrame() with no session id does not clear anything --
+ * it points the iframe at /play/ with a fresh cache-buster, which BOOTS THE
+ * GAME AGAIN. Calling it from the kill path meant "stop everything" killed the
+ * native game and then immediately started the web build in its place, which
+ * looks exactly like the stop having failed and restarted the thing you asked
+ * it to end. A kill has to leave the panel empty. */
+function clearFrame(){
+  const holder = document.getElementById("play-holder");
+  if (!holder) return;
+  holder.innerHTML =
+    '<button class="playbtn" onclick="loadGame()">▶ boot current build</button>'
+    + '<div class="playhint" id="play-controls">Controls come from your game’s '
+    + 'own input map - F1 opens live tuning over the running build.</div>';
+  syncPtButtons();
 }
 
 /* ── playtest recording ──────────────────────────────────────────────── */
@@ -1524,6 +1561,12 @@ let ptReady = false, ptRecording = false;
    Declared here rather than beside ptPoll because renderPreflight is defined
    above it and a `let` below its first caller is a temporal-dead-zone trap. */
 let _ptIdleHTML = "", _ptTransient = false;
+/* Set while a kill is in flight and until the server stops reporting a live
+   session. ptPoll() AUTO-BOOTS THE GAME FRAME whenever status says something
+   is recording, so a poll landing between the kill and the database catching
+   up re-launched the build the kill had just ended -- the same "it restarted
+   the game" symptom, arriving by a second door. */
+let _ptAborting = false;
 
 /* The literal thing to install, per check. "not ready: transcriber (unavail…"
  * truncated at 60 characters told nobody what to do, and the Record button sat
@@ -1613,7 +1656,7 @@ function renderPreflight(p){
   const degraded = failed.filter(([, c]) => c.required === false);
   ptReady = Boolean(p.ready);
   if (lamp) lamp.className = "lamp" + (ptReady ? "" : " bad");
-  if (btn) btn.disabled = !ptReady && !ptRecording;
+  syncPtButtons();
   if (!msg) return;
   if (ptReady){
     /* READY IS READY. NOTHING ELSE GOES HERE.
@@ -1708,11 +1751,55 @@ async function ptPreflight(force){
   renderPreflight(p);
 }
 
+/* Guards the whole start/stop transition. Starting a recording runs a
+   preflight, maybe an export, then spawns ffmpeg -- seconds during which the
+   old code left the button reading "● record" and fully clickable, so the
+   honest reaction to "did that work?" was to click it again. That second click
+   raced the first into start(), and both won. The database is atomic about it
+   now; this stops the second request being sent at all, and -- more to the
+   point -- makes the button say what is happening. */
+let _ptBusy = false;
+
 async function toggleRecord(){
   const btn = document.getElementById("pt-btn");
+  if (_ptBusy) return;
+  _ptBusy = true;
+  const wasLabel = btn ? btn.textContent : "";
+  if (btn){
+    btn.disabled = true;
+    btn.textContent = ptRecording ? "stopping…" : "starting…";
+  }
+  try{
+    await _toggleRecord(btn);
+  } finally {
+    _ptBusy = false;
+    if (btn) btn.disabled = false;
+    // syncPtButtons owns every label, so a failed start cannot leave the
+    // button reading "starting…" forever.
+    syncPtButtons();
+  }
+}
+
+async function _toggleRecord(btn){
   if (!ptRecording){
     const target = document.getElementById("pt-target").value;
-    const buildStatus = target === "web"
+
+    /* ONLY REBUILD WHEN WE ARE ABOUT TO BOOT THE BUILD FOR THIS RECORDING.
+     *
+     * The point of the staleness check is that evidence should be about the
+     * code you have, not the code you exported an hour ago -- but it was
+     * running unconditionally, including when the build was ALREADY UP on
+     * screen. That case makes no sense in either direction. If we rebuild and
+     * do not reload, the recording captures the old instance while the export
+     * on disk has moved, so the build_ref stamped on the session is a lie. If
+     * we rebuild and DO reload, we throw away the run the person is sitting in
+     * front of, at the exact moment they asked to start recording it.
+     *
+     * So: a build already running is the build being recorded, full stop. The
+     * rebuild belongs to the path that boots one.
+     */
+    const alreadyRunning = !!document.getElementById("gameframe");
+    const buildStatus = (target === "web" && !alreadyRunning)
       ? await readJSON("/api/play/status", {}) : {stale:false};
     if (target === "web" && buildStatus.stale){
       document.getElementById("pt-msg").textContent = "rebuilding current build before recording…";
@@ -1733,9 +1820,21 @@ async function toggleRecord(){
     const got = started.ok ? (started.data || {}) : {};
     if (got.recording){
       ptRecording = true;
-      if (target === "web") bootFrame(got.session_id);
-      btn.textContent = "■ stop";
-      btn.classList.add("recording");
+      /* RELOAD ONLY IF THE FRAME IS NOT ALREADY ON THIS SESSION.
+         The reload is how the session id reaches the game (it reads
+         bgate_session from the query string and stamps its telemetry with it),
+         but it is also a full restart -- so pressing record while already
+         playing threw away the run and dropped you back at the title screen.
+         That is the "game resets" report, and combined with a record button
+         that looked like it had not responded, it is how one session became
+         two. If the frame is already carrying this session, leave it alone. */
+      _ptNativeGame = (target === "native");
+      if (target === "web"){
+        const f = document.getElementById("gameframe");
+        if (!f || !f.src.includes(`bgate_session=${got.session_id}`))
+          bootFrame(got.session_id);
+      }
+      syncPtButtons();
       document.getElementById("pt-msg").textContent =
         target === "native"
           ? `RECORDING - native Godot launched (pid ${got.native_launch?.pid || "?"})`
@@ -1750,8 +1849,7 @@ async function toggleRecord(){
     const stopped = await mutate("/api/playtest/stop", {quiet:true});
     const got = stopped.ok ? (stopped.data || {}) : {};
     ptRecording = false;
-    btn.textContent = "● record";
-    btn.classList.remove("recording");
+    syncPtButtons();
     const fine = stopped.ok && got.ok !== false;
     if (fine && document.getElementById("pt-target").value === "web") bootFrame();
     const why = stopped.ok ? (got.error || "?") : stopped.error;
@@ -1760,6 +1858,87 @@ async function toggleRecord(){
       : "stop failed: " + why;
     if (!fine) toast("stop failed - " + why);
   }
+}
+
+/* Which of the two things is running right now.
+ *
+ * `build` is the game in the panel (a booted web build, or a native game the
+ * recorder launched). `recording` is a playtest session. They are independent
+ * and the buttons must never imply otherwise. */
+let _ptNativeGame = false;
+
+function ptState(){
+  return {
+    build: !!document.getElementById("gameframe") || _ptNativeGame,
+    recording: ptRecording,
+  };
+}
+
+/* ONE PLACE DECIDES WHAT BOTH BUTTONS SAY. Labels used to be written at each
+   call site -- start wrote one, stop wrote another, the poller wrote a third --
+   so any path that missed a case left a button lying about what it would do.
+   Every state change calls this instead. */
+function syncPtButtons(){
+  const st = ptState();
+  const build = document.getElementById("pt-build");
+  const rec   = document.getElementById("pt-btn");
+
+  if (build && !_ptBusyBuild){
+    build.textContent = st.build ? "■ stop build" : "▶ start build";
+    build.classList.toggle("pt-on", st.build);
+    build.title = st.build ? "Close the running build"
+                           : "Boot the current build in this panel";
+  }
+  if (rec && !_ptBusy){
+    rec.textContent = st.recording ? "■ stop recording" : "● start recording";
+    rec.classList.toggle("recording", st.recording);
+    rec.title = st.recording ? "End the session, then transcribe and triage it"
+                             : "Record a playtest session";
+    // Disabled until the preflight says the gear is there -- except while a
+    // session is running, when stopping must always be possible.
+    rec.disabled = !ptReady && !st.recording;
+  }
+}
+
+/* Start or stop the BUILD. Never touches the recording. */
+let _ptBusyBuild = false;
+async function toggleBuild(){
+  if (_ptBusyBuild) return;
+  const st = ptState();
+  const btn = document.getElementById("pt-build");
+  _ptBusyBuild = true;
+  if (btn){ btn.disabled = true; btn.textContent = st.build ? "stopping…" : "starting…"; }
+  try{
+    if (st.build) await stopBuild();
+    else          await loadGame();
+  } finally {
+    _ptBusyBuild = false;
+    if (btn) btn.disabled = false;
+    syncPtButtons();
+  }
+}
+
+/* Close the build. Refuses to quietly end a recording that is using it. */
+async function stopBuild(){
+  if (ptRecording &&
+      !confirm("A recording is running on this build.\n\n"
+             + "Stopping the build now ends the recording too, and it is "
+             + "discarded - no transcript, no triage.")) return;
+
+  const r = await mutate("/api/playtest/abort", {quiet:true});
+  const d = r.ok ? (r.data || {}) : {};
+  ptRecording = false;
+  _ptNativeGame = false;
+  _ptAborting = true;
+  clearFrame();
+  const msg = document.getElementById("pt-msg");
+  if (msg){
+    if (!r.ok) msg.textContent = "could not stop the build - " + r.error;
+    else if (d.sessions_stopped?.length) msg.textContent = "build stopped - recording discarded";
+    else msg.textContent = "build stopped";
+  }
+  if (!r.ok) toast("stop build failed - " + r.error);
+  ptPreflight(true);
 }
 
 async function ptPoll(){
@@ -1787,12 +1966,14 @@ async function ptPoll(){
 
   if (s.recording){
     ptRecording = true;
+    _ptNativeGame = !!s.recording.native;
     _ptTransient = true;
+    syncPtButtons();
     const lamp = document.getElementById("pt-lamp");
     if (lamp) lamp.className =
       "lamp" + (s.recording.telemetry_events > 0 ? "" : " waiting");
     const frame = document.getElementById("gameframe");
-    if (!s.recording.native &&
+    if (!_ptAborting && !s.recording.native &&
         (!frame || !frame.src.includes(`bgate_session=${s.recording.id}`))){
       bootFrame(s.recording.id);
     }
@@ -1805,8 +1986,7 @@ async function ptPoll(){
   }
   if (ptRecording){
     ptRecording = false;
-    btn.textContent = "● record";
-    btn.classList.remove("recording");
+    syncPtButtons();
   }
 
   /* PARTITION, DO NOT FILTER. A session whose post-processing failed was the
@@ -1824,6 +2004,7 @@ async function ptPoll(){
   if (failed.length){
     const f = failed[0];
     _ptTransient = true;
+    syncPtButtons();
     msg.innerHTML = `session ${f.id} failed to process`
       + (f.error ? ` - ${esc(f.error)}` : "")
       + ` <button class="qbtn small ghost" onclick="retrySession(${f.id})">retry</button>`;
@@ -1831,12 +2012,19 @@ async function ptPoll(){
   }
   if (busy.length){
     _ptTransient = true;
+    syncPtButtons();
     msg.textContent = `${busy[0].stage || "processing"} session ${busy[0].id}…`;
     return;
   }
   // Nothing recording and nothing processing: the panel is about the Record
   // button again. Hand it back the preflight's own line rather than leaving a
   // finished session's status up as if it were still happening.
+  // Nothing recording and nothing processing -- but a booted build is still
+  // something to stop, so let ptKill decide from the frame rather than
+  // hiding unconditionally.
+  _ptAborting = false;
+  _ptNativeGame = false;
+  syncPtButtons();
   if (_ptTransient){
     _ptTransient = false;
     msg.innerHTML = _ptIdleHTML;

@@ -1582,6 +1582,27 @@ def pt_stop() -> dict:
     return {"ok": True, "session_id": sid, "processing": True}
 
 
+@app.post("/api/playtest/abort")
+def pt_abort() -> dict:
+    """Kill every playtest process this server started. The panic button.
+
+    SEPARATE FROM /stop ON PURPOSE, because it makes the opposite trade. /stop
+    hands the session to a worker thread that finalises the video, ingests
+    telemetry and transcribes; each of those can hang or fail, and when one
+    does the game is still on screen and the panel still says RECORDING. This
+    one kills the processes first and throws the recording away, which is what
+    somebody hitting a stop button for the second time actually wants.
+
+    Also clears `_pt_processing`, so a session wedged in "processing" by a
+    worker that died does not keep the panel busy forever.
+    """
+    root = _root()
+    result = playtest.abort(root)
+    for sid in result["sessions_stopped"] + result["orphans_cleared"]:
+        _pt_processing.pop(sid, None)
+    return {"ok": True, **result}
+
+
 @app.get("/api/playtest/status")
 def pt_status() -> dict:
     root = _root()

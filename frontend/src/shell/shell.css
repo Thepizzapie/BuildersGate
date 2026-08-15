@@ -532,6 +532,15 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   font: 500 9px/1.4 var(--mono); color: var(--text-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* ELLIPSIS NEEDS SOMETHING TO ELLIPSIS AGAINST. The rule above was already
+   nowrap + overflow:hidden and the text still ran straight out of the menu,
+   because a flex item's default min-width is `auto` -- it refuses to shrink
+   below its content, so the label grew to fit "Onboarding/coworker-select
+   screen shows wrong portraits, not the hero roster" and pushed it past the
+   300px dropdown instead of clipping it. min-width:0 on the ancestors is what
+   lets the text box be narrower than the text. */
+.mantine-Menu-item:has(.bg4-tag-sub),
+.mantine-Menu-itemLabel:has(.bg4-tag-sub) { min-width: 0; overflow: hidden }
 /* The banner over the box while it is aimed. Says who hears this and what it
    does to them; the × puts you back in front of the director. */
 .bg4-aimed {
@@ -804,8 +813,42 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
 .bg4-graph .ti { font-size: 10px; fill: var(--text) }
 .bg4-graph .st { font-size: 9px }
 
-/* ── the adjustable board rail ───────────────────────────────────────────── */
-.bg4-console.live { grid-template-columns: minmax(0, 1fr) 6px var(--rail, 340px) }
+/* ── the adjustable board rail ─────────────────────────────────────────────
+   THE BOARD GETS THE ROOM, NOT THE EMPTY CONSOLE.
+
+   The rail used to be a flat 340px with the conversation taking everything
+   else, and that is backwards for how this screen is actually used. Work
+   arrives on the board from seats, MCP calls and chains — the console pane is
+   frequently empty ("Nothing has been said in this console") while the board
+   is the thing with content in it. So the wide half was reserved for the empty
+   pane, and the half doing the work was squeezed hard enough to truncate its
+   own tab strip: "Queue / Asked you / Approve / Respons…", with Chat and
+   Stream clipped off entirely.
+
+   Ratios rather than pixels, so it holds at any window size: the console keeps
+   a readable minimum and the board takes a bit over twice the remainder. The
+   drag grip still wins — it sets --rail to a pixel value, which replaces the
+   fraction outright — so anyone who prefers the old split sets it once and
+   keeps it.
+
+   Below 1400px the board goes back to a fixed 340px: there the console is the
+   pane in danger of becoming unusable, and giving the board 2.2fr of a small
+   space starves it. */
+.bg4-console.live {
+  grid-template-columns: minmax(360px, 1fr) 6px var(--rail, minmax(0, 2.2fr));
+}
+@media (max-width: 1400px) {
+  .bg4-console.live { grid-template-columns: minmax(0, 1fr) 6px var(--rail, 340px) }
+}
+/* LAST, SO IT ACTUALLY WINS. .bg4-console-side is display:none below 1180px,
+   but the track it lived in was still being declared by the rules above --
+   later rule, same specificity -- so a narrow window reserved 340px plus a
+   drag grip for a pane that was not rendered. One column, and no grip to grab
+   for a rail that is not there. */
+@media (max-width: 1180px) {
+  .bg4-console.live { grid-template-columns: minmax(0, 1fr) }
+  .bg4-railgrip { display: none }
+}
 .bg4-railgrip {
   cursor: col-resize; background: transparent; position: relative;
   border-left: 1px solid var(--line); touch-action: none;
@@ -1213,3 +1256,51 @@ html.bg-framed body { padding-top: 44px }
      flow, where it claimed its 340px and shoved every column across. */
   z-index: 40;
 }
+
+
+/* THE NOTEPAD DRAWER RESERVES ITS OWN SPACE INSTEAD OF COVERING THINGS.
+   It is position:fixed against the right edge, so with the shell still
+   occupying the full viewport the drawer sat ON TOP of whatever was there --
+   and what is there, on the Playtests screen, is the right end of the control
+   bar: the record button and the stop button. The one panel you take notes
+   about was hiding the controls for the thing you were taking notes on, and
+   from the user's side the stop button simply did not exist.
+
+   Padding the shell by exactly the drawer's width (--ptn-w, published by
+   ptnotes.js so the two cannot drift) makes the grid resolve narrower and the
+   bar reflow inside it. Nothing ends up underneath.
+
+   Not applied under 640px, where the drawer is the whole window: reserving
+   100vw would leave the app zero columns wide. There it stays an overlay, and
+   closing it is the way back. */
+body.ptn-open .bg4 {
+  padding-right: var(--ptn-w, 380px);
+  box-sizing: border-box;
+}
+@media (max-width: 640px) {
+  body.ptn-open .bg4 { padding-right: 0 }
+}
+
+
+/* ── linked assets, above the composer ────────────────────────────────────
+   A linked asset changes what the message means, so it sits where the text is
+   being typed rather than behind the picker that added it. Each chip carries
+   its own remove, because choosing the wrong sheet out of a list of thirty is
+   the ordinary mistake here.
+
+   The label truncates and the full path is the title: a chip is an
+   identification, not a path viewer, and three long paths would otherwise push
+   the composer's own controls off the row. */
+.bg4-links { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px }
+.bg4-link {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 260px;
+  padding: 3px 6px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface-2); color: var(--text-2);
+  font: 500 10px/1.4 var(--mono);
+}
+.bg4-link .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0 }
+.bg4-link .x {
+  border: 0; background: none; cursor: pointer; padding: 0 1px;
+  color: var(--text-3); font-size: 12px; line-height: 1;
+}
+.bg4-link .x:hover { color: var(--text) }

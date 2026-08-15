@@ -114,11 +114,31 @@ window.PtNotes = (() => {
          see-through and the page behind bled into the notes. --solid-N exists
          for exactly this and aliases back to --surface-N in dark and light, so
          nothing changes on the other two grounds. */
-      ".ptn-pad{position:fixed;top:0;right:0;bottom:0;width:min(400px,92vw);z-index:var(--z-drawer);",
+      /* WIDTH IS A FRACTION OF THE WINDOW, NOT A FLAT 400px. `min(400px,92vw)`
+         reads as "narrow", and it is on a wide monitor -- but 92vw is the
+         branch that fires on anything under about 430px, and on a merely
+         smallish window this drawer covered the panel it is meant to annotate,
+         including the record and stop controls at the right end of the bar.
+         A notepad that hides the thing you are taking notes about is the wrong
+         shape.
+
+         clamp keeps it between 260px (below which the textarea stops being
+         usable) and 380px, and lets it take 28vw in between, so it is always a
+         column beside the build rather than a sheet over it. Genuinely tiny
+         windows still get the full-width sheet from the media query below,
+         where there is no room for two things at once. */
+      /* Published as a custom property so the SHELL can reserve exactly this
+         much room -- see `body.ptn-open` in shell.css. Two hard-coded copies
+         of a width that must agree is a bug waiting for a resize. */
+      ":root{--ptn-w:clamp(260px,28vw,380px)}",
+      ".ptn-pad{position:fixed;top:0;right:0;bottom:0;width:var(--ptn-w);z-index:var(--z-drawer);",
       "  display:flex;flex-direction:column;background:var(--solid-2);border-left:1px solid var(--line);",
       "  box-shadow:var(--shadow-3);transform:translateX(101%);transition:transform var(--dur) var(--ease);",
       "  color:var(--text)}",
       ".ptn-pad.on{transform:none}",
+      /* Under 640px there is not room for the drawer and the build side by
+         side, so stop pretending: take the window and let the user close it. */
+      "@media (max-width:640px){:root{--ptn-w:100vw}}",
       "@media (prefers-reduced-motion:reduce){.ptn-pad{transition:none}}",
       ".ptn-head{display:flex;align-items:center;gap:var(--s-4);padding:var(--s-5) var(--s-6);",
       "  border-bottom:1px solid var(--line);background:var(--solid-1)}",
@@ -562,6 +582,7 @@ window.PtNotes = (() => {
     mount();
     isOpen = true;
     pad.classList.add("on");
+    document.body.classList.add("ptn-open");
     pad.setAttribute("aria-hidden", "false");
 
     // ANCHOR BEFORE ANY AWAIT. The frame and the timestamp have to be the
@@ -596,6 +617,7 @@ window.PtNotes = (() => {
     if (!pad) return;
     isOpen = false;
     pad.classList.remove("on");
+    document.body.classList.remove("ptn-open");
     pad.setAttribute("aria-hidden", "true");
     disarm();
     // Hand the keyboard back, or the next WASD goes into a panel nobody can see.

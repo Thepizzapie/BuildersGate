@@ -1,5 +1,6 @@
 import { Button, Group, Menu, SegmentedControl, Text, Textarea } from "@mantine/core";
 import { Ti } from "../Ti";
+import { AssetLink, type Linked } from "./AssetLink";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
 
 /** A running agent you can tag. */
@@ -31,6 +32,7 @@ export type Aim = null | number | "all" | { seat: string };
 export function Composer({
   variant, mode, onMode, value, onValue, onSend, sending, autoDeploy, onClear,
   targets = [], seats = [], aim = null, onAim,
+  linked = [], onLink, onUnlink,
 }: {
   variant: "hero" | "foot";
   mode: "dispatch" | "brainstorm";
@@ -47,6 +49,10 @@ export function Composer({
   seats?: string[];
   aim?: Aim;
   onAim?: (aim: Aim) => void;
+  /** Assets linked to the next message, and how to change that set. */
+  linked?: Linked[];
+  onLink?: (asset: Linked) => void;
+  onUnlink?: (rel: string) => void;
 }) {
   const hero = variant === "hero";
 
@@ -142,6 +148,27 @@ export function Composer({
               title="talk to the director instead">×</button>
     </div>
   ) : null;
+  /* WHAT IS ATTACHED, ABOVE THE BOX WHERE THE TEXT IS. A linked asset changes
+     what the message means, so it has to be visible while typing rather than
+     discovered after sending -- and removable, because picking the wrong sheet
+     out of a list of thirty is the ordinary mistake here. */
+  const links = onLink && mode === "dispatch" ? (
+    <>
+      {!!linked.length && (
+        <div className="bg4-links">
+          {linked.map((a) => (
+            <span className="bg4-link" key={a.rel} title={a.rel}>
+              <Ti name="photo" size={11} />
+              <span className="tx">{a.label}</span>
+              <button className="x" type="button" onClick={() => onUnlink?.(a.rel)}
+                      title="unlink">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  ) : null;
+
   const send = (
     <Button onClick={onSend} loading={sending} disabled={!value.trim()}
             size={hero ? "sm" : "xs"} className="bg4-sendbtn"
@@ -187,10 +214,12 @@ export function Composer({
     return (
       <div className="bg4-composer-hero">
         {aimNote}
+        {links}
         {field}
         <Group gap="sm" wrap="nowrap" className="bg4-composer-bar">
           {tabs}
           {tag}
+          {onLink && mode === "dispatch" && <AssetLink onPick={onLink} />}
           <span style={{ flex: 1 }} />
           {/* AUTO-DEPLOY IS STATED, NOT ASSUMED. Queued work sitting still
               because a switch is off, with nothing on screen saying so, is the
@@ -207,9 +236,11 @@ export function Composer({
   return (
     <div className="bg4-composer">
       {aimNote}
+      {links}
       <Group gap="xs" mb={8} wrap="nowrap">
         {tabs}
         {tag}
+        {onLink && mode === "dispatch" && <AssetLink onPick={onLink} />}
         <span style={{ flex: 1 }} />
         {onClear && (
           <Button variant="default" size="compact-xs" onClick={onClear}>clear</Button>

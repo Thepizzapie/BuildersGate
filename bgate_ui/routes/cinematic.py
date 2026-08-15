@@ -22,6 +22,7 @@ import time
 from fastapi import APIRouter, Request
 
 from bgate_core import cinematic as _cine
+from bgate_core.proc import run as _run
 from bgate_core import jobs as _core_jobs
 from bgate_ui import api
 from bgate_ui.deps import root
@@ -502,7 +503,6 @@ def _orphan_state(view: dict, job: dict) -> tuple:
 # the one failure that would make this worse than no button at all.
 
 import hashlib
-import subprocess
 from pathlib import Path
 
 from bgate_core import ffmpegbin as _ffmpeg
@@ -557,7 +557,7 @@ def cinematic_watchable(rel: str, request: Request = None):
                 "looks; the delivered file itself is fine and Godot will play it.")
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".part.mp4")
-        proc = subprocess.run(
+        proc = _run(
             [exe, "-y", "-loglevel", "error", "-i", str(src),
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
              "-pix_fmt", "yuv420p",          # some players refuse yuv444

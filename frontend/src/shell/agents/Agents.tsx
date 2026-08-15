@@ -4,13 +4,14 @@ import {
   Stack, Tabs, Text,
 } from "@mantine/core";
 import { Ti } from "../Ti";
-import { useStickyBottom } from "../sticky";
+import { useStickyTop } from "../sticky";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
 import { useViewActive, usePoll } from "../../hooks";
 import { setSelection } from "../selection";
 import { notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { BrainstormFoot } from "./Brainstorm";
 import { Composer, type Aim } from "./Composer";
+import { type Linked } from "./AssetLink";
 import { Cat } from "./Cat";
 import { Streamer } from "./Streamer";
 import {
@@ -108,6 +109,10 @@ export function Agents() {
      running. Read once per activation, not per poll: it changes when somebody
      edits the seat config, which is not a thing that happens mid-session. */
   const [seats, setSeats] = useState<string[]>([]);
+  /* Assets linked to the NEXT message. Cleared on send with the text, because
+     an attachment that outlives the message it belonged to silently rides
+     along on the following one. */
+  const [linked, setLinked] = useState<Linked[]>([]);
   useEffect(() => {
     if (!active) return;
     readJSON<{ seats: { role?: string }[] }>("/api/state", { seats: [] })
@@ -137,10 +142,20 @@ export function Agents() {
             [mode, session, openBrainstorm]);
 
   async function send(said = text) {
-    const body = said.trim();
-    if (!body || sending) return;
+    const said_ = said.trim();
+    if (!said_ || sending) return;
+    /* LINKED ASSETS TRAVEL AS PART OF THE MESSAGE, as project-relative paths.
+       No upload and no new field on the wire: the seats already read paths out
+       of a brief and go and look at the file, so the cheapest correct thing is
+       to say which files, in the text, in a shape that survives being quoted
+       into a work item. */
+    const body = linked.length
+      ? [said_, "", "Assets referenced:",
+         ...linked.map((a) => `- ${a.rel}`)].join("\n")
+      : said_;
     setSending(true);
     setText("");
+    setLinked([]);
     if (mode === "brainstorm" && session) {
       const r = await bsSay(session.id, body);
       if (r.ok) setSession(await bsOpen(session.id));
@@ -212,6 +227,14 @@ export function Agents() {
      menu can say "#424 tech — Wire mimic interact trigger" rather than an id
      the human has to go and look up. */
   const targets = (state.agents || [])
+    /* RUNNING ONLY. /api/console/state sends the whole dispatch roster --
+       finished, failed and running alike; the server filters by state for its
+       own `live_ids` and hands the client the unfiltered list. Mapping all of
+       it put five entries under "Interrupt something already running" while
+       the header said "1 running", and steering an agent that had already
+       exited is a message into nothing. useFloor filters the same field for
+       the same reason. */
+    .filter((a) => a.state === "running")
     .map((a) => {
       const item = items.find((i) => i.id === a.item_id);
       return item
@@ -269,6 +292,9 @@ export function Agents() {
     <Composer variant={variant} mode={mode} onMode={setMode}
               value={text} onValue={setText} onSend={() => send()}
               targets={targets} seats={seats} aim={aim} onAim={setAim}
+              linked={linked}
+              onLink={(a) => setLinked((v) => v.some((x) => x.rel === a.rel) ? v : [...v, a])}
+              onUnlink={(rel) => setLinked((v) => v.filter((x) => x.rel !== rel))}
               sending={sending} autoDeploy={autoDeploy}
               /* No room open means nothing to clear — an enabled button that
                  cannot act is what produced this bug in the first place. */
@@ -397,20 +423,25 @@ function Live({
   const [tab, setTab] = useState<string | null>("queue");
   /* Counts, not arrays — the 3s poll rebuilds the objects and scrolling on
      that would drag the reader to the bottom every tick. */
-  const feed = useStickyBottom(
+  const feed = useStickyTop(
     mode === "brainstorm" ? messages.length : turns.length);
 
   return (
     <>
       <div className="bg4-console-main">
-        {/* Follows the newest turn unless you have scrolled up to read. */}
+        {/* NEWEST FIRST. The transcript used to run oldest-at-top, so the
+            reply you are waiting for arrived at the bottom of a long scroll
+            and the top of the pane was whatever was said first. Reversed here
+            at render rather than in the data, because `turns` and `messages`
+            are also what the counts and the sticky dep are computed from.
+            Follows the newest turn unless you have scrolled down to read. */}
         <ScrollArea className="bg4-transcript" type="auto" viewportRef={feed}>
           {mode === "brainstorm"
-            ? messages.map((m) => (
+            ? [...messages].reverse().map((m) => (
                 <Msg key={m.id} who={m.role === "user" ? "you" : "partner"} text={m.text} />
               ))
             : turns.length
-            ? turns.map((t) => <TurnRow key={t.id} turn={t} />)
+            ? [...turns].reverse().map((t) => <TurnRow key={t.id} turn={t} />)
             /* A LIVE BOARD WITH AN EMPTY TRANSCRIPT IS THE NORMAL CASE NOW, and
                it was drawing a thousand pixels of black nothing.
                `live` is true when anything is running or queued — but work
@@ -491,6 +522,28 @@ function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
   const autoDeploy = !!state.autopilot?.on;
   const [busy, setBusy] = useState(false);
   const queued = open.filter((i) => i.status === "queued");
+
+  /* CHAT AND STREAM ARE STREAMER-MODE TABS, and they only appear when it is
+     on. Both are about broadcasting -- the live chat relay and the OBS overlay
+     pages -- so to anyone not streaming they were two permanent pills that did
+     nothing, taking width from the four tabs that are the actual board. That
+     width matters here: this strip scrolls rather than wraps, so the tabs
+     nobody is using were pushing the ones they are off the visible end.
+
+     Polled rather than read once, because the switch that flips this sits in
+     the same rail: the strip has to answer a toggle without a reload. */
+  const [streamer, setStreamer] = useState(false);
+  const loadStreamer = useCallback(async () => {
+    const s = await readJSON<{ on?: boolean }>("/api/streamer", {});
+    setStreamer(!!s.on);
+  }, []);
+  usePoll(loadStreamer, 10000, true);
+
+  /* Turning streamer mode off while sitting on one of its tabs would leave the
+     strip with nothing selected and the body blank. Fall back to the queue. */
+  useEffect(() => {
+    if (!streamer && (tab === "chat" || tab === "stream")) setTab("queue");
+  }, [streamer, tab, setTab]);
   /* THIS SESSION'S RESULTS, not the project's entire history.
      This listed every work item that has ever carried a result — 400+ rows
      going back weeks — so the panel beside a five-minute conversation was a
@@ -538,8 +591,8 @@ function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
             <Tabs.Tab value="asked">Asked you</Tabs.Tab>
             <Tabs.Tab value="approve">Approve {state.gates.length || ""}</Tabs.Tab>
             <Tabs.Tab value="responses">Responses</Tabs.Tab>
-            <Tabs.Tab value="chat">Chat</Tabs.Tab>
-            <Tabs.Tab value="stream">Stream</Tabs.Tab>
+            {streamer && <Tabs.Tab value="chat">Chat</Tabs.Tab>}
+            {streamer && <Tabs.Tab value="stream">Stream</Tabs.Tab>}
           </Tabs.List>
         </Tabs>
         {tab === "queue" && queued.length > 0 && (

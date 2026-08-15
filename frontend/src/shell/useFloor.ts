@@ -92,7 +92,12 @@ export function useFloor(ms = 4000, enabled = true): Floor {
     const error = [q, ag, act].map((x) => x.__error).find(Boolean);
     const items = q.items || [];
     const agents = (ag.agents || []).filter((a) => a.state === "running");
-    const events = (act.events || []).slice().reverse();       // newest first
+    /* ALREADY NEWEST FIRST — /api/activity pages `id DESC`. This used to call
+       .reverse() with a comment claiming it produced newest-first, which is
+       exactly backwards: it took a descending list and made it ascending, so
+       Work history opened on the oldest thing that ever happened and the run
+       that just finished was at the far end of a 68-row scroll. */
+    const events = act.events || [];
     const byId = new Map(items.map((i) => [i.id, i]));
 
     const liveRows: Row[] = agents.map((a) => {

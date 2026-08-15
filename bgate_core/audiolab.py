@@ -35,12 +35,12 @@ import json
 import os
 import re
 import struct
-import subprocess
 import time
 import wave
 from pathlib import Path
 from typing import Iterable, Optional
 from . import ffmpegbin as _ffmpegbin
+from .proc import run as _run
 
 AUDIO_SUFFIXES = frozenset({".wav", ".ogg", ".mp3"})
 # What the editor can WRITE. mp3 is playable and readable but never a write
@@ -200,7 +200,7 @@ def encode_ogg(wav_bytes: bytes, out_path: str | os.PathLike[str], *,
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")
-    proc = subprocess.run(
+    proc = _run(
         [exe, "-y", "-loglevel", "error", "-f", "wav", "-i", "pipe:0",
          "-c:a", "libvorbis", "-q:a", str(int(quality)), "-f", "ogg", str(tmp)],
         input=wav_bytes, capture_output=True, timeout=timeout)
