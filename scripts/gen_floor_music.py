@@ -137,6 +137,44 @@ def slugify(text: str) -> str:
     return slug or "track"
 
 
+# WHAT SUNO HANDS BACK IS 169 kb/s STEREO, WHICH IS A MASTERING BITRATE FOR A
+# FILE THAT PLAYS UNDER A DASHBOARD. Twelve of them is 42 MB committed to a
+# repository forever, for background music nobody is listening closely to; at
+# 96 kb/s the set is 22 MB and there is no audible difference at the volume this
+# plays at. Done HERE rather than as a cleanup pass, so a regenerated set is
+# never accidentally committed at the original size.
+#
+# BEST EFFORT, AND THE ORIGINAL IS KEPT WHEN IT FAILS. ffmpeg is not a hard
+# dependency of this product - `bgate doctor` reports it as a row that may be
+# red - so a machine without it still gets its tracks, just larger ones.
+TARGET_BITRATE = "96k"
+
+
+def transcode(src: Path, dest: Path) -> bool:
+    """Re-encode `src` to `dest` at TARGET_BITRATE. False if ffmpeg could not."""
+    try:
+        from bgate_core import proc
+    except Exception:
+        return False
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        print("  (ffmpeg not found - keeping the provider's bitrate)")
+        return False
+    try:
+        r = proc.run([exe, "-hide_banner", "-loglevel", "error", "-y",
+                      "-i", str(src), "-c:a", "libmp3lame",
+                      "-b:a", TARGET_BITRATE, "-map_metadata", "0", str(dest)],
+                     capture_output=True, text=True, timeout=180)
+    except Exception as exc:
+        print(f"  (ffmpeg failed: {exc} - keeping the original)")
+        return False
+    if r.returncode != 0 or not dest.is_file() or dest.stat().st_size == 0:
+        print("  (ffmpeg failed - keeping the original)")
+        return False
+    src.unlink(missing_ok=True)
+    return True
+
+
 def read_manifest() -> dict:
     if MANIFEST.exists():
         try:
@@ -281,7 +319,8 @@ def main() -> int:
                 continue
             name = f"{slugify(brief['genre'])}-{slugify(brief['title'])}-{n}.mp3"
             dest = OUT / name
-            shutil.move(str(src), dest)
+            if not transcode(src, dest):
+                shutil.move(str(src), dest)
             by_file[name] = {
                 "file": name,
                 # SUNO'S OWN TITLE WHEN IT GAVE ONE. It names a take after what
