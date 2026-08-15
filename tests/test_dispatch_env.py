@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import subprocess
 
+import sys
+
 import pytest
 
 from bgate_core import queue
@@ -193,6 +195,10 @@ class TestContainment:
         assert not dispatch._contained(str(root.parent / "elsewhere"), root)
         assert not dispatch._contained(str(root) + "-evil", root)
 
+    @pytest.mark.skipif(sys.platform != "win32", reason=(
+        "Case-insensitivity and backslash-as-separator are Windows facts. On "
+        "POSIX these ARE different paths and _contained is right to say so, so "
+        "asserting the Windows answer here would be asserting a bug."))
     def test_containment_ignores_case_and_separators(self, root):
         mixed = str(root).replace("\\", "/").upper()
         assert dispatch._contained(mixed, root)
