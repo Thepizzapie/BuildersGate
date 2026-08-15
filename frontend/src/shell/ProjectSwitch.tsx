@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { mutate, readJSON, toast } from "../bridge";
 import { Ti } from "./Ti";
+import { EMPTY_FLEET, readFleet, type Fleet } from "./settings/AgentFleet";
 
 declare global {
   interface Window {
@@ -48,6 +49,12 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
   const [open, setOpen] = useState(false);
   const [doc, setDoc] = useState<ProjectDoc | null>(null);
   const [busy, setBusy] = useState("");
+  /* What is running right now, machine-wide. Switching project reloads the
+     page, and a reload does not touch a spawned agent — see `arm` below. */
+  const [fleet, setFleet] = useState<Fleet>(EMPTY_FLEET);
+  /* The project whose switch is one click from happening. Only used while
+     agents are running; a plain switch stays a single click. */
+  const [arm, setArm] = useState("");
   const host = useRef<HTMLDivElement>(null);
   /* The portalled menu. It is NOT a descendant of `host`, so the
      click-outside handler has to be told about it explicitly — see below. */
@@ -59,8 +66,11 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
   /* Read on OPEN, not on mount. The list changes when a project is created or
      adopted elsewhere, and a footer has no business polling for that. */
   useEffect(() => {
-    if (!open) { setAnchor(null); return; }
+    if (!open) { setAnchor(null); setArm(""); return; }
     readJSON<ProjectDoc>("/api/project", {}).then(setDoc);
+    /* Read at the same moment and for the same reason: this menu is the last
+       point at which anybody can be told that leaving does not stop anything. */
+    readFleet().then(setFleet);
     const r = host.current?.getBoundingClientRect();
     if (r) setAnchor({ left: r.right + 8, bottom: window.innerHeight - r.bottom });
   }, [open]);
@@ -91,6 +101,22 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
 
   async function choose(root: string) {
     if (busy) return;
+    /* AGENTS DO NOT FOLLOW YOU, AND THEY DO NOT STOP EITHER.
+     *
+     * Every dispatched agent has BGATE_ROOT pinned into its environment at
+     * spawn, and the hook and the MCP server both enforce against that pinned
+     * value. That is deliberate and must stay true: an agent halfway through
+     * editing a scene cannot be re-scoped to a different game mid-run without
+     * its next write landing somewhere nobody asked for.
+     *
+     * What was wrong was the silence. The switch reloads the page, every panel
+     * repoints at the new database, the old project's agents keep writing
+     * files and keep billing — and nothing anywhere said so, so the reasonable
+     * reading of a reload is that whatever was running stopped. It did not.
+     * One click becomes two, with the count and the sentence in between; the
+     * Running agents panel in Settings is where they can actually be stopped.
+     */
+    if (fleet.total > 0 && arm !== root) { setArm(root); return; }
     setBusy(root);
     const r = await mutate("/api/project/select", { body: { root }, quiet: true });
     if (!r.ok) {
@@ -151,16 +177,36 @@ export function ProjectSwitch({ name, connected }: { name: string; connected: bo
         <div className="bg4-projmenu" role="menu" ref={menu}
              style={{ left: anchor.left, bottom: anchor.bottom }}>
           <div className="bg4-projhead">Projects on this machine</div>
+          {/* SAID BEFORE THE CLICK, not after it. Switching does not stop an
+              agent and cannot re-scope one, and a reload looks exactly like a
+              stop from where the user is sitting. */}
+          {fleet.total > 0 && (
+            <div className="bg4-projrunning">
+              <Ti name="alert-triangle" size={13} />
+              <span>
+                {fleet.total} agent{fleet.total === 1 ? "" : "s"} running
+                {fleet.projects.length > 1
+                  ? ` across ${fleet.projects.length} projects`
+                  : ""}. They stay pinned to the project they were started in and
+                keep working after you switch. Stop them in Settings → Running
+                agents.
+              </span>
+            </div>
+          )}
           {known.length === 0 && <div className="bg4-projempty">none registered yet</div>}
           {known.map((k) => {
             const here = k.root === current;
+            const armed = arm === k.root;
             return (
-              <button key={k.root} className="bg4-projitem" role="menuitem"
+              <button key={k.root}
+                      className={armed ? "bg4-projitem armed" : "bg4-projitem"}
+                      role="menuitem"
                       aria-current={here} disabled={here || !!busy}
                       onClick={() => choose(k.root)}>
                 <span className="nm">{here ? name : pretty(k.slug)}</span>
                 <span className="pa">{k.root}</span>
                 {here && <span className="cur">open</span>}
+                {armed && !busy && <span className="cur">switch anyway</span>}
                 {busy === k.root && <span className="cur">opening…</span>}
               </button>
             );

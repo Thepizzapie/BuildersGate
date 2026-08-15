@@ -29,6 +29,20 @@ def payload(tool: str, path: str, cwd: str = "") -> dict:
     return {"tool_name": tool, "tool_input": {key: path}, "cwd": cwd}
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_scope(monkeypatch):
+    """No test in this file inherits a pinned scope from the shell it ran in.
+
+    Containment reads BGATE_ROOT out of the environment, and a developer running
+    the suite from a dashboard-spawned shell HAS one - which would silently pin
+    every test in this file to a project none of them are using and turn the
+    lane assertions into containment refusals. The tests that want a scope set
+    one explicitly.
+    """
+    for var in ("BGATE_ROOT", "BGATE_AEGIS"):
+        monkeypatch.delenv(var, raising=False)
+
+
 class TestDecide:
     def test_in_lane_write_allowed(self, root):
         code, _ = hook.decide(payload("Write", str(root / "game/scripts/player.gd")),
@@ -237,6 +251,367 @@ class TestDirectorMode:
         report = hook.selftest(str(root))
         assert report["enforcing"] is False
         assert "inert" in report["reason"]
+
+
+class TestContainment:
+    """The where-question, which the lane gate structurally could not ask.
+
+    `_judge_path` derived the project from the WRITE TARGET, so an agent
+    dispatched for Ember that wrote into Hollow was graded against Hollow's
+    seats and lanes - the wrong rulebook, silently - and one that wrote outside
+    every project was waved through with no check at all. dispatch has pinned
+    BGATE_ROOT at spawn since it was written and nothing read it. These are the
+    tests that say something reads it now.
+    """
+
+    @pytest.fixture()
+    def other(self, tmp_path_factory):
+        """A SECOND real project, on a path that is not under the first.
+
+        Not a marker file: half of what is being asserted here is that the
+        containment gate answers BEFORE the lane gate ever loads the other
+        project's seat table, and a fake project could pass that test by being
+        unreadable rather than by never being read.
+        """
+        from bgate_core import db, project
+        path = tmp_path_factory.mktemp("hollow")
+        project.init(path, "Hollow")
+        db.close_all()
+        return path
+
+    def seated(self, monkeypatch, root, mode="block", seat="gameplay",
+               allowlist=()):
+        """Exactly what dispatch puts in a spawned agent's environment.
+
+        The allowlist is emptied by default for the same reason test_aegis
+        empties it: pytest's tmp_path lives UNDER the system temp directory,
+        which the real allowlist allows, so every "outside the project" case
+        would come back allowed and prove nothing. `allowlist=None` keeps the
+        real one, for the single test that is about the real one.
+        """
+        from bgate_core import aegis
+        monkeypatch.setenv("BGATE_SEAT", seat)
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("BGATE_AEGIS", mode)
+        if allowlist is not None:
+            monkeypatch.setattr(aegis, "allowlist_dirs", lambda: list(allowlist))
+
+    def write(self, root, path, tool="Write"):
+        return hook.decide(payload(tool, str(path), cwd=str(root)), "gameplay",
+                           "item-1", "block")
+
+    def test_the_pinned_root_decides_not_the_targets_own_project(
+            self, root, other, monkeypatch):
+        """THE BUG, named. Ember's agent writing Hollow's gameplay file used to
+        be ALLOWED - it is in gameplay's lane, in Hollow's table."""
+        self.seated(monkeypatch, root)
+        code, msg = self.write(root, other / "game" / "scripts" / "player.gd")
+        assert code == hook.BLOCK
+        assert "different Builders Gate project" in msg
+        # Both games named. "Denied" without the two names sends the agent
+        # hunting a lane problem it does not have. Matched on the directory
+        # names rather than the full paths, which resolution may respell.
+        assert other.name in msg and root.name in msg
+
+    def test_outside_every_project_is_refused_too(self, root, tmp_path_factory,
+                                                  monkeypatch):
+        """The other half: nobody else's work is at risk, and it is still not
+        this agent's to write. `resolve_root` returning None used to mean the
+        hook stayed out of the way entirely."""
+        self.seated(monkeypatch, root)
+        loose = tmp_path_factory.mktemp("loose") / "notes.txt"
+        code, msg = self.write(root, loose)
+        assert code == hook.BLOCK
+        assert "outside the pinned project" in msg
+
+    def test_in_project_work_is_untouched_by_containment(self, root, monkeypatch):
+        """The control. Containment must not become a second lane gate: inside
+        the pinned root, the old answers are the answers."""
+        self.seated(monkeypatch, root)
+        assert self.write(root, root / "game/scripts/player.gd")[0] == hook.ALLOW
+        code, msg = self.write(root, root / "game/assets/rock.png")
+        assert code == hook.BLOCK
+        assert "queue_add('art'" in msg          # the LANE refusal, not ours
+
+    def test_the_worktree_is_inside_the_project(self, root, monkeypatch):
+        """Dispatch puts each item's worktree at <root>/.bgate/work/item-<id>.
+        The day it moves outside the root, every dispatched agent starts being
+        denied its own working tree - so this is the tripwire for that.
+
+        Asked of the containment gate directly, because the LANE gate has its
+        own long-standing opinion about `.bgate/**` and this test is not about
+        that opinion; conflating them would make a lane change look like a
+        containment regression.
+        """
+        self.seated(monkeypatch, root)
+        target = root / ".bgate" / "work" / "item-1" / "game" / "scripts" / "a.gd"
+        assert hook._contain(str(target), {"cwd": str(root)}, "Write") \
+            == (hook.ALLOW, "")
+
+    def test_warn_allows_the_write_and_tells_the_human(self, root, other,
+                                                       monkeypatch):
+        """The shipped default. Nothing that worked yesterday stops working."""
+        self.seated(monkeypatch, root, mode="warn")
+        code, msg = self.write(root, other / "game" / "scripts" / "player.gd")
+        assert code == hook.WARN                 # exit 1: non-blocking
+        assert "CONTAINMENT WARNING" in msg and "BGATE_AEGIS=block" in msg
+
+    def test_warn_does_not_swallow_a_lane_refusal(self, root, monkeypatch):
+        """A softening that skipped the remaining gates would be a loosening.
+        An out-of-lane write inside the project must still BLOCK in warn mode."""
+        self.seated(monkeypatch, root, mode="warn")
+        assert self.write(root, root / "game/assets/rock.png")[0] == hook.BLOCK
+
+    def test_off_is_exactly_the_old_behaviour(self, root, tmp_path_factory,
+                                              monkeypatch):
+        self.seated(monkeypatch, root, mode="off")
+        loose = tmp_path_factory.mktemp("loose") / "notes.txt"
+        assert self.write(root, loose)[0] == hook.ALLOW
+
+    def test_warn_is_the_default_and_garbage_falls_back_to_it(self, monkeypatch):
+        assert hook.aegis_mode() == "warn"
+        monkeypatch.setenv("BGATE_AEGIS", "BLOCK")
+        assert hook.aegis_mode() == "block"       # case-insensitive
+        monkeypatch.setenv("BGATE_AEGIS", "nonsense")
+        assert hook.aegis_mode() == hook.DEFAULT_AEGIS_MODE
+
+    def test_a_seatless_director_is_not_contained(self, root, other, monkeypatch):
+        """A top-level session legitimately works across projects - reading one
+        game's design while planning another is ordinary. Containment is for the
+        dispatched agents nobody is watching."""
+        self.seated(monkeypatch, root)
+        monkeypatch.delenv("BGATE_SEAT")
+        data = {"tool_name": "Read", "cwd": str(root),
+                "tool_input": {"file_path": str(other / "design" / "pillars.md")}}
+        assert hook.decide(data, hook.DIRECTOR_SEAT, "session:x", "collide")[0] \
+            == hook.ALLOW
+
+    def test_an_unpinned_seat_is_not_contained(self, root, other, monkeypatch):
+        """No pinned root is the absence of a claim, not a failed one. A seat
+        run by hand with no BGATE_ROOT keeps the old semantics rather than being
+        refused everything - which is also why the gate cannot fall back to
+        `active_root()`: that would invent a claim nobody made."""
+        self.seated(monkeypatch, root)
+        monkeypatch.delenv("BGATE_ROOT")
+        code, msg = self.write(root, other / "game" / "scripts" / "player.gd")
+        assert code == hook.ALLOW
+        assert msg == ""
+
+    def test_the_toolchain_allowlist_lets_the_tools_work(self, root, monkeypatch):
+        """Every subprocess, atomic-write dance and Blender scratch file lands
+        in the system temp dir. Denying it contains nothing and breaks the
+        toolchain, so the REAL allowlist is exercised here rather than the
+        emptied one the other tests use."""
+        import tempfile
+        self.seated(monkeypatch, root, allowlist=None)
+        code, _ = self.write(root, Path(tempfile.gettempdir()) / "bgate-probe.tmp")
+        assert code == hook.ALLOW
+
+    def test_a_bash_redirect_into_another_project_is_refused(self, root, other,
+                                                             monkeypatch):
+        """Bash is guarded by the same rules, so containment arrives there for
+        free - which is the point of putting it in _judge_path rather than in
+        the Write handler."""
+        self.seated(monkeypatch, root)
+        # Forward slashes: shlex parses in POSIX mode, where a backslash is an
+        # escape and a Windows path comes back out with its separators eaten.
+        target = str(other / "game" / "scripts" / "player.gd").replace("\\", "/")
+        code, msg = hook.decide(
+            {"tool_name": "Bash", "cwd": str(root),
+             "tool_input": {"command": f"echo pwned > {target}"}},
+            "gameplay", "item-1", "block")
+        assert code == hook.BLOCK
+        assert "different Builders Gate project" in msg
+
+
+class TestReadsAreContained:
+    """"Cannot touch anything outside the project" is not a claim about writing.
+
+    Read, Glob and Grep are how another game's design docs, keys and unreleased
+    plot end up in a transcript, and the hook judged none of them. There is no
+    lane or lock question to ask about a read - a seat may read anything inside
+    its own project - so these go through containment alone.
+    """
+
+    @pytest.fixture()
+    def other(self, tmp_path_factory):
+        from bgate_core import db, project
+        path = tmp_path_factory.mktemp("hollow")
+        project.init(path, "Hollow")
+        db.close_all()
+        return path
+
+    def seated(self, monkeypatch, root, mode="block"):
+        from bgate_core import aegis
+        monkeypatch.setenv("BGATE_SEAT", "gameplay")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("BGATE_AEGIS", mode)
+        monkeypatch.setattr(aegis, "allowlist_dirs", list)
+
+    def read(self, root, tool, **tool_input):
+        return hook.decide({"tool_name": tool, "cwd": str(root),
+                            "tool_input": tool_input}, "gameplay", "item-1",
+                           "block")
+
+    @pytest.mark.parametrize("tool,key", [("Read", "file_path"),
+                                          ("NotebookRead", "notebook_path"),
+                                          ("Glob", "path"),
+                                          ("Grep", "path")])
+    def test_reading_another_project_is_refused(self, root, other, monkeypatch,
+                                                tool, key):
+        self.seated(monkeypatch, root)
+        code, msg = self.read(root, tool, **{key: str(other / "design")})
+        assert code == hook.BLOCK
+        assert "may not read" in msg
+
+    def test_reading_inside_the_project_is_never_in_the_way(self, root,
+                                                            monkeypatch):
+        """Reads have no lane. Anything inside the pinned root passes, including
+        the paths this seat could not WRITE."""
+        self.seated(monkeypatch, root)
+        assert self.read(root, "Read",
+                         file_path=str(root / "game/assets/rock.png"))[0] == hook.ALLOW
+
+    def test_a_grep_with_no_path_is_judged_against_the_session_cwd(
+            self, root, other, monkeypatch):
+        """Glob and Grep DEFAULT the directory to the session's own when it is
+        absent, so treating a missing key as "nothing to check" would make
+        `Grep(pattern)` with the cwd parked in another game the one read that
+        walks straight past this gate."""
+        self.seated(monkeypatch, root)
+        code, _ = hook.decide({"tool_name": "Grep", "cwd": str(other),
+                               "tool_input": {"pattern": "secret"}},
+                              "gameplay", "item-1", "block")
+        assert code == hook.BLOCK
+        assert self.read(root, "Grep", pattern="anything")[0] == hook.ALLOW
+
+    def test_reads_are_not_leased(self, root, monkeypatch):
+        """A lease exists to stop a silent overwrite. Reading twice from two
+        runs is not a collision, and leasing on read would invent one."""
+        self.seated(monkeypatch, root)
+        target = root / "game" / "scripts" / "player.gd"
+        assert self.read(root, "Read", file_path=str(target))[0] == hook.ALLOW
+        code, _ = hook.decide({"tool_name": "Read", "cwd": str(root),
+                               "tool_input": {"file_path": str(target)}},
+                              "tech", "item-2", "block")
+        assert code == hook.ALLOW
+
+    def test_the_installed_matcher_actually_carries_the_read_tools(self):
+        """A hook that never sees the call cannot judge it. The matcher is the
+        only place this coverage can come from, so it is asserted rather than
+        assumed."""
+        from bgate_cli.main import HOOK_MATCHER
+        for tool in ("Read", "NotebookRead", "Glob", "Grep"):
+            assert tool in HOOK_MATCHER.split("|")
+
+
+class TestContainmentIsAudited:
+    """The default is `warn`, so the log IS the feature.
+
+    Moving the default to `block` is a decision about whether anything
+    legitimate is being caught, and a warning that vanishes into a terminal
+    answers that for nobody.
+    """
+
+    @pytest.fixture()
+    def other(self, tmp_path_factory):
+        from bgate_core import db, project
+        path = tmp_path_factory.mktemp("hollow")
+        project.init(path, "Hollow")
+        db.close_all()
+        return path
+
+    def seated(self, monkeypatch, root, mode):
+        from bgate_core import aegis
+        monkeypatch.setenv("BGATE_SEAT", "gameplay")
+        monkeypatch.setenv("BGATE_ROOT", str(root))
+        monkeypatch.setenv("BGATE_AEGIS", mode)
+        monkeypatch.setattr(aegis, "allowlist_dirs", list)
+
+    def test_a_warned_crossing_is_on_the_record(self, root, other, monkeypatch):
+        self.seated(monkeypatch, root, "warn")
+        hook.decide(payload("Write", str(other / "game/scripts/a.gd"),
+                            cwd=str(root)), "gameplay", "item-1", "block")
+        rows = hook.recent_containment(str(root))
+        assert len(rows) == 1
+        assert rows[0]["verdict"] == "deny"
+        assert rows[0]["mode"] == "warn"
+        # The distinction the whole audit turns on: block WOULD have refused
+        # this, and warn did not.
+        assert rows[0]["enforced"] is False
+        assert rows[0]["seat"] == "gameplay" and rows[0]["tool"] == "Write"
+        assert str(other) in rows[0]["target"]
+
+    def test_a_blocked_crossing_says_it_was_enforced(self, root, other,
+                                                     monkeypatch):
+        self.seated(monkeypatch, root, "block")
+        hook.decide(payload("Write", str(other / "game/scripts/a.gd"),
+                            cwd=str(root)), "gameplay", "item-1", "block")
+        assert hook.recent_containment(str(root))[0]["enforced"] is True
+
+    def test_reads_are_audited_too(self, root, other, monkeypatch):
+        self.seated(monkeypatch, root, "warn")
+        hook.decide({"tool_name": "Read", "cwd": str(root),
+                     "tool_input": {"file_path": str(other / "design/x.md")}},
+                    "gameplay", "item-1", "block")
+        assert hook.recent_containment(str(root))[0]["tool"] == "Read"
+
+    def test_ordinary_in_project_work_is_not_logged(self, root, monkeypatch):
+        """Every write the agent makes is in-project. Logging those would bury
+        the two lines that matter under the ten thousand that do not."""
+        self.seated(monkeypatch, root, "block")
+        hook.decide(payload("Write", str(root / "game/scripts/a.gd"),
+                            cwd=str(root)), "gameplay", "item-1", "block")
+        assert hook.recent_containment(str(root)) == []
+
+    def test_an_allowlisted_crossing_is_logged_even_though_it_passed(
+            self, root, tmp_path_factory, monkeypatch):
+        """An allow that only survived the TOOLCHAIN ALLOWLIST still crossed the
+        boundary, and reviewing whether the allowlist is carrying more than it
+        should is exactly what this log is for."""
+        from bgate_core import aegis
+        toolchain = tmp_path_factory.mktemp("toolchain")
+        self.seated(monkeypatch, root, "block")
+        monkeypatch.setattr(aegis, "allowlist_dirs", lambda: [toolchain])
+        code, _ = hook.decide(payload("Write", str(toolchain / "blender.log"),
+                                      cwd=str(root)), "gameplay", "item-1",
+                              "block")
+        assert code == hook.ALLOW
+        rows = hook.recent_containment(str(root))
+        assert len(rows) == 1 and rows[0]["verdict"] == "allow"
+
+    def test_containment_lines_are_not_reported_as_fail_open(self, root, other,
+                                                             monkeypatch):
+        """They share one log file, and the two mean OPPOSITE things about
+        whether enforcement is working. A caller asking 'has this hook been
+        failing open' must not be handed boundary crossings instead."""
+        self.seated(monkeypatch, root, "block")
+        hook.decide(payload("Write", str(other / "game/scripts/a.gd"),
+                            cwd=str(root)), "gameplay", "item-1", "block")
+        assert hook.recent_failures(str(root)) == []
+        assert hook.recent_containment(str(root)) != []
+
+    def test_a_broken_containment_check_fails_open_loudly(self, root, other,
+                                                          monkeypatch):
+        """The fail-safe rule reaches here too: a check that cannot run must not
+        become a session that cannot work - but it must not be silent either."""
+        from bgate_core import aegis
+        self.seated(monkeypatch, root, "block")
+        monkeypatch.setattr(aegis, "decide", lambda *a, **k: 1 / 0)
+        code, _ = hook.decide(payload("Write", str(other / "game/scripts/a.gd"),
+                                      cwd=str(root)), "gameplay", "item-1",
+                              "block")
+        assert code == hook.ALLOW
+        assert "containment" in hook.recent_failures(str(root))[0]["detail"]
+
+    def test_selftest_reports_the_mode_and_the_pinned_root(self, root,
+                                                           monkeypatch):
+        """An empty pinned root is itself the finding when an agent is being
+        refused its own files."""
+        self.seated(monkeypatch, root, "block")
+        report = hook.selftest(str(root))
+        assert report["aegis"] == "block"
+        assert report["pinned_root"] == str(root)
 
 
 class TestInstall:

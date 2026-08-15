@@ -53,7 +53,17 @@ from pathlib import Path
 # Bash is in the matcher because dispatch grants the agent Bash: guarding only
 # the file-edit tools left `echo x > game/foo.gd` as an open door through every
 # lane and lock the README advertises.
-HOOK_MATCHER = "Bash|Write|Edit|MultiEdit|NotebookEdit"
+#
+# Read/Glob/Grep/NotebookRead are here for the CONTAINMENT gate and nothing
+# else - lanes and locks have no opinion on a read. They earn the slot because
+# "this agent cannot touch anything outside its project" is not a claim about
+# writing: reading is how another game's design docs and unreleased plot end up
+# in a transcript. A hook that never sees the call cannot judge it, so the
+# matcher is the only place that coverage can come from. Widening it also
+# upgrades existing installs on the next `bgate hook-install`, which rewrites
+# our own entry whenever it differs.
+HOOK_MATCHER = ("Bash|Write|Edit|MultiEdit|NotebookEdit"
+                "|Read|NotebookRead|Glob|Grep")
 
 # `python -m`, never sys.executable. This file is COMMITTED into the game repo,
 # so an absolute interpreter path bakes one machine's venv into everyone else's

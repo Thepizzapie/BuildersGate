@@ -83,3 +83,55 @@
 .bg4-settings-rail button .ti { flex: none; color: var(--text-3); font-size: 15px }
 .bg4-settings-rail button.on .ti { color: var(--accent) }
 .bg4-settings-head { display: flex; align-items: center; gap: 7px }
+
+/* ── the running-agent fleet ────────────────────────────────────────────────
+   Not a settings group: a live list of processes, grouped by the project each
+   one is pinned to. The grouping IS the content - the failure this panel exists
+   for is an agent running against a game you are not looking at - so the
+   project header is heavier than the rows under it. */
+.bg4-fleet-note {
+  margin: 2px 0 14px; max-width: 78ch;
+  font: 400 12px/1.55 var(--sans); color: var(--text-2);
+}
+
+.bg4-fleet-proj { margin-bottom: 18px }
+.bg4-fleet-proj .ph {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0 6px 10px; border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--line);
+}
+/* The open project gets the accent stripe, same vocabulary the settings rows
+   use for "this one decided". Everything else is running somewhere you are not
+   looking, which is the whole point of showing it. */
+.bg4-fleet-proj.on .ph { border-left-color: var(--accent) }
+.bg4-fleet-proj .ph .nm { font: 500 13px var(--sans); color: var(--text) }
+.bg4-fleet-proj .ph .pa {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; direction: rtl; text-align: left;
+  font: 400 10px var(--mono); color: var(--text-3);
+}
+.bg4-fleet-proj .ph .n { font: 500 10px var(--mono); color: var(--text-3) }
+
+.bg4-fleet-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0 8px 13px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
+}
+.bg4-fleet-row:hover { background: rgba(255, 255, 255, .015) }
+.bg4-fleet-row .it {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font: 400 12px var(--sans); color: var(--text-2);
+}
+.bg4-fleet-row .it b { color: var(--text); font: 500 12px var(--mono) }
+.bg4-fleet-row .meta { flex: none; font: 400 10px var(--mono); color: var(--text-3) }
+/* Runtime is the number you actually scan this list for - a run at 2h is the
+   one to look at - so it is the one piece of metadata that is not dimmed. */
+.bg4-fleet-row .meta .rt { color: var(--text-2) }
+
+/* A rail row with nothing matching the current filter. Dimmed rather than
+   removed: a destination that vanishes while you are reading it is worse than
+   one that says "nothing in here matches", and hiding it is what made the
+   `changed` chip able to delete Community out of the navigation. */
+.bg4-settings-rail button.empty { opacity: .38 }
+.bg4-settings-rail button.empty:hover { opacity: .7 }
+.bg4-settings-rail button.empty.on { opacity: 1 }
