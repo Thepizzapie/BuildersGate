@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from . import activity, assets, db
+from . import activity, aegis, assets, db
 from .util import rows, slugify
 
 REFS_DIRNAME = "refs"
@@ -88,7 +88,22 @@ def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
     """
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
+    # THE SOURCE IS CHECKED BEFORE ANYTHING OPENS IT, not after. `src_path`
+    # arrives from a caller - an agent's tool argument, a dashboard form - and
+    # everything below reads it: _suffix_for sniffs its header and the copy
+    # takes its bytes. A pin is the one place in this module that reaches
+    # OUTSIDE .bgate to fetch a file, so it is the one place the boundary has
+    # to be applied, and applying it at the caller instead would leave the
+    # other callers to remember.
+    #
+    # aegis.decide is the same function the PreToolUse hook and the MCP server
+    # ask, so a path this refuses here is a path they refuse too.
     src = Path(src_path)
+    verdict = aegis.decide(str(Path(root).resolve()), str(src), seat="pin")
+    if not aegis.is_allowed(verdict):
+        raise ValueError(
+            f"cannot pin {src_path}: {verdict['reason']}. Copy it into the "
+            "project first, then pin the copy.")
     if not src.is_file():
         raise FileNotFoundError(f"no file at {src_path}")
     slug = slugify(name)

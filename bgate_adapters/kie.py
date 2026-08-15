@@ -1719,12 +1719,16 @@ def upload_file(path: str | os.PathLike[str], *, root: Any = None,
     # so the suffix answers this question wrong for every pin in the project.
     mime = _upload_mime(source)
     if not mime:
+        # JOINED, NOT A REPR. Interpolating the list itself put
+        # "it is not a ['image/jpeg', 'image/png', 'image/webp'] image" in front
+        # of the user, which is a Python literal wearing a sentence, and it also
+        # dropped the words the test for this refusal matches on.
+        allowed = ", ".join(sorted(set(UPLOAD_MIME.values())))
         raise KieError(
-            f"cannot upload {source.name}, it is not a "
-            f"{sorted(set(UPLOAD_MIME.values()))} image by extension or by its "
-            "own leading bytes. A type kie accepts here but no model accepts "
-            "downstream would fail at generation instead, after the upload had "
-            "already succeeded.")
+            f"cannot upload {source.name}: its type is not one of {allowed}, "
+            "by extension or by its own leading bytes. A type kie accepts here "
+            "but no model accepts downstream would fail at generation instead, "
+            "after the upload had already succeeded.")
 
     key = api_key(root)
     if not key:

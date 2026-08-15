@@ -52,8 +52,36 @@ class TestRefPins:
     def test_bad_kind_and_missing_file(self, root, anchor):
         with pytest.raises(ValueError, match="kind"):
             refs.pin(root, "x", str(anchor), kind="vibes")
+        # MISSING, BUT INSIDE THE PROJECT. The path used to be C:/nope.png,
+        # which now trips the containment check first and raises before the
+        # existence check is reached - so the case this test is named for was
+        # about to stop being tested at all.
         with pytest.raises(FileNotFoundError):
-            refs.pin(root, "x", "C:/nope.png")
+            refs.pin(root, "x", str(Path(root) / "nope.png"))
+
+    def test_a_source_in_another_project_is_refused(self, root, tmp_path_factory):
+        """A pin is the one call in refs that reaches outside .bgate for a file,
+        so it is where the project boundary has to be applied. Refused BEFORE
+        anything opens it: _suffix_for sniffs the header and the copy takes the
+        bytes, and neither should happen for a file another game owns.
+
+        DELIBERATELY ANOTHER PROJECT rather than a loose file in tmp_path. aegis
+        allows the temp tree on purpose, because generated art lands there and
+        pinning it is the ordinary case. Reaching into a second game is the
+        thing that is never ordinary.
+        """
+        from bgate_core import db
+        # A SIBLING, NOT A SUBDIRECTORY. The `root` fixture IS tmp_path, so a
+        # second project made under tmp_path would sit INSIDE the first one and
+        # be allowed for the correct reason, testing nothing.
+        other = tmp_path_factory.mktemp("other-game")
+        (other / db.DB_DIRNAME).mkdir(parents=True)
+        (other / db.DB_DIRNAME / db.DB_FILENAME).touch()
+        theirs = other / "hero.png"
+        theirs.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+
+        with pytest.raises(ValueError, match="cannot pin"):
+            refs.pin(root, "x", str(theirs))
 
     def test_briefs_surface_the_pins(self, root, anchor):
         refs.pin(root, "tommy-ref", str(anchor), kind="character")
