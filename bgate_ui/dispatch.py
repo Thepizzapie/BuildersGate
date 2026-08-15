@@ -2407,6 +2407,23 @@ def _absorb(state: dict, raw: bytes) -> None:
         return
     if not isinstance(ev, dict):
         return
+    # THE CLAUDE SESSION THIS RUN IS, which is what makes it resumable.
+    #
+    # Every line the CLI writes carries the same `session_id`, and Claude Code
+    # keeps that session's transcript under ~/.claude/projects - so the id is
+    # the handle for `claude --resume`, and somebody who would rather read a run
+    # in a terminal than in this dashboard can pick it up exactly where the
+    # agent left it, with its whole context.
+    #
+    # TAKEN FROM THE FIRST LINE THAT HAS ONE AND THEN LEFT ALONE. Measured: one
+    # id per run across a whole log. A later line overwriting it would matter if
+    # that ever stopped being true, and the first is the one that names the
+    # session that was started.
+    if not state.get("session_id"):
+        sid = ev.get("session_id")
+        if isinstance(sid, str) and sid:
+            state["session_id"] = sid
+
     etype = ev.get("type")
     if etype == "bgate_run_start":
         # A RE-DISPATCH. The log appends across runs and showing run 1's result
@@ -2415,6 +2432,10 @@ def _absorb(state: dict, raw: bytes) -> None:
         state["steps"].clear()
         state["step_count"] = 0
         state["final"] = None
+        # A re-dispatch is a DIFFERENT Claude session, so the old id must go
+        # with the old steps. Resuming run 1 while looking at run 2 would open
+        # a transcript that has nothing to do with what is on screen.
+        state["session_id"] = ""
     elif etype == "assistant":
         for block in _blocks(ev):
             if block.get("type") == "text" and str(block.get("text", "")).strip():
@@ -2530,6 +2551,10 @@ def _absorb_codex(state: dict, etype: str, ev: dict) -> None:
         state["steps"].clear()
         state["step_count"] = 0
         state["final"] = None
+        # A re-dispatch is a DIFFERENT Claude session, so the old id must go
+        # with the old steps. Resuming run 1 while looking at run 2 would open
+        # a transcript that has nothing to do with what is on screen.
+        state["session_id"] = ""
         return
     if etype == "turn.completed":
         # NO PRICE HERE, ON PURPOSE - see runners.Runner.cost_tracked. Tokens
@@ -2629,14 +2654,15 @@ def read_activity(root: str, item_id: int, limit: int = 40,
         except OSError:
             _activity.pop(key, None)
             return {"steps": [], "running": _is_running(item_id), "final": None,
-                    "step_count": 0, "dropped": 0, "truncated": False}
+                    "step_count": 0, "dropped": 0, "truncated": False,
+                    "session_id": ""}
 
         state = _activity.get(key)
         if state is None or state["pos"] > size:
             # First look, or the log was replaced/truncated under us (a cursor past
             # EOF means the bytes we already parsed are gone) - start clean.
             state = {"pos": 0, "rem": b"", "steps": [], "final": None,
-                     "step_count": 0, "bytes_read": 0}
+                     "step_count": 0, "bytes_read": 0, "session_id": ""}
             _activity[key] = state
         state["touched"] = time.time()
         if size > state["pos"]:
@@ -2662,6 +2688,7 @@ def read_activity(root: str, item_id: int, limit: int = 40,
                 "final": state["final"], "step_count": state["step_count"],
                 "dropped": state["step_count"] - len(kept),
                 "truncated": len(window) < state["step_count"],
+                "session_id": state.get("session_id") or "",
                 "offset": max(0, int(offset)), "limit": int(limit)}
 
 

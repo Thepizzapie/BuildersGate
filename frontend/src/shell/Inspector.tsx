@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Ti } from "./Ti";
+import { ResumeInCli } from "./ResumeInCli";
 import { SEAT_COLOR } from "./nav";
 import { setSelection, useSelection } from "./selection";
 import { askText, mutate, readJSON, toast, watchAgent } from "../bridge";
@@ -204,6 +205,9 @@ export function Inspector() {
             <span className="small">{running ? "running" : "finished"}</span>
           </div>
         )}
+        {/* THE SAME DRILLDOWN SERVES THE BOARD, THE GRAPH AND THE FLOOR, so
+            putting this here puts it on all three at once. */}
+        {itemId != null && <ResumeInCli itemId={itemId} />}
       </div>
 
       <div className="bg4-insp-body">

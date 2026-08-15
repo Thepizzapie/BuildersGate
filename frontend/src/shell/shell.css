@@ -1332,3 +1332,39 @@ body.ptn-open .bg4 {
   color: var(--text-3); font-size: 12px; line-height: 1;
 }
 .bg4-link .x:hover { color: var(--text) }
+
+/* ── resume in CLI ─────────────────────────────────────────────────────────── */
+
+/* A HANDOFF, NOT A PRIMARY ACTION. It is a disclosure rather than a button on
+   the header because most people opening an item are reading its steps; the
+   ones who want a terminal know they want one. */
+.bg4-cli { margin-top: 8px }
+.bg4-cli-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 7px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--solid-1);
+  font: 500 11px/1 var(--mono); color: var(--text-3); cursor: pointer;
+}
+.bg4-cli-toggle:hover { color: var(--text-2); border-color: var(--line-strong) }
+.bg4-cli-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+.bg4-cli-body {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 6px; padding: 8px;
+  background: var(--solid-1); border: 1px solid var(--line); border-radius: 4px;
+}
+/* The command is the point of the panel, so it is the one thing set in a
+   terminal face and given room to be selected. */
+.bg4-cli-cmd {
+  display: block; padding: 6px 8px; cursor: pointer;
+  font: 400 11px/1.5 var(--mono); color: var(--text);
+  background: var(--solid-2); border: 1px solid var(--line); border-radius: 3px;
+  word-break: break-all;
+}
+.bg4-cli-cmd:hover { border-color: var(--accent) }
+.bg4-cli-note { font: 400 10.5px/1.5 var(--sans); color: var(--text-3) }
+.bg4-cli-note b { color: var(--text-2); font-weight: 600 }
+.bg4-cli-warn {
+  display: flex; align-items: flex-start; gap: 5px;
+  font: 400 10.5px/1.45 var(--sans); color: var(--warn);
+}

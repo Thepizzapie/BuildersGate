@@ -342,6 +342,10 @@ def _reply(root_dir, item: dict) -> dict:
         "running": bool(feed.get("running")),
         "steps": feed.get("steps") or [],
         "step_count": feed.get("step_count") or 0,
+        # THE CLAUDE SESSION THIS TURN WAS, so somebody who would rather work in
+        # a terminal can resume it with its whole context instead of restating
+        # the conversation. See dispatch.read_activity.
+        "session_id": feed.get("session_id") or "",
         "cost": final.get("cost"),
     }
 
@@ -697,12 +701,17 @@ def console_state(steps: bool = True) -> dict:
     # the phases, and both come out of one read of the feed.
     live_steps: dict[str, list] = {}
     live_phases: dict[str, list] = {}
+    # WHICH CLAUDE SESSION EACH LIVE AGENT IS, keyed by item id. The board, the
+    # graph and the floor all drill down to an item, and any of them can offer
+    # to hand that run to a terminal.
+    live_sessions: dict[str, str] = {}
     if steps:
         by_item = _artifacts_by_item(r, live_ids)
         for item_id in sorted(live_ids):
             feed = _dispatch.read_activity(str(r), item_id, limit=0)
             all_steps = feed.get("steps") or []
             live_steps[str(item_id)] = all_steps[-STEPS:]
+            live_sessions[str(item_id)] = feed.get("session_id") or ""
             live_phases[str(item_id)] = _phases_for(
                 r, item_id, feed, all_steps, by_item.get(item_id, []))
 
@@ -729,6 +738,7 @@ def console_state(steps: bool = True) -> dict:
         "questions": questions,
         "steps": live_steps,
         "phases": live_phases,
+        "sessions_by_item": live_sessions,
         "collab": _collab(r, conn, active),
         "sessions": list(reversed(doc.get("sessions") or []))[:20],
         # THE CUT LINE, so the side panel can scope itself to THIS session.
