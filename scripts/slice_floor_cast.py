@@ -1206,7 +1206,7 @@ def main() -> int:
     if bad:
         print(f"\n{bad} strips are short or padded - see above")
         return 1
-    print(f"\nevery strip is TARGET_FRAMES long and holds no repeated frame")
+    print("\nevery strip is TARGET_FRAMES long and holds no repeated frame")
     return 0
 
 

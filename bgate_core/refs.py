@@ -102,7 +102,16 @@ def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
     #
     # aegis.decide is the same function the PreToolUse hook and the MCP server
     # ask, so a path this refuses here is a path they refuse too.
-    src = Path(src_path)
+    # RESOLVED ONCE, AND EVERY LINE BELOW USES THE RESOLVED PATH. The check ran
+    # on `Path(src_path)` while the open and the copy used that same unresolved
+    # value, so the string that was JUDGED and the string that was OPENED were
+    # only equal by assumption: aegis.decide normalises internally before
+    # deciding, and anything containing `..` or a symlink was therefore approved
+    # in one form and used in another. Resolving here collapses the two into one
+    # value, which closes the gap and is also what makes the boundary legible -
+    # to a reader, and to the scanner that flagged this line as a
+    # caller-controlled path reaching a file open.
+    src = Path(src_path).resolve()
     verdict = aegis.decide(str(Path(root).resolve()), str(src), seat="pin")
     if not aegis.is_allowed(verdict):
         raise ValueError(
