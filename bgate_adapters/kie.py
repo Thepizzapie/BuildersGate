@@ -289,7 +289,65 @@ MODELS: dict[str, dict] = {
         "images": "",
         "credits": None,
         "note": "Text-to-image, prompt only. No reference conditioning, so not "
-                "for anchored character work — that stays on Krea.",
+                "for anchored character work. Use nano-banana-2 for that.",
+    },
+    # READ OFF THE REFERENCE PAGES, NOT GUESSED, and the guess would have been
+    # wrong twice over. The docs for this model live at
+    # /market/google/nanobanana2 rather than the /nano-banana-2 the URL pattern
+    # predicts, and BOTH new Google models take a BARE model id where the older
+    # entry above takes "google/nano-banana" - so "google/nano-banana-2" is a
+    # 404 after a round trip. Verified against both pages before adding.
+    #
+    # WHY IT MATTERS BEYOND BEING NEWER: 14 reference images. The note above
+    # sends anchored character work elsewhere because nano-banana has no
+    # reference conditioning at all, and a consistent cast is exactly the job
+    # that needs it.
+    "nano-banana-2": {
+        "model": "nano-banana-2",
+        "kind": "image",
+        "label": "Google Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "required": ("prompt",),
+        "supports": {"prompt", "image_input", "aspect_ratio", "resolution",
+                     "output_format"},
+        "enums": {
+            "output_format": ("png", "jpg"),
+            "resolution": ("1K", "2K", "4K"),
+            "aspect_ratio": ("1:1", "2:3", "3:2", "1:4", "4:1", "3:4", "4:3",
+                             "4:5", "5:4", "1:8", "8:1", "9:16", "16:9", "21:9",
+                             "auto"),
+        },
+        "ranges": {"prompt": (1, 20000)},
+        "caps": {"image_input": 14},
+        "images": "image_input",
+        "images_list": True,
+        "credits": None,
+        "note": "Text-to-image AND reference-conditioned editing, up to 14 "
+                "reference images. The one to reach for when a cast has to stay "
+                "consistent across many generations.",
+    },
+    "nano-banana-pro": {
+        "model": "nano-banana-pro",
+        "kind": "image",
+        "label": "Google Nano Banana Pro (Gemini 3 Pro Image)",
+        "required": ("prompt",),
+        "supports": {"prompt", "image_input", "aspect_ratio", "resolution",
+                     "output_format"},
+        "enums": {
+            "output_format": ("png", "jpg"),
+            "resolution": ("1K", "2K", "4K"),
+            "aspect_ratio": ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4",
+                             "9:16", "16:9", "21:9", "auto"),
+        },
+        # Shorter prompt ceiling and fewer references than nano-banana-2, both
+        # off its own page. Neither is a typo of the other.
+        "ranges": {"prompt": (1, 10000)},
+        "caps": {"image_input": 8},
+        "images": "image_input",
+        "images_list": True,
+        "credits": None,
+        "note": "The Pro tier. Fewer references than nano-banana-2 (8 against "
+                "14) and a shorter prompt ceiling, so it is not a strict "
+                "upgrade for cast work.",
     },
     "flux-2-pro-edit": {
         "model": "flux-2/pro-image-to-image",
