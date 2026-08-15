@@ -42,7 +42,13 @@ export type Gate = {
 export type ConsoleState = {
   /** Work-item id the current console session starts after. */
   cleared_before?: number;
-  turns: Turn[]; items: Item[]; agents: { item_id: number }[];
+  /* `state` MATTERS AND WAS NOT DECLARED. This roster is every agent the
+     dispatcher knows about -- running, finished and failed -- not just the
+     live ones; the server filters by this field for its own bookkeeping and
+     sends the list unfiltered. Leaving it off the type is why the tag menu
+     read the whole roster as "running" and offered five dead agents to steer.
+     Callers that mean "live" must say so. */
+  turns: Turn[]; items: Item[]; agents: { item_id: number; state?: string }[];
   questions: Question[]; gates: Gate[];
   /** Which item produced which — the Graph pane's whole input. */
   lineage?: { parents?: Record<string, number>; children?: Record<string, number[]> };

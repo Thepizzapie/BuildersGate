@@ -19,6 +19,43 @@ import { useCallback, useEffect, useRef } from "react";
  */
 const NEAR = 80;   // px from the bottom that still counts as "at the bottom"
 
+/* THE SAME CONTRACT, FOR A FEED THAT RUNS NEWEST-FIRST.
+ *
+ * A transcript ordered newest-at-top puts new content at scrollTop 0, and the
+ * browser preserves scrollTop when content is prepended — so the new turn
+ * lands above the fold and the reader never sees it arrive. That is the same
+ * bug useStickyBottom exists for, mirrored.
+ *
+ * Follows only while you are already at the top, for the same reason: yanking
+ * somebody back up mid-sentence every poll tick is worse than not following.
+ */
+export function useStickyTop<T>(dep: T) {
+  const ref = useRef<HTMLDivElement>(null);
+  const stuck = useRef(true);
+
+  const onScroll = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    stuck.current = el.scrollTop <= NEAR;
+  }, []);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [onScroll]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !stuck.current) return;
+    const id = requestAnimationFrame(() => { el.scrollTop = 0; });
+    return () => cancelAnimationFrame(id);
+  }, [dep]);
+
+  return ref;
+}
+
 export function useStickyBottom<T>(dep: T) {
   const ref = useRef<HTMLDivElement>(null);
   /* Whether to follow. Starts true so a freshly opened conversation shows its

@@ -532,6 +532,15 @@ body:has(.bg4) :is(#view-agents, #view-brainstorm, #view-seats) > [data-react] {
   font: 500 9px/1.4 var(--mono); color: var(--text-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* ELLIPSIS NEEDS SOMETHING TO ELLIPSIS AGAINST. The rule above was already
+   nowrap + overflow:hidden and the text still ran straight out of the menu,
+   because a flex item's default min-width is `auto` -- it refuses to shrink
+   below its content, so the label grew to fit "Onboarding/coworker-select
+   screen shows wrong portraits, not the hero roster" and pushed it past the
+   300px dropdown instead of clipping it. min-width:0 on the ancestors is what
+   lets the text box be narrower than the text. */
+.mantine-Menu-item:has(.bg4-tag-sub),
+.mantine-Menu-itemLabel:has(.bg4-tag-sub) { min-width: 0; overflow: hidden }
 /* The banner over the box while it is aimed. Says who hears this and what it
    does to them; the × puts you back in front of the director. */
 .bg4-aimed {

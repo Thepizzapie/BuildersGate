@@ -4,7 +4,7 @@ import {
   Stack, Tabs, Text,
 } from "@mantine/core";
 import { Ti } from "../Ti";
-import { useStickyBottom } from "../sticky";
+import { useStickyTop } from "../sticky";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
 import { useViewActive, usePoll } from "../../hooks";
 import { setSelection } from "../selection";
@@ -212,6 +212,14 @@ export function Agents() {
      menu can say "#424 tech — Wire mimic interact trigger" rather than an id
      the human has to go and look up. */
   const targets = (state.agents || [])
+    /* RUNNING ONLY. /api/console/state sends the whole dispatch roster --
+       finished, failed and running alike; the server filters by state for its
+       own `live_ids` and hands the client the unfiltered list. Mapping all of
+       it put five entries under "Interrupt something already running" while
+       the header said "1 running", and steering an agent that had already
+       exited is a message into nothing. useFloor filters the same field for
+       the same reason. */
+    .filter((a) => a.state === "running")
     .map((a) => {
       const item = items.find((i) => i.id === a.item_id);
       return item
@@ -397,20 +405,25 @@ function Live({
   const [tab, setTab] = useState<string | null>("queue");
   /* Counts, not arrays — the 3s poll rebuilds the objects and scrolling on
      that would drag the reader to the bottom every tick. */
-  const feed = useStickyBottom(
+  const feed = useStickyTop(
     mode === "brainstorm" ? messages.length : turns.length);
 
   return (
     <>
       <div className="bg4-console-main">
-        {/* Follows the newest turn unless you have scrolled up to read. */}
+        {/* NEWEST FIRST. The transcript used to run oldest-at-top, so the
+            reply you are waiting for arrived at the bottom of a long scroll
+            and the top of the pane was whatever was said first. Reversed here
+            at render rather than in the data, because `turns` and `messages`
+            are also what the counts and the sticky dep are computed from.
+            Follows the newest turn unless you have scrolled down to read. */}
         <ScrollArea className="bg4-transcript" type="auto" viewportRef={feed}>
           {mode === "brainstorm"
-            ? messages.map((m) => (
+            ? [...messages].reverse().map((m) => (
                 <Msg key={m.id} who={m.role === "user" ? "you" : "partner"} text={m.text} />
               ))
             : turns.length
-            ? turns.map((t) => <TurnRow key={t.id} turn={t} />)
+            ? [...turns].reverse().map((t) => <TurnRow key={t.id} turn={t} />)
             /* A LIVE BOARD WITH AN EMPTY TRANSCRIPT IS THE NORMAL CASE NOW, and
                it was drawing a thousand pixels of black nothing.
                `live` is true when anything is running or queued — but work
