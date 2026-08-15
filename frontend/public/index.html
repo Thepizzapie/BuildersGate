@@ -211,6 +211,14 @@
           <div class="pt-why" id="pt-why" hidden></div>
           <div id="play-holder">
             <button class="playbtn" onclick="loadGame()">▶ boot current build</button>
+            <!-- WHETHER THE BUILD IS CURRENT, SAID RATHER THAN ASSUMED. Booting
+                 already rebuilds a stale export before it plays (see loadGame),
+                 so "boot current build" has always been true - but the screen
+                 never said so, and a button that promises CURRENT with nothing
+                 backing the claim is a promise a reader has to take on faith.
+                 webbuild.status() has returned `newest_source` and `reason` for
+                 exactly this and nothing read them. -->
+            <div class="playhint" id="play-fresh"></div>
             <div class="playhint" id="play-controls">Controls come from your game's own input map - F1 opens live tuning over the running build.</div>
           </div>
         </div>
@@ -1508,6 +1516,53 @@ async function renderArtRail(itemId, running){
 }
 
 
+/* IS THE EXPORT CURRENT WITH THE SOURCE, ANSWERED ON SCREEN.
+ *
+ * loadGame() below already refuses to serve a stale build - it exports first
+ * and then boots - so the button's promise was always kept. What was missing is
+ * the SAYING: a reader looking at "boot current build" had no way to know
+ * whether that meant "the export is current" or "we will make it current", and
+ * no way to rebuild without booting.
+ *
+ * IT NAMES THE FILE. webbuild.status() returns `newest_source` precisely so the
+ * UI can say WHICH file is newer than the build rather than asserting
+ * staleness, and nothing had ever read it. "level-2.json is newer than the
+ * build" is a sentence somebody can act on; "stale" is one they have to
+ * investigate.
+ *
+ * CHEAP AND ON DEMAND. This walks the game directory server-side, so it runs
+ * when the panel opens and after a build - not on a timer. */
+async function refreshBuildFreshness(){
+  const el = document.getElementById("play-fresh");
+  if (!el) return;
+  const st = await readJSON("/api/play/status", {});
+  if (st.__error){ el.innerHTML = ""; return; }
+  if (!st.built){
+    el.innerHTML = `<span style="color:var(--warn)">no build yet</span> · `
+      + `${esc(st.reason || "never exported")} — booting will export it first`;
+    return;
+  }
+  if (st.stale){
+    el.innerHTML = `<span style="color:var(--warn)">build is behind</span> · `
+      + `${esc(st.newest_source || "a source file")} is newer — booting rebuilds first, `
+      + `<button class="qbtn small ghost" onclick="rebuildNow()">rebuild now</button>`;
+    return;
+  }
+  el.innerHTML = `<span style="color:var(--good)">build is current</span> · `
+    + `nothing in the project is newer than the export`;
+}
+
+/* Rebuild WITHOUT booting, which is the thing the panel could not do. Somebody
+   who has just landed a change and wants the export refreshed before they hand
+   the machine to a playtester should not have to launch the game to get it. */
+async function rebuildNow(){
+  const el = document.getElementById("play-fresh");
+  if (el) el.innerHTML = "exporting from current source…";
+  const r = await mutate("/api/play/rebuild", {quiet:true});
+  if (!r.ok) toast("rebuild failed - " + r.error);
+  await refreshBuildFreshness();
+}
+
 async function loadGame(){
   const holder = document.getElementById("play-holder");
   // Never serve a stale build — rebuild if the source is newer than the export.
@@ -1524,6 +1579,7 @@ async function loadGame(){
     }
   }
   bootFrame();
+  refreshBuildFreshness();
 }
 function bootFrame(sessionId=null){
   const session = sessionId ? `&bgate_session=${encodeURIComponent(sessionId)}` : "";
@@ -1673,6 +1729,7 @@ function renderPreflight(p){
      * once there is one to open — at the point it costs the user something,
      * not before. */
     msg.textContent = "playtest ready - record, play, talk";
+    refreshBuildFreshness();
     if (why){ why.hidden = true; why.innerHTML = ""; }
     _ptIdleHTML = msg.innerHTML;
     return;
