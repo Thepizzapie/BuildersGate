@@ -78,6 +78,9 @@ export type PlanRoom = {
   id: string;
   kind: RoomKind;
   seat?: string;
+  /** How this seat looks, carried from the seat table so the renderer never
+   *  has to key anything off the seat's name. */
+  persona?: Persona;
   label: string;
   rect: Rect;
   doors: Door[];
@@ -101,7 +104,36 @@ export type FloorPlan = {
   bySeat: Map<string, PlanRoom>;
 };
 
-export type Seat = { role: string; title?: string };
+/* HOW A SEAT LOOKS, READ FROM THE SEAT TABLE RATHER THAN DECIDED HERE.
+ *
+ * Every visual fact about a room used to be keyed to the seat's NAME in this
+ * file and in the renderer: which sprite walks around it, what its floor is
+ * made of, the word under its nameplate. That is fine right up until a project
+ * renames a seat or invents one, at which point the floor has opinions about
+ * "art" and nothing to say about whatever this project actually calls it.
+ *
+ * bgate_core.seats carries a persona per seat and /api/state ships it, so the
+ * defaults are unchanged and a project can now move any of it without touching
+ * this code. Every field is optional because a seat invented by a project that
+ * has never set one still has to draw. */
+export type Persona = {
+  /** What this seat goes by. Drawn on the nameplate instead of the title, so a
+   *  project's narrative seat can be called Dave. */
+  name?: string;
+  /** THIS SEAT'S OWN BANTER, which is the part that is actually a personality
+   *  rather than a decor choice. When this character is the one talking in the
+   *  lounge it says these instead of the shared pool, so two projects' art
+   *  seats are different people rather than differently-carpeted rooms. */
+  lines?: string[];
+  /** Which character sprite set walks around the room. */
+  cast?: string;
+  /** carpet | tile | wood | vinyl | concrete. */
+  surface?: string;
+  /** The one word under the nameplate. */
+  vibe?: string;
+};
+
+export type Seat = { role: string; title?: string; persona?: Persona };
 
 /* ── grid constants ─────────────────────────────────────────────────────── */
 
@@ -151,6 +183,11 @@ const ROOM_LABEL: Record<string, string> = {
 };
 
 function labelFor(seat: Seat): string {
+  /* THE PROJECT'S NAME FOR THIS SEAT WINS. Falling through to the title is what
+     every project that has not renamed anything gets, which is all of them
+     until somebody types in the Look panel. */
+  const named = seat.persona?.name?.trim();
+  if (named) return named;
   return ROOM_LABEL[seat.role] || seat.title
     || seat.role.charAt(0).toUpperCase() + seat.role.slice(1);
 }
@@ -444,6 +481,7 @@ function craftRoom(seat: Seat, slot: SlotDef): PlanRoom {
   const door: Door = { side: slot.door, at: doorAt, len: DOOR_LEN };
   return {
     id: seat.role, kind: "seat", seat: seat.role, label: labelFor(seat),
+    persona: seat.persona,
     rect, doors: [door], props: dressRoom(seat.role, rect),
     /* AT THE CHAIR, NOT ON THE DESK. The shared kit puts the desk across
        y+1 to y+2.3 and the chair at y+2.6 to y+3.6, so a character standing at
@@ -544,6 +582,7 @@ export function planFloor(seats: Seat[]): FloorPlan {
   if (director) {
     rooms.push({
       id: director.role, kind: "office", seat: director.role,
+      persona: director.persona,
       label: labelFor(director), rect: officeRect, doors: [officeDoor],
       /* THE CORNER OFFICE, DESIGNED AROUND ITS SIX STANDING SPOTS. The whole
          southern half of this room is where agents queue to see the Director,

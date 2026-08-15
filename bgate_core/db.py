@@ -1960,6 +1960,29 @@ _MIGRATIONS: list = [
     ALTER TABLE brainstorm_session ADD COLUMN discuss_rounds INTEGER NOT NULL
         DEFAULT 0 CHECK (discuss_rounds BETWEEN 0 AND 6);
     """,
+    # 0040 — A SEAT HAS A PERSONALITY, AND THE FLOOR READS IT.
+    #
+    # The studio floor draws a room per seat, and every visual fact about that
+    # room was keyed to the seat's NAME in the renderer: which character sprite
+    # walks around in it, what its floor is made of, the word under its
+    # nameplate. That works exactly until a project renames a seat or invents
+    # one, at which point the floor has opinions about "art" and nothing to say
+    # about whatever this project actually calls it.
+    #
+    # PERSONALITY IS A COLUMN, NOT A SETTING, for the same reason write_globs is:
+    # it is a fact about THIS project's seat, two projects legitimately want
+    # different answers, and a setting would make the studio look identical
+    # everywhere. It is JSON rather than four columns because the set of things a
+    # personality drives is going to grow - the floor plan already names idle
+    # poses and banter voice as future members - and a migration per adjective is
+    # a bad trade for a blob nothing joins on.
+    #
+    # NULL MEANS "USE THE CODE DEFAULT", which is what every existing project
+    # gets on upgrade. seats.DEFAULT_SEATS carries a persona per role, so the
+    # floor looks exactly as it does today until somebody changes something.
+    """
+    ALTER TABLE seat_config ADD COLUMN personality TEXT;
+    """,
 ]
 
 

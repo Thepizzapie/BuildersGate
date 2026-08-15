@@ -590,3 +590,63 @@
   display: inline-flex; align-items: center; gap: 5px;
   font: 400 10px var(--mono); color: var(--text-3);
 }
+
+/* ── a seat's look on the floor ────────────────────────────────────────────── */
+
+/* THE ONLY EDITABLE PART OF THE SEAT TABLE THE DASHBOARD EXPOSES, and it is
+   styled as a settings form rather than as a craft panel on purpose: the other
+   tabs are a seat's WORK and this one is its appearance. Three fields, each
+   saving on its own, each with the sentence that says what it is for. */
+.bgs-persona { display: flex; flex-direction: column; gap: 14px; padding: 2px 0 }
+
+.bgs-pgrid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.bgs-pfield { display: flex; flex-direction: column; gap: 5px; min-width: 0 }
+.bgs-pfield .k {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 600 11px/1 var(--sans); color: var(--text-2);
+}
+/* The note under a control is doctrine, not a tooltip: "wipe-clean, because
+   paint" is the reason that surface exists, and it belongs on screen. */
+.bgs-pfield .n { font: 400 10.5px/1.4 var(--sans); color: var(--text-3) }
+
+.bgs-pfield select,
+.bgs-pfield input[type="text"] {
+  width: 100%; padding: 6px 8px;
+  font: 400 12px/1.2 var(--sans); color: var(--text);
+  background: var(--solid-1);
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.bgs-pfield select:hover,
+.bgs-pfield input[type="text"]:hover { border-color: var(--line-strong) }
+.bgs-pfield select:focus-visible,
+.bgs-pfield input[type="text"]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+}
+.bgs-pfield select:disabled,
+.bgs-pfield input:disabled { opacity: .55; cursor: progress }
+
+.bgs-pnote {
+  display: flex; align-items: center; gap: 6px; margin: 0;
+  padding-top: 10px; border-top: 1px dashed var(--line);
+  font: 400 11px/1.5 var(--sans); color: var(--text-3);
+}
+.bgs-pnote b { color: var(--text-2); font-weight: 600 }
+
+/* The two free-text fields are wider than the pickers: one is a sentence about
+   a person and the other is a list of things they say. */
+.bgs-pfield textarea {
+  width: 100%; padding: 6px 8px; resize: vertical;
+  font: 400 12px/1.5 var(--sans); color: var(--text);
+  background: var(--solid-1);
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.bgs-pfield textarea:hover { border-color: var(--line-strong) }
+.bgs-pfield textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+}
+/* The one field that reaches a real agent is marked as such. */
+.bgs-pstyle { padding-left: 8px; border-left: 2px solid var(--accent) }

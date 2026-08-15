@@ -6467,9 +6467,10 @@ def seat_can_write(role: str, path: str) -> dict:
 @_tool
 def seat_configure(role: str, enabled: Optional[bool] = None,
                    write_globs: Optional[list[str]] = None,
-                   mission: Optional[str] = None) -> dict:
-    """Override a seat for this project: change its mission, or (human only)
-    its write lanes and enabled flag.
+                   mission: Optional[str] = None,
+                   persona: Optional[dict] = None) -> dict:
+    """Override a seat for this project: change its mission or its look on the
+    studio floor, or (human only) its write lanes and enabled flag.
 
     `mission` is prose about what a seat should focus on and any caller may
     rewrite it. `write_globs` and `enabled` are PERMISSIONS, and an agent
@@ -6479,7 +6480,26 @@ def seat_configure(role: str, enabled: Optional[bool] = None,
     system, it is a suggestion. Ask the human to make the change in the
     dashboard, or state the case in a work item and let them decide.
 
-    Returns the merged seat {role, title, mission, write_globs, enabled}, or
+    `persona` is how this seat LOOKS on the floor view, and it is merged key by
+    key rather than replacing what is stored - so changing one field keeps the
+    rest, and a call that does not mention it cannot wipe it:
+
+      style    HOW THE SEAT CARRIES ITSELF, appended to the dispatch prompt of
+               every agent spawned into this seat. Manner only: the prompt tells
+               the agent in as many words that it changes tone and not the job,
+               and that the mission wins wherever the two disagree.
+      name     what the seat goes by on the floor's nameplate
+      lines    this seat's own lounge banter, replacing the shared pool
+      cast     which character sprite walks around the room ("art", "tech",
+               ... , or "generic" for an invented seat with no art)
+      surface  the room's floor: carpet | tile | wood | vinyl | concrete
+      vibe     the one word under the nameplate, in the studio's own language
+
+    It carries no permissions, so any caller may set it: the worst a wrong value
+    does is give a room the wrong carpet.
+
+    Returns the merged seat {role, title, mission, write_globs, enabled,
+    persona}, or
     {ok: false, error} - including on the permission refusal, which is a normal
     result to read and route around, not a crash.
     """
@@ -6496,7 +6516,8 @@ def seat_configure(role: str, enabled: Optional[bool] = None,
                 "what you meant, or ask the human to edit the seat in the "
                 "dashboard (Seats -> " + role + ").")
         return _seats.configure(_root(), role, enabled=enabled,
-                                write_globs=write_globs, mission=mission)
+                                write_globs=write_globs, mission=mission,
+                                persona=persona)
     except Exception as exc:
         return _fail(exc)
 

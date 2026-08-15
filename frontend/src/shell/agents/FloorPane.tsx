@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Ti } from "../Ti";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
 import { useSelection, type Selection } from "../selection";
@@ -7,7 +7,7 @@ import { useViewActive } from "../../hooks";
 import { type ConsoleState } from "./api";
 import { floorSignature, placeFloor, type Occupant } from "./occupancy";
 import {
-  planFloor, spotFor, type FloorPlan, type Seat, type Spot,
+  planFloor, spotFor, type FloorPlan, type Persona, type Seat, type Spot,
 } from "./floorplan";
 import { FloorCanvas } from "./FloorCanvas";
 import { buildNav } from "./route";
@@ -253,8 +253,8 @@ export function FloorPane({ state }: { state: ConsoleState }) {
   const [seatsError, setSeatsError] = useState("");
   const [noProject, setNoProject] = useState(false);
   useEffect(() => {
-    readJSON<{ seats: { role?: string; title?: string }[]; project?: unknown }>(
-      "/api/state", { seats: [] })
+    readJSON<{ seats: { role?: string; title?: string; persona?: Persona }[];
+               project?: unknown }>("/api/state", { seats: [] })
       .then((d) => {
         /* readJSON hands back the fallback tagged with __error rather than
            throwing, so an unread seat table looks exactly like a project with
@@ -265,7 +265,12 @@ export function FloorPane({ state }: { state: ConsoleState }) {
         setNoProject(!d.project);
         setSeats((d.seats || [])
           .filter((r): r is Seat => !!r.role)
-          .map((r) => ({ role: r.role, title: r.title })));
+          /* THE PERSONA COMES ALONG. It is what tells the floor which sprite
+             walks in this room, what the floor is made of and what the
+             nameplate says - all of which used to be decided by the seat's
+             name inside the renderer. Dropping it here would leave the whole
+             feature reading defaults. */
+          .map((r) => ({ role: r.role, title: r.title, persona: r.persona })));
       });
   }, []);
 
@@ -376,8 +381,13 @@ export function FloorPane({ state }: { state: ConsoleState }) {
     () => people.filter((p) => p.zone === "lounge" && p.seat !== "director")
                 .map((p) => p.seat),
     [people]);
+  /* A SEAT'S OWN LINES, looked up through the plan so the renderer and the
+     banter agree about who this character is. */
+  const linesFor = useCallback(
+    (seat: string) => plan.bySeat.get(seat)?.persona?.lines || [],
+    [plan]);
   const banter = useBanter(quiet && visible, banterOn, undefined, undefined,
-                           topic, speakers);
+                           topic, speakers, linesFor);
 
   /* THE DECK IS THE PANE'S, NOT THE VIEW'S. The shell hides an inactive pane
      with display:none rather than unmounting it, so a floor navigated away from

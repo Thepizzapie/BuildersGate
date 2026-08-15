@@ -133,16 +133,23 @@ function hash2b(x: number, y: number, salt: number): number {
    something. */
 type Surface = "carpet" | "tile" | "wood" | "vinyl" | "concrete";
 
-const ROOM_SURFACE: Record<string, Surface> = {
-  director: "wood",      // the corner office got the parquet
-  narrative: "carpet",   // writers' room, soft and warm
-  art: "vinyl",          // wipe-clean, because paint
-  audio: "carpet",       // dead room, deep pile
-  tech: "concrete",      // raised floor over cable trays
-  gameplay: "carpet",
-  qa: "vinyl",
-  cinematic: "carpet",   // edit bay, quiet underfoot
-};
+/* THE FALLBACK, NOT THE SOURCE OF TRUTH. Every room's surface now arrives on
+   the room itself, read from the seat table (see floorplan.Persona), so a
+   project can re-floor its own studio. This table is what a seat with no
+   persona gets - which is nothing today, since bgate_core.seats ships a persona
+   for every default seat, and is everything for a seat some project invents. */
+const SURFACES: readonly Surface[] =
+  ["carpet", "tile", "wood", "vinyl", "concrete"];
+
+function surfaceFor(room: PlanRoom): Surface {
+  const asked = room.persona?.surface;
+  if (asked && (SURFACES as readonly string[]).includes(asked)) {
+    return asked as Surface;
+  }
+  /* A room nobody has dressed gets carpet, and the lounge gets boards: those
+     are the two answers that look deliberate rather than missing. */
+  return room.kind === "lounge" || room.kind === "office" ? "wood" : "carpet";
+}
 
 const SURFACE_BASE: Record<Surface, string> = {
   carpet: "#221f26",
@@ -548,8 +555,7 @@ export class FloorRenderer {
       const ry = Math.round(room.rect.y * cell);
       const rw = Math.round(room.rect.w * cell);
       const rh = Math.round(room.rect.h * cell);
-      const surface: Surface = room.kind === "lounge" ? "wood"
-        : (room.seat && ROOM_SURFACE[room.seat]) || "carpet";
+      const surface: Surface = surfaceFor(room);
 
       g.save();
       g.beginPath();
@@ -1545,7 +1551,13 @@ export class FloorRenderer {
     ctx.fill();
 
     /* Sprite. */
-    const cast = CAST_SEATS.has(p.seat) ? p.seat : "generic";
+    /* WHICH DRAWING WALKS AROUND THIS ROOM, asked of the seat rather than
+       assumed from its name. A persona may name any cast; one that names a set
+       with no art falls back to `generic` exactly as an unknown seat does,
+       because a floor that drops a live agent because nobody drew it is the one
+       dishonesty this pane exists to avoid. */
+    const wanted = this.data?.plan.bySeat.get(p.seat)?.persona?.cast || p.seat;
+    const cast = CAST_SEATS.has(wanted) ? wanted : "generic";
     const moving = ch.path.length > 0;
     const anim = moving ? "walk" : animFor(p);
     const frames = castFrames(cast, anim);
@@ -1742,13 +1754,9 @@ export class FloorRenderer {
                   : occ?.state ? color : PLATE_TEXT;
     ctx.fillText(label, px, py);
 
-    /* Vibe word. */
-    const VIBE: Record<string, string> = {
-      director: "calls", narrative: "story", gameplay: "play",
-      tech: "code", art: "paint", audio: "sound",
-      qa: "checks", cinematic: "cuts",
-    };
-    const vibe = room.seat ? VIBE[room.seat] || "desk" : "";
+    /* The word under the label, from the seat's persona. "desk" is what any
+       seat a project invents gets, and it is true of every seat. */
+    const vibe = room.seat ? (room.persona?.vibe || "desk") : "";
     if (vibe) {
       ctx.font = `400 ${Math.round(fontSize * 0.85)}px "Cascadia Code", "Fira Code", monospace`;
       ctx.fillStyle = "#5d5a55";

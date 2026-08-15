@@ -51,11 +51,33 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\adria\Desktop\builders-gate")
+# The repo this script lives in, so `bgate_adapters` imports without the
+# caller having installed anything.
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 
 from bgate_adapters import krea  # noqa: E402
 
-ROOT = Path(r"C:\Users\adria\Desktop\bg-testbed")
+# WHERE THE SANDBOX IS, ASKED FOR RATHER THAN HARDCODED.
+#
+# This was an absolute path to one machine's Desktop, which is three separate
+# problems in one line: it only ran for the person who wrote it, it put a home
+# directory and an account name into a public repository, and the leak test that
+# guards against exactly that (tests/test_streamer.py) failed on main because of
+# it.
+#
+# BGATE_CAST_PROJECT is the env var, --project is the flag, and the default is
+# a sibling `bg-testbed` beside this checkout - which is where it actually lives
+# for the person who wrote it, so the convenience is kept without the address.
+def _sandbox() -> Path:
+    from os import environ
+    asked = environ.get("BGATE_CAST_PROJECT", "").strip()
+    if asked:
+        return Path(asked).expanduser().resolve()
+    return (REPO.parent / "bg-testbed").resolve()
+
+
+ROOT = _sandbox()
 CAST = ROOT / ".bgate_out" / "art" / "cast"
 OUT = CAST / "anim"
 

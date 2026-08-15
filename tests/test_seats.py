@@ -166,3 +166,80 @@ class TestBlackboard:
     def test_unknown_role_cannot_post(self, root):
         with pytest.raises(ValueError, match="unknown role"):
             seats.post_note(root, "ghost", "boo")
+
+
+def test_every_seat_has_a_persona_and_an_override_survives_other_edits(tmp_path):
+    """The floor reads a seat's LOOK from the seat table, not from its name.
+
+    Three properties, and the third is the one that would break quietly:
+      - every default seat ships a persona, so no reader handles its absence
+      - an override merges key by key, so changing the floor keeps the cast
+      - a configure() call that says nothing about persona leaves it alone
+    """
+    root = tmp_path / "proj"
+    root.mkdir()
+    db.connect(root)
+
+    table = seats.roles_for(root)
+    assert all("persona" in cfg for cfg in table.values()), (
+        "a seat with no persona would make the floor fall back to defaults")
+    assert table["tech"]["persona"]["surface"] == "concrete"
+
+    seats.configure(root, "tech", persona={"surface": "wood"})
+    persona = seats.roles_for(root)["tech"]["persona"]
+    assert persona["surface"] == "wood"
+    assert persona["cast"] == "tech", "an override blanked the keys it did not set"
+
+    # The trap: an unrelated edit must not wipe the project's floor.
+    seats.configure(root, "tech", mission="keep the lights on")
+    after = seats.roles_for(root)["tech"]
+    assert after["persona"]["surface"] == "wood", (
+        "configure() wiped the persona when it was not asked to touch it")
+    assert after["mission"] == "keep the lights on"
+
+
+def test_a_persona_override_does_not_leak_between_projects(tmp_path):
+    """It is a column on this project's seat, not a global setting."""
+    one, two = tmp_path / "one", tmp_path / "two"
+    for p in (one, two):
+        p.mkdir()
+        db.connect(p)
+    seats.configure(one, "art", persona={"vibe": "murals"})
+    assert seats.roles_for(one)["art"]["persona"]["vibe"] == "murals"
+    assert seats.roles_for(two)["art"]["persona"]["vibe"] == "paint"
+
+
+def test_a_seat_personality_reaches_the_dispatch_prompt(tmp_path):
+    """`style` is the one persona field that changes what an agent does.
+
+    Everything else on a persona is how the studio view looks. This is appended
+    to the dispatch prompt, so it has to actually arrive - and it has to arrive
+    with the sentence that stops it being read as a new mission, because a text
+    box that quietly outranks a seat's brief is a way to talk an agent out of
+    its lanes with something that looks like a bit of fun.
+    """
+    from bgate_ui import dispatch
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    db.connect(root)
+    item = {"id": 1, "seat": "art", "title": "t", "brief": "b", "source": "x"}
+
+    plain = dispatch._prompt_for(str(root), item)
+    assert "CARRIES ITSELF" not in plain, (
+        "a project that set no personality got one anyway")
+
+    seats.configure(root, "art", persona={"style": "Blunt. Hates meetings."})
+    withit = dispatch._prompt_for(str(root), item)
+    assert "Blunt. Hates meetings." in withit
+    assert "changes your tone, not your job" in withit, (
+        "the guardrail that keeps a personality from reading as a mission is gone")
+    assert withit.rstrip().endswith("carry on as normal."), (
+        "the personality must come LAST, after the job, the lanes and the gates")
+
+    # And it is surfaced on the brief too, which is the other channel a seat
+    # reads its identity from.
+    assert seats.brief(root, "art")["personality"] == "Blunt. Hates meetings."
+
+    seats.configure(root, "art", persona={"style": None})
+    assert "CARRIES ITSELF" not in dispatch._prompt_for(str(root), item)

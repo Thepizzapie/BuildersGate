@@ -693,6 +693,43 @@ DEFAULT_SEATS: dict[str, dict] = {
     },
 }
 
+
+# WHAT A SEAT LOOKS LIKE ON THE STUDIO FLOOR.
+#
+# The floor draws a room per seat, and every visual fact about that room used to
+# be keyed to the seat's NAME inside the renderer - which sprite walks around in
+# it, what the floor is made of, the word under the nameplate. That is fine
+# until a project renames a seat or invents one, at which point the renderer has
+# opinions about "art" and nothing to say about whatever this project calls it.
+#
+# So the facts live HERE, on the seat, and the renderer reads them. A project
+# overrides any of it with seat_configure(persona=...) and the floor follows,
+# which is the difference between personality being a data change later and
+# being a rewrite.
+#
+#   cast     which character sprite set walks around the room. Falls back to
+#            `generic` when no art exists for the name, so an invented seat gets
+#            a person rather than being dropped off the floor.
+#   surface  what the room's floor is made of: carpet, tile, wood, vinyl,
+#            concrete. A studio does not carpet its server room.
+#   vibe     the one word under the nameplate - what the room is FOR, in the
+#            language a studio uses about itself.
+#
+# NOT YET, AND DELIBERATELY: idle poses and a banter voice. The floor plan names
+# both as members of this dict, and neither has anywhere to read from yet - the
+# cast has one idle strip per character and the banter pool is global. Adding
+# the keys before there is code behind them would be a schema that lies.
+SEAT_PERSONA: dict[str, dict] = {
+    "director": {"cast": "director", "surface": "wood", "vibe": "calls"},
+    "narrative": {"cast": "narrative", "surface": "carpet", "vibe": "story"},
+    "gameplay": {"cast": "gameplay", "surface": "carpet", "vibe": "play"},
+    "tech": {"cast": "tech", "surface": "concrete", "vibe": "code"},
+    "art": {"cast": "art", "surface": "vinyl", "vibe": "paint"},
+    "audio": {"cast": "audio", "surface": "carpet", "vibe": "sound"},
+    "qa": {"cast": "qa", "surface": "vinyl", "vibe": "checks"},
+    "cinematic": {"cast": "cinematic", "surface": "carpet", "vibe": "cuts"},
+}
+
 ROLES = tuple(DEFAULT_SEATS)
 
 # Prepended to every dispatched/spawned seat agent and surfaced in seat_brief.
@@ -876,7 +913,12 @@ def director_instructions(seat: str = "",
 # ---------------------------------------------------------------------------
 def roles_for(root: str | os.PathLike[str]) -> dict[str, dict]:
     """Merged seat table for this project. Disabled seats are excluded."""
-    merged = {role: {**cfg, "role": role, "enabled": True}
+    merged = {role: {**cfg, "role": role, "enabled": True,
+                     # The code default, so every seat ALWAYS has a persona and
+                     # no reader has to handle its absence. A project's override
+                     # is merged over the top below, key by key, so changing one
+                     # field does not silently blank the others.
+                     "persona": dict(SEAT_PERSONA.get(role, {}))}
               for role, cfg in DEFAULT_SEATS.items()}
     conn = db.connect(root)
     for row in rows(conn.execute("SELECT * FROM seat_config")):
@@ -890,14 +932,66 @@ def roles_for(root: str | os.PathLike[str]) -> dict[str, dict]:
             merged[role]["write_globs"] = json.loads(row["write_globs"])
         if row["mission"]:
             merged[role]["mission"] = row["mission"]
+        # PER KEY, NOT WHOLESALE. A project that only wants a different floor
+        # surface should not have to restate the cast and the vibe word to keep
+        # them, and a stored persona written before a new key existed must not
+        # blank that key for everybody.
+        stored = row["personality"] if "personality" in row.keys() else None
+        if stored:
+            try:
+                over = json.loads(stored)
+            except (TypeError, ValueError):
+                over = None
+            if isinstance(over, dict):
+                merged[role]["persona"].update(
+                    {k: v for k, v in over.items() if v not in (None, "")})
     return merged
+
+
+def _merge_persona(current, persona: Optional[dict]) -> Optional[str]:
+    """The personality JSON to store: what is there, updated by what was asked.
+
+    Returns the stored value untouched when nothing was asked for, so a call
+    that only flips `enabled` cannot wipe a project's floor.
+    """
+    stored = None
+    if current is not None and "personality" in current.keys():
+        stored = current["personality"]
+    if persona is None:
+        return stored
+    base: dict = {}
+    if stored:
+        try:
+            loaded = json.loads(stored)
+            if isinstance(loaded, dict):
+                base = loaded
+        except (TypeError, ValueError):
+            base = {}
+    # NONE MEANS CLEAR, ABSENT MEANS LEAVE ALONE, and the difference is the
+    # whole of "reset this back to the default". Filtering None out treated the
+    # two as the same thing, so a form that cleared its vibe box kept whatever
+    # was stored and the reset control did nothing. A cleared key is REMOVED
+    # rather than stored empty, so roles_for falls through to SEAT_PERSONA and
+    # the seat looks like the code default again.
+    for key, value in persona.items():
+        if value is None:
+            base.pop(key, None)
+        else:
+            base[key] = value
+    return json.dumps(base) if base else None
 
 
 def configure(root: str | os.PathLike[str], role: str, *,
               enabled: Optional[bool] = None,
               write_globs: Optional[list[str]] = None,
-              mission: Optional[str] = None) -> dict:
-    """Override a seat for this project. Only stores what actually changed."""
+              mission: Optional[str] = None,
+              persona: Optional[dict] = None) -> dict:
+    """Override a seat for this project. Only stores what actually changed.
+
+    `persona` is how this project's seat LOOKS on the studio floor - see
+    SEAT_PERSONA for the keys. Merged into whatever is already stored rather
+    than replacing it, so setting one field keeps the rest.
+    """
     if role not in DEFAULT_SEATS:
         raise ValueError(f"unknown role {role!r}; roles are {ROLES}")
     with db.tx(root) as conn:
@@ -905,12 +999,14 @@ def configure(root: str | os.PathLike[str], role: str, *,
             "SELECT * FROM seat_config WHERE role = ?", (role,)).fetchone()
         conn.execute(
             """
-            INSERT INTO seat_config (role, enabled, write_globs, mission)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO seat_config
+                (role, enabled, write_globs, mission, personality)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (role) DO UPDATE SET
                 enabled = excluded.enabled,
                 write_globs = excluded.write_globs,
-                mission = excluded.mission
+                mission = excluded.mission,
+                personality = excluded.personality
             """,
             (
                 role,
@@ -920,6 +1016,7 @@ def configure(root: str | os.PathLike[str], role: str, *,
                 else (current["write_globs"] if current else None),
                 mission if mission is not None
                 else (current["mission"] if current else None),
+                _merge_persona(current, persona),
             ),
         )
     merged = roles_for(root)
@@ -1548,6 +1645,12 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "your_role": SEAT_IDENTITY,
         "title": seat["title"],
         "mission": seat["mission"],
+        # HOW THIS PROJECT WANTS THE SEAT TO CARRY ITSELF. Manner only, and the
+        # dispatch prompt says so in as many words; it is surfaced here too
+        # because seat_brief is the other channel an agent reads its identity
+        # from, and a personality that only existed in one of them would apply
+        # to dispatched work and not to anything else.
+        "personality": (seat.get("persona") or {}).get("style") or "",
         "dimension": dimension,
         "workflow": workflow_for(role, dimension, seat.get("workflow", "")),
         "write_lanes": seat["write_globs"],

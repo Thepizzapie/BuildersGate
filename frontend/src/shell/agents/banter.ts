@@ -394,7 +394,10 @@ export function useBanter(quiet: boolean, on: boolean,
                              Empty means nobody is available to speak, and then
                              there is no bubble - a line with no speaker is the
                              caption, which is what this used to be. */
-                          speakers: readonly string[] = []): Banter {
+                          speakers: readonly string[] = [],
+                          /* A speaker's OWN lines, when its project wrote it
+                             some. See floorplan.Persona.lines. */
+                          linesFor?: (seat: string) => readonly string[]): Banter {
   const [line, setLine] = useState("");
   const [seat, setSeat] = useState("");
   /* One rotator for the life of the pane, so muting and unmuting does not hand
@@ -436,6 +439,7 @@ export function useBanter(quiet: boolean, on: boolean,
      room. Held in a ref because nothing renders from the choice itself. */
   const pool = speakers.join(",");
   const pick = useRef<() => string>(() => "");
+  const lastOwn = useRef("");
   pick.current = () => (speakers.length
     ? speakers[Math.floor(Math.random() * speakers.length)]
     : "");
@@ -447,7 +451,30 @@ export function useBanter(quiet: boolean, on: boolean,
        by settle + rotate, which is not the gap this file documents and is the
        kind of drift nobody spots because it only reads as "a bit slow". */
     let every = 0;
-    const say = () => { setLine(next.current!()); setSeat(pick.current()); };
+    /* WHOEVER IS TALKING PICKS FROM THEIR OWN POOL WHEN THEY HAVE ONE, which
+       is the whole of "this seat is a person rather than a room". The shared
+       deck stays the fallback, so a project that has written lines for one seat
+       does not silence the other seven.
+
+       DRAWN FRESH RATHER THAN THROUGH THE ROTATOR: a per-seat pool is small
+       and belongs to a character who only speaks occasionally, so the rotator's
+       no-repeat bookkeeping would be maintained across a deck that changes
+       identity every fifteen seconds. Avoiding the line just said is the only
+       property that matters at this size. */
+    const say = () => {
+      const who = pick.current();
+      const mine = who && linesFor ? linesFor(who) : [];
+      if (mine.length) {
+        const fresh = mine.length > 1
+          ? mine.filter((l) => l !== lastOwn.current) : mine;
+        const line = fresh[Math.floor(Math.random() * fresh.length)];
+        lastOwn.current = line;
+        setLine(line);
+      } else {
+        setLine(next.current!());
+      }
+      setSeat(who);
+    };
     const first = window.setTimeout(() => {
       say();
       every = window.setInterval(say, rotate);

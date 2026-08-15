@@ -13,6 +13,7 @@ import { Art } from "./Art";
 import { Audio } from "./Audio";
 import { Cinematic } from "./Cinematic";
 import { Qa } from "./Qa";
+import { Persona } from "./Persona";
 import { Work } from "./Work";
 import { SeatBrainstorm } from "./Brainstorm";
 import { Generate } from "./Generate";
@@ -115,6 +116,19 @@ const TABS: Record<string, SeatTab[]> = {
   ],
 };
 
+/* EVERY SEAT GETS THIS ONE, appended rather than typed into eight lists - it is
+   the same panel for all of them because it is about IDENTITY, like the header,
+   and nothing in it is craft-specific. It goes LAST: a seat's own work comes
+   before what its carpet is made of. */
+const PERSONA_TAB: SeatTab = {
+  id: "persona", label: "Look", icon: "palette",
+  hint: "how this seat looks on the studio floor",
+};
+
+function tabsFor(role: string): SeatTab[] {
+  return [...(TABS[role] || []), PERSONA_TAB];
+}
+
 const LIVE = new Set(["dispatched", "running", "in_progress"]);
 const OPEN = new Set(["queued", "ready", "review", "blocked", ...LIVE]);
 
@@ -155,7 +169,7 @@ export function Seats() {
   const known = seats.filter((s) => BODIES[s.role]);
   const seat: SeatRow | undefined =
     known.find((s) => s.role === pick) || known[0];
-  const tabList = seat ? TABS[seat.role] || [] : [];
+  const tabList = seat ? tabsFor(seat.role) : [];
   const tab = seat
     ? (tabs[seat.role] || recall(`tab-${seat.role}`, tabList[0]?.id || "")) : "";
 
@@ -282,7 +296,9 @@ export function Seats() {
 
             <div className="bgs-body">
               <ChipSink.Provider value={sink}>
-                {tab === "work"
+                {tab === "persona"
+                  ? <Persona seat={seat.role} active={onScreen} />
+                  : tab === "work"
                   ? <Work seat={seat.role} active={onScreen} items={mine} />
                   /* The room is intercepted here rather than inside Director and
                      Narrative: brainstorm.js owns every pixel under its host, so
