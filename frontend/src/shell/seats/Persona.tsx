@@ -89,10 +89,15 @@ export function Persona({ seat, active }: { seat: string; active: boolean }) {
     setBusy("");
     if (res?.ok && res.data?.persona) {
       setPersona(res.data.persona);
-      toast(`${seat}: ${label}`, "good");
+      /* "ok" IS THE ONLY KIND THAT IS NOT AN ERROR. index.html's toast reads
+         `kind === "ok"` and styles everything else as a failure, so a
+         successful save announced with any other word showed a red box and a
+         warning triangle - saying, wrongly, that the thing that just worked
+         had failed. */
+      toast(`${seat}: ${label} saved`, "ok");
     } else {
       setPersona(before);
-      toast(res?.error || `could not change ${label}`, "bad");
+      toast(res?.error || `could not change ${label}`);
     }
   }
 

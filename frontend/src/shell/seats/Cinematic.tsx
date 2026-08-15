@@ -249,7 +249,10 @@ export function Cinematic({ seat, active, tab }: SeatBodyProps) {
     setBusy(Number(body.artifact_id) || -1);
     const r = await mutate(path, { body, quiet: true });
     setBusy(0);
-    if (r.ok) toast(ok, "good");
+    /* "ok", NOT "good". index.html's toast styles ONLY `kind === "ok"` as a
+       success and everything else as a failure, so this reported every
+       successful call as a red box with a warning triangle. */
+    if (r.ok) toast(ok, "ok");
     else toast(r.error || `${path} failed`, "bad");
   }, []);
 
