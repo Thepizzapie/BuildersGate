@@ -252,7 +252,39 @@ export function FloorPane({ state }: { state: ConsoleState }) {
   const [seats, setSeats] = useState<Seat[] | null>(null);
   const [seatsError, setSeatsError] = useState("");
   const [noProject, setNoProject] = useState(false);
+
+  /* THE BOX THE PANE IS MEASURED INSIDE, and the visibility flag below is read
+     by the seat fetch as well as the banter, so both are declared before it. */
+  const wrap = useRef<HTMLDivElement>(null);
+  const paneVisible = useViewActive(wrap);
+
+  /* RE-READ WHEN THE FLOOR COMES BACK ON SCREEN.
+   *
+   * This ran ONCE, on mount, with an empty dependency array - which was right
+   * when a seat table only changed if somebody edited seat config by hand, and
+   * wrong the moment the Look panel existed. Renaming a seat, re-flooring its
+   * room or giving it a different character updated the database and the floor
+   * went on drawing what it had read when it mounted. The shell keeps an
+   * inactive pane MOUNTED with display:none, so "switch to Seats, rename one,
+   * switch back" never remounted this and the change looked like it had not
+   * saved.
+   *
+   * ON VISIBILITY RATHER THAN ON A TIMER, because a seat table is not live
+   * data: it changes when a person changes it, and the only moment that matters
+   * is when they come back to look. A poll would be a request every few seconds
+   * for a value that is identical almost always. */
+  /* Bumped by the seat-changed event below, which is what forces the read to
+     happen again. A counter rather than a boolean: two edits in a row have to
+     produce two reads. */
+  const [seatEpoch, setSeatEpoch] = useState(0);
   useEffect(() => {
+    const again = () => setSeatEpoch((n) => n + 1);
+    window.addEventListener("bgate:seats-changed", again);
+    return () => window.removeEventListener("bgate:seats-changed", again);
+  }, []);
+
+  useEffect(() => {
+    if (!paneVisible) return;
     readJSON<{ seats: { role?: string; title?: string; persona?: Persona }[];
                project?: unknown }>("/api/state", { seats: [] })
       .then((d) => {
@@ -272,7 +304,7 @@ export function FloorPane({ state }: { state: ConsoleState }) {
              feature reading defaults. */
           .map((r) => ({ role: r.role, title: r.title, persona: r.persona })));
       });
-  }, []);
+  }, [paneVisible, seatEpoch]);
 
   /* ONE CHEAP STRING PER POLL instead of a rebuild of the whole floor. See
      floorSignature: consoleState() hands back a new object and a new items
@@ -348,9 +380,6 @@ export function FloorPane({ state }: { state: ConsoleState }) {
     return !was;
   });
 
-  /* The box the pane is measured inside, for the visibility check below. */
-  const wrap = useRef<HTMLDivElement>(null);
-
   /* THE ROUTER FOR THIS BUILDING. Rebuilt only when the plan is - the walls are
      a fact about the floor plan, not about who is standing on it - so an idle
      board with nothing happening never touches it, and a seat being disabled
@@ -363,7 +392,9 @@ export function FloorPane({ state }: { state: ConsoleState }) {
      gated on the same flag up in Agents; the banter rotation was not, so a floor
      left quiet and then navigated away from went on setting a new line every 15s
      for the life of the session. */
-  const visible = useViewActive(wrap);
+  /* One measurement, read twice. Calling useViewActive again on the same ref
+     would install a second observer for an answer this component already has. */
+  const visible = paneVisible;
   /* WHAT THE LOUNGE CAN JOKE ABOUT TODAY, read off the same payload the floor
      is drawn from. Keyed on `sig` like everything else here: the poll hands
      back a new items array every 3s whether or not anything changed, and

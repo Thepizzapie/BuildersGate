@@ -95,6 +95,21 @@ export function Persona({ seat, active }: { seat: string; active: boolean }) {
          warning triangle - saying, wrongly, that the thing that just worked
          had failed. */
       toast(`${seat}: ${label} saved`, "ok");
+      /* TELL THE FLOOR, because nothing else will.
+       *
+       * The studio view reads the seat table ONCE and then draws from it. It
+       * lives in another deck, is kept MOUNTED behind display:none when you are
+       * not looking at it, and switching between its own Board and Floor tabs
+       * does not remount it either - so a seat renamed here reached the
+       * database and the floor went on drawing the old name until a full
+       * reload, which reads as "it did not save".
+       *
+       * A WINDOW EVENT RATHER THAN A POLL. A seat table changes when a person
+       * changes it, which is exactly this line; polling it would be a request
+       * every few seconds forever to catch something that happens a handful of
+       * times in a project's life. */
+      window.dispatchEvent(new CustomEvent("bgate:seats-changed",
+                                           { detail: { seat } }));
     } else {
       setPersona(before);
       toast(res?.error || `could not change ${label}`);
