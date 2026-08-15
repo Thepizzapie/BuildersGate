@@ -28,6 +28,7 @@ of its own and terminating the top of that leaves them holding pipes.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -43,6 +44,8 @@ from bgate_ui import api
 from bgate_ui import dispatch as _dispatch
 
 router = APIRouter()
+
+_log = logging.getLogger(__name__)
 
 
 def _pkey(root: str) -> str:
@@ -206,7 +209,16 @@ def _stop_one(row: dict, actor: str) -> dict:
                 _queue.stop(root, item_id, by=actor, reason=reason)
                 banked = "failed"
         except Exception as exc:                                  # noqa: BLE001
-            banked = f"could not bank the item: {type(exc).__name__}: {exc}"
+            # THE TYPE, NOT THE MESSAGE. An exception's text here can carry the
+            # sqlite statement and the absolute paths around it, and this value
+            # is returned to a browser - CodeQL calls that stack-trace exposure
+            # and it is right, even on a loopback surface: the detail belongs in
+            # the log the operator can read, not in a JSON body a page renders.
+            # The type is enough to tell "the row was gone" from "the database
+            # was locked", which is the only distinction this line has to make.
+            _log.warning("stop-all could not bank item %s in %s", item_id, root,
+                         exc_info=True)
+            banked = f"could not bank the item ({type(exc).__name__})"
     return {"ok": bool(killed), "item_id": item_id, "pid": pid, "root": root,
             "how": "pid", "banked": banked,
             "error": "" if killed else f"pid {pid} could not be aimed at"}
