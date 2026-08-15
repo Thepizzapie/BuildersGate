@@ -127,3 +127,11 @@
 /* Runtime is the number you actually scan this list for — a run at 2h is the
    one to look at — so it is the one piece of metadata that is not dimmed. */
 .bg4-fleet-row .meta .rt { color: var(--text-2) }
+
+/* A rail row with nothing matching the current filter. Dimmed rather than
+   removed: a destination that vanishes while you are reading it is worse than
+   one that says "nothing in here matches", and hiding it is what made the
+   `changed` chip able to delete Community out of the navigation. */
+.bg4-settings-rail button.empty { opacity: .38 }
+.bg4-settings-rail button.empty:hover { opacity: .7 }
+.bg4-settings-rail button.empty.on { opacity: 1 }

@@ -130,19 +130,39 @@ export function Settings() {
     else if (!r.ok) refresh();
   }
 
+  /* FILTERS NARROW WHAT IS IN A CATEGORY. THEY DO NOT REMOVE THE CATEGORY.
+     `.filter((g) => g.fields.length)` used to drop any group with no surviving
+     field, and the rail is built from this list - so pressing `changed` deleted
+     every untouched category out of the NAVIGATION. Community has nothing
+     changed in it by default, so the one control that says "show me what I
+     touched" was also the control that made Community unreachable, including
+     while you were standing on it. A field-level filter had been given
+     authority over the map. */
   const groups = useMemo(() => {
     const needle = q.toLowerCase().trim();
-    return desc.groups
-      .map((g) => ({
-        ...g,
-        fields: g.fields.filter((f) =>
-          (!onlyChanged || f.source !== "default")
-          && (!needle
-              || f.key.toLowerCase().includes(needle)
-              || f.help.toLowerCase().includes(needle))),
-      }))
-      .filter((g) => g.fields.length);
+    return desc.groups.map((g) => ({
+      ...g,
+      fields: g.fields.filter((f) =>
+        (!onlyChanged || f.source !== "default")
+        && (!needle
+            || f.key.toLowerCase().includes(needle)
+            || f.help.toLowerCase().includes(needle))),
+    }));
   }, [desc, q, onlyChanged]);
+
+  /* Whether a filter is doing anything, and therefore whether the rail should
+     say where the matches are. With no filter every count is just "how many
+     settings live here", which is noise. */
+  const filtering = !!q.trim() || onlyChanged;
+
+  /* PANELS MATCH BY NAME, because they have no fields to match by. Typing
+     "agent f" left both panels sitting there looking like results, since they
+     were appended to the rail outside the filter entirely. They stay reachable
+     - nothing here removes a destination - but they now dim like everything
+     else that does not match, so the rail stops lying about what it found. */
+  const panelHit = (name: string) =>
+    !filtering || (!onlyChanged && !!q.trim()
+                   && name.toLowerCase().includes(q.toLowerCase().trim()));
 
   const changed = desc.groups.flatMap((g) => g.fields)
     .filter((f) => f.source !== "default").length;
@@ -168,21 +188,25 @@ export function Settings() {
               have to read; a glyph is the thing you actually navigate by once
               you have been here twice. The name comes from the registry
               (settings.GROUP_ICONS) so a new group cannot arrive iconless. */}
-          {[...groups.map((g) => g.name), ...Object.keys(PANELS)].map((name) => (
-            <button key={name}
-                    className={name === group ? "on" : ""}
-                    onClick={() => setGroup(name)}>
-              <Ti name={PANELS[name]
-                        || groups.find((g) => g.name === name)?.icon || "adjustments"}
-                  size={15} />
-              <span className="l">{name}</span>
-              {!PANELS[name] && (
-                <span className="n">
-                  {groups.find((g) => g.name === name)?.fields.length ?? 0}
-                </span>
-              )}
-            </button>
-          ))}
+          {[...groups.map((g) => g.name), ...Object.keys(PANELS)].map((name) => {
+            const g = groups.find((x) => x.name === name);
+            const hits = PANELS[name] ? (panelHit(name) ? 1 : 0) : (g?.fields.length ?? 0);
+            /* Dimmed, never hidden. A destination that disappears while you are
+               reading it is worse than one that says "nothing in here matches",
+               and the count is how you find the group your search DID land in
+               without clicking through ten of them. */
+            const cls = [name === group ? "on" : "",
+                         filtering && !hits ? "empty" : ""].filter(Boolean).join(" ");
+            return (
+              <button key={name} className={cls} onClick={() => setGroup(name)}>
+                <Ti name={PANELS[name] || g?.icon || "adjustments"} size={15} />
+                <span className="l">{name}</span>
+                {!PANELS[name] && (
+                  <span className="n">{g?.fields.length ?? 0}</span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         <ScrollArea className="bg4-settings-body" type="auto">
