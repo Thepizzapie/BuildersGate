@@ -24,7 +24,7 @@ HAVE_PSUTIL = importlib.util.find_spec("psutil") is not None
 
 @pytest.fixture()
 def without_psutil(monkeypatch):
-    """Run as if psutil were not installed — WHICH IT USUALLY IS NOT.
+    """Run as if psutil were not installed - WHICH IT USUALLY IS NOT.
 
     psutil is not a declared dependency and must never become one, so the
     ctypes/`/proc` fallback is the path almost every real user takes. On a
@@ -35,7 +35,7 @@ def without_psutil(monkeypatch):
 
 
 def _dispatched_item(root, title: str = "make the thing") -> int:
-    """A work item sitting in 'dispatched' — the state a dead agent strands."""
+    """A work item sitting in 'dispatched' - the state a dead agent strands."""
     item = queue.add(root, "art", title, "brief")
     assert queue.reserve(root, item["id"])
     return int(item["id"])
@@ -63,7 +63,7 @@ def test_probe_reports_this_process_alive_with_a_plausible_start():
     assert exists is True
     assert started is not None, "the test host must be able to time its own pid"
     # Somewhere between "started after the machine booted this year" and "not in
-    # the future" — the point is that it is a real epoch stamp, not ticks or a
+    # the future" - the point is that it is a real epoch stamp, not ticks or a
     # FILETIME that never got its 1601 offset subtracted.
     assert 0 < started <= time.time() + 5
     assert time.time() - started < 365 * 24 * 3600
@@ -85,7 +85,7 @@ def test_probe_reports_an_exited_process_as_gone():
 
 
 def test_probe_without_psutil_answers_the_same_way(without_psutil):
-    """The fallback is not a degraded mode — it has to give the same verdicts,
+    """The fallback is not a degraded mode - it has to give the same verdicts,
     because the pid-reuse check is only as good as the start time it gets."""
     exists, started = agentreg.probe(os.getpid())
     assert exists is True
@@ -160,7 +160,7 @@ def test_an_exited_process_is_stale_not_live(root):
 
 
 # ---------------------------------------------------------------------------
-# PID REUSE — the case this module is built around
+# PID REUSE - the case this module is built around
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ def test_an_unknowable_process_is_neither_live_nor_settled(root, monkeypatch):
 
 def test_an_entry_with_no_recorded_start_time_is_not_claimed_as_ours(root):
     """Written by an older build, or on a host that would not say. The pid is
-    alive, but nothing proves it is the same process — so it stays unknowable
+    alive, but nothing proves it is the same process - so it stays unknowable
     rather than being promoted on the strength of a recycled number."""
     item_id = _dispatched_item(root)
     agentreg.record(os.getpid(), item_id=item_id, root=str(root))

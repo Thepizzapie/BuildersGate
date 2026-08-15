@@ -1,4 +1,4 @@
-"""The machine-wide registry of running agents — one small file per run.
+"""The machine-wide registry of running agents - one small file per run.
 
 WHY THIS EXISTS. ``dispatch._live`` is a module-level dict of Popen handles, so
 it dies with the process that built it. A dashboard restart left every agent it
@@ -13,7 +13,7 @@ any dashboard, any CLI, any project can read the fleet.
 
 PID PLUS PROCESS START TIME, NEVER PID ALONE. This is the detail the rest of
 the module is built around. Pids are recycled within minutes on Windows, and
-this ledger is best-effort by construction — a hard crash leaves entries for
+this ledger is best-effort by construction - a hard crash leaves entries for
 processes that died hours ago. A stale entry that names nothing but a number
 will eventually name SOMEBODY ELSE'S PROGRAM, and "stop that agent" would then
 kill the user's editor. The creation time of a process is the one thing a
@@ -49,7 +49,7 @@ START_TOLERANCE_S = 1.0
 
 
 def registry_dir() -> Path:
-    """``~/.bgate/agents`` — through user_dir(), so BGATE_HOME moves it."""
+    """``~/.bgate/agents`` - through user_dir(), so BGATE_HOME moves it."""
     return user_dir() / DIRNAME
 
 
@@ -61,7 +61,7 @@ def _path(pid: int) -> Path:
 # Asking the OS about a pid
 # ---------------------------------------------------------------------------
 # psutil answers both questions in one call and is used WHEN IT HAPPENS TO BE
-# INSTALLED — it is deliberately not a declared dependency of this project and
+# INSTALLED - it is deliberately not a declared dependency of this project and
 # must never become one on account of this module, so every path below works
 # without it.
 
@@ -87,7 +87,7 @@ def _psutil_probe(pid: int) -> Optional[tuple[Optional[bool], Optional[float]]]:
 
 
 def _windows_probe(pid: int) -> tuple[Optional[bool], Optional[float]]:
-    """(exists, start) from kernel32 directly — no dependency, no subprocess.
+    """(exists, start) from kernel32 directly - no dependency, no subprocess.
 
     ctypes rather than `wmic`/PowerShell because both of those cost a process
     spawn per pid and wmic is gone from current Windows 11 images. OpenProcess
@@ -198,7 +198,7 @@ def _matches(entry: dict) -> Optional[bool]:
     """Is the pid in this entry still the process it was written for?
 
     True/False/None as above. An entry with no recorded start time cannot be
-    proved either way once its pid is alive — that is an entry written by an
+    proved either way once its pid is alive - that is an entry written by an
     older build or on a host that would not say, and it stays unknowable rather
     than being promoted to "ours" on the strength of a recycled number.
     """
@@ -229,7 +229,7 @@ def record(pid: int, *, item_id: int, seat: str = "", root: str = "",
     started by the time this is called.
 
     The start time is read here, at spawn, while the process is certainly alive
-    and certainly still ours — reading it later would race the very recycling
+    and certainly still ours - reading it later would race the very recycling
     this whole module exists to survive.
     """
     try:
@@ -302,7 +302,7 @@ def reconcile() -> dict:
     """Settle the work items of agents that died without cleaning up.
 
     An entry only exists between spawn and exit, so one left behind by a
-    process that is gone means the run ended without anybody banking it — a
+    process that is gone means the run ended without anybody banking it - a
     dashboard killed, a machine rebooted, a crash. The item on the other side
     of that is sitting in 'dispatched', which is the status nothing recovers
     from on its own: autodeploy will not touch it, dispatch() refuses it as
@@ -326,7 +326,7 @@ def reconcile() -> dict:
                     _queue.complete(
                         root, item_id, failed=True,
                         result="the agent process is gone and nothing banked "
-                               "this run — the dashboard that spawned it did "
+                               "this run - the dashboard that spawned it did "
                                "not survive to reap it, so what it did or did "
                                "not finish was never reported")
                     failed.append({"item_id": item_id, "root": root,

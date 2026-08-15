@@ -4,13 +4,13 @@ import { Ti } from "../Ti";
 import { mutate, readJSON } from "../../bridge";
 import { usePoll } from "../../hooks";
 
-/* THE MASTER AGENT VIEW — every running agent on the machine, not just this
+/* THE MASTER AGENT VIEW - every running agent on the machine, not just this
  * project's.
  *
  * The rest of the app asks /api/agents, which reads dispatch._live: a dict of
  * process handles that dies with the dashboard, scoped to the one project you
  * have open. So an agent survived a dashboard restart, or belonged to a second
- * dashboard, or was working the game you switched away from — and appeared
+ * dashboard, or was working the game you switched away from - and appeared
  * nowhere, while still editing files and still billing. /api/agents/all reads
  * the on-disk registry instead, which outlives the process that wrote it.
  *
@@ -45,7 +45,7 @@ export async function readFleet(): Promise<Fleet> {
 /** 2h 04m, 6m 12s, 41s. A runtime is read to judge whether something is stuck,
  *  so the leading unit is the only one that carries information. */
 export function runtime(seconds: number): string {
-  if (!seconds) return "—";
+  if (!seconds) return "-";
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
@@ -97,11 +97,19 @@ export function AgentFleet({ active }: { active: boolean }) {
       </div>
 
       <p className="bg4-fleet-note">
-        Every agent running on this machine, from the on-disk registry — including
-        ones this dashboard did not start and ones working a project you do not
-        have open. Stopping kills the whole process tree (a runner starts children
-        of its own) and banks the work item as failed, so the board never claims
-        work is in flight that nothing is doing.
+        {/* SAY WHAT IT CAN ACTUALLY SEE. This read "every agent running on this
+            machine", which is a promise the registry cannot keep: it lists what
+            Builders Gate DISPATCHED and recorded. A Claude Code session you
+            started yourself in a terminal was never recorded, so it is not here
+            and never will be - and someone looking for the session they are
+            talking to reasonably concludes the panel is broken. */}
+        Every agent Builders Gate dispatched, across every project, from the
+        on-disk registry - including ones this dashboard did not start and ones
+        working a project you do not have open. A session you started yourself in
+        a terminal is not dispatched work and does not appear here. Stopping
+        kills the whole process tree (a runner starts children of its own) and
+        banks the work item as failed, so the board never claims work is in
+        flight that nothing is doing.
       </p>
 
       {!fleet.projects.length && (
@@ -127,7 +135,7 @@ export function AgentFleet({ active }: { active: boolean }) {
             <div key={`${a.root}#${a.pid}`} className="bg4-fleet-row">
               <Badge size="xs" variant="light"
                      style={{ background: `var(--c-${a.seat}, var(--solid-2))` }}>
-                {a.seat || "—"}
+                {a.seat || "-"}
               </Badge>
               <span className="it">
                 <b>#{a.item_id}</b> {a.item_title || "(no title on the board)"}
@@ -142,8 +150,7 @@ export function AgentFleet({ active }: { active: boolean }) {
                 )}
                 {/* The board status, when it disagrees with reality. A live
                     process against an item that no longer reads 'dispatched'
-                    means somebody completed it and the process did not exit —
-                    which is the shape of a wedged run. */}
+                    means somebody completed it and the process did not exit - which is the shape of a wedged run. */}
                 {a.item_status && a.item_status !== "dispatched" && (
                   <Badge size="xs" variant="light" color="yellow">
                     board says {a.item_status}

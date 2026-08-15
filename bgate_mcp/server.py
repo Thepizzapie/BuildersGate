@@ -1,7 +1,7 @@
 """Builders Gate MCP server (FastMCP, stdio).
 
 Every tool takes an optional `project_dir` and resolves the project from it,
-then BGATE_ROOT, then the cwd by walking up for a .bgate dir — so an agent
+then BGATE_ROOT, then the cwd by walking up for a .bgate dir - so an agent
 working inside a game repo never has to pass paths around, but a fleet sharing
 one server can always be explicit.
 
@@ -10,21 +10,21 @@ which every tool read. That made "which game does this call affect" a function
 of call ORDER: two agents on one server, one selects project A, the other
 selects B, and the first one's next write lands in B. Deleted. The per-call
 `project_dir` travels with the call, and the fallback for a call that omits it
-is a contextvar bound for the duration of THAT call only — nothing a concurrent
+is a contextvar bound for the duration of THAT call only - nothing a concurrent
 call can reach in.
 
 Tool errors return a dict with an "error" key rather than raising: a raised
 exception inside a tool call reads to the model as a broken server, while an
 error payload reads as a fact it can act on.
 
-FAILURE SHAPE — ONE PREDICATE, EVERY TOOL. A result is a failure if and only if
+FAILURE SHAPE - ONE PREDICATE, EVERY TOOL. A result is a failure if and only if
 it carries a truthy "error"; every failure also carries "ok": false, and the two
 are always set together, so either key answers the question. Legacy shapes are
 kept alongside rather than replaced, because callers already read them: a tool
 that used to answer {"available": false, "reason": ...} still answers with those
 keys AND with ok/error, and a tool that answered a bare {"ok": false, ...} gains
 the "error" string built from whatever reason it did state. Success payloads are
-left exactly as they were — an absent "error" is the success signal, and no tool
+left exactly as they were - an absent "error" is the success signal, and no tool
 gains a cosmetic "ok": true it never had.
 
 Not everything false is a failure: seat_can_write's {"allowed": false} and
@@ -99,7 +99,7 @@ from bgate_core import vfx as _vfx
 # CLAUDE.md managed block (only if the project was init/adopt-ed AND the agent
 # is standing in it), seat_brief (only if the agent thinks to call it), and the
 # dispatch prompt (only for agents the dashboard spawned). A human-started
-# session in a fresh checkout hit none of them and saw a bare tool list — so it
+# session in a fresh checkout hit none of them and saw a bare tool list - so it
 # did the work itself, off the board and past the QA gate, which is exactly what
 # the pipeline exists to prevent.
 #
@@ -110,13 +110,13 @@ from bgate_core import vfx as _vfx
 #
 # It is read ONCE, at server start, and that is correct rather than a limitation:
 # each MCP client spawns its own stdio server process, so BGATE_SEAT here is this
-# session's identity for its whole life — the same fact `_seat()` below relies on.
+# session's identity for its whole life - the same fact `_seat()` below relies on.
 #
 # The root is resolved here too, and best-effort: a seatless session's brief
 # quotes the DIRECTOR SEAT's own mission, so a project that rewrote it with
 # seat_configure gets its wording rather than the shipped default. A server can
 # legitimately start outside any project, so `None` is an ordinary answer and
-# seats.py falls back to the code default — this must never stop a boot.
+# seats.py falls back to the code default - this must never stop a boot.
 def _boot_root() -> Optional[str]:
     hint = os.environ.get("BGATE_ROOT", "").strip()
     if hint:
@@ -139,20 +139,20 @@ _PROJECT_DIR_DOC = (
     "Absolute path to the Builders Gate project root (the directory holding "
     ".bgate). Omit it and the server falls back to BGATE_ROOT, then to walking "
     "up from the working directory. Pass it explicitly whenever more than one "
-    "project could be in play — it is the only way a call is guaranteed to land "
+    "project could be in play - it is the only way a call is guaranteed to land "
     "in the game you mean."
 )
 
 # The per-call project override. A ContextVar, deliberately: it is set on the
 # way into ONE tool call and reset on the way out, so it cannot be observed by
-# any other call. The module-level `_ACTIVE_ROOT` this replaces could — that was
+# any other call. The module-level `_ACTIVE_ROOT` this replaces could - that was
 # the race, and this is the whole reason the contextvar exists.
 _CALL_ROOT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "bgate_call_root", default=None)
 
 
 def _root_hint() -> Optional[str]:
-    """The root this call was given, if any — before falling back to discovery."""
+    """The root this call was given, if any - before falling back to discovery."""
     return _CALL_ROOT.get() or (os.environ.get("BGATE_ROOT") or None)
 
 
@@ -173,7 +173,7 @@ def _art_out(root, filename: str):
         out.relative_to(base)
     except ValueError:
         raise ValueError(
-            f"filename must stay inside .bgate_out/art — refusing {filename!r}"
+            f"filename must stay inside .bgate_out/art - refusing {filename!r}"
         ) from None
     return out
 
@@ -184,7 +184,7 @@ def _keys(root: Optional[str] = None) -> None:
     Split out of :func:`_root` because the two questions came apart. "Which
     project is this call about" can legitimately have no answer; "does this
     machine have an OpenAI key" always does, and it used to be reachable only
-    through a project root — so a tool that needs a key and not a game could not
+    through a project root - so a tool that needs a key and not a game could not
     be reached at all without inventing a project to hold the credential.
 
     Order is the precedence and is documented at envfile.load_env: shell beats
@@ -198,7 +198,7 @@ def _keys(root: Optional[str] = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CONTAINMENT — the same project boundary the PreToolUse hook enforces, on the
+# CONTAINMENT - the same project boundary the PreToolUse hook enforces, on the
 # side of the fence the hook cannot see.
 #
 # The hook judges FILE OPERATIONS, so it sees what Write, Edit, Read and Bash
@@ -377,7 +377,7 @@ def _root(scratch: bool = False) -> str:
 
     ``scratch=True`` additionally puts that project at the BOTTOM of the
     discovery chain rather than raising. Passed by the tools whose output has
-    somewhere to go even when no game does — see :func:`_scratch_root`.
+    somewhere to go even when no game does - see :func:`_scratch_root`.
     """
     override = _root_hint()
     if override:
@@ -410,7 +410,7 @@ def _root(scratch: bool = False) -> str:
 def _scratch_root() -> str:
     """The root for a tool whose output does not need a game to belong to.
 
-    Generation is the case: an image, a sheet, a track — all of them need a
+    Generation is the case: an image, a sheet, a track - all of them need a
     project for the artifact registry, the spend ledger and `.bgate_out`, and
     none of them need an engine. Falling back here rather than refusing is what
     makes "just use one tool for something" possible without inventing a game to
@@ -418,13 +418,13 @@ def _scratch_root() -> str:
 
     Not the default for every tool. `godot_run` against an empty scratch project
     is a confusing failure a long way from its cause, and a tool that edits game
-    files has nothing to edit — those keep refusing, which is the useful answer.
+    files has nothing to edit - those keep refusing, which is the useful answer.
     """
     return _root(scratch=True)
 
 
 # The machine-wide keys are live from the moment the server starts, so a tool
-# that needs a credential and not a project — provider_status, doctor — answers
+# that needs a credential and not a project - provider_status, doctor - answers
 # correctly in a session that never names one.
 _keys()
 
@@ -468,12 +468,12 @@ def _nested_reasons(result: dict) -> str:
     ok=False with the exposure verdict living in renders[i]["verdict"], and the
     top level carries no reason key at all. Collapsing that to "the call failed
     without stating a reason" threw away the one mechanical signal the tool
-    exists to produce — and the standard response to a tool that looks broken is
+    exists to produce - and the standard response to a tool that looks broken is
     to retry it or move on, not to turn the lights down.
 
     Only entries that themselves claim failure contribute, so the three good
     frames of a four-frame turnaround stay quiet, and only the top level's own
-    values are inspected — this reads a result, it does not walk a tree.
+    values are inspected - this reads a result, it does not walk a tree.
     """
     found: list[str] = []
     for value in result.values():
@@ -501,7 +501,7 @@ def _normalize(result):
     {error}, {ok: false, ...} and {available: false, reason} all meant failure
     and a model calling these tools had to know which tool spoke which dialect.
     Now any of them also carries ok=false AND a filled-in "error", so `"error"
-    in result` is the whole test. Legacy keys stay put — the dashboard and the
+    in result` is the whole test. Legacy keys stay put - the dashboard and the
     seat scripts already read `available` and `reason`, and a normalizer that
     renames things breaks callers to please a schema.
 
@@ -510,7 +510,7 @@ def _normalize(result):
     "what is installed", and stamping an error on it would be a lie.
 
     A REASON THE TOOL DID STATE IS NEVER REPLACED. That includes one stated per
-    item — see _nested_reasons. The generic string is the last resort, not the
+    item - see _nested_reasons. The generic string is the last resort, not the
     first: it says "this tool is broken", which is a different fact from any
     verdict the tool actually reached, and the model acts differently on it.
     """
@@ -541,8 +541,8 @@ def _normalize(result):
 # talk itself out of is worth more than an image it can.
 #
 # Downscaled first: four 640x960 PNGs are several megabytes of base64 in one
-# response, and every defect these frames exist to catch — blown out, black,
-# imported nothing, wrong colour entirely — survives a long edge of 512.
+# response, and every defect these frames exist to catch - blown out, black,
+# imported nothing, wrong colour entirely - survives a long edge of 512.
 _IMAGE_RETURN_EDGE = 512
 _IMAGE_RETURN_CAP = 6
 
@@ -588,14 +588,14 @@ def _tool(fn: Optional[Callable] = None, *,
     Every tool gets the same optional trailing parameter rather than 70-odd
     hand-edited signatures, and the wrapper binds it into `_CALL_ROOT` for the
     duration of the call so the existing `_root()` bodies need no change. The
-    binding is reset in a finally — a tool that raises must not leave its root
+    binding is reset in a finally - a tool that raises must not leave its root
     behind for the next call on this thread.
 
     The bodies are blocking by nature: subprocesses (Blender, Godot, ffmpeg),
     sqlite, and image-model calls that legitimately run for tens of minutes.
     Run as a plain sync def, FastMCP would await them ON the loop and one
     image_sprites batch would freeze the dashboard, the queue and every other
-    seat's tool call behind it — the exact failure the transcribe adapter's
+    seat's tool call behind it - the exact failure the transcribe adapter's
     docstring says this design exists to avoid. So the wrapper is async and the
     body goes to a worker thread.
 
@@ -603,7 +603,7 @@ def _tool(fn: Optional[Callable] = None, *,
     than around the await: anyio reuses worker threads, so a `set` left on a
     pooled thread's default context could be seen by whatever call lands on that
     thread next. Each call gets its own contextvars.Context, sets the root in
-    there, and drops it — call N's project_dir cannot reach call N+1 no matter
+    there, and drops it - call N's project_dir cannot reach call N+1 no matter
     which thread either one runs on.
     """
     if fn is None:
@@ -681,8 +681,8 @@ def _run_tag(label: str = "") -> str:
     are fine with one seat and silently destructive with several: two seats
     screenshotting at once, and the second write lands under the first one's
     returned path, so the first seat reviews the second seat's game. The pid is
-    in there because seats are separate PROCESSES — a counter alone repeats
-    across them — and the counter is because two calls in one process can start
+    in there because seats are separate PROCESSES - a counter alone repeats
+    across them - and the counter is because two calls in one process can start
     inside the same clock second.
     """
     with _RUN_SEQ_LOCK:
@@ -693,7 +693,7 @@ def _run_tag(label: str = "") -> str:
 
 
 def _actor() -> str:
-    """Who this server process acts as — the identity artifacts.review checks."""
+    """Who this server process acts as - the identity artifacts.review checks."""
     return _activity.current_actor()
 
 
@@ -704,7 +704,7 @@ def _caller_is_agent() -> bool:
     core's actor model uses; but dispatch.py stamps a spawned seat with
     BGATE_SEAT / BGATE_WORK_ITEM and does NOT stamp BGATE_ACTOR, so trusting the
     actor alone would let every dispatched agent read as the human at the
-    keyboard — which is precisely the caller a permission gate must catch.
+    keyboard - which is precisely the caller a permission gate must catch.
     """
     if _activity.is_agent(_actor()):
         return True
@@ -738,8 +738,7 @@ def _log(kind: str, summary: str, ref: str = "") -> None:
 def _archive_preview(src: str, label: str) -> Optional[str]:
     """Copy a render into .bgate/previews/ so the dashboard keeps a history.
 
-    Renders land on a fixed path (render.png) and each run overwrites the last —
-    without archiving, the dashboard could only ever show the newest one.
+    Renders land on a fixed path (render.png) and each run overwrites the last - without archiving, the dashboard could only ever show the newest one.
     """
     try:
         import shutil
@@ -757,7 +756,7 @@ def _archive_preview(src: str, label: str) -> Optional[str]:
 
 
 def _work_item_id() -> Optional[int]:
-    """The work item this session is executing, if any — the key the spend
+    """The work item this session is executing, if any - the key the spend
     ledger charges against."""
     raw = os.environ.get("BGATE_WORK_ITEM", "").strip()
     return int(raw) if raw.isdigit() else None
@@ -768,7 +767,7 @@ def _run_ceiling(root: str, override_usd: float = 0.0) -> float:
 
     Three sources, most specific first: an explicit argument on the call, the
     max_cost_usd of the work item this session is executing, then the project
-    budget's per_item_usd. spend.item_ceiling already knows the last two — this
+    budget's per_item_usd. spend.item_ceiling already knows the last two - this
     only has to find the work item, which the ledger keys spend against anyway.
     """
     if override_usd and float(override_usd) > 0:
@@ -796,7 +795,7 @@ def _spend_gate(root: str, projected_usd: float, what: str,
     A cap that only reports what a run cost is an invoice, not a cap. Both
     ceilings are consulted: the per-run one (see _run_ceiling) and the project
     /day budget (spend.check), which is the same gate the dispatcher asks before
-    spawning — an overnight fan-out must not be bounded in one leg and unbounded
+    spawning - an overnight fan-out must not be bounded in one leg and unbounded
     in the other. The refusal names the number so the caller can decide, rather
     than saying no and leaving the model to guess by how much.
     """
@@ -807,7 +806,7 @@ def _spend_gate(root: str, projected_usd: float, what: str,
         return {"ok": False, "stage": "spend_gate", "estimated_usd": projected,
                 "ceiling_usd": round(float(ceiling_usd), 4),
                 "error": f"{what} is estimated at ${projected:.2f}, over the "
-                         f"${float(ceiling_usd):.2f} ceiling for one run — cut "
+                         f"${float(ceiling_usd):.2f} ceiling for one run - cut "
                          "poses or quality, or pass max_cost_usd to confirm the "
                          "spend deliberately"}
     try:
@@ -829,7 +828,7 @@ def _gate_images(root: str, count: int, quality: str, what: str,
     THE GATE GUARDED ONE TOOL OUT OF TWELVE. _spend_gate was written for
     image_sprites and called only there, so image_generate, image_edit,
     item_generate, item_variants, image_talkhead, vfx_animate and
-    character_generate all billed first and recorded afterwards — which makes
+    character_generate all billed first and recorded afterwards - which makes
     the project budget an invoice for every path except the one it was
     demonstrated on. An unattended loop on any of them could not be refused.
 
@@ -884,14 +883,14 @@ def project_init(name: str, pitch: str = "", engine: str = "godot",
 @_tool
 def project_select(project: str = "") -> dict:
     """Resolve a Builders Gate project by registered name or path. DEPRECATED as
-    a mode switch — it no longer changes what later calls affect.
+    a mode switch - it no longer changes what later calls affect.
 
     It used to latch the choice into a server-wide variable, which meant the
     project a tool touched depended on who called project_select last. Now it
     only ANSWERS: it verifies the project exists, registers it so it stays
     discoverable, and hands back its absolute root. Feed that root to the
     `project_dir` parameter that every tool carries (or export BGATE_ROOT before
-    spawning the server) — then the target of a call is written on the call.
+    spawning the server) - then the target of a call is written on the call.
 
     Empty arg: report the root this session resolves to plus every known project.
     Returns {active, known} or {active, project, use_project_dir, deprecated}.
@@ -915,7 +914,7 @@ def project_select(project: str = "") -> dict:
         return {"active": resolved, "project": _project.get(resolved),
                 "use_project_dir": resolved,
                 "deprecated": "project_select no longer switches the server's "
-                              "active project — pass project_dir=<active> on "
+                              "active project - pass project_dir=<active> on "
                               "each tool call instead"}
     except Exception as exc:
         return _fail(exc)
@@ -925,12 +924,12 @@ def project_select(project: str = "") -> dict:
 def bgate_doctor(refresh: bool = False) -> dict:
     """Can this machine actually do the work? One call, every dependency.
 
-    Run this FIRST, and any time a tool fails with "not found" — instead of
+    Run this FIRST, and any time a tool fails with "not found" - instead of
     calling blender_status, godot_status, image_status, playtest_check and
     playtest_devices one after another to assemble the same picture.
 
     Nothing here opens the microphone, renders a frame, launches an engine or
-    downloads a model: playtest_check does open the mic (deliberately — a muted
+    downloads a model: playtest_check does open the mic (deliberately - a muted
     mic is invisible any other way), so it stays the pre-SESSION check, not the
     is-my-toolchain-here check. Results are cached a few seconds, so polling
     this is cheap; pass refresh=True right after installing something.
@@ -974,8 +973,8 @@ def project_status() -> dict:
         return {"project": _project.get(root), "root": root, "counts": counts,
                 # SAY WHEN THIS IS THE SCRATCH PROJECT. Otherwise "where did my
                 # sprite sheet go" has an answer nothing on any surface states,
-                # and the honest one — a directory under ~/.bgate that was
-                # created for you — is not a place anyone would think to look.
+                # and the honest one - a directory under ~/.bgate that was
+                # created for you - is not a place anyone would think to look.
                 "scratch": _project.is_scratch(root)}
     except Exception as exc:
         return _fail(exc)
@@ -989,7 +988,7 @@ def project_set_dimension(dimension: str) -> dict:
     afterwards. A 2D prototype that grew a 3D scene went on reporting
     ``dimension: "2d"`` in project_status indefinitely, and the only workaround
     was re-running ``project_init``, which rewrites name, pitch and engine from
-    its own defaults — overwriting four fields to correct one.
+    its own defaults - overwriting four fields to correct one.
 
     Not cosmetic: the field steers scaffolding templates and the wording of seat
     briefs, so a stale value aims the board at the wrong kind of game. Use
@@ -1014,7 +1013,7 @@ def bible_add(kind: str, title: str, body: str = "", rank: int = 0) -> dict:
     """Add a bible section.
 
     kind: pillar | loop | constraint | reference.
-    rank orders sections within a kind — it is the reading order of the
+    rank orders sections within a kind - it is the reading order of the
     document, lowest first.
     """
     try:
@@ -1048,11 +1047,11 @@ def bible_read(kind: Optional[str] = None) -> dict:
 @_tool
 def bible_ref_attach(section_id: int, ref: str, kind: str = "style",
                      note: str = "", rank: int = 0) -> dict:
-    """Anchor a pinned reference IMAGE to a bible section — the art that says
+    """Anchor a pinned reference IMAGE to a bible section - the art that says
     what the words mean.
 
     The bible is prose. A pillar reading "grimy corporate satire", a canon
-    entity, a locked art-direction constraint — each is settled by pictures that
+    entity, a locked art-direction constraint - each is settled by pictures that
     until now lived only in the pin list, unconnected to the text. A seat read
     the section, got the words, and guessed the look; that guess is where style
     drift starts, and afterwards nobody can point at where it began.
@@ -1080,7 +1079,7 @@ def bible_ref_list(section_id: Optional[int] = None, suggest: bool = False) -> d
 
     No section_id: every section that has anchors, so the director can see at a
     glance which pillars are still described in words alone. With one: that
-    section's anchors plus `resolved` — the layered set to condition a
+    section's anchors plus `resolved` - the layered set to condition a
     generation on (this section's anchors first, then the global pins), the same
     shape the task-level refs hand back.
 
@@ -1090,7 +1089,7 @@ def bible_ref_list(section_id: Optional[int] = None, suggest: bool = False) -> d
 
     suggest=True adds `suggestions`: sections whose PROSE names a pin (people
     typed "(pinned: concept-battle / concept-battle-dark)" into titles because
-    there was nowhere structured to put it). It is a proposal only — attach the
+    there was nowhere structured to put it). It is a proposal only - attach the
     ones that are right with bible_ref_attach, and leave the titles alone.
     """
     try:
@@ -1113,7 +1112,7 @@ def bible_ref_list(section_id: Optional[int] = None, suggest: bool = False) -> d
 
 @_tool
 def bible_ref_detach(section_id: int, ref: str) -> dict:
-    """Remove one anchor from a bible section. The pin itself survives — only
+    """Remove one anchor from a bible section. The pin itself survives - only
     the claim that this section is about that image goes away."""
     try:
         out = _bible_refs.remove(_root(), section_id, ref)
@@ -1127,7 +1126,7 @@ def bible_ref_detach(section_id: int, ref: str) -> dict:
 # `scope_check(rank)` was here, and every seat's rules told agents to call it
 # before building anything. It answered off a `cut_line` bible section that
 # almost no project drew, and the queue gate behind the same idea never once
-# refused an item. Removed with the rest of the tier machinery — a tool that
+# refused an item. Removed with the rest of the tier machinery - a tool that
 # always says yes still costs a slot in every agent's tool list.
 
 
@@ -1140,7 +1139,7 @@ def lore_add(kind: str, name: str, summary: str = "", body: str = "",
     """Create a lore entity.
 
     kind: faction | character | place | event | item | concept | species.
-    status: draft | canon | retired. Names are unique — update, don't duplicate.
+    status: draft | canon | retired. Names are unique - update, don't duplicate.
     """
     try:
         return _lore.add_entity(_root(), kind, name, summary=summary, body=body,
@@ -1161,7 +1160,7 @@ def lore_update(ref: str, summary: Optional[str] = None, body: Optional[str] = N
 
 @_tool
 def lore_brief(ref: str) -> dict:
-    """Everything about one entity — record, facts, and edges. Read before writing it."""
+    """Everything about one entity - record, facts, and edges. Read before writing it."""
     try:
         return _lore.brief(_root(), ref)
     except Exception as exc:
@@ -1188,7 +1187,7 @@ def lore_link(src: str, rel: str, dst: str, note: str = "") -> dict:
 
 @_tool
 def lore_fact(ref: str, statement: str, source: str = "", locked: bool = False) -> dict:
-    """Assert ONE atomic fact about an entity — canon_check compares against these.
+    """Assert ONE atomic fact about an entity - canon_check compares against these.
 
     Keep it to a single checkable claim ("The siege lasted seven years"), not a
     paragraph. locked=True marks it immovable: conflicts against it are hard.
@@ -1209,7 +1208,7 @@ def canon_check(text: str, entities: Optional[list[str]] = None) -> dict:
     Returns verdict (ok | review | conflict), the entities it touches, the canon
     facts in play, and flags. Deterministic lexical checks: catches retired
     entities, invented proper nouns, polarity flips, and number disagreements.
-    It does not judge tone or theme — 'ok' means nothing mechanical is wrong.
+    It does not judge tone or theme - 'ok' means nothing mechanical is wrong.
     """
     try:
         return _canon.check(_root(), text, entities=entities)
@@ -1235,7 +1234,7 @@ def blender_status() -> dict:
     """Is Blender available to this machine, and which version? Check before modeling.
 
     Also reports `generate`: whether image-to-3D is reachable, and from where.
-    Folded in here rather than given its own tool — one question ("what can I
+    Folded in here rather than given its own tool - one question ("what can I
     build with?") should cost one call.
     """
     try:
@@ -1250,7 +1249,7 @@ def blender_status() -> dict:
 def _imageto3d_summary() -> dict:
     """A few lines, not the whole catalogue.
 
-    imageto3d.status() carries every backend's full licence prose — right for
+    imageto3d.status() carries every backend's full licence prose - right for
     a doctor row a human reads once, far too expensive to hand an agent on
     every status call. Names what is usable and why the rest is not, and
     leaves the reading to blender_generate's own failure.
@@ -1263,19 +1262,19 @@ def _imageto3d_summary() -> dict:
     #
     # imageto3d.api_key() only loads the project's .env when it is given a root
     # (`if root:`), so status() with no root reads a bare os.environ. On a
-    # machine whose keys live in the project .env — which is where the setup
-    # docs put them — every hosted backend then reports "<KEY> not set".
+    # machine whose keys live in the project .env - which is where the setup
+    # docs put them - every hosted backend then reports "<KEY> not set".
     #
     # Measured: a project with a working KREA_API_KEY had image_status report the
     # krea leg AVAILABLE while blender_status reported krea BLOCKED for want of
-    # the same key, in the same session. image_status was right by accident — it
+    # the same key, in the same session. image_status was right by accident - it
     # calls _root() first, which loads the .env as a side effect. The 2D and 3D
     # legs disagreeing about one key sent a user hunting for a key they already
     # had, and hid a paid image-to-3D backend they were entitled to use.
     try:
         root = _root()
     except Exception:
-        # No project resolvable — a legitimate answer, not an error. Fall back to
+        # No project resolvable - a legitimate answer, not an error. Fall back to
         # the bare environment, which is what this did for every call before.
         root = None
     try:
@@ -1292,7 +1291,7 @@ def _imageto3d_summary() -> dict:
     # This flattened status() to one list and dropped the local/hosted split the
     # adapter had already computed. ["hunyuan-local", "krea", "trellis-cpp"] gave
     # no hint that two of those need a server the user has to start and one is a
-    # hosted API that needs only its key — and probe=False, which is the default
+    # hosted API that needs only its key - and probe=False, which is the default
     # here for the good reason that a status call must not block on a TCP
     # timeout, means a local row says "usable" while nothing is listening.
     #
@@ -1307,10 +1306,10 @@ def _imageto3d_summary() -> dict:
     hint = ""
     if local and not hosted:
         hint = ("every usable backend here is LOCAL, which means CONFIGURED, not "
-                "running — probe one before concluding anything, and do not "
+                "running - probe one before concluding anything, and do not "
                 "report image-to-3D unavailable on a refused connection alone.")
     elif hosted:
-        hint = (f"hosted backends ({', '.join(hosted)}) need no local server — "
+        hint = (f"hosted backends ({', '.join(hosted)}) need no local server - "
                 "they are reachable now. If a local one refuses a connection, "
                 "try a hosted one before reporting the path unavailable.")
     return {"available": bool(usable), "usable": usable,
@@ -1321,9 +1320,9 @@ def _imageto3d_summary() -> dict:
             "unconditional_licence": clear,
             "gpu": gpu.get("name", ""), "vram_gb": gpu.get("vram_gb"),
             "blocked": blocked,
-            "checked": "configuration only — a local backend listed usable may "
+            "checked": "configuration only - a local backend listed usable may "
                        "still have no server running",
-            "note": ("nothing configured — see .env.example; a generated mesh "
+            "note": ("nothing configured - see .env.example; a generated mesh "
                      "is a DRAFT and still has to be cleaned, scaled, oriented "
                      "and rigged before it is an asset")
             if not usable else
@@ -1338,14 +1337,14 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     """Run a bpy script in headless Blender and get the scene back as facts.
 
     `bpy` is already imported. Returns per-object tri/vert counts (evaluated, so
-    modifiers count), UV warnings, materials, your print() output, and — with
-    render=True — a PNG of the active camera view (archived to the project's
+    modifiers count), UV warnings, materials, your print() output, and - with
+    render=True - a PNG of the active camera view (archived to the project's
     preview gallery; give a `label` so humans can tell renders apart).
 
     THE MODELLING KIT IS ALREADY THERE (kit=True, the default). Do not write your
-    own material/UV/hygiene helpers — an agent burned 33 KB and most of an hour
+    own material/UV/hygiene helpers - an agent burned 33 KB and most of an hour
     doing exactly that on the first real character run. Available:
-      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT — a
+      bg_help()                      PRINTS A COMPLETE WORKED LAYER SCRIPT - a
                                      humanoid built from one head-height, a
                                      named rig with roll, the checks, bg_finish
                                      last. Read it before writing your first one.
@@ -1353,14 +1352,14 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_box/bg_cyl/bg_ball/bg_plane named primitives
       bg_mirror/bg_smooth/bg_taper   symmetry, subsurf, limb taper
       bg_join(objs, name)            one layer should leave as ONE mesh
-      bg_clean(obj)                  doubles/loose/degenerate/normals — THIS is
+      bg_clean(obj)                  doubles/loose/degenerate/normals - THIS is
                                      what makes automatic weighting work later
       bg_unwrap(obj)                 smart-project UVs (no UVs = no texture)
       bg_mat(obj, name, rgb)         a BLOCKING-IN colour, not a shipped surface
       bg_bone_chain(name, bones)     an armature with NAMED bones. Entries are
                                      (name, head, tail, parent=None, roll_deg=0);
                                      order does not matter, parents are wired in
-                                     a second pass, and ROLL IS IN DEGREES — set
+                                     a second pass, and ROLL IS IN DEGREES - set
                                      it on limbs or a humanoid retarget gives you
                                      the twisted-forearm look.
       bg_finish(obj, colour=...)     clean + apply + unwrap + material, in order
@@ -1368,14 +1367,14 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
                                      PLUS world-space dims/centre/min/max
       bg_bounds(obj)                 world-space min/max/dims/centre, in metres
       bg_flipped(obj)                how many faces point INWARD (count, measured
-                                     on a throwaway copy — the mesh is untouched)
+                                     on a throwaway copy - the mesh is untouched)
       bg_overlap(a, b)               do two layers' world bounds intersect, and
                                      by how much. Layers are built in isolated
                                      scenes, so "is the cap sunk into the head"
                                      is a question NOTHING else in the pipeline
                                      can ask until they are already combined.
 
-    bg_bone_chain RAISES — deliberately, and it is the only thing in the kit that
+    bg_bone_chain RAISES - deliberately, and it is the only thing in the kit that
     does. Everything else swallows its problems because a helper that raises
     takes the whole run down; a rig cannot afford that trade, because a wrong rig
     looks built and comes apart in the engine several steps later. It refuses: a
@@ -1384,7 +1383,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     bones on leaving edit mode and says nothing, so the bone simply is not in the
     armature you get back), and a name Blender had to rename or truncate (bind=
     'bone:Head' then matches nothing in blender_combine). Every message names the
-    bone. Read the message and fix the chain — do not wrap it in a try.
+    bone. Read the message and fix the chain - do not wrap it in a try.
 
     START A BODY FROM THE BASE MESH LIBRARY, NOT FROM PRIMITIVES. Same kit, same
     namespace, no import:
@@ -1392,7 +1391,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
                pose="t"|"a", convention="godot"|"blender", rig=True)
       bg_quadruped(...) / bg_prop_frame(...)
                                      each returns {"obj","rig","marks","props",
-                                     "convention","pose"} — a correctly
+                                     "convention","pose"} - a correctly
                                      proportioned, closed, unwrapped,
                                      weight-ready body with a NAMED skeleton.
       bg_proportions(...)            45 measurements out of one number
@@ -1408,7 +1407,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
       bg_base_report / bg_base_assert  the base's own self-check (assert RAISES)
       bg_base_help()                 prints BG_BASE_EXAMPLE, the worked script
       BG_UNIT="metre", BG_HUMAN_HEIGHT=1.8, BG_GROUND=0.0, BG_FORWARD=(0,1,0),
-      BG_LEFT=(-1,0,0), BG_SIDES — the base FACES +Y, which the glTF exporter
+      BG_LEFT=(-1,0,0), BG_SIDES - the base FACES +Y, which the glTF exporter
                                      turns into -Z, which is what Godot calls
                                      forward. Author faces, visors and emblems
                                      on the +Y side; the figure's own left is -X.
@@ -1417,7 +1416,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
     FIT LAYERS ONTO LANDMARKS INSTEAD OF GUESSING COORDINATES. MEASURED: a cap
     placed with bg_fit(cap, bg_mark(base, "head_top"), "on") rests on the crown
     at 10% overlap; the same cap at a hand-typed 1.7 m is 89% INSIDE the skull
-    and passed every check the old pipeline had. The honest limit — the base has
+    and passed every check the old pipeline had. The honest limit - the base has
     no face and no fingers. It is a correctly-proportioned blockout to build the
     character ONTO, not a finished character.
 
@@ -1431,7 +1430,7 @@ def blender_run(script: str, blend_file: Optional[str] = None, render: bool = Fa
         # Per-call render directory. The adapter always writes <out_dir>/render.png,
         # so a shared out_dir means the second seat rendering at the same moment
         # overwrites the first seat's frame at the very path the first call just
-        # returned — silent, and it looks like the render simply came out wrong.
+        # returned - silent, and it looks like the render simply came out wrong.
         out_dir = str(_Path(_root()) / ".bgate_out" / "renders" / _run_tag(label))
     except Exception:
         out_dir = None  # modeling before project_init is allowed
@@ -1482,7 +1481,7 @@ def blender_warmup(engine: str = "BLENDER_EEVEE_NEXT") -> dict:
 
 @_tool
 def blender_scene_stats(blend_file: str) -> dict:
-    """Report an existing .blend without modifying it — objects, tris, materials."""
+    """Report an existing .blend without modifying it - objects, tris, materials."""
     try:
         return _blender.scene_stats(blend_file)
     except Exception as exc:
@@ -1494,7 +1493,7 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
                         script: str = "pass", timeout: int = 240) -> dict:
     """Export a .blend (or a bpy-script-built scene) to .glb for Godot.
 
-    Modifiers are APPLIED on export — Blender defaults that off, which silently
+    Modifiers are APPLIED on export - Blender defaults that off, which silently
     ships the base mesh and makes an asset look right in Blender and wrong in the
     engine. Also returns game-readiness issues (no UVs, n-gons, unapplied scale)
     worth fixing before the asset reaches a level. Pair with godot_import_asset.
@@ -1511,7 +1510,7 @@ def _register_assembly(result: dict, out_path: str, *, root_name: str,
     """Put an assembled .glb on the artifact ledger. One shape, two callers.
 
     blender_combine and blender_layer_rerun produce the SAME asset by the same
-    route, so they must register it the same way — one logical name means a
+    route, so they must register it the same way - one logical name means a
     re-run is revision N+1 of the character rather than a second unrelated one,
     which is the whole reason the QA gate can see a 3D asset at all.
     """
@@ -1535,8 +1534,7 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
     The end of the layered 3D path: model body, clothing, hard accessories and
     any logo as their own files, then join them here. Built in ONE pass instead,
-    a figure comes back with the parts that lost the attention budget deformed —
-    on a real baseball player, the hands, the cap, and a scrambled team logo.
+    a figure comes back with the parts that lost the attention budget deformed - on a real baseball player, the hands, the cap, and a scrambled team logo.
 
     `parts` is the layer list, each a path or a dict:
       {"path": "out/uniform.glb",   # .glb / .gltf / .blend
@@ -1548,7 +1546,7 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
     A LOGO OR ANY TEXT GOES IN AS ITS OWN LAYER WITH decal_on. Flush against the
     surface it z-fights and tears in-engine; shrinkwrap plus an offset fixes it.
     Hard geometry rides a bone (a cap does not bend), soft geometry deforms.
-    `rig` names the layer holding the armature — without it nothing binds, which
+    `rig` names the layer holding the armature - without it nothing binds, which
     is right for a prop and a shipped statue for a character.
 
     Returns per-layer objects/tris/binding, plus `checks`: `unbound` and
@@ -1557,7 +1555,7 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
 
     The assembled file is REGISTERED as a candidate artifact (`artifact_id`),
     which is what puts it under the same QA gate every 2D asset passes through.
-    Write out_path inside the project — an artifact cannot be recorded for a
+    Write out_path inside the project - an artifact cannot be recorded for a
     file outside it, and an unregistered asset is one no reviewer ever sees.
     """
     try:
@@ -1593,7 +1591,7 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
     to find out. They are the same five steps in the same order every time.
 
     Each stage gates the next, so a failure costs the stage that found it.
-    Measured on the runs this was built from — an unkeyed plate took 605 s and
+    Measured on the runs this was built from - an unkeyed plate took 605 s and
     came back 21% non-manifold, refused by the quality gate, against 216 s and
     16% for the same subject keyed; a collapse met its triangle budget with
     20,799 of 39,803 faces inside out; a bind created all 22 vertex groups and
@@ -1602,7 +1600,7 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
 
     DRY_RUN IS TRUE BY DEFAULT. It quotes the backend and stops. This spends
     real money at the plate and again at the mesh, and a tool that bills on the
-    first call is a tool nobody trusts twice — pass dry_run=False to run it.
+    first call is a tool nobody trusts twice - pass dry_run=False to run it.
 
     backend   "" asks choose(), which REFUSES to pick a backend whose licence
               carries conditions. That refusal is the design: this tool does not
@@ -1614,8 +1612,7 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
               is written into a game project.
 
     Returns every artifact by path, the gate result from each stage, and `stage`
-    naming where it stopped. `ok` is True only if a RIGGED character came out —
-    a mesh that failed to bind reports ok=False with the unweighted count, and
+    naming where it stopped. `ok` is True only if a RIGGED character came out - a mesh that failed to bind reports ok=False with the unweighted count, and
     that is a refusal, not a warning.
     """
     # The decorator injects project_dir on every tool and _root() reads it, so
@@ -1642,7 +1639,7 @@ def blender_humanoid_template() -> dict:
     START A CHARACTER HERE. Every generated mesh used to invent its own
     proportions, so the skeleton had to be bent to fit each one and no two
     characters could share an animation. Conditioning the PLATE on this
-    reference inverts that — the art conforms to the skeleton, and a clip
+    reference inverts that - the art conforms to the skeleton, and a clip
     authored for one character plays on the next.
 
     Measured on one character, bones further than 6 cm from any mesh vertex:
@@ -1653,12 +1650,12 @@ def blender_humanoid_template() -> dict:
 
     Returns the reference image to pass as `ref_images` to image_generate, the
     prompt clause that holds the stance, and the 23 Godot-profile bone names
-    every humanoid from this pipeline carries — so BoneMap retargeting works
+    every humanoid from this pipeline carries - so BoneMap retargeting works
     and animations move between characters.
 
     The five-step path:
       1. image_generate(prompt + pose_clause, ref_images=[pose_front])
-      2. key it — an opaque plate becomes geometry, measured 2.8x slower and
+      2. key it - an opaque plate becomes geometry, measured 2.8x slower and
          21% non-manifold against 16% keyed
       3. blender_generate(plate, out)          draft mesh
       4. blender_rig(mesh, out)                adopt, fit, bind, PROVE it
@@ -1677,7 +1674,7 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
                 timeout: int = 900) -> dict:
     """Take a GENERATED mesh to a bound, weighted character an engine can move.
 
-    Every image-to-3D backend returns `rigged: false` — geometry and nothing
+    Every image-to-3D backend returns `rigged: false` - geometry and nothing
     else. This is the missing step between that and a character: adopt the mesh
     (weld, decimate, scale, orient, ground), fit a skeleton to its own measured
     height, bind it, and PROVE the bind took.
@@ -1696,12 +1693,11 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
 
     Bone heat is tried first because it deforms properly; ARMATURE_ENVELOPE is
     the fallback and is rigid, so elbows and shoulders pinch. `bound_with` says
-    which one shipped. **`rigged` False means the asset is not animatable** —
-    it is not a warning to pass along, it is a refusal.
+    which one shipped. **`rigged` False means the asset is not animatable** - it is not a warning to pass along, it is a refusal.
 
     kind    "humanoid" reads a front from foot reach; "none" refuses to guess.
             A subject with no feet (a prop, a bust) wants "none", and then
-            orientation is NEVER ESTABLISHED — check the turnaround yourself.
+            orientation is NEVER ESTABLISHED - check the turnaround yourself.
     budget  0 leaves the density alone. A local backend with no face_count knob
             hands back ~280k faces, and post-decimation here is the only lever
             those users have. 8k shattered a character; 45-60k was clean.
@@ -1709,14 +1705,14 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
     symmetrize  "auto" (default) mirrors the skin weights across the body's own
             centre plane, but ONLY when the audit says the two sides are within
             2% of the character's height of each other. Heat fails differently
-            on each side — one clean elbow and one bound to the ribs is the
-            normal outcome — and averaging the pair fixes it without picking a
+            on each side - one clean elbow and one bound to the ribs is the
+            normal outcome - and averaging the pair fixes it without picking a
             winner. "off" skips it. "force" runs it on an asymmetric body, which
             is right for a cosmetic asymmetry (one pauldron, a cloak) and wrong
             for anything else.
 
     THE REPORT NOW CARRIES `audit` BEFORE THE BIND, and it is the part worth
-    reading first. `audit.shells` is the fragmentation count — a real user's
+    reading first. `audit.shells` is the fragmentation count - a real user's
     character arrived as 940 separate shells, which passes every
     well-formedness gate and guarantees a bad bind, because heat will not cross
     the gaps and loose islands weight to whichever bone is nearest.
@@ -1726,11 +1722,10 @@ def blender_rig(model: str, out_path: str, kind: str = "humanoid",
     output: it bends the thing and measures what bending it did.
 
     `coverage` (kind="humanoid" only) is a fast pre-check for the 15 bone
-    names godot_retarget_check calls essential — Hips, the spine/head chain,
+    names godot_retarget_check calls essential - Hips, the spine/head chain,
     both arms, both legs, under the EXACT name a BoneMap-free retarget
     matches by. It cannot see hierarchy or binding, only naming, so a pass
-    here is not a substitute for retarget_check against the real engine —
-    it just means a naming problem shows up now instead of after the Godot
+    here is not a substitute for retarget_check against the real engine - it just means a naming problem shows up now instead of after the Godot
     round-trip.
     """
     try:
@@ -1775,14 +1770,14 @@ def blender_flex(model: str, out_dir: str = "", stem: str = "flex",
       worst_pinch       the joint that lost the most cross-section. 1.0 is
                         rigid, 0.6 is a visible waist, under 0.4 is a straw.
       new_self_pairs    faces that intersect in this pose and did not at rest.
-                        The increase, not the count — a generated mesh arrives
+                        The increase, not the count - a generated mesh arrives
                         with overlapping shells and the absolute number is
                         meaningless.
       render            a PNG of the pose. LOOK AT IT. The whole lesson of this
                         pipeline is that green gates are not evidence.
 
     `verdict.passed` False is a refusal, not a warning: those weights are not
-    animatable as they stand. The usual fixes, in order — raise `budget` on the
+    animatable as they stand. The usual fixes, in order - raise `budget` on the
     rig so the joint has enough loops to bend, check `audit.shells` for a
     fragmented mesh heat could not cross, and re-run the rig with
     symmetrize='force' when only one side failed.
@@ -1814,7 +1809,7 @@ def blender_weights(model: str, threshold: float = 0.02,
     A THIRD RIG PROOF, ALONGSIDE `blender_rig` AND `blender_flex`. Neither of
     those catches this: `rig()`'s `unweighted` count only sees vertices with
     NO weight, and `flex()` only sees a joint after it bends. Bleed is
-    neither — a hand painted mostly to Hand but partly to Spine, because a
+    neither - a hand painted mostly to Hand but partly to Spine, because a
     brush stroke crossed empty space in the viewport rather than the mesh
     surface, has full weight coverage and may not even move wrong at any of
     flex's six test poses if the bleed region is small. It still reads as a
@@ -1822,17 +1817,17 @@ def blender_weights(model: str, threshold: float = 0.02,
 
     Reports each deform bone's weighted vertices as connected components on
     the mesh surface, and flags a bone whose paint makes MORE components than
-    the number of separate mesh pieces it touches — a split inside one
+    the number of separate mesh pieces it touches - a split inside one
     connected piece of surface, which only a stray stroke explains. Spanning
     several pieces is not itself a fault: this pipeline assembles bodies from
     joined primitives, so a hip bone legitimately covers three of them.
 
     `threshold` is the minimum weight at which a vertex counts as belonging to
-    a bone (0.02). `min_bleed_vertices` (3) is a noise floor — a single stray
+    a bone (0.02). `min_bleed_vertices` (3) is a noise floor - a single stray
     vertex is a cleanup nit, not the seam-tearing failure this exists to catch.
 
     `verdict.passed` False names which bones split and how many vertices sit
-    off their own patch. It is also False when nothing could be measured — a
+    off their own patch. It is also False when nothing could be measured - a
     bind with no weights above `threshold` reports `checked: 0` and refuses,
     rather than passing an empty result as a clean one.
     """
@@ -1860,7 +1855,7 @@ def blender_template_deviation(model: str, reference: str = "",
     """How far a rigged character's joints sit from the shipped humanoid template.
 
     A FOURTH RIG PROOF. `blender_rig`, `blender_flex`, and `blender_weights`
-    all ask questions about ONE character in isolation — is it bound, does it
+    all ask questions about ONE character in isolation - is it bound, does it
     survive bending, is the paint contiguous. None of them can tell you the
     fit itself landed a bone somewhere anatomically wrong, because a bone
     can be fully weighted, pinch-free, and bleed-free while still sitting in
@@ -1870,17 +1865,17 @@ def blender_template_deviation(model: str, reference: str = "",
     `reference`), matched by name and each expressed as a fraction of its own
     file's body height, so two characters of different heights aren't
     penalised for that alone. Lengths rather than joint positions because the
-    two skeletons are never posed alike — this pipeline rigs in an A-pose and
+    two skeletons are never posed alike - this pipeline rigs in an A-pose and
     the template is a T-pose, and a positional check reports that difference
     as a fault on every correctly-rigged character. Bone length does not move
     when a joint rotates. Parent links are compared too, so a rig that kept
     the 23 names but rewired the chain is caught.
 
-    NOT a weight comparison — the reference skeleton and a generated character
+    NOT a weight comparison - the reference skeleton and a generated character
     never share mesh topology, so there is nothing to diff vertex-for-vertex.
 
-    `max_deviation` (0.08 body-heights) is a GROSS-ERROR line — a limb
-    collapsed to nothing or stretched across the body — not a proportional-
+    `max_deviation` (0.08 body-heights) is a GROSS-ERROR line - a limb
+    collapsed to nothing or stretched across the body - not a proportional-
     fidelity one. Fitting is meant to adapt the template to each body.
 
     `verdict.passed` False names which bones are mis-proportioned or
@@ -1911,21 +1906,21 @@ def blender_silhouette(model: str, min_ratio: float = 0.15,
                        max_ratio: float = 4.0, timeout: int = 600) -> dict:
     """The character's projected 2D outline across flex's own pose sweep.
 
-    EXPERIMENTAL — no production rig-QA tool anywhere this project's
+    EXPERIMENTAL - no production rig-QA tool anywhere this project's
     research found automates a pose-sweep silhouette check; studios render
     the sweep and a human watches it. This is a real attempt at that, not
     an adopted technique.
 
     A DIFFERENT QUESTION FROM blender_flex. Volume and pinch are 3D
     measures against the mesh itself and cannot see a failure that only
-    shows up from a CAMERA's point of view — a limb that folds directly
+    shows up from a CAMERA's point of view - a limb that folds directly
     behind the torso and vanishes from the silhouette while its 3D volume
     stays intact, or a shoulder that balloons on screen without losing any
     measured volume. This projects the SAME pose sweep through the SAME
     fixed, rest-fitted camera flex() uses (never refit per pose) and
     measures the projected convex-hull area.
 
-    'Preserved' means SANITY BOUNDS, not 'unchanged' — a pose is EXPECTED
+    'Preserved' means SANITY BOUNDS, not 'unchanged' - a pose is EXPECTED
     to change how a character reads on screen. `verdict.passed` False means
     the silhouette nearly vanished (min_ratio) or ballooned far past what a
     single joint's rotation should produce (max_ratio), not that anything
@@ -1933,7 +1928,7 @@ def blender_silhouette(model: str, min_ratio: float = 0.15,
 
     It is ALSO False on a sweep that proves nothing: every pose skipped for
     want of the bones it rotates, or every pose projecting the identical
-    outline as rest. The second is the important one — an unbound mesh does
+    outline as rest. The second is the important one - an unbound mesh does
     exactly that, and bounds that only fire far from 1.0 would otherwise call
     a ratio of exactly 1.0 across the whole sweep a perfect result.
     """
@@ -1960,7 +1955,7 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                      min_sparc: float = -8.0, max_skating_frames: int = 0,
                      check_anticipation: bool = True,
                      min_anticipation_width: float = 6.0) -> dict:
-    """Measure an exported animation clip's curves — no Blender/Godot needed.
+    """Measure an exported animation clip's curves - no Blender/Godot needed.
 
     Reads a GLB's animation channels directly (glTF is a public format, so
     this is a plain file parse, not another headless spawn) and reports, per
@@ -1968,25 +1963,24 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
 
       arc_deviation      (translation only) how far the path bows from the
                          straight line between its endpoints. DESCRIPTIVE,
-                         not pass/fail — an arc is right for a swinging limb
+                         not pass/fail - an arc is right for a swinging limb
                          and wrong for a jab's extension, and this cannot
                          tell which the clip is doing.
       velocity_profile   what fraction of the clip's DURATION is spent near
                          its own peak speed. High means the motion travels
-                         at near-constant speed rather than easing in/out —
-                         the curve-math signature of raw linear-interpolated
+                         at near-constant speed rather than easing in/out - the curve-math signature of raw linear-interpolated
                          keyframes.
-      sparc              spectral arc length of the speed profile — a
+      sparc              spectral arc length of the speed profile - a
                          smoothness/jitter measure from the mocap-cleanup
                          literature. Its threshold is a starting point
                          borrowed from gait research, not yet validated on
-                         this project's own stylized clips — treat FAILs as
+                         this project's own stylized clips - treat FAILs as
                          worth a look, not as certain defects.
       anticipation       EXPERIMENTAL, per axis. Laplacian-of-Gaussian
                          correlation looking for curvature spread across a
                          transition (shaped, eased, wound-up) vs. a narrow
                          spike (a raw interpolated corner). No prior art
-                         exists for this as a detector — the cited research
+                         exists for this as a detector - the cited research
                          (Wang/Xu/Cohen SIGGRAPH 2006) shows the FORWARD
                          direction, that this filter CREATES anticipation;
                          using it to detect whether anticipation is already
@@ -1997,9 +1991,9 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
 
     `foot_bones` (channel node names, exact match) additionally get
     foot_skate: frames where the bone sits near its lowest point in the clip
-    but still moves horizontally — a planted foot sliding.
+    but still moves horizontally - a planted foot sliding.
 
-    None of this measures appeal or exaggeration — nothing computational
+    None of this measures appeal or exaggeration - nothing computational
     does. A clean pass here means "no obvious curve-math defect", not
     "looks good"; it is a floor, not a ceiling.
     """
@@ -2061,12 +2055,12 @@ def animation_curves(model: str, foot_bones: Optional[list[str]] = None,
                          "flagged_bones": failed})
         # A FILE WITH NO CLIPS IS NOT A FILE WITH CLEAN CLIPS. `failed` never
         # evaluates on an empty channel list, so every aggregate here reported
-        # a pass for a model carrying no animation at all — which is exactly
+        # a pass for a model carrying no animation at all - which is exactly
         # what blender_rig hands back, and exactly the file an agent reaches
         # for this tool with.
         if not clips:
             return {"ok": False, "clips": [],
-                    "error": f"{model} contains no animations — nothing was "
+                    "error": f"{model} contains no animations - nothing was "
                              "measured. A rigged-but-unanimated export (what "
                              "blender_rig produces) has no curves to judge; "
                              "animate or bake a clip into it first."}
@@ -2089,7 +2083,7 @@ def blender_texture(model: str, image: str, out_path: str, material: str = "",
     """Put GENERATED maps on a 3D layer's material and re-export it.
 
     The surface half of the layered path. Measured on the first real character
-    run: the assembled asset carried 21 materials and ZERO images — every
+    run: the assembled asset carried 21 materials and ZERO images - every
     surface a flat colour an agent typed by hand, because nothing connected the
     image adapter to the 3D layers. Generate the maps with image_generate
     (task_kind="texture", conditioned on the pinned refs via use_pinned), then
@@ -2097,7 +2091,7 @@ def blender_texture(model: str, image: str, out_path: str, material: str = "",
 
     `image` is the albedo / base colour and is what the one-image call has
     always meant. The rest are optional and each drives its own BSDF input.
-    WITHOUT THEM EVERY SURFACE IS THE SAME PLASTIC — the modelling kit types
+    WITHOUT THEM EVERY SURFACE IS THE SAME PLASTIC - the modelling kit types
     rough=0.6, metal=0.0, so cloth, leather, skin and steel all ship as one
     dielectric and colour is the only thing that varies across an asset:
       roughness   how glossy, per texel        metallic  0 dielectric, 1 metal
@@ -2106,12 +2100,12 @@ def blender_texture(model: str, image: str, out_path: str, material: str = "",
     colour sockets and stay sRGB. Pass image="" to apply maps without changing
     the base colour. normal_strength scales the Normal Map node.
 
-    ALPHA — auto | opaque | clip | blend. MEASURED: a decal needs alpha="clip"
+    ALPHA - auto | opaque | clip | blend. MEASURED: a decal needs alpha="clip"
     to export `alphaMode: MASK`. Without it the logo layer ships as a solid
     rectangle of key colour glued over the cap, which is worse than the
     z-fighting the decal layer exists to prevent. `auto` inspects the base image
-    and picks clip only when it ACTUALLY carries transparent pixels — an opaque
-    PNG with an RGBA header is not a cut-out — so say clip explicitly when you
+    and picks clip only when it ACTUALLY carries transparent pixels - an opaque
+    PNG with an RGBA header is not a cut-out - so say clip explicitly when you
     know it is one. alpha_cutoff is the MASK threshold. decal=True is shorthand
     for a conformed graphic and implies backface culling; backface_cull
     overrides it either way.
@@ -2121,7 +2115,7 @@ def blender_texture(model: str, image: str, out_path: str, material: str = "",
     that says you meant to paint every slot, because that used to be the DEFAULT
     and it put one image over skin, eyes and mouth and called the layer
     textured. A named material matching no slot is a failure, not a cheerful
-    ok=True with an empty list. Meshes with no UVs are unwrapped first — a map
+    ok=True with an empty list. Meshes with no UVs are unwrapped first - a map
     on an unwrapped mesh is silently ignored, which looks exactly like the
     generation having failed.
 
@@ -2177,26 +2171,26 @@ def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
                        width: int = 640, height: int = 960,
                        engine: str = "BLENDER_EEVEE_NEXT",
                        exposure: float = 0.0, timeout: int = 480) -> dict:
-    """Render a model from four angles under a fixed rig — and JUDGE each frame.
+    """Render a model from four angles under a fixed rig - and JUDGE each frame.
 
     THE FRAMES COME BACK IN THIS RESULT AS IMAGES, not as paths you are trusted
     to go and open. Measured: four turnarounds of a correctly-coloured model
     came back white because the lights were far too hot, and were reported as
     finished without anybody opening them. The model was fine; the render was
     not, and nothing could tell the difference. Look at what you were handed,
-    and read the verdicts — they are the half of the check you cannot argue with.
+    and read the verdicts - they are the half of the check you cannot argue with.
 
     Camera and three-point lighting are scaled to the subject's own bounding
     box, so a giant and a doll both frame correctly. Every frame returns a
     `blown`/`mean` reading and a verdict; `ok` is False when any frame is
     unreadable, and the verdict of the frame that failed is the `error`. A
-    failing frame is a lighting problem, not a modelling one — do not go back
+    failing frame is a lighting problem, not a modelling one - do not go back
     and change the mesh because a render was white.
 
     Each frame is archived to the preview gallery and REGISTERED as a candidate
     artifact, so a turnaround can be handed to an independent reviewer by
     `artifact_id` (see art_qa_verdict) and shows up in the dashboard beside the
-    2D work. Point out_dir INSIDE the project — frames written outside it cannot
+    2D work. Point out_dir INSIDE the project - frames written outside it cannot
     be registered, and an unregistered render is one nobody reviews.
     """
     try:
@@ -2233,7 +2227,7 @@ def blender_turnaround(model: str, out_dir: str, stem: str = "turnaround",
             result["artifact_ids"] = registered
         elif frames:
             result["artifact_note"] = (
-                "no artifact was registered for these frames — out_dir is "
+                "no artifact was registered for these frames - out_dir is "
                 "outside the project root, so art QA and the dashboard cannot "
                 "see them; re-render into the project to put them on the ledger")
         if frames:
@@ -2254,7 +2248,7 @@ def blender_generate(image: str, out_path: str, backend: str = "",
     """Turn ONE generated image into a draft mesh. The other way to get geometry.
 
     The primitive path (blender_run + the kit) is for props, vehicles, terrain
-    and block-out — things made of boxes and cylinders. It tops out at a
+    and block-out - things made of boxes and cylinders. It tops out at a
     proportioned blockout with no face and no fingers, so a hero character
     seen close up comes from here instead: generate the plate with
     image_generate, then hand it over.
@@ -2263,25 +2257,25 @@ def blender_generate(image: str, out_path: str, backend: str = "",
     topology, no armature, no unit convention, and possibly baked lighting in
     the texture. It has to be scaled to 1.8 m, faced +Y, cleaned, unwrapped
     and weighted to a skeleton before blender_combine will make anything of
-    it — bg_human's rig is the one to weight it to. `draft` is True in the
+    it - bg_human's rig is the one to weight it to. `draft` is True in the
     result and `next_steps` says so; there is no path straight to
     godot_deliver_asset and that is deliberate.
 
-    Nothing runs until you configure a backend (see .env.example) — this
+    Nothing runs until you configure a backend (see .env.example) - this
     machine ships no model and downloads none. blender_status reports what is
     reachable. A local backend costs nothing per generation; a hosted one is
     priced before it submits, and `dry_run=True` returns that quote plus the
     licence verdict without spending anything.
 
     LICENCE IS PART OF THE RESULT. A local server is only a transport, so the
-    model must be declared (BGATE_LOCAL_MODEL) — undeclared reads as unknown,
+    model must be declared (BGATE_LOCAL_MODEL) - undeclared reads as unknown,
     never as permission. Some grants exclude whole territories and some
     forbid commercial use outright, which is a shipping problem rather than a
     technical one, so read `licence` before building on the mesh.
 
     parts=True ASKS FOR A BODY IN PIECES, and for a character it is the better
-    request. A monolithic generation gives one blob — measured on a real user's
-    asset, 940 disconnected shells with no relationship to anatomy — and bone
+    request. A monolithic generation gives one blob - measured on a real user's
+    asset, 940 disconnected shells with no relationship to anatomy - and bone
     heat then has to guess where the arm stops and the torso starts, which is
     how fingers end up weighted to a hip. A part-aware graph returns a head, a
     torso, arms and legs as SEPARATE meshes, and every step after it gets
@@ -2311,14 +2305,14 @@ def blender_generate(image: str, out_path: str, backend: str = "",
                              (_i3d.choose(root) or {}).get("backend", ""))
         if parts and not _i3d.supports(picked, "parts"):
             return {"ok": False,
-                    "error": f"backend {picked!r} does not generate parts — "
+                    "error": f"backend {picked!r} does not generate parts - "
                              "the part-aware path needs a graph exported to "
                              "BGATE_COMFY_PARTS_WORKFLOW that saves each part "
                              "separately",
                     "capabilities": _i3d.capabilities(picked)}
         if not picked:
             return {"ok": False, "error": "no image-to-3D backend is configured "
-                    "— see .env.example; blender_status reports what is reachable",
+                    " - see .env.example; blender_status reports what is reachable",
                     "status": _imageto3d_summary()}
         opts = dict(options or {})
         quote = {"backend": picked,
@@ -2358,8 +2352,8 @@ def blender_generate(image: str, out_path: str, backend: str = "",
                             **opts)
         got.setdefault("quote", quote)
         # generate() names the written file `path`, the same key every other
-        # adapter here returns. This asked for `out_path` — the name of THIS
-        # function's argument, never a key on the result — so the guard was
+        # adapter here returns. This asked for `out_path` - the name of THIS
+        # function's argument, never a key on the result - so the guard was
         # always false and the mesh landed on disk unregistered: invisible to
         # the dashboard and to art QA, which is the one failure a generated
         # draft must not have.
@@ -2384,7 +2378,7 @@ def blender_sweep(out_path: str, dry_run: bool = True,
     """Delete a finished asset's intermediate layer files, keeping the record.
 
     A character run leaves a per-layer .glb each, a .blend rig, the assembled
-    asset and its renders — fourteen files for one request. This removes the
+    asset and its renders - fourteen files for one request. This removes the
     layer sources listed in that asset's manifest and NOTHING ELSE, so a
     neighbouring asset's layers survive.
 
@@ -2422,14 +2416,14 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
                         source: str = "", kit: bool = True,
                         out_path: str = "", timeout: int = 300) -> dict:
     """Rebuild ONE layer of an assembled asset and re-assemble it. Not the
-    character — the layer.
+    character - the layer.
 
     "Re-run that one layer, not the whole character" is the promise the layered
     3D path is built on, and until this tool existed there was no way to keep
     it: the recipe lived in the manifest and nothing read it back, so a bad cap
     meant re-modelling, re-texturing and re-assembling everything beside it.
     blender_combine names the layer that failed (`checks`: unbound,
-    unweighted_verts, and the per-layer tri counts) — this is what you do with
+    unweighted_verts, and the per-layer tri counts) - this is what you do with
     that name.
 
     `asset` is the ASSEMBLED .glb (the manifest sits beside it). `layer` is the
@@ -2438,15 +2432,15 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
                file. The modelling kit is injected (kit=True) exactly as in
                blender_run, and the script is recorded beside the layer so the
                next re-run has it.
-      source   a .glb/.gltf/.blend you already built — used in place, nothing
+      source   a .glb/.gltf/.blend you already built - used in place, nothing
                is run.
       neither  the layer's RECORDED script is re-run. After blender_sweep the
                layer files are gone and this is the recovery path: each swept
                layer's manifest entry carries the script that built it. If the
                file is still on disk and no script is given, it is reused as-is.
 
-    Everything else — placement, rotation, scale, binding, decal_on, which layer
-    holds the rig, the root name — comes back off the manifest untouched. A
+    Everything else - placement, rotation, scale, binding, decal_on, which layer
+    holds the rig, the root name - comes back off the manifest untouched. A
     layer put back at the origin unrotated is a different asset, which is why
     those arguments are recorded rather than re-typed.
 
@@ -2456,8 +2450,8 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
 
     The re-assembled file is registered under the SAME logical name, so it is
     revision N+1 of the asset a reviewer already saw, not a new one. Returns the
-    combine result plus `changed` — the layer's tri and object counts before and
-    after — so "did that fix it" is a number rather than an impression.
+    combine result plus `changed` - the layer's tri and object counts before and
+    after - so "did that fix it" is a number rather than an impression.
     """
     try:
         recipe = _blender.manifest_recipe(asset)
@@ -2466,7 +2460,7 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
         index = next((i for i, name in enumerate(names) if name == layer), -1)
         if index < 0:
             return {"ok": False, "error": (
-                f"{layer!r} is not a layer of {_Path(asset).name} — this asset's "
+                f"{layer!r} is not a layer of {_Path(asset).name} - this asset's "
                 f"layers are: {', '.join(n for n in names if n) or 'none'}")}
         target = parts[index]
         before = _manifest_layers(asset).get(layer, {})
@@ -2474,7 +2468,7 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
                     for entry in recipe.get("missing") or []}
 
         # 1. Every OTHER layer has to be on disk, or the assembly quietly loses
-        #    it — combine assembles happily around the hole and hands back a
+        #    it - combine assembles happily around the hole and hands back a
         #    character with no arms, ok=True. Refuse FIRST, before a rebuild
         #    spends minutes in Blender on an assembly that cannot happen, and
         #    say which of the missing ones still carry a script.
@@ -2486,7 +2480,7 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
                 + "; ".join(
                     f"layer {part.get('name')!r} has no file at "
                     f"{part.get('path')} ("
-                    + ("its script is in the manifest — re-run it too"
+                    + ("its script is in the manifest - re-run it too"
                        if recorded.get(part.get("name", ""), {}).get("script")
                        else "and the manifest recorded no script for it")
                     + ")" for part in gone))}
@@ -2517,7 +2511,7 @@ def blender_layer_rerun(asset: str, layer: str, script: str = "",
             else:
                 return {"ok": False, "error": (
                     f"layer {layer!r} has no file at {target.get('path')!r} and "
-                    "the manifest recorded no script for it — pass script= to "
+                    "the manifest recorded no script for it - pass script= to "
                     "rebuild it, or source= to point at a file you already have")}
 
         out = str(out_path or asset)
@@ -2564,13 +2558,12 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
                     timeout: int = 420) -> dict:
     """Render a Blender-built character as a transparent 2D sprite set.
 
-    THE 2D art path: build the model once in base_script (bpy; lights included —
-    camera optional, an auto-framed ORTHO one is added if missing), then each
+    THE 2D art path: build the model once in base_script (bpy; lights included - camera optional, an auto-framed ORTHO one is added if missing), then each
     pose in poses=[{"name","script"}] tweaks the scene and renders one frame.
     Output: per-pose PNGs + <name>_sheet.png + <name>_frames.tres (a Godot
     SpriteFrames with one animation per pose) ready for an AnimatedSprite2D via
     godot_import_asset into res_dir. Rendered sprites cannot drift between
-    poses the way hand-drawn ones do — same rig, camera, light every frame.
+    poses the way hand-drawn ones do - same rig, camera, light every frame.
 
     A pose script that errors fails only that pose; check `failed` in the result.
     The sheet is archived to the preview gallery.
@@ -2613,18 +2606,18 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
 # ---------------------------------------------------------------------------
 @_tool
 def image_status() -> dict:
-    """Is the painted-art leg usable — hosted, local, or neither?
+    """Is the painted-art leg usable - hosted, local, or neither?
 
     Reports BOTH legs, because "no API key" stopped meaning "no art". The
     hosted answer checks the key without exposing it; the local answer says
     whether a ComfyUI on this machine is reachable and configured, what model
-    was declared, and what that model's licence permits — which is the question
+    was declared, and what that model's licence permits - which is the question
     that decides whether the output can ship in a game you sell.
     """
     try:
         # NO PROJECT IS NOT AN ERROR FOR THIS QUESTION. "Can this machine make
         # an image" is about credentials and installed packages, and both have
-        # an answer before any game exists — this used to raise LookupError
+        # an answer before any game exists - this used to raise LookupError
         # outside a project, which made the one tool you would reach for to
         # diagnose a key the one tool you could not run.
         try:
@@ -2638,8 +2631,8 @@ def image_status() -> dict:
         legs["openai"] = dict(imagegen.available())
         # KREA IS A FIRST-CLASS PROVIDER AND THIS TOOL DID NOT KNOW IT EXISTED.
         # It probed OPENAI_API_KEY alone and answered for the whole painted-art
-        # leg, so a project holding a working Krea key — which image_generate
-        # will happily auto-select — was told the leg was unavailable. It cost a
+        # leg, so a project holding a working Krea key - which image_generate
+        # will happily auto-select - was told the leg was unavailable. It cost a
         # support cycle in a real run. blender_status has always reported
         # per-backend; this is that shape.
         try:
@@ -2672,7 +2665,7 @@ def image_status() -> dict:
             "legs": legs,
             "project": root or "",
             # Setting a key is HUMAN-ONLY and there is deliberately no tool here
-            # that does it — an agent that can write credentials can hand itself
+            # that does it - an agent that can write credentials can hand itself
             # a provider nobody paid for. So the fix names what the human runs,
             # not something to call.
             "reason": "" if usable else
@@ -2681,7 +2674,7 @@ def image_status() -> dict:
                       "~/.bgate/.env, which every project on this machine "
                       "inherits and which works with no project at all), or "
                       "without --global to keep it to one game, or in the "
-                      "dashboard's provider panel — or configure a local "
+                      "dashboard's provider panel - or configure a local "
                       "ComfyUI (see the local leg's `how`)",
         }
     except Exception as exc:
@@ -2694,8 +2687,8 @@ def local_status() -> dict:
 
     The read half of the local setup surface. ``image_status`` answers for the
     2D leg only and folds local in beside the hosted providers; this is the
-    whole local registry — the ComfyUI image path, every local image-to-3D
-    backend — each with a STAGE rather than a boolean, because "not set up",
+    whole local registry - the ComfyUI image path, every local image-to-3D
+    backend - each with a STAGE rather than a boolean, because "not set up",
     "set up but nothing is running" and "running but the workflow file is gone"
     are three different problems with three different fixes and a caller told
     only "unavailable" cannot pick one.
@@ -2705,7 +2698,7 @@ def local_status() -> dict:
     generation runs; the dashboard gates that on a human (see
     ``bgate_ui/routes/localsetup.py``) and an MCP tool that did it would be that
     gate with a hole in it. The same reason there is no ``set_api_key`` tool.
-    Report the reason to the human instead — every row here carries the
+    Report the reason to the human instead - every row here carries the
     adapter's own sentence, which is what to tell them.
 
     Nothing here starts anything either. Builders Gate talks to software the
@@ -2726,7 +2719,7 @@ def local_status() -> dict:
                       "nothing local is running. Each row's `reason` says what "
                       "it needs; a human sets that up in the dashboard under "
                       "Settings → Local & agents. Hosted providers are "
-                      "unaffected — see image_status.",
+                      "unaffected - see image_status.",
         }
     except Exception as exc:
         return _fail(exc)
@@ -2748,7 +2741,7 @@ def _pinned_refs(root, spec: str) -> tuple[list[str], list[str]]:
 
     THE POINT: the art seat brief tells an agent to generate "conditioned on the
     pinned refs", and until now the only tool that took a reference at all was
-    image_edit — so obeying the brief meant knowing a path the brief never
+    image_edit - so obeying the brief meant knowing a path the brief never
     stated. A pin already knows where it lives; this is the tool asking.
     """
     want = str(spec or "").strip().lower()
@@ -2758,13 +2751,13 @@ def _pinned_refs(root, spec: str) -> tuple[list[str], list[str]]:
     pins = _refs.list_refs(root, kind=kind)
     if not pins and not kind:
         raise LookupError(
-            "this project has no pinned references — use_pinned asked for "
+            "this project has no pinned references - use_pinned asked for "
             "anchors that do not exist. Pin the approved art with ref_pin, or "
             "drop use_pinned to generate unconditioned deliberately.")
     if not pins and kind:
         kinds = sorted({p.get("kind", "") for p in _refs.list_refs(root)})
         raise LookupError(
-            f"no pinned reference of kind {kind!r} — pinned kinds here: "
+            f"no pinned reference of kind {kind!r} - pinned kinds here: "
             f"{', '.join(k for k in kinds if k) or 'none'}. Pass "
             f"use_pinned='all', a kind that exists, or pin one with ref_pin.")
     chosen = pins[:_PINNED_REF_CAP]
@@ -2775,8 +2768,8 @@ def _pick_provider(asked: str = "") -> str:
     """Which image provider to use: what was asked for, else what is CONFIGURED.
 
     Defaulting to a constant is how this broke. `image_generate` was pinned to
-    openai, so a project holding only KREA_API_KEY — a key `.env.example` and
-    the setup docs both tell people to set — got "OPENAI_API_KEY not set" from
+    openai, so a project holding only KREA_API_KEY - a key `.env.example` and
+    the setup docs both tell people to set - got "OPENAI_API_KEY not set" from
     the one tool most likely to be reached first, while krea sat configured and
     unused two functions away.
 
@@ -2792,13 +2785,13 @@ def _pick_provider(asked: str = "") -> str:
         return "openai"
     if os.environ.get("KREA_API_KEY"):
         return "krea"
-    # NOTE: character/sprite/animation work does NOT come through here — it goes
+    # NOTE: character/sprite/animation work does NOT come through here - it goes
     # to providers.provider_for(task_kind), which routes identity work to krea
     # regardless of this order. See that function for the measurement.
     # kie LAST, and it is the only one of the three that has to be named to be
     # used for anything else. Its image fields take public URLs only, so
     # auto-selecting it would silently turn every anchored generation in the
-    # product into unanchored prompt-only work — see bgate_core.providers. A
+    # product into unanchored prompt-only work - see bgate_core.providers. A
     # kie-only project still reaches this tool; it just gets told, once, that
     # the pinned refs cannot come along.
     if os.environ.get("KIE_API_KEY"):
@@ -2817,11 +2810,11 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                    task_kind: str = "", tileable: bool = False,
                    ref_strength: float = 0.5, provider: str = "",
                    model: str = "") -> dict:
-    """Generate PAINTED art — portraits, select-screen cards, title splashes,
+    """Generate PAINTED art - portraits, select-screen cards, title splashes,
     textures, decals, stage paint-overs. Costs real money per image
     (~$0.02-0.19).
 
-    provider  "" picks from what is CONFIGURED — openai if OPENAI_API_KEY is
+    provider  "" picks from what is CONFIGURED - openai if OPENAI_API_KEY is
               set, else krea if KREA_API_KEY is. Name one to force it, and you
               get that provider's own error if its key is missing rather than a
               silent substitution that bills you for a model you did not ask
@@ -2839,20 +2832,19 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     take no reference at all while every seat brief said to generate "against
     the pinned refs", so the instruction could only be obeyed by switching to
     image_edit or by not obeying it:
-      ref_images   pin NAMES (see ref_list — preferred) or absolute paths.
+      ref_images   pin NAMES (see ref_list - preferred) or absolute paths.
                    `name@r2` reaches an older revision.
       use_pinned   pull the project's own anchors with NO paths passed by hand:
                    a ref kind (character | style | ui | concept) or "all".
                    Capped at the first 4 pins, explicit ref_images first.
       anchors      extra images used ONLY to choose the key colour, never sent
-                   to the model — the identity whose palette the chroma must
+                   to the model - the identity whose palette the chroma must
                    avoid colliding with.
       ref_strength how hard a reference pulls (Krea-side; 0-1).
 
     task_kind names WHAT IS BEING MADE and changes real decisions, not wording:
       texture   forced square (a non-square map stretches across a unit UV and
-                nothing downstream can undo it), given the flat-albedo clause —
-                no baked light, no camera angle — and not keyed, because the
+                nothing downstream can undo it), given the flat-albedo clause - no baked light, no camera angle - and not keyed, because the
                 surface IS the whole frame. Pair with tileable=True for a
                 repeating field; the seam guarantee is a mirrored post-pass, not
                 a sentence in the prompt.
@@ -2865,14 +2857,14 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
     Omit it and nothing changes: keying then follows `transparent` exactly as
     it always did.
 
-    transparent=True does NOT ask the API for alpha — measured, gpt-image
+    transparent=True does NOT ask the API for alpha - measured, gpt-image
     answers that request with a gradient. It runs the KEYABLE-BACKGROUND
     contract instead: flat chroma backdrop, keyed out, then audited. A cut that
     comes back haloed/bled FAILS with the flag rather than being handed back as
     a sprite with dirty alpha.
 
     filename is relative to the project's .bgate_out/art/ (e.g. "tommy_portrait.png").
-    The result is archived to the preview gallery — LOOK at it before importing
+    The result is archived to the preview gallery - LOOK at it before importing
     into the game with godot_import_asset.
     """
     try:
@@ -2896,8 +2888,8 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         # task_kind that answers False, which is exactly what this tool did
         # before any of these parameters existed.
         # PROVIDER IS A CHOICE NOW, not a constant. This was hardcoded to
-        # openai, so a user whose only key is KREA_API_KEY — a key the setup
-        # docs tell them to configure — could not reach this tool at all, and
+        # openai, so a user whose only key is KREA_API_KEY - a key the setup
+        # docs tell them to configure - could not reach this tool at all, and
         # Krea images were only obtainable through image_sprites and
         # image_talkhead, the two tools that happened to expose `provider`.
         # chroma.generate has dispatched to either since it was written; the
@@ -2929,7 +2921,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
             result["warning"] = (
                 "tileable was requested and DID NOT happen: "
                 + (tiled.get("note") if isinstance(tiled, dict) else "no tile pass ran")
-                + " — this map will seam where it repeats")
+                + " - this map will seam where it repeats")
         if result.get("ok"):
             archived = _archive_preview(result["path"], f"art-{_Path(filename).stem}")
             if archived:
@@ -2965,14 +2957,14 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
 def image_edit(prompt: str, ref_images: list[str], filename: str,
                size: str = "1024x1536", quality: str = "medium",
                transparent: bool = False) -> dict:
-    """Generate an image CONDITIONED ON reference image(s) — the consistency
+    """Generate an image CONDITIONED ON reference image(s) - the consistency
     primitive, exposed raw. Use it to regenerate a single sprite pose against a
     character's existing reference (~$0.04 at medium) instead of re-buying the
     whole set, or to derive variants that must stay on-model.
 
-    ref_images: PINNED REFERENCE NAMES (see ref_list — preferred) or absolute
+    ref_images: PINNED REFERENCE NAMES (see ref_list - preferred) or absolute
     paths. filename lands under the project's .bgate_out/art/. Result is
-    archived to the gallery — LOOK at it. transparent=True runs the
+    archived to the gallery - LOOK at it. transparent=True runs the
     keyable-background contract (flat chroma backdrop -> keyed -> audited), not
     the API's background=transparent, which does not reliably return alpha.
     """
@@ -3011,7 +3003,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
 
 
 # ---------------------------------------------------------------------------
-# The item-art pipeline — item-as-object, class-templated, Codex-drivable.
+# The item-art pipeline - item-as-object, class-templated, Codex-drivable.
 # Variants are cheap and classes are expensive: one prompt template per class
 # holds framing/light/scale/background invariant, a parameter grid mints the
 # variants. See bgate_core/items.py for the taxonomy and the pure builders.
@@ -3019,7 +3011,7 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
 @_tool
 def item_classes() -> dict:
     """The item-art taxonomy: the classes, their equip slot, and the variant
-    axes. This IS the contract to drive item_generate / item_variants — read it
+    axes. This IS the contract to drive item_generate / item_variants - read it
     before minting gear so names/slots line up with the equip/layer system."""
     return {
         "ok": True,
@@ -3039,7 +3031,7 @@ def _item_style_clause(root: _Path, character: str) -> str:
     """The cross-leg style rail: a character's stored visual profile -> the
     style clause appended to every item prompt, so worn gear reads as the same
     set as the body it hangs on. Same fallback chain image_sprites uses.
-    Naming a character with no profile raises — silently minting unstyled gear
+    Naming a character with no profile raises - silently minting unstyled gear
     would LOOK like a result."""
     if not character.strip():
         return ""
@@ -3048,12 +3040,12 @@ def _item_style_clause(root: _Path, character: str) -> str:
         if profile:
             return profile.get("style", "")
     raise ValueError(
-        f"no visual profile for {character!r} — set one with profile_set "
+        f"no visual profile for {character!r} - set one with profile_set "
         "(or drop the character param to mint unstyled)")
 
 
 def _index_item(root: _Path, man: dict) -> bool:
-    """Upsert one manifest into .bgate_out/items/_index.json — the one-shot
+    """Upsert one manifest into .bgate_out/items/_index.json - the one-shot
     rollup the equip UI reads. Loose per-item manifests stay the source of
     truth; a missing/corrupt index is rebuilt from them, never trusted."""
     path = root / _items.INDEX_REL
@@ -3064,7 +3056,7 @@ def _index_item(root: _Path, man: dict) -> bool:
             index = loaded
     except Exception:
         pass
-    if not index:  # first write or corrupt — rebuild from the loose manifests
+    if not index:  # first write or corrupt - rebuild from the loose manifests
         index = {"items": {}}
         for f in sorted(path.parent.glob("*.json")) if path.parent.is_dir() else []:
             if f.name == path.name:
@@ -3094,7 +3086,7 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     result; failures are reported, not raised, so one bad variant never sinks a
     batch.
 
-    Gear is a LAYER — it hangs on a fighter, so its background is not part of
+    Gear is a LAYER - it hangs on a fighter, so its background is not part of
     the asset. That makes it sprite-shaped and it goes through the keyable
     contract: the items STYLE clause asks for "fully transparent background",
     which is a wish no model in either provider grants."""
@@ -3139,12 +3131,12 @@ def item_generate(item_class: str, name: str, descriptor: str,
                   material: str = "", element: str = "", tier: str = "",
                   quality: str = "medium", character: str = "",
                   force: bool = False) -> dict:
-    """Mint ONE gear/item icon — transparent, class-templated, tracked.
+    """Mint ONE gear/item icon - transparent, class-templated, tracked.
 
     item_class is one of item_classes() (main_hand, off_hand, head, body, feet,
     consumable, throwable, ranged). descriptor names the item ("curved saber").
     material/element/tier are the variant axes. `character` names a pinned ref
-    with a visual profile (profile_set) — its style is appended so worn gear
+    with a visual profile (profile_set) - its style is appended so worn gear
     reads as the same set as the fighter it hangs on. An already-minted item
     (manifest on disk) is skipped, not re-bought; force=true regenerates.
     Costs real money per image (~$0.02-0.19 at `quality`). For a batch, use
@@ -3168,7 +3160,7 @@ def item_generate(item_class: str, name: str, descriptor: str,
                 return {"ok": True, "name": spec["name"], "skipped": True,
                         "manifest": _items.rel_manifest_path(spec["name"]),
                         "estimated_cost_usd": 0.0,
-                        "note": "already minted — manifest exists; pass "
+                        "note": "already minted - manifest exists; pass "
                                 "force=true to re-buy"}
         res = _mint_item(root, spec, quality)
         if res.get("ok"):
@@ -3188,17 +3180,16 @@ def item_variants(item_class: str, base_name: str, descriptor: str,
                   tiers: Optional[list[str]] = None,
                   quality: str = "medium", limit: int = 12,
                   character: str = "", force: bool = False) -> dict:
-    """Mint a BATCH of variants of one class from a parameter grid — the
+    """Mint a BATCH of variants of one class from a parameter grid - the
     cartesian product of the axes you pass, each a self-contained item.
 
     This is the "plethora of gear, easily" engine: pass materials=[...],
     tiers=[...], elements=[...] and get one on-set icon per combination.
-    `character` names a pinned ref with a visual profile — its style is woven
+    `character` names a pinned ref with a visual profile - its style is woven
     into every prompt so the whole set matches the fighter that wears it.
     Already-minted variants (manifest on disk) are skipped and reported, so a
     re-run finishes a batch instead of re-buying it; force=true re-buys.
-    Every image costs money, so `limit` caps what a run may BUY (default 12) —
-    the plan and its $ estimate are reported and refused if new images exceed
+    Every image costs money, so `limit` caps what a run may BUY (default 12) - the plan and its $ estimate are reported and refused if new images exceed
     the cap, so you confirm the spend before it happens. LOOK at the set
     before importing."""
     try:
@@ -3251,7 +3242,7 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
                        row_labels: Optional[list[str]] = None,
                        guides: bool = True) -> dict:
     """LOOK AT A GENERATED POSE ROW OR CHARACTER SHEET BEFORE SPENDING ANYTHING
-    ELSE ON IT. Free — calls no model, buys nothing, changes nothing.
+    ELSE ON IT. Free - calls no model, buys nothing, changes nothing.
 
     CALL THIS THE MOMENT A MULTI-FIGURE IMAGE COMES BACK, and call it before
     keying, before slicing, before assembling, and before generating the next
@@ -3260,20 +3251,20 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
 
     THE PROBLEM IT EXISTS FOR. An image model asked for four figures on one
     canvas does not draw four frames. It draws ONE picture, left to right, each
-    figure conditioned on the canvas so far — so every small error is inherited
+    figure conditioned on the canvas so far - so every small error is inherited
     by the next figure and added to. The result degrades ACROSS the row and, on a
     stacked sheet, DOWN the page: the character grows, the feet leave the ground
     line, a head yaws the wrong way, a necktie appears in row three and is still
     there in row four. None of it is visible in any single frame, all of it is
     obvious with a straight edge held against the image, and none of the existing
-    audits can see any of it — they run on frames that have already been sliced
+    audits can see any of it - they run on frames that have already been sliced
     and bottom-pinned into their own cells, by which point the evidence has been
     destroyed rather than fixed.
 
     WHAT COMES BACK. Named findings, each carrying its own fix: `foot_drift`,
     `head_drift`, `size_drift`, `size_ramp`, `facing_flip`, `stray_ink`,
     `empty_cell` within each row; `sheet_size_drift`, `sheet_size_ramp` and
-    `band_palette` across them. Plus — and this is the part to actually read — an
+    `band_palette` across them. Plus - and this is the part to actually read - an
     ANNOTATED COPY of the image with the ground line, the head line and each
     figure's true feet and mass anchor drawn on it, returned as an image so you
     can see what the numbers are talking about.
@@ -3283,13 +3274,13 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
     which means it compounds, which means re-rolling buys one better figure and
     the next attempt does exactly the same thing. The fix is structural: stop
     asking for a row, and generate each pose as its own image against ONE
-    approved reference — which is what `image_sprites` does, and why it exists.
+    approved reference - which is what `image_sprites` does, and why it exists.
 
     `columns` and `rows` are the grid you asked the model for. `labels` names the
     columns (pose names) and `row_labels` the rows (animation names); both are
     only there so the findings read as "walk/2" instead of "row1/2".
 
-    Advisory, never a gate — a turnaround SHOULD flip its facing and a size chart
+    Advisory, never a gate - a turnaround SHOULD flip its facing and a size chart
     SHOULD ramp. It reports; you decide."""
     try:
         root = _Path(_root())
@@ -3312,7 +3303,7 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
                 "nothing measurable is wrong with this sheet: the feet are on a "
                 "line, the draw size holds, no head is yawed against its row and "
                 "there is no ink on the canvas that is not the character. This "
-                "says nothing about whether it is the right CHARACTER — that is "
+                "says nothing about whether it is the right CHARACTER - that is "
                 "consistency_check, which asks a model, because identity is not "
                 "arithmetic.")
         return report
@@ -3324,7 +3315,7 @@ def sprite_sheet_check(image: str, columns: int, rows: int = 1,
 def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
                          frame_size: Optional[list[int]] = None) -> dict:
     """Wrap a single item PNG into a 1-frame Godot SpriteFrames .tres so it drops
-    straight into an equip slot — the bridge from the item pipeline to the
+    straight into an equip slot - the bridge from the item pipeline to the
     equip/layer system (templates/2d gear_rig.gd).
 
     A static held weapon/shield with one frame is the honest v1 for worn gear: it
@@ -3343,11 +3334,11 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
         slug = _items.slugify(name)
         out_dir = src.parent
         sheet_name = f"{slug}_sheet.png"
-        # The single frame IS the sheet — copy under the sheet name the tres
+        # The single frame IS the sheet - copy under the sheet name the tres
         # expects, so the pair imports together like every other SpriteFrames.
         from shutil import copyfile
         copyfile(src, out_dir / sheet_name)
-        tres = _sprites._sprite_frames_tres(  # noqa: SLF001 — shared emitter
+        tres = _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
             sheet_name, [("default", 1)], (int(size[0]), int(size[1])),
             1.0, res_dir)
         tres_rel = out_dir / f"{slug}_frames.tres"
@@ -3367,7 +3358,7 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
     """Turn ONE approved key frame into an effect ANIMATION, arithmetically.
 
     THE TOOL FOR PROJECTILE AND IMPACT VFX. Do NOT buy an effect animation as a
-    grid of frames from an image model — that returns N INDEPENDENT DRAWINGS,
+    grid of frames from an image model - that returns N INDEPENDENT DRAWINGS,
     not an animation, and the faults are not promptable away: a mug shatters and
     is intact again in frame 4, a cloud's palette pops mid-set, a "fading"
     effect ends at full opacity, a trail's frames point different ways. Identity
@@ -3375,7 +3366,7 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
     arithmetic gets free.
 
     THE WORKFLOW, in order:
-      1. Generate ONE key frame — the effect at its PEAK, alone on the keyed
+      1. Generate ONE key frame - the effect at its PEAK, alone on the keyed
          backdrop, via image_generate/image_edit. One image, so you can LOOK at
          it and re-roll it cheaply.
       2. Call this. It derives every other frame from those pixels: frames
@@ -3384,14 +3375,14 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
       3. Read `notes` in the result. They are findings, not decoration.
 
     Emits <name>_sheet.png + <name>_frames.tres through the same emitters the
-    character pipeline uses, every frame registered to the cell centre — so the
+    character pipeline uses, every frame registered to the cell centre - so the
     effect stacks on the projectile it belongs to without anyone computing an
     offset. `anchor` in the result is the pixel a runtime manifest should place.
 
     MOTIONS:
 {motions}
     `peak` is which output frame the key frame IS. A burst drawn at its widest
-    wants peak=1 of 4 — one frame snapping in, two coming apart.
+    wants peak=1 of 4 - one frame snapping in, two coming apart.
 
     `overrides` tunes one motion's numbers (grow/expand/scatter/drift/fade/
     gravity/jitter/squash/chunk) without inventing a new one.
@@ -3434,7 +3425,7 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
 # tool description here. This must happen BEFORE _tool is applied: functools.wraps
 # copies __doc__ at decoration time and FastMCP reads it then, so a docstring
 # built afterwards would never reach the model. (A `"""...""" % x` docstring is
-# worse still — the % makes it an expression, so __doc__ is simply None and the
+# worse still - the % makes it an expression, so __doc__ is simply None and the
 # whole description vanishes silently. It did, for one commit.)
 vfx_animate.__doc__ = vfx_animate.__doc__.format(motions=_vfx.motion_help())
 vfx_animate = _tool(vfx_animate)
@@ -3453,7 +3444,7 @@ _CONSISTENCY_FLOOR = 90
 # Measured on the failed PM-Paladin batch: adjacent same-character frames
 # intersect ~0.45; recolored frames vs their siblings crater to ~0.06; and
 # ref-vs-frame runs low (~0.1-0.3) even for GOOD frames because the ref's
-# rendering differs — so BATCH COHESION (each frame vs the batch median) is
+# rendering differs - so BATCH COHESION (each frame vs the batch median) is
 # the primary gate, and vs-ref only trips on catastrophic recolors.
 _PALETTE_COHESION_FLOOR = float(os.environ.get("BGATE_PALETTE_COHESION", "0.35"))
 _PALETTE_REF_FLOOR = float(os.environ.get("BGATE_PALETTE_FLOOR", "0.10"))
@@ -3481,9 +3472,9 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
 
     Cheap pixel metrics (palette, silhouette) can't judge "same character" pose-
     invariantly, so this asks a vision model to score each frame 0-100 (identity
-    only — pose/expression ignored). frame_items: list of (label, path). Returns
+    only - pose/expression ignored). frame_items: list of (label, path). Returns
     {"ok": True, "frames": [{"label","score","reason","pass"}], "min", "flagged"}
-    or {"ok": False, "error": ...} — callers must treat failure as non-blocking.
+    or {"ok": False, "error": ...} - callers must treat failure as non-blocking.
     """
     import base64 as _b64, io as _io, json as _json
     try:
@@ -3506,7 +3497,7 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
         content = [{"type": "text", "text":
             "The FIRST image is the APPROVED reference for a game character. The remaining "
             "images are generated frames of ONE animation of that character. Pose, action "
-            "and expression WILL differ between frames — IGNORE those.\n"
+            "and expression WILL differ between frames - IGNORE those.\n"
             "Judge TWO things:\n"
             "(1) IDENTITY: score each frame 0-100 for being the SAME character as the "
             "reference (body proportions, art style, line weight, palette, defining "
@@ -3514,7 +3505,7 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
             f"the reference in the same sheet with no visible difference in build, palette "
             f"or line weight; below {pass_floor} means drift a player would notice.\n"
             "(2) FRAME-TO-FRAME CONSISTENCY: the frames must also look consistent WITH "
-            "EACH OTHER — same build, proportions, weight, head size and style across the "
+            "EACH OTHER - same build, proportions, weight, head size and style across the "
             "set. Mark outlier=true for any frame whose PROPORTIONS/BUILD/STYLE visibly "
             "differ from the majority of the other frames (e.g. suddenly buffer, rounder, "
             "bigger head, different line weight), even if it still resembles the reference.\n"
@@ -3530,7 +3521,7 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
             messages=[{"role": "user", "content": content}],
             response_format={"type": "json_object"}, temperature=0)
         raw = _json.loads(r.choices[0].message.content).get("frames", [])
-        # Deterministic palette gates — the vision judge kept passing
+        # Deterministic palette gates - the vision judge kept passing
         # outfit/skin recolors. Primary: cohesion of each frame against the
         # BATCH MEDIAN histogram; secondary: catastrophic drift vs the ref.
         try:
@@ -3573,14 +3564,14 @@ def _vision_consistency(ref_path, frame_items, pass_floor=_CONSISTENCY_FLOOR):
 
 
 def _reference_sanity(path):
-    """Structural gate for a freshly generated character reference — run BEFORE
+    """Structural gate for a freshly generated character reference - run BEFORE
     spending one edit per pose conditioned on it. gpt-image sometimes returns an
     'ok' result that is still unusable: a near-empty frame, or one whose
     background never keyed to transparent (a fully-filled rectangle). Identity
     can't be auto-judged with no ground truth, but 'is this a usable single
     transparent figure' can. Catching it here caps a broken run at ~1 spend
     instead of N poses that all inherit the flaw and all fail the pose gate.
-    Returns (ok: bool, reason: str). Any checker error is treated as PASS — this
+    Returns (ok: bool, reason: str). Any checker error is treated as PASS - this
     must never block a good run; the per-pose consistency gate still runs after.
     """
     try:
@@ -3592,18 +3583,18 @@ def _reference_sanity(path):
         opaque = sum(1 for _, _, _, a in data if a > 40)
         cov = opaque / n
         if cov < 0.04:
-            return False, (f"near-empty reference (opaque coverage {cov:.3f}) — "
+            return False, (f"near-empty reference (opaque coverage {cov:.3f}) - "
                            "the generation produced almost nothing")
         if cov > 0.93:
             return False, (f"background did not key to transparent (opaque "
-                           f"coverage {cov:.3f}) — the reference is a filled "
+                           f"coverage {cov:.3f}) - the reference is a filled "
                            "frame, not a cut-out character")
         return True, f"coverage {cov:.3f}"
     except Exception as exc:
         return True, f"sanity check skipped: {type(exc).__name__}"
 
 
-# Chroma keying MOVED to bgate_core.chroma — it is a contract now, not a local
+# Chroma keying MOVED to bgate_core.chroma - it is a contract now, not a local
 # trick. Generating on a solid backdrop the character never uses and keying it
 # out is the ONLY way either provider yields alpha (gpt-image's transparent mode
 # returns gradients and punches eye-whites to holes; Krea has no alpha parameter
@@ -3618,24 +3609,24 @@ _chroma_key = _chroma.key
 @_tool
 def sprite_plan(archetypes: Optional[list[str]] = None, view: str = "",
                 quality: str = "medium") -> dict:
-    """The key poses and timing for standard animations. FREE — spends nothing.
+    """The key poses and timing for standard animations. FREE - spends nothing.
 
     Call this BEFORE image_sprites. With no arguments it returns the catalogue:
     every archetype, how many frames it generates, how many steps it plays, and
     one line on why it is built that way. With `archetypes=["idle","walk4",
     "attack"]` it returns the exact pose list and timing that run would use, plus
-    what it would cost — so the plan can be read, edited and priced before any of
+    what it would cost - so the plan can be read, edited and priced before any of
     it is bought.
 
     WHY THIS EXISTS. image_sprites will animate whatever poses it is handed, and
-    the expensive failure is not a broken sheet — it is a sheet that assembles
+    the expensive failure is not a broken sheet - it is a sheet that assembles
     perfectly, passes the identity gate, holds its palette, and animates like
     nothing alive. Four frames named walk/0..walk/3 and described as "walking,
     left foot forward" / "walking" / "walking, right foot forward" / "walking"
     is a legal, costly, useless animation and not one existing gate rejects it.
 
     Animation has had the answer since the 1930s. A walk is CONTACT, DOWN,
-    PASSING, UP, once per leg — the body rises and falls twice per cycle and that
+    PASSING, UP, once per leg - the body rises and falls twice per cycle and that
     bob is what a walk IS; four frames with no height change is a character
     sliding along the floor. An attack is ANTICIPATION, CONTACT, FOLLOW-THROUGH,
     RECOVER, and its impact frame is HELD while its wind-up is rushed, because
@@ -3646,7 +3637,7 @@ def sprite_plan(archetypes: Optional[list[str]] = None, view: str = "",
     `view` ("side view, facing right") is prepended to every description, so the
     camera convention is stated once rather than drifting between eight prose
     strings. Feed the returned `poses` and `archetypes` straight to
-    image_sprites, or edit them first — this is a starting point with reasons
+    image_sprites, or edit them first - this is a starting point with reasons
     attached, not a rule.
     """
     try:
@@ -3654,7 +3645,7 @@ def sprite_plan(archetypes: Optional[list[str]] = None, view: str = "",
             return {"ok": True, "catalog": _animspec.catalog(),
                     "note": "pass archetypes=[...] for the pose list and price of "
                             "a specific run. `generated` is what you pay for; "
-                            "`steps` is how many frames actually play — they "
+                            "`steps` is how many frames actually play - they "
                             "differ where ping-pong is doing its job."}
         built = _animspec.plans(list(archetypes), view=view)
         from bgate_adapters import imagegen as _ig
@@ -3699,7 +3690,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   archetypes: Optional[list[str]] = None, view: str = "",
                   palette_lock: str = "auto", palette_colors: int = 64,
                   sheet_padding: int = 0, anchor_views: int = 3) -> dict:
-    """PAINTED sprite set — REFERENCE-FIRST for consistency.
+    """PAINTED sprite set - REFERENCE-FIRST for consistency.
 
     provider: "openai" (gpt-image, default) or "krea". They condition on the
     reference in genuinely different ways, and it changes what you get:
@@ -3711,7 +3702,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     that pin is the same distinction: krea-2-large (the provider's general
     default) conditions on a reference as STYLE, and a style reference cannot be
     asked to hold a subject through a pose change, because holding the subject
-    is not what it does — measured on the party idles, krea-2-medium drew a FACE
+    is not what it does - measured on the party idles, krea-2-medium drew a FACE
     in seven of eight frames when four of them were specified as back views.
     nano-banana-2 takes its references as edit inputs, keeps `styles` so a
     trained LoRA still rides alongside, and bills a flat $0.06 against
@@ -3722,16 +3713,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     How it works (and why): a fresh generation invents a new character every
     time, and asking for many poses in one image comes back misaligned. So:
     (1) generate ONE reference character (or pass ref_image to reuse an approved
-    one — reusing the ref is also how you REGENERATE a single pose later without
+    one - reusing the ref is also how you REGENERATE a single pose later without
     changing the fighter); (2) each pose is an EDIT conditioned on that
-    reference — same character, new stance; (3) frames are alpha-trimmed,
+    reference - same character, new stance; (3) frames are alpha-trimmed,
     registered on the body's mass, stitched into <name>_sheet.png +
-    <name>_frames.tres — drop-in for AnimatedSprite2D.
+    <name>_frames.tres - drop-in for AnimatedSprite2D.
 
-    character_prompt: the character + art style (full body, single character —
-    framing/transparency contracts are appended automatically).
+    character_prompt: the character + art style (full body, single character - framing/transparency contracts are appended automatically).
     poses: [{"name": "jab", "description": "lead fist fully extended right,
-    body driving forward"}] — name becomes the animation; description is the
+    body driving forward"}] - name becomes the animation; description is the
     stance. LOOK at the reference preview before the poses run wild, and at the
     sheet preview before importing. Cost: 1 ref + 1 edit per pose (~$0.04-0.25
     each by quality). Failed poses are listed, never silently shipped.
@@ -3753,8 +3743,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     anchor ONCE and passes all three on every call; 1 is the old single
     front-view behaviour. This is the highest-leverage knob here. One front view
     plus previous frames that are near-copies of it is the weak reference
-    configuration — distinct angles carry far more identity than more of the
-    same angle — and it bites hardest in the normal case, a side-view game asking
+    configuration - distinct angles carry far more identity than more of the
+    same angle - and it bites hardest in the normal case, a side-view game asking
     for side-view poses against a front-view anchor, where the model re-invents
     the profile on every call and re-invents it differently each time. That is
     not drift a re-roll fixes; a re-roll buys another guess at information the
@@ -3763,7 +3753,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 
     palette_lock: "auto" (default), "on" or "off". Locking quantises every frame
     to the reference's own palette, which makes colour drift UNREPRESENTABLE
-    rather than merely detectable — the existing palette gate finds drift and
+    rather than merely detectable - the existing palette gate finds drift and
     pays for a re-roll; this leaves nowhere for the drift to be stored. It is a
     posteriser, so "auto" measures the reference and turns it on only for flat,
     cel or limited-palette art, where it is free. Painterly art with real
@@ -3780,14 +3770,14 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     unset, the work item's ceiling / the project's per_item_usd) or the project
     /day budget; the running tally is re-checked before every pose, so a retry
     storm stops mid-set instead of discovering the overrun on the invoice.
-    `timeout` bounds ONE image call and `max_seconds` the whole run — past the
+    `timeout` bounds ONE image call and `max_seconds` the whole run - past the
     deadline the remaining poses are reported as skipped and whatever was made
     is still assembled, because half a sheet plus a reason beats a hung call.
 
     Returns the assembled sheet result, or {ok: false, stage, error} when the
     spend gate, the reference gate or every pose fails. The result carries a
-    `motion` block — duplicated frames, popped poses, cycles that do not close,
-    figures in more than one piece — which is the half of quality the identity
+    `motion` block - duplicated frames, popped poses, cycles that do not close,
+    figures in more than one piece - which is the half of quality the identity
     judge cannot see, because every one of those faults is perfectly on-model.
     """
     try:
@@ -3799,7 +3789,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             # emitter would happily ship it.
             if poses:
                 return {"ok": False, "stage": "plan", "name": name,
-                        "error": "pass EITHER archetypes OR poses, not both — "
+                        "error": "pass EITHER archetypes OR poses, not both - "
                                  "the catalogue writes the whole pose list "
                                  "including its frame numbering, and merging it "
                                  "with hand-written poses duplicates frames. "
@@ -3819,7 +3809,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 
         # PRICE THE RUN BEFORE BUYING ANY OF IT. One reference (skipped when an
         # approved ref_image is reused) plus one edit per pose, at this call's
-        # qualities. Retries are deliberately NOT in the estimate — they are
+        # qualities. Retries are deliberately NOT in the estimate - they are
         # bounded per pose and caught by the running check below; pricing the
         # worst case up front would refuse healthy runs.
         ceiling = _run_ceiling(str(root), max_cost_usd)
@@ -3828,7 +3818,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             """What ONE call of this run costs, on the provider it will run on.
 
             This used to read the gpt-image price table whichever provider was
-            named, which quietly under-quoted every Krea run — and the spend gate
+            named, which quietly under-quoted every Krea run - and the spend gate
             is described as a cap rather than an invoice, so a gate fed the wrong
             provider's prices is the failure that description exists to rule out.
             Krea prices per model and payload rather than per quality, so `q` is
@@ -3845,8 +3835,8 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 
         per_pose = _unit(quality)
         # The model-sheet views are priced in. They are bought whether or not the
-        # anchor was passed in — a supplied ref_image is one approved drawing,
-        # and the extra angles are derived FROM it — so they are not conditional
+        # anchor was passed in - a supplied ref_image is one approved drawing,
+        # and the extra angles are derived FROM it - so they are not conditional
         # on the anchor being generated here.
         extra_views = max(0, min(2, int(anchor_views) - 1))
         projected = round(
@@ -3861,7 +3851,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         deadline = _time.monotonic() + max(60, int(max_seconds))
         call_timeout = float(max(30, int(timeout)))
 
-        # The stored visual identity, if one exists — injected into EVERY
+        # The stored visual identity, if one exists - injected into EVERY
         # prompt so no generation depends on anyone's memory of the character.
         profile = None
         for key in ((str(ref_image),) if ref_image else ()) + (name, f"{name}-character"):
@@ -3874,7 +3864,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                         f"STYLE (must hold exactly): {profile['style']}. "
                         f"NEVER: {profile['negative']}.")
 
-        # 1. The reference — the single source of who this character is.
+        # 1. The reference - the single source of who this character is.
         result: dict = {"poses_attempted": len(poses),
                         "profile_used": bool(profile)}
         # Rolled-up spend/latency for the WHOLE set (ref + every pose edit,
@@ -3895,7 +3885,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             def _gen_ref():
                 # The anchor is sprite-shaped, so it goes through the keyable
                 # contract like every pose does. It used to ask gpt-image for
-                # background=transparent and take whatever came back — measured
+                # background=transparent and take whatever came back - measured
                 # 2026-07-25, that is a brown gradient with holes where the eyes
                 # should be, and every pose then inherited a dirty anchor.
                 r = _chroma.generate(
@@ -3911,7 +3901,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 result["reference_chroma"] = r.get("chroma")
                 result["reference_alpha"] = r.get("alpha")
                 if r.get("ok") or r.get("rejected_path"):
-                    # Archive the preview even for an alpha rejection — the
+                    # Archive the preview even for an alpha rejection - the
                     # whole value of failing loudly is that someone can LOOK at
                     # the backdrop the model painted instead of guessing.
                     result["reference_preview"] = _archive_preview(
@@ -3923,7 +3913,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 actually key clean (chroma audit), and is this a cut-out figure
                 rather than a filled frame (structural sanity)?
 
-                A provider failure is NOT this gate's business — it returns
+                A provider failure is NOT this gate's business - it returns
                 stage 'reference' below, because "the API refused" and "the
                 model painted something unusable" need different fixes.
                 """
@@ -3935,7 +3925,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if not ref.get("ok") and not ref.get("rejected_path"):
                 return {"ok": False, "stage": "reference", **ref}
             # REFERENCE GATE: validate the anchor and re-roll it BEFORE paying
-            # for N poses. A broken reference makes every pose broken — every one
+            # for N poses. A broken reference makes every pose broken - every one
             # fails the pose gate, every one gets retried, and the run costs ~2N
             # against garbage. Catch it here at ~1 spend. A passed-in ref_image is
             # already approved and skips this.
@@ -3954,15 +3944,14 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                         "reference_preview": result.get("reference_preview"),
                         "error": f"reference failed the structural gate: "
                                  f"{ref_reason}. Not spending on poses against a "
-                                 "broken anchor — adjust character_prompt and retry."}
+                                 "broken anchor - adjust character_prompt and retry."}
         result["reference"] = ref_path
 
-        # 2. Each pose derives from the reference — same fighter, new stance.
+        # 2. Each pose derives from the reference - same fighter, new stance.
         # ANCHOR + ROLLING conditioning: every edit carries (a) the character
-        # ANCHOR — always present, so identity re-grounds each call and drift
-        # can't compound telephone-style, (b) the PREVIOUS successful frame —
-        # motion continuity, (c) for the closing frame of a multi-frame
-        # animation, that animation's FIRST frame — so cycles loop smoothly
+        # ANCHOR - always present, so identity re-grounds each call and drift
+        # can't compound telephone-style, (b) the PREVIOUS successful frame - # motion continuity, (c) for the closing frame of a multi-frame
+        # animation, that animation's FIRST frame - so cycles loop smoothly
         # (walk/2 flows back into walk/0). ONE frame per API call, always.
         pose_files: list[tuple[str, str]] = []
         pose_errors: list[dict] = []
@@ -3973,7 +3962,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             anim_counts[p["name"].split("/", 1)[0]] = \
                 anim_counts.get(p["name"].split("/", 1)[0], 0) + 1
         pose_desc: dict[str, str] = {}
-        # The keyable-background contract does the whole dance now — pick a key
+        # The keyable-background contract does the whole dance now - pick a key
         # colour this character never uses, demand a flat backdrop of it, key it
         # out, and AUDIT the cut. The audit is why a pose can now fail here: a
         # frame with a halo or background bleed used to be shipped and only
@@ -3985,12 +3974,12 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 "This exact character from the reference image"
                 + (" (shown again in the other image(s) in different poses of "
                    "the same motion)" if len(refs) > 1 else "")
-                + " — identical design, colors, face, and art style. CRITICAL: "
+                + " - identical design, colors, face, and art style. CRITICAL: "
                 "keep the EXACT SAME BODY BUILD, musculature, height, weight, head "
-                "size and limb proportions as the reference in EVERY frame — do NOT "
+                "size and limb proportions as the reference in EVERY frame - do NOT "
                 "slim him down, bulk him up, change his muscle definition, or restyle "
                 "the body between frames; ONLY the pose changes"
-                f" — now in this stance: {desc}. ONE single full-body "
+                f" - now in this stance: {desc}. ONE single full-body "
                 "character head to toe, exactly one figure, no text, no cropping of "
                 "limbs."
                 + identity,
@@ -4009,7 +3998,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             return got
 
         def _stop_reason(next_cost: float) -> str:
-            """Why this run must not start another paid call — or "" to go on.
+            """Why this run must not start another paid call - or "" to go on.
             Checked before EVERY pose: the estimate up front is a plan, and a
             plan is not a cap once retries and a slow API get involved."""
             if _time.monotonic() >= deadline:
@@ -4026,7 +4015,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # Every reference this run carried was the same view of the character:
         # the front-facing idle, plus previous frames that are near-copies of it.
         # The reference-conditioning literature is consistent that this is the
-        # weak configuration — two or three images from DISTINCT ANGLES improve
+        # weak configuration - two or three images from DISTINCT ANGLES improve
         # identity retention substantially, and four distinct angles carry more
         # information than ten near-identical front shots. It is also just what
         # animation has always done: a model sheet exists so the profile and
@@ -4036,7 +4025,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # It matters most in the case this tool is usually used for. A side-view
         # action game asks for side-view poses against a front-view anchor, so
         # the model re-invents the profile on EVERY call, slightly differently
-        # each time. That is not drift a re-roll fixes — it is drift the anchor
+        # each time. That is not drift a re-roll fixes - it is drift the anchor
         # never constrained, and re-rolling it buys another guess at the same
         # missing information.
         #
@@ -4062,7 +4051,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 break
             view_png = str(art_dir / f"reference_{label}.png")
             got = _chroma.generate(
-                "This exact character from the reference image — identical "
+                "This exact character from the reference image - identical "
                 "design, colours, face, build and art style. Show " + angle
                 + ". Exactly one character, no text, no ground shadow." + identity,
                 view_png, provider=provider, model=model, task_kind="anchor",
@@ -4072,8 +4061,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 timeout=call_timeout)
             _tally(got)
             # An auxiliary view IMPROVES the anchor; it is not part of it. A bad
-            # one is dropped and the run continues on the views it does have —
-            # failing the whole set because the profile came back badly would be
+            # one is dropped and the run continues on the views it does have - # failing the whole set because the profile came back badly would be
             # strictly worse than the single-view behaviour this replaces.
             ok_view, why = ((False, str(got.get("error") or "generation failed"))
                             if not got.get("ok") else _reference_sanity(view_png))
@@ -4094,7 +4082,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 # Stop BUYING, don't abort: the poses already painted still
                 # assemble into a partial sheet, and the caller is told exactly
                 # which ones never ran and why.
-                pose_errors.append({"name": pname, "error": f"skipped — {stop}"})
+                pose_errors.append({"name": pname, "error": f"skipped - {stop}"})
                 continue
             anim, _, idx = pname.partition("/")
             out_png = str(art_dir / f"pose_{pname.replace('/', '_')}.png")
@@ -4132,7 +4120,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # 3. Assemble + AUTO CONSISTENCY GATE, with bounded retry of flagged frames.
         # The gate scores every frame vs the reference AND for frame-to-frame build
         # drift; any flagged pose is re-rolled (on its rolling refs, not the bare
-        # anchor — see _rolling_refs) up to max_retries, keeping whichever roll
+        # anchor - see _rolling_refs) up to max_retries, keeping whichever roll
         # scores best. This turns the gate from "detects drift" into "converges
         # on a consistent sheet".
         import shutil as _shutil
@@ -4143,7 +4131,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             """Reconstruct the ANCHOR+ROLLING ref list a pose was first built
             with, so a RETRY keeps motion continuity. Re-rolling on the bare
             anchor (the old behavior) optimizes the gate's identity metric while
-            silently dropping the cross-frame conditioning — a re-rolled mid-cycle
+            silently dropping the cross-frame conditioning - a re-rolled mid-cycle
             frame could score better on identity yet pop out of the walk. The gate
             doesn't measure motion, so nothing caught it. Rebuild: the model
             sheet, plus the cycle's first frame for a closing frame, plus the
@@ -4173,7 +4161,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             lock_why = ("the reference reads as flat / limited-palette art, "
                         "where locking is free" if do_lock else
                         "the reference reads as painterly (many near-identical "
-                        "shades), where locking would band the shading — left off")
+                        "shades), where locking would band the shading - left off")
         else:
             do_lock = lock_mode in ("on", "true", "yes", "1")
             lock_why = f"palette_lock={palette_lock!r}, set explicitly"
@@ -4215,7 +4203,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     # re-extends its failed list from here, and `assembled` is
                     # about to be replaced by the next one.
                     pose_errors.append(
-                        {"name": pname, "error": f"regen skipped — {stop}"})
+                        {"name": pname, "error": f"regen skipped - {stop}"})
                     tries = 0
                     break
                 bak = pose_path[pname] + ".bak"
@@ -4223,7 +4211,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     _shutil.copy2(pose_path[pname], bak); backups[pname] = bak
                 except Exception:
                     pass
-                # Re-roll WITH the rolling refs, not the bare anchor — keep motion
+                # Re-roll WITH the rolling refs, not the bare anchor - keep motion
                 # continuity while the gate chases identity (see _rolling_refs).
                 _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
             asm2, cons2 = _assemble_and_gate()
@@ -4294,11 +4282,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             cons_note = ""
             if consistency.get("ok"):
                 cons_note = (f", consistency min {consistency.get('min')}"
-                             + (f" — REGEN {consistency['flagged']}" if consistency.get("flagged")
+                             + (f" - REGEN {consistency['flagged']}" if consistency.get("flagged")
                                 else " (all pass)"))
             # THE GATE HAS TO GATE. Retries are exhausted by this point, so a
             # sheet still carrying flagged frames is the best this run will do
-            # — and shipping it as ok=True is how "no outliers, min 80" reached
+            # - and shipping it as ok=True is how "no outliers, min 80" reached
             # a human as if it meant on-model, for a sheet whose every frame the
             # judge had rejected.
             #
@@ -4318,7 +4306,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     f"(floor {_CONSISTENCY_FLOOR}, best {consistency.get('min')}); "
                     f"worst: {', '.join(f'{lab} {sc}' for sc, lab in worst)}. "
                     "The sheet and preview were kept for inspection but MUST NOT be "
-                    "installed as-is — tighten character_prompt on the drifting "
+                    "installed as-is - tighten character_prompt on the drifting "
                     "detail, or lower the floor if this is as good as the model gets.")
 
             seq = assembled.get("sequence") or {}
@@ -4451,7 +4439,7 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
 
         order = list(_th.MOUTHS)
         # res_dir and name arrive from the model, and this writes with pathlib
-        # rather than the Write tool — so the PreToolUse lane hook never sees
+        # rather than the Write tool - so the PreToolUse lane hook never sees
         # it. "../../.." would land outside the project entirely; contain it
         # here, where the write happens.
         out_dir = (root / "game" / res_dir).resolve()
@@ -4518,12 +4506,12 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     """Run a GDScript headless and capture its output.
 
     The script MUST `extends SceneTree`, do its work in `_init()`, and call
-    `quit()` — without quit() it runs until the timeout. Returns stdout, stderr,
+    `quit()` - without quit() it runs until the timeout. Returns stdout, stderr,
     and any parse/script errors (Godot prints SCRIPT ERROR and still exits 0, so
     check `errors`, not just the exit code).
 
     godot_project is the GODOT project directory (the one holding project.godot),
-    not the Builders Gate root — that one is `project_dir`.
+    not the Builders Gate root - that one is `project_dir`.
     """
     try:
         return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
@@ -4533,14 +4521,14 @@ def godot_run(script: str, godot_project: Optional[str] = None,
 
 # THE QA SEAT HAD NO WAY TO RUN A TEST. Its mission is "Own tests, repro,
 # regression" and the brief it is dispatched with demands "tests at the known
-# baseline, no new failures" — a question that could only be answered by
+# baseline, no new failures" - a question that could only be answered by
 # hand-rolling a godot_run call per script, reading raw stdout, and counting by
 # eye. dispatch._verify_rule already NAMES this project's test scripts in every
 # seat prompt (game/tests/*.gd); this is the tool that runs the thing the prompt
 # points at, and returns a per-script verdict instead of a wall of engine chatter.
 #
-# The pass/fail convention is a marker in the output — a line containing FAIL is
-# a failure, one containing PASS is a pass — because that is what the existing
+# The pass/fail convention is a marker in the output - a line containing FAIL is
+# a failure, one containing PASS is a pass - because that is what the existing
 # .gd test scripts already print and inventing a framework nobody's tests use
 # would make this tool answer about nothing. Exit code alone is not enough:
 # Godot prints SCRIPT ERROR and still exits 0, which is why godot_run reports
@@ -4551,19 +4539,19 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
                    godot_project: Optional[str] = None) -> dict:
     """Run this project's own Godot test scripts headless and score them.
 
-    Discovers `<godot project>/tests/*.gd` — resolved through the project's real
+    Discovers `<godot project>/tests/*.gd` - resolved through the project's real
     layout, so it works whether project.godot sits at the root (bgate init) or
     in <root>/game (godot_scaffold). Pass `paths` to run a subset; each may be
     absolute, project-relative, or relative to the Godot project.
 
-    Returns a per-script verdict — ok, PASS/FAIL marker counts, exit code,
-    seconds, engine errors, and the OUTPUT of the ones that failed — plus the
+    Returns a per-script verdict - ok, PASS/FAIL marker counts, exit code,
+    seconds, engine errors, and the OUTPUT of the ones that failed - plus the
     totals the QA brief asks for in one number: `scripts_failed` and
     `failures`.
 
     A PROJECT WITH NO TEST SCRIPTS IS NOT A PASS. It answers ok=false with
     no_tests=true and says where it looked, because "0 failures" out of nothing
-    run is the single most misleading thing this tool could report — a regression
+    run is the single most misleading thing this tool could report - a regression
     gate that silently tests nothing looks exactly like a green one.
 
     Each script must `extends SceneTree` and call `quit()`, like godot_run.
@@ -4576,7 +4564,7 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
                 else _project.game_dir(root))
         if base is None or not (_Path(base) / "project.godot").is_file():
             return {"ok": False, "no_tests": True,
-                    "error": "no Godot project found — looked for project.godot "
+                    "error": "no Godot project found - looked for project.godot "
                              f"at {root} and {_Path(root) / 'game'}. Run "
                              "godot_scaffold, or pass godot_project."}
         base = _Path(base)
@@ -4603,7 +4591,7 @@ def godot_test_run(paths: Optional[list[str]] = None, timeout: int = 180,
                 "ok": False, "no_tests": True, "tests_dir": str(tests_dir),
                 "missing": missing, "scripts": [], "scripts_run": 0,
                 "error": (f"none of {missing} exist" if missing else
-                          f"no test scripts in {tests_dir} — this project has "
+                          f"no test scripts in {tests_dir} - this project has "
                           "no regression baseline to check. Write one "
                           "(extends SceneTree, print PASS/FAIL per assertion, "
                           "call quit()) before claiming tests are green."),
@@ -4688,7 +4676,7 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
 
     The template ships the BGate telemetry autoload already registered, and a
     player whose feel tunables (gravity, fall_multiplier, coyote_time) are both
-    exported AND emitted on jump/land — so the first playtest already produces
+    exported AND emitted on jump/land - so the first playtest already produces
     the telemetry join.
 
     A non-empty dest is refused unless force or replace, and THOSE TWO ARE NOT
@@ -4704,7 +4692,7 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
     force used to mean what replace means now, and it was a data-loss bug in a
     feature's clothing: someone topping up one missing file lost their
     project.godot, their player.gd and their export_presets.cfg in place. That
-    last one is unrecoverable in the usual case — the .gitignore this same
+    last one is unrecoverable in the usual case - the .gitignore this same
     template stamps excludes export_presets.cfg, so the customised export
     targets were not in git either.
 
@@ -4723,7 +4711,7 @@ def godot_scaffold(name: str, kind: str = "2d", dest: Optional[str] = None,
 
 @_tool
 def godot_check_project(godot_project: str, timeout: int = 180) -> dict:
-    """Import/validate a project headless — the 'does it still build' check.
+    """Import/validate a project headless - the 'does it still build' check.
 
     godot_project: the directory holding project.godot.
     """
@@ -4739,7 +4727,7 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     """Bring an asset (e.g. a Blender .glb) into a project and VERIFY the engine loads it.
 
     Copies the file in, triggers a headless import, then loads the resource
-    IN-ENGINE and reports the meshes Godot actually built — tri counts, UVs,
+    IN-ENGINE and reports the meshes Godot actually built - tri counts, UVs,
     materials, bounding box. Copying a file in is not integration: an asset that
     imports with zero surfaces is a silent failure, and this catches it by
     checking the engine's view, not the file's presence. The end of the
@@ -4747,8 +4735,8 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
 
     THE DESTINATION IS KEYED ON THE FILENAME ALONE, so a second `hero.glb` from
     a different output directory lands on the first one and wins. Keeping the
-    existing .import and its uid is right — every .tscn in the project points at
-    that uid — but the mesh underneath it has changed, and `replaced` in the
+    existing .import and its uid is right - every .tscn in the project points at
+    that uid - but the mesh underneath it has changed, and `replaced` in the
     result is where that is said. Read it before telling anyone the import was
     clean.
 
@@ -4763,7 +4751,7 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     reads like a locked file rather than like the race it is. Batching them in
     parallel to save wall-clock buys an error instead. And a `src_path` already
     inside the project makes this copy a file onto itself, which Windows also
-    refuses — generate to a staging directory and import FROM there.
+    refuses - generate to a staging directory and import FROM there.
 
     godot_project: the directory holding project.godot.
     """
@@ -4772,7 +4760,7 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
                                      timeout=timeout)
         warning = (result.get("alpha_mode") or {}).get("warning")
         if warning:
-            _log("asset", f"alphaMode:MASK in {src_path} — {warning[:160]}")
+            _log("asset", f"alphaMode:MASK in {src_path} - {warning[:160]}")
         # Register the landed asset so asset_verify covers it from birth. Only
         # possible when the game project lives inside the bgate root.
         if result.get("ok") and result.get("copied_to"):
@@ -4813,7 +4801,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
                         nominal_size_m: float = 1.8, with_camera: bool = False,
                         overwrite_scene: bool = False, label: str = "",
                         timeout: int = 300) -> dict:
-    """Take a finished .glb the rest of the way — into the engine, into a scene.
+    """Take a finished .glb the rest of the way - into the engine, into a scene.
 
     THE STEP THE 3D PATH WAS MISSING. Everything before this ends at a file:
     blender_combine writes a .glb, and blender_turnaround photographs a BLENDER
@@ -4825,7 +4813,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     on a lit floor, and photographed by Godot's own renderer.
 
     THE SCREENSHOT COMES BACK IN THIS RESULT AS AN IMAGE, and it is the first
-    time anyone — you included — sees the asset under the renderer that will
+    time anyone - you included - sees the asset under the renderer that will
     ship it. Look at it, then read `checks`: the measurements are the half you
     cannot argue with.
 
@@ -4833,7 +4821,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     materials_carry_a_texture, real_world_size and has_collider are required;
     has_skeleton / has_animations / has_blend_shapes report without failing, so
     a prop is not marked broken for having no rig. A FAILING GATE STILL WRITES
-    THE SCENE AND TAKES THE SCREENSHOT, deliberately — a 2880 m `giant_hero`
+    THE SCENE AND TAKES THE SCREENSHOT, deliberately - a 2880 m `giant_hero`
     fails real_world_size and you still get the frame, because a gate that hides
     the asset is one you cannot debug.
 
@@ -4843,9 +4831,9 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     the importer builds from the real geometry, and no capsule. Pass
     character_body="RigidBody3D" for a prop that should fall and be pushed, or
     any class name to override; `root_body` and `collision` in the result say
-    what it became. Every asset used to be wrapped in CharacterBody3D — which
+    what it became. Every asset used to be wrapped in CharacterBody3D - which
     only moves when code calls move_and_slide(), so a crate delivered that way
-    never simulated at all — AND carried both an accurate trimesh and an
+    never simulated at all - AND carried both an accurate trimesh and an
     invisible person-shaped capsule on two different bodies at once.
 
     physics: auto (the strategy above) | all (mesh shapes on every mesh, capsule
@@ -4868,7 +4856,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
 
     REDELIVERING DOES NOT CLOBBER THE SCENE. If <name>.tscn already exists its
     model ext_resource is repointed at the new import and the node tree is left
-    exactly as the human left it — scripts, extra nodes, tweaked transforms all
+    exactly as the human left it - scripts, extra nodes, tweaked transforms all
     survive, and `scene_action` in the result says which happened (written /
     rewired / left_alone). Pass overwrite_scene=True to deliberately throw those
     edits away. The old behaviour rewrote the file every time, which during one
@@ -4912,7 +4900,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
         if failed and not result.get("error"):
             result["error"] = (
                 "the asset was delivered but the gate failed on "
-                + ", ".join(failed) + " — the scene and the screenshot were "
+                + ", ".join(failed) + " - the scene and the screenshot were "
                 "written anyway; look at the frame and the `checks` rows")
         shot = result.get("screenshot")
         if shot:
@@ -4939,7 +4927,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
                 result["artifact_id"] = artifact["id"]
             else:
                 result["artifact_note"] = (
-                    "no artifact was registered for this frame — it was written "
+                    "no artifact was registered for this frame - it was written "
                     "outside the project root, so art QA and the dashboard "
                     "cannot see it")
             _log("asset", f"delivered {stem} into the engine"
@@ -4976,7 +4964,7 @@ def _res_pair(godot_project: str, path: str, suffix: str) -> tuple[_Path, str]:
     """A res:// path and its file on disk, from either form."""
     gd = _Path(godot_project).expanduser().resolve()
     if not (gd / "project.godot").is_file():
-        raise ValueError(f"no project.godot in {gd} — that is not a Godot project")
+        raise ValueError(f"no project.godot in {gd} - that is not a Godot project")
     rel = path[len("res://"):] if path.startswith("res://") else path
     rel = rel.replace("\\", "/").lstrip("/")
     if not rel.endswith(suffix):
@@ -4995,7 +4983,7 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
 
     BSP: cut the map in two until a piece holds one room, put a room in each
     piece, then join the two halves of every cut on the way back up. That join
-    is the guarantee — it builds a spanning tree over the rooms, so every room
+    is the guarantee - it builds a spanning tree over the rooms, so every room
     is reachable from every other by construction rather than by luck. The
     result says `connected` and it is checked with a flood fill, not asserted.
 
@@ -5049,12 +5037,12 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     editor involved, so it runs headless and is a normal reviewable diff.
 
     WHICH TILE GOES WHERE is decided by a neighbour bitmask, the same job the
-    Godot editor's terrain sets do — and they only run in the editor, which is
+    Godot editor's terrain sets do - and they only run in the editor, which is
     why it is redone here. `wall_layout` says how the wall sheet is arranged:
 
       blob47   8-bit mask, 47 tiles, row-major from (wall_atlas_x, wall_atlas_y),
                `wall_columns` wide, masks ascending. Sides plus corners.
-      grid16   4-bit mask, 16 tiles, same layout rule. Sides only — right for a
+      grid16   4-bit mask, 16 tiles, same layout rule. Sides only - right for a
                wall one cell thick.
       solid    one tile everywhere. No autotiling.
       none     no wall layer at all; floor only.
@@ -5063,7 +5051,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     or bought from an asset pack has its own order, and a wrong order draws a
     complete, confident, wrong-looking level. Check the first screenshot. If
     `unmapped` in the result is non-empty, the sheet is missing shapes the level
-    needs and that field says which masks and how often — that is what to hand
+    needs and that field says which masks and how often - that is what to hand
     an artist.
 
     Re-running REPLACES the layers it wrote rather than adding more, so
@@ -5080,7 +5068,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
 
         if not tiles_disk.is_file():
-            raise ValueError(f"no tileset at {tiles_res} — generate or import it "
+            raise ValueError(f"no tileset at {tiles_res} - generate or import it "
                              "first; a level cannot pick tiles from nothing")
         parsed_set = _tilemap.parse_tileset(
             tiles_disk.read_text(encoding="utf-8", errors="replace"))
@@ -5089,7 +5077,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         missing = sorted(w for w in wanted if w not in parsed_set["sources"])
         if missing:
             raise ValueError(
-                f"{tiles_res} has no source {missing} — it has {have}. Source "
+                f"{tiles_res} has no source {missing} - it has {have}. Source "
                 "ids are not indexes; a tileset numbers them however it likes.")
 
         fresh = not scene_disk.is_file()
@@ -5116,7 +5104,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             floor_name=floor_name, wall_name=wall_name)
 
         # THE CHECK THAT MATTERS. The built-in layouts are complete by
-        # construction — every mask has an entry — so "unmapped" can only ever
+        # construction - every mask has an entry - so "unmapped" can only ever
         # catch a hand-written table. What actually goes wrong is the layout
         # pointing at atlas coordinates the SHEET does not define: Godot places
         # nothing there, reports nothing, and the level is invisible in exactly
@@ -5137,7 +5125,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 + "; ".join(f"{name} wants {coords}"
                             for name, coords in absent.items())
                 + ". A cell pointing at an undefined tile draws nothing and "
-                  "says nothing — add the tiles to the atlas, move the layout "
+                  "says nothing - add the tiles to the atlas, move the layout "
                   "with *_atlas_x/_atlas_y, or change wall_layout.")
 
         wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent)
@@ -5145,7 +5133,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             written = {"written": False, "backup": None}
         elif fresh:
             # A brand-new scene has no previous bytes to back up, and apply()
-            # refuses a missing file on purpose — that refusal is what catches a
+            # refuses a missing file on purpose - that refusal is what catches a
             # typo'd path everywhere else.
             scene_disk.parent.mkdir(parents=True, exist_ok=True)
             scene_disk.write_text(wired["text"], encoding="utf-8")
@@ -5184,7 +5172,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
     The look-iteration loop: headless checks prove the game boots, this shows
     what it LOOKS like. A game window appears briefly on the user's screen
     (rendering needs a display) and closes itself after the capture. The shot
-    is archived to the preview gallery — check it before and after visual work.
+    is archived to the preview gallery - check it before and after visual work.
 
     THE WINDOW NEVER GAINS TRUE FOREGROUND FOCUS ON WINDOWS, AND THAT IS THIS
     TOOL'S ARTIFACT, NOT YOUR GAME'S. Read this before "fixing" anything it
@@ -5193,8 +5181,8 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
     The capture window is spawned by a background process, so Windows does not
     hand it the foreground. The mouse is therefore never captured:
     `Input.mouse_mode` stays VISIBLE no matter what `_ready` asked for, and any
-    code gated on MOUSE_MODE_CAPTURED — a viewfinder, a first-person look
-    controller, a pointer-lock HUD — collapses in the shot while working
+    code gated on MOUSE_MODE_CAPTURED - a viewfinder, a first-person look
+    controller, a pointer-lock HUD - collapses in the shot while working
     perfectly for a human running the same build.
 
     Measured cost of not knowing: a previous pass "fixed" this by re-asserting
@@ -5209,7 +5197,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
 
     Two more things this tool cannot give you. It returns NO STDOUT, so a
     windowed run's diagnostics must be written to `user://` and read back. And
-    `res://.bgate_shot.gd` is the harness's own helper — it can error during
+    `res://.bgate_shot.gd` is the harness's own helper - it can error during
     unrelated headless runs; work around it, do not delete it.
 
     godot_project: the directory holding project.godot.
@@ -5233,7 +5221,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
                  ref=archived or result["path"])
         # ON EVERY RESULT, not only when something looks wrong. The failure this
         # prevents is a correct-looking screenshot being read as evidence about
-        # input — by which point the misreading has already been acted on. A
+        # input - by which point the misreading has already been acted on. A
         # caveat that only appears once you suspect a problem arrives after the
         # bug report has been written.
         result["focus"] = {
@@ -5242,7 +5230,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
             "note": ("this window never takes true foreground focus on Windows, "
                      "so Input.mouse_mode stays VISIBLE and anything gated on "
                      "MOUSE_MODE_CAPTURED will not appear in this shot. That is "
-                     "the harness, not the game — do not fix the game for it, "
+                     "the harness, not the game - do not fix the game for it, "
                      "and do not re-assert capture per frame to make the shot "
                      "look right. Check input with godot_run and an assertion, "
                      "or with a human at the keyboard."),
@@ -5256,7 +5244,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
 def godot_inspect_resource(godot_project: str, res_path: str, timeout: int = 180) -> dict:
     """Load a res:// resource in-engine and report what it actually became.
 
-    Meshes, tri counts, per-surface UV/material, bounding box — the engine's
+    Meshes, tri counts, per-surface UV/material, bounding box - the engine's
     view of an asset already in the project.
 
     godot_project: the directory holding project.godot.
@@ -5275,7 +5263,7 @@ def godot_retarget_check(godot_project: str, res_path: str,
     The rigs this pipeline builds carry Godot's own SkeletonProfileHumanoid bone
     names, and the whole point of that is that any humanoid animation library
     then plays on the character. Nothing tested that claim until this tool. A
-    .glb can export 23 perfectly-named bones in a FLAT hierarchy — blender_rig
+    .glb can export 23 perfectly-named bones in a FLAT hierarchy - blender_rig
     reports 0 unweighted, godot_deliver_asset photographs it happily, and the
     character can be animated by nothing except a clip authored for it alone.
 
@@ -5290,12 +5278,12 @@ def godot_retarget_check(godot_project: str, res_path: str,
                         silently and moves zero.
 
     `retargetable` is the verdict. False means the humanoid animation ecosystem
-    is unavailable to this asset — treat it the way you treat `rigged: false`.
+    is unavailable to this asset - treat it the way you treat `rigged: false`.
 
     bone_map_res: a res:// path to save the BoneMap to, or "" to skip. Written,
     it is what the user's import settings point at to retarget real clips.
 
-    res_path must already be imported — godot_import_asset first.
+    res_path must already be imported - godot_import_asset first.
     """
     try:
         result = _godot.retarget_check(godot_project, res_path,
@@ -5323,11 +5311,11 @@ def godot_evidence(godot_project: str, at: float = 1.0, scene: Optional[str] = N
     whether a hitbox lines up with its sprite, or whether an entity is on
     screen at all. This runs the game the same way, then walks the live tree at
     capture time and reports every measurable node as screen-pixel bounds,
-    visibility, z, and — for progress bars and labels — its RUNTIME VALUE.
+    visibility, z, and - for progress bars and labels - its RUNTIME VALUE.
 
     Returns beauty.png, an overlay.png with collision shapes (red) and other
     bounds (blue) stroked over the frame, and manifest.json with `entities` and
-    `ui`. Pair with `causal_chains` — the manifest says what was on screen, the
+    `ui`. Pair with `causal_chains` - the manifest says what was on screen, the
     chains say why it happened.
 
     godot_project: the directory holding project.godot.
@@ -5377,13 +5365,13 @@ def evidence_check_ui(manifest_path: str, expect: dict,
 
 
 # ---------------------------------------------------------------------------
-# Scene editing — the node-level surgery the dashboard has always had
+# Scene editing - the node-level surgery the dashboard has always had
 # ---------------------------------------------------------------------------
 # bgate_core.scenewire has parsed and edited .tscn text since the Atlas builder
 # shipped: load_steps accounting, ext_resource ids, name uniquing, block spans,
 # a dry run on every mutation and a backup on every write. All of it was
 # reachable from a browser and none of it from here, so an agent told to place a
-# prop or repoint a texture hand-edited the file as TEXT — inventing ids,
+# prop or repoint a texture hand-edited the file as TEXT - inventing ids,
 # guessing at load_steps, and finding out at godot_check_project.
 #
 # These are the same functions the dashboard's /api/scene/* routes call, with
@@ -5395,7 +5383,7 @@ def evidence_check_ui(manifest_path: str, expect: dict,
 def _res_declared_type(asset_disk: _Path) -> Optional[str]:
     """The class a .tres declares itself to be. None for anything else.
 
-    Guessing from the suffix calls every .tres a SpriteFrames — right for what
+    Guessing from the suffix calls every .tres a SpriteFrames - right for what
     the sprite pipeline writes, wrong for the project's TileSet. An ext_resource
     with the wrong type loads as null: the node draws nothing and says nothing.
     """
@@ -5411,7 +5399,7 @@ def _res_declared_type(asset_disk: _Path) -> Optional[str]:
 def _scene_lock_conflict(scene_disk: _Path) -> Optional[dict]:
     """The seat blocking a write to this scene, or None if we may proceed.
 
-    A seat holding its OWN lock is not blocked by it — that is what taking the
+    A seat holding its OWN lock is not blocked by it - that is what taking the
     lock was for. Everyone else is, and `force` is the deliberate override.
     """
     held = _assets.lock_holder(_root(), scene_disk)
@@ -5428,7 +5416,7 @@ def _scene_edit(godot_project: str, scene: str, mutate, *,
     """Shared shape for every scene mutation: resolve, lock, edit, back up.
 
     ``mutate`` takes the scene text and returns scenewire's ``{text, ...}``.
-    Nothing here writes when ``dry_run`` — it returns the resulting text so the
+    Nothing here writes when ``dry_run`` - it returns the resulting text so the
     caller can read the diff before committing, which is the reviewable step a
     hand-edit never had.
     """
@@ -5469,14 +5457,14 @@ def _scene_edit(godot_project: str, scene: str, mutate, *,
 def scene_outline(godot_project: str, scene: str, match: str = "",
                   role: str = "", parent: str = "", properties: bool = False,
                   limit: int = 120) -> dict:
-    """Read a scene's node tree — paths, types, roles, scripts, resources.
+    """Read a scene's node tree - paths, types, roles, scripts, resources.
 
     THE READ THAT MAKES THE EDITS SAFE. Every other tool here addresses nodes by
     PATH ("Characters/Desk_12"), and this is where a path comes from. Guessing
     one costs a failed call; reading one costs nothing.
 
     FILTER BEFORE YOU LOOK. A hand-authored scene has thirty nodes and a baked
-    floor plate has fifteen hundred — dumping that whole tree would bury the
+    floor plate has fifteen hundred - dumping that whole tree would bury the
     task in furniture. `match` is a substring of the node name or path, `role`
     is one of the roles the builder groups by (character, prop, visual, ui,
     collision, layer, camera, audio, controller, marker, instance), `parent`
@@ -5493,7 +5481,7 @@ def scene_outline(godot_project: str, scene: str, match: str = "",
         text = scene_disk.read_text(encoding="utf-8", errors="replace")
         nodes = _scenewire.outline(text)
         total = len(nodes)
-        # Counted over the WHOLE scene, before filtering — "what is in here" is
+        # Counted over the WHOLE scene, before filtering - "what is in here" is
         # the question this answers, and it must not change shape depending on
         # what the caller happened to search for.
         roles: dict[str, int] = {}
@@ -5541,8 +5529,7 @@ def scene_wire(godot_project: str, scene: str, asset: str,
 
     What this does that editing the text does not: allocates a non-colliding
     ext_resource id, reuses the existing one if the scene already references the
-    file, bumps load_steps, and uniquifies the node name against its siblings —
-    the four things a hand-written block gets wrong, three of which the engine
+    file, bumps load_steps, and uniquifies the node name against its siblings - the four things a hand-written block gets wrong, three of which the engine
     reports as something else entirely.
 
     A .gd is not an asset here; a script attaches to a node that already exists,
@@ -5568,7 +5555,7 @@ def scene_unwire(godot_project: str, scene: str, node: str,
                  force: bool = False) -> dict:
     """Remove a node from a scene, and sweep any resource left referenced by nothing.
 
-    Refuses a node that has children unless `recursive` — deleting a parent and
+    Refuses a node that has children unless `recursive` - deleting a parent and
     silently orphaning its subtree is not a thing anyone means. Run it dry first
     if you are not certain what hangs off it; `scene_outline(parent=...)` says.
     """
@@ -5586,7 +5573,7 @@ def scene_unwire(godot_project: str, scene: str, node: str,
 def scene_node_add(godot_project: str, scene: str, name: str, node_type: str,
                    parent: str = ".", props: Optional[dict] = None,
                    dry_run: bool = False, force: bool = False) -> dict:
-    """Add a plain node — a Camera2D, a Timer, a CanvasLayer, a grouping Node2D.
+    """Add a plain node - a Camera2D, a Timer, a CanvasLayer, a grouping Node2D.
 
     A scene is not only the files in it. `props` sets properties in the same
     call, in Godot's own literal syntax where the type needs it:
@@ -5608,11 +5595,11 @@ def scene_node_add(godot_project: str, scene: str, name: str, node_type: str,
 def scene_set_property(godot_project: str, scene: str, node: str, key: str,
                        value=None, clear: bool = False,
                        dry_run: bool = False, force: bool = False) -> dict:
-    """Set one property on one node — position, z_index, visible, scale, a flag.
+    """Set one property on one node - position, z_index, visible, scale, a flag.
 
     THIS IS THE MOVE TOOL. "Put the desk two cells left" is this call with
     key="position". Vector and colour values are Godot literals passed as
-    strings — "Vector2(320, 96)", "Color(1, 0.5, 0, 1)" — while numbers, bools
+    strings - "Vector2(320, 96)", "Color(1, 0.5, 0, 1)" - while numbers, bools
     and strings pass through as themselves.
 
     `clear=True` removes the property instead of setting it, which is how a node
@@ -5638,12 +5625,12 @@ def scene_set_property(godot_project: str, scene: str, node: str, key: str,
 def scene_swap_resource(godot_project: str, scene: str, node: str, asset: str,
                         property: str = "", dry_run: bool = False,
                         force: bool = False) -> dict:
-    """Point a node at a different file — try that sheet, that music, that scene.
+    """Point a node at a different file - try that sheet, that music, that scene.
 
     By hand this is four steps (find the scene, add an ext_resource, retype the
     property, delete the resource that is now unused) and the fourth is the one
     everybody skips, which leaves the old asset looking referenced to every tool
-    that counts references — including Atlas's dead-asset rail.
+    that counts references - including Atlas's dead-asset rail.
     """
     try:
         asset_disk, asset_res = _res_pair(godot_project, asset, "")
@@ -5700,7 +5687,7 @@ def scene_reparent_node(godot_project: str, scene: str, node: str,
     """Move a node and everything under it beneath a different parent.
 
     Godot stores a node's transform LOCAL to its parent, and this moves the
-    declaration, not the maths — a node reparented under something offset will
+    declaration, not the maths - a node reparented under something offset will
     land somewhere else on screen. Reparent for structure (into a YSort, onto a
     CanvasLayer), then fix position with scene_set_property.
     """
@@ -5715,7 +5702,7 @@ def scene_reparent_node(godot_project: str, scene: str, node: str,
 
 
 # ---------------------------------------------------------------------------
-# Causal chains — DESIGN.md §8 over shipped telemetry, no engine required
+# Causal chains - DESIGN.md §8 over shipped telemetry, no engine required
 
 
 def _telemetry_path(session: Optional[int], telemetry_path: str) -> str:
@@ -5740,7 +5727,7 @@ def causal_chains(spec: str, session: Optional[int] = None,
 
     A log line says `whiffed reason=facing`. A causal chain says the attack was
     thrown, cleared its cooldown, reached contact, PASSED the range gate at
-    dist=104 vs reach=115, and only then failed on facing — a completely
+    dist=104 vs reach=115, and only then failed on facing - a completely
     different bug from failing on range, which the raw event cannot distinguish.
 
     Works on telemetry the game ALREADY emits: no engine, no new store, no
@@ -5748,7 +5735,7 @@ def causal_chains(spec: str, session: Optional[int] = None,
     a fixed order, so the gate that failed implies every earlier one passed.
 
     `spec` names one of THIS PROJECT's chain specs (see `causal_specs`). The
-    harness ships none — event kinds are your game's vocabulary, not Builders
+    harness ships none - event kinds are your game's vocabulary, not Builders
     Gate's. Draft one from a telemetry file with `causal_infer_spec`.
 
     Filter with actor, outcome ("landed", "failed", "blocked", "refused",
@@ -5778,7 +5765,7 @@ def causal_specs() -> dict:
     """This project's chain specs, and whether each one's gate order is trusted.
 
     Read before trusting a chain. Every PASS in a chain is an INFERENCE from
-    gate ordering, not an observation — sound only while the ladder matches the
+    gate ordering, not an observation - sound only while the ladder matches the
     game's real resolution order. `order_verified: false` means nobody has
     checked it against the source yet, and chains from it mark passed gates
     with '~'.
@@ -5787,7 +5774,7 @@ def causal_specs() -> dict:
         specs = _causal.load_specs(_root())
         if not specs:
             return {"ok": True, "specs": {}, "count": 0,
-                    "hint": "none defined for this project — run "
+                    "hint": "none defined for this project - run "
                             "causal_infer_spec against a telemetry file to "
                             "draft one from the events your game emits."}
         return {"ok": True, "count": len(specs),
@@ -5810,7 +5797,7 @@ def causal_infer_spec(session: Optional[int] = None, telemetry_path: str = "",
     It CANNOT infer the one thing that matters most: the ORDER of the gates.
     Order is a property of your resolution code, not of its telemetry, and the
     whole passed-gate inference rests on it. So the draft comes back
-    `order_verified: false` — open your resolution function, put the ladder in
+    `order_verified: false` - open your resolution function, put the ladder in
     the order it actually checks, add each gate's detail fields, then set
     order_verified true. Until you do, chains mark passed gates with '~'.
 
@@ -5840,7 +5827,7 @@ def ref_pin(name: str, path: str, kind: str = "style", note: str = "") -> dict:
     The file is copied into .bgate/refs/ (durable, travels with the project)
     under the given name; every seat brief lists the pins, and image_edit /
     image_sprites accept pin names anywhere they accept paths. Pin a character's
-    approved reference, the style anchor, concept mocks from the user — the
+    approved reference, the style anchor, concept mocks from the user - the
     things art must stay consistent WITH. Re-pinning a name upgrades the anchor
     in place. kind: character | style | ui | concept.
     """
@@ -5861,7 +5848,7 @@ def ref_list(kind: Optional[str] = None) -> dict:
 
 @_tool
 def profile_set(name: str, traits: str, style: str, negative: str) -> dict:
-    """Store a character's visual identity — written while LOOKING at the pinned
+    """Store a character's visual identity - written while LOOKING at the pinned
     reference, never from memory. Injected automatically into every
     image_sprites generation for this character, and consistency_check judges
     against it. traits = what the character IS; style = the rendering style
@@ -5886,7 +5873,7 @@ def profile_get(name: str) -> dict:
 
 @_tool
 def consistency_check(candidate_path: str, character: str) -> dict:
-    """Judge a generated frame against its character — from a BUILT comparison,
+    """Judge a generated frame against its character - from a BUILT comparison,
     never from memory. Composes reference | candidate side-by-side on a
     checkerboard (alpha honesty), archives it to the gallery, and returns the
     profile checklist + a palette-drift tripwire. YOU then look at the
@@ -5931,7 +5918,7 @@ def consistency_check(candidate_path: str, character: str) -> dict:
         archived = _archive_preview(str(out),
                                     f"check-{_Path(candidate_path).stem}"[:40])
 
-        # Palette tripwire (advisory — catches color drift, blind to identity).
+        # Palette tripwire (advisory - catches color drift, blind to identity).
         def _pal(img, n=6):
             img = img.copy()
             img.thumbnail((128, 128))
@@ -5951,7 +5938,7 @@ def consistency_check(candidate_path: str, character: str) -> dict:
                  if pa and pb else None)
 
         checklist = ["same character design (species/build/proportions)",
-                     "same rendering style (brushwork/detail level — no added "
+                     "same rendering style (brushwork/detail level - no added "
                      "texture like fur, hair, etched lines)",
                      "same palette family", "no extra elements (glow, shadow, props)"]
         if profile:
@@ -5959,12 +5946,12 @@ def consistency_check(candidate_path: str, character: str) -> dict:
             checklist.insert(1, f"holds style: {profile['style'][:160]}")
             checklist.append(f"nothing from the negative list: {profile['negative'][:160]}")
 
-        # ALPHA / TRANSPARENCY TRIPWIRE (automated — the palette check above is
+        # ALPHA / TRANSPARENCY TRIPWIRE (automated - the palette check above is
         # blind to transparency because it samples only a>64). White halos,
         # feathered fringes, opaque background bleed, dirty RGB under zero alpha
         # and hollow interiors are what a checklist-by-eye keeps missing. The
         # measurements live in bgate_core.chroma.audit, which is the SAME code
-        # the keyable path gates on at generation time — a frame cannot pass one
+        # the keyable path gates on at generation time - a frame cannot pass one
         # and fail the other.
         try:
             alpha = _chroma.audit(candidate_path)
@@ -5986,7 +5973,7 @@ def consistency_check(candidate_path: str, character: str) -> dict:
                                   "line explicitly. Any fail = do not land. If "
                                   "alpha.flags is non-empty the frame AUTO-FAILS on "
                                   "transparency (white halo / bleed / hollow / dirty "
-                                  "alpha) — regenerate; do not land it.")}
+                                  "alpha) - regenerate; do not land it.")}
         try:
             _artifacts.record_check(
                 _root(), candidate_path, "consistency", result)
@@ -6007,7 +5994,7 @@ def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
     reference. The score (0-100 similarity) and reasons are stored on the
     revision under metadata.qa_review so the dashboard can show why.
 
-    verdict 'fail' REJECTS the revision outright — refusing to ship something is
+    verdict 'fail' REJECTS the revision outright - refusing to ship something is
     a call a machine is allowed to make alone. verdict 'pass' does NOT approve
     it: the pass is recorded and the revision stays a candidate, marked
     machine-checked and queued for a human to approve in the dashboard. An LLM's
@@ -6031,7 +6018,7 @@ def art_qa_verdict(artifact_id: int, verdict: str, score: int = 0,
                 "score": max(0, min(int(score or 0), 100)),
                 "status": reviewed["status"], "awaiting_human": awaiting,
                 "logical_name": art["logical_name"], "revision": art["revision"],
-                **({"next": "a human approves this revision in the dashboard — "
+                **({"next": "a human approves this revision in the dashboard - "
                             "art-QA cannot promote it to 'approved'"}
                    if awaiting else {})}
     except LookupError as exc:
@@ -6047,26 +6034,25 @@ def art_tournament_verdict(match_id: int, winner_artifact_id: int,
 
     art_qa_verdict asks "is this on-model" against a reference. This asks a
     different question a reviewer only sees when dispatched against a
-    tournament brief: given two candidates shown in a RANDOMISED order —
-    fixed when the match was opened, before you were asked, and not something
-    you control or need to look up — which one is better. The brief you were
+    tournament brief: given two candidates shown in a RANDOMISED order - fixed when the match was opened, before you were asked, and not something
+    you control or need to look up - which one is better. The brief you were
     dispatched with lists each match's two images in that settled order and is
     the only place match ids come from.
 
-    PICK A WINNER — do not skip a match because it feels close. The
+    PICK A WINNER - do not skip a match because it feels close. The
     VLM-as-judge research behind this tool is consistent that comparative
     judgement ("which is better") is far more reliable than an absolute
     score, but only if every match actually resolves; an abstained match
     just removes one data point from a rating that already has few of them.
 
-    winner_artifact_id must be one of the two candidates IN THIS match — an
+    winner_artifact_id must be one of the two candidates IN THIS match - an
     id from a different match or a different logical_name is refused, not
     silently recorded. So is a second verdict on a match already decided:
     re-sending after a dropped response used to overwrite the first pick in
     silence, so a retry is now an error rather than a rewrite.
 
     Returns {ok, match_id, logical_name, winner_id}. The rating itself is
-    NOT computed here — see art_tournament_standings, which derives it fresh
+    NOT computed here - see art_tournament_standings, which derives it fresh
     from every decided match so a corrected verdict can never leave a stale
     number behind.
     """
@@ -6087,14 +6073,14 @@ def art_tournament_standings(logical_name: str, tournament_ref: str = "") -> dic
     """Elo standings for a target, derived fresh from its decided matches.
 
     `tournament_ref` scopes the result to ONE tournament. Left empty, every
-    match ever recorded for `logical_name` is pooled — which is the right
+    match ever recorded for `logical_name` is pooled - which is the right
     answer for a target run once, and misleading for one re-tournamented after
     new candidates landed, since the two runs' verdicts then rate each other's
     candidates. Pass the ref the tournament was opened with to separate them.
 
     Returns {logical_name, standings: [{artifact_id, rating, matches, wins}]
     ranked highest first, decided_matches, pending_matches}. An artifact
-    with no matches yet does not appear — it has no rating to report.
+    with no matches yet does not appear - it has no rating to report.
     """
     try:
         root = _root()
@@ -6106,7 +6092,7 @@ def art_tournament_standings(logical_name: str, tournament_ref: str = "") -> dic
 
 @_tool
 def ref_unpin(name: str) -> dict:
-    """Remove a pin (the file itself is kept — deleting canon art is a human call)."""
+    """Remove a pin (the file itself is kept - deleting canon art is a human call)."""
     try:
         return _refs.unpin(_root(), name)
     except Exception as exc:
@@ -6114,13 +6100,13 @@ def ref_unpin(name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Assets — locks for the files git can't merge
+# Assets - locks for the files git can't merge
 # ---------------------------------------------------------------------------
 @_tool
 def asset_lock(path: str, seat: str) -> dict:
     """Claim a binary asset for one seat BEFORE editing it.
 
-    Binary files (.blend, .glb, textures, audio) don't merge — two agents editing
+    Binary files (.blend, .glb, textures, audio) don't merge - two agents editing
     one .blend loses someone's work. Lock first, edit, then asset_release. A held
     lock errors rather than queues: decide to wait, or work on something else.
     Lock-before-create is the normal flow for new assets.
@@ -6134,10 +6120,10 @@ def asset_lock(path: str, seat: str) -> dict:
 
 @_tool
 def asset_release(path: str, seat: str, force: bool = False) -> dict:
-    """Release a lock when the edit is done — records the new content hash.
+    """Release a lock when the edit is done - records the new content hash.
 
     Only the holding seat can release. force=True breaks anyone's lock (for a
-    dead agent's stale claim) — a human's call, not a convenience.
+    dead agent's stale claim) - a human's call, not a convenience.
     """
     try:
         if force:
@@ -6173,14 +6159,14 @@ def pending_decisions(limit: int = 40) -> dict:
 
     There was no way to ask this. ``asset_status`` lists candidates but exposes
     no approval STATE, ``art_tournament_standings`` reports Elo from matches
-    already decided, and human approval was dashboard-only — so a director could
+    already decided, and human approval was dashboard-only - so a director could
     not see, surface or triage a queue of decisions blocking their own board.
     Measured: five candidates generated in two minutes with an approval card each,
     and nothing an agent could call would say so.
 
     WHY THAT IS DANGEROUS AND NOT MERELY INCOMPLETE. A pending decision is a
     blocking gate. Work stalls behind it and the heartbeat shows nothing, which
-    looks exactly like an agent quietly working — the same "silence is not
+    looks exactly like an agent quietly working - the same "silence is not
     success" failure as a dead agent, arriving through a different door.
 
     Three classes, because the floor has three:
@@ -6189,7 +6175,7 @@ def pending_decisions(limit: int = 40) -> dict:
                   chain behind each one does not advance until a human approves.
       candidates  generated artifact revisions nobody has dispositioned. An
                   agent may record a verdict (art_qa_verdict) but may not
-                  promote — that is the human's call, by design.
+                  promote - that is the human's call, by design.
       questions   open ask_human questions, oldest first.
 
     ``gate`` names the mode that decides whether any of this is being asked for
@@ -6197,7 +6183,7 @@ def pending_decisions(limit: int = 40) -> dict:
     a non-empty list under that mode is worth reporting rather than clicking
     through.
 
-    WHAT THIS DOES NOT DO: approve anything. It cannot — the agent that made a
+    WHAT THIS DOES NOT DO: approve anything. It cannot - the agent that made a
     candidate is exactly who must not clear it. Hand the list to the human with
     what each decision is blocking, and keep working on what it does not block.
     """
@@ -6226,7 +6212,7 @@ def pending_decisions(limit: int = 40) -> dict:
                 "work_item_id": art.get("work_item_id"),
                 "producer": art.get("producer") or "",
                 # WHETHER A MACHINE HAS ALREADY LOOKED. A candidate with a
-                # passing qa_review is a different ask than a raw one — the human
+                # passing qa_review is a different ask than a raw one - the human
                 # is confirming a check, not performing the first one.
                 "machine_verdict": qa.get("verdict") or "",
                 "machine_note": (qa.get("reasons") or "")[:200],
@@ -6250,10 +6236,10 @@ def pending_decisions(limit: int = 40) -> dict:
                 "nothing is waiting on a human" if not total else
                 f"{len(parked)} chain(s) stopped, {len(candidates)} candidate(s) "
                 f"and {len(questions)} question(s) waiting. Only a human clears "
-                "these — surface the list, say what each blocks, and carry on "
+                "these - surface the list, say what each blocks, and carry on "
                 "with the work that is not behind one."
                 + (" NOTE: the approval gate is 'none' for this project, so "
-                   "nothing here should be stopping for a human — report that "
+                   "nothing here should be stopping for a human - report that "
                    "rather than working around it."
                    if state["mode"] == _gatemode.NONE else "")),
         }
@@ -6263,7 +6249,7 @@ def pending_decisions(limit: int = 40) -> dict:
 
 @_tool
 def asset_verify() -> dict:
-    """Audit every tracked asset against disk — catches silent clobbers.
+    """Audit every tracked asset against disk - catches silent clobbers.
 
     'modified' means content changed with NO lock held: an unlocked write or an
     outside edit. Locked files are expected to differ and aren't drift. Run this
@@ -6304,7 +6290,7 @@ def iteration_record_checks(status: str, summary: str = "",
 # ---------------------------------------------------------------------------
 @_tool
 def playtest_devices(filter_text: str = "") -> dict:
-    """List mic inputs and open windows — pick what to record before starting."""
+    """List mic inputs and open windows - pick what to record before starting."""
     try:
         return {
             "inputs": _recorder.list_inputs(),
@@ -6323,7 +6309,7 @@ def playtest_check(mic_device: Optional[int] = None,
     """Preflight a session: ffmpeg, mic SIGNAL, transcriber, target window.
 
     ALWAYS run this before playtest_start. It records a short mic sample and
-    measures level — a muted or unplugged mic records perfect digital silence,
+    measures level - a muted or unplugged mic records perfect digital silence,
     which looks identical to a working one until the transcript comes back empty
     and the whole playthrough is wasted.
     """
@@ -6340,7 +6326,7 @@ def playtest_start(name: str, window_title: Optional[str] = None,
                    mic_device: Optional[int] = None, build_ref: str = "",
                    fps: int = 30, launch_native: bool = False,
                    game_cmd: str = "") -> dict:
-    """Start recording a play session — game window video + your voice.
+    """Start recording a play session - game window video + your voice.
 
     Play the game and talk out loud about what you like and what needs changing.
     Say it near when it happens; feedback is matched to game events by timestamp.
@@ -6365,7 +6351,7 @@ def playtest_stop(session_id: Optional[int] = None, model: str = "base",
 
     Transcription runs a whisper model in a subprocess; expect roughly a minute
     per 10 minutes of audio on CPU (the first run also downloads the model).
-    Items land as 'new' — nothing becomes work until you promote it.
+    Items land as 'new' - nothing becomes work until you promote it.
     """
     try:
         return _playtest.stop(_root(), session_id, model=model,
@@ -6380,7 +6366,7 @@ def playtest_brief(session_id: int, include_transcript: bool = False,
     """The session as agents should read it: video frames + feedback + telemetry.
 
     You CAN watch the recording: `video_frames` is an ordered strip of stills
-    ({i, t, path}) sampled across the whole session — Read them in order to see
+    ({i, t, path}) sampled across the whole session - Read them in order to see
     what happened. Each feedback item also carries a frame at its own moment and
     the game events within window_s of it, and `transcript` is what the player
     said, timestamped. Line frames up with the transcript by t.
@@ -6407,7 +6393,7 @@ def playtest_promote(item_id: int, seat: Optional[str] = None,
     """Accept a feedback item as real work, optionally re-routing it.
 
     This is the human's call. Do not promote items on the user's behalf without
-    being asked — thinking out loud mid-play is not a decision to build.
+    being asked - thinking out loud mid-play is not a decision to build.
     """
     try:
         return _playtest.promote(_root(), item_id, seat=seat, kind=kind, ref=ref)
@@ -6417,7 +6403,7 @@ def playtest_promote(item_id: int, seat: Optional[str] = None,
 
 @_tool
 def playtest_dismiss(item_id: int) -> dict:
-    """Drop a feedback item — noise, or already handled."""
+    """Drop a feedback item - noise, or already handled."""
     try:
         return _playtest.dismiss(_root(), item_id)
     except Exception as exc:
@@ -6434,7 +6420,7 @@ def playtest_telemetry_contract() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Seats — stable roles, write lanes, and the blackboard
+# Seats - stable roles, write lanes, and the blackboard
 # ---------------------------------------------------------------------------
 @_tool
 def seat_list() -> dict:
@@ -6451,7 +6437,7 @@ def seat_brief(role: str) -> dict:
 
     Mission, write lanes, the bible (with the scope cut applied), canon entities,
     the promoted playtest feedback routed to this seat, held/others' locks, and
-    recent blackboard notes. Read this BEFORE doing seat work — it replaces
+    recent blackboard notes. Read this BEFORE doing seat work - it replaces
     re-deriving the project state from scratch.
     """
     try:
@@ -6465,7 +6451,7 @@ def seat_can_write(role: str, path: str) -> dict:
     """May this seat write this path? Check BEFORE editing outside your obvious lane.
 
     Two gates, both must pass: the path must be inside the seat's write lanes,
-    and the file must not be locked by another seat — being in-lane does not
+    and the file must not be locked by another seat - being in-lane does not
     excuse stomping a locked binary. Fails closed for unknown/disabled seats.
     """
     try:
@@ -6490,7 +6476,7 @@ def seat_configure(role: str, enabled: Optional[bool] = None,
     dashboard, or state the case in a work item and let them decide.
 
     Returns the merged seat {role, title, mission, write_globs, enabled}, or
-    {ok: false, error} — including on the permission refusal, which is a normal
+    {ok: false, error} - including on the permission refusal, which is a normal
     result to read and route around, not a crash.
     """
     try:
@@ -6500,7 +6486,7 @@ def seat_configure(role: str, enabled: Optional[bool] = None,
         if privileged and _caller_is_agent():
             raise PermissionError(
                 f"{_actor() or 'an agent session'} may not change "
-                f"{', '.join(privileged)} on seat {role!r} — write lanes and the "
+                f"{', '.join(privileged)} on seat {role!r} - write lanes and the "
                 "enabled flag are a human's call, because a seat that can widen "
                 "its own lanes has no lanes. Change the mission here if that is "
                 "what you meant, or ask the human to edit the seat in the "
@@ -6530,7 +6516,7 @@ def handoff_note(kind: str, text: str, refs: Optional[list] = None) -> dict:
 
     The board says what was dispatched and the bible says what was settled.
     Neither says what you were halfway through, why you chose the thing you
-    chose, or what you deliberately did not do — and that is what evaporates
+    chose, or what you deliberately did not do - and that is what evaporates
     when a session ends. This is an append-only trail read back at the start of
     the next one, so a death costs a successor one read instead of an
     investigation.
@@ -6541,7 +6527,7 @@ def handoff_note(kind: str, text: str, refs: Optional[list] = None) -> dict:
     kind:
       state     where things stand; what is half-done.
       decision  a call you made, WITH the reason. If it is settled canon it
-                belongs in the bible — bible_add it and cite the section in
+                belongs in the bible - bible_add it and cite the section in
                 `refs` rather than restating it here.
       deferred  something you chose NOT to do, and why. An unlabelled deferral
                 is the most expensive thing to lose: the next agent finds it and
@@ -6549,7 +6535,7 @@ def handoff_note(kind: str, text: str, refs: Optional[list] = None) -> dict:
       blocker   what is in the way, and who owns it.
       next      the very next action.
 
-    refs: ids/paths this note points at — "bible#12", "item 41",
+    refs: ids/paths this note points at - "bible#12", "item 41",
     "game/data/loot/floor_0.json". Cite, do not duplicate.
     """
     try:
@@ -6560,7 +6546,7 @@ def handoff_note(kind: str, text: str, refs: Optional[list] = None) -> dict:
 
 @_tool
 def handoff_read(limit: int = 0, kind: str = "") -> dict:
-    """The project thread, oldest first — what earlier sessions left behind.
+    """The project thread, oldest first - what earlier sessions left behind.
 
     The SessionStart hook already injects the tail of this into every session, so
     reach for it when you need MORE than that: the whole history, or one kind
@@ -6599,7 +6585,7 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
 # WRITING SPLITS THE SAME WAY THE HTTP ROUTES DO (see bgate_ui/routes/
 # decisions.py, which argues it at length): a proposal is open to an agent, a
 # ruling is not. A settled decision binds every other seat, and a refusal is read
-# as binding with no acceptance test anyone can check it against — an agent that
+# as binding with no acceptance test anyone can check it against - an agent that
 # could write either would be authorising its own work. So a dispatched session
 # gets 'open' and a message naming the verb that IS available to it, rather than
 # a silent downgrade it would never notice.
@@ -6608,7 +6594,7 @@ def seat_notes(topic: Optional[str] = None, role: Optional[str] = None,
 def decision_add(title: str, acceptance: str, leaves_dark: str,
                  state: str = "settled", work_item_id: Optional[int] = None,
                  session_id: Optional[int] = None) -> dict:
-    """File a decision — with its acceptance test and what it leaves dark.
+    """File a decision - with its acceptance test and what it leaves dark.
 
     All three are MANDATORY and the tool refuses without them, because the two
     that are easy to skip are the two that make the register worth keeping:
@@ -6619,10 +6605,10 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
                    should be fast".
       leaves_dark  what this call deliberately does NOT cover. A deferral nobody
                    labelled gets 'fixed' as a bug by the next agent that finds
-                   it — naming it here is what stops that.
+                   it - naming it here is what stops that.
 
     state: 'settled' is a ruling and only a human session may file one. 'open' is
-    a PROPOSAL — it lands in the director's "Awaiting a ruling" rail and binds
+    a PROPOSAL - it lands in the director's "Awaiting a ruling" rail and binds
     nobody until a human settles it. A dispatched agent asking for 'settled' gets
     a refusal, not a quiet downgrade.
 
@@ -6632,7 +6618,7 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
     """
     if state == "settled" and _caller_is_agent():
         return _fail(PermissionError(
-            f"{_actor() or 'an agent session'} may not SETTLE a decision — a "
+            f"{_actor() or 'an agent session'} may not SETTLE a decision - a "
             "settled decision binds every other seat, and an agent that settles "
             "its own decisions authorises its own work. File it with "
             "state='open' instead: it lands in the director's Awaiting a ruling "
@@ -6652,7 +6638,7 @@ def decision_add(title: str, acceptance: str, leaves_dark: str,
 @_tool
 def decision_list(state: Optional[str] = None,
                   work_item_id: Optional[int] = None) -> dict:
-    """What this project has settled, newest first — each with its test.
+    """What this project has settled, newest first - each with its test.
 
     READ THIS BEFORE RE-OPENING AN ARGUMENT. A decision here was made once, with
     a reason and a test; re-deciding it from scratch is the most expensive thing
@@ -6661,8 +6647,7 @@ def decision_list(state: Optional[str] = None,
 
     state: settled | open | superseded. No state returns all three, so a reader
     sees at a glance what is ruled, what is waiting on a human, and what was
-    replaced. A superseded row keeps `superseded_by` pointing at whatever won —
-    that pair is how you learn an idea was already tried.
+    replaced. A superseded row keeps `superseded_by` pointing at whatever won - that pair is how you learn an idea was already tried.
     """
     try:
         rows = _decisions.list_decisions(_root(), state=state or "",
@@ -6678,13 +6663,12 @@ def decision_settle(decision_id: int) -> dict:
     """Turn an open proposal into a ruling. Human sessions only.
 
     The proposal keeps its acceptance test and its left-dark; what changes is
-    that it now binds the other seats, and `actor` becomes whoever settled it —
-    accountability follows the ruling, not the draft.
+    that it now binds the other seats, and `actor` becomes whoever settled it - accountability follows the ruling, not the draft.
     """
     if _caller_is_agent():
         return _fail(PermissionError(
             f"{_actor() or 'an agent session'} may not settle decision "
-            f"{decision_id} — settling is the act that binds the other seats, "
+            f"{decision_id} - settling is the act that binds the other seats, "
             "and it is a human's. The proposal is already on the director's "
             "Awaiting a ruling rail, which is where it gets one."))
     try:
@@ -6712,12 +6696,12 @@ def not_building_add(text: str, reason: str, tag: str = "",
     somebody who cannot see what was wrong with it, and each re-proposal costs
     the argument again.
 
-    tag is free-form and optional — 'scope', 'engine', 'v2', whatever this
+    tag is free-form and optional - 'scope', 'engine', 'v2', whatever this
     project groups its refusals by.
     """
     if _caller_is_agent():
         return _fail(PermissionError(
-            f"{_actor() or 'an agent session'} may not write the no-list — "
+            f"{_actor() or 'an agent session'} may not write the no-list - "
             "every agent reads it as binding and nothing can check it was "
             "right, so it is a human's list. Call decision_add with "
             "state='open' to propose the refusal instead."))
@@ -6735,13 +6719,13 @@ def not_building_add(text: str, reason: str, tag: str = "",
 def not_building_list(tag: Optional[str] = None) -> dict:
     """What this project has said no to. CALL THIS BEFORE YOU FILE WORK.
 
-    An unsaid no gets built anyway — this tool is the reason the no is not
+    An unsaid no gets built anyway - this tool is the reason the no is not
     unsaid. Each row carries the thing refused and WHY, so a proposal that looks
     obviously good to a session with no history can be checked against the
     argument that already happened.
 
     A refusal is not a permanent law; it is the current answer with its reason
-    attached. If the reason no longer holds, say so — do not build the thing and
+    attached. If the reason no longer holds, say so - do not build the thing and
     hope nobody notices, and do not silently work around it either, because a
     workaround for a deliberate no is the no getting built with extra steps.
     """
@@ -6756,7 +6740,7 @@ def not_building_list(tag: Optional[str] = None) -> dict:
 # Quests
 # ---------------------------------------------------------------------------
 # THE THIRD NOUN IN THE NARRATIVE SEAT'S MISSION. "Own the lore graph, quests,
-# and dialogue" — and until now two of those three had tools and the middle one
+# and dialogue" - and until now two of those three had tools and the middle one
 # had nothing, so an agent holding the seat could write the world and the
 # conversations in it and had no way to record what the player is asked to DO.
 #
@@ -6780,7 +6764,7 @@ def quest_add(title: str, steps: list, premise: str = "", reward: str = "",
     steps is a list of {text, done_when, optional?}:
 
       text       what the player does.
-      done_when  MANDATORY — the observable that closes the step. "the wizard's
+      done_when  MANDATORY - the observable that closes the step. "the wizard's
                  signed form is in the player's inventory", not "talk to the
                  wizard". Without it nothing can finish the step: not the
                  engine, which has nothing to test, and not the player, who
@@ -6789,7 +6773,7 @@ def quest_add(title: str, steps: list, premise: str = "", reward: str = "",
                  optional the quest can never be finished, and the verdict on
                  the returned row says so.
 
-    giver is a lore entity slug or name — the quest hangs off the graph rather
+    giver is a lore entity slug or name - the quest hangs off the graph rather
     than sitting beside it. A giver that names no entity is refused, because
     that is either a typo or a character nobody wrote down. Omit it for a quest
     that comes from the world rather than from somebody.
@@ -6798,7 +6782,7 @@ def quest_add(title: str, steps: list, premise: str = "", reward: str = "",
     three things the verdict refuses on, so a create-then-append API would make
     the invalid state the normal first state of every quest.
 
-    The returned row carries `ok` and `problems` — the shape checks, each naming
+    The returned row carries `ok` and `problems` - the shape checks, each naming
     its step.
     """
     try:
@@ -6841,7 +6825,7 @@ def quest_update(quest: str, premise: Optional[str] = None,
                  giver: Optional[str] = None) -> dict:
     """Change a quest's own fields. state: draft | active | done | cut.
 
-    There is no delete here on purpose. 'cut' keeps the row — "we are not
+    There is no delete here on purpose. 'cut' keeps the row - "we are not
     shipping this, and here is what it was" is the most useful thing the next
     person to propose it can read, exactly as with a superseded decision.
     """
@@ -6857,7 +6841,7 @@ def quest_list(state: Optional[str] = None) -> dict:
     """Every quest, with its steps and its verdict. READ BEFORE WRITING ONE.
 
     The verdict travels with the listing so a broken quest is visible without
-    opening it — a rail of eight titles that makes you open each to find the two
+    opening it - a rail of eight titles that makes you open each to find the two
     that do not hold together gets read once.
 
     state: draft | active | done | cut. No state returns all of them.
@@ -6880,20 +6864,19 @@ def quest_read(quest: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Brainstorm — the cheap room, from the other door
+# Brainstorm - the cheap room, from the other door
 # ---------------------------------------------------------------------------
 # The dashboard grew this room and the tool list did not, which in a system with
 # two front doors means the capability did not exist for half of it: an agent
 # could file work on the board but could not see, join or continue the
 # conversation the work came out of, and a human who thought out loud in the
 # dashboard was invisible to the session they were talking to. These tools call
-# bgate_core.brainstorm — the same functions bgate_ui.routes.brainstorm calls —
-# so the two doors cannot drift on what a session IS.
+# bgate_core.brainstorm - the same functions bgate_ui.routes.brainstorm calls - # so the two doors cannot drift on what a session IS.
 # tests/test_brainstorm_mcp.py asserts they haven't.
 #
 # WHAT DOES NOT COME ACROSS FOR FREE IS THE DISPATCH BAN, AND IT IS THE POINT.
 # On the web side "a message cannot dispatch" is nearly free: that process holds
-# no tools. Here it is the opposite — this module IS the tool set and queue_add
+# no tools. Here it is the opposite - this module IS the tool set and queue_add
 # is a hundred lines down, so "it has no mechanism" stops being true by accident
 # and has to be true by construction. It is:
 #
@@ -6903,26 +6886,25 @@ def quest_read(quest: str) -> dict:
 #     cannot inherit the one this very process is serving, no settings sources
 #     to add any of it back, and plan mode behind that. The partner used to be
 #     a bare chat-completions call; it is a real Claude Code session now, and
-#     the guarantee moved from "no tools were passed" to "no tools exist" —
-#     which matters most HERE, where the tool being withheld is the one this
+#     the guarantee moved from "no tools were passed" to "no tools exist" - #     which matters most HERE, where the tool being withheld is the one this
 #     module is currently exporting;
 #   * brainstorm_deploy is the only function in this section that so much as
 #     names the queue, and it is the only one a machine may not call.
 @_tool
 def brainstorm_list(seat: Optional[str] = None, status: Optional[str] = None,
                     limit: int = 50) -> dict:
-    """The brainstorm file drawer — what has been thought about, and what it filed.
+    """The brainstorm file drawer - what has been thought about, and what it filed.
 
     THE CHEAP ROOM. A brainstorm session is where an idea is still an idea:
     conversation, a writing pad and a drawing pad, none of which queue anything.
     The board is the expensive room. Read a session before proposing work in its
-    area — half the "new" ideas an agent files were already argued out and cut
+    area - half the "new" ideas an agent files were already argued out and cut
     in a room nobody looked in.
 
     seat: director (what to BUILD) | narrative (what is TRUE).
     status: open | deployed | archived. Archived sorts last whatever you pass.
 
-    Titles and counts only — never the pads, which come one session at a time
+    Titles and counts only - never the pads, which come one session at a time
     from brainstorm_open, because an index that ships every scratch document is
     an index nobody can afford to poll.
     """
@@ -6944,7 +6926,7 @@ def brainstorm_list(seat: Optional[str] = None, status: Optional[str] = None,
 def brainstorm_new(seat: str = "director", title: str = "") -> dict:
     """Open a brainstorm session. Nothing about this reaches the board.
 
-    Use it when the human is thinking rather than asking — "what if the hub had
+    Use it when the human is thinking rather than asking - "what if the hub had
     weather" is not a work order, and turning it into one costs a spawned
     session per half-thought and leaves a board full of items nobody meant to
     file. Everything said here stays here until a human deploys it.
@@ -6952,7 +6934,7 @@ def brainstorm_new(seat: str = "director", title: str = "") -> dict:
     seat picks what the room is FOR, and it is enforced at plan time rather than
     trusted to the prompt:
       director   what to BUILD. May propose work for any seat.
-      narrative  what is TRUE — canon, lore, the bible. May propose narrative
+      narrative  what is TRUE - canon, lore, the bible. May propose narrative
                  work only.
     """
     try:
@@ -6966,8 +6948,7 @@ def brainstorm_open(session_id: int) -> dict:
     """One session, whole: the conversation, the notes pad, the drawing, what it filed.
 
     THE DRAWING COMES BACK AS WORDS. `drawing_text` is the pad's elements
-    rendered as lines — "rectangle#hub-1 'hub'", "arrow#a1 hub-1 -> shrine-1" —
-    which is the content of the board and is readable without vision. The raw
+    rendered as lines - "rectangle#hub-1 'hub'", "arrow#a1 hub-1 -> shrine-1" - which is the content of the board and is readable without vision. The raw
     `drawing` scene is there too, and the ids in it are what you reuse if you
     write elements back with brainstorm_note. `drawing_png` is a preview path
     the browser renders; it is never the source of truth.
@@ -6979,7 +6960,7 @@ def brainstorm_open(session_id: int) -> dict:
     `thinker` is who else is in the room: which runner and model this session's
     partner runs on, whether a process is live right now, what the conversation
     has cost, and the path to its raw transcript. Worth a glance before you pass
-    `reply=` to brainstorm_say — if a partner is already live, its answers and
+    `reply=` to brainstorm_say - if a partner is already live, its answers and
     yours are two voices in one conversation.
     """
     try:
@@ -7002,7 +6983,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
 
     `reply` IS THE POINT OF THIS DOOR, and it is worth more now than it was.
     YOU are a model and you are already holding the session, so pass your own
-    answer and it is stored as the assistant turn — no second session, no CLI,
+    answer and it is stored as the assistant turn - no second session, no CLI,
     no cost, and no key was ever needed for it. Leave it empty and the dashboard's
     partner answers instead, which spawns a real (tool-less, read-only) CLI
     session and bills a turn against the subscription. Between an answer you
@@ -7010,8 +6991,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
     strictly better.
 
     So: a MACHINE must pass `reply=`. A caller stamped as an agent that leaves it
-    empty is refused rather than allowed to spawn a nested thinking session —
-    an agent already inside a CLI session paying to start another one to think
+    empty is refused rather than allowed to spawn a nested thinking session - an agent already inside a CLI session paying to start another one to think
     for it is a loop with a bill attached, and it was one flag away from being
     the default behaviour of this tool.
 
@@ -7019,14 +6999,14 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
     dead partner costs a reply and never what was typed.
 
     `to` ADDRESSES ONE SEAT that has been invited into the room
-    (brainstorm_invite). Leave it empty and everyone present answers — one CLI
-    turn each, in invite order, the room's own partner first — which is what you
+    (brainstorm_invite). Leave it empty and everyone present answers - one CLI
+    turn each, in invite order, the room's own partner first - which is what you
     want for "what does everybody think" and is four times the cost for "what
     does the art seat think". `to` is ignored when you pass `reply=`, because
     then YOU are the one answering and there is nobody to address.
 
     Push back in the reply when something does not hold together, and say which
-    part. Do not write a task list here — proposing the work is a separate step
+    part. Do not write a task list here - proposing the work is a separate step
     (brainstorm_synthesize) that a human takes when they are ready.
     """
     try:
@@ -7044,7 +7024,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
         replies: list = []
         if not answered and _caller_is_agent():
             model = {"ok": False, "error":
-                     "pass reply= — you are a model holding this session "
+                     "pass reply= - you are a model holding this session "
                      "already, and spawning a second CLI session to think on "
                      "your behalf costs a turn against the subscription for an "
                      "answer you can simply write. The sentence is stored; "
@@ -7059,8 +7039,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
                     # session_id makes the room a CONVERSATION: one spawned
                     # session per voice answers every message rather than a
                     # fresh process per turn. An invited seat's process is built
-                    # by the same read-only spawner as the room's own partner —
-                    # it holds an opinion, never a tool.
+                    # by the same read-only spawner as the room's own partner - # it holds an opinion, never a tool.
                     system = (_bs.participant_system(root, seat,
                                                      discuss=discuss) if seat
                               else _bs.chat_system(session["seat"],
@@ -7104,7 +7083,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
                "model": model, "spoke": speaking,
                "session_id": int(session_id)}
         if wrote is None:
-            out["note"] = ("the sentence is stored and nothing was lost — pass "
+            out["note"] = ("the sentence is stored and nothing was lost - pass "
                            "reply= to write the answer yourself, which needs no "
                            "key and spawns nothing")
         return out
@@ -7116,8 +7095,7 @@ def brainstorm_say(session_id: int, text: str, reply: str = "",
 def brainstorm_invite(session_id: int, seat: str) -> dict:
     """INVITE A SEAT INTO A BRAINSTORM. It arrives WITHOUT ITS TOOLS.
 
-    The room had two voices — the human and the owning seat's thinking partner —
-    and the question a human actually has ("would weather in the hub be cheap or
+    The room had two voices - the human and the owning seat's thinking partner - and the question a human actually has ("would weather in the hub be cheap or
     a fortnight") is one only the seat that would BUILD it can answer. This is
     how that seat gets asked.
 
@@ -7126,14 +7104,14 @@ def brainstorm_invite(session_id: int, seat: str) -> dict:
     it cannot inherit the server you are reading this on, and at most the
     two-tool pad server. It is the seat's JUDGEMENT, not the seat's HANDS. It
     cannot write a file, run a command, claim work or file anything, and nothing
-    it says becomes work on its own — a human still reads a synthesis and
+    it says becomes work on its own - a human still reads a synthesis and
     presses Deploy. Compare queue_add, which puts a real agent with real tools
     on the board; that is the other room and this is deliberately not it.
 
     Refused, each saying which: a seat that is not a seat, a seat this project
     has disabled, a seat already in the room (including the seat that OWNS it,
     whose partner is the room's own voice), a room already at its limit, and a
-    runner that has not declared a read-only mode — that last one is refused
+    runner that has not declared a read-only mode - that last one is refused
     rather than started with dispatch flags, which is the whole guarantee.
     """
     try:
@@ -7168,18 +7146,17 @@ def brainstorm_leave(session_id: int, seat: str) -> dict:
 def brainstorm_note(session_id: int, notes: Optional[str] = None,
                     title: Optional[str] = None,
                     drawing: Optional[dict] = None) -> dict:
-    """Write the session's pads — the title, the writing pad, the drawing scene.
+    """Write the session's pads - the title, the writing pad, the drawing scene.
 
     `notes` REPLACES the whole pad. It is one text area a person types into, not
     a patch protocol, so brainstorm_open it and send the whole document back if
-    you are adding to somebody's writing — a partial write here deletes the rest
+    you are adding to somebody's writing - a partial write here deletes the rest
     of their hour.
 
     `drawing` is the pad's structured scene ({"elements": [...], "appState":
     {...}}), which is the whole reason a text model can work on it: reuse the
     element ids brainstorm_open showed you rather than inventing new ones, or
-    the arrows come back unbound. The flattened PNG is not settable here —
-    only the browser renders one.
+    the arrows come back unbound. The flattened PNG is not settable here - only the browser renders one.
 
     Omitted fields are left alone. Nothing here queues anything.
     """
@@ -7199,7 +7176,7 @@ def brainstorm_note(session_id: int, notes: Optional[str] = None,
             changed.append("drawing")
         if not changed:
             return {"ok": False,
-                    "error": "nothing to change — pass notes, title or drawing"}
+                    "error": "nothing to change - pass notes, title or drawing"}
         after = _bs.read(root, int(session_id))
         return {**after, "changed": changed,
                 "drawing_text": _bs.drawing_digest(after["drawing"])}
@@ -7211,19 +7188,19 @@ def brainstorm_note(session_id: int, notes: Optional[str] = None,
 def brainstorm_synthesize(session_id: int) -> dict:
     """THE PREVIEW: what work this session adds up to. WRITES NOTHING.
 
-    Not a work item, not the session's status, not even the plan — a stored plan
+    Not a work item, not the session's status, not even the plan - a stored plan
     would be a fourth thing that can go stale. Safe to press, and safe to press
     twice.
 
     What comes back under `plan` is exactly the shape brainstorm_deploy takes:
     {"summary", "chained", "questions", "items": [{"seat", "title", "brief"}]}.
     `plan.notes` lists every repair made to the model's answer (a seat it named
-    that a narrative session may not file, an item with no brief) — those are
+    that a narrative session may not file, an item with no brief) - those are
     corrections a human should see, not silent fixes.
 
     HAND THE RESULT TO THE HUMAN. You may not deploy it; see brainstorm_deploy
     for why. If there is no thinking partner on this machine the call fails and
-    you can write the plan yourself in that same shape — the review step is what
+    you can write the plan yourself in that same shape - the review step is what
     matters, not which model drafted it.
     """
     try:
@@ -7240,7 +7217,7 @@ def brainstorm_synthesize(session_id: int) -> dict:
         if not answer.get("ok"):
             return {"ok": False, "wrote_nothing": True,
                     "error": answer.get("error") or "synthesis failed",
-                    "note": "no model here — draft the plan yourself in the "
+                    "note": "no model here - draft the plan yourself in the "
                             "shape brainstorm_deploy takes and put it in front "
                             "of the human"}
         plan = _bs.parse_plan(answer["text"], session["seat"])
@@ -7264,20 +7241,19 @@ def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
     WHY A MACHINE IS REFUSED. This whole room exists so a human reads a plan
     before agents are dispatched against it. An agent that can deploy closes
     that loop on itself: it writes the session, synthesizes a plan out of its
-    own sentences, files N items, and each of those spawns another agent — a
+    own sentences, files N items, and each of those spawns another agent - a
     work generator with a review step nobody attended. The same reasoning
     already refuses a machine the write lanes in seat_configure and the
     human-only settings in bgate_core.settings, and the same fail-closed test is
     used: BGATE_SEAT / BGATE_WORK_ITEM, not the actor string alone, because a
     gate that reads one stamp is disabled by forgetting one line.
 
-    A human's own session — no seat, no work item — deploys normally. Nothing is
+    A human's own session - no seat, no work item - deploys normally. Nothing is
     taken away by this rule: that session could already call queue_add, and
     routing through here is what keeps `source=brainstorm` on the items so the
     board can name the conversation they came from.
 
-    `plan` is what brainstorm_synthesize returned, as the human approved it —
-    edits included, since their text is the point. Items are validated strictly
+    `plan` is what brainstorm_synthesize returned, as the human approved it - edits included, since their text is the point. Items are validated strictly
     rather than repaired: quietly rewriting a confirmed plan files something
     other than what was agreed. Set "chained": true ONLY when each item needs
     what the one before it produced; that becomes a real dependency chain rather
@@ -7289,7 +7265,7 @@ def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
         if _caller_is_agent():
             raise PermissionError(
                 f"{_actor() or 'an agent session'} may not deploy brainstorm "
-                f"{session_id} — a brainstorm is filed by the human who read the "
+                f"{session_id} - a brainstorm is filed by the human who read the "
                 "plan, and an agent filing its own proposals is the review step "
                 "reviewing itself. Leave the plan where they will see it: "
                 "brainstorm_synthesize writes nothing and its result is the "
@@ -7303,7 +7279,7 @@ def brainstorm_deploy(session_id: int, plan: dict, again: bool = False) -> dict:
         # THE GAME-PLAN BACK HALF. A plan carrying a `manifest` is the
         # premise-to-plan compiler's output: rows land in plan_row (coverage),
         # slice rows land on the board with real dependency links. Behind the
-        # same human gate as the items — the manifest IS the plan, at a finer
+        # same human gate as the items - the manifest IS the plan, at a finer
         # grain. validate_plan ignores the key, so a manifest-free plan is
         # exactly what it always was.
         if isinstance(plan, dict) and plan.get("manifest"):
@@ -7328,7 +7304,7 @@ def brainstorm_close(session_id: int) -> dict:
     THREE WORDS THAT ALL SOUND FINAL, kept apart on purpose:
       close     (this) stops the spawned CLI process. The conversation, the
                 notes and the drawing are untouched, and the next message
-                reopens it — resuming the same CLI session where it left off, or
+                reopens it - resuming the same CLI session where it left off, or
                 replaying the transcript if the CLI no longer has it. It is
                 about the PROCESS. Nothing is decided and nothing is lost.
       archive   files the SESSION away as a record: no new turns, notes or
@@ -7356,7 +7332,7 @@ def brainstorm_discuss(session_id: int, rounds: int) -> dict:
     if it has something to add; a round where everybody passes ends it early.
 
     Every round is one billed turn PER VOICE IN THE ROOM, so four guests at 2
-    rounds is ten turns on one sentence. The ceiling is small on purpose — past
+    rounds is ten turns on one sentence. The ceiling is small on purpose - past
     it a human should be steering, not buying more of the same argument.
     """
     try:
@@ -7371,7 +7347,7 @@ def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
 
     THE FOURTH END-STATE, and the one people reach for most: the conversation
     has gone circular or is arguing from a premise that stopped being true, and
-    what is wanted is a clean head — NOT a closed process that resumes the same
+    what is wanted is a clean head - NOT a closed process that resumes the same
     dead thread, and NOT a delete that takes an hour of notes and diagram with
     it. brainstorm_close resumes where it left off; this one makes the next
     message the first message.
@@ -7379,7 +7355,7 @@ def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
     The notes and the drawing SURVIVE by default: they are the human's own
     document, not the conversation. `keep_pads=False` clears those too.
 
-    Deploys are never touched — work already on the board outlives the thread
+    Deploys are never touched - work already on the board outlives the thread
     that thought of it.
     """
     try:
@@ -7390,10 +7366,10 @@ def brainstorm_reset(session_id: int, keep_pads: bool = True) -> dict:
 
 @_tool
 def brainstorm_feed(session_id: int, cursor: int = 0) -> dict:
-    """What the session's partner PROCESS actually emitted — the terminal channel.
+    """What the session's partner PROCESS actually emitted - the terminal channel.
 
     Not the conversation (brainstorm_open has that): this is the raw stream the
-    spawned CLI wrote — run boundaries, its own `init` event stating the tool
+    spawned CLI wrote - run boundaries, its own `init` event stating the tool
     list it really built, its calls to the two-tool pad server, their results,
     and its prose. Read forward from `cursor`; keep the one you are handed and
     pass it back to get only what is new.
@@ -7414,7 +7390,7 @@ def brainstorm_archive(session_id: int, archived: bool = True) -> dict:
 
     An archived session is a record rather than a workspace: it still reads, but
     it takes no new turns, notes or deploys until it is reopened with
-    archived=False. Reopening restores the status it earned — a session that has
+    archived=False. Reopening restores the status it earned - a session that has
     filed work stays 'deployed', because resetting it to 'open' would erase the
     one field saying that work exists.
     """
@@ -7429,8 +7405,8 @@ def brainstorm_delete(session_id: int) -> dict:
     """Really delete a session and its messages. HUMAN-ONLY. Prefer archiving.
 
     Refused for a machine on the same reasoning as brainstorm_deploy, pointing
-    the other way: what this destroys is the human's own writing — an hour of
-    notes and a drawing that exist nowhere else — and no agent has enough
+    the other way: what this destroys is the human's own writing - an hour of
+    notes and a drawing that exist nowhere else - and no agent has enough
     context to be sure a quiet session is finished. brainstorm_archive is the
     reversible motion and it is available to any caller.
 
@@ -7442,7 +7418,7 @@ def brainstorm_delete(session_id: int) -> dict:
         if _caller_is_agent():
             raise PermissionError(
                 f"{_actor() or 'an agent session'} may not delete brainstorm "
-                f"{session_id} — it holds writing that exists nowhere else. "
+                f"{session_id} - it holds writing that exists nowhere else. "
                 "Use brainstorm_archive, which files it away, deletes nothing "
                 "and can be undone.")
         return _bs.delete(_root(), int(session_id))
@@ -7451,7 +7427,7 @@ def brainstorm_delete(session_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Voice — Deepgram speech, the half of it that has two doors
+# Voice - Deepgram speech, the half of it that has two doors
 # ---------------------------------------------------------------------------
 # MCP PARITY, AND WHERE IT DELIBERATELY STOPS. The dashboard's voice surface is
 # three endpoints (bgate_ui/routes/voice.py): a status read, a TTS POST, and a
@@ -7472,7 +7448,7 @@ def brainstorm_delete(session_id: int) -> dict:
 def voice_status() -> dict:
     """Can this project do speech in and out, and if not, what is missing?
 
-    Presence and reasons only — never the key. Two independent things can be
+    Presence and reasons only - never the key. Two independent things can be
     absent (DEEPGRAM_API_KEY, and the `websockets` extra) and they need
     different actions from the human, so both are reported separately.
     """
@@ -7514,7 +7490,7 @@ def voice_speak(text: str, out_path: str = "",
             raise RuntimeError(verdict["reason"])
 
         # BILLED PER CHARACTER AND NEVER CHECKED. This path recorded its
-        # spend and never asked the budget — the one paid tool an
+        # spend and never asked the budget - the one paid tool an
         # unattended loop could run up with no gate at all. Priced from
         # the same table the adapter bills from; an unpriced model quotes
         # None there rather than 0.0, and an unknown price must not read
@@ -7555,11 +7531,11 @@ def voice_speak(text: str, out_path: str = "",
 
 
 # ---------------------------------------------------------------------------
-# SFX — synthesized, not generated
+# SFX - synthesized, not generated
 # ---------------------------------------------------------------------------
 # THE AUDIO SEAT COULD NOT MAKE A GAME SOUND. Its mission opens "Own SFX and
-# music hooks" and every tool it had was a paid, keyed provider — kie_music_*
-# for beds, voice_* for speech — so a project without a key produced no audio at
+# music hooks" and every tool it had was a paid, keyed provider - kie_music_*
+# for beds, voice_* for speech - so a project without a key produced no audio at
 # all, and even with one there was no path to a coin pickup or a laser. These
 # three tools need no key, no network and no budget: an SFX is four oscillator
 # parameters and an envelope, and synthesis genuinely beats generation there.
@@ -7567,7 +7543,7 @@ def voice_speak(text: str, out_path: str = "",
 def sfx_kinds() -> dict:
     """What game sounds this can synthesize, and the aliases each answers to.
 
-    Read this before guessing a kind — `sfx_generate("pew")` fails, `"laser"`
+    Read this before guessing a kind - `sfx_generate("pew")` fails, `"laser"`
     and its alias `"shoot"` do not. Every entry says how long it comes out and
     what its base frequency is, which are the two knobs worth moving first.
     """
@@ -7588,16 +7564,16 @@ def sfx_generate(kind: str, name: str, seed: Optional[int] = None,
     """Synthesize a game sound effect into the project. No key, no provider.
 
     kind        sfx_kinds() lists them: blip, pickup, jump, laser, explosion,
-                hit, powerup, sweep (plus aliases — "coin", "shoot", "thud").
+                hit, powerup, sweep (plus aliases - "coin", "shoot", "thud").
     name        becomes <name>.wav in the audio seat's lane.
-    base_hz     scales every pitch in the preset — a bigger gun, not a
+    base_hz     scales every pitch in the preset - a bigger gun, not a
                 different sound. 0 keeps the preset's own.
     duration_s  scales every time in the preset. 0 keeps its nominal length.
     bits        3-8 bit-crushes it for the retro sound; 0 leaves it clean.
 
     WRITES TWO FILES, AND THAT IS THE POINT. `<name>.synth.json` lands beside
-    the wav carrying the complete parametric recipe — waves, sweeps, ADSR,
-    filter, seed — because the audio house rule requires it and because a .wav
+    the wav carrying the complete parametric recipe - waves, sweeps, ADSR,
+    filter, seed - because the audio house rule requires it and because a .wav
     whose knobs are lost cannot be nudged by anyone, ever. sfx_rerender rebuilds
     the identical bytes from that sidecar alone.
 
@@ -7636,7 +7612,7 @@ def sfx_rerender(recipe_path: str, out_path: str = "") -> dict:
 
     This is the proof the recipe is a recipe: `identical` says whether the bytes
     match the wav already on disk. A sidecar that renders something else is
-    worse than no sidecar — it looks like provenance and is not — so run this
+    worse than no sidecar - it looks like provenance and is not - so run this
     after hand-editing a recipe, and read that field rather than assuming.
 
     recipe_path may be absolute or relative to the project root.
@@ -7679,7 +7655,7 @@ def sfx_list() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Dialogue — the narrative seat's own artifact
+# Dialogue - the narrative seat's own artifact
 # ---------------------------------------------------------------------------
 @_tool
 def dialogue_write(name: str, nodes: list[dict], start: str = "",
@@ -7694,7 +7670,7 @@ def dialogue_write(name: str, nodes: list[dict], start: str = "",
     THE WRITE IS REFUSED, NOT WARNED, when the graph is broken, and the refusal
     names the node: a choice pointing at a node that does not exist, a node
     nothing reaches, a node from which no ending is reachable. All three are
-    invisible in the file and expensive in the game — a dead-ended branch is
+    invisible in the file and expensive in the game - a dead-ended branch is
     found weeks later by a player, and a node with no exit reads as a hang.
 
     canon_check runs on the way in, on the lines AND the choice labels. A hard
@@ -7702,7 +7678,7 @@ def dialogue_write(name: str, nodes: list[dict], start: str = "",
     changed); review-level flags ride along in the result, because an unknown
     name is the normal state of a first draft.
 
-    Lands at <godot project>/dialogue/<name>.dialogue.json — inside the
+    Lands at <godot project>/dialogue/<name>.dialogue.json - inside the
     narrative seat's own lane, for both project layouts.
     """
     try:
@@ -7722,7 +7698,7 @@ def dialogue_write(name: str, nodes: list[dict], start: str = "",
 
 @_tool
 def dialogue_read(name: str) -> dict:
-    """One dialogue tree, whole — nodes, choices, start and ends.
+    """One dialogue tree, whole - nodes, choices, start and ends.
 
     Read before editing: dialogue_write replaces the file outright, so a partial
     node list silently deletes every branch it left out.
@@ -7740,7 +7716,7 @@ def dialogue_list() -> dict:
     """Every dialogue tree in the project, and whether each still validates.
 
     A file that no longer passes the graph checks is reported with ok=false and
-    the reason — hand edits and merges break `goto` targets, and the listing is
+    the reason - hand edits and merges break `goto` targets, and the listing is
     the cheapest place to find that out.
     """
     try:
@@ -7764,7 +7740,7 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
     """The work queue. status: queued | dispatched | done | failed.
 
     BRIEFS ARE PREVIEWS and the list is PAGED. This used to answer with every
-    work item a project had ever had, brief text and all — on a real board that
+    work item a project had ever had, brief text and all - on a real board that
     is 150,000 characters, which does not fit in a tool result at all: the call
     failed, the CLI spilled it to a file, and the agent spent its next two turns
     grepping a dump of its own queue instead of doing the work. A board is a
@@ -7794,7 +7770,7 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
             "shown": len(items),
             "total": len(rows),
             "truncated": len(rows) > len(items),
-            "note": ("briefs are previews — queue_get(item_id) returns one item "
+            "note": ("briefs are previews - queue_get(item_id) returns one item "
                      "whole" if not full else "full briefs; keep limit small"),
         }
     except Exception as exc:
@@ -7803,7 +7779,7 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
 
 @_tool
 def queue_get(item_id: int) -> dict:
-    """One work item, whole — brief, result, lineage, cost, status.
+    """One work item, whole - brief, result, lineage, cost, status.
 
     The other half of queue_list's preview: scan the board with the list, read
     the one item you are about to act on with this.
@@ -7825,7 +7801,7 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     about to produce.
 
     PRIORITY IS NOT ORDER, and this parameter exists because that gap had no
-    workaround. Priority is a preference among things that are ALL ready — it
+    workaround. Priority is a preference among things that are ALL ready - it
     does not stop auto-deploy from starting both agents in the same tick, so the
     one that needed the other's output writes against a file that does not exist,
     reports done, and the damage surfaces two items later wearing someone else's
@@ -7834,13 +7810,13 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
     Before this, order could only be expressed by ``queue_add_chain``, which
     files a whole ordered group at once. Chains are strictly linear and cannot be
     appended to, so filing a dependent FOLLOW-UP once a chain already existed had
-    no correct form at all — which is how a fidelity pass nearly got dispatched
+    no correct form at all - which is how a fidelity pass nearly got dispatched
     into a running build. Use the chain when you are filing the group; use this
     when the group is already on the board.
 
     A dependency on an item that does not exist is refused rather than dropped:
     an item silently waiting on nothing is indistinguishable from one that is
-    ready, and it would dispatch immediately — the exact failure being prevented.
+    ready, and it would dispatch immediately - the exact failure being prevented.
     """
     try:
         from bgate_core import queue as _q
@@ -7863,7 +7839,7 @@ def queue_add(seat: str, title: str, brief: str = "", priority: int = 0,
             "title": str(blocker.get("title") or "")[:120],
             "status": blocker.get("status") or "",
             "note": (f"#{item['id']} will not dispatch until #{depends_on} is "
-                     "done" + (" — approved, if this project runs an approval "
+                     "done" + (" - approved, if this project runs an approval "
                                "gate" if waiting else "")
                      if waiting else
                      f"#{depends_on} is already done, so #{item['id']} is "
@@ -7882,23 +7858,23 @@ def queue_add_chain(links: list, chain_id: str = "") -> dict:
     express it. Priority is a preference among things that are all ready; a chain
     is what decides which are ready. Filed as separate items, both agents start
     in the same auto-deploy tick and the second writes against a file that does
-    not exist yet — reports done, and the failure surfaces two items later
+    not exist yet - reports done, and the failure surfaces two items later
     looking like something else.
 
     ``links`` is an ORDERED list of dicts, each taking queue_add's fields:
     {"seat": ..., "title": ..., "brief": ..., "priority": ...}. Link N waits for
-    link N-1 to reach 'done' — approved, if this project runs an approval gate.
+    link N-1 to reach 'done' - approved, if this project runs an approval gate.
     Chains are strictly linear; model a fan-out as separate chains that share a
     first link, or as one link whose brief covers both halves.
 
     A CHAIN CANNOT BE APPENDED TO. To hang one dependent item off work that is
-    already on the board — a follow-up you did not know about when you filed the
-    chain — use ``queue_add(..., depends_on=<item id>)`` instead of filing a
+    already on the board - a follow-up you did not know about when you filed the
+    chain - use ``queue_add(..., depends_on=<item id>)`` instead of filing a
     second chain that races the first.
 
     WRITE EACH BRIEF AS IF ITS PREDECESSOR ALREADY LANDED, because it will have.
     Name what it produced (the file, the function, the scene) rather than saying
-    "wait for it" — the waiting is now the board's job, not the brief's.
+    "wait for it" - the waiting is now the board's job, not the brief's.
 
     Returns {chain_id, items: [...]} in running order. Nothing dispatches until
     `bgate serve` is up, exactly as with queue_add.
@@ -7922,7 +7898,7 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
                  seat: Optional[str] = None, priority: Optional[int] = None) -> dict:
     """Edit an existing work item in place (title/brief/seat/priority).
 
-    For enriching a ticket without re-filing it — e.g. rewriting a transcript-
+    For enriching a ticket without re-filing it - e.g. rewriting a transcript-
     era brief to add the frames, timestamps, and telemetry you saw while
     watching the recording. Only the fields you pass change; status and lineage
     stay put. Pass the full new brief text (this replaces, it does not append).
@@ -7937,11 +7913,11 @@ def queue_update(item_id: int, title: Optional[str] = None, brief: Optional[str]
 
 @_tool
 def queue_next(seat: str) -> dict:
-    """The highest-priority queued item for a seat — what to work on next.
+    """The highest-priority queued item for a seat - what to work on next.
 
     A READ: it changes nothing and reserves nothing. A dispatched worker that
     wants to actually take the item it sees here uses queue_claim_next, which
-    claims atomically — acting on this read alone races the dashboard.
+    claims atomically - acting on this read alone races the dashboard.
     """
     try:
         from bgate_core import queue as _q
@@ -7953,7 +7929,7 @@ def queue_next(seat: str) -> dict:
 
 @_tool
 def board_digest(hours: int = 12) -> dict:
-    """WHAT HAPPENED WHILE YOU WERE AWAY — finished, failed, blocked, spent.
+    """WHAT HAPPENED WHILE YOU WERE AWAY - finished, failed, blocked, spent.
 
     The morning report. Nothing else answers it: the autopilot keeps only its
     LAST refusal, notices collapse past three into "11 items finished", and the
@@ -7961,8 +7937,8 @@ def board_digest(hours: int = 12) -> dict:
     So after an overnight run the most common question had no surface at all.
 
     The field to read first is ``blocked``. Queued work with nothing running is
-    either a dead dashboard or a floor refusal — most often a dirty tree, which
-    stops the WHOLE board rather than one item — and this names which.
+    either a dead dashboard or a floor refusal - most often a dirty tree, which
+    stops the WHOLE board rather than one item - and this names which.
 
     Spends nothing. Read it at the start of a session before deciding anything.
     """
@@ -7978,12 +7954,12 @@ def queue_cut_dependency(item_id: int, depends_on: int) -> dict:
     """Release an item from a predecessor that will never land. THE REPAIR VERB.
 
     Only 'done' satisfies a dependency, so a CANCELLED predecessor blocks its
-    successors forever — the board's one state with no exit. Before this the
+    successors forever - the board's one state with no exit. Before this the
     only escape was deleting and re-filing the work, losing its brief, its
     round count and everything the harness observed it write.
 
     Use it when the predecessor was cut, superseded, or turned out to be
-    unnecessary — NOT to jump a queue: the item you release starts writing
+    unnecessary - NOT to jump a queue: the item you release starts writing
     against whatever the predecessor was supposed to produce, so if that
     output is genuinely still needed, this is how a run writes against a file
     that does not exist. The cut is recorded with your identity, not deleted.
@@ -8001,7 +7977,7 @@ def queue_cut_dependency(item_id: int, depends_on: int) -> dict:
 
 @_tool
 def queue_add_dependency(item_id: int, depends_on: int) -> dict:
-    """Make an item wait for one MORE predecessor — dependencies are a graph.
+    """Make an item wait for one MORE predecessor - dependencies are a graph.
 
     queue_add's own depends_on takes a single parent, which is all a chain
     ever needed. A real feature is a fan-in: the scene needs the sprite AND
@@ -8017,7 +7993,7 @@ def queue_add_dependency(item_id: int, depends_on: int) -> dict:
 
 @_tool
 def plan_status() -> dict:
-    """Coverage: what the game consists of vs what is built — THE completeness
+    """Coverage: what the game consists of vs what is built - THE completeness
     read.
 
     An empty queue is NOT a finished game: after a bad decomposition the two
@@ -8025,7 +8001,7 @@ def plan_status() -> dict:
     superseded while the objective ranked last. This reads the game-plan
     manifest (plan_row, written when a human deploys a brainstorm plan that
     carries one) joined live against the board: spec / on_board / built /
-    lost per row, slice completeness, and `remaining` — the rows the board
+    lost per row, slice completeness, and `remaining` - the rows the board
     does not currently hold. Anyone may read it; the director reads it before
     declaring anything finished, and uses queue_add to put uncovered rows on
     the board.
@@ -8041,25 +8017,25 @@ def plan_status() -> dict:
 def queue_claim_next() -> dict:
     """Claim the next READY item for YOUR seat and keep this session working.
 
-    THE PICKUP LOOP. A finished worker used to have one move — exit, and let
+    THE PICKUP LOOP. A finished worker used to have one move - exit, and let
     the board pay a fresh agent's entire briefing to start the next item. This
     is the other move: claim the next item, complete your current one, and
     continue in the same session with your context already paid for.
 
     ORDER MATTERS: CLAIM FIRST, THEN queue_complete. The dashboard closes this
     session shortly after your current item settles unless you already hold a
-    claim — a claim made after completing races that shutdown and loses.
+    claim - a claim made after completing races that shutdown and loses.
 
     The claim is atomic against the dashboard's own dispatcher: whoever loses
     simply does not get the item, so a claim that returns a row is yours. It
     honours the same holds autodeploy does (dependencies, human-only sources),
-    and it only ever claims for the seat you already hold — this is a loop,
+    and it only ever claims for the seat you already hold - this is a loop,
     not a way to change lanes. Your run's cost and runtime ceilings still come
     from the ORIGINAL dispatch and bound the whole session; if the claimed
     work will not fit under what remains, do not claim it.
 
     Returns the claimed item (its brief is the task) or {empty: true}, which
-    means: queue_complete and finish — an empty board is a finished shift.
+    means: queue_complete and finish - an empty board is a finished shift.
     """
     try:
         from bgate_core import queue as _q
@@ -8074,7 +8050,7 @@ def queue_claim_next() -> dict:
         item = _q.claim_next(_root(), seat, actor=f"agent:item-{int(origin)}")
         if item is None:
             return {"empty": True, "seat": seat,
-                    "note": "nothing ready for your seat — queue_complete "
+                    "note": "nothing ready for your seat - queue_complete "
                             "your current item and finish."}
         _log("queue", f"claimed #{item['id']} to continue after "
                       f"item {origin}", ref=str(item["id"]))
@@ -8092,13 +8068,13 @@ def queue_claim_next() -> dict:
 def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
     """Close out a work item with an honest one-paragraph result.
 
-    failed=True when the work did not land — say why plainly; a false 'done'
+    failed=True when the work did not land - say why plainly; a false 'done'
     poisons the queue's trustworthiness for everyone.
 
     WHAT "CLOSED" MEANS DEPENDS ON THE PROJECT'S APPROVAL GATE, and the returned
     row says which happened. Under the agent gate the item goes to 'done' and a
     QA agent is spawned to verify the claim; under the builder's gate it goes to
-    'review' and waits for the human — you are finished either way, but anything
+    'review' and waits for the human - you are finished either way, but anything
     chained behind it does not start until it reaches 'done'. Do not "fix" a
     'review' status by re-reporting: it is the gate working.
     """
@@ -8118,7 +8094,7 @@ def queue_reopen(item_id: int, reason: str) -> dict:
     dispatched agent reads exactly what to fix, and recorded as the result.
 
     ROUTED THROUGH queue.reopen, and the difference is not cosmetic. This tool
-    used to re-queue directly, which left ``attempts`` at zero forever — and
+    used to re-queue directly, which left ``attempts`` at zero forever - and
     ``attempts`` is the round counter the QA gate's max-rounds cap reads, so
     the fail/reopen loop the cap exists to stop could never trip it: an
     unbounded money pump wearing the gate's own uniform. queue.reopen counts
@@ -8135,7 +8111,7 @@ def queue_reopen(item_id: int, reason: str) -> dict:
             # here: cancelled is a human calling work off, and a machine
             # un-cancelling it is the human's call being overridden.
             raise ValueError(
-                f"item {item_id} is {item['status']!r} — only done/failed "
+                f"item {item_id} is {item['status']!r} - only done/failed "
                 "items can be reopened")
         return _q.reopen(root, item_id, (reason or "").strip())
     except Exception as exc:
@@ -8151,8 +8127,8 @@ def agent_steer_all(text: str) -> dict:
     path. Steering that agent by agent means retyping the same sentence four
     times and the last one hears it a minute after the first.
 
-    Same delivery as agent_steer — the steer inbox, read by each agent when its
-    current step ends — and the same caps. Returns one row per item it reached,
+    Same delivery as agent_steer - the steer inbox, read by each agent when its
+    current step ends - and the same caps. Returns one row per item it reached,
     so "who did not get this" is answerable: an item whose runner takes its
     prompt at launch has no live channel and is reported as refused rather than
     silently skipped.
@@ -8171,7 +8147,7 @@ def agent_steer_all(text: str) -> dict:
         running = [it for it in _q.list_items(root, status="dispatched")]
         if not running:
             return {"ok": True, "count": 0, "sent": [],
-                    "note": "nothing is running — there was nobody to steer"}
+                    "note": "nothing is running - there was nobody to steer"}
         sent = []
         for item in running:
             posted = _steerbox.post_long(root, int(item["id"]), said,
@@ -8190,8 +8166,8 @@ def agent_steer(item_id: int, text: str) -> dict:
     """Say something to the agent currently running a work item, mid-run.
 
     The director's other half. queue_add hands work OUT; this is how you correct
-    it while it is happening — "that pose is off-model, use the pinned ref",
-    "stop widening the scope, ship the three screens" — without killing the run
+    it while it is happening - "that pose is off-model, use the pinned ref",
+    "stop widening the scope, ship the three screens" - without killing the run
     and paying for it twice.
 
     The message is left in the project's steer inbox and delivered by the
@@ -8199,13 +8175,13 @@ def agent_steer(item_id: int, text: str) -> dict:
 
       * it needs `bgate serve` to be running to land;
       * the agent reads it when its CURRENT step ends, not instantly;
-      * an item with no live agent gets no delivery — check queue_list(
+      * an item with no live agent gets no delivery - check queue_list(
         status='dispatched') first, and use queue_update or queue_reopen for
         work that is not running.
 
       * A STEER IS CAPPED AT 2000 CHARACTERS. It is an interruption, not a
         brief. Past the cap the text is written to a file in the project's steer
-        box and the agent is handed the opening paragraph plus that path — so a
+        box and the agent is handed the opening paragraph plus that path - so a
         long correction reaches a RUNNING agent instead of forcing you to kill
         the run and pay for it twice, which is what the cap used to mean in
         practice. Truncation is still never on the table: half a sentence with
@@ -8227,7 +8203,7 @@ def agent_steer(item_id: int, text: str) -> dict:
         if item["status"] != "dispatched":
             return {"ok": False,
                     "error": f"item {item_id} is {item['status']!r}, not running "
-                             "— there is no agent to steer",
+                             " - there is no agent to steer",
                     "status": item["status"]}
         posted = _steerbox.post_long(root, int(item_id), text,
                                      by=f"seat:{_seat() or 'director'}")
@@ -8236,7 +8212,7 @@ def agent_steer(item_id: int, text: str) -> dict:
                            "reads it when its current step ends"}
         if posted.get("excerpted"):
             out["note_path"] = posted["note_path"]
-            out["delivery"] += (f" — over {_steerbox.MAX_TEXT} characters, so it "
+            out["delivery"] += (f" - over {_steerbox.MAX_TEXT} characters, so it "
                                 "was handed over as an excerpt plus the path to "
                                 "the full text")
         return out
@@ -8246,17 +8222,17 @@ def agent_steer(item_id: int, text: str) -> dict:
 
 @_tool
 def ask_human(question: str, refs: Optional[list] = None) -> dict:
-    """Ask the human who owns this project ONE question — and keep working.
+    """Ask the human who owns this project ONE question - and keep working.
 
     The director's ping. Use it for the calls that are genuinely not yours: which
     of two directions to take, whether a scope cut is acceptable, whether a thing
     you just finished is what they meant. It returns immediately and DOES NOT
-    BLOCK — do not poll for the answer, and do not sit idle waiting for one. Say
+    BLOCK - do not poll for the answer, and do not sit idle waiting for one. Say
     in your result note that you asked and what you assumed in the meantime.
 
     NOT A WORK ITEM, DELIBERATELY. A question that becomes a queued row is a row
     somebody has to dispatch in order to read, which is how "ask the human" turns
-    into "spawn an agent to ask the human" — paid, laned, and still in front of
+    into "spawn an agent to ask the human" - paid, laned, and still in front of
     nobody. This lands on the event bus instead, so it reaches the console card,
     the drawer and any notification channel the project has switched on.
 
@@ -8269,7 +8245,7 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
         session reads it from one file) and attached to the question itself.
 
     Unanswered questions are reminded about ONCE, past notify.question_stale_h.
-    So: ask one thing, make it decidable, and name the options — "A or B?" gets an
+    So: ask one thing, make it decidable, and name the options - "A or B?" gets an
     answer, "any thoughts?" does not. `refs` are ids or paths the human should
     look at ("item 41", "bible#12", "game/scenes/hub.tscn"); cite, do not paste.
     """
@@ -8286,10 +8262,10 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
                        "they answer, otherwise as a handoff decision note for "
                        "the next session")
         else:
-            arrives = ("as a handoff decision note — this session is not a "
+            arrives = ("as a handoff decision note - this session is not a "
                        "dispatched work item, so there is no run to steer")
         return {**result, "answer_arrives": arrives,
-                "note": "returns immediately — do not wait for the answer"}
+                "note": "returns immediately - do not wait for the answer"}
     except Exception as exc:
         return _fail(exc)
 
@@ -8299,7 +8275,7 @@ def ask_human(question: str, refs: Optional[list] = None) -> dict:
 # ---------------------------------------------------------------------------
 # FOUR TOOLS, NOT SEVEN. The public tool list is a budget an agent reads in
 # full, and the kit-generation and part-rerun verbs belong with the art
-# generation path rather than here — they are labelled as not-yet-built rather
+# generation path rather than here - they are labelled as not-yet-built rather
 # than stubbed, so nobody calls one and gets a shrug.
 
 
@@ -8308,7 +8284,7 @@ def _cutout_dir(root: str, name: str) -> "_Path":
 
     Inside game/assets/**, which is the ART SEAT'S EXISTING WRITE LANE. A bare
     characters/** would be out of lane for every seat and the PreToolUse hook
-    would refuse the writes — the feature would be unusable by the seat that
+    would refuse the writes - the feature would be unusable by the seat that
     owns it.
     """
     return _Path(root) / "game" / "assets" / "characters" / name
@@ -8319,14 +8295,14 @@ def cutout_templates() -> dict:
     """The cutout rig templates, and what a kit for each has to contain.
 
     A CUTOUT CHARACTER IS THE OTHER WAY TO ANIMATE IN 2D. The frame pipeline
-    pays per character per animation — six clips at eight frames is 48 paid
+    pays per character per animation - six clips at eight frames is 48 paid
     generations that all have to agree with each other, and a new hat means
     regenerating every one. A cutout kit is about ten parts, the animation is
     authored once per TEMPLATE and free forever after, and equipment is a
     texture swap on one slot.
 
     What it costs you: a puppet, not a painting. Parts are rigid Sprite2Ds on
-    Node2D bones — no mesh deformation, no squash, no per-frame redraw. For a
+    Node2D bones - no mesh deformation, no squash, no per-frame redraw. For a
     hero seen in close-up the frame pipeline is still the better answer.
 
     `parts_to_generate` is the actual generation list: the far-side limbs reuse
@@ -8338,10 +8314,10 @@ def cutout_templates() -> dict:
         return {"ok": True, "templates": _cutout.templates(),
                 "layout": "game/assets/characters/<name>/",
                 "not_built_yet": [
-                    "cutout_kit_generate — generating the parts themselves "
+                    "cutout_kit_generate - generating the parts themselves "
                     "still goes through image_generate/chroma by hand against "
                     "a pinned reference",
-                    "cutout_part_rerun — regenerate one part in place",
+                    "cutout_part_rerun - regenerate one part in place",
                 ]}
     except Exception as exc:
         return _fail(exc)
@@ -8357,7 +8333,7 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
     cutout_templates lists the slots. Anything you leave out simply does not get
     a sprite, so a half-generated kit assembles and shows what it has.
 
-    What comes out: `<name>.cutout.json` (the rig document — the editable
+    What comes out: `<name>.cutout.json` (the rig document - the editable
     thing), `<name>.tscn` (bones, sprites, z order, an AnimationPlayer) and
     `<name>.anims.tres` (six clips, baked onto THIS character's rest pose).
     Drop the .tscn into a scene and call play("walk") on it.
@@ -8365,8 +8341,7 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
     THE FAR SIDE IS FREE. Slots ending _far reuse the matching _near image with
     a tint unless you pass them explicitly, so a side-view kit is ten images.
 
-    `adjustments` nudges the template per character — {"arm_near": {"rot": -8}}
-    — and those survive every clip, because the animation is baked as deltas on
+    `adjustments` nudges the template per character - {"arm_near": {"rot": -8}} - and those survive every clip, because the animation is baked as deltas on
     top of them rather than as absolute poses.
 
     It REFUSES to overwrite a .tscn that has changed since it last wrote one
@@ -8434,7 +8409,7 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
                                      "filled": len(doc["skin"])})
         return {**emitted, "doc": str(doc_path), "status": status,
                 "how": [f"instance {emitted['scene_res']} in a scene",
-                        'call play("walk") on it — the rig script is on the root',
+                        'call play("walk") on it - the rig script is on the root',
                         "connect its anim_event signal for hit frames"]}
     except Exception as exc:
         return _fail(exc)
@@ -8444,7 +8419,7 @@ def cutout_assemble(name: str, parts: dict, template: str = "biped_v1",
 def cutout_status(name: str) -> dict:
     """What is wrong with a cutout character, and what is merely unfinished.
 
-    Reports rather than refuses — a half-generated kit is the normal state
+    Reports rather than refuses - a half-generated kit is the normal state
     while a character is being made. `missing` is slots with no part yet;
     `problems` is the list that actually needs action:
 
@@ -8468,7 +8443,7 @@ def cutout_status(name: str) -> dict:
 @_tool
 def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = None,
                  force: bool = False) -> dict:
-    """Put a different part in one slot and re-emit — a hat, a sword, an arm.
+    """Put a different part in one slot and re-emit - a hat, a sword, an arm.
 
     This is what the whole pipeline is for: swapping equipment is one texture
     on one slot, not a re-drawn character. The scene carries a pivot table so
@@ -8520,16 +8495,16 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
 
 
 # ---------------------------------------------------------------------------
-# kie.ai — Suno music and Seedance video
+# kie.ai - Suno music and Seedance video
 # ---------------------------------------------------------------------------
 # THE TWO CAPABILITIES THIS PRODUCT HAS NEVER HAD. audiolab MIXES audio and has
 # never generated a note; nothing anywhere has generated a frame of video. Both
 # arrive behind one key, so both get a tool here rather than waiting on a UI
-# surface — a capability with no door is a capability the system does not have,
+# surface - a capability with no door is a capability the system does not have,
 # which is the rule tests/test_brainstorm_mcp.py::TestParity was added to hold.
 #
 # MUSIC IS A PIPELINE ASSET NOW; VIDEO STILL IS NOT. These tools used to say the
-# same thing about both — "nothing downstream imports this, listen to it and
+# same thing about both - "nothing downstream imports this, listen to it and
 # that is all". That is still true of a .mp4: no importer, no gate, no manifest
 # kind. It is no longer true of a track. bgate_core.music registers every
 # generated take as a candidate artifact revision and installs a KEPT one under
@@ -8539,15 +8514,14 @@ def cutout_equip(name: str, slot: str, texture: str, pivot: Optional[list] = Non
 # WHICH IS WHY THE MUSIC TOOLS GO THROUGH bgate_core.music, NOT THE ADAPTER.
 # kie.generate_music still exists and still just writes files; calling it
 # directly from here would produce paid-for .mp3s in a scratch directory with no
-# provenance row, no ledger entry and no way for the audio seat to see them —
-# the same reason kie's IMAGES get no tool of their own and reach the pipeline
+# provenance row, no ledger entry and no way for the audio seat to see them - # the same reason kie's IMAGES get no tool of their own and reach the pipeline
 # through image_generate(provider="kie") instead. One door per capability.
 @_tool
 def kie_status() -> dict:
     """Is kie.ai usable, and what does it reach? Never exposes the key.
 
     kie is one key over three capabilities: images (Nano Banana, FLUX.2, Qwen),
-    Suno music, and Seedance video. No 3D — that stays on Krea.
+    Suno music, and Seedance video. No 3D - that stays on Krea.
     """
     try:
         root = _root()  # triggers .env load
@@ -8585,21 +8559,21 @@ def kie_music_generate(prompt: str, name: str = "", instrumental: bool = True,
                        timeout: float = 900.0) -> dict:
     """Generate MUSIC with Suno through kie.ai. Costs real credits.
 
-    ONE REQUEST RETURNS SEVERAL TRACKS — Suno generates variations, typically
+    ONE REQUEST RETURNS SEVERAL TRACKS - Suno generates variations, typically
     two, and no page of the reference commits to a number. So this returns a
     BATCH OF CANDIDATES, not a file: every take is downloaded and registered as
     an artifact revision under one logical name, exactly as a batch of candidate
-    images is. Audition them (music_candidates), then music_keep ONE — keeping
+    images is. Audition them (music_candidates), then music_keep ONE - keeping
     installs it under the engine project and approves the revision; the rest get
     music_discard. Nothing reaches the game until a human keeps it.
 
     instrumental defaults to TRUE: background music with a vocalist singing over
     the dialogue is the wrong asset almost every time. Pass False for a title
-    song or a diegetic track — and only then does vocal_gender ('m'/'f') apply.
+    song or a diegetic track - and only then does vocal_gender ('m'/'f') apply.
 
     custom=False (simple mode) takes a 500-character DESCRIPTION and Suno writes
     everything. custom=True takes lyrics up to 3,000-5,000 characters depending
-    on the model, plus `style` and `title` — which are refused in simple mode
+    on the model, plus `style` and `title` - which are refused in simple mode
     rather than silently dropped. See kie_music_options for the exact ceilings.
 
     duration is V5_5 ONLY (10-360s). Every other model would be charged for its
@@ -8612,7 +8586,7 @@ def kie_music_generate(prompt: str, name: str = "", instrumental: bool = True,
     the charge is measured as the account-balance delta around the call and the
     result says which number it is (`credits_source`). With no rate configured
     (BGATE_KIE_USD_PER_CREDIT) the run is reported UNPRICED and `accounted` is
-    false — it is never filed as $0.00, which a budget check would read as free.
+    false - it is never filed as $0.00, which a budget check would read as free.
 
     Runs for one to three minutes. This blocks for the whole batch.
     """
@@ -8643,7 +8617,7 @@ def kie_music_status(task_id: str) -> dict:
     is only a failure when the record also carries no audio.
 
     This only LOOKS. When it says `recoverable`, kie_music_recover is what puts
-    the audio on disk — do not re-run kie_music_generate to get files for a task
+    the audio on disk - do not re-run kie_music_generate to get files for a task
     that already has them, that is paying twice.
     """
     try:
@@ -8659,14 +8633,14 @@ def music_stuck_tracks(older_than_s: int = 0, poll: bool = True) -> dict:
     """Music generations that were PAID FOR and never collected. Finds money.
 
     The music twin of cinematic_stuck_shots, and it exists for the same reason:
-    a batch is charged at SUBMIT, and everything after that — the poll loop, the
-    download, the absorb — can die without the charge going anywhere. Until the
+    a batch is charged at SUBMIT, and everything after that - the poll loop, the
+    download, the absorb - can die without the charge going anywhere. Until the
     task id was persisted before the provider call, a crash mid-poll lost the
     only handle to work you had already bought, and nothing anywhere noticed.
 
     Run it after any crash, kill or dashboard restart. `recoverable` is the list
     worth acting on: those are finished generations sitting on the provider that
-    kie_music_recover can still collect — but only inside the provider's
+    kie_music_recover can still collect - but only inside the provider's
     retention window, which the result names. `poll=False` answers from local
     tickets alone and reaches no provider, which is the right call when you only
     want to know whether anything is outstanding.
@@ -8685,8 +8659,8 @@ def kie_music_recover(task_id: str, name: str = "") -> dict:
     """Download and register the tracks of a task ALREADY PAID FOR. Costs nothing.
 
     kie_music_generate submits, waits, downloads and files in one blocking call,
-    so anything that goes wrong after the submit — a timeout, a dropped
-    connection, a cancel, a CDN refusing the download — leaves a task id, a
+    so anything that goes wrong after the submit - a timeout, a dropped
+    connection, a cancel, a CDN refusing the download - leaves a task id, a
     charge, and no files. kie holds the audio for FOURTEEN DAYS from generation.
     This collects it.
 
@@ -8698,7 +8672,7 @@ def kie_music_recover(task_id: str, name: str = "") -> dict:
     so running this twice downloads nothing twice and files nothing twice; the
     result reports how many were `skipped`.
 
-    NO COST IS CLAIMED against this call — the charge happened at submit time,
+    NO COST IS CLAIMED against this call - the charge happened at submit time,
     possibly days ago, and a balance delta measured now would be fiction.
     """
     try:
@@ -8716,7 +8690,7 @@ def music_candidates(logical_name: str = "", limit: int = 100) -> dict:
 
     Every row carries its artifact_id (what music_keep / music_discard take),
     its on-disk path, its prompt and what it cost. LISTEN to a candidate before
-    keeping it — the dashboard's audio seat plays them inline; from a shell the
+    keeping it - the dashboard's audio seat plays them inline; from a shell the
     path is a real file.
     """
     try:
@@ -8737,9 +8711,9 @@ def music_keep(artifact_id: int, note: str = "") -> dict:
     """Keep one candidate: install it under the engine project and approve it.
 
     THIS IS THE STEP THAT MAKES A TRACK REAL. The file is copied from the
-    scratch directory to game/assets/audio/music/ — inside the audio seat's
+    scratch directory to game/assets/audio/music/ - inside the audio seat's
     write lane, inside the Godot project, and visible to both the audio library
-    and the audio lab's mixer — and only then is the revision approved.
+    and the audio lab's mixer - and only then is the revision approved.
 
     APPROVAL IS A HUMAN'S CALL and this does not get around that: it goes
     through artifacts.review, which refuses an agent by name unless the project
@@ -8763,12 +8737,12 @@ def music_install(artifact_id: int) -> dict:
     candidate until a human keeps it. On a project whose approval gate is off
     (`gate.mode = none`, or `art.auto_approve`) that assumption is false:
     artifacts.register approves each take as it is filed, so there is no
-    candidate, no keep, and — before this existed — no installed file. The row
+    candidate, no keep, and - before this existed - no installed file. The row
     said approved and the engine project had nothing.
 
     Use it when music_candidates shows a kept track with `installed: false`, or
     when an approved track's file has been deleted out of the engine project.
-    Idempotent, and it does not change review state — music_keep is what picks a
+    Idempotent, and it does not change review state - music_keep is what picks a
     DIFFERENT take from an auto-approved batch.
     """
     try:
@@ -8784,7 +8758,7 @@ def music_discard(artifact_id: int, note: str = "") -> dict:
     """Reject a candidate track. Refusing to ship something is an agent's call
     to make, so unlike music_keep this needs no human.
 
-    The file is left where it is — under .bgate_out, gitignored and outside the
+    The file is left where it is - under .bgate_out, gitignored and outside the
     engine project. Only the decision is recorded, with the reason, against an
     immutable revision row. Say what was wrong with it; 'discarded' teaches the
     next generation nothing.
@@ -8803,14 +8777,14 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
                        first_frame: str = "", audio: Optional[bool] = None,
                        model: str = "", timeout: float = 1800.0) -> dict:
     """Generate a VIDEO CLIP through kie.ai. Costs real credits, and video is the
-    most expensive thing this product can buy — kie's own docs put video at
+    most expensive thing this product can buy - kie's own docs put video at
     100-500 credits against an image's 10-50.
 
     THE ARGUMENTS ARE INTENT, NOT ONE MODEL'S FIELD NAMES, so this drives any
     registered video model rather than only Seedance. kie's own catalogue does
-    not agree with itself on spelling — Sora 2 counts `n_frames` where Seedance
+    not agree with itself on spelling - Sora 2 counts `n_frames` where Seedance
     takes `duration`, and calls its shape "landscape" where Seedance wants
-    "16:9" — so the model's table entry translates. cinematic_options lists
+    "16:9" - so the model's table entry translates. cinematic_options lists
     every registered model with the exact ranges each one accepts.
 
       seconds     how long. Seedance does 4-15; ranges move per model.
@@ -8818,14 +8792,14 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
       shape       16:9 | 9:16 | 1:1 | 4:3 | 3:4 | 21:9 | adaptive on Seedance
       audio       generated audio is BAKED IN and cannot be removed later
 
-    first_frame may be a public URL OR a local path — a local one is uploaded to
+    first_frame may be a public URL OR a local path - a local one is uploaded to
     kie's file store first and the minted URL (which dies in 3 days) is used.
 
     Runs in MINUTES, not seconds; the default timeout is half an hour.
     filename lands under .bgate_out/video/.
 
     THIS IS THE RAW DOOR, AND IT IS PROBABLY NOT THE ONE YOU WANT. It buys one
-    unmanaged .mp4 — no shot list, no provenance row, no budget row against a
+    unmanaged .mp4 - no shot list, no provenance row, no budget row against a
     sequence, and Godot CANNOT PLAY AN .mp4 at all, so nothing here reaches a
     game. Use it for a one-off reference clip a human watches. For anything the
     project ships, cinematic_plan / cinematic_generate_shot / cinematic_keep run
@@ -8842,7 +8816,7 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
         # has to survive here or the gate reads "free" for exactly the models
         # whose cost is least predictable. So: a KNOWN price is gated on the
         # number. An UNKNOWN one still asks the budget (which catches a project
-        # already over its ceiling) and then says so in the result — a spend
+        # already over its ceiling) and then says so in the result - a spend
         # nobody could price is a fact the caller is owed, not something to
         # bury under a passing check.
         priced = None
@@ -8865,7 +8839,7 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
             out.relative_to(base)
         except ValueError:
             return {"ok": False,
-                    "error": "filename must stay inside .bgate_out/video — "
+                    "error": "filename must stay inside .bgate_out/video - "
                              f"refusing {filename!r}"}
         result = kie.generate_video(
             prompt, str(out), model=model or kie.DEFAULT_VIDEO_MODEL,
@@ -8882,18 +8856,18 @@ def kie_video_generate(prompt: str, filename: str, seconds: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
-# Cinematics — the pipeline half of video
+# Cinematics - the pipeline half of video
 # ---------------------------------------------------------------------------
 # WHY THESE EXIST ALONGSIDE kie_video_generate, and it is the same split the
 # music tools settled: the adapter buys a file, the core module makes it an
 # asset. Video needs the split more than music did, because a copied .mp4 is not
-# merely unmanaged — it is UNPLAYABLE. Godot's VideoStreamPlayer supports Ogg
+# merely unmanaged - it is UNPLAYABLE. Godot's VideoStreamPlayer supports Ogg
 # Theora and nothing else in core, so a keep that copies delivers a black
 # rectangle and a green badge. cinematic_keep transcodes.
 #
 # AND BECAUSE ONE GENERATION IS NOT ONE DELIVERABLE. Every video model here caps
 # at 15 seconds, so a cutscene is N paid generations that have to be planned,
-# ordered, judged and joined — cinematic_plan is the only free step in the whole
+# ordered, judged and joined - cinematic_plan is the only free step in the whole
 # pipeline and is where a sequence should be argued about.
 @_tool
 def cinematic_options() -> dict:
@@ -8904,7 +8878,7 @@ def cinematic_options() -> dict:
     PROVIDER (a kie key) is what buys a shot, and the ENCODER (ffmpeg built with
     libtheora) is what makes a bought shot playable. A machine with a key and no
     libtheora can generate a whole sequence, pay for all of it, and deliver none
-    of it — so this is worth reading before the first shot, and
+    of it - so this is worth reading before the first shot, and
     cinematic_generate_shot checks it before spending anyway.
     """
     try:
@@ -8923,7 +8897,7 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
                    resolution: str = "720p", audio_track: str = "",
                    audio_gain_db: float = 0.0, fade_in: float = 0.0,
                    fade_out: float = 0.0) -> dict:
-    """Write a cutscene's shot list. SPENDS NOTHING — do this first, always.
+    """Write a cutscene's shot list. SPENDS NOTHING - do this first, always.
 
     `shots` is a list of objects, in cut order. Each takes:
       action       REQUIRED. What happens in this shot.
@@ -8944,7 +8918,7 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
       vo           a voice-over clip for this shot
 
     SOUND. audio_track is a repo-relative path to the bed laid under the whole
-    cutscene — a track the audio seat kept, or a hand mix. Without it the cut is
+    cutscene - a track the audio seat kept, or a hand mix. Without it the cut is
     SILENT: models generate audio baked into the picture, which cannot be
     separated, ducked or localised, so this pipeline keeps the picture clean and
     scores it here. audio_gain_db trims the bed under dialogue (-6 is a usual
@@ -8955,12 +8929,12 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
     both .srt (what a translator opens) and .json (what the delivered scene
     reads). Nothing stores caption timing, so it cannot drift from the shot list.
 
-    STYLE — "cutscenes in whatever style" — has three levers, weakest first,
+    STYLE - "cutscenes in whatever style" - has three levers, weakest first,
     and all three are applied to EVERY shot automatically:
       style       a preset KEY (cinematic_options lists them: anime, noir,
                   comic, painterly, pixel, stop_motion, cg_animated, watercolor,
                   vhs, silhouette, live_action) OR free prose. An unlisted word
-                  is treated as prose rather than refused — whatever style means
+                  is treated as prose rather than refused - whatever style means
                   whatever style.
       style_note  the project's own wording, appended to the preset
       style_refs  repo-relative paths to frames carrying the look. These BEAT
@@ -8971,8 +8945,8 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
     so rather than letting it pass.
 
     THE SET IS THE THIRD RAIL AND IT IS THE ONE THAT WAS MISSING. `locations` is
-    a list of objects — slug, description, optional label and plates (repo-
-    relative images of the set) — and each shot names one. That description is
+    a list of objects - slug, description, optional label and plates (repo-
+    relative images of the set) - and each shot names one. That description is
     injected into EVERY shot filmed there, identically, in a fixed position.
     Without it the room lives inside each shot's own action prose, and four
     differently-worded descriptions of one office are four different offices:
@@ -8981,7 +8955,7 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
 
     GENERATE GROUPED BY LOCATION, NOT DOWN THE LIST. Two shots of one set agree
     with each other less the further apart they were generated, so buy a
-    location's shots together — `generation_order` in the returned sequence is
+    location's shots together - `generation_order` in the returned sequence is
     that order. The CUT is unaffected: cinematic_assemble joins by shot index.
 
     COVER THE BEATS TIGHT. Wides are both the flattest editorial choice and the
@@ -8995,8 +8969,8 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
     model picks which video model buys this sequence (cinematic_options lists
     what is registered and the exact ranges each accepts). It lives on the
     SEQUENCE because a cutscene generated half on one model does not cut
-    together. Changing style or model resets already-generated shots — a clip
-    rendered in the old look is not a rendering of the new one — and that is
+    together. Changing style or model resets already-generated shots - a clip
+    rendered in the old look is not a rendering of the new one - and that is
     reported, because it means spending money again.
 
     ANCHOR EVERY SHOT. A text-only sequence invents the cast fresh each
@@ -9006,7 +8980,7 @@ def cinematic_plan(name: str, shots: list, logline: str = "", style: str = "",
     anchored, and it is the most expensive warning in the product to ignore.
 
     NEVER point last_frame/first_frame at the previous shot's output. That is
-    the art seat's rule 2 (chains decay) with a worse decay constant — a video
+    the art seat's rule 2 (chains decay) with a worse decay constant - a video
     model's final frame is the most drifted image it produced AND a lossy
     intermediate. Every shot anchors on the same approved stills.
 
@@ -9090,14 +9064,13 @@ def cinematic_generate_shot(name: str, idx: int, model: str = "",
 def cinematic_assemble(name: str, quality: int = 6) -> dict:
     """Join a sequence's kept shots, in order, into ONE .ogv the game can load.
 
-    Refuses while any shot that is not marked 'cut' is unkept — assembling
+    Refuses while any shot that is not marked 'cut' is unkept - assembling
     around a missing beat ships a story that does not make sense rather than an
     error. It also refuses a set of shots that are not all the same size,
     because ffmpeg joins those into a broken file and reports SUCCESS.
 
     The result is registered as a candidate like any other. WATCH THE WHOLE CUT
-    before keeping it: shots were judged alone, and a cut is judged as a cut —
-    the light jumping, a character swapping hands, the camera crossing the line
+    before keeping it: shots were judged alone, and a cut is judged as a cut - the light jumping, a character swapping hands, the camera crossing the line
     are all invisible shot by shot.
     """
     try:
@@ -9114,7 +9087,7 @@ def cinematic_candidates(logical_name: str = "", limit: int = 100) -> dict:
 
     Every row carries its artifact_id (what cinematic_keep / cinematic_discard
     take) and `installed`, which is true only when the file in the engine
-    project was transcoded from THIS revision — so a superseded take cannot
+    project was transcoded from THIS revision - so a superseded take cannot
     claim to be the clip the game loads.
     """
     try:
@@ -9135,7 +9108,7 @@ def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6,
     """Approve a take, and put it in the engine project if the engine loads it.
 
     WHAT GETS INSTALLED DEPENDS ON WHAT IT IS. An assembled CUT is transcoded to
-    Ogg Theora and copied into the game — that is the asset the game plays. A
+    Ogg Theora and copied into the game - that is the asset the game plays. A
     SHOT is approved and stays in .bgate_out, because nothing references it: the
     game loads the cut, and cinematic_assemble reads the candidates directly.
     Installing every shot meant a Theora encode each and, at 1080p, tens of
@@ -9150,7 +9123,7 @@ def cinematic_keep(artifact_id: int, note: str = "", quality: int = 6,
     a row saying approved over a game with no file.
 
     quality is 1-10, 6 is the documented baseline; drop to 5 for 1440p+.
-    install_to_engine overrides the default either way — pass true for a single
+    install_to_engine overrides the default either way - pass true for a single
     clip used on its own, as an attract-mode loop or a sting with no cut.
     """
     try:
@@ -9187,7 +9160,7 @@ def cinematic_discard(artifact_id: int, note: str = "") -> dict:
     re-generated. Refusing to ship something is an agent's call, so unlike
     cinematic_keep this needs no human.
 
-    The file is left under .bgate_out — gitignored, outside the engine project.
+    The file is left under .bgate_out - gitignored, outside the engine project.
     Say what was wrong with it: 'discarded' teaches the re-roll nothing, and at
     video prices the re-roll is the expensive part.
     """
@@ -9214,21 +9187,19 @@ def cinematic_register_model(name: str, model: str, intent: dict,
     ones whose id and schema were verified against their own documentation,
     because a guessed id is a 404 after a round trip and a guessed parameter
     name is a setting you paid for and did not get. That rule is not relaxed
-    here — what this changes is WHO does the reading, so a user with the Kling
+    here - what this changes is WHO does the reading, so a user with the Kling
     or Sora page open is not blocked on a release.
 
       name    what to call it here, e.g. "kling-3"
       model   the LITERAL id kie wants in the top-level `model` field
       intent  what this model calls each of: seconds, shape, quality,
-              first_frame, last_frame, refs, audio. Omit any it cannot do —
-              asking for one it has no field for is then refused before the
+              first_frame, last_frame, refs, audio. Omit any it cannot do - asking for one it has no field for is then refused before the
               spend instead of being silently dropped.
 
     Optional, and worth filling in because they are checked before money moves:
       enums / ranges / caps   this model's own limits, keyed by ITS field names
-      intent_values           {intent: {canonical: this model's spelling}} —
-                              e.g. shape 16:9 -> "landscape"
-      intent_scale            {intent: multiplier} — e.g. seconds -> n_frames
+      intent_values           {intent: {canonical: this model's spelling}} - e.g. shape 16:9 -> "landscape"
+      intent_scale            {intent: multiplier} - e.g. seconds -> n_frames
 
     Registered models are stamped source="registered" everywhere they are
     listed, so nothing confuses your entry for a verified one. The registration
@@ -9252,7 +9223,7 @@ def cinematic_estimate(name: str, model: str = "") -> dict:
 
     Read this between cinematic_plan and the first cinematic_generate_shot. A
     shot list is the only artifact here that can be reviewed for nothing, and
-    an eight-shot sequence is eight paid generations — the argument about
+    an eight-shot sequence is eight paid generations - the argument about
     whether shot 3 earns its place is much easier with the bill next to it.
 
     AN UNKNOWN PRICE IS REPORTED AS UNKNOWN, NEVER AS ZERO. kie publishes credit
@@ -9278,8 +9249,8 @@ def cinematic_stuck_shots(older_than_s: int = 0, poll: bool = True) -> dict:
     """Find generations that were PAID FOR and never collected. This is the tool
     that finds money.
 
-    A generation is charged at submit. Everything after that — the poll loop,
-    the download, this process surviving the ten minutes it takes — can fail
+    A generation is charged at submit. Everything after that - the poll loop,
+    the download, this process surviving the ten minutes it takes - can fail
     while the provider sits on a finished clip you have already been billed for.
     Nothing surfaces that on its own; a shot row simply stays at 'generating'
     forever and looks like work in flight.
@@ -9294,7 +9265,7 @@ def cinematic_stuck_shots(older_than_s: int = 0, poll: bool = True) -> dict:
       poll          ask the provider about each one. False answers from the
                     database alone and never leaves the machine.
 
-    `lost` means the row has no task id at all — the submit failed before it
+    `lost` means the row has no task id at all - the submit failed before it
     returned one, so there is probably nothing to collect and nothing was
     charged. `unknown` means the provider was asked and did not say.
     """
@@ -9314,7 +9285,7 @@ def cinematic_probe_model(name: str, timeout: float = 30.0) -> dict:
     """Ask kie whether a registered model id actually exists. Opt-in, and READ
     THE CAVEAT.
 
-    cinematic_register_model takes a model id on trust — kie publishes no
+    cinematic_register_model takes a model id on trust - kie publishes no
     catalogue endpoint, so a typo passes registration cleanly and surfaces as a
     PAID 404 at generation time. This narrows that window by submitting a
     deliberately empty request and reading which error comes back: 404 means the
@@ -9323,7 +9294,7 @@ def cinematic_probe_model(name: str, timeout: float = 30.0) -> dict:
     IT IS INFERENCE, NOT A CONTRACT. The 404-vs-422 split is read off kie's
     error table, not documented behaviour, and the case it cannot rule out is a
     model that ACCEPTS an empty input and starts a billable job. If that happens
-    the returned task id is reported loudly rather than swallowed — treat it as
+    the returned task id is reported loudly rather than swallowed - treat it as
     a real charge and collect it with cinematic_recover_shot.
 
     Registered models are marked unverified until this says otherwise. An
@@ -9343,7 +9314,7 @@ def cinematic_styles() -> dict:
     """Every built-in style preset, with what each is good and bad at.
 
     Read this before planning rather than guessing at prose: each entry carries
-    a `note` naming the trap. Two worth knowing up front — `pixel` is the
+    a `note` naming the trap. Two worth knowing up front - `pixel` is the
     WEAKEST fit for generated video (models produce pixel-looking output on a
     non-integer grid, which shimmers next to real pixel art), and `silhouette`
     is the one style that survives being unanchored, because no faces means no
@@ -9366,7 +9337,7 @@ def cinematic_shot_status(task_id: str) -> dict:
     """Where a submitted generation got to at the provider. Costs nothing.
 
     This only LOOKS. When it says `recoverable`, cinematic_recover_shot is what
-    puts the clip on disk — do NOT re-run cinematic_generate_shot to get a file
+    puts the clip on disk - do NOT re-run cinematic_generate_shot to get a file
     for a task that has already been charged.
     """
     try:
@@ -9382,15 +9353,14 @@ def cinematic_recover_shot(name: str, idx: int, task_id: str = "",
                            overwrite: bool = False) -> dict:
     """Download a shot that was ALREADY PAID FOR and register it. Repair verb.
 
-    A generation is charged at SUBMIT, and everything after that — the poll
-    loop, the download, this process surviving the ten minutes it takes — can
+    A generation is charged at SUBMIT, and everything after that - the poll
+    loop, the download, this process surviving the ten minutes it takes - can
     fail while the provider sits on a finished clip you have been billed for.
     Pressing generate again pays twice.
 
     The task id is read off the shot row when omitted, which is why it is stored
     there: an agent that died mid-generation left the id behind, so its
-    successor needs no archaeology. No cost is recorded against this call —
-    the charge happened at submit, possibly days ago.
+    successor needs no archaeology. No cost is recorded against this call - the charge happened at submit, possibly days ago.
     """
     try:
         from bgate_core import cinematic as _cine
@@ -9408,7 +9378,7 @@ def cinematic_transitions() -> dict:
 
     `cut` is the default and needs no filter graph at all, so a sequence of
     cuts is joined with one decode and one encode. Anything else decodes every
-    shot in full — which is a real cost on a long sequence and the reason the
+    shot in full - which is a real cost on a long sequence and the reason the
     cheap path is the default rather than an option.
 
     A transition OVERLAPS both shots, so a cut is shorter than the sum of its
@@ -9430,7 +9400,7 @@ def cinematic_continuity(name: str) -> dict:
 
     The measured half of the seat's "watch it twice" rule. It extracts the real
     frames either side of every join and compares overall brightness and colour
-    palette — on the pixels, never on the prompts, because the whole reason a
+    palette - on the pixels, never on the prompts, because the whole reason a
     cut fails is that the model did something other than what was asked.
 
     IT CANNOT TELL YOU THE CUTSCENE IS GOOD and does not try. A cut from a
@@ -9438,7 +9408,7 @@ def cinematic_continuity(name: str) -> dict:
     measured and leaves the verdict to a human.
 
     Run it BEFORE assembling: the fix for a real mismatch is re-generating a
-    shot, which is a decision to make before paying for the assembly — or
+    shot, which is a decision to make before paying for the assembly - or
     softening the join with a dissolve, which is what a dissolve is for.
     """
     try:
@@ -9466,7 +9436,7 @@ def _animatic_images(result: dict) -> list[str]:
 @_tool(images=_animatic_images)
 def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
                        burn_captions: bool = True) -> dict:
-    """Cut the storyboard panels together at their planned timings. FREE — calls
+    """Cut the storyboard panels together at their planned timings. FREE - calls
     no model and spends nothing.
 
     CALL THIS BEFORE cinematic_generate_shot. EVERY TIME. Between planning a
@@ -9477,7 +9447,7 @@ def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
 
     That is not a nicety borrowed from film school, it is the arithmetic. Hand
     animation runs at about one finished second per animator-hour, which is why
-    nobody animates an unproven edit — they cut the boards together first and fix
+    nobody animates an unproven edit - they cut the boards together first and fix
     it there. Generated video costs MORE per second than that, and this pipeline
     had no previs at all.
 
@@ -9490,7 +9460,7 @@ def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
                        actually is. They disagree only when something is wrong,
                        and captions are timed off the first one.
       placeholders     beats with no still yet. They are rendered as slate cards
-                       held for their full duration, never skipped — a gap in
+                       held for their full duration, never skipped - a gap in
                        the edit is information, and a reel that quietly ran
                        short would read as finished.
       warnings         untimed shots, two consecutive shots describing the same
@@ -9500,7 +9470,7 @@ def cinematic_animatic(name: str, source: str = "auto", fps: int = 12,
     "sequence" or "board". The sequence is preferred because that is the row
     money is spent against and the only one carrying transitions.
 
-    The reel is an .mp4 under design/cinematics/animatics/ — H.264, not the
+    The reel is an .mp4 under design/cinematics/animatics/ - H.264, not the
     Theora the shipped cutscene uses, because this is watched by a person in a
     browser and never by the engine. The panels come back as images so you can
     look at the edit rather than reading a runtime.
@@ -9519,13 +9489,13 @@ def cinematic_deliver(name: str, force: bool = False) -> dict:
     """Build the Godot scene that PLAYS this cutscene. The last mile.
 
     Keeping a cut installs an .ogv and prints a res:// path, and that is where
-    this pipeline used to stop — leaving a designer to hand-author a
+    this pipeline used to stop - leaving a designer to hand-author a
     VideoStreamPlayer, wire a skip input, drive the captions and work out how to
     hand control back to gameplay. This writes all four.
 
     What you get, beside the .ogv in the engine project:
       <name>.tscn   a CanvasLayer at layer 100, so it draws over whatever is
-                    already rendering — 2D, 3D or the HUD
+                    already rendering - 2D, 3D or the HUD
       <name>.gd     plays, draws captions off the video's own clock, skips on
                     ui_cancel/ui_accept, and emits `finished(skipped: bool)`
       <name>.srt    the caption file a translator opens
@@ -9541,7 +9511,7 @@ def cinematic_deliver(name: str, force: bool = False) -> dict:
         await cut.finished
 
     IT WILL NOT OVERWRITE A SCRIPT YOU HAVE EDITED. The .gd is meant to be
-    changed — a project will want its own skip input or a letterbox — so
+    changed - a project will want its own skip input or a letterbox - so
     delivery detects a hand-edited file and keeps it. Pass force to replace it.
     """
     try:
@@ -9553,7 +9523,7 @@ def cinematic_deliver(name: str, force: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# storyboards — the free half of a cutscene
+# storyboards - the free half of a cutscene
 # ---------------------------------------------------------------------------
 
 def _board_images(result: dict) -> list[str]:
@@ -9685,8 +9655,7 @@ def storyboard_plan(name: str, frames: Optional[list] = None, premise: str = "",
       refs      frame-specific pinned reference names, on top of the cast
       note      anything for the human reading the board
 
-    OMIT `frames` ENTIRELY to edit the board's own fields — cast, style, premise
-    — and leave the drawings alone. That is how you re-cast a board you have
+    OMIT `frames` ENTIRELY to edit the board's own fields - cast, style, premise - and leave the drawings alone. That is how you re-cast a board you have
     already drawn without paying to draw it again.
 
     A frame that already has an image KEEPS it when the board is re-planned at
@@ -9745,7 +9714,7 @@ def storyboard_frame_generate(name: str, idx: int, prompt: str = "",
                               use_cast: bool = True, ref_strength: float = 0.5,
                               quality: str = "medium") -> dict:
     """Draw ONE storyboard frame. This is the only tool here that costs money,
-    and it is an IMAGE — roughly two orders of magnitude cheaper than the video
+    and it is an IMAGE - roughly two orders of magnitude cheaper than the video
     shot it exists to stop you buying blind.
 
     ONE FRAME PER CALL, deliberately. A loop that draws the whole board has
@@ -9783,7 +9752,7 @@ def storyboard_frame_generate(name: str, idx: int, prompt: str = "",
 @_tool
 def storyboard_frame_attach(name: str, idx: int, image: str = "",
                             ref: str = "", approve: bool = False) -> dict:
-    """Put an EXISTING image on a frame — one the author drew, shot, or pinned.
+    """Put an EXISTING image on a frame - one the author drew, shot, or pinned.
     Costs nothing.
 
     Pass exactly one of:
@@ -9819,7 +9788,7 @@ def storyboard_frame_set(name: str, idx: int, beat: Optional[str] = None,
     """Edit one frame's text, timing or status without touching the rest.
 
     status is empty | generating | drafted | approved | cut. APPROVING A FRAME
-    WITH NO IMAGE IS REFUSED — a shot promoted from it would be bought against
+    WITH NO IMAGE IS REFUSED - a shot promoted from it would be bought against
     prose alone, which is the thing this board exists to prevent.
 
     An image is changed with storyboard_frame_generate or _frame_attach, never
@@ -9874,7 +9843,7 @@ def storyboard_frame_cut(name: str, idx: int) -> dict:
 def storyboard_reorder(name: str, order: list) -> dict:
     """Re-sequence a board. `order` lists every current index in its new order.
 
-    Every live frame must appear exactly once — a partial list is refused rather
+    Every live frame must appear exactly once - a partial list is refused rather
     than interpreted, because a reorder that quietly dropped a frame would throw
     away an image somebody paid for.
     """
@@ -9900,7 +9869,7 @@ def storyboard_promote(name: str, sequence_name: str = "", model: str = "",
 
     REFUSES BY DEFAULT on a board whose live frames are not all approved and
     drawn, and names which ones. allow_unanchored=True is for the deliberate
-    case only — every shot in what comes out of this is a paid generation.
+    case only - every shot in what comes out of this is a paid generation.
 
     Cut frames do not travel. What comes back is a cine_sequence: read it with
     cinematic_sequences, then buy it one shot at a time with
@@ -9919,7 +9888,7 @@ def storyboard_promote(name: str, sequence_name: str = "", model: str = "",
 @_tool
 def storyboard_delete(name: str, drop_images: bool = False) -> dict:
     """Remove a board. Its generated images stay on disk unless you ask
-    otherwise — they were paid for, and a deleted row is not a reason to burn
+    otherwise - they were paid for, and a deleted row is not a reason to burn
     them."""
     try:
         from bgate_core import storyboard as _sb

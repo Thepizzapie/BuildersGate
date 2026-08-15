@@ -1,4 +1,4 @@
-"""Aegis — may this seated agent touch this path, yes or no.
+"""Aegis - may this seated agent touch this path, yes or no.
 
 NAMED AFTER THE SEPARATE AEGIS PROJECT ON PURPOSE (github.com/Thepizzapie/AEGIS),
 which is a general policy layer for AI coding agents. This module is that same

@@ -86,8 +86,8 @@
 
 /* ── the running-agent fleet ────────────────────────────────────────────────
    Not a settings group: a live list of processes, grouped by the project each
-   one is pinned to. The grouping IS the content — the failure this panel exists
-   for is an agent running against a game you are not looking at — so the
+   one is pinned to. The grouping IS the content - the failure this panel exists
+   for is an agent running against a game you are not looking at - so the
    project header is heavier than the rows under it. */
 .bg4-fleet-note {
   margin: 2px 0 14px; max-width: 78ch;
@@ -124,8 +124,8 @@
 }
 .bg4-fleet-row .it b { color: var(--text); font: 500 12px var(--mono) }
 .bg4-fleet-row .meta { flex: none; font: 400 10px var(--mono); color: var(--text-3) }
-/* Runtime is the number you actually scan this list for — a run at 2h is the
-   one to look at — so it is the one piece of metadata that is not dimmed. */
+/* Runtime is the number you actually scan this list for - a run at 2h is the
+   one to look at - so it is the one piece of metadata that is not dimmed. */
 .bg4-fleet-row .meta .rt { color: var(--text-2) }
 
 /* A rail row with nothing matching the current filter. Dimmed rather than

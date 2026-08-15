@@ -1,16 +1,16 @@
-"""Dispatch — the dashboard spawns real Claude seat sessions against work items.
+"""Dispatch - the dashboard spawns real Claude seat sessions against work items.
 
 Why this architecture wins: a session spawned with cwd = the game project gets
 (1) the builders-gate MCP tools NATIVELY (the server resolves the project by
-cwd — no runner scripts, no kwargs files), and (2) the PreToolUse lane/lock
-hook with BGATE_SEAT set — actual enforcement, not honor-system. The dashboard
+cwd - no runner scripts, no kwargs files), and (2) the PreToolUse lane/lock
+hook with BGATE_SEAT set - actual enforcement, not honor-system. The dashboard
 is user-run software, so a dispatch click is the USER launching the agent.
 
 One live session per work item; state is in-memory plus a log file per item
 (.bgate/agents/item-<id>.log) so a dashboard restart loses handles, not history.
 
 Who writes what, because getting this wrong cost us the whole lifecycle once:
-status() and read_activity() are READS — the dashboard polls them every few
+status() and read_activity() are READS - the dashboard polls them every few
 seconds and they must not touch the DB. Everything that settles a run
 (_reap/_trip/sweep/reconcile) is driven by the per-run watchdog thread, or
 called explicitly at startup, so a run finishes correctly whether or not
@@ -46,7 +46,7 @@ _lock = threading.Lock()
 # _lock; see dispatch() for the race it closes.
 _starting: set[int] = set()
 
-# The parsed-feed cursors below are now touched by two threads — the per-run
+# The parsed-feed cursors below are now touched by two threads - the per-run
 # watchdog (which reads the feed every couple of seconds to see whether the run
 # errored out) and whatever request thread is painting the console. Advancing
 # the same byte cursor twice absorbs the same lines twice: duplicated steps,
@@ -54,14 +54,13 @@ _starting: set[int] = set()
 _feed_lock = threading.Lock()
 
 # Finished runs, kept so their result can actually be READ. A reaped run used to
-# leave the table on the very next poll, taking the agent's final word with it —
-# the one thing the user was waiting three minutes to see was on screen for
+# leave the table on the very next poll, taking the agent's final word with it - # the one thing the user was waiting three minutes to see was on screen for
 # three seconds. Bounded by count and age; keyed (project, item).
 _done: dict[tuple[str, int], dict] = {}
 RETAIN_RUNS = 20
 RETAIN_S = 30 * 60
 
-# Parsed activity per (project, item) — see read_activity: the log is read
+# Parsed activity per (project, item) - see read_activity: the log is read
 # FORWARD FROM A BYTE CURSOR exactly once, never re-parsed per poll.
 _activity: dict[tuple[str, int], dict] = {}
 MAX_STEPS = 500      # ring per run; what falls off is counted, not hidden
@@ -71,8 +70,7 @@ MAX_FEEDS = 200      # parsed feeds held at once
 #
 # HARD_RUNTIME_S is the ceiling that applies when the project's budget names
 # none (max_runtime_s = 0 used to mean forever). STALL_S kills a session that is
-# alive but has produced no observable output at all — no log line, no file —
-# for that long: that is a wedged process holding a concurrency slot, not work.
+# alive but has produced no observable output at all - no log line, no file - # for that long: that is a wedged process holding a concurrency slot, not work.
 # Both are deliberately generous; they are the difference between a bad run and
 # an unbounded one, not a performance policy.
 HARD_RUNTIME_S = int(os.environ.get("BGATE_MAX_RUNTIME_S") or 2 * 60 * 60)
@@ -95,13 +93,13 @@ def _refuse(code: str, message: str, **detail) -> dict:
 
     dispatch() answers plain dicts (app.py returns them verbatim) and callers
     already read ``error`` as a sentence, so the machine-readable ``code`` rides
-    alongside rather than replacing it — the string stays a string.
+    alongside rather than replacing it - the string stays a string.
     """
     return {"ok": False, "error": message, "code": code, "detail": detail}
 
 
 def _user_msg(text: str) -> str:
-    """A stream-json user turn — the wire format the CLI reads from stdin."""
+    """A stream-json user turn - the wire format the CLI reads from stdin."""
     return json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": text}]}}) + "\n"
 
@@ -110,8 +108,8 @@ def _emit(root, kind: str, ref: str = "", payload: Optional[dict] = None) -> Non
     """Put one event on the bus, never at the cost of the dispatch that caused it.
 
     Same shape and same reasoning as ``queue._emit``: the event log is a
-    notification substrate, so a locked database — or an events module that will
-    not import at all, on a project whose migration has not run — loses the line
+    notification substrate, so a locked database - or an events module that will
+    not import at all, on a project whose migration has not run - loses the line
     and nothing else. Without it ``agent.spawned``/``agent.exited`` and
     ``budget.refused`` are three of the fourteen kinds the vocabulary offers a
     notification checkbox for and nobody writes.
@@ -128,7 +126,7 @@ def _flag(root, key: str, env_name: str) -> bool:
     """A boolean dispatch switch, through the settings registry.
 
     The registry declares ``env=<env_name>`` for these, so the variable still
-    wins — what this adds is that the STORED value is read at all. Before it,
+    wins - what this adds is that the STORED value is read at all. Before it,
     both switches were read straight from ``os.environ``, so the Settings panel
     offered a toggle whose only effect was to write a doc nothing looked at.
     Falls back to the bare variable if the registry will not read: a dispatch
@@ -152,7 +150,7 @@ def _executable(runner: "_runners.Runner") -> Optional[str]:
 
     The claude lookup deliberately still goes through THIS module's
     ``find_claude``. It has been dispatch's public seam since there was one
-    runner — the lifecycle tests stand a fake CLI up by patching it, and so does
+    runner - the lifecycle tests stand a fake CLI up by patching it, and so does
     anything else that ever needed to. Moving the resolution wholesale into the
     table would have silently stopped honouring that, which is a worse trade
     than one branch with a reason on it.
@@ -180,8 +178,8 @@ def _runner_for(root: str, seat: str) -> "_runners.Runner":
 def _model_for(root: str, seat: str) -> Optional[str]:
     """Which model this seat's agent runs on.
 
-    NOTHING PASSED --model BEFORE THIS. Every dispatch call site — autodeploy,
-    the QA gate, follow-up, the console, the orchestrator — called dispatch()
+    NOTHING PASSED --model BEFORE THIS. Every dispatch call site - autodeploy,
+    the QA gate, follow-up, the console, the orchestrator - called dispatch()
     without a model, so `["--model", model] if model else []` in runners.py
     always evaluated to the empty branch and every seat inherited whatever the
     CLI happened to default to. On 2026-08-08 that was opus-5[1m]: 82 runs,
@@ -189,8 +187,8 @@ def _model_for(root: str, seat: str) -> Optional[str]:
     and a half. The default was never chosen; it was just never overridden.
 
     Art is the seat that gets the exception, and it is the only one. Its output
-    is judged on taste — a portrait that is merely syntactically valid is a
-    failed portrait — whereas a seat editing GDScript is judged on whether the
+    is judged on taste - a portrait that is merely syntactically valid is a
+    failed portrait - whereas a seat editing GDScript is judged on whether the
     engine loads the scene, which a cheaper model settles just as well.
 
     An unreadable setting returns None rather than a guess, which restores the
@@ -227,7 +225,7 @@ def _native_images(root: str, runner: "_runners.Runner") -> bool:
 
     Falls back to the bgate pipeline whenever the runner has no image tool of
     its own, so the setting can never ask for a capability the process does not
-    have — a switch reading `native` next to an agent that cannot generate is
+    have - a switch reading `native` next to an agent that cannot generate is
     the kind of lie that costs an afternoon.
     """
     if runner.name != "codex":
@@ -238,8 +236,7 @@ def _native_images(root: str, runner: "_runners.Runner") -> bool:
         return False
 
 
-# Seat-specific house rules injected UNCONDITIONALLY into the dispatch prompt —
-# the one channel every agent sees even if it skips seat_brief (item 56 did:
+# Seat-specific house rules injected UNCONDITIONALLY into the dispatch prompt - # the one channel every agent sees even if it skips seat_brief (item 56 did:
 # it hand-rolled 8 loose image_edit frames for an animation task and never
 # stitched a sheet). Keep these short, imperative, and PROJECT-AGNOSTIC: this
 # dict ships with the tool and is read by every project on the machine, so
@@ -247,14 +244,14 @@ def _native_images(root: str, runner: "_runners.Runner") -> bool:
 # in that project's own seat_rules.json (see :func:`seat_rules`), not here.
 SEAT_RULES = {
     "narrative": (
-        "NARRATIVE HOUSE RULE — NO FIRST-THOUGHT JOKES:\n"
+        "NARRATIVE HOUSE RULE - NO FIRST-THOUGHT JOKES:\n"
         "• Before landing ANY name/line/bark, generate 5 candidates and kill "
         "every one that is the FIRST joke anyone would make on the premise "
         "(the obvious pun, the meme format, the joke every parody of this "
         "subject already made). Ship the one that surprises.\n"
         "• Obey the project's OWN tone tests (read the tone guide / bible "
         "before writing; if you wrote one this session, your content must "
-        "pass it — self-contradiction is an automatic fail). No winks, no "
+        "pass it - self-contradiction is an automatic fail). No winks, no "
         "lampshading, no decade-old meme formats.\n"
         "• Specificity beats snark: a line should only make sense in THIS "
         "world. If it could be pasted into any generic parody of the genre, "
@@ -263,36 +260,36 @@ SEAT_RULES = {
         "tone tests before landing. Land fewer, better lines."
     ),
     "audio": (
-        "AUDIO HOUSE RULE — EVERY SYNTHESIZED ASSET SHIPS ITS RECIPE:\n"
+        "AUDIO HOUSE RULE - EVERY SYNTHESIZED ASSET SHIPS ITS RECIPE:\n"
         "• Alongside each .wav/.ogg you synthesize, write a `<name>.synth.json` "
         "sidecar capturing the FULL parametric recipe: wave type(s), ADSR, "
-        "pitch/glide, noise mix, filter, duration, sample rate — and for music "
+        "pitch/glide, noise mix, filter, duration, sample rate - and for music "
         "beds the complete note/step pattern per channel + tempo/key. Another "
         "process must be able to re-render the identical asset from the recipe "
-        "alone (the upcoming Audio Studio edits these knobs and re-renders — "
+        "alone (the upcoming Audio Studio edits these knobs and re-renders - "
         "a .wav without its recipe is a dead end).\n"
         "• Keep the synthesis code you used in the project's .bgate/ scratch "
         "so the recipe->render path is reproducible."
     ),
     "art": (
-        "ART HOUSE RULE — ANIMATIONS ARE SINGLE-GEN SHEETS (identity by "
+        "ART HOUSE RULE - ANIMATIONS ARE SINGLE-GEN SHEETS (identity by "
         "construction), THEN SLICED:\n"
         "• For ANY animation, generate the WHOLE animation as ONE image: "
         "image_edit conditioned on the approved anchor ref, prompting 'an "
         "N-frame <anim> animation sprite sheet of THIS EXACT character, N "
         "poses side-by-side left-to-right in one row, evenly spaced, "
         "transparent background, same character same colors in every frame'. "
-        "A model CANNOT drift identity inside one image — per-pose generation "
+        "A model CANNOT drift identity inside one image - per-pose generation "
         "drifted skin/outfit colors across frames and is now the FALLBACK, "
         "not the default.\n"
         "• Slice + normalize + emit the engine sheet with the pipeline: "
-        "python -c from bgate_adapters.sprites import from_painted_sheet — it "
+        "python -c from bgate_adapters.sprites import from_painted_sheet - it "
         "cuts the row into equal cells, alpha-trims, bottom-centers, and "
         "writes <name>_sheet.png + <name>_frames.tres. Verify every cell "
         "sliced cleanly (no half-characters: regenerate the sheet with a "
         "stricter even-spacing instruction, don't hand-fix).\n"
         "• Cross-sheet identity: every animation sheet conditions on the SAME "
-        "anchor ref, and you LOOK at all sheets side-by-side before landing — "
+        "anchor ref, and you LOOK at all sheets side-by-side before landing - "
         "same character, same colors across the whole set.\n"
         "• image_edit single-frame fixes and per-pose image_sprites remain "
         "available ONLY to repair one bad cell of an otherwise-good sheet.\n"
@@ -302,14 +299,14 @@ SEAT_RULES = {
         "\n"
         "HUD / UI CHROME SHIPS AS SEPARATE LAYERED PARTS, NEVER ONE BAKED "
         "COMPOSITE:\n"
-        "• A UI element with dynamic or independently-driven sub-parts — a meter = "
+        "• A UI element with dynamic or independently-driven sub-parts - a meter = "
         "frame + segmented FILL + icon + counter badge; a health bar = frame + "
-        "FILL; a card = frame + portrait + label plate — MUST ship as SEPARATE "
+        "FILL; a card = frame + portrait + label plate - MUST ship as SEPARATE "
         "transparent PNGs, one per layer, NOT fused into a single image. The "
         "scene/designer stacks and drives each independently: the fill depletes in "
         "code BEHIND a hollow frame, segments light one by one, the icon/badge are "
         "their own nodes. Gening the whole element in one go leaves nothing the "
-        "designer can wire — it is not shippable.\n"
+        "designer can wire - it is not shippable.\n"
         "• Frames are HOLLOW: a fully transparent window where the code-driven fill "
         "shows through. NEVER bake a colored fill into a frame. For every frame, "
         "post the exact fill-window rect (x,y,w,h) in your seat note.\n"
@@ -318,21 +315,21 @@ SEAT_RULES = {
         "FOR REVIEW, but the SHIPPED assets are the separate layers.\n"
         "• Match the pinned concept: crop the target element out of the concept "
         "ref, condition generation on that crop, and build your own "
-        "concept-vs-output comparison — iterate until it matches, don't ship "
+        "concept-vs-output comparison - iterate until it matches, don't ship "
         "isolated bare bars.\n"
         "\n"
         "WORLD / ENVIRONMENT ASSETS ARE INDIVIDUAL GENS, NEVER A SLICED SCENE:\n"
-        "• Concept mocks are COMPOSITES — inspiration, not assets. A shippable "
+        "• Concept mocks are COMPOSITES - inspiration, not assets. A shippable "
         "world asset is generated ON ITS OWN: one prop (desk, plant, vending "
         "machine, printer shrine), one tile, one unit sprite per gen, "
         "transparent background, consistent scale against the project's grid "
         "(e.g. a 32px-tile world: props sized in tile multiples, characters to "
         "their tile footprint). NEVER generate a full scene and cut pieces out "
-        "of it — sliced fragments have baked lighting/overlap and never "
+        "of it - sliced fragments have baked lighting/overlap and never "
         "composite cleanly.\n"
         "• Tilesets: gen each tile type separately (or a strict uniform grid "
         "sheet where every cell is one clean tile), then assemble the atlas "
-        "with code — cells must be seamlessly tileable with their neighbors.\n"
+        "with code - cells must be seamlessly tileable with their neighbors.\n"
         "• Scale/registration discipline: every asset in a batch states its "
         "intended pixel size; verify against the grid before landing so the "
         "engine drops it in without per-asset fudging.\n"
@@ -340,18 +337,18 @@ SEAT_RULES = {
         "(SE front-right + NE back-right) x every animation, named "
         "<anim>_<facing> (idle_se, walk_ne, ...) through the standard sheet "
         "pipeline; SW/NW are mirrored in-engine (flip_h), never generated. A "
-        "partial facing x anim matrix is an automatic fail — check the "
+        "partial facing x anim matrix is an automatic fail - check the "
         "project bible's unit-sprite contract before landing any unit.\n"
         "• ISO PROPS DECLARE A ROTATION CLASS (see the project bible's "
         "prop-rotation contract): SYMMETRIC = 1 gen reused; MIRRORABLE = 2 "
         "gens + flip_h (NO text/logos/handedness); FULL = 4 gens (anything "
-        "with readable text/signage — mirrored text is an automatic fail). "
+        "with readable text/signage - mirrored text is an automatic fail). "
         "All views of one prop conditioned on the SAME prop ref so it reads "
         "as one object rotated; state the tile footprint per prop.\n"
         "\n"
-        "DELIVERY FIDELITY — WHAT WAS APPROVED IS WHAT SHIPS:\n"
+        "DELIVERY FIDELITY - WHAT WAS APPROVED IS WHAT SHIPS:\n"
         "• The engine-ready file you deliver must be a MECHANICAL derivation "
-        "of the approved artifact revision: trim, downscale, alpha-clean — "
+        "of the approved artifact revision: trim, downscale, alpha-clean - "
         "NOTHING ELSE. Never redraw, re-generate, or 'improve' an asset at "
         "the delivery step; a delivered file whose content differs from its "
         "approved source is an automatic reject (observed failure: floors "
@@ -369,7 +366,7 @@ def seat_rules(root: str, seat: str) -> str:
     """The house rules injected into THIS project's prompt for this seat.
 
     ``<root>/.bgate/seat_rules.json`` ({"art": "...", "narrative": ""}) is the
-    project's override and wins outright — including an empty string, which is
+    project's override and wins outright - including an empty string, which is
     how a project turns a built-in off. Rules are prompt text, not schema, so
     they live in a file the project edits and diffs rather than in the seat
     table. Absent an override, the shipped built-in applies.
@@ -388,7 +385,7 @@ def _verify_rule(root: str) -> str:
     """Step 4's verification line, DERIVED from this project.
 
     It used to name another game's test scene (game/tests/fight_test.gd) and
-    order every seat of every project to run it — an instruction most projects
+    order every seat of every project to run it - an instruction most projects
     cannot follow and none should inherit. Nothing is invented here: the engine
     comes from the project row (or a project.godot on disk), the test scripts
     from what actually exists, and a project with neither is simply told to look
@@ -412,7 +409,7 @@ def _verify_rule(root: str) -> str:
     if tests:
         named = ", ".join(p.relative_to(root_path).as_posix() for p in tests[:4])
         parts.append("run this project's own test scripts via godot_run when the "
-                     f"code they cover moved ({named}) — fail=0 or report exactly "
+                     f"code they cover moved ({named}) - fail=0 or report exactly "
                      "why")
     parts.append("godot_screenshot when the change is visible")
     parts.append("LOOK at what you produce")
@@ -422,7 +419,7 @@ def _verify_rule(root: str) -> str:
 # The toolchain the agent INHERITS, resolved once by the dashboard.
 #
 # WHY THIS EXISTS, observed 2026-08-09: two agents spawned a minute apart each
-# ran `find / -iname godot*.exe` against the whole filesystem — one of them with
+# ran `find / -iname godot*.exe` against the whole filesystem - one of them with
 # no -maxdepth at all. They were still walking 22 minutes later, ~20 CPU-minutes
 # each, having outlived the agents that started them; nothing was left to read
 # their output. The search was never needed. find_godot() checks a handful of
@@ -430,13 +427,13 @@ def _verify_rule(root: str) -> str:
 #
 # The cost is not the CPU. A drive-wide find outruns the Bash tool's timeout, so
 # the agent gets nothing back, tries again with different flags, and each of
-# those turns re-sends the entire context — the same mechanism the SPEND TURNS
+# those turns re-sends the entire context - the same mechanism the SPEND TURNS
 # section below was written for. An agent searches when nobody handed it a path,
 # so this hands it the path.
 #
 # Successes are cached, misses are NOT: a dashboard left running while the user
 # installs Blender should pick it up on the next dispatch rather than at the
-# next restart. A finder that raises is not fatal here — a project with no
+# next restart. A finder that raises is not fatal here - a project with no
 # Blender still dispatches every seat that never calls it, and the adapter
 # raises its own explanatory error at the call site if one ever does.
 _TOOLCHAIN: dict[str, str] = {}
@@ -480,7 +477,7 @@ def _toolchain_rule() -> str:
                 "reports every dependency, with its path, in ONE call.\n")
     names = ", ".join("$" + var for var in sorted(resolved))
     return ("- The toolchain is ALREADY RESOLVED in your environment: "
-            f"{names}. Never search for a binary — no `find /`, no drive-wide "
+            f"{names}. Never search for a binary - no `find /`, no drive-wide "
             "glob. One of those ran for 22 minutes, outlived the agent, and "
             "returned nothing to anybody. bgate_doctor reports every "
             "dependency, with its path, in ONE call.\n")
@@ -490,9 +487,8 @@ def _image_policy(root: str, item: dict, native: bool) -> str:
     """What the art seat is told about where pixels come from.
 
     ONLY THE GENERATION CALL MOVES. Everything the art seat does around a
-    generation — reading the pinned refs, holding the lock, checking the alpha
-    and the consistency, registering the artifact, delivering into the engine —
-    is the same work on either backend, and an agent that reads "generate
+    generation - reading the pinned refs, holding the lock, checking the alpha
+    and the consistency, registering the artifact, delivering into the engine - is the same work on either backend, and an agent that reads "generate
     natively" as "skip the pipeline" produces an unregistered PNG that no
     review, no ledger and no consistency gate has ever seen. So the native
     branch spends most of its words on what has NOT changed.
@@ -520,7 +516,7 @@ def _image_policy(root: str, item: dict, native: bool) -> str:
         "- Deliver into the engine and verify there (godot_import_asset), "
         "because the engine's view is still the truth.\n"
         "BGATE_IMAGE_MODEL DOES NOT REACH YOUR OWN TOOL. If this project bans a "
-        "model, honour it yourself — nothing downstream will catch it for you.\n"
+        "model, honour it yourself - nothing downstream will catch it for you.\n"
         "If your tool cannot do what the task needs, fall back to "
         "image_generate rather than shipping something worse."
     )
@@ -535,25 +531,25 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         SEAT_IDENTITY + "\n\n"
         f"You are the {item['seat'].upper()} seat of the Builders Gate game project "
         "in the current directory. The builders-gate MCP tools are available to you "
-        "NATIVELY — no runner scripts.\n\n"
+        "NATIVELY - no runner scripts.\n\n"
         f"WORK ITEM #{item['id']} ({item['source']}): {item['title']}\n"
         f"{item['brief']}\n\n"
         + (seat_rule + "\n\n" if seat_rule else "")
         + (policy + "\n\n" if policy else "")
         + "Protocol, in order:\n"
         "1. seat_brief for your role, ONCE. It carries mission, lanes, bible, "
-        "pinned refs, notes and the BOARD — what every other agent is queued "
+        "pinned refs, notes and the BOARD - what every other agent is queued "
         "for or working on right now. Read the board before touching a file a "
         "dispatched peer owns or duplicating queued work; a second brief call "
         "returns the same payload and costs what the first one did.\n"
         "2. Do the work inside your lanes. The PreToolUse hook enforces them, "
-        "so write and let it refuse — seat_can_write is for when you need to "
+        "so write and let it refuse - seat_can_write is for when you need to "
         "know BEFORE a long generation, not a checkpoint before every edit. "
         "Lock binaries before editing.\n"
         "   OUT-OF-LANE WORK IS ROUTED, NEVER DROPPED. If this task needs a "
         "write another seat owns, queue_add(<that seat>, title, brief) files "
-        "it for an agent that CAN write it — pass depends_on="
-        f"{item['id']} when it needs this item's output — then keep working "
+        "it for an agent that CAN write it - pass depends_on="
+        f"{item['id']} when it needs this item's output - then keep working "
         "on what is yours. A seat note, a LEFTOVERS block or a 'blocked' "
         "result dispatches NOBODY; only a queue row does. Handing work on IS "
         "part of finishing yours, and a result paragraph that names the items "
@@ -561,27 +557,27 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         f"3. Verify per house norms: {_verify_rule(root)}\n"
         f"4. Mark the item: call queue_complete with item_id={item['id']} and a "
         "one-paragraph result (status 'done', or 'failed' with the honest "
-        "reason). That paragraph IS the record — no separate note is owed.\n"
+        "reason). That paragraph IS the record - no separate note is owed.\n"
         "5. KEEP THE SEAT WARM. Before queue_complete, you may call "
-        "queue_claim_next() to claim the next READY item for your seat — then "
+        "queue_claim_next() to claim the next READY item for your seat - then "
         "complete this item and continue with the claimed one under the same "
         "rules. Claim FIRST: once your item completes with nothing claimed, "
-        "the harness closes this session. An empty claim means you are done — "
+        "the harness closes this session. An empty claim means you are done - "
         "just complete and finish.\n"
         "\n"
         "Also: seat_post_note only when another seat must know something your "
         f"result paragraph will not tell them. Append to .bgate/progress/item-"
         f"{item['id']}.jsonl only on a handoff or a failure worth resuming from "
-        "— it is a trail for whoever picks this up, not a log of your turns.\n"
+        " - it is a trail for whoever picks this up, not a log of your turns.\n"
         # WHY THIS SECTION EXISTS, measured on 2026-08-08 across 60 runs: 8,304
         # model calls, 42 of them on average before the first productive one,
         # and 1.19 BILLION input-side tokens against 77k of output. Nothing was
         # expensive because agents wrote a lot. It was expensive because every
-        # turn re-sends the whole context, so a wasted turn is not free — it is
+        # turn re-sends the whole context, so a wasted turn is not free - it is
         # priced at the size of everything read so far. That makes turn count,
         # not token count, the thing an agent controls.
         "\n"
-        "SPEND TURNS LIKE THEY COST SOMETHING — they do, and it is not linear. "
+        "SPEND TURNS LIKE THEY COST SOMETHING - they do, and it is not linear. "
         "Every turn re-sends everything already in your context, so turn 90 "
         "bills for all 89 before it:\n"
         "- Read and Grep are for files. sed/head/cat/`python -c` in Bash pay a "
@@ -596,12 +592,12 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         + _toolchain_rule()
         # What "done" costs and who checks it, stated up front. An agent that
         # thinks its word closes the item writes a thinner result note than one
-        # that knows a picky reviewer — or the owner — reads it next.
+        # that knows a picky reviewer - or the owner - reads it next.
         + "\n" + _gates.describe(root, item["seat"]) + "\n"
         + (f"\nCHAIN: this item is link {item['chain_pos']} of chain "
            f"{item['chain_id']}. Work waiting on yours does not start until this "
            "item reaches 'done', so an honest 'failed' is cheaper than a "
-           "hopeful one — a wrong 'done' releases the next agent onto a "
+           "hopeful one - a wrong 'done' releases the next agent onto a "
            "foundation that is not there.\n" if item.get("chain_id") else "")
     )
 
@@ -763,8 +759,8 @@ def _live_count() -> int:
 def dispatch(root: str, item_id: int, **kwargs) -> dict:
     """Spawn one agent for one item, with the start RESERVED against a race.
 
-    Everything _spawn does between its `_live` check and the actual Popen — the
-    scope check, the budget check, git dirty-state, cutting a worktree — takes
+    Everything _spawn does between its `_live` check and the actual Popen - the
+    scope check, the budget check, git dirty-state, cutting a worktree - takes
     seconds, and the lock is not held across it. Two callers racing through that
     window both saw `_live` empty and both spawned a claude tree; the second
     entry overwrote the first in `_live`, so the first process was never reaped,
@@ -799,7 +795,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
 
     Four things must be true before a process exists: the CLI is there, the item
     is dispatchable, the fleet is under its concurrency cap, and the projected
-    cost fits the budget. Then the git boundary is captured — without a
+    cost fits the budget. Then the git boundary is captured - without a
     base_commit nothing downstream can show or undo what the agent did.
     """
     try:
@@ -811,12 +807,12 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                        item_id=item_id)
     if item["status"] != "queued":
         extra = ("" if item["status"] != "review" else
-                 " — it is finished and waiting for approval, not for an agent")
+                 " - it is finished and waiting for approval, not for an agent")
         return {"ok": False,
                 "error": f"item {item_id} is {item['status']}, not queued{extra}"}
 
     # THE CHAIN. A link whose predecessor has not landed must not start, and this
-    # is the last gate before a process exists — autodeploy filters blocked items
+    # is the last gate before a process exists - autodeploy filters blocked items
     # out of its candidate list, but "dispatch all" and the per-row button do not.
     held = _queue.blocker(root, item_id)
     if held:
@@ -836,13 +832,13 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         if item_id in _live and _live[item_id]["proc"].poll() is None:
             return {"ok": False, "error": f"item {item_id} already has a live agent"}
         # Server-side, because the dashboard's "dispatch all" loops every queued
-        # item with no cap of its own — 20 agents is 20 claude trees, each with
+        # item with no cap of its own - 20 agents is 20 claude trees, each with
         # its own MCP children, on one laptop.
         cap = int(_spend.budget(root).get("max_concurrent") or 0)
         running = _live_count()
         if cap and running >= cap:
             return _refuse("concurrency_limit",
-                           f"{running} agents already running — the cap is {cap}",
+                           f"{running} agents already running - the cap is {cap}",
                            running=running, max_concurrent=cap)
 
     # Ceilings: the item's own overrides win, then this call's, then the budget.
@@ -868,10 +864,10 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                            k: v for k, v in verdict.items()
                            if k in ("scope", "spent", "ceiling")})
 
-    # THE RESERVATION — the queued->dispatched transition, taken atomically and
+    # THE RESERVATION - the queued->dispatched transition, taken atomically and
     # FIRST. There are two dispatchers now (this function, and a worker's
-    # queue_claim_next in the MCP server process), and the old shape — read
-    # 'queued' here, write 'dispatched' after Popen — left a seconds-wide window
+    # queue_claim_next in the MCP server process), and the old shape - read
+    # 'queued' here, write 'dispatched' after Popen - left a seconds-wide window
     # in which both proceeded and one item got two agents. The UPDATE's WHERE
     # clause means exactly one caller wins; every refusal past this point puts
     # the item back through release(), which touches nothing but the status.
@@ -896,7 +892,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             f"{len(state['paths'])} uncommitted change(s) in the tree, so the "
             "agent's edits could not be told from yours. Commit or stash them "
             "and the board resumes on its own. (Finished runs commit their own "
-            "files when dispatch.auto_commit is on, which it is by default — so "
+            "files when dispatch.auto_commit is on, which it is by default - so "
             "what is dirty here is work the harness did not do.)",
             paths=state["paths"][:50])
     base_commit = _git.head(root) if state["available"] else ""
@@ -954,17 +950,16 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         "BGATE_LOCK_OWNER": f"item-{item_id}",
         # Who this session is, for anything that asks whether a human is
         # responsible. Without it a spawned agent inherits the dashboard user's
-        # identity and can approve its own work — it did, until this line.
+        # identity and can approve its own work - it did, until this line.
         "BGATE_ACTOR": f"agent:item-{item_id}",
-        # Director directive: gpt-image-2 is banned — force 1 for every gen.
+        # Director directive: gpt-image-2 is banned - force 1 for every gen.
         "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL", "gpt-image-1"),
     }
-    # The flags each CLI needs to stream its work live are that CLI's business —
-    # see runners.py, which also records what each one CANNOT do (steering, cost)
+    # The flags each CLI needs to stream its work live are that CLI's business - # see runners.py, which also records what each one CANNOT do (steering, cost)
     # so the rest of this module stops assuming both.
     # An explicit model on the call wins; otherwise the seat's configured one.
     # Before _model_for existed this was `model` alone, which every caller left
-    # as None — see _model_for for what that cost.
+    # as None - see _model_for for what that cost.
     model = model or _model_for(root, item.get("seat") or "")
     args = runner.build_args(exe, permission_mode=permission_mode,
                              model=model, cwd=cwd, native_images=native_images,
@@ -993,7 +988,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     except OSError as exc:
         return _refused("spawn_failed", f"cannot open the agent log: {exc}")
     # RUN BOUNDARY: the log appends across re-dispatches, and both the activity
-    # view and the steer-echo scanner must only look at THIS run — the stale
+    # view and the steer-echo scanner must only look at THIS run - the stale
     # first-run result being shown as current, and old echoes falsely marking
     # fresh steers consumed, were real observed bugs. Marker + byte offset.
     import time as _time
@@ -1013,7 +1008,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # Deliver the task. A streaming runner takes it as the first user message
     # and keeps the pipe open as a steer channel; `codex exec` reads stdin ONCE
     # and acts on what it got, so the pipe has to be closed or the run never
-    # starts — the difference between "waiting for more input" and "hung" is
+    # starts - the difference between "waiting for more input" and "hung" is
     # invisible from out here, which is why prompt_via is declared rather than
     # inferred.
     prompt = _prompt_for(root, item, native_images=native_images)
@@ -1055,7 +1050,7 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           # stop(item_id) has no root argument to be given one.
                           "root": str(root), "actor": actor,
                           "branch": branch, "worktree": worktree}
-    # Status is already 'dispatched' — the reservation above wrote it before any
+    # Status is already 'dispatched' - the reservation above wrote it before any
     # of the slow work, which is what makes two dispatchers safe against each
     # other. Writing it again here would wipe the item's result note for nothing.
     _queue.set_run_fields(root, item_id, base_commit=base_commit, branch=branch,
@@ -1065,8 +1060,8 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     _record_pid(root, proc.pid, item_id)
     # And in the MACHINE-WIDE registry, which is the one that survives this
     # process. pids.json above is per project and is read by the orphan sweep;
-    # this entry is what lets a restarted dashboard — or a second one, or one
-    # opened on a different project entirely — see and stop this agent at all.
+    # this entry is what lets a restarted dashboard - or a second one, or one
+    # opened on a different project entirely - see and stop this agent at all.
     _agentreg.record(proc.pid, item_id=item_id, seat=item.get("seat") or "",
                      root=str(root), runner=runner.name, log=str(log_path))
     # The streamed session waits on stdin forever; close it once the agent
@@ -1096,7 +1091,7 @@ def _observed_cost(entry: dict) -> float:
     """The highest ``total_cost_usd`` the CLI has reported THIS run.
 
     The session only prints cost at result boundaries, so this is a step
-    function, not a live meter — it trips at the first boundary past the
+    function, not a live meter - it trips at the first boundary past the
     ceiling, which still bounds the damage. Incremental tail read (own cursor,
     separate from the steer scanner's) so polling a 10MB log costs nothing."""
     best = float(entry.get("cost_usd", 0.0))
@@ -1124,7 +1119,7 @@ def _observed_cost(entry: dict) -> float:
 
 
 # Terminal ``result`` subtypes: the CLI saying this session is over and it did
-# not work. "success" is deliberately absent — see the call site in
+# not work. "success" is deliberately absent - see the call site in
 # _watch_completion for why a successful result must NOT settle the run.
 _ERROR_SUBTYPES = ("error", "error_during_execution", "error_max_turns",
                    "error_max_tokens")
@@ -1133,8 +1128,7 @@ _ERROR_SUBTYPES = ("error", "error_during_execution", "error_max_turns",
 def _terminal_error(root: str, item_id: int) -> str:
     """The sentence to fail this run with, or "" if it has not errored out.
 
-    Read off the CLI's own terminal event, so it carries the CLI's words —
-    "Failed to authenticate: OAuth session expired" is an actionable line, and
+    Read off the CLI's own terminal event, so it carries the CLI's words - "Failed to authenticate: OAuth session expired" is an actionable line, and
     a generic 'the agent stopped' is not.
     """
     final = _final_event(root, item_id)
@@ -1147,8 +1141,8 @@ def _terminal_error(root: str, item_id: int) -> str:
         # Some builds report an auth/setup failure as a plain result with no
         # error flag at all; the CLI's own wording is the only signal left.
         # Gated on the subtype NOT being success, because an agent reporting
-        # ABOUT auth — "failed to authenticate against the test fixture, so I
-        # stubbed it" — is a run that worked, and reaping it throws the work
+        # ABOUT auth - "failed to authenticate against the test fixture, so I
+        # stubbed it" - is a run that worked, and reaping it throws the work
         # away over a sentence.
         low = said.lower()
         errored = low.startswith("failed to authenticate") or (
@@ -1157,7 +1151,7 @@ def _terminal_error(root: str, item_id: int) -> str:
         return ""
     return (f"the session ended in error ({subtype or 'error'})"
             + (f": {said[:400]}" if said else "")
-            + " — it was not going to do anything else, so it was reaped")
+            + " - it was not going to do anything else, so it was reaped")
 
 
 # Where the WRAP-UP steer goes out, as a fraction of the cost ceiling. A hard
@@ -1169,7 +1163,7 @@ WRAP_AT = 0.8
 
 WRAP_TEXT = (
     "BUDGET STOP. You have spent ${spent:.2f} of a ${limit:.2f} ceiling on this "
-    "item. Start NOTHING new — no new generations, no new files, no further "
+    "item. Start NOTHING new - no new generations, no new files, no further "
     "exploration. Finish or abandon the edit in front of you, then call "
     "queue_complete IMMEDIATELY with a partial result that says plainly: what is "
     "done and verified, what is half-done and where, and what is untouched. A "
@@ -1199,15 +1193,14 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
     """A ceiling the agent blew through: stop the tree and BANK what it wrote.
 
     THE KILL USED TO THROW THE WORK AWAY. MEASURED: an item was killed at $7.17
-    against a $5 ceiling having already written every file it was asked for —
-    player.tscn, player_controller.gd and two more, all on disk and all correct.
+    against a $5 ceiling having already written every file it was asked for - player.tscn, player_controller.gd and two more, all on disk and all correct.
     The money was spent, the deliverables existed, and the item went to `failed`
     with its result replaced by the kill reason. A human had to go and look at
     the filesystem to find out that the run had actually succeeded.
 
     So the result now leads with the fact that this was a STOP rather than a
     fault, and `set_status` appends the harness's own observed-writes record
-    underneath it — the list a human, or the reopened agent, needs in order to
+    underneath it - the list a human, or the reopened agent, needs in order to
     pick the work up rather than repeat it.
     """
     _kill_tree(entry["proc"].pid)
@@ -1224,9 +1217,9 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
     except LookupError:
         pass
     else:
-        # ANNOUNCE THE KILL. set_status never emits (by design — see
+        # ANNOUNCE THE KILL. set_status never emits (by design - see
         # queue.complete), and _reap skips complete() because the item is no
-        # longer 'dispatched' — so every ceiling kill was a failure with no
+        # longer 'dispatched' - so every ceiling kill was a failure with no
         # item.failed event: no bell, no webhook, no auto-reopen, an item that
         # just sat there. item.failed is in the default notify kinds; the most
         # expensive failures this system has should be the loudest, not the
@@ -1241,7 +1234,7 @@ def _trip(root: str, item_id: int, entry: dict, reason: str,
 def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                       exit_grace_s: float = 90.0) -> None:
     """Close the agent's stdin once it has queue_complete'd, so the waiting
-    process reaches EOF and exits — then make SURE it exits. EOF alone proved
+    process reaches EOF and exits - then make SURE it exits. EOF alone proved
     unreliable (agents wedged on child MCP servers piled up 14 orphaned
     claude.exe at peak), so after a grace period the process tree is killed;
     the item is already done, nothing of value is lost.
@@ -1254,7 +1247,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
     And it is where a finished run is BANKED (_reap). It used to be the
     dashboard's GET that did that; a read handler is the wrong owner, and an
     agent whose dashboard nobody had open never got settled at all. The lock is
-    held only long enough to look the entry up — every DB and process call below
+    held only long enough to look the entry up - every DB and process call below
     happens outside it, or _reap (which takes the lock itself) would deadlock."""
     with _lock:
         watched = _live.get(item_id)
@@ -1274,10 +1267,10 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
             _reap(root, item_id, entry, code)
             return
 
-        # The ceilings, enforced from spawn — not from completion.
+        # The ceilings, enforced from spawn - not from completion.
         #
         # NOTHING RUNS UNBOUNDED. The budget's max_runtime_s is settable to 0,
-        # which used to mean "no wall clock at all" — an agent that never
+        # which used to mean "no wall clock at all" - an agent that never
         # self-reports then runs until someone notices, which on a machine left
         # alone overnight is the single most expensive failure this system can
         # have. 0 now means the hard cap, not infinity.
@@ -1287,8 +1280,8 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                   f"killed: exceeded the {limit_s // 60}-minute runtime budget")
             return
 
-        # HUNG, as distinct from slow. A wedged agent — one whose MCP child
-        # died holding the pipe — is alive, costs nothing more, and will sit
+        # HUNG, as distinct from slow. A wedged agent - one whose MCP child
+        # died holding the pipe - is alive, costs nothing more, and will sit
         # there occupying a concurrency slot until the wall clock finally fires
         # half an hour later. Silence is measured against real output (the log
         # AND files under .bgate_out / game assets) precisely so that a 30-minute
@@ -1297,7 +1290,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         silent = _last_output_age_s(root, entry)
         if silent is not None and silent >= STALL_S:
             _trip(root, item_id, entry,
-                  f"killed: no output of any kind for {silent // 60} minutes — "
+                  f"killed: no output of any kind for {silent // 60} minutes - "
                   "the session was hung, not working")
             return
         # THE COST CEILING ONLY EXISTS WHERE COST IS REPORTED. A runner that
@@ -1305,7 +1298,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         # this branch would sit there looking like a live guard while spending
         # nothing it can see. Skipping it explicitly is the honest shape: the
         # run is marked cost_tracked=False at spawn and shown that way, and the
-        # runtime and stall limits above — which do not depend on price — are
+        # runtime and stall limits above - which do not depend on price - are
         # what actually bound it.
         limit_usd = float(entry.get("max_cost_usd") or 0)
         if limit_usd and entry.get("cost_tracked", True):
@@ -1325,7 +1318,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                         {"text": f"budget wrap-up at ${spent:.2f}",
                          "sent_at": time.time(), "consumed_at": None})
                     try:
-                        # NOT `_activity` — that name is this module's parsed
+                        # NOT `_activity` - that name is this module's parsed
                         # per-run log cache, and a dict has no .log(). The
                         # try/except would have swallowed the AttributeError
                         # forever and the wrap-up would have gone unrecorded.
@@ -1354,8 +1347,8 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
 
         # A RUN THAT ALREADY FAILED IS NOT STILL WORKING.
         #
-        # The CLI reports a terminal error — expired OAuth, max turns, an
-        # execution error — as a result event and then goes right back to
+        # The CLI reports a terminal error - expired OAuth, max turns, an
+        # execution error - as a result event and then goes right back to
         # waiting on the stdin we deliberately hold open for steering. Nothing
         # else here notices: the item stays 'dispatched', the process stays
         # alive, and the board says "thinking" for however long the runtime
@@ -1364,7 +1357,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         # then reads to the user as a hung dashboard.
         #
         # Only ERROR results settle a run. A successful result event without a
-        # queue_complete is an agent pausing mid-work — steerable, and settling
+        # queue_complete is an agent pausing mid-work - steerable, and settling
         # that would break the channel this whole file exists to keep open.
         if not entry.get("stdin_closed") and not entry.get("stop_reason"):
             failure = _terminal_error(root, item_id)
@@ -1376,7 +1369,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
                 if _queue.get(root, item_id)["status"] in ("done", "failed"):
                     # THE PICKUP LOOP KEEPS THE PIPE OPEN. A worker that called
                     # queue_claim_next before completing its item is still
-                    # working — closing stdin here would kill it mid-claim,
+                    # working - closing stdin here would kill it mid-claim,
                     # which turns the sanctioned loop into a trap. The run's
                     # ceilings (runtime, stall, cost) still bound the whole
                     # session, so this is not an escape from any limit.
@@ -1394,7 +1387,7 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         # stdin closed: give the process the grace period, then kill its
         # whole tree (the agent's own MCP-server children orphan too).
         # setdefault matters: another path (stop, a manual sweep) may close
-        # stdin FIRST without stamping eof_at — without this, the default
+        # stdin FIRST without stamping eof_at - without this, the default
         # re-evaluated to now() every pass and the kill NEVER fired (the
         # observed doom-loop zombie).
         entry.setdefault("eof_at", time.monotonic())
@@ -1410,7 +1403,7 @@ def _open_claims(root: str, item_id: int) -> list[dict]:
     """Items this run claimed via queue_claim_next and has not yet settled.
 
     The claim stamp is the actor column (agent:item-<original id>), written by
-    queue.claim_next in the MCP server process — the DB is the only channel the
+    queue.claim_next in the MCP server process - the DB is the only channel the
     two processes share, which is why this is a query and not a field on the
     _live entry. Best-effort: an unreadable DB answers 'no claims', which errs
     toward closing a session rather than keeping a corpse alive.
@@ -1437,7 +1430,7 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
     """Bank what the run cost and what it touched, exactly once.
 
     Cost used to be parsed off the final result event and handed to an ephemeral
-    JSON response — nothing summed it, so no one could answer what a night of
+    JSON response - nothing summed it, so no one could answer what a night of
     fan-out cost. It now lands on the item and in the spend ledger.
 
     The fingerprint is the other half of revert: hashes of every path this run
@@ -1454,10 +1447,10 @@ def _finalize(root: str, item_id: int, entry: dict) -> None:
             _queue.set_run_fields(root, item_id, num_turns=int(turns))
         tokens = final.get("tokens") or {}
         if (isinstance(cost, (int, float)) and cost > 0) or any(tokens.values()):
-            # spend.record also increments work_item.total_cost_usd — one write,
+            # spend.record also increments work_item.total_cost_usd - one write,
             # one truth; do not add it a second time here. Tokens ride along
             # because on a subscription they, not the dollars, are what runs
-            # out — and a run under a plan reporting no price is still a run
+            # out - and a run under a plan reporting no price is still a run
             # worth having in the ledger.
             _spend.record(root, float(cost or 0), kind="agent",
                           work_item_id=item_id, model=str(final.get("model") or ""),
@@ -1486,7 +1479,7 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
     """Commit this run's own files, so the NEXT dispatch is not refused.
 
     THE DEADLOCK. Nothing in this system committed anything, and dispatch
-    refuses a dirty tree by default — so the first agent to write a file
+    refuses a dirty tree by default - so the first agent to write a file
     blocked every later dispatch, permanently, with a 20-second retry loop.
     `dirty_tree` is a FLOOR refusal, so it stopped the whole board rather than
     one item. Measured consequence: an overnight queue of thirty items woke up
@@ -1494,14 +1487,12 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
     green.
 
     ONLY THIS RUN'S PATHS (gitwork.commit_paths, never `commit -a`), so a
-    human's unrelated uncommitted work is not swept into an agent's commit —
-    and if THAT is what makes the tree dirty, it stays dirty and the next
+    human's unrelated uncommitted work is not swept into an agent's commit - and if THAT is what makes the tree dirty, it stays dirty and the next
     dispatch is still refused, which is the rule working rather than being
     bypassed.
 
     Skipped for a worktree run: those already live on their own branch, which
-    is the isolation this exists to substitute for. Best effort throughout —
-    the work is on disk either way, and a failed commit must never turn a
+    is the isolation this exists to substitute for. Best effort throughout - the work is on disk either way, and a failed commit must never turn a
     finished run into a failed one.
     """
     if entry.get("worktree"):
@@ -1517,7 +1508,7 @@ def _auto_commit(root: str, item_id: int, entry: dict) -> None:
         made = _git.commit_paths(
             root, scope["paths"],
             f"bgate: item #{item_id}" + (f" [{seat}]" if seat else "")
-            + " — committed by the harness so the board keeps moving")
+            + " - committed by the harness so the board keeps moving")
         if made.get("ok"):
             from bgate_core import activity as _act
 
@@ -1540,7 +1531,7 @@ def _exit_verdict(root: str, item_id: int, code, entry: dict) -> tuple[str, str]
     """What a dead process means for its item.
 
     EXIT 0 IS NOT SUCCESS. A `claude` that dies on startup, gets killed by the
-    OS, or does nothing at all can still exit 0 — and marking that 'done'
+    OS, or does nothing at all can still exit 0 - and marking that 'done'
     silently books work nobody did, on an item nobody will ever look at again.
     The evidence that a run happened is the CLI's own terminal ``result`` event:
     exited 0 AND self-reported = done; exited 0 saying nothing = a session with
@@ -1555,7 +1546,7 @@ def _exit_verdict(root: str, item_id: int, code, entry: dict) -> tuple[str, str]
     if code != 0:
         return "failed", f"session exited {code} without self-reporting{tail}"
     if not final:
-        return "failed", ("session exited 0 without ever reporting a result — "
+        return "failed", ("session exited 0 without ever reporting a result - "
                           "nothing was accounted for, so this is not done "
                           "(a crashed or no-op run looks exactly like this)")
     if final.get("subtype") != "success":
@@ -1566,7 +1557,7 @@ def _exit_verdict(root: str, item_id: int, code, entry: dict) -> tuple[str, str]
 
 
 def _reap(root: str, item_id: int, entry: dict, code) -> dict:
-    """Bank a run whose process is gone — exactly once — and retain the result.
+    """Bank a run whose process is gone - exactly once - and retain the result.
 
     The ONE place a finished run writes its item status. It used to live in
     status(), i.e. in the dashboard's GET: two concurrent polls raced each other
@@ -1596,7 +1587,7 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
         pass
     # CLAIMS DIE WITH THE RUN, BUT THE WORK DOES NOT. An item the agent claimed
     # (queue_claim_next) and never completed goes back on the board as 'queued'
-    # rather than dying as a stranded 'dispatched' row — autodeploy re-dispatches
+    # rather than dying as a stranded 'dispatched' row - autodeploy re-dispatches
     # it fresh, and nothing about it was attempted enough to call it failed.
     try:
         for claimed in _open_claims(root, item_id):
@@ -1613,7 +1604,7 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
         pass
     # The machine-wide entry goes with it. An entry left behind is what
     # agentreg.reconcile() reads as "this run died without being banked", and
-    # this run has just been banked — leaving it would have the next dashboard
+    # this run has just been banked - leaving it would have the next dashboard
     # start by failing an item that finished cleanly.
     try:
         _agentreg.forget(entry["proc"].pid)
@@ -1650,7 +1641,7 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
                    "stopped_by": entry.get("stopped_by", ""),
                    "cost_usd": round(float(entry.get("cost_usd") or 0), 4),
                    # started_at is a monotonic stamp, so 0 means "not recorded"
-                   # rather than "the epoch" — subtracting it would report the
+                   # rather than "the epoch" - subtracting it would report the
                    # machine's uptime as the run's duration.
                    "seconds": (int(max(0.0, time.monotonic()
                                        - float(entry["started_at"])))
@@ -1662,7 +1653,7 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
 
 def _prune_retained() -> None:
     """Bounded retention: the newest RETAIN_RUNS per project, nothing older than
-    RETAIN_S. Evicting a run drops its parsed feed too — the two are the same
+    RETAIN_S. Evicting a run drops its parsed feed too - the two are the same
     memory story."""
     now = time.time()
     with _lock:
@@ -1680,7 +1671,7 @@ def _prune_retained() -> None:
 
 
 def sweep(root: str) -> dict:
-    """Advance this project's bookkeeping — the WRITER half of status().
+    """Advance this project's bookkeeping - the WRITER half of status().
 
     status() is a pure read now, so something explicit has to bank runs whose
     process died, renew what live runs hold, and expire retained results. The
@@ -1718,13 +1709,13 @@ def reconcile(root: str) -> dict:
     an item that was mid-flight when the dashboard went down stayed 'dispatched'
     FOREVER: not queued, not finished, absent from the agent table, and refused
     by dispatch() because it is 'not queued'. The run's own log outlives the
-    process, so that is what the item is settled against — a log that ends in a
+    process, so that is what the item is settled against - a log that ends in a
     success result is a run that finished and only lost its bookkeeping.
     """
     try:
         stranded = _queue.list_items(root, status="dispatched")
     except Exception:
-        return {"settled": []}  # no project here (or no DB yet) — nothing to do
+        return {"settled": []}  # no project here (or no DB yet) - nothing to do
     settled = []
     pids = _read_pids(root)
     adopted_items = {int(m["item_id"]) for m in pids.values()
@@ -1736,7 +1727,7 @@ def reconcile(root: str) -> dict:
             if item_id in _live:
                 continue  # this server run owns it
         # STILL WORKING IS NOT STRANDED. reap_orphans now ADOPTS an inherited
-        # agent that is making progress instead of killing it — but this pass
+        # agent that is making progress instead of killing it - but this pass
         # still settled its item as "the process did not survive", which is a
         # lie about a process that is generating art right now. The item then
         # failed, the follow-up router reopened it, and the next attempt paid
@@ -1776,7 +1767,7 @@ def reconcile(root: str) -> dict:
                       "agent's log ends in success" + (f": {said}" if said else ""))
         else:
             outcome = "failed"
-            result = ("stranded by a dashboard restart — the process did not "
+            result = ("stranded by a dashboard restart - the process did not "
                       "survive it and never reported a result")
         try:
             _queue.complete(root, item_id, result=result,
@@ -1835,7 +1826,7 @@ def _proc_identity(pid: int) -> dict:
 
     psutil answers both and is used when it is installed (it is NOT a declared
     dependency, so it can never be required); otherwise tasklist answers the
-    name only. An empty dict means 'no such process, or unknowable' — and the
+    name only. An empty dict means 'no such process, or unknowable' - and the
     sweep treats unknowable as 'do not touch'.
     """
     try:
@@ -1868,8 +1859,8 @@ def _is_recorded_agent(pid: int, meta: dict) -> bool:
     user's OWN claude session: pids are recycled, and this ledger is best-effort
     (a crash can leave entries for processes that died hours ago). The process
     START TIME is the part a recycled pid cannot fake, so when the ledger
-    recorded one it is the check that decides. Entries without it — written by
-    an older build, or on a host where the start time was unreadable — fall back
+    recorded one it is the check that decides. Entries without it - written by
+    an older build, or on a host where the start time was unreadable - fall back
     to the name check and stay explicitly best-effort.
     """
     live = _proc_identity(int(pid))
@@ -1903,13 +1894,12 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
     while you read this. It does four things in the order that matters, because
     doing them in any other order leaves a gap something can restart through:
 
-      1. auto-deploy OFF, first — killing agents while the loop is still on is
+      1. auto-deploy OFF, first - killing agents while the loop is still on is
          how you get a fresh one dispatched before the old one has finished
          dying;
       2. every live agent in THIS process killed by tree (stop(), so the item
          records that a human stopped it rather than 'exited without reporting');
-      3. every recorded pid from ANY previous or parallel dashboard reaped —
-         the ledger on disk outlives the process that wrote it, which is the
+      3. every recorded pid from ANY previous or parallel dashboard reaped - the ledger on disk outlives the process that wrote it, which is the
          whole reason orphans exist;
       4. anything still sitting in 'dispatched' settled, so the board does not
          claim work is running after this returns.
@@ -1945,7 +1935,7 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
 
     # The brainstorm room's thinking partners. They hold no tools and can write
     # nothing, so they are not agents in the sense the rest of this function
-    # means — but they ARE spawned CLI processes on this project, and a kill
+    # means - but they ARE spawned CLI processes on this project, and a kill
     # switch that leaves processes running is a kill switch nobody trusts twice.
     # Lazily imported and fully guarded: the emergency stop must not fail on a
     # module it only touches as a courtesy.
@@ -1967,7 +1957,7 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
     try:
         from bgate_core import activity as _activity
         _activity.log(root, "killswitch",
-                      f"KILL SWITCH — {len(stopped)} agent(s) stopped, "
+                      f"KILL SWITCH - {len(stopped)} agent(s) stopped, "
                       f"{len(orphans.get('killed') or [])} orphan(s) reaped: {note}",
                       actor=actor or None)
     except Exception:
@@ -2002,7 +1992,7 @@ def _recent_progress(root: str, meta: dict) -> bool:
     # the progress manifest, the ledger's start time and work_item.updated_at,
     # and got all three wrong: the manifest is optional, the ledger writes
     # `spawned_at` (not `started_at`), and a work_item row is NOT touched while
-    # an agent runs — so a process generating a sheet every twenty seconds read
+    # an agent runs - so a process generating a sheet every twenty seconds read
     # as silent. _last_output_age_s is purpose-built for exactly this question
     # and watches what actually moves: the agent's log plus file mtimes under
     # .bgate_out and the game assets.
@@ -2025,10 +2015,10 @@ def reap_orphans(root: str) -> dict:
     """Sweep agents orphaned by a previous server run.
 
     _live dies with the server process, but the spawned claude.exe trees do
-    not — they sit waiting on a pipe nobody will ever close. The pids ledger
+    not - they sit waiting on a pipe nobody will ever close. The pids ledger
     survives restarts; anything in it that is not in the CURRENT _live and is
     still verifiably OUR agent process gets its tree killed. The items those
-    orphans were working on are settled in the same pass (reconcile) — killing
+    orphans were working on are settled in the same pass (reconcile) - killing
     the process without settling the item just moves the strand somewhere
     else."""
     killed, cleared = [], []
@@ -2040,7 +2030,7 @@ def reap_orphans(root: str) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         _reconcile_quietly(root)
-        return {"killed": [], "cleared": ["unreadable ledger — reset"],
+        return {"killed": [], "cleared": ["unreadable ledger - reset"],
                 "reset": bool(path.write_text("{}", encoding="utf-8"))}
     with _lock:
         live_pids = {e["proc"].pid for e in _live.values()}
@@ -2052,7 +2042,7 @@ def reap_orphans(root: str) -> dict:
         info = meta if isinstance(meta, dict) else {}
         if _is_recorded_agent(pid, info):
             # AN ORPHAN IS A STUCK PROCESS, NOT AN INHERITED ONE. This used to
-            # kill every recorded agent that was not in _live — and _live is
+            # kill every recorded agent that was not in _live - and _live is
             # EMPTY at startup, which is the only time this runs. So restarting
             # the dashboard executed every agent then working, the follow-up
             # router reopened their items, and the next attempt re-bought art
@@ -2064,7 +2054,7 @@ def reap_orphans(root: str) -> dict:
             # our stdin, it is working. Only the STEER pump needs the pipe, and
             # losing steerability is a far smaller harm than killing live work.
             # So: if it has shown progress recently, leave it alone, leave it in
-            # the ledger, and leave its item unsettled — it will finish and
+            # the ledger, and leave its item unsettled - it will finish and
             # settle itself, or fall quiet and be reaped by a later sweep.
             if _recent_progress(root, info):
                 adopted.append({"pid": pid, "item_id": info.get("item_id")})
@@ -2082,7 +2072,7 @@ def reap_orphans(root: str) -> dict:
 
 
 def _reconcile_quietly(root: str) -> None:
-    """Reconcile once per project, never raising — reap_orphans runs at server
+    """Reconcile once per project, never raising - reap_orphans runs at server
     startup and its return shape is a contract, so this cannot add keys or
     blow up on a directory that has no project in it."""
     project = _pkey(root)
@@ -2096,7 +2086,7 @@ def _reconcile_quietly(root: str) -> None:
 
 
 def steer(root: str, item_id: int, text: str) -> dict:
-    """Inject a live user message into a running agent — course-correction
+    """Inject a live user message into a running agent - course-correction
     without killing and re-dispatching. Lands as a new user turn mid-work."""
     text = (text or "").strip()
     if not text:
@@ -2113,7 +2103,7 @@ def steer(root: str, item_id: int, text: str) -> dict:
             return {"ok": False, "item_id": item_id, "runner": entry.get("runner"),
                     "error": f"the {entry.get('runner') or 'this'} runner takes "
                              "its prompt once at launch and has no live steer "
-                             "channel — stop the item and re-dispatch it with "
+                             "channel - stop the item and re-dispatch it with "
                              "the correction in the brief"}
         if entry.get("stdin_closed"):
             return {"ok": False, "error": "agent is finishing; steer channel closed"}
@@ -2168,7 +2158,7 @@ def _scan_steer_echoes(entry: dict) -> None:
     """Mark steers consumed by finding their --replay-user-messages echoes.
 
     A steer lands in stdin instantly, but the model only READS it when the
-    current turn ends — that gap is the 'late to inject' feeling. The echo of
+    current turn ends - that gap is the 'late to inject' feeling. The echo of
     the injected user message in the output log is the moment of consumption,
     so sent_at -> echo time IS the injection latency. Incremental tail read
     (cursor per entry), so a 10MB log costs nothing per poll."""
@@ -2197,7 +2187,7 @@ def _scan_steer_echoes(entry: dict) -> None:
 
 
 def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
-    """Seconds since the agent last produced ANY observable output — log write
+    """Seconds since the agent last produced ANY observable output - log write
     or a file under .bgate_out / game assets. Long atomic MCP calls (a 30-min
     image_sprites batch) log nothing until they return, which made healthy
     agents look hung and got them manually killed; file mtimes are the real
@@ -2208,7 +2198,7 @@ def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
         newest = os.path.getmtime(entry["log"])
     except OSError:
         pass
-    budget = 400  # max entries visited — keep the poll snappy
+    budget = 400  # max entries visited - keep the poll snappy
     stack = [(Path(root) / ".bgate_out", 0), (Path(root) / "game" / "assets", 0)]
     while stack and budget > 0:
         d, depth = stack.pop()
@@ -2232,7 +2222,7 @@ def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
 
 
 def status(root: str) -> list[dict]:
-    """The agent table for the dashboard — a PURE READ.
+    """The agent table for the dashboard - a PURE READ.
 
     This used to reap: a GET that closed pipes, flipped item statuses and wrote
     the spend ledger. Two dashboards (or one dashboard and one long-poll) raced
@@ -2251,7 +2241,7 @@ def status(root: str) -> list[dict]:
                    if _pkey(e.get("root") or root) == project]
     for item_id, entry in entries:
         if entry["proc"].poll() is not None:
-            continue  # dead but not banked yet — the watchdog/sweep owns that
+            continue  # dead but not banked yet - the watchdog/sweep owns that
         _scan_steer_echoes(entry)
         steers = [s for s in entry.get("steers", ()) if isinstance(s, dict)]
         consumed = [s for s in steers if s.get("consumed_at")]
@@ -2264,7 +2254,7 @@ def status(root: str) -> list[dict]:
                     # WHAT THIS RUN'S GUARDS ACTUALLY ARE. A cost ceiling that
                     # cannot bite and a steer box that goes nowhere must be
                     # visible as facts about the run, not discovered by trying
-                    # them — that is the whole price of allowing a second runner.
+                    # them - that is the whole price of allowing a second runner.
                     "runner": entry.get("runner", "claude"),
                     "cost_tracked": bool(entry.get("cost_tracked", True)),
                     "steerable": bool(entry.get("steerable", True)),
@@ -2282,8 +2272,8 @@ def status(root: str) -> list[dict]:
                     "cost_usd": round(float(entry.get("cost_usd") or 0), 4),
                     "last_output_s": _last_output_age_s(root, entry)})
     # AGENTS THIS PROCESS DID NOT SPAWN ARE STILL RUNNING AGENTS. _live is an
-    # in-memory table, so an agent inherited across a dashboard restart — or
-    # dispatched from another process — was invisible here: /api/agents returned
+    # in-memory table, so an agent inherited across a dashboard restart - or
+    # dispatched from another process - was invisible here: /api/agents returned
     # an empty list, the deck showed "0 running", and the work item's panel said
     # "no live steps" while the agent generated a sheet every twenty seconds.
     # The reaper no longer kills those and reconcile no longer fails them, and
@@ -2292,7 +2282,7 @@ def status(root: str) -> list[dict]:
     #
     # Reported with what is genuinely known and no more: the pid and the item
     # are on record, the steer pipe is NOT ours (steerable=False, and that is
-    # true rather than pessimistic — only the spawning process holds the stdin).
+    # true rather than pessimistic - only the spawning process holds the stdin).
     known = {item_id for item_id, _ in entries}
     # MOST RECENTLY SPAWNED FIRST. An item that was re-dispatched has several
     # entries in the ledger and only the last is the live agent; listing both
@@ -2310,7 +2300,7 @@ def status(root: str) -> list[dict]:
             continue
         # Claimed only once it PASSES: a re-dispatched item has a dead pid in
         # the ledger beside its live one, and marking the item seen before the
-        # liveness check let the dead entry shadow the working agent — which
+        # liveness check let the dead entry shadow the working agent - which
         # reported nothing running while it generated a sheet every 20 seconds.
         if not (_is_recorded_agent(int(pid_s), meta) and
                 _recent_progress(root, meta)):
@@ -2343,7 +2333,7 @@ STEER_MARKER = "STEER FROM THE DIRECTOR (act on this now): "
 
 def _add_step(state: dict, step: dict) -> None:
     """Append one step to the ring. What falls off the front is counted, not
-    forgotten — see the ``dropped``/``truncated`` fields read_activity returns.
+    forgotten - see the ``dropped``/``truncated`` fields read_activity returns.
 
     Every step is stamped with when it was PARSED. That is a few milliseconds
     after the CLI wrote it and is the only clock the log offers, but it is what
@@ -2381,7 +2371,7 @@ def _absorb(state: dict, raw: bytes) -> None:
     etype = ev.get("type")
     if etype == "bgate_run_start":
         # A RE-DISPATCH. The log appends across runs and showing run 1's result
-        # as run 2's current state was a real observed bug — everything before
+        # as run 2's current state was a real observed bug - everything before
         # this marker belongs to a run that is over.
         state["steps"].clear()
         state["step_count"] = 0
@@ -2412,7 +2402,7 @@ def _absorb(state: dict, raw: bytes) -> None:
                     _add_step(state, {"kind": "result", "text": txt[:600],
                                       "truncated": len(txt) > 600})
             elif block.get("type") == "text":
-                # Replayed user turns — and the FIRST of them is the dispatch
+                # Replayed user turns - and the FIRST of them is the dispatch
                 # prompt, which carries the seat-identity preamble and the whole
                 # house-rules block. That is internal plumbing, not something to
                 # show a human reading their agent's activity: only turns
@@ -2422,7 +2412,7 @@ def _absorb(state: dict, raw: bytes) -> None:
                     _add_step(state, {"kind": "steer",
                                       "text": txt.split(STEER_MARKER, 1)[1].strip()[:600]})
     elif etype == "result":
-        # The agent's actual answer. NOT truncated to a preview length — this is
+        # The agent's actual answer. NOT truncated to a preview length - this is
         # the deliverable sentence the user opened the panel to read; the cap is
         # only here so a runaway result cannot pin the process's memory.
         state["final"] = {"subtype": ev.get("subtype"),
@@ -2465,8 +2455,7 @@ def _final_model(ev: dict) -> str:
     """Which model actually ran, as the CLI names it.
 
     Recorded because nothing else in this system knew. Every dispatch left
-    --model unset, so the answer was whatever the CLI defaulted to that day —
-    unlogged, unqueryable, and discovered only by reading a raw session log
+    --model unset, so the answer was whatever the CLI defaulted to that day - unlogged, unqueryable, and discovered only by reading a raw session log
     after the bill looked wrong. `modelUsage` is keyed by the resolved name
     including its context-window suffix, which is the distinction that matters:
     an opus-5[1m] run and an opus-5 run meter differently.
@@ -2482,7 +2471,7 @@ def _final_model(ev: dict) -> str:
 # The other vocabulary
 # ---------------------------------------------------------------------------
 # `codex exec --json` speaks a different, smaller event language than claude's
-# stream-json. The two do not collide — dotted names against bare ones — so one
+# stream-json. The two do not collide - dotted names against bare ones - so one
 # reader handles a log of either kind without being told which runner wrote it,
 # which matters because the log is per ITEM and a re-dispatch may switch runners
 # under an existing file.
@@ -2504,7 +2493,7 @@ def _absorb_codex(state: dict, etype: str, ev: dict) -> None:
         state["final"] = None
         return
     if etype == "turn.completed":
-        # NO PRICE HERE, ON PURPOSE — see runners.Runner.cost_tracked. Tokens
+        # NO PRICE HERE, ON PURPOSE - see runners.Runner.cost_tracked. Tokens
         # are recorded so the run is not a black box, but nothing downstream may
         # read them as dollars.
         usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else {}
@@ -2561,8 +2550,7 @@ def _absorb_codex(state: dict, etype: str, ev: dict) -> None:
         _add_step(state, {"kind": "tool", "name": "Edit",
                           "hint": (paths or str(item.get("path") or ""))[:120]})
         return
-    # An item type this version has never seen still belongs in the feed —
-    # silence would make a new codex capability look like an agent doing nothing.
+    # An item type this version has never seen still belongs in the feed - # silence would make a new codex capability look like an agent doing nothing.
     label = str(item.get("text") or item.get("command") or kind)
     _add_step(state, {"kind": "tool", "name": kind or "item", "hint": label[:120]})
 
@@ -2574,13 +2562,13 @@ def _is_running(item_id: int) -> bool:
 
 def read_activity(root: str, item_id: int, limit: int = 40,
                   offset: int = 0) -> dict:
-    """An agent's stream-json log as a readable feed — parsed FORWARD FROM A
+    """An agent's stream-json log as a readable feed - parsed FORWARD FROM A
     BYTE CURSOR, once. Serialized: see _feed_lock.
 
     The log is documented as 10MB and the dashboard polls every ~3s per live
     agent; read_text() + json.loads on every line of it, every poll, re-parsed
     the entire session to display its last 40 steps. The steer-echo scanner a
-    hundred lines up already solved that with a per-run byte cursor — this is
+    hundred lines up already solved that with a per-run byte cursor - this is
     the same trick, plus a bounded ring so a long session cannot grow without
     limit in memory.
 
@@ -2594,8 +2582,7 @@ def read_activity(root: str, item_id: int, limit: int = 40,
     # ONE READER AT A TIME per process. The cursor advance and the remainder
     # buffer are read-modify-write, and there are two callers now: the request
     # thread painting the console, and the per-run watchdog checking whether the
-    # session errored out. Interleaved, they absorb the same byte range twice —
-    # duplicate steps, doubled counts — or one clobbers the other's partial
+    # session errored out. Interleaved, they absorb the same byte range twice - # duplicate steps, doubled counts - or one clobbers the other's partial
     # line and a step is lost outright.
     with _feed_lock:
         try:
@@ -2608,7 +2595,7 @@ def read_activity(root: str, item_id: int, limit: int = 40,
         state = _activity.get(key)
         if state is None or state["pos"] > size:
             # First look, or the log was replaced/truncated under us (a cursor past
-            # EOF means the bytes we already parsed are gone) — start clean.
+            # EOF means the bytes we already parsed are gone) - start clean.
             state = {"pos": 0, "rem": b"", "steps": [], "final": None,
                      "step_count": 0, "bytes_read": 0}
             _activity[key] = state
@@ -2653,14 +2640,14 @@ def stop(item_id: int, actor: str = "", root: str = "") -> dict:
     """End a run deliberately: kill the TREE, and record it as a stop.
 
     Two bugs in one line. terminate() killed the `claude` parent only, leaving
-    its MCP-server children alive holding the pipe — the orphan pile-up the rest
+    its MCP-server children alive holding the pipe - the orphan pile-up the rest
     of this file keeps fighting. And the run was then banked as 'session exited
     N without self-reporting', so the one place a user looks to find out what
     happened told them their agent mysteriously died, when in fact they stopped
     it. The stop lands on the item immediately, with a name on it.
 
     ``root`` NAMES THE PROJECT THE CALLER MEANT, and is checked rather than
-    assumed. Item ids are per project — every game has its own #14 — and _live
+    assumed. Item ids are per project - every game has its own #14 - and _live
     is keyed by item id alone, machine-wide. The fleet view lists agents across
     every registered project, so a stop aimed at another game's #14 would have
     killed whatever this process happened to be running under that number.
@@ -2672,13 +2659,13 @@ def stop(item_id: int, actor: str = "", root: str = "") -> dict:
         if not entry or entry["proc"].poll() is not None:
             return {"ok": False, "error": "no live agent for this item"}
         # An entry with no root recorded predates that field and cannot be
-        # proved to be the wrong project, so it is left stoppable — refusing on
+        # proved to be the wrong project, so it is left stoppable - refusing on
         # an unknown is how a stop button starts doing nothing.
         here = str(entry.get("root") or "")
         if root and here and _pkey(here) != _pkey(root):
             return {"ok": False,
                     "error": f"item {item_id} here belongs to {here}, not to "
-                             f"{root} — nothing was stopped"}
+                             f"{root} - nothing was stopped"}
         if not actor:
             try:
                 from bgate_ui import api as _api
@@ -2686,7 +2673,7 @@ def stop(item_id: int, actor: str = "", root: str = "") -> dict:
             except Exception:
                 actor = ""
         actor = actor or "the dashboard"
-        reason = (f"stopped by {actor} — this run was ended by hand, "
+        reason = (f"stopped by {actor} - this run was ended by hand, "
                   "it did not die on its own")
         entry["stopped_by"] = actor
         entry["stop_reason"] = reason

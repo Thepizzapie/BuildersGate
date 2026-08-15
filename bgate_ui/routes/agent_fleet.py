@@ -193,7 +193,7 @@ def _stop_one(row: dict, actor: str) -> dict:
     # agentreg.live() already proved they still name this run.
     killed = _proc.kill_pid_tree(pid)
     _agentreg.forget(pid)
-    reason = (f"stopped by {actor} from the fleet view — this run was ended by "
+    reason = (f"stopped by {actor} from the fleet view - this run was ended by "
               "hand from a dashboard that did not spawn it, so it reported "
               "nothing about what it had finished")
     banked = ""
@@ -240,7 +240,7 @@ def agents_stop(request: Request, payload: dict) -> dict:
     roots = {_pkey(r["root"]) for r in matches}
     if len(roots) > 1:
         raise api.bad_request(
-            f"item {item_id} names a live agent in {len(roots)} projects — "
+            f"item {item_id} names a live agent in {len(roots)} projects - "
             "pass root to say which",
             item_id=item_id, roots=sorted(r["root"] for r in matches))
     return api.ok(_stop_one(matches[0], api.current_actor(request)))
@@ -252,7 +252,7 @@ def agents_stop_all(request: Request, payload: Optional[dict] = None) -> dict:
 
     Deliberately reports PER AGENT, refusals included. A broadcast stop that
     half landed and answered "ok" is worse than one that failed outright,
-    because the operator stops watching — the same reasoning the steer-all
+    because the operator stops watching - the same reasoning the steer-all
     endpoint is written to.
 
     This does NOT touch auto-deploy. dispatch.kill_all is the per-project panic
