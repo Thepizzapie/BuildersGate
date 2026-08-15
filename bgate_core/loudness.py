@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import ffmpegbin as _ffmpegbin
+from .proc import run as _run
 
 #: The seat's declared target. Godot mixes linearly and ships no normalisation,
 #: so the target is a discipline the seat keeps, not something the engine
@@ -86,7 +87,7 @@ def measure(path: str | os.PathLike[str]) -> dict:
         return _unmeasured("no ffmpeg on this machine — set BGATE_FFMPEG or put "
                            "one in ~/.bgate/bin")
     try:
-        proc = subprocess.run(
+        proc = _run(
             [exe, "-nostdin", "-hide_banner", "-i", str(p),
              "-af", "ebur128=peak=true", "-f", "null", "-"],
             capture_output=True, text=True, timeout=TIMEOUT_S,

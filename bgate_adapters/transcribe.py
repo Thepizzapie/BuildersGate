@@ -15,6 +15,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+from bgate_core.proc import run as _run
 from typing import Optional
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -110,7 +112,7 @@ def available() -> dict:
     probe = ("import importlib.metadata as m;"
              "print(m.version('faster-whisper'))")
     try:
-        proc = subprocess.run([exe, "-c", probe], capture_output=True, text=True,
+        proc = _run([exe, "-c", probe], capture_output=True, text=True,
                               timeout=60, stdin=subprocess.DEVNULL,
                               creationflags=_NO_WINDOW)
     except Exception as exc:

@@ -4625,3 +4625,21 @@
   }
   :root[data-theme="orbit"] .nc-node::after{ display:none }
 }
+
+/* The playtest panic button. Reads as destructive because it is: it discards
+   the recording. Deliberately not the same weight as `record` -- it is the
+   second thing you press, not the first. */
+/* The two playtest controls sit as one pair, and each shows when it is the
+   STOP half: a running build and a running recording are the two states where
+   the button destroys something rather than starting it. */
+.pt-controls{ display: inline-flex; gap: var(--s-3) }
+.pt-controls .pt-on,
+.pt-controls .recording{
+  border-color: color-mix(in srgb, var(--danger, #e5484d) 55%, transparent);
+  color: var(--danger, #e5484d);
+}
+.pt-controls .pt-on:hover,
+.pt-controls .recording:hover{
+  background: color-mix(in srgb, var(--danger, #e5484d) 14%, transparent);
+  border-color: var(--danger, #e5484d);
+}

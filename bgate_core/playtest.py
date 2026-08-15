@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import activity, chatlink, db, feedback, iterations
+from .proc import kill_tree, popen as _popen, run as _run
 from .util import rows, slugify
 
 # Live recordings, keyed by session id. Deliberately in-memory: a Recording owns
@@ -170,13 +171,13 @@ def _build_identity(root: str | os.PathLike[str]) -> str:
     commit = "unversioned"
     dirty = False
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["git", "rev-parse", "--short=12", "HEAD"], cwd=project_root,
             capture_output=True, text=True, timeout=10,
             stdin=subprocess.DEVNULL)
         if proc.returncode == 0 and proc.stdout.strip():
             commit = proc.stdout.strip()
-        dirty_proc = subprocess.run(
+        dirty_proc = _run(
             ["git", "status", "--porcelain"], cwd=project_root,
             capture_output=True, text=True, timeout=10,
             stdin=subprocess.DEVNULL)
@@ -317,22 +318,39 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
 
     slug = slugify(name)
     build_ref = build_ref or _build_identity(root)
-    live = db.connect(root).execute(
-        "SELECT id, name FROM playtest_session WHERE status = 'recording'").fetchone()
-    if live:
-        raise RuntimeError(
-            f"session {live['id']} ({live['name']!r}) is already recording — "
-            "stop it first; two ffmpeg captures fight over the same window"
-        )
+
     iteration = iterations.create(root, name)
     iteration_id = int(iteration["id"])
+
+    # THE CHECK AND THE INSERT ARE ONE STATEMENT, AND THEY HAVE TO BE.
+    # This used to SELECT for a live session, raise if it found one, and INSERT
+    # afterwards -- three statements with two gaps in the middle. A second
+    # request arriving in either gap saw no live session too, and both inserted:
+    # two rows both marked `recording`, two ffmpeg captures fighting over one
+    # window, and a panel that could only ever stop one of them. It took two
+    # clicks on a button that gives no feedback for several seconds, which is
+    # to say it took no effort at all -- that is the "makes 2 recording
+    # sessions" report.
+    #
+    # INSERT ... SELECT ... WHERE NOT EXISTS does the test and the write in a
+    # single atomic statement, so the loser of a race inserts nothing and finds
+    # out by getting no row back.
     with db.tx(root) as conn:
         cur = conn.execute(
             "INSERT INTO playtest_session "
             "(name, slug, status, game_cmd, build_ref, iteration_id) "
-            "VALUES (?, ?, 'recording', ?, ?, ?)",
+            "SELECT ?, ?, 'recording', ?, ?, ? WHERE NOT EXISTS ("
+            "  SELECT 1 FROM playtest_session WHERE status = 'recording')",
             (name, slug, game_cmd, build_ref, iteration_id),
         )
+        if not cur.rowcount:
+            live = conn.execute(
+                "SELECT id, name FROM playtest_session WHERE status = 'recording'"
+            ).fetchone()
+            raise RuntimeError(
+                f"session {live['id']} ({live['name']!r}) is already recording — "
+                "stop it first; two ffmpeg captures fight over the same window"
+            )
         session_id = int(cur.lastrowid)
 
     out_dir = _session_dir(root, session_id, slug)
@@ -409,6 +427,93 @@ def start(root: str | os.PathLike[str], name: str, *, window_title: Optional[str
     }
 
 
+def abort(root: str | os.PathLike[str]) -> dict:
+    """Kill EVERYTHING this process started for playtests. Never raises.
+
+    THE BUTTON FOR WHEN STOP DID NOT STOP. Ordinary stop() is a careful
+    sequence: end the capture, finalise a video whose moov atom only lands if
+    ffmpeg exits cleanly, ingest telemetry, transcribe. Every one of those
+    steps can hang or throw, and when one does the user is left with a game on
+    screen, a recorder holding the capture file, and a button that reports an
+    error instead of doing the one thing they asked for.
+
+    This is the other kind of stop, and it makes the opposite trade: it gives
+    up on the recording to guarantee the processes are gone. Whatever was
+    captured stays on disk as a partial file and the session is marked failed
+    rather than left `recording` forever, so the panel stops claiming a live
+    session that no longer exists.
+
+    Returns what it actually killed, not what it tried to kill, because "stop
+    everything" is a claim the interface should only make when it is true.
+    """
+    games = sorted(_GAMES)
+    recs = sorted(_LIVE)
+    killed_games, killed_recs, errors = [], [], []
+
+    for sid in games:
+        try:
+            if kill_tree(_GAMES.pop(sid, None)):
+                killed_games.append(sid)
+        except Exception as exc:                                # noqa: BLE001
+            errors.append(f"game {sid}: {exc}")
+
+    for sid in recs:
+        rec = _LIVE.pop(sid, None)
+        if rec is None:
+            continue
+        # The ffmpeg child, straight to kill_tree. recorder.stop() is the
+        # graceful path and this function exists precisely because the graceful
+        # path is what failed.
+        try:
+            if kill_tree(getattr(rec, "_proc", None)):
+                killed_recs.append(sid)
+            stop_event = getattr(rec, "_stop", None)
+            if stop_event is not None:
+                stop_event.set()          # release the audio callback thread
+            stream = getattr(rec, "_stream", None)
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:                               # noqa: BLE001
+                    pass                  # already dead is the outcome we want
+        except Exception as exc:                                # noqa: BLE001
+            errors.append(f"recorder {sid}: {exc}")
+
+    stopped = sorted(set(games) | set(recs))
+    for sid in stopped:
+        try:
+            _fail(root, sid, "stopped by hand — recording discarded")
+        except Exception as exc:                                # noqa: BLE001
+            errors.append(f"session {sid}: {exc}")
+
+    # A session left `recording` in the database by an earlier crashed process
+    # is invisible to the loops above and is exactly what makes the panel keep
+    # insisting something is live. Nothing in THIS process owns it, so there is
+    # no process to kill; marking it is the whole fix.
+    orphans = []
+    try:
+        with db.tx(root) as conn:
+            rows_ = conn.execute(
+                "SELECT id FROM playtest_session WHERE status = 'recording'"
+            ).fetchall()
+            orphans = [r[0] for r in rows_ if r[0] not in stopped]
+        for sid in orphans:
+            _fail(root, sid, "stopped by hand — no live recorder in this process")
+    except Exception as exc:                                    # noqa: BLE001
+        errors.append(f"orphan sweep: {exc}")
+
+    return {
+        "ok": not errors,
+        "games_killed": killed_games,
+        "recorders_killed": killed_recs,
+        "sessions_stopped": stopped,
+        "orphans_cleared": orphans,
+        "nothing_was_running": not (stopped or orphans),
+        "errors": errors,
+    }
+
+
 def stop(root: str | os.PathLike[str], session_id: Optional[int] = None, *,
          model: str = "base", transcribe_now: bool = True) -> dict:
     """End recording, then transcribe + align + classify into a brief."""
@@ -417,21 +522,30 @@ def stop(root: str | os.PathLike[str], session_id: Optional[int] = None, *,
     session = _active(root, session_id)
     session_id = session["id"]
     rec = _LIVE.pop(session_id, None)
+
+    # THE GAME DIES FIRST, AND UNCONDITIONALLY. It used to be killed after
+    # recorder.stop() returned, several statements below a `raise` -- so any
+    # stop that could not finish the recording left the game running. Both
+    # routes there are ordinary: the server restarting mid-session drops the
+    # live recorder (rec is None, and the old code raised on the spot), and
+    # recorder.stop() can throw while finalising a file. The user pressed stop,
+    # got an error, and the game stayed on screen with nothing in the interface
+    # still claiming to own it. Killing here means "stop" always means stop,
+    # whatever happens to the recording afterwards.
+    #
+    # kill_tree, not terminate: Godot starts children of its own, and
+    # terminate() ends only the process we launched.
+    killed_game = kill_tree(_GAMES.pop(session_id, None))
+
     if rec is None:
         _fail(root, session_id, "no live recorder — server restarted mid-session?")
         raise RuntimeError(
             f"session {session_id} has no live recorder in this process "
-            "(the server restarted). Marked failed; the partial files remain on disk."
+            "(the server restarted). Marked failed; the partial files remain on "
+            f"disk.{' The game was closed.' if killed_game else ''}"
         )
 
     result = recorder.stop(rec)
-    game_proc = _GAMES.pop(session_id, None)
-    if game_proc is not None and game_proc.poll() is None:
-        game_proc.terminate()
-        try:
-            game_proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            game_proc.kill()
     with db.tx(root) as conn:
         conn.execute(
             "UPDATE playtest_session SET status = 'processing', ended_at = datetime('now'), "
@@ -513,7 +627,7 @@ def launch_native_game(root: str | os.PathLike[str], session_id: int,
 
     env = os.environ.copy()
     env["BGATE_TELEMETRY"] = telemetry_path
-    proc = subprocess.Popen(
+    proc = _popen(
         args, cwd=str(game_dir if game_dir.is_dir() else Path(root)),
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW)
