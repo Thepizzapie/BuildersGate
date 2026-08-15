@@ -1,6 +1,7 @@
 import { Button, Group, Menu, SegmentedControl, Text, Textarea } from "@mantine/core";
 import { Ti } from "../Ti";
 import { AssetLink, type Linked } from "./AssetLink";
+import { OpenCli } from "./OpenCli";
 import { SEAT_COLOR, SEAT_ICON } from "../nav";
 
 /** A running agent you can tag. */
@@ -216,10 +217,14 @@ export function Composer({
         {aimNote}
         {links}
         {field}
-        <Group gap="sm" wrap="nowrap" className="bg4-composer-bar">
+        {/* WRAPS, because this row grew a fifth control and a narrow rail was
+            clipping "brainstorm" to "brai" and "send" to "sen". A row that
+            cannot fit its buttons should get taller, not eat them. */}
+        <Group gap="sm" wrap="wrap" className="bg4-composer-bar">
           {tabs}
           {tag}
           {onLink && mode === "dispatch" && <AssetLink onPick={onLink} />}
+          <OpenCli />
           <span style={{ flex: 1 }} />
           {/* AUTO-DEPLOY IS STATED, NOT ASSUMED. Queued work sitting still
               because a switch is off, with nothing on screen saying so, is the
@@ -237,10 +242,14 @@ export function Composer({
     <div className="bg4-composer">
       {aimNote}
       {links}
-      <Group gap="xs" mb={8} wrap="nowrap">
+      <Group gap="xs" mb={8} wrap="wrap">
         {tabs}
         {tag}
         {onLink && mode === "dispatch" && <AssetLink onPick={onLink} />}
+        {/* THE FOURTH THING YOU CAN DO WITH AN EMPTY CONSOLE. Continuing a run
+            needs a run to point at; starting one needs only the project, so it
+            belongs here rather than behind a selection. */}
+        <OpenCli />
         <span style={{ flex: 1 }} />
         {onClear && (
           <Button variant="default" size="compact-xs" onClick={onClear}>clear</Button>

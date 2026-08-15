@@ -159,6 +159,44 @@ def _terminal_argv(cwd: Path, inner: list[str]) -> list[str] | None:
     return None
 
 
+def _launch(project_root: Path, inner_args: list[str]) -> dict:
+    """Open a terminal in `project_root` running claude with `inner_args`."""
+    exe = runners.find_claude()
+    if not exe:
+        raise api.ApiError(503, "the claude CLI is not on PATH", detail={
+            "fix": "install Claude Code, or open a terminal yourself and run "
+                   "the command shown"})
+    inner = [exe, *inner_args]
+    argv = _terminal_argv(project_root, inner)
+    if argv is None:
+        raise api.ApiError(501, "no terminal this dashboard knows how to open "
+                                "on this platform", detail={
+            "fix": "run the command yourself",
+            "command": " ".join(inner)})
+    try:
+        # THE TERMINAL IS NOT OUR CHILD TO SUPERVISE. It outlives this request by
+        # design, so its streams are detached; inheriting them would tie an
+        # interactive window's lifetime to a web request that ends immediately.
+        proc.popen(argv, cwd=str(project_root), close_fds=True)
+    except OSError as exc:
+        raise api.ApiError(500, f"could not open a terminal: {exc}",
+                           detail={"argv": argv[0]}) from exc
+    return {"cwd": str(project_root), "opened": Path(argv[0]).name}
+
+
+@router.post("/api/session/open")
+def open_project_session() -> dict:
+    """Open a terminal on the PROJECT, as a new Claude session.
+
+    SEPARATE FROM THE PER-ITEM ROUTE BECAUSE STARTING NEEDS NO ITEM. Continuing
+    is about one run and has to name it; starting is about the project, and
+    requiring a run to exist first meant a console with nothing in it yet - the
+    exact moment somebody wants a terminal - had no way to open one.
+    """
+    r = root()
+    return api.ok({"mode": "start", "session_id": "", **_launch(Path(r), [])})
+
+
 @router.post("/api/agents/{item_id}/session/open")
 def open_session(item_id: int, body: dict = Body(default={})) -> dict:
     """Open a terminal on this run: `continue` resumes it, `start` opens a new
@@ -174,13 +212,7 @@ def open_session(item_id: int, body: dict = Body(default={})) -> dict:
         raise api.ApiError(422, "mode must be 'continue' or 'start'",
                            detail={"mode": mode})
 
-    exe = runners.find_claude()
-    if not exe:
-        raise api.ApiError(503, "the claude CLI is not on PATH", detail={
-            "fix": "install Claude Code, or open a terminal yourself and run "
-                   "the command shown"})
-
-    inner = [exe]
+    inner: list[str] = []
     session_id = ""
     if mode == "continue":
         info = agent_session(item_id)["data"]
@@ -194,23 +226,7 @@ def open_session(item_id: int, body: dict = Body(default={})) -> dict:
         if not _SESSION_RE.match(session_id):
             raise api.ApiError(422, "that session id is not a session id",
                                detail={"session_id": session_id[:64]})
-        inner += ["--resume", session_id]
+        inner = ["--resume", session_id]
 
-    argv = _terminal_argv(Path(r), inner)
-    if argv is None:
-        raise api.ApiError(501, "no terminal this dashboard knows how to open "
-                                "on this platform", detail={
-            "fix": "run the command yourself",
-            "command": " ".join(inner)})
-
-    try:
-        # THE TERMINAL IS NOT OUR CHILD TO SUPERVISE. It outlives this request by
-        # design, so its streams are detached; inheriting them would tie an
-        # interactive window's lifetime to a web request that ends immediately.
-        proc.popen(argv, cwd=str(r), close_fds=True)
-    except OSError as exc:
-        raise api.ApiError(500, f"could not open a terminal: {exc}",
-                           detail={"argv": argv[0]}) from exc
-
-    return api.ok({"mode": mode, "session_id": session_id, "cwd": str(r),
-                   "opened": Path(argv[0]).name})
+    return api.ok({"mode": mode, "session_id": session_id,
+                   **_launch(Path(r), inner)})
