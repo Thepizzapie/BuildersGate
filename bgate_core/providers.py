@@ -148,13 +148,24 @@ def art_providers() -> tuple["Provider", ...]:
 # server on purpose: openai first, then krea, then kie. A panel that lists them
 # in a different order than the code picks them teaches the wrong default.
 #
-# kie is LAST among the image providers deliberately, and not because it is
-# worse: it is the only one here that cannot condition on a local pinned anchor
-# (its reference documents every image field as a URI and says nothing about
-# base64), so auto-selecting it would quietly turn anchored character work into
-# unanchored prompt-only work. It is the right choice when a human names it, and
-# the wrong default. Its music and video are unaffected — nothing else in this
-# product can do either at all.
+# kie is LAST among the image providers, and THE REASON THIS COMMENT USED TO
+# GIVE IS NO LONGER TRUE. It said kie was the only provider here that cannot
+# condition on a local pinned anchor, because its reference documents every
+# image field as a URI and says nothing about base64. That was correct when it
+# was written and it is not correct now: `kie.upload_file` posts base64 to the
+# file-upload host and hands back an https URL the generation endpoint accepts,
+# `kie.reference_slots` reads each model's own reference field and cap, and
+# nano-banana-2 takes fourteen reference images — which makes kie one of the
+# better choices for a consistent cast, not a provider that quietly downgrades
+# the work.
+#
+# THE ORDER IS LEFT ALONE ANYWAY, and deliberately, because it is now resting on
+# a different and much duller argument: openai is the key most setups have, and
+# changing which provider a project bills by default is not a thing to do inside
+# a comment fix. What is fixed here is the false statement, which was the part
+# that would have sent the next reader to build an upload path that already
+# exists. Its music and video are unaffected — nothing else in this product can
+# do either at all.
 PROVIDERS: tuple[Provider, ...] = (
     Provider(
         id="openai",
@@ -277,6 +288,28 @@ def provider_for(task_kind: str = "", *, asked: str = "") -> str:
     from bgate_adapters import krea
 
     if str(task_kind or "").strip().lower() in krea.CHARACTER_KINDS:
+        # KIE FIRST FOR IDENTITY WORK WHEN IT IS CONFIGURED, and this is the
+        # same routing rule as before rather than a reversal of it. Read the
+        # measurement above carefully: what won was NANO-BANANA-2, and the
+        # provider it was reached through is incidental. That model is now
+        # registered on kie directly (bgate_adapters.kie.MODELS, verified off
+        # /market/google/nanobanana2) with FOURTEEN reference slots against the
+        # eight its Pro tier takes, so a cast that has to stay consistent gets
+        # more anchors here than anywhere else in the product.
+        #
+        # THE OLD OBJECTION TO ROUTING ANYTHING TO KIE IS DEAD. It was that
+        # kie's image fields take public URLs, so an anchored generation would
+        # silently become prompt-only. `kie.upload_file` posts the local anchor
+        # as base64 and hands back a URL the generation endpoint accepts, and
+        # `kie.reference_slots` reads each model's own field and cap, so a
+        # pinned ref travels. See the note beside PROVIDERS.
+        #
+        # krea remains the fallback rather than being removed: it serves the
+        # same model, a project may hold only a krea key, and character work
+        # must never fall through to the general order - that is what handed
+        # sprite sheets to gpt-image, which refuses them outright.
+        if (os.environ.get("KIE_API_KEY") or "").strip():
+            return "kie"
         if (os.environ.get("KREA_API_KEY") or "").strip():
             return "krea"
     if (os.environ.get("OPENAI_API_KEY") or "").strip():

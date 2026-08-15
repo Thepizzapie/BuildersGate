@@ -6,9 +6,16 @@ import { readJSON } from "../../bridge";
 import { useViewActive } from "../../hooks";
 import { type ConsoleState } from "./api";
 import { floorSignature, placeFloor, type Occupant } from "./occupancy";
+import {
+  planFloor, spotFor, type FloorPlan, type Seat, type Spot,
+} from "./floorplan";
+import { FloorCanvas } from "./FloorCanvas";
+import { buildNav } from "./route";
 import { useHandoffs, type Handoff } from "./handoff";
-import { useWalk } from "./useWalk";
-import { banterOnStored, floorIsQuiet, storeBanterOn, useBanter } from "./banter";
+import {
+  banterOnStored, floorIsQuiet, readTopic, storeBanterOn, useBanter,
+} from "./banter";
+import { useFloorMusic, type MusicDeck } from "./floorMusic";
 import "./floor.css";
 
 /* THE STUDIO FLOOR - the third reading of the queue, beside Board and Graph.
@@ -20,66 +27,66 @@ import "./floor.css";
  * Walking to the lounge is idle, sitting at the desk is running, standing at
  * the Director's door is waiting on a human.
  *
+ * IT IS ONE BUILDING NOW, NOT NINE CARDS. This pane's first version drew each
+ * room as an independent rounded box in a flex column with a gutter beside it,
+ * which is a component list wearing the word "room": no wall was shared, no
+ * doorway existed, and there was nowhere for a character to BE while it crossed
+ * the floor - it teleported between two boxes with a gap in between. The
+ * geometry is now computed in floorplan.ts as cell rectangles inside ONE
+ * footprint, walls are drawn on the cell edges between rooms, doorways are gaps
+ * cut in those walls, and the corridor is the space left over. This file does
+ * not decide where anything is; it converts cells to lengths and paints.
+ *
+ * THE BUILDING IS PAINTED, NOT LAID OUT. It was sixty positioned elements in a
+ * perspective-transformed div, and it read as a web page wearing a floor plan
+ * because that is what it was. floorRender.ts draws the whole of it into one
+ * canvas - tiled floors, composited sprites, depth sorted by the y of an
+ * object's feet, which is how a game draws a room. This file is now the DATA:
+ * it reads the poll, asks floorplan/occupancy/route where everything is, and
+ * hands the answer to <FloorCanvas />.
+ *
+ * THE CAMERA LIVES IN THE ART. The cast and the environment sprites are drawn
+ * to a high three-quarter, about 70 degrees above the floor, so painting them
+ * onto a flat plane IS that camera. The DOM version applied a rotateX on top of
+ * art that already had the angle in it, then counter-rotated every character to
+ * undo it - which is drawing the camera twice and then arguing with itself.
+ *
  * THE OCCUPANTS ARE PLACED BY occupancy.ts AND BY NOTHING IN HERE. Every
  * character on this floor stands where one row of /api/console/state put it,
  * and a seat nothing was reported about is drawn idle rather than guessed at -
  * a figure sat at a desk that is not running would be worse than an empty
- * pane, because it stops you going to look. The placement is a pure function
- * so that claim can be checked without a browser.
+ * pane, because it stops you going to look. occupancy.ts chooses the ZONE and
+ * floorplan.ts turns the zone into a coordinate; neither one invents a state.
  *
  * THE MOVEMENT IS INTERPOLATED BETWEEN POLLS AND THE POLL DID NOT GET FASTER.
- * consoleState() ticks at 3s and that is the only clock this pane has; useWalk
- * animates from the placement it measured last commit to the one it is looking
- * at now. Every character is therefore drawn where the LAST poll put it or
- * where THIS one did, never at a coordinate the server never described.
+ * consoleState() ticks at 3s and that is the only clock this pane has; the
+ * renderer walks each character from the placement it was last handed to the
+ * one it is holding now. Every character is therefore drawn where the LAST poll
+ * put it, where THIS one did, or somewhere on the routed line between the two -
+ * never at a coordinate the server never described.
+ *
+ * AND IT WALKS THROUGH THE DOORWAYS TO GET THERE. The two ends of a journey are
+ * the server's; the line between them is not, and on a one-building floor plan
+ * that line runs through partitions. route.ts paths out of the room, along the
+ * corridor and in through the destination's door, computed from the same wall
+ * list the walls are PAINTED from - so a door is passable for the reason it looks
+ * passable, and a plan with a seat disabled re-routes everybody for free. A
+ * figure sliding through a wall would say the walls are a picture of walls,
+ * which is the card layout's teleport with a tween on it.
  *
  * THE LAYOUT IS GENERATED FROM THE SEAT TABLE, NEVER FROM A LIST IN HERE.
- * Seats are per project - a project can disable qa or cinematic, and
- * seat_config is what says so - so a hardcoded seven-room floor would draw
- * rooms for staff that do not exist and silently omit the ones that do. Every
- * room below is computed from whatever /api/state returns, and the arrangement
- * rule is what stays fixed: rooms to the LEFT and RIGHT of a central lounge so
- * travel across the floor is horizontal, and the Director's office alone at the
- * bottom, because the Director is who you walk to, not who you sit beside.
- *
- * NO ART EXISTS YET. Every room here is CSS blockout - a rectangle with a wall
- * band along its top edge to suggest the tilt. Generated art replaces the
- * insides of `.bg4-room` and nothing else; the grid, the seat ordering and the
- * (coming) state machine do not know what is painted in a room.
+ * Seats are per project - a project can disable qa or cinematic - so a
+ * hardcoded seven-room floor would draw rooms for staff that do not exist and
+ * silently omit the ones that do. What is fixed is the ARRANGEMENT RULE: craft
+ * rooms ring the outside, the lounge is the middle, the Director is at the
+ * bottom because the Director is who you walk to.
  *
  * CLICKING DRIVES THE SHELL'S SELECTION AND THE FLOOR OWNS NO INSPECTOR. A room
  * and the character in it are two controls that resolve to the SAME selection
  * key as the board's card for that item - `i<id>` - so clicking an agent here
  * and clicking its card over on the board are one act, not two panels
- * disagreeing about what is selected. A floor-local detail panel would have
- * been a second inspector to keep in step with the first, and the first one
- * already fetches the log, steers and stops.
+ * disagreeing about what is selected.
  */
-
-/** What a room is CALLED. The seat table's own title is the default; this
- *  overrides only where the craft's name and the room's name differ. A studio
- *  has a video room, not a "cinematic". */
-const ROOM_LABEL: Record<string, string> = {
-  cinematic: "Video",
-  qa: "QA",
-};
-
-/** The one word under the label. It is what the room is FOR, in the language a
- *  studio uses about itself - the difference between reading this as a floor of
- *  workshops and reading it as an org chart with rounded corners. Unknown seats
- *  fall back to "desk", which is true of any seat a project invents. */
-const ROOM_VIBE: Record<string, string> = {
-  director: "calls",
-  narrative: "story",
-  gameplay: "play",
-  tech: "code",
-  art: "paint",
-  audio: "sound",
-  qa: "checks",
-  cinematic: "cuts",
-};
-
-type Seat = { role: string; title?: string };
 
 /** What selecting this character selects.
  *
@@ -108,153 +115,30 @@ function selectionFor(who: Occupant): Selection {
   };
 }
 
-/** Where every room sits. `side` rooms are laid out in pairs down the grid,
- *  left then right, so the two columns fill evenly and the lounge always has
- *  something on both sides of it. */
-type Floor = {
-  left: Seat[];
-  right: Seat[];
-  /** The Director, when the project has one. A project may disable the seat,
-   *  and the floor must not draw an office for staff who were let go. */
-  director: Seat | null;
-};
-
-export function planFloor(seats: Seat[]): Floor {
-  const director = seats.find((s) => s.role === "director") || null;
-  const rest = seats.filter((s) => s.role !== "director");
-  const left: Seat[] = [];
-  const right: Seat[] = [];
-  /* ALTERNATING, NOT SPLIT DOWN THE MIDDLE. Halving the list puts the first
-     half of the seat table in one column and the second half in the other, so
-     the floor's shape changes completely when a seat is disabled near the
-     middle. Alternating means disabling one seat moves one room. */
-  rest.forEach((s, i) => (i % 2 === 0 ? left : right).push(s));
-  return { left, right, director };
-}
-
-/* WHICH DRAWING, for a seat in a state.
- *
- * The pose is chosen from the SAME state the position is chosen from, so the
- * picture and the place can never disagree: a character at a desk is drawn
- * working, one crossing the floor with a result is drawn carrying it. Walking
- * is not selected here at all - useWalk drives the two-frame cycle while an
- * actor is in transit, and a pose picked on a 3s poll would sit still while the
- * character slid across the room.
- *
- * CAST_SEATS is the list that has art. Anything else falls back to `generic`
- * rather than rendering nothing, because a project can invent a seat and a
- * missing drawing must not remove a live agent from the floor.
- */
-const CAST_SEATS = new Set([
-  "art", "audio", "narrative", "gameplay", "qa", "cinematic", "tech", "director",
-]);
-
-const POSE: Record<string, string> = {
-  running: "working",
-  delivering: "handoff",
-  idle: "sitting",
-  dispatched: "idle",
-  chained: "idle",
-  waiting: "idle",
-  failed: "idle",
-};
-
-export function spriteFor(who: { seat: string; state: string; carrying?: unknown }): string {
-  const cast = CAST_SEATS.has(who.seat) ? who.seat : "generic";
-  const pose = who.carrying ? "handoff" : (POSE[who.state] || "idle");
-  return `/static/img/floor/${cast}/${pose}.png`;
-}
-
-/* A CHARACTER. Head, body, and the seat's own colour - blockout, like the
-   rooms, and for the same reason: generated art replaces what is inside these
-   two divs and finds the position, the state attribute and the hover text
-   already decided for it.
-
-   The title is the whole tooltip and it says WHAT THE SERVER SAID, item number
-   included. Somebody who doubts a placement has to be able to check it against
-   the board in one hover, or the floor is decoration.
-
-   `data-walk` IS THE SEAT AND NOT THE ELEMENT. A character changes parent when
-   it changes zone - out of the lounge, into a room - so React throws the node
-   away and builds another, and useWalk matches the old position to the new one
-   by this key. Name it anything less stable and the only moves worth animating
-   are exactly the ones that stop animating.
-
-   IT IS A BUTTON, and that is the whole of the keyboard story on this pane. A
-   div with an onClick is unreachable by tab, unannounced by a screen reader and
-   silent on Enter, and the three of those would have had to be re-implemented
-   here by hand. The tooltip is the hover text and the aria-label is the same
-   sentence, because what the mouse gets to read the keyboard has to as well.
-
-
-   NO `onPick` MEANS THE CHARACTER IS NOT A CONTROL - the Director, whose panel
-   is the console itself. Disabled rather than a second element type, so the
-   walk, the states and the note it may be carrying all keep one implementation
-   and a tab through the floor skips it the way it should. */
-function Person({ who, delay = 0, onPick, picked }: {
-  who: Occupant; delay?: number;
-  onPick?: (who: Occupant) => void; picked?: boolean;
-}) {
-  const color = SEAT_COLOR[who.seat] || "var(--line-strong)";
-  const hover = [
-    who.seat,
-    who.note,
-    who.itemId ? `#${who.itemId}` : null,
-    who.title,
-    who.chainId ? `chain ${who.chainId}${who.chainPos ? ` lane ${who.chainPos}` : ""}` : null,
-  ].filter(Boolean).join(" · ");
-  return (
-    /* `aria-current`, NOT `aria-selected`. This is a plain button, and ARIA only
-       allows aria-selected on gridcell, option, row and tab - so the attribute
-       was dropped by the accessibility tree and a screen reader read the
-       selected character and every unselected one as the identical string, with
-       nothing saying which one the inspector was describing. aria-current is
-       allowed on any element and is announced. Absent rather than "false",
-       because "not the current one" is not worth a word each. */
-    <button type="button" className="bg4-person" data-state={who.state} title={hover}
-            aria-label={hover} aria-current={picked ? "true" : undefined}
-            disabled={!onPick}
-            onClick={() => onPick?.(who)}
-            data-walk={who.seat} data-walk-delay={delay}
-            style={{ "--seat": color } as React.CSSProperties}>
-      {/* THE CAST, generated in the bg-testbed sandbox and sliced by
-          scripts/slice_floor_cast.py. The head-and-body shapes are still
-          underneath: a seat this project invented has no sprite of its own, and
-          a floor that drops a live agent because nobody drew it would be
-          exactly the dishonesty this pane is built to avoid. The art covers
-          them when it loads, and `generic` catches everything unnamed. */}
-      <span className="bg4-person-art" aria-hidden="true"
-            style={{ backgroundImage: `url(${spriteFor(who)})` }} />
-      <span className="bg4-person-head" />
-      <span className="bg4-person-body" />
-      {/* THE NOTE IS CARRIED, not conjured at the office. A character walking
-          with something in its hands is the whole reason the return trip reads
-          as a delivery rather than as an agent wandering off. */}
-      {who.carrying && <span className="bg4-person-note" />}
-    </button>
-  );
-}
-
 /* WHAT WAS HANDED OVER. The card is the work item's own result text and the
    status the board closed it with - no summary, no rewrite, no "completed
    successfully" standing in for a result nobody wrote. An agent that left no
-   result says so, because "wrote nothing" is a thing worth seeing. */
+   result says so, because "wrote nothing" is a thing worth seeing.
+
+   IT IS UNDER THE BUILDING, NOT IN IT. A note is text somebody reads; the
+   building is a painted image, and the one thing on this pane that has to be
+   legible must not be inside it. */
 function Note({ note }: { note: Handoff }) {
   const color = SEAT_COLOR[note.seat] || "var(--line-strong)";
   return (
-    <div className="bg4-note" data-status={note.status}
+    <div className="bg4-handover-note" data-status={note.status}
          style={{ "--seat": color } as React.CSSProperties}
          /* The full 600 characters the server sent, on hover. The card clamps
             to three lines and a result is routinely longer, so without this the
             rest of it would exist nowhere on the pane. */
          title={note.result || "no result recorded"}>
-      <span className="bg4-note-head">
+      <span className="bg4-handover-note-head">
         <Ti name={SEAT_ICON[note.seat] || "point"} size={11} />
         #{note.itemId}
-        <span className="bg4-note-status">{note.status}</span>
+        <span className="bg4-handover-note-status">{note.status}</span>
       </span>
-      <span className="bg4-note-title">{note.title}</span>
-      <span className="bg4-note-body">
+      <span className="bg4-handover-note-title">{note.title}</span>
+      <span className="bg4-handover-note-body">
         {note.result || <em>no result recorded</em>}
       </span>
     </div>
@@ -264,10 +148,10 @@ function Note({ note }: { note: Handoff }) {
 /* WHAT THE LOUNGE SAYS WHEN THE STUDIO IS EMPTY, and every choice in here is
    about making sure it cannot be read as an agent talking.
 
-   IT IS A CAPTION ON THE ROOM, NOT SPEECH FROM A PERSON. No bubble, no tail,
-   not anchored to a character, not in a seat's colour, and it sits below the
-   crowd rather than beside anybody in it. The word `overheard` is on the line
-   itself, in the same mono label the lounge and the queue rails use, so the
+   IT IS A CAPTION ON THE BUILDING, NOT SPEECH FROM A PERSON. No bubble, no
+   tail, not anchored to a character, not in a seat's colour, and it sits under
+   the building rather than beside anybody on it. The word `overheard` is on
+   the line itself, in the same mono label the rest of the pane uses, so the
    thing that tells you what this is does not depend on the styling surviving a
    theme. A seat's real output has two homes - the transcript and the handover
    note - and neither of them looks like this.
@@ -304,77 +188,53 @@ function Banter({ line, on, onToggle }: {
   );
 }
 
-function Room({ seat, kind, who, delay, onPick, picked }: {
-  seat: Seat; kind: "side" | "office"; who?: Occupant; delay?: number;
-  onPick?: (who: Occupant) => void; picked?: boolean;
-}) {
-  const color = SEAT_COLOR[seat.role];
-  const label = ROOM_LABEL[seat.role] || seat.title
-    || seat.role.charAt(0).toUpperCase() + seat.role.slice(1);
-  return (
-    /* `--seat` rides on the element rather than being written into a rule, so
-       the room stylesheet has ONE set of rules for every seat and the colour
-       comes from nav.ts - the same table the rail, the queue cards and the
-       graph read, which is what keeps art pink in all four places. Seats the
-       table has no colour for fall back to the theme's own line colour rather
-       than to a literal. */
-    /* `data-state` IS ON THE ROOM, not only on the character, because a failed
-       item has to be visible when the character is not standing in the room to
-       carry it - and because "room marked" is a property of the room. It is the
-       occupant's state verbatim; the stylesheet decides which of them draw. */
-    <div className={`bg4-room bg4-room-${kind}`} data-seat={seat.role}
-         data-state={who ? who.state : "idle"}
-         data-picked={picked ? "true" : undefined}
-         style={{ "--seat": color || "var(--line-strong)" } as React.CSSProperties}>
-      {/* THE WHOLE ROOM SELECTS THE SEAT, and the control is a LAYER rather
-          than a wrapper because the character standing in the room is its own
-          button - a button inside a button is invalid, and browsers resolve it
-          by throwing one of them away. Absolutely positioned and first in the
-          room, so the stage (positioned, and later in the DOM) keeps the
-          character clickable on top of it. THE BODY AND THE STAGE BOTH DECLINE
-          POINTER EVENTS in floor.css so this layer really does get the room:
-          the body is positioned and later in the DOM too, and while it took the
-          clicks the only part of a room that selected anything was the wall
-          band across the top.
+/* THE SOUNDTRACK'S ONE CONTROL, and it is deliberately small: a switch, what is
+   playing, a skip and a level. Everything else about the deck - the shuffle, the
+   no-repeat bag, where the files live - is in floorMusic.ts.
 
-          NOT DRAWN AT ALL when there is nobody to select or nothing to open -
-          the Director's office, and a room whose seat the poll said nothing
-          about. A hit layer over a room that answers no click is a click the
-          reader spends finding that out. */}
-      {onPick && who && (
-        /* aria-current for the same reason the character uses it - see Person. */
-        <button type="button" className="bg4-room-hit"
-                aria-current={picked ? "true" : undefined}
-                aria-label={`${label} room, ${who.note}`}
-                onClick={() => onPick(who)} />
+   IT IS DRAWN WHETHER OR NOT THE FLOOR IS QUIET, unlike the banter, and the two
+   differ for a reason that is not inconsistency. Banter is words, and words
+   compete with an agent's real output, so they stop the moment there is work.
+   Music is not words. It is what the studio sounds like while the studio works,
+   and a soundtrack that cut out every time somebody started a task would be
+   worse than no soundtrack.
+
+   NOTHING IS DRAWN WHEN NO SET IS GENERATED. A mute button for silence is a
+   control that answers nothing, and the line that says so belongs in the
+   generator's output, not in the middle of the floor. */
+function Music({ deck }: { deck: MusicDeck }) {
+  if (!deck.tracks || deck.tracks.length === 0) return null;
+  return (
+    <div className="bg4-music" data-on={deck.on ? "true" : undefined}>
+      {/* THE SWITCH LIVES ON THE FLOOR, NOT HERE. It is the radio in the
+          lounge, and this button is its keyboard equivalent - a painted prop
+          cannot be tabbed to, and "click the thing in the room" is not an
+          instruction a screen reader can carry out. Same act, two doors. */}
+      <button type="button" className="bg4-music-toggle" onClick={deck.toggle}
+              aria-pressed={deck.on}
+              title={deck.on ? "turn the lounge radio off" : "turn the lounge radio on"}
+              aria-label={deck.on ? "turn the lounge radio off" : "turn the lounge radio on"}>
+        <Ti name={deck.on ? "volume-3" : "volume-off"} size={11} />
+      </button>
+      {deck.on && (
+        <>
+          {/* THE TITLE IS THE GENERATOR'S, NOT A FILENAME. A reader who likes a
+              track has to be able to name it to regenerate around it. */}
+          <span className="bg4-music-now">
+            {deck.now ? deck.now.title : "…"}
+            {deck.now?.genre && (
+              <span className="bg4-music-genre">{deck.now.genre}</span>
+            )}
+          </span>
+          <button type="button" className="bg4-music-skip" onClick={deck.skip}
+                  title="next track" aria-label="next track">
+            <Ti name="chevrons-right" size={11} />
+          </button>
+          <input className="bg4-music-vol" type="range" min={0} max={1} step={0.05}
+                 value={deck.volume} aria-label="music volume"
+                 onChange={(e) => deck.setVolume(Number(e.target.value))} />
+        </>
       )}
-      {/* THE WALL IS THE WHOLE TILT. There is no 3D transform anywhere in this
-          pane: rotating the container would make a twelve-seat floor unreadable
-          and unscrollable, and it would fight whatever perspective the
-          generated art is drawn with. A band along the top edge reads as a back
-          wall at a high angle, and costs nothing. */}
-      <div className="bg4-room-wall">
-        <span className="bg4-room-plate">
-          <Ti name={SEAT_ICON[seat.role] || "point"} size={12} />
-          {label}
-        </span>
-      </div>
-      <div className="bg4-room-body">
-        <span className="bg4-room-vibe">{ROOM_VIBE[seat.role] || "desk"}</span>
-        {/* WHERE THE PEOPLE GO, and the desk they are either at or not at. The
-            desk is drawn in every room whether or not anybody is in it, because
-            "at the desk" only means something if the desk is a fixed place. The
-            character is placed against the stage box, so which corner it lands
-            in is one attribute and not a layout of its own. */}
-        <div className="bg4-room-stage">
-          <span className="bg4-desk" />
-          {/* Only the occupants whose zone IS this room. A seat standing at the
-              Director's door or out in the lounge is drawn there and must not
-              also be drawn here, or one agent is in two places. */}
-          {who && (who.zone === "desk" || who.zone === "room")
-            && <Person who={who} delay={delay} onPick={onPick} picked={picked} />}
-        </div>
-      </div>
     </div>
   );
 }
@@ -412,8 +272,8 @@ export function FloorPane({ state }: { state: ConsoleState }) {
   /* ONE CHEAP STRING PER POLL instead of a rebuild of the whole floor. See
      floorSignature: consoleState() hands back a new object and a new items
      array every 3s whether or not anything changed, so every memo below keyed on
-     `state` missed on every tick and the room tree was rebuilt - which is also
-     what kept handing useWalk a commit to re-measure. */
+     `state` missed on every tick and the building was re-planned - which is also
+     what kept handing the walk a commit to re-measure. */
   const sig = useMemo(() => floorSignature(state), [state]);
 
   /* THE SEAT TABLE AND THE SEATS THE WORK IS ADDRESSED TO, UNIONED - never one
@@ -424,10 +284,8 @@ export function FloorPane({ state }: { state: ConsoleState }) {
      stays dispatchable. Disabling cinematic mid-run therefore left item #12
      running with no room, no character and nothing on the floor about it, on a
      pane whose whole claim is that position is state. The configured seats come
-     first so the arrangement does not reshuffle when an off-table seat appears;
-     /api/state answering with no seats at all (no project selected) still leaves
-     the item seats as a true, if partial, roster. */
-  const floor = useMemo(() => {
+     first so the arrangement does not reshuffle when an off-table seat appears. */
+  const plan: FloorPlan = useMemo(() => {
     const table: Seat[] = seats ? [...seats] : [];
     const known = new Set(table.map((s) => s.role));
     for (const item of state.items) {
@@ -447,32 +305,29 @@ export function FloorPane({ state }: { state: ConsoleState }) {
   const handoffs = useHandoffs(state);
 
   /* WHO IS WHERE, recomputed every poll and remembered between none of them.
-     The roster passed in is the floor's own - the rooms that exist - so a seat
-     with work but no room cannot put a character in a corridor, and a room with
-     no news gets an idle occupant rather than an empty one. */
+     The roster passed in is the floor's own - the seats that HAVE a room - so a
+     room with no news gets an idle occupant rather than an empty one. */
   const people = useMemo(() => {
-    const roster = [...floor.left, ...floor.right,
-                    ...(floor.director ? [floor.director] : [])].map((s) => s.role);
-    const placed = placeFloor(roster, state, handoffs.bySeat);
-    return new Map(placed.map((p) => [p.seat, p]));
+    const roster = [...plan.bySeat.keys()];
+    return placeFloor(roster, state, handoffs.bySeat);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [floor, sig, handoffs]);
+  }, [plan, sig, handoffs]);
 
-  /* HOW LONG EACH CHARACTER WAITS BEFORE IT MOVES, and the rule is the feature:
-     A CHAIN TRAVELS TOGETHER. Every link of one chain is filed in the same act
-     and steps off on the same frame, so the group reads as one decision leaving
-     the lounge; seats that have nothing to do with each other are staggered so
-     a floor-wide reshuffle does not look like one sliding object. The stagger
-     is small and capped, because it is spent out of the budget useWalk has to
-     land everybody before the next poll. */
-  const delays = useMemo(() => {
-    const out = new Map<string, number>();
-    let n = 0;
-    for (const p of people.values()) {
-      out.set(p.seat, p.chainId ? 0 : (n++ % 4) * 70);
+  /* THE COORDINATE FOR EACH CHARACTER. The zone is occupancy.ts's answer and the
+     coordinate is floorplan.ts's; this only counts how many are already in a
+     zone so two agents in the lounge do not stand inside each other. Counted in
+     ROSTER ORDER, which is the seat table's order, so the crowd does not
+     reshuffle itself between polls while nothing has changed. */
+  const spots = useMemo(() => {
+    const nth = new Map<string, number>();
+    const out = new Map<string, Spot>();
+    for (const p of people) {
+      const i = nth.get(p.zone) || 0;
+      nth.set(p.zone, i + 1);
+      out.set(p.seat, spotFor(plan, p.seat, p.zone, i));
     }
     return out;
-  }, [people]);
+  }, [people, plan]);
 
   /* THE LOUNGE ONLY TALKS INTO SILENCE, and `floorIsQuiet` is the whole of that
      rule (see banter.ts). It is asked of the PLACEMENT rather than of the raw
@@ -480,7 +335,7 @@ export function FloorPane({ state }: { state: ConsoleState }) {
      at a desk, the floor is not quiet, whatever a count says. */
   const [banterOn, setBanterOn] = useState(banterOnStored);
   const quiet = useMemo(
-    () => floorIsQuiet(state, people.values(), handoffs.notes.length),
+    () => floorIsQuiet(state, people, handoffs.notes.length),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sig, people, handoffs]);
   const toggleBanter = () => setBanterOn((was) => {
@@ -488,28 +343,49 @@ export function FloorPane({ state }: { state: ConsoleState }) {
     return !was;
   });
 
-  /* The positions the last commit left, and the box they are measured inside.
-     A ref rather than state: nothing renders from it, it is the other end of
-     the interpolation, and putting it in state would loop a render per poll for
-     a value no JSX reads. */
+  /* The box the pane is measured inside, for the visibility check below. */
   const wrap = useRef<HTMLDivElement>(null);
-  const seen = useRef(new Map<string, { x: number; y: number }>());
+
+  /* THE ROUTER FOR THIS BUILDING. Rebuilt only when the plan is - the walls are
+     a fact about the floor plan, not about who is standing on it - so an idle
+     board with nothing happening never touches it, and a seat being disabled
+     re-derives every route from the walls that are actually drawn. */
+  const nav = useMemo(() => buildNav(plan), [plan]);
 
   /* IS THIS PANE ON SCREEN AT ALL. The shell hides an inactive `.deck-view` with
      display:none rather than unmounting it, so switching to another screen
      leaves this component mounted with its timers running. usePoll is already
      gated on the same flag up in Agents; the banter rotation was not, so a floor
      left quiet and then navigated away from went on setting a new line every 15s
-     for the life of the session, each one committing this pane and re-measuring
-     a floor nobody can see. */
+     for the life of the session. */
   const visible = useViewActive(wrap);
-  const banter = useBanter(quiet && visible, banterOn);
+  /* WHAT THE LOUNGE CAN JOKE ABOUT TODAY, read off the same payload the floor
+     is drawn from. Keyed on `sig` like everything else here: the poll hands
+     back a new items array every 3s whether or not anything changed, and
+     re-deriving the topic on each one would rebuild the banter deck three times
+     a minute. */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const topic = useMemo(() => readTopic(state), [sig]);
+  /* WHO IS AVAILABLE TO SPEAK. Only people standing in the LOUNGE, which is
+     both the plan's rule and the honest one: the whole gate on this feature is
+     that nobody is working, and the lounge is where occupancy.ts puts somebody
+     with nothing to do. A character talking at its own desk would be a
+     character talking while at work, which is the thing that must never be
+     drawn. The Director is excluded - the console is where it speaks. */
+  const speakers = useMemo(
+    () => people.filter((p) => p.zone === "lounge" && p.seat !== "director")
+                .map((p) => p.seat),
+    [people]);
+  const banter = useBanter(quiet && visible, banterOn, undefined, undefined,
+                           topic, speakers);
 
-  /* The queue at the Director's door, in the roster's order so it does not
-     reshuffle itself between polls while nothing has changed. */
-  const atDoor = [...people.values()].filter((p) => p.zone === "door");
-  const inLounge = [...people.values()].filter((p) => p.zone === "lounge");
-  const atOffice = [...people.values()].filter((p) => p.zone === "office");
+  /* THE DECK IS THE PANE'S, NOT THE VIEW'S. The shell hides an inactive pane
+     with display:none rather than unmounting it, so a floor navigated away from
+     is still mounted - and unlike the banter rotation, that is CORRECT for
+     audio: somebody who put the music on and went to look at the board wanted
+     the music on, not paused because a tab changed. It stops when the pane
+     unmounts, which is when the console itself goes. */
+  const music = useFloorMusic();
 
   /* WHAT IS SELECTED IS THE SHELL'S, NOT THIS PANE'S. The inspector lives in
      another React root, which is why selection.ts is a store outside React at
@@ -522,24 +398,7 @@ export function FloorPane({ state }: { state: ConsoleState }) {
      moves on the next poll, the room the reader clicked did not. */
   const picked = sel?.seat || "";
 
-  const sides = floor.left.length + floor.right.length;
-
-  /* WHAT MAKES THE FLOOR WORTH MEASURING AGAIN - see useWalk, which runs on
-     this and on nothing else. Everything in here can move a character: the
-     placement itself, the notes on the desk (which grow the office row and shift
-     every room above it), the lounge caption (which does the same to the
-     lounge), and the number of side rooms, which is the arrangement. What is
-     deliberately NOT in here cannot change the layout - the selection is a
-     box-shadow and a colour - so it must not cost the floor a measurement. */
-  const walkKey = [
-    sides,
-    [...people.values()].map((p) => `${p.seat}:${p.state}:${p.zone}`).join(","),
-    handoffs.notes.map((n) => n.itemId).join(","),
-    quiet && banterOn ? banter : "",
-  ].join("|");
-  useWalk(wrap, seen.current, walkKey);
-
-  if (!sides && !floor.director) {
+  if (plan.bySeat.size === 0) {
     /* NAME THE ACTUAL CASE. This printed "no seats configured" for all four of
        them, which is a claim about the project's configuration made from a
        request that had not come back yet, or had failed, or had answered "there
@@ -554,12 +413,6 @@ export function FloorPane({ state }: { state: ConsoleState }) {
   }
 
   return (
-    /* `data-sides` IS WHAT LETS THE FLOOR SURVIVE A SMALL SEAT TABLE. A project
-       running Director plus one seat has nothing to put in the third column,
-       and a three-column grid with two empty tracks is a room floating in the
-       middle of a lot of nothing. The stylesheet collapses the arrangement at
-       0 and 1, and the rule stays in CSS rather than becoming a second JSX
-       branch to keep one floor, not three. */
     <div className="bg4-floorwrap" ref={wrap}>
       {/* THE FLOOR SAYS WHEN IT IS NO LONGER BEING TOLD ANYTHING. The poll keeps
           the last payload it received when a read fails (see Agents.refresh),
@@ -575,103 +428,69 @@ export function FloorPane({ state }: { state: ConsoleState }) {
           </span>
         </div>
       )}
-      <div className="bg4-studio" data-sides={Math.min(sides, 2)}>
-        <div className="bg4-floor-col bg4-floor-left">
-          {floor.left.map((s) =>
-            <Room key={s.role} seat={s} kind="side" who={people.get(s.role)}
-                  delay={delays.get(s.role)} onPick={pick}
-                  picked={picked === s.role} />)}
-        </div>
 
-        {/* THE LOUNGE IS NOT A SEAT and has no room chrome - no wall band, no
-            nameplate. It is the middle of the floor, which is where an agent
-            stands when it holds no work, and it has to read as open ground or
-            "idle" looks like an eighth department. */}
-        <div className="bg4-lounge">
-          <span className="bg4-lounge-label">lounge</span>
-          {/* THE CROWD IS NOT POSITIONED, it is a row that wraps. Every idle
-              seat stands here at once and a floor of twelve idle agents has to
-              stay legible; scattering them would also imply each one is
-              somewhere in particular, and the whole point of the lounge is that
-              they are not. */}
-          <div className="bg4-lounge-stage">
-            {inLounge.map((p) =>
-              <Person key={p.seat} who={p} delay={delays.get(p.seat)}
-                      onPick={pick} picked={picked === p.seat} />)}
-          </div>
-          {/* UNDER THE CROWD, and only when there is no work anywhere. It is
-              the last thing in the lounge so it reads as a caption on the room
-              rather than as anything coming out of the people standing in it. */}
-          {quiet && <Banter line={banter} on={banterOn} onToggle={toggleBanter} />}
-        </div>
+      {/* THE BUILDING, PAINTED RATHER THAN LAID OUT. Every room, wall, prop and
+          character is one drawImage into a single canvas, depth-sorted by the y
+          of its feet - which is how a game draws a floor and is not something a
+          document layout engine can be talked into. The camera angle lives in
+          the ART: the cast and the environment are drawn to a high
+          three-quarter, so painting them onto a flat plane IS that camera. The
+          DOM version applied a rotateX on top of art that already had the angle
+          baked in, which is drawing the camera twice.
 
-        <div className="bg4-floor-col bg4-floor-right">
-          {floor.right.map((s) =>
-            <Room key={s.role} seat={s} kind="side" who={people.get(s.role)}
-                  delay={delays.get(s.role)} onPick={pick}
-                  picked={picked === s.role} />)}
-        </div>
+          THE FLOOR IS AN IMAGE, SO IT IS DESCRIBED IN TEXT BESIDE IT. A canvas
+          has no accessibility tree; the seat rail and the board both list the
+          same placements as real controls, and the underfloor strip below
+          carries the words. */}
+      <div className="bg4-stage">
+        <FloorCanvas plan={plan} people={people} spots={spots} nav={nav}
+                     picked={picked} onPick={pick}
+                     /* THE RADIO IN THE LOUNGE IS THE SWITCH. Not a widget in
+                        the chrome - a thing in the room, which is the whole
+                        point of having a room. It only answers a click when
+                        there is a set to play; with no tracks generated it is
+                        scenery, because a switch that does nothing is worse
+                        than a prop. */
+                     musicOn={music.on}
+                     onRadio={music.tracks?.length ? music.toggle : undefined}
+                     banter={banterOn && quiet && banter.seat && banter.line
+                       ? { seat: banter.seat, line: banter.line } : null} />
+      </div>
+      <ul className="bg4-floor-sr">
+        {people.map((p) => (
+          <li key={p.seat}>
+            <button type="button" onClick={() => pick(p)}
+                    aria-current={picked === p.seat ? "true" : undefined}>
+              {[p.seat, p.note, p.itemId ? `#${p.itemId}` : null, p.title]
+                .filter(Boolean).join(" · ")}
+            </button>
+          </li>
+        ))}
+      </ul>
 
-        {/* THE OFFICE ROW IS DRAWN WHENEVER THERE IS EITHER AN OFFICE OR A
-            QUEUE. A project can disable the director seat, and a waiting agent
-            must not vanish with the room it was queuing outside of - it is
-            still waiting, and dropping it would be the exact dishonesty this
-            pane exists to avoid. With no office the queue stands on its own and
-            says what it is waiting for. */}
-        {(floor.director || atDoor.length > 0
-          || atOffice.length > 0 || handoffs.notes.length > 0) && (
-          <div className="bg4-floor-office">
-            {/* Beside the office, not inside it: these agents have not been
-                seen, and the distance is the message. Rendered only when
-                somebody is in it - a permanent empty rail stops meaning
-                anything within a day. */}
-            {atDoor.length > 0 && (
-              <div className="bg4-queue">
-                <span className="bg4-queue-label">waiting on you</span>
-                <div className="bg4-queue-line">
-                  {atDoor.map((p) =>
-                    <Person key={p.seat} who={p} delay={delays.get(p.seat)}
-                            onPick={pick} picked={picked === p.seat} />)}
-                </div>
-              </div>
-            )}
-            {floor.director && (
-              /* THE DIRECTOR'S OFFICE IS NOT A CONTROL, and that is a decision
-                 rather than an omission: the main console IS the Director's
-                 chat, so a panel here would be a worse copy of the screen this
-                 room is standing on. No onPick means no hit layer and a
-                 character that cannot be focused - not a control that opens
-                 something redundant. */
-              <Room seat={floor.director} kind="office"
-                    who={people.get(floor.director.role)}
-                    delay={delays.get(floor.director.role)} />
-            )}
-            {/* THE OTHER SIDE OF THE DOOR. The queue is people who want
-                something from the human; this is people who brought something
-                to it. They are opposite sides of the office on purpose: a line
-                and a delivery both look like "a group by the door" and the two
-                mean nearly opposite things.
-
-                THE NOTES OUTLIVE THE WALK. A seat that closes an item and is
-                handed the next one in the same tick never gets to make the
-                trip - it is already running, and drawing it here would hide
-                live work behind a courtesy - but the note it wrote is a fact
-                about that item and stays on the desk either way. */}
-            {(atOffice.length > 0 || handoffs.notes.length > 0) && (
-              <div className="bg4-handover">
-                <span className="bg4-handover-label">handed over</span>
-                <div className="bg4-handover-line">
-                  {atOffice.map((p) =>
-                    <Person key={p.seat} who={p} delay={delays.get(p.seat)} />)}
-                </div>
-                <div className="bg4-notes">
-                  {handoffs.notes.map((n) =>
-                    <Note key={n.itemId} note={n} />)}
-                </div>
-              </div>
-            )}
+      {/* UNDER THE BUILDING: the things that are text. The handover notes and
+          the lounge caption are read, not looked at, and text laid into a
+          tilted plane is text on a slant. */}
+      <div className="bg4-underfloor">
+        {handoffs.notes.length > 0 && (
+          <div className="bg4-handover">
+            <span className="bg4-handover-label">handed over</span>
+            <div className="bg4-handovers">
+              {handoffs.notes.map((n) => <Note key={n.itemId} note={n} />)}
+            </div>
           </div>
         )}
+        {/* THE CAPTION STRIP NOW ONLY CARRIES A LINE NOBODY IS SAYING. With a
+            speaker available the line is drawn as a bubble over their head on
+            the floor, and printing it here as well would be the exact failure
+            Cat.tsx recorded: the same sentence twice on one screen, six lines
+            apart. The mute stays either way, because it is how the whole
+            feature is turned off. */}
+        {quiet && (
+          <Banter line={banter.seat ? "" : banter.line} on={banterOn}
+                  onToggle={toggleBanter} />
+        )}
+        <Music deck={music} />
       </div>
     </div>
   );

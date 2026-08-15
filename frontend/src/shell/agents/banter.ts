@@ -126,6 +126,209 @@ export function createRotator(pool: readonly string[] = BANTER,
   };
 }
 
+
+/* ── what fits over a head ────────────────────────────────────────────────────
+
+   THE BUBBLE POOL IS SEPARATE FROM THE CAPTION POOL, and that is a decision
+   about screen space rather than about voice. The lines above are two-clause
+   sitcom asides written to be READ in a strip under the building, where there
+   is a whole pane of width for them. Drawn over a character in a room eight
+   cells wide, the same sentence is a box the size of the room it is standing
+   in, and the floor disappears behind the joke.
+
+   SO THESE ARE THE SAME VOICE, SHORTER. Five words or so, the length of a thing
+   somebody actually says out loud in an office, which is also the length that
+   fits in a bubble without covering the desk behind it. The long lines are not
+   deleted - they still run in the caption strip, which is where a longer beat
+   belongs.
+
+   THE LENGTH RULE IS ENFORCED, NOT TRUSTED. `BANTER_SHORT` is asserted below to
+   be under the ceiling, because a pool is exactly the kind of list somebody
+   appends a good long line to six months from now, and the failure is not an
+   error - it is a bubble that quietly eats the lounge. */
+
+/** Longest a bubble line may be. Measured in characters because the renderer
+ *  wraps on width and two lines of this is the most a head can carry without
+ *  the box reaching the room above. */
+export const BUBBLE_MAX = 38;
+
+export const BANTER_SHORT: readonly string[] = [
+  "Who moved the good chair.",
+  "That is not my mug.",
+  "The printer is lying again.",
+  "I did not touch it.",
+  "Is the clock fast, or me.",
+  "Somebody reheated fish.",
+  "It was like that already.",
+  "I have a meeting about the meeting.",
+  "The plant is fake. Still dying.",
+  "Third coffee. Not proud.",
+  "That chair is load bearing.",
+  "I have read this line twice.",
+  "The milk has a name on it.",
+  "Nobody owns this stapler.",
+  "It works on my desk.",
+  "Do not sit there, it squeaks.",
+  "I labelled it. Nobody read it.",
+  "Two people booked this room.",
+  "The lift skipped our floor.",
+  "I am not on that thread.",
+  "Whose lunch is this.",
+  "The lights go off if I sit still.",
+  "I moved it back. It moved again.",
+  "That is a Tuesday problem.",
+  "I will look at it after this.",
+  "The good pen has gone.",
+  "It was fine yesterday.",
+  "Somebody has my headphones.",
+  "Three settings. All of them wrong.",
+  "I am going to stand for a bit.",
+];
+
+/* THE CEILING IS CHECKED AT MODULE LOAD, so a line that is too long fails
+   loudly the first time the floor is opened rather than silently drawing a
+   bubble across two rooms. Dev-only: a thrown error in production would take
+   the console down over a joke, which is a worse outcome than a wide bubble. */
+{
+  const tooLong = BANTER_SHORT.filter((l) => l.length > BUBBLE_MAX);
+  if (tooLong.length) {
+    console.warn(
+      `banter: ${tooLong.length} bubble line(s) over ${BUBBLE_MAX} chars and `
+      + `will draw wide over the floor:`, tooLong);
+  }
+}
+
+/* ── lines that are about TODAY ────────────────────────────────────────────────
+
+   THE PLAN ASKED FOR THIS AND IT IS THE ANSWER TO STALENESS. A fixed pool is
+   stale on the second day: the reader has met every line, and a joke you have
+   met is a joke that has become furniture. The fix is NOT a bigger pool and it
+   is certainly not a model call. It is lines that take an ARGUMENT from what
+   actually happened on this board - the seat that failed, the item that cost
+   the most, the room that closed everything - so the same twelve templates say
+   something different on Tuesday than they said on Monday.
+
+   EVERY RULE THE REST OF THIS FILE HOLDS STILL HOLDS HERE. These are canned
+   strings with a hole in them, filled from a payload that is already on screen.
+   No token is spent, nothing is fetched, and a topical line can no more invent
+   a fact than a fixed one can: if there is no failed item, no template that
+   mentions failure is even a candidate.
+
+   THE SUBJECT IS A SEAT OR AN ITEM, NEVER A PERSON AND NEVER THE APP. Same
+   voice note as the pool above - studio staff on a break - so a line refers to
+   "narrative" the way you would refer to a department, and never to an agent, a
+   model, a prompt or a run.
+
+   NO EM DASHES, and it is worth saying twice because a template is where one
+   would sneak in. A dash is the loudest tell that a line was machine written. */
+
+/** What the floor can currently make a joke ABOUT. Every field is optional
+ *  because every field is a fact that may not exist yet, and a template is only
+ *  a candidate when the fact it needs is present. */
+export type Topic = {
+  /** The seat whose most recent item failed. */
+  failedSeat?: string;
+  /** The seat that closed the most work in what the console is holding. */
+  busiestSeat?: string;
+  /** How many that was. Only meaningful beside busiestSeat. */
+  busiestCount?: number;
+  /** The most expensive item the console is holding, in whole dollars. */
+  priciestSeat?: string;
+  priciestUsd?: number;
+  /** A seat with work still queued while the floor stands idle, which is the
+   *  one genuinely useful thing this can point at. */
+  stalledSeat?: string;
+};
+
+/** Read the topic off the SAME payload the floor is drawn from.
+ *
+ *  IT IS A PURE READING AND IT INVENTS NOTHING. Every branch below either finds
+ *  a row and names it or leaves the field undefined; there is no default seat,
+ *  no "probably art", and no fallback that would let a template say something
+ *  about a room that had nothing to do with it. */
+export function readTopic(state: ConsoleState): Topic {
+  const items = state.items || [];
+  const out: Topic = {};
+
+  /* The most recent failure. Walked from the END because the payload is
+     ordered oldest first and the joke should be about the last thing to go
+     wrong, not the first. */
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].status === "failed" && items[i].seat) {
+      out.failedSeat = items[i].seat;
+      break;
+    }
+  }
+
+  const closed = new Map<string, number>();
+  let priciest = 0;
+  for (const it of items) {
+    if (it.status === "done" && it.seat) {
+      closed.set(it.seat, (closed.get(it.seat) || 0) + 1);
+    }
+    const cost = it.total_cost_usd || 0;
+    if (cost > priciest && it.seat) {
+      priciest = cost;
+      out.priciestSeat = it.seat;
+    }
+    if (it.seat && (it.status === "queued" || it.status === "ready")) {
+      out.stalledSeat = it.seat;
+    }
+  }
+  /* WHOLE DOLLARS, AND ONLY WHEN IT IS AT LEAST ONE. "spent $0.03" is not a
+     joke about spending, it is a number nobody was going to worry about, and a
+     line built on it reads as the studio being precious. */
+  if (priciest >= 1) out.priciestUsd = Math.round(priciest);
+  else out.priciestSeat = undefined;
+
+  /* Two is the floor for "busiest". One closed item makes everybody the
+     busiest, which is a superlative about nothing. */
+  for (const [seat, n] of closed) {
+    if (n >= 2 && n > (out.busiestCount || 0)) {
+      out.busiestSeat = seat;
+      out.busiestCount = n;
+    }
+  }
+  return out;
+}
+
+/** A template and the fact it needs. `when` is what makes this safe: a line is
+ *  not a candidate unless its own precondition is true, so the fill can never
+ *  be undefined and no line ever reads "the undefined room". */
+type Topical = { when: (t: Topic) => boolean; line: (t: Topic) => string };
+
+export const TOPICAL: readonly Topical[] = [
+  { when: (t) => !!t.failedSeat,
+    line: (t) => `Something went wrong in ${t.failedSeat} and the door has been shut since.` },
+  { when: (t) => !!t.failedSeat,
+    line: (t) => `${t.failedSeat} is having a day. Nobody has gone in to ask.` },
+  { when: (t) => !!t.failedSeat,
+    line: (t) => `I heard a noise from ${t.failedSeat} and decided it was not mine.` },
+
+  { when: (t) => !!t.busiestSeat && !!t.busiestCount,
+    line: (t) => `${t.busiestSeat} closed ${t.busiestCount} things today and told everybody about all of them.` },
+  { when: (t) => !!t.busiestSeat,
+    line: (t) => `The board says ${t.busiestSeat} is on top of everything. The board is easily impressed.` },
+  { when: (t) => !!t.busiestSeat,
+    line: (t) => `Somebody put a chart on the wall. ${t.busiestSeat} is winning it.` },
+
+  { when: (t) => !!t.priciestSeat && !!t.priciestUsd,
+    line: (t) => `${t.priciestSeat} spent $${t.priciestUsd} on one thing and called it research.` },
+  { when: (t) => !!t.priciestSeat,
+    line: (t) => `There is a receipt on the fridge with ${t.priciestSeat} written on it in red.` },
+
+  { when: (t) => !!t.stalledSeat,
+    line: (t) => `${t.stalledSeat} has something waiting and everyone is on a break. Fine. Sure.` },
+  { when: (t) => !!t.stalledSeat,
+    line: (t) => `The queue for ${t.stalledSeat} has not moved. Neither has anybody.` },
+];
+
+/** Which topical lines are usable right now. Empty is the normal case on a
+ *  fresh board, and that is why the fixed pool never goes away. */
+export function topicalFor(topic: Topic): string[] {
+  return TOPICAL.filter((t) => t.when(topic)).map((t) => t.line(topic));
+}
+
 /** IS ANYTHING REAL HAPPENING. Every clause here is a reason to shut up, and
  *  they are separate clauses rather than one count because they fail
  *  separately: a gate open with an empty board is still a studio waiting on a
@@ -182,29 +385,82 @@ const ROTATE_MS = 15000;
  *  the one promise this thing makes is that it is never on screen at the same
  *  time as something real. Coming back the other way it waits. */
 export function useBanter(quiet: boolean, on: boolean,
-                          settle = SETTLE_MS, rotate = ROTATE_MS): string {
+                          settle = SETTLE_MS, rotate = ROTATE_MS,
+                          /* What the board makes it possible to joke about.
+                             See readTopic. Optional because the tests drive
+                             this hook with no payload. */
+                          topic?: Topic,
+                          /* Who is standing in the lounge and could say it.
+                             Empty means nobody is available to speak, and then
+                             there is no bubble - a line with no speaker is the
+                             caption, which is what this used to be. */
+                          speakers: readonly string[] = []): Banter {
   const [line, setLine] = useState("");
+  const [seat, setSeat] = useState("");
   /* One rotator for the life of the pane, so muting and unmuting does not hand
      back a fresh deck and let a line repeat inside its own cycle. */
   const next = useRef<(() => string) | null>(null);
   if (!next.current) next.current = createRotator();
 
+  /* THE DECK IS REBUILT WHEN WHAT IS TRUE CHANGES, AND ONLY THEN. The key is
+     the topical LINES rather than the topic object, because the topic is
+     derived on every poll and an object identity would hand back a fresh deck
+     three times a minute - which is the exact repeat the rotator exists to
+     prevent. Identical facts produce an identical key and the deck survives.
+
+     WHICH POOL DEPENDS ON WHERE THE LINE IS GOING. With somebody to say it the
+     line is drawn in a bubble over their head, so it comes from BANTER_SHORT -
+     five words, the length of a thing said out loud, and the length that fits
+     over a character without covering the room. With nobody available it falls
+     back to the long pool and the caption strip, where there is width for a
+     two-clause line. Topical lines join the long pool only: they name a seat
+     and a number, which is a caption's job.
+
+     THE FIXED POOL IS ALWAYS IN THERE. A board with one failure on it would
+     otherwise say the same three things about that failure until somebody
+     cleared it, which is a worse kind of stale than the one this fixed. */
+  const talking = speakers.length > 0;
+  const topical = topic && !talking ? topicalFor(topic) : [];
+  const key = [talking ? "s" : "l", ...topical].join("|");
+  const seen = useRef("");
+  if (seen.current !== key) {
+    seen.current = key;
+    next.current = createRotator(
+      talking ? BANTER_SHORT
+              : (topical.length ? [...BANTER, ...topical] : BANTER));
+  }
+
+  /* WHO SPEAKS, chosen once per line rather than once per render. A speaker
+     recomputed on every poll would hand the same sentence to a different
+     character mid-sentence, which reads as the line being passed around the
+     room. Held in a ref because nothing renders from the choice itself. */
+  const pool = speakers.join(",");
+  const pick = useRef<() => string>(() => "");
+  pick.current = () => (speakers.length
+    ? speakers[Math.floor(Math.random() * speakers.length)]
+    : "");
+
   useEffect(() => {
-    if (!quiet || !on) { setLine(""); return; }
+    if (!quiet || !on) { setLine(""); setSeat(""); return; }
     /* The interval is armed INSIDE the settle timeout rather than beside it.
        Running both from the same instant would space every line after the first
        by settle + rotate, which is not the gap this file documents and is the
        kind of drift nobody spots because it only reads as "a bit slow". */
     let every = 0;
+    const say = () => { setLine(next.current!()); setSeat(pick.current()); };
     const first = window.setTimeout(() => {
-      setLine(next.current!());
-      every = window.setInterval(() => setLine(next.current!()), rotate);
+      say();
+      every = window.setInterval(say, rotate);
     }, settle);
     return () => { window.clearTimeout(first); window.clearInterval(every); };
-  }, [quiet, on, settle, rotate]);
+  }, [quiet, on, settle, rotate, key, pool]);
 
-  return line;
+  return { line, seat };
 }
+
+/** A line and, when there is somebody to say it, who. An empty `seat` means the
+ *  line belongs in the caption strip rather than in a bubble. */
+export type Banter = { line: string; seat: string };
 
 const KEY = "bgate-floor-banter";
 

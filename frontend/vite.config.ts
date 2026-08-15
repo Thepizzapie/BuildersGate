@@ -44,12 +44,16 @@ export default defineConfig({
     // a megabyte of churn in every diff. `npm run dev` is the debugging path.
     sourcemap: false,
     rollupOptions: {
-      input: resolve(here, "src/main.tsx"),
+      input: {
+        bgate: resolve(here, "src/main.tsx"),
+        "floor-overlay": resolve(here, "src/floor-overlay.tsx"),
+      },
       output: {
         format: "es",
         // Still under dist/, because index.html and the cache-bust stamper in
         // bgate_ui/app.py both reference /static/dist/bgate.js by that path.
-        entryFileNames: "dist/bgate.js",
+        entryFileNames: (chunk) =>
+          chunk.name === "bgate" ? "dist/bgate.js" : "dist/[name].js",
         chunkFileNames: "dist/bgate-[name].js",
         assetFileNames: (info) =>
           info.names?.[0]?.endsWith(".css") ? "dist/bgate.css" : "dist/[name][extname]",

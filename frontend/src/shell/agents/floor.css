@@ -1,193 +1,182 @@
-/* The studio floor - blockout. Rooms | lounge | rooms, office at the bottom.
+/* WHAT IS LEFT OF THE FLOOR'S STYLESHEET AFTER THE BUILDING BECAME A CANVAS.
+ *
+ * This file used to be six hundred lines drawing a studio out of positioned
+ * divs: a perspective camera on a plane, nine room rectangles, a wall segment
+ * per edge, a rule per kind of furniture, and a sprite-sheet animation system
+ * built out of keyframed background-positions. It rendered, and it never read
+ * as a place - CSS lays out documents, and what came out was a web page wearing
+ * a floor plan. floorRender.ts paints all of it now, so every one of those
+ * rules is gone rather than left behind to rot.
+ *
+ * WHAT IS STILL CSS IS WHAT IS STILL TEXT. The handover notes and the lounge
+ * caption are read rather than looked at, they sit UNDER the building for that
+ * reason, and they are ordinary DOM with ordinary type. The canvas itself needs
+ * three rules: a box to fill, a cursor, and the off-screen list that gives a
+ * painted picture the accessibility tree it cannot have on its own.
  *
  * COLOUR COMES FROM TOKENS AND FROM `--seat`, NEVER FROM A HEX. There are four
  * grounds (dark, light, orbit and the OS default) and a literal breaks three of
- * them. The one colour that is not a token is the seat's own, and that arrives
- * on the element from nav.ts's SEAT_COLOR, so a seat is the same pink here as
- * on the rail and in the graph.
- *
- * THERE IS NO 3D TRANSFORM IN THIS FILE, deliberately. The high three-quarter
- * angle is drawn, not computed: a wall band along the top edge of each room, a
- * baseboard under it, and floors a shade lighter than the walls. A rotated
- * container would have made a twelve-room floor scroll diagonally, put the
- * nameplates on a slant at every zoom, and locked the layout to one camera that
- * the generated art would then have to match exactly.
+ * them. The building's own palette moved into the renderer with the drawing.
  */
 
 .bg4-floorwrap {
-  flex: 1; min-height: 0; overflow: auto;
-  padding: 12px;
+  flex: 1; min-height: 0; overflow: hidden;
+  /* A COLUMN, because the building now takes whatever height is left after the
+     text under it. It used to scroll, which is what a fixed-size building in a
+     resizable rail forces; the canvas is sized to its box instead. */
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 12px 4px;
+
   /* THE RAIL IS DRAGGABLE, SO WIDTH QUESTIONS ARE ABOUT THIS BOX, NOT THE
-     WINDOW. A @media rule would collapse the floor on a small laptop with the
-     rail dragged wide, and keep three columns in a 300px rail on a 4K monitor -
-     both exactly backwards. The @container rules at the foot ask the element
-     that is actually being resized. */
+     WINDOW. A @media rule would shrink the text under the floor on a small
+     laptop with the rail dragged wide, and leave it wide in a 300px rail on a
+     4K monitor - both exactly backwards. */
   container-type: inline-size;
 }
 
-/* `.bg4-studio` AND NOT `.bg4-floor`, WHICH IS ALREADY TAKEN. shell.css gives
-   `.bg4-floor` to the Floor SCREEN - the one stream of everything the studio is
-   doing - as `display: flex; flex-direction: column; height: 100%`. Both
-   stylesheets are loaded at once, the specificity is identical, so the winner
-   was whichever file the bundler happened to emit last: this grid with its
-   three columns thrown away, or that screen turned into a grid. A collision
-   nobody can read off either file is not worth one shared word. */
-.bg4-studio {
-  display: grid;
-  /* The lounge is the widest track because it is the only one that has to hold
-     a crowd: every idle agent stands in it at once, while a room holds one. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 12px;
-  min-height: 100%;
-}
-.bg4-floor-col {
-  display: flex; flex-direction: column; gap: 12px;
-  justify-content: flex-start;
-}
-.bg4-floor-left { grid-column: 1; grid-row: 1 }
-.bg4-lounge { grid-column: 2; grid-row: 1 }
-.bg4-floor-right { grid-column: 3; grid-row: 1 }
-/* THE OFFICE SPANS ALL THREE COLUMNS AND SITS UNDER THEM. It is not a fourth
-   column and not a peer of the crafts: the Director is who work is escalated
-   to, and the floor should read as "everyone works across, and up to there". */
-.bg4-floor-office {
-  grid-column: 1 / -1; grid-row: 2;
-  display: flex; justify-content: center;
-}
-/* `flex: none` OR THE OFFICE IS THE WHOLE WIDTH OF THE FLOOR. A room is
-   `flex: 1 1 auto` for the side columns, and inherited here that grow factor
-   beat the width and drew the Director a 685px room across the foot of the
-   building - which reads as a lobby, not an office. */
-.bg4-floor-office .bg4-room { flex: none; width: min(340px, 100%) }
+/* ── the stage ────────────────────────────────────────────────────────────────
 
-/* ── a room ───────────────────────────────────────────────────────────────── */
+   THE BUILDING IS ONE CANVAS NOW. Every room, wall, prop and character used to
+   be a positioned element inside a perspective-transformed plane, and the whole
+   of the section below this one exists to style them. It is dead for the console
+   pane and live only for anything still drawing the building in the DOM.
 
-.bg4-room {
-  position: relative; display: flex; flex-direction: column;
-  /* A ROOM HAS A SIZE RANGE, NOT A SIZE. Plain `flex: 1` divides the column
-     among however many rooms it holds, which drew 380px-tall empty rooms for a
-     three-seat project and 40px strips for a twelve-seat one - the same rule
-     failing in both directions. The floor of a room only ever has to hold a
-     character and a desk, so past 160px the extra height is nothing but empty
-     carpet. */
-  flex: 1 1 auto; min-height: 84px; max-height: 160px;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: var(--solid-1); overflow: hidden;
+   THE STAGE HAS NO SCALE OF ITS OWN, AND THAT IS THE POINT OF THE MOVE. The
+   `--cell` breakpoint ladder at the foot of this file was three hand-written
+   guesses at how big a building fits in a rail somebody is dragging; the
+   renderer divides the box it is given by the plan's own dimensions on every
+   resize, so the building fits the pane at every width with no number to keep in
+   sync. */
+.bg4-stage {
+  flex: 1;
+  min-height: 240px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--solid-1);
 }
-/* The back wall. Darker than the floor, tinted by the seat, and carrying the
-   only 2px line in the room so the eye reads it as the far edge. */
-.bg4-room-wall {
-  flex: none; display: flex; align-items: center;
-  height: 26px; padding: 0 8px;
-  background:
-    linear-gradient(to bottom,
-      color-mix(in srgb, var(--seat) 14%, var(--solid-2)),
-      var(--solid-2));
-  border-bottom: 1px solid color-mix(in srgb, var(--seat) 34%, var(--line));
+
+.bg4-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The rooms are the only hit targets and the renderer resolves them from the
+     click, so a pointer over one is a pointer over a control. */
+  cursor: pointer;
 }
-.bg4-room-plate {
-  display: inline-flex; align-items: center; gap: 5px;
-  font: 600 10px/1 var(--sans); letter-spacing: .04em; text-transform: uppercase;
-  color: var(--seat);
+
+/* THE FLOOR IN WORDS, because a canvas has no accessibility tree and a picture
+   of a studio is not a description of one. Every placement is a real button
+   here, so the keyboard reaches every agent the mouse can and a screen reader
+   is told who is where in the same sentence the hover used to carry. It is
+   off-screen rather than `display:none`, which would take it out of the tree
+   as well and leave the pane with nothing. */
+.bg4-floor-sr {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
-/* THE FLOOR OF THE ROOM IS LIT FROM THE BACK WALL FORWARD. One gradient is the
-   whole reason a flat rectangle reads as a floor seen from above rather than as
-   a card: the near edge is the darker one, which is where the light is not. */
-.bg4-room-body {
-  position: relative; flex: 1; min-height: 0;
-  padding: 6px 8px 8px;
-  /* IT MUST NOT TAKE THE CLICK THAT BELONGS TO THE ROOM. This is positioned and
-     comes AFTER `.bg4-room-hit` in the room, so it painted over the hit layer
-     and swallowed every click below the 26px wall band - which is 70-85% of a
-     room, including the obvious target in the middle of it. The stage inside
-     already opts out for the same reason; the wrapper it lives in was missed,
-     so "the whole room selects the seat" was true of a strip along the top and
-     nothing else. Nothing in here is interactive except the character, which
-     opts back in below. */
-  pointer-events: none;
-  background:
-    linear-gradient(to bottom,
-      color-mix(in srgb, var(--seat) 7%, transparent),
-      transparent 62%);
+.bg4-floor-sr button { all: unset }
+.bg4-floor-sr button:focus-visible {
+  position: fixed; top: 8px; left: 8px; z-index: 50;
+  clip: auto; width: auto; height: auto;
+  padding: 4px 8px; background: var(--solid-3); color: var(--text);
+  outline: 2px solid var(--accent); white-space: normal;
 }
-.bg4-room-vibe {
+
+/* ── under the building ───────────────────────────────────────────────────── */
+
+/* THE THINGS THAT ARE TEXT LIVE BELOW THE PLAN. A handover note is read, not
+   looked at, and text laid into a tilted plane is text on a slant - the one
+   element on the pane that has to be legible would be the one drawn at an
+   angle. */
+.bg4-underfloor {
+  display: flex; align-items: flex-start; gap: 12px;
+  margin-top: 10px; padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.bg4-handover {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  max-width: min(420px, 60%);
+}
+.bg4-handover-label {
   font: 500 10px/1 var(--mono); color: var(--text-3);
+  letter-spacing: .04em; white-space: nowrap;
 }
-/* Where the occupants land in a later step. Sized now so adding them does not
-   change the height of a room and reflow the whole floor. */
-.bg4-room-stage {
-  position: absolute; inset: 20px 8px 8px;
-  pointer-events: none;
+/* NEWEST FIRST. The column is capped rather than scrolled: a note is a glance,
+   and anything that needs reading properly is on the board with its whole
+   result. */
+.bg4-handovers {
+  display: flex; flex-direction: column; gap: 4px;
+  width: 100%; max-height: 132px; overflow: hidden;
 }
-
-/* The office reads as a corner room: same construction, one shade heavier, so
-   it is obviously not another craft room in a different colour. */
-.bg4-room-office { border-color: var(--line-strong) }
-.bg4-room-office .bg4-room-wall { height: 30px }
-
-/* ── the lounge ───────────────────────────────────────────────────────────── */
-
-/* OPEN GROUND, NOT A ROOM. No wall band and no nameplate: an agent standing
-   here holds no work, and if the lounge had a room's chrome then "idle" would
-   read as a department of its own. Dashed, because a boundary you can walk
-   through should not be drawn like one you cannot. */
-.bg4-lounge {
-  position: relative; display: flex; flex-direction: column;
-  border: 1px dashed var(--line); border-radius: 10px;
-  background: var(--solid-2);
-  padding: 8px;
+.bg4-handover-note {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 5px 7px; border-radius: 3px;
+  background: var(--solid-1);
+  border: 1px solid var(--line);
+  /* The seat's colour on the binding edge only. A whole note tinted per seat
+     starts competing with the failed marking, and the note is meant to be read,
+     not spotted. */
+  border-left: 3px solid var(--seat);
 }
-.bg4-lounge-label {
-  /* --text-3, not --text-dim: the dim token is documented NON-TEXT ONLY at
-     3.6:1 and this is a label somebody has to read. */
-  font: 500 10px/1 var(--mono); color: var(--text-3);
-  letter-spacing: .06em;
+/* A REJECTION IS NOT A DELIVERY AND MUST NOT LOOK LIKE ONE. The status word is
+   the server's; this is only the colour agreeing with it. */
+.bg4-handover-note[data-status="rejected"], .bg4-handover-note[data-status="cancelled"] {
+  border-color: var(--bad-line); border-left-color: var(--seat);
 }
-/* THE CROWD WRAPS, IT IS NOT SCATTERED. Every idle seat stands here at once,
-   and placing each one at a coordinate would imply the coordinate meant
-   something. In the lounge it deliberately does not: that is what idle is. */
-.bg4-lounge-stage {
-  position: relative; flex: 1; min-height: 0;
-  display: flex; flex-wrap: wrap; align-content: flex-end; gap: 8px 10px;
-  padding-top: 6px;
+.bg4-handover-note-head {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 600 10px/1 var(--mono); color: var(--text-3);
 }
+.bg4-handover-note-status { color: var(--text-3); text-transform: uppercase; letter-spacing: .05em }
+.bg4-handover-note[data-status="rejected"] .bg4-handover-note-status,
+.bg4-handover-note[data-status="cancelled"] .bg4-handover-note-status { color: var(--bad) }
+.bg4-handover-note-title {
+  font: 600 11px/1.25 var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* THREE LINES OF THE RESULT, and the rest on hover. The server sends 600
+   characters; a card that grew to fit them would push the whole pane about
+   every time an agent finished, which is movement that means nothing. */
+.bg4-handover-note-body {
+  font: 400 10px/1.35 var(--sans); color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bg4-handover-note-body em { color: var(--text-3); font-style: italic }
 
 /* ── the lounge caption ───────────────────────────────────────────────────── */
 
 /* IT MUST NOT READ AS SPEECH, AND THAT IS THE WHOLE BRIEF (see banter.ts and
    the docstring at the top of Cat.tsx, which records this repo getting it wrong
    twice). Everything a bubble would give it is refused here on purpose: no
-   tail, no rounded pill, no seat colour, no border it shares with a card, and
-   it is anchored to the ROOM's bottom edge rather than to any character. What
-   it does get is an italic that exists nowhere else in this shell, so the
-   difference is visible before a word of it is read.
-
-   A HAIRLINE ABOVE IT, NOT A BOX AROUND IT. A box is a card, a card is a thing
-   the board and the handover desk use for real output, and a fifth kind of card
-   on this pane would be one more shape to tell apart at a glance. */
+   tail, no rounded pill, no seat colour, no border it shares with a card, and it
+   is not anchored to any character - it is under the building. What it does get
+   is an italic that exists nowhere else in this shell, so the difference is
+   visible before a word of it is read. */
 .bg4-banter {
-  flex: none; display: flex; align-items: flex-start; gap: 6px;
-  margin-top: 8px; padding-top: 6px;
-  border-top: 1px dashed var(--line);
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: flex-start; gap: 6px;
   min-height: 16px;
 }
 .bg4-banter-line {
   margin: 0; flex: 1; min-width: 0;
   font: italic 400 11px/1.5 var(--sans);
-  /* --text-3, not --text-dim, for the same reason the lounge label says so:
-     the dim token is documented NON-TEXT ONLY. Peripheral is not unreadable. */
+  /* --text-3, not --text-dim: the dim token is documented NON-TEXT ONLY at
+     3.6:1 and this is a line somebody has to read. */
   color: var(--text-3);
 }
-/* THE WORD THAT SAYS WHAT THIS IS, in the same mono the lounge, the queue and
-   the handover use for their labels. The tag carries the meaning even if the
-   italic is lost to a theme, a zoom or somebody's own stylesheet, which is why
-   it is real text and not a ::before. */
+/* THE WORD THAT SAYS WHAT THIS IS, in the same mono the rest of the pane uses
+   for its labels. The tag carries the meaning even if the italic is lost to a
+   theme, a zoom or somebody's own stylesheet, which is why it is real text and
+   not a ::before. */
 .bg4-banter-tag {
   font: 500 9px/1 var(--mono); color: var(--text-dim);
   letter-spacing: .06em; text-transform: uppercase;
   margin-right: 6px; vertical-align: 1px;
-  /* Not italic: it is the label, not the line. */
   font-style: normal;
 }
 /* A NEW LINE FADES, IT DOES NOT SLIDE OR TYPE. Movement on this pane means an
@@ -201,249 +190,33 @@
 
 /* THE OFF SWITCH IS GHOSTED UNTIL IT IS WANTED. It is drawn only while the
    floor is quiet (see FloorPane), and even then it is a mark rather than a
-   button until the pointer or the keyboard reaches the lounge - a permanent
-   speaker icon would be the loudest thing in an empty room. Muted, it stays lit
-   at full strength, because a mute you cannot find is a setting you cannot
+   button until the pointer or the keyboard reaches it. Muted, it stays lit at
+   full strength, because a mute you cannot find is a setting you cannot
    undo. */
 .bg4-banter-mute {
   appearance: none; border: 0; padding: 1px; margin: 0; background: transparent;
   color: var(--text-dim); cursor: pointer; line-height: 1;
   border-radius: 4px; opacity: 0; transition: opacity 120ms ease;
 }
-.bg4-lounge:hover .bg4-banter-mute,
-.bg4-lounge:focus-within .bg4-banter-mute,
+.bg4-underfloor:hover .bg4-banter-mute,
+.bg4-underfloor:focus-within .bg4-banter-mute,
 .bg4-banter:not([data-on]) .bg4-banter-mute { opacity: 1 }
 .bg4-banter-mute:hover { color: var(--text-2); background: var(--solid-1) }
 .bg4-banter-mute:focus-visible {
-  /* --accent and offset 2, the same ring the rooms and the characters take. A
-     second focus style on one pane is a second thing to learn. */
   opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .bg4-banter-mute { transition: none }
 }
 
-/* ── the occupants ────────────────────────────────────────────────────────── */
-
-/* THE DESK IS DRAWN IN EVERY ROOM, OCCUPIED OR NOT. "At the desk" is only a
-   readable state if the desk is a fixed landmark; a desk that appears with its
-   agent would just be a second character. Same slab in every room, far corner,
-   so scanning across the floor for who is seated is one horizontal pass. */
-.bg4-desk {
-  position: absolute; right: 0; bottom: 0;
-  width: 38px; height: 12px; border-radius: 2px;
-  background: color-mix(in srgb, var(--seat) 18%, var(--solid-2));
-  border: 1px solid color-mix(in srgb, var(--seat) 26%, var(--line));
-}
-
-/* A person. Two blocks and the seat's colour - blockout, exactly like the
-   rooms, and the art that replaces it inherits the position and the state
-   attribute rather than choosing them. */
-.bg4-person {
-  position: relative;
-  display: flex; flex-direction: column; align-items: center; gap: 1px;
-  width: 46px; flex: none;
-  /* IT IS A BUTTON (see FloorPane) so it carries a button's defaults, and a
-     14px character with a 1px UA border and 1px of padding is a 17px character
-     that no longer lines up with the desk it is meant to be sitting at. */
-  appearance: none; border: 0; padding: 0; margin: 0;
-  background: transparent; color: inherit; font: inherit;
-  cursor: pointer;
-  /* NO TRANSITION IS DECLARED HERE, and that is not an oversight. The walk is
-     applied by useWalk.ts on the frame it starts, with a duration it works out
-     from the distance actually travelled - a rule in this file would either be
-     one speed for a step across a room and a walk across the building, or it
-     would fight the inline one. What the stylesheet owns is the OFF switch
-     below, which has to win no matter what any script wrote. */
-}
-/* SNAP, DO NOT SLOW DOWN. Somebody who has asked the OS for less motion is not
-   asking for the same journey at half speed. useWalk already declines to apply
-   the inverse transform, so nothing is animating by the time this rule is read;
-   it is here as the backstop, because a transition written onto an element by
-   script is exactly the kind of motion a media query is expected to catch. */
-@media (prefers-reduced-motion: reduce) {
-  .bg4-person { transition: none !important }
-}
-.bg4-person-art {
-  /* THE DRAWING SITS OVER THE BLOCKOUT AND THE BLOCKOUT STAYS. A seat this
-     project invented has no sprite, the art may not have loaded yet, and in
-     either case the head-and-body shapes underneath still say a person is
-     there. A floor that drops a live agent because nobody drew it would be the
-     exact dishonesty this pane exists to avoid.
-
-     Anchored BOTTOM CENTRE because the feet are what stands on the floor: the
-     sprites are trimmed to their own ink, so their heights differ by a few
-     pixels between poses and aligning any other edge makes a character bob as
-     it changes pose.
-
-     pixelated, because these are pixel art at 2x and a smooth resample turns a
-     deliberate hard edge into mush. */
-  position: absolute; left: 50%; bottom: 0;
-  width: 46px; height: 56px; transform: translateX(-50%);
-  background-repeat: no-repeat;
-  background-position: bottom center;
-  background-size: contain;
-  image-rendering: pixelated;
-  pointer-events: none;
-}
-
-.bg4-person-head {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--seat);
-}
-.bg4-person-body {
-  width: 12px; height: 11px; border-radius: 4px 4px 3px 3px;
-  background: color-mix(in srgb, var(--seat) 62%, var(--solid-2));
-  border: 1px solid color-mix(in srgb, var(--seat) 70%, transparent);
-}
-
-/* THE NOTE IN THE HAND. Small, and it is what makes the return trip legible as
-   a delivery: without it a character crossing the floor toward the office looks
-   like a character that has been reassigned. */
-.bg4-person-note {
-  position: absolute; right: -3px; bottom: 1px;
-  width: 7px; height: 8px; border-radius: 1px;
-  background: var(--solid-1);
-  border: 1px solid color-mix(in srgb, var(--seat) 60%, var(--line));
-  box-shadow: 0 0 0 1px var(--solid-2);
-}
-
-/* WHERE IN THE ROOM, and the positions are far apart for a reason: at the
-   desk versus just inside the door is the difference between "running" and
-   "handed out and nothing has started", and if those two read as the same
-   corner the floor has stopped saying anything. */
-.bg4-room-stage .bg4-person { position: absolute }
-.bg4-person[data-state="running"] { right: 4px; bottom: 10px }
-/* Dispatched, chained and failed all stand in the room. They are told apart by
-   the room's own marking, not by a third position nobody could name. */
-.bg4-person[data-state="dispatched"],
-.bg4-person[data-state="failed"],
-.bg4-person[data-state="waiting"],
-.bg4-person[data-state="delivering"],
-.bg4-person[data-state="chained"] { left: 0; bottom: 0 }
-
-/* A LINK WAITING ITS TURN IS IN THE BUILDING, NOT AT WORK. Dimmer than a
-   dispatched agent, because no process exists for this item yet - it is the
-   chain that has been committed, not the run - and brighter than the lounge,
-   because the seat is spoken for. */
-.bg4-person[data-state="chained"] { opacity: .72 }
-/* The chain marking on the ROOM is a dashed near edge: the room is claimed and
-   the work has not started, which is exactly what a dashed line says elsewhere
-   on this floor (the lounge, the queue rail). */
-.bg4-room[data-state="chained"] .bg4-room-wall {
-  border-bottom-style: dashed;
-}
-
-/* A seat with nothing reported is drawn at half strength. It is a real
-   character - the seat exists - but there is no news about it, and it must not
-   compete with the ones that are doing something. */
-.bg4-person[data-state="idle"] { opacity: .55 }
-
-/* THE ROOM IS MARKED, NOT THE CHARACTER. A failure outlives the agent that hit
-   it: the item stays failed until somebody reopens it, so the mark belongs to
-   the room and stays there after the character has gone to the lounge. */
-.bg4-room[data-state="failed"] { border-color: var(--bad-line) }
-.bg4-room[data-state="failed"] .bg4-room-wall {
-  border-bottom-color: var(--bad-line);
-}
-.bg4-room[data-state="failed"] .bg4-room-vibe { color: var(--bad) }
-
-/* ── the queue at the Director's door ─────────────────────────────────────── */
-
-/* OUTSIDE THE OFFICE, NOT IN IT. These agents are waiting to be seen. The rail
-   only exists while somebody is in it (see FloorPane) so its presence is itself
-   the signal that something wants a human. */
-.bg4-queue {
-  flex: none; display: flex; flex-direction: column; gap: 4px;
-  justify-content: flex-end; align-items: flex-start;
-  padding: 6px 10px 6px 0;
-}
-.bg4-queue-label {
-  font: 500 10px/1 var(--mono); color: var(--warn);
-  letter-spacing: .04em; white-space: nowrap;
-}
-/* A LINE, and it goes toward the door: the reason the queue reads as a queue
-   rather than as another group of idle agents is that it is single file and it
-   ends at the office wall. */
-.bg4-queue-line {
-  display: flex; align-items: flex-end; gap: 6px;
-  padding: 4px 6px; border-radius: 6px 6px 0 0;
-  border: 1px dashed var(--warn-line); border-bottom: none;
-  background: var(--warn-soft);
-}
-/* Room, lounge and queue all hold the same element, so the office row has to
-   line the queue up with the office rather than stretch it. */
-.bg4-floor-office { align-items: flex-end }
-
-/* ── what came back ───────────────────────────────────────────────────────── */
-
-/* THE FAR SIDE OF THE DOOR. The queue is on the left because it is people
-   wanting in; this is on the right because it is what already came out. Two
-   groups of characters standing at one office would otherwise read as one
-   crowd, and "five agents want you" and "five items finished" are not a fact
-   anybody should have to hover to tell apart. */
-.bg4-handover {
-  flex: none; display: flex; flex-direction: column; gap: 4px;
-  align-items: flex-start; justify-content: flex-end;
-  padding: 6px 0 6px 10px;
-  max-width: min(320px, 46%);
-}
-.bg4-handover-label {
-  font: 500 10px/1 var(--mono); color: var(--text-3);
-  letter-spacing: .04em; white-space: nowrap;
-}
-.bg4-handover-line {
-  display: flex; align-items: flex-end; gap: 6px; min-height: 4px;
-}
-/* NEWEST AT THE BOTTOM, next to the door it was carried through. The column is
-   capped rather than scrolled: a note is a glance, and anything that needs
-   reading properly is on the board with its whole result. */
-.bg4-notes {
-  display: flex; flex-direction: column; gap: 4px;
-  width: 100%; max-height: 132px; overflow: hidden;
-}
-.bg4-note {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 5px 7px; border-radius: 3px;
-  background: var(--solid-1);
-  border: 1px solid var(--line);
-  /* The seat's colour on the binding edge only. A whole note tinted per seat
-     starts competing with the failed marking and with the warn rail beside it,
-     and the note is meant to be read, not spotted. */
-  border-left: 3px solid var(--seat);
-}
-/* A REJECTION IS NOT A DELIVERY AND MUST NOT LOOK LIKE ONE. The status word is
-   the server's; this is only the colour agreeing with it. */
-.bg4-note[data-status="rejected"], .bg4-note[data-status="cancelled"] {
-  border-color: var(--bad-line); border-left-color: var(--seat);
-}
-.bg4-note-head {
-  display: inline-flex; align-items: center; gap: 4px;
-  font: 600 10px/1 var(--mono); color: var(--text-3);
-}
-.bg4-note-status { color: var(--text-3); text-transform: uppercase; letter-spacing: .05em }
-.bg4-note[data-status="rejected"] .bg4-note-status,
-.bg4-note[data-status="cancelled"] .bg4-note-status { color: var(--bad) }
-.bg4-note-title {
-  font: 600 11px/1.25 var(--sans); color: var(--text);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-/* THREE LINES OF THE RESULT, and the rest on hover. The server sends 600
-   characters; a card that grew to fit them would push the whole floor up the
-   pane every time an agent finished, which is movement that means nothing. */
-.bg4-note-body {
-  font: 400 10px/1.35 var(--sans); color: var(--text-2);
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.bg4-note-body em { color: var(--text-3); font-style: italic }
+/* ── nothing to draw ──────────────────────────────────────────────────────── */
 
 .bg4-floor-none {
   padding: 24px; text-align: center;
   font: 400 12px var(--sans); color: var(--text-3);
 }
 
-/* THE READ FAILED AND THE PEOPLE BELOW ARE A MEMORY. Above the floor rather
+/* THE READ FAILED AND THE PEOPLE BELOW ARE A MEMORY. Above the building rather
    than over it: the placement underneath is still the last thing the board
    actually said, and dimming or blanking it would throw away the only true
    information on the pane. Warn rather than bad, because nothing has gone wrong
@@ -456,101 +229,61 @@
   font: 500 10px/1.4 var(--mono); letter-spacing: .03em;
 }
 
-/* ── clicking one ─────────────────────────────────────────────────────────── */
+/* ── fitting the rail ─────────────────────────────────────────────────────── */
 
-/* THE ROOM IS A HIT LAYER, NOT A WRAPPER. A character is its own button and a
-   button inside a button is invalid markup, so the room's control is a sibling
-   underneath everything: absolutely positioned and FIRST in the room, which
-   leaves the stage - also positioned, and later - painting and receiving
-   clicks on top of it. */
-.bg4-room-hit {
-  position: absolute; inset: 0; z-index: 0;
-  appearance: none; border: 0; padding: 0; margin: 0;
-  background: transparent; cursor: pointer;
-}
-/* The body AND the stage inside it are `pointer-events: none`, so the whole
-   floor of a room belongs to the hit layer under it. The character has to opt
-   back in, or the one thing on the floor most worth clicking is the one thing
-   that cannot be. */
-.bg4-room-stage .bg4-person { pointer-events: auto }
+/* THE BUILDING IS NOT RE-PLANNED TO FIT, IT IS SCALED, and there is no longer a
+   breakpoint ladder doing it. The renderer divides the box it is handed by the
+   plan's own cols and rows on every resize, so the building fits the pane at
+   every width with no number in this file to keep in sync - and the arrangement
+   the reader has learned (rooms ring the lounge, Director at the bottom) never
+   reshuffles, because nothing here is a second floor plan.
 
-/* WHAT THE KEYBOARD SEES. Nothing on this floor has a resting outline, so
-   without these two rules a tab through the pane moves an invisible cursor
-   across a picture - which is the same as not being reachable at all. */
-.bg4-room-hit:focus-visible,
-.bg4-person:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px;
-}
-/* A disabled character is the Director's: not a control, and it must not offer
-   the hand cursor that says otherwise. */
-.bg4-person:disabled { cursor: default }
-
-.bg4-room:has(.bg4-room-hit:hover) { border-color: var(--line-strong) }
-.bg4-person:not(:disabled):hover { opacity: 1 }
-
-/* SELECTED IS THE SEAT'S OWN COLOUR, and it is drawn INSIDE the border so the
-   mark cannot be confused with the red one a failed room carries - a ring in
-   the seat's colour reads as "you are looking at this", a red edge reads as
-   "this went wrong", and they can both be true at once. Last in the file so it
-   wins over the failed border without a specificity fight. */
-.bg4-room[data-picked="true"] {
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--seat) 70%, transparent);
-}
-/* The character reads as picked by standing at full strength with a ring, which
-   is the one marking that survives the idle dimming above it. `aria-current` and
-   not `aria-selected`: see FloorPane - the latter is not allowed on a button and
-   never reached the accessibility tree, so this selector was the only place the
-   selection existed at all. */
-.bg4-person[aria-current="true"] { opacity: 1 }
-.bg4-person[aria-current="true"] .bg4-person-head {
-  box-shadow: 0 0 0 1px var(--solid-2), 0 0 0 3px var(--seat);
+   WHAT IS LEFT IS THE TEXT UNDER IT, which does still reflow: a note is read
+   rather than looked at, and two columns of it in a 400px rail is one word per
+   line. */
+@container (max-width: 400px) {
+  .bg4-underfloor { flex-direction: column }
+  .bg4-handover { max-width: 100% }
 }
 
-/* ── degrading with the seat table ────────────────────────────────────────── */
+/* ── the soundtrack ───────────────────────────────────────────────────────── */
 
-/* ONE SIDE ROOM, OR NONE. The three-column arrangement needs something on both
-   sides of the lounge to mean anything. With one craft seat the floor becomes a
-   single column - room, lounge, office - which is still the same building read
-   top to bottom, and with none it is the lounge and the office. */
-.bg4-studio[data-sides="1"], .bg4-studio[data-sides="0"] {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(120px, 1fr) auto;
+/* ONE ROW, AND IT IS THE QUIETEST THING ON THE PANE. A transport control that
+   competes with the floor for attention is a music player somebody has to look
+   past every time they read the studio. It sits in the same strip as the banter
+   caption, on the right, because both are about the room rather than about the
+   work. */
+.bg4-music {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: auto;
+  padding: 3px 6px; border-radius: 3px;
+  border: 1px solid transparent;
+  color: var(--text-3);
 }
-.bg4-studio[data-sides="1"] .bg4-floor-left,
-.bg4-studio[data-sides="0"] .bg4-floor-left { grid-column: 1; grid-row: 1 }
-.bg4-studio[data-sides="1"] .bg4-lounge,
-.bg4-studio[data-sides="0"] .bg4-lounge { grid-column: 1; grid-row: 2 }
-.bg4-studio[data-sides="1"] .bg4-floor-right,
-.bg4-studio[data-sides="0"] .bg4-floor-right { display: none }
-.bg4-studio[data-sides="1"] .bg4-floor-office,
-.bg4-studio[data-sides="0"] .bg4-floor-office { grid-row: 3 }
+.bg4-music[data-on] { border-color: var(--line); background: var(--solid-1) }
 
-/* A DEEP FLOOR STOPS SQUEEZING AND STARTS SCROLLING. `flex-shrink: 0` is what
-   makes min-height binding inside the column: without it a twelve-seat side
-   column crushes six rooms into 40px strips with a 26px wall on each, and the
-   floor never scrolls because it always "fits". A twelve-seat studio is a
-   taller building, not a flatter one. */
-.bg4-floor-col > .bg4-room { flex-shrink: 0 }
-
-/* Under 460px of RAIL - not of window - the two side columns cannot hold a
-   nameplate and a vibe word side by side, so the floor becomes one column and
-   reads as a section per craft. The lounge keeps its place in the middle of the
-   order, which is the one thing that has to survive: it is where the walking
-   starts and ends. */
-@container (max-width: 460px) {
-  .bg4-studio {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto auto;
-  }
-  .bg4-floor-left  { grid-column: 1; grid-row: 1 }
-  .bg4-lounge      { grid-column: 1; grid-row: 2; min-height: 72px }
-  .bg4-floor-right { grid-column: 1; grid-row: 3; display: flex }
-  .bg4-floor-office { grid-row: 4 }
-  .bg4-floor-office .bg4-room { width: 100% }
-  /* THE OFFICE ROW STACKS RATHER THAN SQUEEZING. Queue, office and handover
-     side by side in a 300px rail gives each about 90px, which is narrower than
-     one note card and turns the waiting line into a column of one. Stacked,
-     the order still reads: who is waiting, the office, what came back. */
-  .bg4-floor-office { flex-direction: column; align-items: stretch }
-  .bg4-handover { max-width: 100%; padding-left: 0 }
+.bg4-music-toggle, .bg4-music-skip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  border: 1px solid var(--line); border-radius: 3px;
+  background: var(--solid-2); color: var(--text-3);
+  cursor: pointer;
 }
+.bg4-music-toggle:hover, .bg4-music-skip:hover { color: var(--text-2) }
+.bg4-music[data-on] .bg4-music-toggle { color: var(--accent) }
+.bg4-music-toggle:focus-visible, .bg4-music-skip:focus-visible,
+.bg4-music-vol:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+/* THE TITLE IS CLAMPED RATHER THAN WRAPPED. Suno names a track whatever it
+   likes and some of them are a sentence; a second line here would push the
+   handover notes around every time the track changed. */
+.bg4-music-now {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  max-width: 190px;
+  font: 500 10px/1.3 var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-music-genre { color: var(--text-dim); font-size: 9px; letter-spacing: .04em }
+
+.bg4-music-vol { width: 56px; accent-color: var(--accent); cursor: pointer }

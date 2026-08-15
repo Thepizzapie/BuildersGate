@@ -26,7 +26,7 @@ import { type Handoff } from "./handoff";
  *     as not blocking: unknown must not become a claim.
  *
  * THERE IS STILL NO ANIMATION IN HERE, and that was the condition on adding
- * one. The walking lives in useWalk.ts, which interpolates between two
+ * one. The walking lives in floorRender.ts, which interpolates between two
  * consecutive outputs of this function and cannot invent a third: the DOM at
  * every moment says what was placed here, only the paint lags. Nothing below
  * softened to make a movement look better, because a placement that is wrong
@@ -104,7 +104,7 @@ const FS = "\u0001", RS = "\u0002", GS = "\u0003";
  * consoleState() builds a fresh object and a fresh items array every 3s, so a
  * byte-identical payload still arrives with a new identity and every memo keyed
  * on it misses. On this pane that meant planFloor and placeFloor re-ran, the
- * whole room tree took new props, and every one of those commits handed useWalk
+ * whole room tree took new props, and every one of those commits handed the walk
  * a floor to re-measure - on an idle board with nothing happening, forever.
  * This is the equality the object identity cannot give.
  *
@@ -241,6 +241,18 @@ export function placeFloor(
        the office. The state is still `waiting` - it is true and the room says
        so - only the zone differs. The same is true of a handover: the Director
        does not walk a note across the floor to itself. */
+    /* THE DIRECTOR NEVER LEAVES THE OFFICE, and that is now true of every
+       state rather than only the two that used to ask.
+
+       NOBODY QUEUES OUTSIDE THEIR OWN DOOR: the door is where you go to reach
+       the Director, so a waiting Director has nowhere to walk to. The same
+       logic applies to a HANDOVER - it does not carry a note across the floor
+       to itself - and to being IDLE, which is the case this missed. An idle
+       Director walked to the lounge and stood in the crowd, which is both wrong
+       about the fiction (the office is where you go to find it) and wrong about
+       the pane's own rule, since the office is the room the queue forms outside
+       of. If the Director is not in it, the queue is pointing at an empty
+       room. */
     const home = (zone: Zone): Zone => (seat === "director" ? "room" : zone);
 
     const question = questionFor(seat);
@@ -262,7 +274,7 @@ export function placeFloor(
     const dispatched = firstFor(seat, (i) => i.status === "dispatched"
                                              && !live.has(i.id));
     if (dispatched) {
-      return { seat, state: "dispatched", zone: ZONE.dispatched, itemId: dispatched.id,
+      return { seat, state: "dispatched", zone: home(ZONE.dispatched), itemId: dispatched.id,
                title: dispatched.title, note: "dispatched, not started yet",
                ...chain(dispatched) };
     }
@@ -285,7 +297,7 @@ export function placeFloor(
                                           && i.status === "queued");
     if (chained) {
       const on = chained.waiting_on;
-      return { seat, state: "chained", zone: ZONE.chained, itemId: chained.id,
+      return { seat, state: "chained", zone: home(ZONE.chained), itemId: chained.id,
                title: chained.title,
                note: on ? `next up, waiting on ${on.seat || "#" + on.id}`
                         : "next up in the chain",
@@ -311,7 +323,7 @@ export function placeFloor(
                ...chain(failed) };
     }
 
-    return { seat, state: "idle", zone: ZONE.idle, itemId: null,
+    return { seat, state: "idle", zone: home(ZONE.idle), itemId: null,
              note: "nothing running", chainId: null, chainPos: null };
   });
 }
