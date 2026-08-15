@@ -38,6 +38,46 @@ def _refs_dir(root: str | os.PathLike[str]) -> Path:
     return Path(root) / db.DB_DIRNAME / REFS_DIRNAME
 
 
+# The magic bytes of the four types an image model will accept as a reference.
+# A pin taken from a temp file with no extension used to land as
+# `<slug>.r1` with no suffix at all, and kie refuses to upload a file whose
+# extension is not one of these, so the anchor was pinned, listed, and
+# unusable as an anchor, which is the one job it has.
+_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+# What counts as "already named like an image". A pin whose source was itself
+# an older pin (`floor-style.r1`) has a suffix, ".r1", and trusting it is how
+# an anchor ends up named `<slug>.r2.r1`, still unusable.
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tga")
+
+
+def _suffix_for(src: Path) -> str:
+    """The extension the pinned copy should carry.
+
+    The source's own suffix wins when it is an image extension. When it is not
+    - no suffix at all, or a revision tag like ".r1" - sniff the header rather
+    than copying the name through: everything downstream routes on the
+    extension, and kie refuses to upload a reference it cannot type.
+    """
+    if src.suffix.lower() in _IMAGE_SUFFIXES:
+        return src.suffix.lower()
+    try:
+        head = src.open("rb").read(16)
+    except OSError:
+        return ""
+    for magic, suffix in _MAGIC:
+        if head.startswith(magic):
+            return suffix
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
 def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
         kind: str = "style", note: str = "", actor: Optional[str] = None) -> dict:
     """Pin a reference: copy it into .bgate/refs/ as a new numbered revision.
@@ -65,7 +105,7 @@ def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
 
     dest_dir = _refs_dir(root)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{slug}.r{revision}{src.suffix.lower()}"
+    dest = dest_dir / f"{slug}.r{revision}{_suffix_for(src)}"
     shutil.copy2(src, dest)
     digest = assets.file_hash(dest)
 

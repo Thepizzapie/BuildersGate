@@ -462,18 +462,38 @@ def _gates(root_dir, conn, active: set[int]) -> list[dict]:
     # to ask — artifacts.register auto-approves at registration under that mode
     # rather than leaving a wall of candidates behind a suppressed card.
     if mode != _gatemode.NONE:
+        cands: list[tuple[int, dict]] = []
         for art in _artifacts.list_revisions(root_dir, status="candidate")[:60]:
             item_id = art.get("work_item_id")
             if not item_id or int(item_id) not in active:
                 continue
+            cands.append((int(item_id), art))
+        # THE SEAT IS WHOEVER PRODUCED THE CANDIDATE, NOT ALWAYS ART. This said
+        # "art" for every candidate, while item_id named the real producing row:
+        # cinematic.py, music.py and storyboard.py all call artifacts.register,
+        # so a cinematic shot or a music cue raised a gate addressed to a seat
+        # that had no work. Anything reading the gate BY SEAT then pointed at
+        # the wrong room - the studio floor walked the art character to the
+        # Director's door carrying a cinematic item's title, and the seat that
+        # was actually blocked showed nothing.
+        seat_of: dict[int, str] = {}
+        if cands:
+            ids = sorted({item_id for item_id, _ in cands})
+            marks = ",".join("?" * len(ids))
+            for row in conn.execute(
+                    f"SELECT id, seat FROM work_item WHERE id IN ({marks})", ids):
+                seat_of[int(row["id"])] = row["seat"] or ""
+        for item_id, art in cands:
             out.append({
                 "kind": "art",
                 "id": f"gate_art_{art['id']}",
                 "artifact_id": int(art["id"]),
-                "item_id": int(item_id) if item_id else None,
-                "over_item_id": int(item_id) if item_id else None,
+                "item_id": item_id,
+                "over_item_id": item_id,
                 "title": art.get("logical_name") or f"candidate {art['id']}",
-                "seat": "art",
+                # Falls back to 'art' only when the row is gone: a candidate
+                # with no seat at all would be a gate no reader could place.
+                "seat": seat_of.get(item_id) or "art",
                 "status": "candidate",
                 "blocking": True,
                 "path": art.get("path") or "",

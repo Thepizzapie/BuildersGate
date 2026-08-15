@@ -139,6 +139,33 @@ UPLOAD_DIR = "images/builders-gate"
 UPLOAD_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".webp": "image/webp"}
 
+
+def _upload_mime(source: Path) -> str | None:
+    """The MIME of a file, by suffix first and then by its own leading bytes.
+
+    A pinned anchor is stored as `name.r1`: the revision number IS the
+    extension. Keying off the suffix alone therefore refused every pin in the
+    project, which is the exact thing this upload exists to carry, and the
+    error read like a bad file rather than a naming convention. The magic bytes
+    are the better authority anyway, because a .png that is really a JPEG
+    uploads happily and then 422s at generation, after the round trip is spent.
+    """
+    mime = UPLOAD_MIME.get(source.suffix.lower())
+    if mime:
+        return mime
+    try:
+        with source.open("rb") as fh:
+            head = fh.read(12)
+    except OSError:
+        return None
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
 ENV = "KIE_API_KEY"
 KEY_URL = "https://kie.ai/api-key"
 
@@ -1686,15 +1713,18 @@ def upload_file(path: str | os.PathLike[str], *, root: Any = None,
     and never anything from outside the project.
     """
     source = Path(path)
-    suffix = source.suffix.lower()
-    if suffix not in UPLOAD_MIME:
-        raise KieError(
-            f"cannot upload {source.name} — {suffix or 'no extension'} is not "
-            f"one of {sorted(UPLOAD_MIME)}. A type kie accepts here but no model "
-            "accepts downstream would fail at generation instead, after the "
-            "upload had already succeeded.")
     if not source.is_file():
         raise KieError(f"nothing on disk at {source}")
+    # Sniffed, not assumed: a pinned anchor's extension is its revision number,
+    # so the suffix answers this question wrong for every pin in the project.
+    mime = _upload_mime(source)
+    if not mime:
+        raise KieError(
+            f"cannot upload {source.name}, it is not a "
+            f"{sorted(set(UPLOAD_MIME.values()))} image by extension or by its "
+            "own leading bytes. A type kie accepts here but no model accepts "
+            "downstream would fail at generation instead, after the upload had "
+            "already succeeded.")
 
     key = api_key(root)
     if not key:
@@ -1722,7 +1752,7 @@ def upload_file(path: str | os.PathLike[str], *, root: Any = None,
         "url": url,
         "bytes": int(got.get("fileSize") or source.stat().st_size),
         "name": str(got.get("fileName") or payload["fileName"]),
-        "mime": str(got.get("mimeType") or UPLOAD_MIME[suffix]),
+        "mime": str(got.get("mimeType") or mime),
         # STAMPED, NOT ASSUMED. A caller that stores this URL anywhere has to be
         # able to tell that it is dead without calling it.
         "expires_at": _expiry(UPLOAD_TTL_DAYS),

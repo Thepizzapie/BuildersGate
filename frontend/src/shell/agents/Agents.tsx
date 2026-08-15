@@ -70,6 +70,8 @@ declare global {
 
 const POLL_MS = 3000;
 
+export type Pane = "board" | "graph" | "floor";
+
 const SUGGESTIONS = [
   { icon: "refresh", text: "redo the enemy set — they're off-model" },
   { icon: "alert-triangle", text: "the hub screen feels dead, give it parallax" },
@@ -121,8 +123,23 @@ export function Agents() {
         (d.seats || []).map((row) => row.role || "").filter(Boolean)));
   }, [active]);
 
+  /* A FAILED POLL IS NOT AN EMPTY BOARD, and it used to be drawn as one.
+     readJSON never throws: a fetch error or a 500 comes back as the fallback we
+     handed it - EMPTY_CONSOLE - tagged with __error. Written straight into
+     state, that turned one bad response into "no turns, no items, no agents",
+     which the floor then drew as every seat idle in the lounge with the tooltip
+     "nothing running", and six seconds later the lounge started telling jokes
+     over three agents that were still working. So the last payload we actually
+     received is KEPT and the error is stamped on it; the panes that can say so
+     (see FloorPane) draw it as stale rather than as news. */
   const refresh = useCallback(async () => {
     const next = await consoleState();
+    if (next.__error) {
+      setState((was) => ({ ...was, __error: next.__error }));
+      // The bell is fed facts, not a failure. A stale badge is right here:
+      // nothing has been learned about what is running.
+      return;
+    }
     setState(next);
     // The bell has no view of its own and was fed by the classic console's
     // poll. This is that poll now; drop the call and the badge goes stale.
@@ -220,8 +237,20 @@ export function Agents() {
      look at: a turn in this session, an agent running, or work waiting. NOT
      "has the user started typing" — a page that rearranges itself under the
      cursor mid-sentence is worse than either state. */
+  /* LIFTED OUT OF `Live` so `live` below can depend on it. */
+  const [pane, setPane] = useState<Pane>("board");
+
+  /* THE FLOOR COUNTS AS SOMETHING TO LOOK AT, which the other two panes do not.
+     `live` gates the whole side column, and the reasoning was sound while that
+     column held only a board and a graph: both are empty when there is no work,
+     so reserving 320px for them was reserving space for nothing.
+
+     The floor is not empty when there is no work. An idle studio is staff on
+     the couch, which is a state worth seeing and the one the lounge is written
+     for - so gating it the same way made the floor unreachable in exactly the
+     case it is best in. Standing on the floor keeps the column open. */
   const live = turns.length > 0 || (floor.running || 0) > 0 || open.length > 0
-    || (mode === "brainstorm" && messages.length > 0);
+    || (mode === "brainstorm" && messages.length > 0) || pane === "floor";
 
   /* THE TAGGABLE AGENTS: what is running right now, with the item it is on.
      `state.agents` is the live roster and `items` carries the titles, so the
@@ -310,21 +339,28 @@ export function Agents() {
         ? <Live state={state} turns={turns} open={open} sending={sending}
                 mode={mode} messages={messages} session={session}
                 composer={composer("foot")}
+                pane={pane} setPane={setPane}
                 onBrainstormReset={() => { setSession(null); openBrainstorm(); }}
                 onRefresh={refresh} />
         : <Idle items={items} floor={floor} composer={composer("hero")}
-                onSuggest={(t) => send(t)} />}
+                onSuggest={(t) => send(t)}
+                onFloor={() => setPane("floor")} />}
     </div>
   );
 }
 
 /* ── 5a · idle ───────────────────────────────────────────────────────────── */
 
-function Idle({ items, floor, composer, onSuggest }: {
+function Idle({ items, floor, composer, onSuggest, onFloor }: {
   items: Item[];
   floor: NonNullable<ConsoleState["floor"]>;
   composer: React.ReactNode;
   onSuggest: (text: string) => void;
+  /* THE ONLY DOOR ONTO THE FLOOR WHEN NOTHING IS RUNNING. The pane switch lives
+     in the side column, and the side column only exists once the console is
+     live, so without this the floor was reachable in every state except the one
+     it is best in: an empty studio with everybody on the couch. */
+  onFloor: () => void;
 }) {
   const closed = items.filter((i) => CLOSED.has(i.status))
     .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
@@ -344,6 +380,11 @@ function Idle({ items, floor, composer, onSuggest }: {
         </div>
 
         <Group gap="xs" mt="sm" mb="xl">
+          <Button variant="default" size="xs" className="bg4-suggest"
+                  leftSection={<Ti name="building" size={13} />}
+                  onClick={onFloor}>
+            see the studio
+          </Button>
           {SUGGESTIONS.map((s) => (
             <Button key={s.text} variant="default" size="xs" className="bg4-suggest"
                     leftSection={<Ti name={s.icon} size={13} />}
@@ -400,7 +441,7 @@ function ClosedRow({ item }: { item: Item }) {
 
 function Live({
   state, turns, open, sending, mode, messages, session, composer,
-  onBrainstormReset, onRefresh,
+  onBrainstormReset, onRefresh, pane, setPane,
 }: {
   state: ConsoleState;
   turns: Turn[];
@@ -410,6 +451,12 @@ function Live({
   messages: { id: number; role: string; text: string }[];
   session: BsSession | null;
   composer: React.ReactNode;
+  /* THE PANE IS THE PARENT'S STATE. `live` decides whether this component is
+     rendered at all and now depends on the pane, because standing on the floor
+     has to keep the console open when there is no work. Owning it here would
+     mean the value that keeps the door open lives behind the door. */
+  pane: Pane;
+  setPane: (p: Pane) => void;
   onBrainstormReset: () => void;
   onRefresh: () => void;
 }) {
@@ -418,7 +465,6 @@ function Live({
      POSITION is its state. It is a third value here and nothing else: it obeys
      the same rule the graph does, drawing the queue tab only, so the rail keeps
      Asked you, Approve, Responses and the rest in all three. */
-  const [pane, setPane] = useState<"board" | "graph" | "floor">("board");
   /* THE TABS BELONG TO THE RAIL, NOT TO THE BOARD PANE.
      They used to live inside BoardPane, so switching to Graph took Asked you,
      Approve, Responses, Chat and Stream off the screen with it — the graph is a
@@ -491,7 +537,7 @@ function Live({
               one you cannot read. The composer's mode toggle has always
               carried this class; this one was added later and did not. */}
           <SegmentedControl size="xs" value={pane} className="bg4-modes"
-                            onChange={(v) => setPane(v as "board" | "graph" | "floor")}
+                            onChange={(v) => setPane(v as Pane)}
                             data={[
                               { value: "board",
                                 label: <span><Ti name="layout-list" size={12} /> Board</span> },

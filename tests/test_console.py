@@ -186,6 +186,26 @@ class TestOnePayload:
         gates = client.get("/api/console/state").json()["gates"]
         assert any(g["kind"] == "art" and g["item_id"] == item["id"] for g in gates)
 
+    def test_a_candidate_names_the_seat_that_produced_it(self, client, root):
+        """The seat was hardcoded 'art' while item_id named the real row.
+
+        cinematic.py, music.py and storyboard.py all call artifacts.register, so
+        a cinematic shot raised a gate addressed to art. Anything that reads a
+        gate BY SEAT then points at the wrong room: the studio floor walked the
+        art character to the Director's door carrying a cinematic item's title,
+        while the seat that was actually blocked showed nothing.
+        """
+        from bgate_core import artifacts
+
+        item = _queue.add(root, "cinematic", "the establishing shot")
+        frame = root / "shot.png"
+        frame.write_bytes(b"shot")
+        artifacts.register(root, "shot_01", frame, producer="cinematic_generate_shot",
+                           work_item_id=item["id"])
+        gate = [g for g in client.get("/api/console/state").json()["gates"]
+                if g["kind"] == "art" and g["item_id"] == item["id"]][0]
+        assert gate["seat"] == "cinematic"
+
     def test_a_candidate_from_finished_work_is_not_a_gate(self, client, root):
         """The regression this filter exists for.
 
