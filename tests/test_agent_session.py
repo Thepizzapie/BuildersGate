@@ -91,3 +91,34 @@ def test_a_missing_transcript_is_not_offered_as_resumable(tmp_path):
     that fails in the user's terminal quoting an id they have never seen."""
     assert _transcript(tmp_path, "") is None
     assert _transcript(tmp_path, "no-such-session-0000") is None
+
+
+def test_only_a_session_id_shaped_string_can_reach_a_launch():
+    """The one string a request could influence is matched, never escaped.
+
+    `open_session` builds argv as a LIST from a resolved executable and this id,
+    so no shell parses any of it - but the id is still pattern-matched first,
+    because the thing that must never be true is an unvalidated string reaching
+    a process launch.
+    """
+    from bgate_ui.routes.agent_session import _SESSION_RE
+
+    assert _SESSION_RE.match("d109f0c3-a959-4282-be1a-1a2fc2399d6f")
+    for bad in ("; rm -rf /", "a && calc", "$(whoami)", "../../etc", "",
+                "x" * 80, "id with spaces", "id;calc"):
+        assert not _SESSION_RE.match(bad), f"{bad!r} was accepted"
+
+
+def test_the_terminal_argv_is_a_list_and_carries_no_shell_string(tmp_path):
+    """Staying a list is what makes the launch safe, so it is asserted."""
+    from bgate_ui.routes.agent_session import _terminal_argv
+
+    argv = _terminal_argv(tmp_path, ["/bin/claude", "--resume", "abc-123"])
+    if argv is None:
+        return  # a platform with no terminal we drive; the route refuses there
+    assert all(isinstance(part, str) for part in argv)
+    # The inner command survives as separate entries rather than one string.
+    assert "--resume" in argv and "abc-123" in argv
+    joined = " ".join(argv)
+    for meta in (";", "&&", "|", "$("):
+        assert meta not in joined, f"a shell metacharacter reached argv: {meta}"

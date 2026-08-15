@@ -11,6 +11,7 @@ import { setSelection } from "../selection";
 import { notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { BrainstormFoot } from "./Brainstorm";
 import { Composer, type Aim } from "./Composer";
+import { ResumeInCli } from "../ResumeInCli";
 import { FloorPane } from "./FloorPane";
 import { type Linked } from "./AssetLink";
 import { Cat } from "./Cat";
@@ -1000,6 +1001,11 @@ function TurnRow({ turn }: { turn: Turn }) {
             {r.cost ? `$${Number(r.cost).toFixed(3)}` : ""}
             {r.step_count ? ` · ${r.step_count} steps` : ""}
           </div>
+          {/* THE DIRECTOR'S TURN IS A RUN LIKE ANY OTHER. It is a work item with
+              a Claude session behind it, so `turn.id` is the item id the same
+              endpoint answers for - which is why this is the same component the
+              board, graph and floor drilldown uses rather than a second one. */}
+          <ResumeInCli itemId={turn.id} />
         </div>
       ) : r.running ? (
         <Msg who="director" live text={r.thinking || "reading the board…"} />

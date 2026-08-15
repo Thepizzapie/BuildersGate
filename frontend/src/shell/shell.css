@@ -1368,3 +1368,21 @@ body.ptn-open .bg4 {
   display: flex; align-items: flex-start; gap: 5px;
   font: 400 10.5px/1.45 var(--sans); color: var(--warn);
 }
+
+/* Continue is the reason the panel exists; Start is the fallback, so it is the
+   quieter of the two rather than a second primary. */
+.bg4-cli-actions { display: flex; flex-wrap: wrap; gap: 6px }
+.bg4-cli-go {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 9px; border-radius: 4px; cursor: pointer;
+  font: 600 11px/1 var(--sans);
+  background: var(--accent); color: #1b1206; border: 1px solid transparent;
+}
+.bg4-cli-go:hover { filter: brightness(1.08) }
+.bg4-cli-go.ghost {
+  background: var(--solid-2); color: var(--text-2); border-color: var(--line);
+  font-weight: 500;
+}
+.bg4-cli-go.ghost:hover { color: var(--text); border-color: var(--line-strong) }
+.bg4-cli-go:disabled { opacity: .5; cursor: progress }
+.bg4-cli-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
