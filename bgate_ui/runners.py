@@ -105,10 +105,20 @@ def mcp_overrides(server_name: str = MCP_SERVER_NAME) -> list[str]:
     path the install docs insist on, for the same reason — a bare name resolves
     differently under a spawned CLI than in the shell and the failure reads as
     "server not connected" with nothing pointing at the interpreter.
+
+    FROZEN AND FROM SOURCE ARE DIFFERENT SENTENCES. Frozen, sys.executable is
+    BuildersGate.exe rather than an interpreter, and `-m bgate_mcp.server`
+    handed to it was read by the launcher as "no command given" — so
+    registering an MCP server for a spawned agent opened a second copy of the
+    desktop app. The frozen binary hosts the server under its own `mcp`
+    subcommand instead. The answer is shared with agentcli.MODULE_ARGS so the
+    two cannot drift.
     """
+    from bgate_ui.agentcli import MODULE_ARGS
+    args = ",".join(f'"{a}"' for a in MODULE_ARGS)
     return [
         "-c", f'mcp_servers.{server_name}.command={_toml_str(sys.executable)}',
-        "-c", f'mcp_servers.{server_name}.args=["-m","bgate_mcp.server"]',
+        "-c", f'mcp_servers.{server_name}.args=[{args}]',
     ]
 
 

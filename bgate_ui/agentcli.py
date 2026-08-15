@@ -56,7 +56,21 @@ from bgate_ui import runners as _runners
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 SERVER = _runners.MCP_SERVER_NAME
-MODULE_ARGS = ["-m", "bgate_mcp.server"]
+
+# HOW TO START THE SERVER, WHICH IS NOT THE SAME SENTENCE IN BOTH BUILDS.
+#
+# From source, `command` is a real interpreter and `-m bgate_mcp.server` is the
+# module to run. Frozen, sys.executable IS BuildersGate.exe — there is no
+# interpreter to hand a module to — so the registration named the app and the
+# CLI ran `BuildersGate.exe -m bgate_mcp.server`. The launcher read a leading
+# dash as "no command given" and opened the DESKTOP APP, which is why inviting
+# a seat into a brainstorm room produced "Builders Gate is already running"
+# instead of a participant.
+#
+# One constant, so registration, verification and repair cannot disagree about
+# what a correct entry looks like: everything downstream compares against this.
+FROZEN = bool(getattr(sys, "frozen", False))
+MODULE_ARGS = ["mcp"] if FROZEN else ["-m", "bgate_mcp.server"]
 
 # A registration whose command is one of these AND carries no directory part is
 # the documented failure. The "no directory part" half is load-bearing: an
