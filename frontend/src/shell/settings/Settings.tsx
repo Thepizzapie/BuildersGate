@@ -7,6 +7,7 @@ import { Ti } from "../Ti";
 import { mutate, readJSON } from "../../bridge";
 import { usePoll, useViewActive } from "../../hooks";
 import { useEffect } from "react";
+import { AgentFleet } from "./AgentFleet";
 import "./settings.css";
 
 /* 7b · Settings as a FORM.
@@ -57,6 +58,19 @@ const EMPTY: Described = { precedence: "", groups: [] };
 
 /** The generator panels are a group in the rail like any other. */
 const GENERATORS = "Generators";
+
+/* THE FLEET IS A RAIL GROUP TOO, and it is not a setting at all — it is a live
+   list of processes with a kill button on each. It belongs here because this is
+   the screen that already holds every machine-scoped, human-only control (the
+   only surface allowed to write an API key is three lines below), and because
+   the board deliberately cannot show it: the board is one project and the whole
+   point of this panel is the agents running against the OTHER ones. */
+const FLEET = "Running agents";
+
+/* Rail entries that are panels rather than settings groups. Listed once so the
+   rail, the icon lookup and the count suppression cannot disagree — they did,
+   and Generators rendered a "0" beside itself for a while. */
+const PANELS: Record<string, string> = { [GENERATORS]: "sparkles", [FLEET]: "robot" };
 
 const show = (v: unknown): string =>
   Array.isArray(v) ? (v.length ? v.join(", ") : "none")
@@ -154,15 +168,15 @@ export function Settings() {
               have to read; a glyph is the thing you actually navigate by once
               you have been here twice. The name comes from the registry
               (settings.GROUP_ICONS) so a new group cannot arrive iconless. */}
-          {[...groups.map((g) => g.name), GENERATORS].map((name) => (
+          {[...groups.map((g) => g.name), ...Object.keys(PANELS)].map((name) => (
             <button key={name}
                     className={name === group ? "on" : ""}
                     onClick={() => setGroup(name)}>
-              <Ti name={name === GENERATORS ? "sparkles"
-                        : groups.find((g) => g.name === name)?.icon || "adjustments"}
+              <Ti name={PANELS[name]
+                        || groups.find((g) => g.name === name)?.icon || "adjustments"}
                   size={15} />
               <span className="l">{name}</span>
-              {name !== GENERATORS && (
+              {!PANELS[name] && (
                 <span className="n">
                   {groups.find((g) => g.name === name)?.fields.length ?? 0}
                 </span>
@@ -172,7 +186,13 @@ export function Settings() {
         </nav>
 
         <ScrollArea className="bg4-settings-body" type="auto">
-          {group === GENERATORS ? (
+          {group === FLEET ? (
+            /* `active` is the DECK's activity, not the rail's: the fleet polls,
+               and a poller left running behind a screen the user navigated away
+               from is the thing usePoll's enabled flag exists to stop. The rail
+               selection is already accounted for by not rendering this at all. */
+            <AgentFleet active={active} />
+          ) : group === GENERATORS ? (
             <section className="bg4-settings-group">
               {/* THREE CLASSIC PANELS, HOSTED NOT REBUILT. providerkeys.js is
                   the only surface in the product that may write an API key —
@@ -198,7 +218,10 @@ export function Settings() {
               </section>
             ))
           )}
-          {!groups.length && (
+          {/* Only for the SETTINGS groups. A panel that legitimately has no
+              rows of its own — the fleet with nothing running — was being told
+              "nothing matches that" under a filter box it does not use. */}
+          {!groups.length && !PANELS[group] && (
             <Text size="xs" c="dimmed" ta="center" py="xl">nothing matches that</Text>
           )}
         </ScrollArea>

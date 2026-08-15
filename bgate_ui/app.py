@@ -29,6 +29,7 @@ from bgate_core import (
     activity, artifacts, assets, bible, db, lore, playtest,
     project, scaffold, seats,
 )
+from bgate_core import agentreg as _agentreg
 from bgate_core import controls as _controls
 from bgate_core import queue as _queue
 from bgate_core.util import rows as _rows
@@ -97,6 +98,15 @@ def _start_reactors() -> None:
     # Same problem one layer over: a recording ffmpeg outlives the server too.
     try:
         _repair_orphan_recordings(_root())
+    except Exception:
+        pass
+    # The same job across EVERY project on this machine, not just this one. The
+    # sweep below reads dispatch's in-memory table and this project's DB, so an
+    # agent a previous dashboard spawned against a DIFFERENT project stays
+    # stranded no matter how many times this one starts. agentreg's entries name
+    # their own root, so it can settle them all.
+    try:
+        _agentreg.reconcile()
     except Exception:
         pass
     # Settle anything the last run left mid-flight. status() is a pure read now,

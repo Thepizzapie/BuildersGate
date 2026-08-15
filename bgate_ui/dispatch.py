@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from bgate_core import aegis as _aegis
+from bgate_core import agentreg as _agentreg
 from bgate_core import assets as _assets
 from bgate_core import gates as _gates
 from bgate_core import gitwork as _git
@@ -604,6 +606,156 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
     )
 
 
+# WHAT THE SPAWNED AGENT'S ENVIRONMENT IS ALLOWED TO CONTAIN.
+#
+# This used to be `{**os.environ, ...}`. The dashboard is long-lived, started
+# from the user's own shell, and holds every credential that shell holds - not
+# just the ones Builders Gate uses. An agent with a Bash tool and an unfiltered
+# copy of that environment can read a cloud token, a database URL or a signing
+# key that has nothing to do with making a game, and the first place it would
+# show up is a log file it wrote itself.
+#
+# THE FAILURE MODE ON THE OTHER SIDE IS WORSE, so this list is generous where a
+# variable is plainly infrastructure and stingy only where it is plainly a
+# secret. Breaking a working agent costs a run and a confused user; the leak
+# costs a credential. Every entry below says why it survives.
+_ENV_PASSTHROUGH: tuple[str, ...] = (
+    # --- the process can start at all -------------------------------------
+    # PATH finds the CLI and everything it shells out to. PATHEXT and COMSPEC
+    # are how Windows resolves a bare `git` or `npm` to git.exe / a .cmd shim;
+    # without PATHEXT a node-installed CLI is unlaunchable.
+    "PATH", "PATHEXT", "COMSPEC",
+    # SystemRoot is load-bearing on Windows in a way it does not look: the
+    # socket stack (WSAStartup) fails to initialise without it, so an agent
+    # spawned without it starts and then cannot make a single HTTPS call.
+    "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE",
+    "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+    # ProgramFiles is how find_godot/find_blender name their install roots, and
+    # how a child that re-resolves them finds the same thing this process did.
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA",
+    # --- scratch space ------------------------------------------------------
+    # Every atomic write, every Blender and ffmpeg intermediate, and the aegis
+    # allowlist's own temp-dir entry resolve through these. Denying them does
+    # not contain anything; it breaks the toolchain.
+    "TEMP", "TMP", "TMPDIR",
+    # --- who the user is ----------------------------------------------------
+    # git reads ~/.gitconfig, the CLIs read their own config under the profile,
+    # and Path.home() is these variables. An agent with no home directory
+    # commits as nobody and re-authenticates on every run.
+    "HOME", "HOMEDRIVE", "HOMEPATH", "USERPROFILE", "USERNAME", "USER",
+    "APPDATA", "LOCALAPPDATA",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    # --- the network the toolchain has to reach -----------------------------
+    # A corporate machine reaches the API only through the proxy, and only
+    # trusts the MITM root through these bundle vars. Dropping them turns every
+    # provider call into an unexplained TLS failure. They are addresses and
+    # file paths, not credentials.
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    # --- the interpreter that hosts the MCP server --------------------------
+    # The agent's CLI spawns `sys.executable -m bgate_mcp.server` (runners.py,
+    # mcp_overrides). That import only resolves if the venv it was installed
+    # into is still described here. PYTHONUTF8/IOENCODING keep a non-ASCII
+    # asset path from raising UnicodeEncodeError at the process boundary.
+    "PYTHONPATH", "PYTHONHOME", "PYTHONUTF8", "PYTHONIOENCODING",
+    "VIRTUAL_ENV", "CONDA_PREFIX",
+    # --- the agent CLI's own identity and config ----------------------------
+    # CLAUDE_CONFIG_DIR and CODEX_HOME are already read by first-party code, so
+    # a dashboard started with either pointed somewhere non-default must hand
+    # the child the same one or the child reads a different account's config.
+    # ANTHROPIC_* / OPENAI_BASE_URL are the CLI's endpoint and key: the run does
+    # not happen without them, which is the entire point of the spawn.
+    "CLAUDE_CONFIG_DIR", "CODEX_HOME",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
+    "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID",
+    # --- provider keys the MCP tools genuinely require ----------------------
+    # NOT a second copy of the provider table: the registered ones are pulled
+    # from bgate_core.providers below, so a provider added there is not
+    # silently scrubbed into a "key not set" that names the wrong cause. These
+    # two are the ones that live outside that table - STABILITY_API_KEY is
+    # declared inline in the imageto3d backend table, and TWITCH_CHANNEL is the
+    # half of the Twitch pair that is a channel name rather than a token.
+    "STABILITY_API_KEY", "TWITCH_CHANNEL",
+)
+
+# Everything in the harness's own namespace rides through as a prefix rather
+# than a list. Two reasons it is safe: these are settings, paths and ids that
+# this process itself wrote or that the user set FOR Builders Gate, and the
+# registry (settings.py) keeps adding to them - an allowlist enumerated by hand
+# would silently stop honouring the newest toggle, which is a bug that looks
+# like "the Settings panel does nothing".
+_ENV_PREFIXES: tuple[str, ...] = ("BGATE_",)
+
+
+def _provider_env_vars() -> tuple[str, ...]:
+    """Every credential var a registered provider reads, from the table itself.
+
+    Derived rather than duplicated so that adding a Provider row cannot leave
+    its key scrubbed out of the one process that needs it. A failure here is
+    not fatal: the hand-written list above still covers the toolchain, and an
+    art call answers with its own "key not set" message.
+    """
+    try:
+        from bgate_core.providers import PROVIDERS
+    except Exception:
+        return ()
+    return tuple(p.env for p in PROVIDERS if getattr(p, "env", ""))
+
+
+def _scrubbed_environ() -> dict[str, str]:
+    """os.environ, reduced to what a seat needs.
+
+    Case-insensitive matching because Windows environment names are, and the
+    same variable arrives as SystemRoot, SYSTEMROOT or systemroot depending on
+    who set it. The ORIGINAL name is what gets passed on - CreateProcess does
+    not care, but a POSIX child does, and this module is not the place to
+    rename someone's variable.
+    """
+    allowed = {name.upper() for name in _ENV_PASSTHROUGH}
+    allowed.update(name.upper() for name in _provider_env_vars())
+    prefixes = tuple(p.upper() for p in _ENV_PREFIXES)
+    kept: dict[str, str] = {}
+    for name, value in os.environ.items():
+        upper = name.upper()
+        if upper in allowed or upper.startswith(prefixes):
+            kept[name] = value
+    return kept
+
+
+def _contained(path: str, root: str) -> bool:
+    """Is ``path`` the project root or something inside it?
+
+    normcase + normpath because the supported platform is Windows, where
+    C:\\Games\\Ember and c:/games/ember are the same directory and a plain
+    string compare says they are not. Symlinks are resolved first so a junction
+    pointing out of the tree cannot be laundered into looking contained.
+    """
+    try:
+        target = os.path.normcase(os.path.normpath(str(Path(path).resolve())))
+        base = os.path.normcase(os.path.normpath(str(Path(root).resolve())))
+    except OSError:
+        return False
+    return target == base or target.startswith(base + os.sep)
+
+
+# Flags that hand a CLI a directory it may work in. Checked by value, not by
+# trusting runners.py to stay correct: neither runner passes anything outside
+# the project today (claude takes no --add-dir here, codex takes --cd cwd), and
+# this is what keeps that true after the next flag is added.
+_DIR_GRANTING_FLAGS = ("--add-dir", "--cd", "--workdir", "--directory")
+
+
+def _escaping_dir_flag(args: list[str], root: str) -> Optional[str]:
+    """The first directory-granting flag pointing outside ``root``, if any."""
+    for flag, value in zip(args, args[1:]):
+        if flag in _DIR_GRANTING_FLAGS and not _contained(value, root):
+            return f"{flag} {value}"
+    return None
+
+
 def _live_count() -> int:
     return sum(1 for e in _live.values() if e["proc"].poll() is None)
 
@@ -780,13 +932,24 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     log_path = log_dir / f"item-{item_id}.log"
 
     env = {
-        **os.environ,
+        # NOT os.environ. See _scrubbed_environ: the dashboard's whole
+        # environment used to reach the agent, credentials the game has no use
+        # for included.
+        **_scrubbed_environ(),
         # Resolved paths, so no agent ever has a reason to go looking for a
-        # binary. Placed after os.environ deliberately — _toolchain_env has
+        # binary. Placed after the scrub deliberately, because _toolchain_env has
         # already preferred any override that was set there.
         **_toolchain_env(),
         "BGATE_SEAT": item["seat"],
         "BGATE_ROOT": str(root),
+        # THE PROJECT BOUNDARY, STATED ONCE. The hook (bgate_cli/hook.py) and
+        # the MCP server both ask aegis.mode() how hard to enforce it, and both
+        # read it from this variable. Passing the dashboard's NORMALISED mode
+        # rather than letting each child re-read a raw string means a typo in
+        # the user's shell cannot have the hook enforcing one policy while the
+        # server enforces another. aegis.mode() maps anything unrecognised to
+        # the default, and it maps it the same way for everybody here.
+        "BGATE_AEGIS": _aegis.mode(),
         "BGATE_WORK_ITEM": str(item_id),
         "BGATE_LOCK_OWNER": f"item-{item_id}",
         # Who this session is, for anything that asks whether a human is
@@ -806,6 +969,24 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     args = runner.build_args(exe, permission_mode=permission_mode,
                              model=model, cwd=cwd, native_images=native_images,
                              max_turns=_max_turns(root))
+
+    # CONTAINMENT, CHECKED AT THE SPAWN RATHER THAN TRUSTED.
+    #
+    # BGATE_ROOT above is what the agent is TOLD it owns; these two lines are
+    # what make it true of the process. cwd is either the root or a worktree
+    # under <root>/.bgate/work/, so no case needs excusing. Anything else got
+    # here through a caller passing a directory that is not this project's, and
+    # an agent that starts outside its root writes outside its root while the
+    # hook is still judging it against the project it was pinned to.
+    if not _contained(cwd, root):
+        return _refused("cwd_escape",
+                        f"the agent's working directory {cwd} is outside the "
+                        f"project it was dispatched for ({root})")
+    escape = _escaping_dir_flag(args, root)
+    if escape:
+        return _refused("arg_escape",
+                        f"{runner.name} would be given `{escape}`, which grants "
+                        f"the agent a directory outside {root}")
 
     try:
         log_handle = open(log_path, "ab")
@@ -882,6 +1063,12 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                           max_cost_usd=ceiling_usd or None,
                           max_runtime_s=ceiling_s or None)
     _record_pid(root, proc.pid, item_id)
+    # And in the MACHINE-WIDE registry, which is the one that survives this
+    # process. pids.json above is per project and is read by the orphan sweep;
+    # this entry is what lets a restarted dashboard — or a second one, or one
+    # opened on a different project entirely — see and stop this agent at all.
+    _agentreg.record(proc.pid, item_id=item_id, seat=item.get("seat") or "",
+                     root=str(root), runner=runner.name, log=str(log_path))
     # The streamed session waits on stdin forever; close it once the agent
     # self-reports so it exits even when no dashboard is polling /api/agents.
     threading.Thread(target=_watch_completion, args=(root, item_id),
@@ -1422,6 +1609,14 @@ def _reap(root: str, item_id: int, entry: dict, code) -> dict:
     _finalize(root, item_id, entry)
     try:
         _unrecord_pid(root, entry["proc"].pid)
+    except Exception:
+        pass
+    # The machine-wide entry goes with it. An entry left behind is what
+    # agentreg.reconcile() reads as "this run died without being banked", and
+    # this run has just been banked — leaving it would have the next dashboard
+    # start by failing an item that finished cleanly.
+    try:
+        _agentreg.forget(entry["proc"].pid)
     except Exception:
         pass
     row = {"item_id": item_id, "state": "exited", "code": code,
@@ -2454,7 +2649,7 @@ def _prune_feeds() -> None:
         _activity.pop(key, None)
 
 
-def stop(item_id: int, actor: str = "") -> dict:
+def stop(item_id: int, actor: str = "", root: str = "") -> dict:
     """End a run deliberately: kill the TREE, and record it as a stop.
 
     Two bugs in one line. terminate() killed the `claude` parent only, leaving
@@ -2463,11 +2658,27 @@ def stop(item_id: int, actor: str = "") -> dict:
     N without self-reporting', so the one place a user looks to find out what
     happened told them their agent mysteriously died, when in fact they stopped
     it. The stop lands on the item immediately, with a name on it.
+
+    ``root`` NAMES THE PROJECT THE CALLER MEANT, and is checked rather than
+    assumed. Item ids are per project — every game has its own #14 — and _live
+    is keyed by item id alone, machine-wide. The fleet view lists agents across
+    every registered project, so a stop aimed at another game's #14 would have
+    killed whatever this process happened to be running under that number.
+    Callers that genuinely mean "whatever holds this id here" (the per-project
+    board buttons, kill_all) pass nothing and are unaffected.
     """
     with _lock:
         entry = _live.get(item_id)
         if not entry or entry["proc"].poll() is not None:
             return {"ok": False, "error": "no live agent for this item"}
+        # An entry with no root recorded predates that field and cannot be
+        # proved to be the wrong project, so it is left stoppable — refusing on
+        # an unknown is how a stop button starts doing nothing.
+        here = str(entry.get("root") or "")
+        if root and here and _pkey(here) != _pkey(root):
+            return {"ok": False,
+                    "error": f"item {item_id} here belongs to {here}, not to "
+                             f"{root} — nothing was stopped"}
         if not actor:
             try:
                 from bgate_ui import api as _api

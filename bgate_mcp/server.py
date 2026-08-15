@@ -60,6 +60,7 @@ from bgate_adapters import godot as _godot
 from bgate_adapters import recorder as _recorder
 from bgate_adapters import sprites as _sprites
 from bgate_core import activity as _activity
+from bgate_core import aegis as _aegis
 from bgate_core import assets as _assets
 from bgate_core import autotile as _autotile
 from bgate_core import levelgen as _levelgen
@@ -196,6 +197,176 @@ def _keys(root: Optional[str] = None) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# CONTAINMENT — the same project boundary the PreToolUse hook enforces, on the
+# side of the fence the hook cannot see.
+#
+# The hook judges FILE OPERATIONS, so it sees what Write, Edit, Read and Bash
+# do and nothing else. Every tool in this module takes `project_dir` and then
+# goes straight to sqlite and the filesystem IN THIS PROCESS: no Write, no
+# Bash, no PreToolUse event, no hook. An agent dispatched for Ember could call
+# queue_add(project_dir=<Hollow>), scene_set_property against another game's
+# scene, or asset_lock on somebody else's file, and not one of those crossed a
+# gate. Containment in the hook alone was theatre for anything holding these
+# tools, which is every dispatched agent.
+#
+# THE ANSWER COMES FROM bgate_core.aegis, the same function the hook calls,
+# against the same pinned BGATE_ROOT dispatch stamps at spawn. Two processes,
+# one decision function, no shared state - see that module's docstring for why
+# it is pure.
+_CALL_TOOL: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "bgate_call_tool", default="")
+
+
+class ContainmentRefused(Exception):
+    """This seated session named a project that is not the one it is pinned to.
+
+    A distinct type rather than a PermissionError so the wrapper can recognise
+    it and answer with the structured payload below; tools that catch broadly
+    and return `_fail` still surface the same sentence, which is the part the
+    model acts on.
+    """
+
+
+# WHAT A SEATED AGENT MAY STILL ASK ABOUT ANOTHER PROJECT: things that only
+# look. Refusing every cross-project call would be defensible - the hook
+# contains reads too - but the cost lands very differently at the two ends. A
+# refused read is an agent that cannot orient; a refused WRITE is the whole
+# point, because a write into another game is the damage nobody can undo by
+# reading more carefully.
+#
+# EVERYTHING NOT LISTED HERE IS TREATED AS WRITING. That direction is
+# deliberate: a new tool arrives contained, and the failure mode of forgetting
+# to add a genuinely read-only tool to this set is a refusal a human can see
+# and fix, while the failure mode of a default-allow list is a silent write
+# into somebody else's game.
+#
+# Membership was decided by reading the bodies, not the names. Tools whose name
+# reads like a report and whose body is not one are absent on purpose:
+# sprite_sheet_check writes a guides PNG next to the sheet, godot_retarget_check
+# and the two *_verdict tools record their verdict, consistency_check generates
+# images and spends money, queue_claim_next takes the item, and
+# cinematic_stuck_shots / music_stuck_tracks poll the provider and write job
+# rows back. playtest_check is here despite opening the microphone: a device
+# probe changes nothing in any project.
+_READ_ONLY_TOOLS = frozenset({
+    # machine and project diagnostics
+    "bgate_doctor", "project_status", "image_status", "local_status",
+    "blender_status", "godot_status", "voice_status", "kie_status",
+    "godot_templates", "godot_check_project", "godot_inspect_resource",
+    "item_classes", "sfx_kinds", "cutout_templates", "cutout_status",
+    "playtest_devices", "playtest_check", "playtest_telemetry_contract",
+    # the board and the seats, read side
+    "seat_list", "seat_brief", "seat_can_write", "seat_notes", "handoff_read",
+    "queue_list", "queue_get", "queue_next", "board_digest", "plan_status",
+    "pending_decisions", "decision_list", "not_building_list",
+    "iteration_status", "asset_status",
+    # design, canon and lore, read side
+    "bible_read", "bible_ref_list", "lore_list", "lore_brief", "canon_check",
+    "recall", "ref_list", "profile_get", "quest_list", "quest_read",
+    "causal_chains", "causal_specs", "scene_outline", "dialogue_read",
+    "dialogue_list", "sfx_list", "brainstorm_list", "brainstorm_feed",
+    "playtest_list", "playtest_brief", "art_tournament_standings",
+    # long-running production pipelines, read side
+    "kie_music_options", "music_candidates", "cinematic_options",
+    "cinematic_styles", "cinematic_sequences", "cinematic_candidates",
+    "cinematic_shot_status", "cinematic_estimate", "kie_music_status",
+    "storyboard_boards", "storyboard_open",
+})
+
+
+def _log_containment(result: dict, target: str, tool: str, mode: str) -> None:
+    """Put every crossing on the record, refused or not.
+
+    Same file and same line shape as the hook's own containment log, so `bgate
+    hook --log` reads both without knowing there are two writers; `surface`
+    says which one wrote the line. THE LOG GOES IN THE PINNED PROJECT, never
+    the one that was asked for - writing the audit trail into the other game
+    would be the boundary crossing this line exists to report.
+
+    Best effort, by the rule that governs every side effect on this path: a
+    logger that raises would take the session down to save a line of audit.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        pinned = os.environ.get("BGATE_ROOT", "").strip()
+        if not pinned:
+            return
+        path = _Path(pinned) / ".bgate" / "hook.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "event": "containment",
+                "surface": "mcp",
+                "verdict": result.get("verdict", ""),
+                "mode": mode,
+                "enforced": mode == "block" and tool not in _READ_ONLY_TOOLS,
+                "tool": tool,
+                "seat": os.environ.get("BGATE_SEAT", ""),
+                "owner": os.environ.get("BGATE_LOCK_OWNER", ""),
+                "scope": result.get("scope", ""),
+                "target": str(target)[:1000],
+                "reason": str(result.get("reason", ""))[:1000],
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def _contained(root: str) -> str:
+    """``root`` back if this session may act on it, else raise.
+
+    SEATED SESSIONS ONLY, exactly as in the hook. A human-started director with
+    no BGATE_SEAT legitimately works across projects - reading one game's design
+    while planning another is ordinary top-level work - and an unpinned session
+    has claimed no scope for anyone to enforce.
+
+    A check that cannot run must not become a session that cannot work, so an
+    unexpected failure inside aegis allows the call. That is the same fail-safe
+    the hook documents, and it is safe to repeat here for the same reason: the
+    gate exists to stop an accident, and an accident is not what survives a
+    broken import.
+    """
+    mode = _aegis.mode()
+    if mode == "off":
+        return root
+    seat = _seat()
+    if not seat:
+        return root
+    pinned = os.environ.get("BGATE_ROOT", "").strip()
+    if not pinned:
+        return root
+
+    try:
+        # cwd is the resolved root itself: it is already absolute, so nothing
+        # is being guessed here - the argument is passed only because aegis
+        # refuses a relative target rather than resolving one blindly.
+        result = _aegis.decide(pinned, root, cwd=root, seat=seat)
+        allowed = _aegis.is_allowed(result)
+    except Exception:
+        return root
+    if allowed:
+        return root
+
+    tool = _CALL_TOOL.get() or "this tool"
+    _log_containment(result, root, tool, mode)
+    if tool in _READ_ONLY_TOOLS or mode == "warn":
+        return root
+
+    other_game = result.get("verdict") == _aegis.DENY
+    tail = (" Another game's files are on the other side of that call. Nothing "
+            "makes them yours to change, including being asked to."
+            if other_game else
+            " Your work belongs in the tree you were dispatched for and nowhere "
+            "else.")
+    raise ContainmentRefused(
+        f"[builders-gate] seat {seat!r} may not run {tool} against that "
+        f"project: {result.get('reason', '')}.{tail} If your task genuinely "
+        "needs something from outside, do not go and get it - say so in your "
+        "result note and name the project, so a human decides.")
+
+
 def _root(scratch: bool = False) -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
     Also loads the project's .env and the machine-wide one, in that order.
@@ -226,6 +397,12 @@ def _root(scratch: bool = False) -> str:
                 "this call, or project_dir='scratch' to use ~/.bgate/scratch, "
                 "or export BGATE_ROOT, or run project_init to create one "
                 "here.") from None
+    # BEFORE _keys, AND THAT ORDER IS THE POINT. _keys loads the named
+    # project's .env into this process's environment, so a containment check
+    # placed after it would hand a seated agent another game's API keys and
+    # then tell it it was not allowed to be there. Refuse first, read the
+    # credentials second.
+    root = _contained(root)
     _keys(root)
     return root
 
@@ -447,6 +624,10 @@ def _tool(fn: Optional[Callable] = None, *,
 
         def _call():
             token = _CALL_ROOT.set(given)
+            # The tool's own name, for the containment gate: it is what decides
+            # whether this call only looks or actually writes, and _root() has
+            # no other way to know which of 200 tools is asking.
+            name_token = _CALL_TOOL.set(fn.__name__)
             try:
                 payload = _normalize(fn(*args, **kwargs))
                 if images is None or not isinstance(payload, dict):
@@ -456,7 +637,19 @@ def _tool(fn: Optional[Callable] = None, *,
                 except Exception:
                     blocks = []  # a picture is a bonus; never lose the result
                 return [*blocks, payload] if blocks else payload
+            except ContainmentRefused as exc:
+                # Most tools catch their own exceptions and would have turned
+                # this into _fail's "ContainmentRefused: ..." string, which is
+                # the same sentence. This is for the ones that do not, so a
+                # refusal is never the model's first sight of a raised
+                # exception - and so both shapes carry ok/error like every
+                # other failure this module produces.
+                return {"ok": False, "error": str(exc),
+                        "refused": "containment",
+                        "pinned_root": os.environ.get("BGATE_ROOT", "").strip(),
+                        "seat": _seat()}
             finally:
+                _CALL_TOOL.reset(name_token)
                 _CALL_ROOT.reset(token)
 
         # abandon_on_cancel stays False (the default): a cancelled client must

@@ -1071,6 +1071,20 @@ html.bg-framed body { padding-top: 44px }
 }
 .bg4-projsep { height: 1px; margin: 5px 4px; background: var(--line) }
 .bg4-projitem.new .nm { color: var(--accent) }
+/* Switching does not stop a running agent and cannot re-scope one. Said in the
+   menu, above the buttons, because after the reload there is nothing left to
+   say it to. */
+.bg4-projrunning {
+  display: flex; gap: 7px; align-items: flex-start;
+  margin: 0 4px 5px; padding: 7px 8px; border-radius: 6px;
+  background: var(--warn-soft); border: 1px solid var(--warn-line);
+  font: 400 11px/1.45 var(--sans); color: var(--text-2);
+}
+.bg4-projrunning .ti { flex: none; margin-top: 1px; color: var(--warn) }
+/* One click armed, not a modal: the second click is the same button, and the
+   label under it changes to say what it will now do. */
+.bg4-projitem.armed { background: var(--warn-soft) }
+.bg4-projitem.armed .cur { color: var(--warn) }
 .bg4-projwarn {
   position: absolute; top: 7px; right: 7px; width: 6px; height: 6px;
   border-radius: 50%; background: var(--bad);

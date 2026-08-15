@@ -64,6 +64,59 @@ def popen(cmd, **kwargs: Any) -> subprocess.Popen:
     return subprocess.Popen(cmd, **_flags(kwargs))
 
 
+def kill_pid_tree(pid: int, timeout: float = 3.0) -> bool:
+    """End a process AND everything it started, KNOWING ONLY ITS PID.
+
+    The cross-process case, which kill_tree below cannot serve: an agent is
+    recorded in ~/.bgate/agents by the dashboard that spawned it, and that
+    ledger outlives the dashboard. A second dashboard -- or the same one after a
+    restart -- has a number and no Popen handle, so "stop that agent" had
+    nothing to call and the agent kept editing files and kept billing.
+
+    The OS incantation lives here rather than being retyped wherever a bare pid
+    turns up, which is the same argument the module docstring makes about
+    CREATE_NO_WINDOW: a detail remembered at ten call sites is a detail
+    forgotten at the eleventh.
+
+    True when the kill was issued, False when the pid is not one we may aim at.
+    It cannot promise the tree is gone -- taskkill reports per process and a
+    child that exited a millisecond earlier is an error on an otherwise
+    successful kill -- so callers verify with agentreg.probe rather than trust
+    this return. NEVER RAISES, for the same reason kill_tree does not.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    # A stop aimed at pid 0 is a stop aimed at every process in the group on
+    # POSIX, and at nothing coherent on Windows. Refuse rather than find out.
+    if pid <= 0:
+        return False
+
+    if WINDOWS:
+        # taskkill /T walks the child tree, which terminate() does not. /F
+        # because a game mid-frame does not process WM_CLOSE promptly and the
+        # user has already said they want it gone.
+        try:
+            run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        import signal
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            # Not a group leader, or already gone. Aim at the process itself
+            # rather than giving up: a runner spawned outside a new session
+            # still has to die.
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+    return True
+
+
 def kill_tree(proc: Optional[subprocess.Popen], timeout: float = 3.0) -> bool:
     """End a process AND everything it started. True if anything was killed.
 
@@ -77,21 +130,7 @@ def kill_tree(proc: Optional[subprocess.Popen], timeout: float = 3.0) -> bool:
     if proc is None or proc.poll() is not None:
         return False
 
-    if WINDOWS:
-        # taskkill /T walks the child tree, which terminate() does not. /F
-        # because a game mid-frame does not process WM_CLOSE promptly and the
-        # user has already said they want it gone.
-        try:
-            run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True, timeout=timeout)
-        except (OSError, subprocess.SubprocessError):
-            pass
-    else:
-        import signal
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
+    kill_pid_tree(proc.pid, timeout=timeout)
 
     try:
         proc.wait(timeout=timeout)

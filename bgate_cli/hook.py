@@ -32,6 +32,21 @@ It cannot parse shell in general, so the contract is stated honestly:
     A determined process can still write; this stops the casual bypass, which
     is what actually happened. Do not read it as a sandbox.
 
+CONTAINMENT IS A SEPARATE QUESTION AND IT IS ASKED FIRST. Lanes and locks answer
+"what may this agent touch"; they never answered "where", because this hook used
+to derive the project FROM THE WRITE TARGET. An agent dispatched for Ember that
+wrote into Hollow was therefore judged against HOLLOW's seats, and one that wrote
+outside every project was waved through with no check at all. bgate_core.aegis
+answers the where-question against the root dispatch PINNED at spawn time, and
+the answer is now consulted before the lane gate. See ``_contain``.
+
+READS ARE CHECKED TOO, and only for containment. "This agent cannot touch
+anything outside its project" is not a statement about writing: Read, Glob and
+Grep are how another game's design docs, keys and unreleased plot end up in a
+transcript. There is no lane or lock question to ask about a read - a seat may
+read anything inside its own project - so those tools go through the containment
+gate alone.
+
 FAIL-SAFE RULE: this must NEVER raise or exit nonzero by accident — a crashing
 hook blocks every write in the session. Any unexpected error means exit 0. That
 silence used to be indistinguishable from "enforcement is off", so failing open
@@ -52,6 +67,25 @@ _PATH_KEYS = {
     "Edit": "file_path",
     "MultiEdit": "file_path",
     "NotebookEdit": "notebook_path",
+}
+
+# Tool → the input key that carries a path being READ. These reach only the
+# containment gate: a seat may read anything inside its own project, so there is
+# no lane question here, and leases exist to stop a silent overwrite, which a
+# read cannot cause.
+#
+# Glob and Grep name their directory `path` and DEFAULT IT TO THE SESSION'S OWN
+# when it is absent, so a missing key is not "nothing to check" — it is the cwd,
+# and that is what gets judged. What is NOT judged is the glob PATTERN: a
+# pattern is not a path and expanding one here would mean walking the filesystem
+# on the hook's hot path to answer a question the tool is about to answer
+# anyway. A pattern that climbs out of the project reaches files that are
+# themselves outside it, and each of those is a Read this hook does see.
+_READ_PATH_KEYS = {
+    "Read": "file_path",
+    "NotebookRead": "notebook_path",
+    "Glob": "path",
+    "Grep": "path",
 }
 
 # Claude Code's contract: 0 allows, 2 blocks and shows stderr to the MODEL, any
@@ -105,6 +139,53 @@ def director_mode() -> str:
     """How hard to check a session that adopted no seat. Never raises."""
     mode = os.environ.get("BGATE_DIRECTOR_MODE", "").strip().lower()
     return mode if mode in DIRECTOR_MODES else DEFAULT_DIRECTOR_MODE
+
+
+# ---------------------------------------------------------------------------
+# CONTAINMENT — the where-question, and its own ladder.
+#
+# Deliberately NOT folded into DIRECTOR_MODES even though it reads the same
+# shape, because the two dials govern different populations and would fight if
+# they were one. The director ladder softens the LANE for a seatless session;
+# this one governs the PROJECT BOUNDARY for a seated one, and a seatless
+# director is exempt from it entirely (see `_contain`).
+#
+# THE LADDER ITSELF NOW LIVES IN bgate_core.aegis and these three names are
+# aliases onto it. It moved when the MCP server became a second enforcer: that
+# process asks the same question about the same agent, and if each side kept its
+# own copy of the dial then BGATE_AEGIS=block could mean "refused" at the hook
+# and "warned" at the tools, which is not a policy anyone could reason about.
+# The names stay because callers and tests here use them.
+#
+#   off    the old behaviour: the boundary is not checked at all.
+#   warn   DEFAULT FOR THIS RELEASE. The call lands and the human is told on
+#          exit 1. This is not timidity: the gate's whole job right now is to
+#          produce the log that proves `block` would deny nothing legitimate.
+#          Turning it straight to block would have every false positive land as
+#          a dead agent in somebody's board, discovered hours later.
+#   block  a seated agent touching another tree is refused.
+def aegis_mode() -> str:
+    """How hard to enforce the project boundary. Never raises.
+
+    Imported lazily, like every other bgate_core import in this module: the
+    hook is a fresh process on every tool call, so nothing it might not need
+    belongs at the top of the file.
+    """
+    from bgate_core import aegis
+
+    return aegis.mode()
+
+
+def __getattr__(name: str):
+    # AEGIS_MODES and DEFAULT_AEGIS_MODE resolved on first touch rather than at
+    # import, so the alias costs nothing in the runs that never look at it.
+    from bgate_core import aegis
+
+    if name == "AEGIS_MODES":
+        return aegis.MODES
+    if name == "DEFAULT_AEGIS_MODE":
+        return aegis.DEFAULT_MODE
+    raise AttributeError(name)
 
 
 def session_owner(payload: dict) -> str:
@@ -412,13 +493,17 @@ def decide(payload: dict, seat: str, owner: str = "",
                             seat, owner, mode)
 
     key = _PATH_KEYS.get(tool)
-    if key is None:
-        return ALLOW, ""  # not a file write — not this hook's business
+    if key is not None:
+        target = tool_input.get(key)
+        if not target:
+            return ALLOW, ""
+        return _judge_path(str(target), payload, seat, owner, mode)
 
-    target = tool_input.get(key)
-    if not target:
-        return ALLOW, ""
-    return _judge_path(str(target), payload, seat, owner, mode)
+    read_key = _READ_PATH_KEYS.get(tool)
+    if read_key is not None:
+        return _judge_read(tool_input.get(read_key), payload, tool)
+
+    return ALLOW, ""  # neither a read nor a write — not this hook's business
 
 
 def _session_cwd(payload: dict):
@@ -429,8 +514,128 @@ def _session_cwd(payload: dict):
     return Path(payload.get("cwd") or os.getcwd())
 
 
+def _contain(target: str, payload: dict, tool: str = "",
+             verb: str = "write") -> tuple[int, str]:
+    """Is this path inside the project this agent was dispatched for?
+
+    ``(ALLOW, "")`` means carry on to whatever gate comes next; it does NOT mean
+    the write is permitted, only that it is in the right tree.
+
+    THE ROOT IS THE PINNED ONE, from BGATE_ROOT, and that is the entire point.
+    ``db.resolve_root(target)`` reads the project off the file being written,
+    which is how an agent writing into another game got judged by that game's
+    rules. ``project.active_root()`` is no better: the human can switch the
+    active project from the dashboard while an agent runs, and a running agent's
+    containment must not move under it halfway through. Dispatch already pins
+    the root at spawn and nothing consumed it. This consumes it.
+
+    SEATED SESSIONS ONLY. A hand-started director legitimately works across
+    projects - reading one game's design while planning another is ordinary
+    top-level work - so a session with no BGATE_SEAT is exempt. The agents this
+    contains are the ones nobody is watching.
+    """
+    mode = aegis_mode()
+    if mode == "off":
+        return ALLOW, ""
+    seat = os.environ.get("BGATE_SEAT", "").strip()
+    if not seat:
+        return ALLOW, ""
+    pinned = os.environ.get("BGATE_ROOT", "").strip()
+    if not pinned:
+        # Nothing claimed a scope for this session, so there is no claim to
+        # enforce. aegis says the same thing ("unscoped"); short-circuiting here
+        # keeps the common seatless-and-unpinned case off the import path.
+        return ALLOW, ""
+
+    try:
+        from bgate_core import aegis
+        cwd = _session_cwd(payload)
+        result = aegis.decide(pinned, target, cwd=cwd, seat=seat)
+        allowed = aegis.is_allowed(result)
+        if allowed:
+            # ORDINARY IN-PROJECT WORK IS NOT LOGGED - that is every file the
+            # agent touches, and it would bury the handful of lines the audit is
+            # for. An allow that only survived because of the TOOLCHAIN
+            # ALLOWLIST is a different animal: it crossed the boundary and was
+            # let through, which is exactly what has to be reviewable before the
+            # default moves to block. Asking again with an empty allowlist is
+            # how we tell the two apart without reading aegis's prose, and it is
+            # cheap: an in-project target returns before aegis touches the disk.
+            crossed = not aegis.is_allowed(
+                aegis.decide(pinned, target, cwd=cwd, seat=seat, allowlist=[]))
+            if crossed:
+                _log_containment(result, target, tool, mode, payload)
+            return ALLOW, ""
+        _log_containment(result, target, tool, mode, payload)
+    except Exception as exc:
+        # The fail-safe rule applies here like everywhere else: a containment
+        # check that cannot run must not become a session that cannot work.
+        _log_fail_open(f"containment check failed: {type(exc).__name__}: {exc}",
+                       payload)
+        return ALLOW, ""
+
+    if mode == "warn":
+        # Exit 1 is non-blocking and its stderr goes to the HUMAN, not the
+        # model, so this names the dial: the person reading it is the one who
+        # decides whether the finding is a bug in the gate or in the agent.
+        return WARN, (
+            f"[builders-gate] CONTAINMENT WARNING - the {verb} was ALLOWED: "
+            f"{result['reason']}. BGATE_AEGIS=block would have refused it; "
+            "this line is the evidence that decides whether it should.")
+
+    other_game = result["verdict"] == "deny"
+    tail = (" Another game's files are on the other side of that path. Nothing "
+            "makes that yours to touch, including being asked to."
+            if other_game else
+            " Your work belongs in the tree you were dispatched for and "
+            "nowhere else.")
+    return BLOCK, (
+        f"[builders-gate] seat {seat!r} may not {verb} that path: "
+        f"{result['reason']}.{tail} If your task genuinely needs something from "
+        "outside, do not go and get it - say so in your result note and name "
+        "the path, so a human decides.")
+
+
+def _judge_read(target, payload: dict, tool: str) -> tuple[int, str]:
+    """Containment, and nothing else, for the tools that only look.
+
+    A missing path is not "nothing to judge": Glob and Grep default it to the
+    session's own directory, so that is what gets judged. Treating absent as
+    exempt would make `Grep(pattern)` with the cwd parked in another project the
+    one read that walks straight past this gate.
+    """
+    return _contain(str(target or _session_cwd(payload)), payload, tool,
+                    verb="read")
+
+
 def _judge_path(target: str, payload: dict, seat: str,
                 owner: str, mode: str = "block") -> tuple[int, str]:
+    """Containment, then lane + lock + lease, for one concrete path.
+
+    ORDER IS LOAD-BEARING. Containment runs first because the lane gate cannot
+    answer this question: it resolves the project from the target, so a write
+    into another game is graded against that game's lanes and a write outside
+    every project is waved through. Asking "is this even your tree" first makes
+    both of those a refusal instead of an accident.
+
+    In `warn` the containment finding does NOT short-circuit the lane gate. A
+    warning that skipped the remaining checks would be a loosening dressed as a
+    softening - a cross-project write would stop being graded by anything at
+    all - so the lane gate still runs and the warning is only what surfaces when
+    it had nothing louder to say.
+    """
+    contained, note = _contain(target, payload,
+                               str((payload or {}).get("tool_name", "")))
+    if contained == BLOCK:
+        return BLOCK, note
+    code, message = _judge_lanes(target, payload, seat, owner, mode)
+    if contained == WARN and code == ALLOW:
+        return WARN, note
+    return code, message
+
+
+def _judge_lanes(target: str, payload: dict, seat: str,
+                 owner: str, mode: str = "block") -> tuple[int, str]:
     """Lane + lock + lease for one concrete path. ALLOW takes the lease."""
     # Lazy imports keep the hook fast on the (common) inert path.
     from pathlib import Path
@@ -738,7 +943,47 @@ def _log_fail_open(detail: str, payload: dict | None = None) -> None:
         pass  # a logger that raises would defeat the fail-safe it documents
 
 
-def recent_failures(start=None, limit: int = 10) -> list[dict]:
+def _log_containment(result: dict, target, tool: str, mode: str,
+                     payload: dict | None = None) -> None:
+    """Put every boundary crossing on the record, allowed or not.
+
+    THIS IS WHAT MAKES `warn` WORTH SHIPPING. The default is warn precisely
+    because nobody yet knows whether a real board produces legitimate
+    cross-project touches, and a warning that vanishes into a terminal answers
+    that question for nobody. `enforced` records whether the mode of the day
+    actually stopped anything, so a later reader can tell "block would have
+    refused this" from "block did refuse this" without inferring it from dates.
+
+    Same file as the fail-open trail, deliberately: one log to read when asking
+    what the gate has been doing. Best effort, by the rule that governs every
+    side effect in this module - a logger that raises would take the session
+    down to save a line of audit.
+    """
+    try:
+        from datetime import datetime, timezone
+        path = log_path((payload or {}).get("cwd") or None)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "event": "containment",
+                "verdict": result.get("verdict", ""),
+                "mode": mode,
+                "enforced": mode == "block" and result.get("verdict") != "allow",
+                "tool": tool,
+                "seat": os.environ.get("BGATE_SEAT", ""),
+                "owner": os.environ.get("BGATE_LOCK_OWNER", ""),
+                "scope": result.get("scope", ""),
+                "target": str(target)[:1000],
+                "reason": str(result.get("reason", ""))[:1000],
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def _log_rows(start=None) -> list[dict]:
     path = log_path(start)
     if path is None or not path.is_file():
         return []
@@ -747,12 +992,28 @@ def recent_failures(start=None, limit: int = 10) -> list[dict]:
     except OSError:
         return []
     out = []
-    for line in lines[-limit:]:
+    for line in lines:
         try:
             out.append(json.loads(line))
         except ValueError:
             continue
     return out
+
+
+def recent_failures(start=None, limit: int = 10) -> list[dict]:
+    """Fail-open events only. FILTERED BY EVENT rather than just tailing the
+    file, because containment now shares the log and a caller asking "has this
+    hook been failing open" must not be handed boundary crossings instead - the
+    two mean opposite things about whether enforcement is working."""
+    return [row for row in _log_rows(start)
+            if row.get("event", "fail_open") == "fail_open"][-limit:]
+
+
+def recent_containment(start=None, limit: int = 20) -> list[dict]:
+    """The containment lines out of the same log, for the human reviewing
+    whether `block` is safe to make the default."""
+    return [row for row in _log_rows(start)
+            if row.get("event") == "containment"][-limit:]
 
 
 # A path no seat owns, used to prove the gate bites without touching real work.
@@ -791,6 +1052,12 @@ def selftest(start=None, seat: str = "") -> dict:
         "enforcing": False,
         "probes": [],
         "recent_failures": recent_failures(start),
+        # Reported whether or not it is biting, because "which project am I
+        # pinned to" is the first thing to check when an agent is being refused
+        # its own files - and an EMPTY pinned root is itself the finding.
+        "aegis": aegis_mode(),
+        "pinned_root": os.environ.get("BGATE_ROOT", ""),
+        "containment": recent_containment(start),
     }
     if root is not None:
         settings = Path(root) / ".claude" / "settings.json"
