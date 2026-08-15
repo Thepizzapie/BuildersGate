@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from . import activity, assets, db
+from . import activity, aegis, assets, db
 from .util import rows, slugify
 
 REFS_DIRNAME = "refs"
@@ -38,6 +38,50 @@ def _refs_dir(root: str | os.PathLike[str]) -> Path:
     return Path(root) / db.DB_DIRNAME / REFS_DIRNAME
 
 
+# The magic bytes of the four types an image model will accept as a reference.
+# A pin taken from a temp file with no extension used to land as
+# `<slug>.r1` with no suffix at all, and kie refuses to upload a file whose
+# extension is not one of these, so the anchor was pinned, listed, and
+# unusable as an anchor, which is the one job it has.
+_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"GIF87a", ".gif"),
+    (b"GIF89a", ".gif"),
+)
+
+# What counts as "already named like an image". A pin whose source was itself
+# an older pin (`floor-style.r1`) has a suffix, ".r1", and trusting it is how
+# an anchor ends up named `<slug>.r2.r1`, still unusable.
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tga")
+
+
+def _suffix_for(name: str, head: bytes) -> str:
+    """The extension the pinned copy should carry.
+
+    TAKES BYTES, NOT A PATH, and that is the point: this used to open the file
+    itself, which put a read of a caller-supplied path in a function with no way
+    to know which project owns it. The read now happens in pin(), on the line
+    after the boundary check, so the check and the open cannot drift apart. It
+    also makes this a pure function, which is how the table below is testable
+    without a file.
+
+    The source's own suffix wins when it is an image extension. When it is not -
+    no suffix at all, or a revision tag like ".r1" - the header decides, because
+    everything downstream routes on the extension and kie refuses to upload a
+    reference it cannot type.
+    """
+    suffix = Path(name).suffix.lower()
+    if suffix in _IMAGE_SUFFIXES:
+        return suffix
+    for magic, magic_suffix in _MAGIC:
+        if head.startswith(magic):
+            return magic_suffix
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    return ""
+
+
 def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
         kind: str = "style", note: str = "", actor: Optional[str] = None) -> dict:
     """Pin a reference: copy it into .bgate/refs/ as a new numbered revision.
@@ -48,9 +92,42 @@ def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
     """
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}, got {kind!r}")
-    src = Path(src_path)
+    # THE SOURCE IS CHECKED BEFORE ANYTHING OPENS IT, not after. `src_path`
+    # arrives from a caller - an agent's tool argument, a dashboard form - and
+    # everything below reads it: _suffix_for sniffs its header and the copy
+    # takes its bytes. A pin is the one place in this module that reaches
+    # OUTSIDE .bgate to fetch a file, so it is the one place the boundary has
+    # to be applied, and applying it at the caller instead would leave the
+    # other callers to remember.
+    #
+    # aegis.decide is the same function the PreToolUse hook and the MCP server
+    # ask, so a path this refuses here is a path they refuse too.
+    # RESOLVED ONCE, AND EVERY LINE BELOW USES THE RESOLVED PATH. The check ran
+    # on `Path(src_path)` while the open and the copy used that same unresolved
+    # value, so the string that was JUDGED and the string that was OPENED were
+    # only equal by assumption: aegis.decide normalises internally before
+    # deciding, and anything containing `..` or a symlink was therefore approved
+    # in one form and used in another. Resolving here collapses the two into one
+    # value, which closes the gap and is also what makes the boundary legible -
+    # to a reader, and to the scanner that flagged this line as a
+    # caller-controlled path reaching a file open.
+    src = Path(src_path).resolve()
+    verdict = aegis.decide(str(Path(root).resolve()), str(src), seat="pin")
+    if not aegis.is_allowed(verdict):
+        raise ValueError(
+            f"cannot pin {src_path}: {verdict['reason']}. Copy it into the "
+            "project first, then pin the copy.")
     if not src.is_file():
         raise FileNotFoundError(f"no file at {src_path}")
+    # READ ONCE, HERE, on the line after the boundary check. _suffix_for used to
+    # open the file itself, which put a read of a caller-supplied path in a
+    # function with no idea which project owns it; keeping the open next to the
+    # check is what stops the two drifting apart.
+    try:
+        with src.open("rb") as fh:
+            head = fh.read(16)
+    except OSError as exc:
+        raise FileNotFoundError(f"cannot read {src_path}: {exc}") from exc
     slug = slugify(name)
     who = actor if actor is not None else activity.current_actor()
 
@@ -65,7 +142,7 @@ def pin(root: str | os.PathLike[str], name: str, src_path: str, *,
 
     dest_dir = _refs_dir(root)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{slug}.r{revision}{src.suffix.lower()}"
+    dest = dest_dir / f"{slug}.r{revision}{_suffix_for(src.name, head)}"
     shutil.copy2(src, dest)
     digest = assets.file_hash(dest)
 

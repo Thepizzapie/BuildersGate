@@ -3,6 +3,7 @@ import { Ti } from "./Ti";
 import { SEAT_COLOR } from "./nav";
 import { setSelection, useSelection } from "./selection";
 import { askText, mutate, readJSON, toast, watchAgent } from "../bridge";
+import { say } from "./agents/api";
 import { usePoll } from "../hooks";
 
 /* The inspector — what you selected, in a panel that pops out over the stage.
@@ -118,12 +119,46 @@ export function Inspector() {
      every single time somebody clicked an agent. */
   const [opened, setOpened] = useState<Record<number, boolean>>({});
 
+  /* GIVING AN IDLE SEAT SOMETHING TO DO. The floor's lounge is where a seat
+     with no work stands, and the only useful thing to say about one is what it
+     should do next - there is no log to read and no run to steer. So the panel
+     for that selection is a box, and it posts to the SAME endpoint the
+     composer's "send it straight to a seat" does. Deliberately not a second
+     door: /api/console/say with a seat files the item for that seat and
+     dispatches it, and a second route would be a second set of rules about
+     what a human typing at a seat is allowed to start.
+     ABOVE THE EARLY RETURN with everything else - see the note on `opened`. */
+  const [draft, setDraft] = useState("");
+  const [posting, setPosting] = useState(false);
+  /* The draft belongs to the seat it was typed for. Carrying it across a
+     selection would offer somebody else's sentence to the next seat clicked,
+     one button press away from filing it. */
+  const selKey = sel?.key;
+  useEffect(() => { setDraft(""); }, [selKey]);
+
   const open = !!sel;
   if (!sel) return <aside className="bg4-insp" aria-hidden="true" />;
 
   const c = SEAT_COLOR[sel.seat || ""] || "var(--accent)";
   const steps = act.steps || [];
   const running = act.running;
+  /* IDLE AND ONLY IDLE. A seat standing at the Director's door is also
+     item-less, and answering "this seat is waiting on YOU" with a box that
+     files it more work would be the floor arguing with itself. The floor stamps
+     the word; nothing here re-derives it. */
+  const seat = sel.seat || "";
+  const composing = !itemId && !!seat && sel.seatState === "idle";
+
+  async function dispatch() {
+    const said = draft.trim();
+    if (!said || posting || !seat) return;
+    setPosting(true);
+    const r = await say(said, seat);
+    setPosting(false);
+    /* mutate() already raises the toast on a failure, and the draft is left in
+       the box on purpose when one happens - the sentence is the only copy. */
+    if (r.ok) { setDraft(""); toast(`filed for ${seat}`, "ok"); }
+  }
 
   async function stop() {
     if (!itemId) return;
@@ -172,9 +207,37 @@ export function Inspector() {
       </div>
 
       <div className="bg4-insp-body">
+        {composing && (
+          <div className="bg4-seatbox">
+            <div className="bg4-insp-eyebrow" style={{ marginBottom: 8 }}>
+              Give it something
+            </div>
+            <p className="bg4-seatbox-note">
+              Nothing is running on {seat}. This files the work for that seat and
+              dispatches it in your own words. The director does not read it first.
+            </p>
+            <textarea className="bg4-seatbox-in" rows={4} value={draft}
+                      placeholder={`tell the ${seat} seat what to do`}
+                      onChange={(e) => setDraft(e.currentTarget.value)}
+                      /* Enter sends, Shift+Enter is a newline - the same
+                         bargain the console's composer strikes, because this is
+                         the same act typed somewhere closer to the seat. */
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault(); dispatch();
+                        }
+                      }} />
+            <button className="bg4-act primary" onClick={dispatch}
+                    disabled={!draft.trim() || posting}>
+              <Ti name="send" size={14} />send to {seat}
+            </button>
+          </div>
+        )}
+        {!composing && (
         <div className="bg4-insp-eyebrow" style={{ marginBottom: 8 }}>
           {sel.kind === "event" ? "Event" : "Steps"}
         </div>
+        )}
         {sel.kind === "event" && (
           <div className="bg4-step done">
             <div className="gut"><span className="dot"><Ti name="point" size={12} /></span></div>
@@ -229,6 +292,11 @@ export function Inspector() {
         )}
       </div>
 
+      {/* NO FOOT ON A SEAT WITH NOTHING RUNNING. Log, stop and steer all need a
+          run to act on, so all three would sit there greyed out under the one
+          control that does work - three dead buttons saying the panel is broken
+          rather than that the seat is free. */}
+      {!composing && (
       <div className="bg4-insp-foot">
         <button className="bg4-act" disabled={!itemId}
                 onClick={() => itemId && watchAgent(itemId)}>
@@ -242,6 +310,7 @@ export function Inspector() {
           <Ti name="steering-wheel" size={14} />steer
         </button>
       </div>
+      )}
     </aside>
   );
 }

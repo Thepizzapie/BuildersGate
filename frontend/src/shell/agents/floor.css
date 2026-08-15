@@ -1,0 +1,289 @@
+/* WHAT IS LEFT OF THE FLOOR'S STYLESHEET AFTER THE BUILDING BECAME A CANVAS.
+ *
+ * This file used to be six hundred lines drawing a studio out of positioned
+ * divs: a perspective camera on a plane, nine room rectangles, a wall segment
+ * per edge, a rule per kind of furniture, and a sprite-sheet animation system
+ * built out of keyframed background-positions. It rendered, and it never read
+ * as a place - CSS lays out documents, and what came out was a web page wearing
+ * a floor plan. floorRender.ts paints all of it now, so every one of those
+ * rules is gone rather than left behind to rot.
+ *
+ * WHAT IS STILL CSS IS WHAT IS STILL TEXT. The handover notes and the lounge
+ * caption are read rather than looked at, they sit UNDER the building for that
+ * reason, and they are ordinary DOM with ordinary type. The canvas itself needs
+ * three rules: a box to fill, a cursor, and the off-screen list that gives a
+ * painted picture the accessibility tree it cannot have on its own.
+ *
+ * COLOUR COMES FROM TOKENS AND FROM `--seat`, NEVER FROM A HEX. There are four
+ * grounds (dark, light, orbit and the OS default) and a literal breaks three of
+ * them. The building's own palette moved into the renderer with the drawing.
+ */
+
+.bg4-floorwrap {
+  flex: 1; min-height: 0; overflow: hidden;
+  /* A COLUMN, because the building now takes whatever height is left after the
+     text under it. It used to scroll, which is what a fixed-size building in a
+     resizable rail forces; the canvas is sized to its box instead. */
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 12px 4px;
+
+  /* THE RAIL IS DRAGGABLE, SO WIDTH QUESTIONS ARE ABOUT THIS BOX, NOT THE
+     WINDOW. A @media rule would shrink the text under the floor on a small
+     laptop with the rail dragged wide, and leave it wide in a 300px rail on a
+     4K monitor - both exactly backwards. */
+  container-type: inline-size;
+}
+
+/* ── the stage ────────────────────────────────────────────────────────────────
+
+   THE BUILDING IS ONE CANVAS NOW. Every room, wall, prop and character used to
+   be a positioned element inside a perspective-transformed plane, and the whole
+   of the section below this one exists to style them. It is dead for the console
+   pane and live only for anything still drawing the building in the DOM.
+
+   THE STAGE HAS NO SCALE OF ITS OWN, AND THAT IS THE POINT OF THE MOVE. The
+   `--cell` breakpoint ladder at the foot of this file was three hand-written
+   guesses at how big a building fits in a rail somebody is dragging; the
+   renderer divides the box it is given by the plan's own dimensions on every
+   resize, so the building fits the pane at every width with no number to keep in
+   sync. */
+.bg4-stage {
+  flex: 1;
+  min-height: 240px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--solid-1);
+}
+
+.bg4-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The rooms are the only hit targets and the renderer resolves them from the
+     click, so a pointer over one is a pointer over a control. */
+  cursor: pointer;
+}
+
+/* THE FLOOR IN WORDS, because a canvas has no accessibility tree and a picture
+   of a studio is not a description of one. Every placement is a real button
+   here, so the keyboard reaches every agent the mouse can and a screen reader
+   is told who is where in the same sentence the hover used to carry. It is
+   off-screen rather than `display:none`, which would take it out of the tree
+   as well and leave the pane with nothing. */
+.bg4-floor-sr {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.bg4-floor-sr button { all: unset }
+.bg4-floor-sr button:focus-visible {
+  position: fixed; top: 8px; left: 8px; z-index: 50;
+  clip: auto; width: auto; height: auto;
+  padding: 4px 8px; background: var(--solid-3); color: var(--text);
+  outline: 2px solid var(--accent); white-space: normal;
+}
+
+/* ── under the building ───────────────────────────────────────────────────── */
+
+/* THE THINGS THAT ARE TEXT LIVE BELOW THE PLAN. A handover note is read, not
+   looked at, and text laid into a tilted plane is text on a slant - the one
+   element on the pane that has to be legible would be the one drawn at an
+   angle. */
+.bg4-underfloor {
+  display: flex; align-items: flex-start; gap: 12px;
+  margin-top: 10px; padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.bg4-handover {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  max-width: min(420px, 60%);
+}
+.bg4-handover-label {
+  font: 500 10px/1 var(--mono); color: var(--text-3);
+  letter-spacing: .04em; white-space: nowrap;
+}
+/* NEWEST FIRST. The column is capped rather than scrolled: a note is a glance,
+   and anything that needs reading properly is on the board with its whole
+   result. */
+.bg4-handovers {
+  display: flex; flex-direction: column; gap: 4px;
+  width: 100%; max-height: 132px; overflow: hidden;
+}
+.bg4-handover-note {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 5px 7px; border-radius: 3px;
+  background: var(--solid-1);
+  border: 1px solid var(--line);
+  /* The seat's colour on the binding edge only. A whole note tinted per seat
+     starts competing with the failed marking, and the note is meant to be read,
+     not spotted. */
+  border-left: 3px solid var(--seat);
+}
+/* A REJECTION IS NOT A DELIVERY AND MUST NOT LOOK LIKE ONE. The status word is
+   the server's; this is only the colour agreeing with it. */
+.bg4-handover-note[data-status="rejected"], .bg4-handover-note[data-status="cancelled"] {
+  border-color: var(--bad-line); border-left-color: var(--seat);
+}
+.bg4-handover-note-head {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 600 10px/1 var(--mono); color: var(--text-3);
+}
+.bg4-handover-note-status { color: var(--text-3); text-transform: uppercase; letter-spacing: .05em }
+.bg4-handover-note[data-status="rejected"] .bg4-handover-note-status,
+.bg4-handover-note[data-status="cancelled"] .bg4-handover-note-status { color: var(--bad) }
+.bg4-handover-note-title {
+  font: 600 11px/1.25 var(--sans); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* THREE LINES OF THE RESULT, and the rest on hover. The server sends 600
+   characters; a card that grew to fit them would push the whole pane about
+   every time an agent finished, which is movement that means nothing. */
+.bg4-handover-note-body {
+  font: 400 10px/1.35 var(--sans); color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bg4-handover-note-body em { color: var(--text-3); font-style: italic }
+
+/* ── the lounge caption ───────────────────────────────────────────────────── */
+
+/* IT MUST NOT READ AS SPEECH, AND THAT IS THE WHOLE BRIEF (see banter.ts and
+   the docstring at the top of Cat.tsx, which records this repo getting it wrong
+   twice). Everything a bubble would give it is refused here on purpose: no
+   tail, no rounded pill, no seat colour, no border it shares with a card, and it
+   is not anchored to any character - it is under the building. What it does get
+   is an italic that exists nowhere else in this shell, so the difference is
+   visible before a word of it is read. */
+.bg4-banter {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: flex-start; gap: 6px;
+  min-height: 16px;
+}
+.bg4-banter-line {
+  margin: 0; flex: 1; min-width: 0;
+  font: italic 400 11px/1.5 var(--sans);
+  /* --text-3, not --text-dim: the dim token is documented NON-TEXT ONLY at
+     3.6:1 and this is a line somebody has to read. */
+  color: var(--text-3);
+}
+/* THE WORD THAT SAYS WHAT THIS IS, in the same mono the rest of the pane uses
+   for its labels. The tag carries the meaning even if the italic is lost to a
+   theme, a zoom or somebody's own stylesheet, which is why it is real text and
+   not a ::before. */
+.bg4-banter-tag {
+  font: 500 9px/1 var(--mono); color: var(--text-dim);
+  letter-spacing: .06em; text-transform: uppercase;
+  margin-right: 6px; vertical-align: 1px;
+  font-style: normal;
+}
+/* A NEW LINE FADES, IT DOES NOT SLIDE OR TYPE. Movement on this pane means an
+   agent walking somewhere, and a caption that animates like a character is a
+   caption competing with the one thing the floor is for. */
+.bg4-banter-line { animation: bg4-banter-in 420ms ease both }
+@keyframes bg4-banter-in { from { opacity: 0 } to { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) {
+  .bg4-banter-line { animation: none }
+}
+
+/* THE OFF SWITCH IS GHOSTED UNTIL IT IS WANTED. It is drawn only while the
+   floor is quiet (see FloorPane), and even then it is a mark rather than a
+   button until the pointer or the keyboard reaches it. Muted, it stays lit at
+   full strength, because a mute you cannot find is a setting you cannot
+   undo. */
+.bg4-banter-mute {
+  appearance: none; border: 0; padding: 1px; margin: 0; background: transparent;
+  color: var(--text-dim); cursor: pointer; line-height: 1;
+  border-radius: 4px; opacity: 0; transition: opacity 120ms ease;
+}
+.bg4-underfloor:hover .bg4-banter-mute,
+.bg4-underfloor:focus-within .bg4-banter-mute,
+.bg4-banter:not([data-on]) .bg4-banter-mute { opacity: 1 }
+.bg4-banter-mute:hover { color: var(--text-2); background: var(--solid-1) }
+.bg4-banter-mute:focus-visible {
+  opacity: 1; outline: 2px solid var(--accent); outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bg4-banter-mute { transition: none }
+}
+
+/* ── nothing to draw ──────────────────────────────────────────────────────── */
+
+.bg4-floor-none {
+  padding: 24px; text-align: center;
+  font: 400 12px var(--sans); color: var(--text-3);
+}
+
+/* THE READ FAILED AND THE PEOPLE BELOW ARE A MEMORY. Above the building rather
+   than over it: the placement underneath is still the last thing the board
+   actually said, and dimming or blanking it would throw away the only true
+   information on the pane. Warn rather than bad, because nothing has gone wrong
+   with the work - we have just stopped hearing about it. */
+.bg4-floor-stale {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 10px; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--warn-line); background: var(--warn-soft);
+  color: var(--warn);
+  font: 500 10px/1.4 var(--mono); letter-spacing: .03em;
+}
+
+/* ── fitting the rail ─────────────────────────────────────────────────────── */
+
+/* THE BUILDING IS NOT RE-PLANNED TO FIT, IT IS SCALED, and there is no longer a
+   breakpoint ladder doing it. The renderer divides the box it is handed by the
+   plan's own cols and rows on every resize, so the building fits the pane at
+   every width with no number in this file to keep in sync - and the arrangement
+   the reader has learned (rooms ring the lounge, Director at the bottom) never
+   reshuffles, because nothing here is a second floor plan.
+
+   WHAT IS LEFT IS THE TEXT UNDER IT, which does still reflow: a note is read
+   rather than looked at, and two columns of it in a 400px rail is one word per
+   line. */
+@container (max-width: 400px) {
+  .bg4-underfloor { flex-direction: column }
+  .bg4-handover { max-width: 100% }
+}
+
+/* ── the soundtrack ───────────────────────────────────────────────────────── */
+
+/* ONE ROW, AND IT IS THE QUIETEST THING ON THE PANE. A transport control that
+   competes with the floor for attention is a music player somebody has to look
+   past every time they read the studio. It sits in the same strip as the banter
+   caption, on the right, because both are about the room rather than about the
+   work. */
+.bg4-music {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: auto;
+  padding: 3px 6px; border-radius: 3px;
+  border: 1px solid transparent;
+  color: var(--text-3);
+}
+.bg4-music[data-on] { border-color: var(--line); background: var(--solid-1) }
+
+.bg4-music-toggle, .bg4-music-skip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0;
+  border: 1px solid var(--line); border-radius: 3px;
+  background: var(--solid-2); color: var(--text-3);
+  cursor: pointer;
+}
+.bg4-music-toggle:hover, .bg4-music-skip:hover { color: var(--text-2) }
+.bg4-music[data-on] .bg4-music-toggle { color: var(--accent) }
+.bg4-music-toggle:focus-visible, .bg4-music-skip:focus-visible,
+.bg4-music-vol:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+/* THE TITLE IS CLAMPED RATHER THAN WRAPPED. Suno names a track whatever it
+   likes and some of them are a sentence; a second line here would push the
+   handover notes around every time the track changed. */
+.bg4-music-now {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  max-width: 190px;
+  font: 500 10px/1.3 var(--mono); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-music-genre { color: var(--text-dim); font-size: 9px; letter-spacing: .04em }
+
+.bg4-music-vol { width: 56px; accent-color: var(--accent); cursor: pointer }

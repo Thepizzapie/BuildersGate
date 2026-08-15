@@ -393,7 +393,21 @@ def data_uri(path: str | os.PathLike) -> str:
     mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp"}.get(p.suffix.lower())
     if not mime:
-        raise KreaError(f"unsupported reference type {p.suffix!r} — png/jpg/webp only")
+        # A pinned anchor is stored as `name.r1`: the revision number IS the
+        # extension, so the suffix rejected every pin in the project and the
+        # only way to condition on one was to copy it somewhere with a nicer
+        # name. The leading bytes say what the file actually is.
+        with p.open("rb") as fh:
+            head = fh.read(12)
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            mime = "image/png"
+        elif head.startswith(b"\xff\xd8\xff"):
+            mime = "image/jpeg"
+        elif head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            mime = "image/webp"
+    if not mime:
+        raise KreaError(f"unsupported reference type {p.suffix!r}, and the file "
+                        "is not a png/jpg/webp by its leading bytes either")
     return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode("ascii")
 
 

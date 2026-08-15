@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Studio Floor Overlay</title>
+<link rel="stylesheet" href="/static/dist/bgate.css">
+<style>
+  /* THE OVERLAY IS TRANSPARENT. OBS chroma-keys the background, so nothing
+     but the building and its characters reaches the stream. */
+  :root {
+    --solid-1: #16151a; --solid-2: #1e1d22; --solid-3: #27262e;
+    --line: #393842; --line-strong: #504f5a;
+    --text: #f4f2ef; --text-2: #bab6ae; --text-3: #8e8a84; --text-dim: #5d5a55;
+    --accent: #ff6a3d; --accent-soft: rgba(255,106,61,.12);
+    --good: #4ade80; --good-line: #22c55e; --good-soft: rgba(74,222,128,.1);
+    --bad: #f87171; --bad-line: #ef4444; --bad-soft: rgba(248,113,113,.1);
+    --warn: #fbbf24; --warn-line: #f59e0b; --warn-soft: rgba(251,191,36,.1);
+    --sans: "Segoe UI", Arial, sans-serif;
+    --mono: "Cascadia Code", "Fira Code", monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; margin: 0; overflow: hidden;
+               background: transparent; }
+  body { display: flex; align-items: center; justify-content: center; }
+  #floor-overlay { width: 100%; height: 100%; }
+  .bg4-floorwrap { height: 100%; display: flex; align-items: center;
+                   justify-content: center; }
+  /* Hide the underfloor strip (handover notes, banter) on overlay. */
+  .bg4-underfloor { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .bg4-person { transition: none !important; }
+    .bg4-person-art { animation: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div id="floor-overlay"></div>
+  <script type="module" src="/static/dist/floor-overlay.js"></script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+{
+  "tracks": [
+    {
+      "file": "ambient-server-room-hum-1.mp3",
+      "title": "Slow Tide Glass (1)",
+      "genre": "ambient",
+      "seconds": 206.16
+    },
+    {
+      "file": "ambient-server-room-hum-2.mp3",
+      "title": "Slow Tide Glass (2)",
+      "genre": "ambient",
+      "seconds": 214.8
+    },
+    {
+      "file": "bossa-lofi-notes-from-narrative-1.mp3",
+      "title": "Patio Ledger (1)",
+      "genre": "bossa lofi",
+      "seconds": 121.4
+    },
+    {
+      "file": "bossa-lofi-notes-from-narrative-2.mp3",
+      "title": "Patio Ledger (2)",
+      "genre": "bossa lofi",
+      "seconds": 154.92
+    },
+    {
+      "file": "chillhop-build-is-green-1.mp3",
+      "title": "Paper Cup Rain (1)",
+      "genre": "chillhop",
+      "seconds": 168.64
+    },
+    {
+      "file": "chillhop-build-is-green-2.mp3",
+      "title": "Paper Cup Rain (2)",
+      "genre": "chillhop",
+      "seconds": 143.96
+    },
+    {
+      "file": "downtempo-ticket-closed-friday-1.mp3",
+      "title": "Quiet After Hours (1)",
+      "genre": "downtempo",
+      "seconds": 204.48
+    },
+    {
+      "file": "downtempo-ticket-closed-friday-2.mp3",
+      "title": "Quiet After Hours (2)",
+      "genre": "downtempo",
+      "seconds": 130.0
+    },
+    {
+      "file": "jazzhop-the-good-chair-1.mp3",
+      "title": "Paper Cup Session (1)",
+      "genre": "jazzhop",
+      "seconds": 224.72
+    },
+    {
+      "file": "jazzhop-the-good-chair-2.mp3",
+      "title": "Paper Cup Session (2)",
+      "genre": "jazzhop",
+      "seconds": 157.84
+    },
+    {
+      "file": "lofi-hip-hop-standup-at-ten-1.mp3",
+      "title": "Paper Window Loops (1)",
+      "genre": "lofi hip hop",
+      "seconds": 112.4
+    },
+    {
+      "file": "lofi-hip-hop-standup-at-ten-2.mp3",
+      "title": "Paper Window Loops (2)",
+      "genre": "lofi hip hop",
+      "seconds": 108.0
+    }
+  ]
+}

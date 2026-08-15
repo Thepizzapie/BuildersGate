@@ -21,6 +21,12 @@ export type Selection = {
   eventId?: number;
   title?: string;
   seat?: string;
+  /* WHAT THE FLOOR SAID ABOUT THE SEAT, in occupancy.ts's own word - "running",
+     "waiting", "idle". One word from the poll, not a payload, and it is here
+     because the inspector cannot re-derive it: with no item id there is nothing
+     to fetch, and "this seat has nothing on" is exactly the case where the
+     panel should offer to give it something rather than show an empty log. */
+  seatState?: string;
 } | null;
 
 let current: Selection = null;

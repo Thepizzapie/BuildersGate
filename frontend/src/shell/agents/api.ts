@@ -26,6 +26,10 @@ export type Item = {
   /** False when an earlier link has not landed. deploy-all skips these rather
    *  than aborting on the refusal they would return. */
   ready?: boolean;
+  /** The link this one is blocked behind, when it is blocked. _chain_state
+   *  sends the predecessor's own row so a card can name WHO it is waiting on
+   *  rather than printing a bare id at somebody. */
+  waiting_on?: { id: number; seat?: string; title?: string; status?: string } | null;
 };
 export type Question = { id: number; seat?: string; text?: string; asked_at?: string };
 /** `blocking` IS THE FIELD THAT DECIDES WHETHER A HUMAN IS NEEDED, and it was
@@ -40,6 +44,12 @@ export type Gate = {
   result?: string; status?: string; created_at?: string;
 };
 export type ConsoleState = {
+  /** SET WHEN THE READ FAILED, and the whole payload beside it is then the
+   *  caller's fallback rather than the board. readJSON never throws: it returns
+   *  the fallback tagged with this, so a panel that does not look at it renders
+   *  an empty board as fact. Declared here because the console's readers all
+   *  have to be able to tell "nothing is running" from "nobody answered". */
+  __error?: string;
   /** Work-item id the current console session starts after. */
   cleared_before?: number;
   /* `state` MATTERS AND WAS NOT DECLARED. This roster is every agent the
@@ -58,7 +68,10 @@ export type ConsoleState = {
      after which the console asserted the opposite of what the board was doing. */
   autopilot?: { on?: boolean; source?: string; env_override?: string };
   floor?: {
-    running?: number; queued?: number; review?: number;
+    /* `dispatched` was missing while the route has always sent it, so anything
+       asking "is the board empty" from these counts alone read a board with
+       handed-out work on it as idle. */
+    running?: number; queued?: number; dispatched?: number; review?: number;
     done?: number; failed?: number;
   };
 };

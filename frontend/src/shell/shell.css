@@ -256,6 +256,20 @@ body:has(.bg4) .statusbar { display: none }
 }
 .bg4-act:disabled { opacity: .45; cursor: default }
 
+/* The panel for a seat with nothing on it: one sentence of context and a box.
+   It lives in the BODY rather than the foot because it is the whole content of
+   this panel, not an action on content above it. */
+.bg4-seatbox { display: flex; flex-direction: column; gap: 10px }
+.bg4-seatbox-note { margin: 0; font: 400 11px/1.45 var(--sans); color: var(--text-3) }
+.bg4-seatbox-in {
+  width: 100%; resize: vertical; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--solid-2); color: var(--text);
+  font: 400 12px/1.45 var(--sans);
+}
+.bg4-seatbox-in:focus-visible { outline: none; border-color: var(--accent) }
+.bg4-seatbox .bg4-act { flex: none }
+
 /* the vertical stepper — phases, revisions, triage all share it */
 .bg4-step { display: grid; grid-template-columns: 22px 1fr; gap: 10px }
 .bg4-step .gut { display: flex; flex-direction: column; align-items: center }

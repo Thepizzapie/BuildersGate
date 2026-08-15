@@ -77,9 +77,12 @@ Everything is stdlib. No SDK, no new dependency.
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import re
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -138,6 +141,33 @@ UPLOAD_DIR = "images/builders-gate"
 # to discover.
 UPLOAD_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".webp": "image/webp"}
+
+
+def _upload_mime(source: Path) -> str | None:
+    """The MIME of a file, by suffix first and then by its own leading bytes.
+
+    A pinned anchor is stored as `name.r1`: the revision number IS the
+    extension. Keying off the suffix alone therefore refused every pin in the
+    project, which is the exact thing this upload exists to carry, and the
+    error read like a bad file rather than a naming convention. The magic bytes
+    are the better authority anyway, because a .png that is really a JPEG
+    uploads happily and then 422s at generation, after the round trip is spent.
+    """
+    mime = UPLOAD_MIME.get(source.suffix.lower())
+    if mime:
+        return mime
+    try:
+        with source.open("rb") as fh:
+            head = fh.read(12)
+    except OSError:
+        return None
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 ENV = "KIE_API_KEY"
 KEY_URL = "https://kie.ai/api-key"
@@ -289,7 +319,65 @@ MODELS: dict[str, dict] = {
         "images": "",
         "credits": None,
         "note": "Text-to-image, prompt only. No reference conditioning, so not "
-                "for anchored character work — that stays on Krea.",
+                "for anchored character work. Use nano-banana-2 for that.",
+    },
+    # READ OFF THE REFERENCE PAGES, NOT GUESSED, and the guess would have been
+    # wrong twice over. The docs for this model live at
+    # /market/google/nanobanana2 rather than the /nano-banana-2 the URL pattern
+    # predicts, and BOTH new Google models take a BARE model id where the older
+    # entry above takes "google/nano-banana" - so "google/nano-banana-2" is a
+    # 404 after a round trip. Verified against both pages before adding.
+    #
+    # WHY IT MATTERS BEYOND BEING NEWER: 14 reference images. The note above
+    # sends anchored character work elsewhere because nano-banana has no
+    # reference conditioning at all, and a consistent cast is exactly the job
+    # that needs it.
+    "nano-banana-2": {
+        "model": "nano-banana-2",
+        "kind": "image",
+        "label": "Google Nano Banana 2 (Gemini 3.1 Flash Image)",
+        "required": ("prompt",),
+        "supports": {"prompt", "image_input", "aspect_ratio", "resolution",
+                     "output_format"},
+        "enums": {
+            "output_format": ("png", "jpg"),
+            "resolution": ("1K", "2K", "4K"),
+            "aspect_ratio": ("1:1", "2:3", "3:2", "1:4", "4:1", "3:4", "4:3",
+                             "4:5", "5:4", "1:8", "8:1", "9:16", "16:9", "21:9",
+                             "auto"),
+        },
+        "ranges": {"prompt": (1, 20000)},
+        "caps": {"image_input": 14},
+        "images": "image_input",
+        "images_list": True,
+        "credits": None,
+        "note": "Text-to-image AND reference-conditioned editing, up to 14 "
+                "reference images. The one to reach for when a cast has to stay "
+                "consistent across many generations.",
+    },
+    "nano-banana-pro": {
+        "model": "nano-banana-pro",
+        "kind": "image",
+        "label": "Google Nano Banana Pro (Gemini 3 Pro Image)",
+        "required": ("prompt",),
+        "supports": {"prompt", "image_input", "aspect_ratio", "resolution",
+                     "output_format"},
+        "enums": {
+            "output_format": ("png", "jpg"),
+            "resolution": ("1K", "2K", "4K"),
+            "aspect_ratio": ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4",
+                             "9:16", "16:9", "21:9", "auto"),
+        },
+        # Shorter prompt ceiling and fewer references than nano-banana-2, both
+        # off its own page. Neither is a typo of the other.
+        "ranges": {"prompt": (1, 10000)},
+        "caps": {"image_input": 8},
+        "images": "image_input",
+        "images_list": True,
+        "credits": None,
+        "note": "The Pro tier. Fewer references than nano-banana-2 (8 against "
+                "14) and a shorter prompt ceiling, so it is not a strict "
+                "upgrade for cast work.",
     },
     "flux-2-pro-edit": {
         "model": "flux-2/pro-image-to-image",
@@ -1504,10 +1592,124 @@ def _envelope(body: dict, *, what: str) -> dict:
                    + (f" — {help_text}" if help_text else ""))
 
 
+# THE RATE LIMIT, AS KIE STATED IT: 20 new requests per 10 seconds, with 100+
+# concurrent tasks supported (kie support, 2026-08-15).
+#
+# NOTE WHICH NUMBER IS THE BINDING ONE. The concurrency figure is not a
+# constraint on this product at all - nothing here fans out to anything like a
+# hundred simultaneous jobs, and a cap that cannot be reached is not worth code.
+# The RATE is reachable: a board dispatching several seats at once, each
+# submitting and then POLLING its own task, adds requests faster than the job
+# count suggests, because a poll is a new request too. So the window below
+# counts EVERY call through _request, not only submits.
+#
+# EIGHTEEN, NOT TWENTY, and the two spare are deliberate. This limiter is
+# PER PROCESS: seat agents run as separate processes and share no window, so
+# whatever this file promises is a promise about one of them. Leaving headroom
+# means two processes drifting into the same window are still likely to land
+# under the real limit rather than exactly on it. The 429 retry above is the
+# backstop for when they do not, and it is why this being imperfect is
+# acceptable rather than dangerous.
+_RATE_WINDOW_SECONDS = 10.0
+_RATE_WINDOW_MAX = 18
+
+_rate_lock = threading.Lock()
+_rate_window: "collections.deque[float]" = collections.deque()
+
+
+def _rate_gate() -> None:
+    """Hold here until this process is allowed another kie request.
+
+    A SLIDING WINDOW, NOT A FIXED ONE, because the limit kie described is
+    sliding: "20 new requests per 10 seconds" is violated by 20 requests in the
+    last ten seconds no matter which wall-clock bucket they fall in. A fixed
+    bucket would allow 20 at 9.9s and 20 more at 10.1s, which is 40 inside one
+    real window and exactly the burst that gets an account flagged.
+
+    THE WAIT IS COMPUTED FROM THE OLDEST ENTRY, so a caller sleeps precisely
+    long enough for one slot to free rather than a guessed interval. Under the
+    limit this costs one lock and one deque trim, which is nothing next to a
+    network call.
+    """
+    while True:
+        with _rate_lock:
+            now = time.monotonic()
+            while _rate_window and now - _rate_window[0] >= _RATE_WINDOW_SECONDS:
+                _rate_window.popleft()
+            if len(_rate_window) < _RATE_WINDOW_MAX:
+                _rate_window.append(now)
+                return
+            # The oldest call in the window is the one whose expiry frees a
+            # slot. Computed inside the lock and slept OUTSIDE it, so a waiting
+            # thread never holds the gate shut for the others.
+            wait = _RATE_WINDOW_SECONDS - (now - _rate_window[0])
+        time.sleep(max(wait, 0.01))
+
+
+# HOW LONG TO WAIT WHEN KIE SAYS SLOW DOWN, and how many times to try.
+#
+# The 429 row in _CODE_HELP has always said "slow the fan-out or retry in a
+# moment" and NOTHING IN THIS PRODUCT DID EITHER. That advice was aimed at a
+# human reading a traceback, while the caller that actually hit the limit was a
+# seat agent in a fan-out that had already moved on. A rate limit is the one
+# failure here that is guaranteed to be temporary and is guaranteed to come back
+# if nobody waits, so it is the one worth retrying in the adapter rather than
+# surfacing.
+#
+# THREE ATTEMPTS AND THEN IT IS THE CALLER'S PROBLEM. A limit that survives
+# three backed-off waits is not a burst any client-side politeness can absorb;
+# it is a cap that has to be raised or a fan-out that has to be narrowed, and
+# quietly retrying past that point turns a visible error into a slow one.
+_RATE_LIMIT_TRIES = 3
+# Doubling, and the first wait is long enough to actually clear a per-minute
+# bucket rather than spending an attempt discovering it has not.
+_RATE_LIMIT_BACKOFF = (5.0, 15.0)
+# kie's own Retry-After wins over the table above whenever it sends one, capped
+# so a header nobody sanity-checked cannot park an agent for an hour.
+_RETRY_AFTER_CAP = 120.0
+
+
+def _retry_after(exc: "urllib.error.HTTPError", attempt: int) -> float:
+    """How long to hold before trying again, preferring what kie asked for.
+
+    A server that names a number knows something the client does not, so its
+    header outranks the local schedule - but it is CLAMPED, because an absurd
+    value is indistinguishable from a correct one at the point of reading it and
+    the cost of trusting it blindly is an agent that looks hung.
+    """
+    raw = ""
+    try:
+        raw = (exc.headers or {}).get("Retry-After", "") or ""
+    except Exception:                                            # noqa: BLE001
+        raw = ""
+    try:
+        asked = float(str(raw).strip())
+        if asked > 0:
+            return min(asked, _RETRY_AFTER_CAP)
+    except (TypeError, ValueError):
+        # Retry-After may also be an HTTP date. Not parsed: the schedule below
+        # is a fine answer and a half-parsed date is a worse one.
+        pass
+    idx = min(attempt, len(_RATE_LIMIT_BACKOFF) - 1)
+    return _RATE_LIMIT_BACKOFF[idx]
+
+
 def _request(path: str, key: str, *, payload: Optional[dict] = None,
              params: Optional[dict] = None, method: str = "GET",
              timeout: float = 60.0) -> dict:
-    """One call, unwrapped. The key rides in the header and nowhere else."""
+    """One call, unwrapped. The key rides in the header and nowhere else.
+
+    RETRIES A 429 AND NOTHING ELSE. Every other status here is either a fact
+    about the request (422, 404), a fact about the account (401, 433) or a fact
+    about kie (500, 455) - and retrying any of them is spending time to receive
+    the same answer. A rate limit is the only one where waiting IS the fix.
+
+    IT IS SAFE ON A SUBMIT, which is the question worth asking before retrying
+    anything that costs money: a 429 means the request was REFUSED, so no job
+    was created and nothing was charged. That is exactly why a 500 is not
+    retried here - an internal error can land on either side of the charge, and
+    a blind retry there is how one submit becomes two paid jobs.
+    """
     url = path if path.startswith("http") else API_BASE + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -1531,23 +1733,44 @@ def _request(path: str, key: str, *, payload: Optional[dict] = None,
         "User-Agent": DOWNLOAD_UA,
     })
     what = f"{method} {path}"
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8") or "{}"
-    except urllib.error.HTTPError as exc:
-        detail = ""
+    raw = ""
+    for attempt in range(_RATE_LIMIT_TRIES):
+        # BEFORE EVERY ATTEMPT, INCLUDING RETRIES. A retry is a new request as
+        # far as the limit is concerned, so exempting it would mean the one
+        # moment we are provably near the cap is the one moment we stop
+        # counting.
+        _rate_gate()
         try:
-            detail = exc.read().decode("utf-8", "replace")[:400]
-        except Exception:                                        # noqa: BLE001
-            pass
-        # A transport-level failure carries the SAME numbers as the body-level
-        # one, so the same advice applies and there is no second table.
-        help_text = _CODE_HELP.get(exc.code, "")
-        raise KieError(f"kie HTTP {exc.code} on {what}"
-                       + (f": {detail}" if detail else "")
-                       + (f" — {help_text}" if help_text else "")) from exc
-    except urllib.error.URLError as exc:
-        raise KieError(f"could not reach kie ({exc.reason})") from exc
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8") or "{}"
+            break
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+            except Exception:                                    # noqa: BLE001
+                pass
+            if exc.code == 429 and attempt < _RATE_LIMIT_TRIES - 1:
+                wait = _retry_after(exc, attempt)
+                # SAID OUT LOUD, on stderr, because a call that takes twenty
+                # seconds longer than usual with no explanation is
+                # indistinguishable from one that has hung - and the whole
+                # point of this is that somebody watching a seat should be able
+                # to tell "being throttled" from "stuck".
+                print(f"kie rate-limited {what}; waiting {wait:.0f}s "
+                      f"(attempt {attempt + 1} of {_RATE_LIMIT_TRIES})",
+                      file=sys.stderr)
+                time.sleep(wait)
+                continue
+            # A transport-level failure carries the SAME numbers as the
+            # body-level one, so the same advice applies and there is no second
+            # table.
+            help_text = _CODE_HELP.get(exc.code, "")
+            raise KieError(f"kie HTTP {exc.code} on {what}"
+                           + (f": {detail}" if detail else "")
+                           + (f" — {help_text}" if help_text else "")) from exc
+        except urllib.error.URLError as exc:
+            raise KieError(f"could not reach kie ({exc.reason})") from exc
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -1628,15 +1851,22 @@ def upload_file(path: str | os.PathLike[str], *, root: Any = None,
     and never anything from outside the project.
     """
     source = Path(path)
-    suffix = source.suffix.lower()
-    if suffix not in UPLOAD_MIME:
-        raise KieError(
-            f"cannot upload {source.name} — {suffix or 'no extension'} is not "
-            f"one of {sorted(UPLOAD_MIME)}. A type kie accepts here but no model "
-            "accepts downstream would fail at generation instead, after the "
-            "upload had already succeeded.")
     if not source.is_file():
         raise KieError(f"nothing on disk at {source}")
+    # Sniffed, not assumed: a pinned anchor's extension is its revision number,
+    # so the suffix answers this question wrong for every pin in the project.
+    mime = _upload_mime(source)
+    if not mime:
+        # JOINED, NOT A REPR. Interpolating the list itself put
+        # "it is not a ['image/jpeg', 'image/png', 'image/webp'] image" in front
+        # of the user, which is a Python literal wearing a sentence, and it also
+        # dropped the words the test for this refusal matches on.
+        allowed = ", ".join(sorted(set(UPLOAD_MIME.values())))
+        raise KieError(
+            f"cannot upload {source.name}: its type is not one of {allowed}, "
+            "by extension or by its own leading bytes. A type kie accepts here "
+            "but no model accepts downstream would fail at generation instead, "
+            "after the upload had already succeeded.")
 
     key = api_key(root)
     if not key:
@@ -1664,7 +1894,7 @@ def upload_file(path: str | os.PathLike[str], *, root: Any = None,
         "url": url,
         "bytes": int(got.get("fileSize") or source.stat().st_size),
         "name": str(got.get("fileName") or payload["fileName"]),
-        "mime": str(got.get("mimeType") or UPLOAD_MIME[suffix]),
+        "mime": str(got.get("mimeType") or mime),
         # STAMPED, NOT ASSUMED. A caller that stores this URL anywhere has to be
         # able to tell that it is dead without calling it.
         "expires_at": _expiry(UPLOAD_TTL_DAYS),

@@ -2786,14 +2786,18 @@ def _pick_provider(asked: str = "") -> str:
     if os.environ.get("KREA_API_KEY"):
         return "krea"
     # NOTE: character/sprite/animation work does NOT come through here - it goes
-    # to providers.provider_for(task_kind), which routes identity work to krea
-    # regardless of this order. See that function for the measurement.
-    # kie LAST, and it is the only one of the three that has to be named to be
-    # used for anything else. Its image fields take public URLs only, so
-    # auto-selecting it would silently turn every anchored generation in the
-    # product into unanchored prompt-only work - see bgate_core.providers. A
-    # kie-only project still reaches this tool; it just gets told, once, that
-    # the pinned refs cannot come along.
+    # to providers.provider_for(task_kind), which routes identity work to KIE
+    # when a kie key is set and krea otherwise, regardless of this order. See
+    # that function for the measurement and for why kie leads it.
+    #
+    # kie LAST HERE, and the reason this comment used to give is no longer true.
+    # It said kie's image fields take public URLs only, so auto-selecting it
+    # would silently turn every anchored generation into unanchored prompt-only
+    # work. `kie.upload_file` posts a local anchor as base64 and returns a URL
+    # the generation endpoint accepts, so a pinned ref travels fine. What keeps
+    # kie last is now the duller argument: openai is the key most setups already
+    # have, and this picker covers plates, props and concept passes where the
+    # provider matters far less than it does for a cast.
     if os.environ.get("KIE_API_KEY"):
         return "kie"
     # None configured: return the historical default so the error a caller
