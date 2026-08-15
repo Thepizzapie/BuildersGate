@@ -491,6 +491,28 @@ function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
   const autoDeploy = !!state.autopilot?.on;
   const [busy, setBusy] = useState(false);
   const queued = open.filter((i) => i.status === "queued");
+
+  /* CHAT AND STREAM ARE STREAMER-MODE TABS, and they only appear when it is
+     on. Both are about broadcasting -- the live chat relay and the OBS overlay
+     pages -- so to anyone not streaming they were two permanent pills that did
+     nothing, taking width from the four tabs that are the actual board. That
+     width matters here: this strip scrolls rather than wraps, so the tabs
+     nobody is using were pushing the ones they are off the visible end.
+
+     Polled rather than read once, because the switch that flips this sits in
+     the same rail: the strip has to answer a toggle without a reload. */
+  const [streamer, setStreamer] = useState(false);
+  const loadStreamer = useCallback(async () => {
+    const s = await readJSON<{ on?: boolean }>("/api/streamer", {});
+    setStreamer(!!s.on);
+  }, []);
+  usePoll(loadStreamer, 10000, true);
+
+  /* Turning streamer mode off while sitting on one of its tabs would leave the
+     strip with nothing selected and the body blank. Fall back to the queue. */
+  useEffect(() => {
+    if (!streamer && (tab === "chat" || tab === "stream")) setTab("queue");
+  }, [streamer, tab, setTab]);
   /* THIS SESSION'S RESULTS, not the project's entire history.
      This listed every work item that has ever carried a result — 400+ rows
      going back weeks — so the panel beside a five-minute conversation was a
@@ -538,8 +560,8 @@ function BoardPane({ state, open, onRefresh, tab, setTab, graph }: {
             <Tabs.Tab value="asked">Asked you</Tabs.Tab>
             <Tabs.Tab value="approve">Approve {state.gates.length || ""}</Tabs.Tab>
             <Tabs.Tab value="responses">Responses</Tabs.Tab>
-            <Tabs.Tab value="chat">Chat</Tabs.Tab>
-            <Tabs.Tab value="stream">Stream</Tabs.Tab>
+            {streamer && <Tabs.Tab value="chat">Chat</Tabs.Tab>}
+            {streamer && <Tabs.Tab value="stream">Stream</Tabs.Tab>}
           </Tabs.List>
         </Tabs>
         {tab === "queue" && queued.length > 0 && (
