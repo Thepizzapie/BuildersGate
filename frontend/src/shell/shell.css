@@ -1280,3 +1280,27 @@ body.ptn-open .bg4 {
 @media (max-width: 640px) {
   body.ptn-open .bg4 { padding-right: 0 }
 }
+
+
+/* ── linked assets, above the composer ────────────────────────────────────
+   A linked asset changes what the message means, so it sits where the text is
+   being typed rather than behind the picker that added it. Each chip carries
+   its own remove, because choosing the wrong sheet out of a list of thirty is
+   the ordinary mistake here.
+
+   The label truncates and the full path is the title: a chip is an
+   identification, not a path viewer, and three long paths would otherwise push
+   the composer's own controls off the row. */
+.bg4-links { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px }
+.bg4-link {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 260px;
+  padding: 3px 6px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface-2); color: var(--text-2);
+  font: 500 10px/1.4 var(--mono);
+}
+.bg4-link .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0 }
+.bg4-link .x {
+  border: 0; background: none; cursor: pointer; padding: 0 1px;
+  color: var(--text-3); font-size: 12px; line-height: 1;
+}
+.bg4-link .x:hover { color: var(--text) }

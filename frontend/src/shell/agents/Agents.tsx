@@ -11,6 +11,7 @@ import { setSelection } from "../selection";
 import { notifyUpdate, mutate, readJSON, toast } from "../../bridge";
 import { BrainstormFoot } from "./Brainstorm";
 import { Composer, type Aim } from "./Composer";
+import { type Linked } from "./AssetLink";
 import { Cat } from "./Cat";
 import { Streamer } from "./Streamer";
 import {
@@ -108,6 +109,10 @@ export function Agents() {
      running. Read once per activation, not per poll: it changes when somebody
      edits the seat config, which is not a thing that happens mid-session. */
   const [seats, setSeats] = useState<string[]>([]);
+  /* Assets linked to the NEXT message. Cleared on send with the text, because
+     an attachment that outlives the message it belonged to silently rides
+     along on the following one. */
+  const [linked, setLinked] = useState<Linked[]>([]);
   useEffect(() => {
     if (!active) return;
     readJSON<{ seats: { role?: string }[] }>("/api/state", { seats: [] })
@@ -137,10 +142,20 @@ export function Agents() {
             [mode, session, openBrainstorm]);
 
   async function send(said = text) {
-    const body = said.trim();
-    if (!body || sending) return;
+    const said_ = said.trim();
+    if (!said_ || sending) return;
+    /* LINKED ASSETS TRAVEL AS PART OF THE MESSAGE, as project-relative paths.
+       No upload and no new field on the wire: the seats already read paths out
+       of a brief and go and look at the file, so the cheapest correct thing is
+       to say which files, in the text, in a shape that survives being quoted
+       into a work item. */
+    const body = linked.length
+      ? [said_, "", "Assets referenced:",
+         ...linked.map((a) => `- ${a.rel}`)].join("\n")
+      : said_;
     setSending(true);
     setText("");
+    setLinked([]);
     if (mode === "brainstorm" && session) {
       const r = await bsSay(session.id, body);
       if (r.ok) setSession(await bsOpen(session.id));
@@ -277,6 +292,9 @@ export function Agents() {
     <Composer variant={variant} mode={mode} onMode={setMode}
               value={text} onValue={setText} onSend={() => send()}
               targets={targets} seats={seats} aim={aim} onAim={setAim}
+              linked={linked}
+              onLink={(a) => setLinked((v) => v.some((x) => x.rel === a.rel) ? v : [...v, a])}
+              onUnlink={(rel) => setLinked((v) => v.filter((x) => x.rel !== rel))}
               sending={sending} autoDeploy={autoDeploy}
               /* No room open means nothing to clear — an enabled button that
                  cannot act is what produced this bug in the first place. */
