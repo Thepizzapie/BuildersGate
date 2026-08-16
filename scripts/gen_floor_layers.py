@@ -58,7 +58,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from PIL import Image  # noqa: E402
 
 from bgate_adapters import kie  # noqa: E402
-from gen_floor_rooms import AT, CLEAR, DEST, RATIO, WHAT  # noqa: E402
+from gen_floor_rooms import AT, DEST, RATIO  # noqa: E402
 from slice_floor_cast import despeckle  # noqa: E402
 
 ART_ROOT = Path.home() / "Desktop" / "bg-testbed"
