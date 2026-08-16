@@ -45,6 +45,21 @@ datas += collect_data_files("PIL", include_py_files=False)
 # its window and falls back to the browser.
 datas += collect_data_files("webview", includes=["lib/runtimes/**/*.dll"])
 
+# faster-whisper's VAD MODEL, which is a DATA file inside the package and so is
+# invisible to the import graph PyInstaller builds.
+#
+# WHAT ITS ABSENCE LOOKS LIKE, because it does not look like a packaging bug.
+# Recording works, the audio lands, and processing then dies with
+# `NoSuchFile: faster_whisper/assets/silero_vad_v6.onnx`. The session is banked
+# `failed` with no transcript, so the review screen has nothing to show and the
+# playtest looks like it broke. Measured on a shipped install: three sessions
+# (21, 27, 28) lost this way before anyone traced the message, and the app's own
+# director agent was the one that finally read it out.
+#
+# include_py_files=False on purpose: assets/__init__.py comes in through the
+# import graph already, and the only thing missing is the .onnx beside it.
+datas += collect_data_files("faster_whisper", include_py_files=False)
+
 # ── hidden imports ──────────────────────────────────────────────────────────
 hiddenimports = [
     # faster-whisper + CTranslate2 reach their backends by name at run time.
