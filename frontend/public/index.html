@@ -1543,6 +1543,16 @@ async function refreshBuildFreshness(){
     return;
   }
   if (st.stale){
+    /* A REBUILD BUTTON ON A MACHINE THAT CANNOT EXPORT IS A TRAP. `blocked` is
+       the same probe `bgate doctor` reports, and it names both versions - so
+       the panel offers the fix rather than a button that was never going to
+       work. Offering to boot the stale build anyway, because a mismatched
+       export template is no reason to refuse to play what is already built. */
+    if (st.blocked){
+      el.innerHTML = `<span style="color:var(--ember)">cannot build</span> · `
+        + `${esc(st.blocked)}`;
+      return;
+    }
     el.innerHTML = `<span style="color:var(--warn)">build is behind</span> · `
       + `${esc(st.newest_source || "a source file")} is newer — booting rebuilds first, `
       + `<button class="qbtn small ghost" onclick="rebuildNow()">rebuild now</button>`;

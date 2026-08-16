@@ -125,11 +125,34 @@ def available() -> dict:
     return {"available": True, "path": path}
 
 
+# A binary's version cannot change unless the FILE changes, so the cache is
+# keyed on the path and its mtime rather than on a clock. That is exact: a TTL
+# would be a guess that is either wrong for a while or re-spawns Godot for no
+# reason, and this is now on a path the playtest panel reads.
+_VERSION_CACHE: dict[tuple[str, float], str] = {}
+
+
 def version() -> dict:
+    """Which Godot this is, asked of the binary rather than of its filename.
+
+    THE FILENAME IS NOT THE VERSION. `Godot_v4.4.1-stable_win64.exe` is a
+    convention, not a guarantee, and export templates are matched against what
+    the engine reports about itself - so anything deciding whether a build can
+    run has to ask the engine.
+    """
     exe = find_godot()
+    try:
+        key = (exe, os.path.getmtime(exe))
+    except OSError:
+        key = (exe, 0.0)
+    hit = _VERSION_CACHE.get(key)
+    if hit is not None:
+        return {"path": exe, "version": hit}
     proc = _spawn([exe, "--version"], timeout=60)
     raw = (proc.stdout or proc.stderr or "").strip().splitlines()
-    return {"path": exe, "version": raw[-1] if raw else "unknown"}
+    found = raw[-1] if raw else "unknown"
+    _VERSION_CACHE[key] = found
+    return {"path": exe, "version": found}
 
 
 def run_script(script: str, project_dir: Optional[str] = None,

@@ -34,6 +34,11 @@ def project(tmp_path, monkeypatch):
     (game / "project.godot").write_text("[application]\n", encoding="utf-8")
     (game / "export_presets.cfg").write_text("[preset.0]\n", encoding="utf-8")
     monkeypatch.setattr(webbuild, "_godot", lambda: "godot")
+    # NEUTRAL BY DEFAULT. The templates preflight runs against the REAL machine
+    # otherwise, so these tests would pass or fail depending on which Godot the
+    # developer happens to have - and every test about the export path would be
+    # refused before reaching it. The preflight has its own test below.
+    monkeypatch.setattr(webbuild, "_templates_blocked", lambda: "")
     return tmp_path
 
 
@@ -107,3 +112,67 @@ def test_the_export_error_names_the_fix_when_godot_names_it():
     other = "ERROR: Project export for preset \"Web\" failed.\n   at: x.cpp:1\n"
     assert webbuild._export_error(other).startswith("Project export")
     assert webbuild._export_error("") == ""
+
+
+def test_a_blocked_export_is_refused_before_godot_runs(project, monkeypatch):
+    """The preflight, which is the whole point of the fix.
+
+    `godot.export_templates()` already knew this machine could not export - it
+    is the same probe `bgate doctor` reports - and the export path never asked.
+    So a mismatched template set meant running Godot for five seconds to learn
+    what was knowable in a stat().
+    """
+    ran = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: ran.append(a) or _Result(0))
+    monkeypatch.setattr(
+        webbuild, "_templates_blocked",
+        lambda: "web export templates installed for 4.7.1.stable but Godot is 4.4.1")
+
+    res = webbuild.rebuild(project)
+    assert res["ok"] is False
+    assert res["templates"] is True
+    assert "4.7.1" in res["error"] and "4.4.1" in res["error"], (
+        "the refusal must name BOTH versions - that is what makes it a fix "
+        "rather than a complaint")
+    assert not ran, "Godot was launched for an export that could not succeed"
+
+
+def test_status_reports_that_no_build_can_be_made(project, monkeypatch):
+    """The panel needs this BEFORE somebody presses rebuild.
+
+    A screen saying "build is behind" beside a rebuild button, on a machine
+    where no export can succeed, sends people to press a button that was never
+    going to work.
+    """
+    import os
+
+    out = project / "export" / "web"
+    out.mkdir(parents=True)
+    pck = out / "index.pck"
+    pck.write_bytes(b"old")
+    # STAMPED, NOT ASSUMED. Two writes in the same test land on the same
+    # filesystem tick, and `stale` is a strict `<` - so "write the source second"
+    # is not enough to make it newer.
+    src = project / "game" / "scene.tscn"
+    src.write_text("x", encoding="utf-8")
+    built = pck.stat().st_mtime
+    os.utime(src, (built + 10, built + 10))
+
+    monkeypatch.setattr(webbuild, "_templates_blocked", lambda: "templates mismatch")
+    st = webbuild.status(project)
+    assert st["stale"] is True
+    assert st["blocked"] == "templates mismatch"
+
+    # And a machine that CAN export says nothing, rather than an empty warning.
+    monkeypatch.setattr(webbuild, "_templates_blocked", lambda: "")
+    assert webbuild.status(project)["blocked"] == ""
+
+
+def test_the_templates_probe_never_takes_the_build_down(project, monkeypatch):
+    """Guarded: a probe that will not run must not stop a build that might."""
+    from bgate_adapters import godot as _g
+
+    monkeypatch.setattr(_g, "export_templates",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert webbuild._templates_blocked() == ""

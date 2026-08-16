@@ -69,7 +69,14 @@ def _newest_source(game_dir: Path) -> tuple[float, str]:
 
 
 def status(root: str | os.PathLike[str]) -> dict:
-    """Is there a build, and is it current with the source?"""
+    """Is there a build, is it current with the source, and CAN one be made?
+
+    The third question is new and it is the one the panel could not answer. A
+    screen that says "build is behind" beside a rebuild button, on a machine
+    where no export can succeed, sends somebody to press a button that was
+    never going to work - which is exactly what happened here. `blocked` says so
+    before the press, in the words that name the fix.
+    """
     game = _game(root)
     pck = Path(root) / "export" / "web" / "index.pck"
     if game is None:
@@ -83,7 +90,27 @@ def status(root: str | os.PathLike[str]) -> dict:
             "build_mtime": built, "source_mtime": src,
             # What makes it stale. Without this the UI can only assert.
             "newest_source": newest if stale else "",
-            "reason": f"{newest} is newer than the build" if stale else ""}
+            "reason": f"{newest} is newer than the build" if stale else "",
+            # Cheap: the version probe behind this is cached on the binary's
+            # mtime, so a panel asking on every open pays one stat().
+            "blocked": _templates_blocked() if stale else ""}
+
+
+def _templates_blocked() -> str:
+    """Why this Godot cannot export to Web, or "" if it can.
+
+    Guarded: a probe that will not run must not stop a build that might. The
+    export's own error handling is the backstop for everything this cannot
+    foresee.
+    """
+    try:
+        from bgate_adapters import godot as _g
+        probe = _g.export_templates("web")
+    except Exception:
+        return ""
+    if probe.get("available"):
+        return ""
+    return str(probe.get("reason") or "web export templates are not installed")
 
 
 def _export_error(stderr: str) -> str:
@@ -121,6 +148,20 @@ def rebuild(root: str | os.PathLike[str], timeout: int = 240) -> dict:
     godot = _godot()
     if not godot:
         return {"ok": False, "error": "Godot not found (set BGATE_GODOT)"}
+
+    # ASK BEFORE SPENDING FIVE SECONDS FAILING, and ask the thing that already
+    # knows. godot.export_templates() is the same probe `bgate doctor` reports
+    # under godot_web_templates, and it answers better than an export's stderr
+    # can: it names the version Godot IS and the version the installed templates
+    # are FOR, which is a thirty-second fix, where the engine's own message is a
+    # path to a zip that does not exist.
+    #
+    # This was the whole bug from the outside. The export path never asked, so a
+    # machine with a perfectly good Godot and mismatched templates ran the
+    # export, failed, and (before the exit code was checked) reported success.
+    blocked = _templates_blocked()
+    if blocked:
+        return {"ok": False, "error": blocked, "templates": True}
 
     out = Path(root) / "export" / "web"
     out.mkdir(parents=True, exist_ok=True)
