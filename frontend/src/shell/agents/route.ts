@@ -1,4 +1,4 @@
-import { type FloorPlan, type Spot } from "./floorplan";
+import { type FloorPlan, type Prop, type Spot } from "./floorplan";
 
 /* GETTING THERE WITHOUT GOING THROUGH A WALL.
  *
@@ -42,6 +42,24 @@ import { type FloorPlan, type Spot } from "./floorplan";
  * leaves the few corners that are actually load-bearing: out of the door, along
  * the corridor, in through the next one. That is the shape the walk is supposed
  * to read as, and it falls out of the geometry rather than being posed.
+ *
+ * FURNITURE IS THE OTHER HALF OF THE BUILDING. Walls alone got characters
+ * through the right doors and then straight through the Director's desk, the
+ * lounge couches and the tech room's racks - and a figure sliding through a
+ * three-cell desk reads worse than one sliding through a wall, because the desk
+ * is drawn in front of it. Every room's `props` rect is a footprint here, which
+ * is why the arrays stayed populated after the renderer stopped drawing most of
+ * them. FLAT PROPS ARE NOT FURNITURE: a rug is walked on and floor cabling is
+ * walked over, so `rug` and `cables` are skipped - the same two kinds the lounge
+ * already skips when it filters its standing spots, and for the same reason.
+ *
+ * A FOOTPRINT YOU ARE ALREADY STANDING IN CANNOT STOP YOU. The craft rooms put
+ * the desk spot at y+3.1 and the chair at y+2.6..3.6, so a character seated at
+ * its own desk is inside a solid rect by construction; blocking it would make
+ * every desk in the building unreachable and send every walk to the fallback
+ * straight line, which is the failure this file exists to prevent. So the boxes
+ * containing either end of a walk are lifted for that walk only - being sat at a
+ * chair is not the same as walking through one.
  */
 
 /** Half a cell. See above: this is the doorway's number, not a tuning knob. */
@@ -97,16 +115,78 @@ function clear(p: Spot, q: Spot, walls: Seg[]): boolean {
   return true;
 }
 
+/* ── furniture ─────────────────────────────────────────────────────────────
+   A prop is a filled rectangle, not a line, so it is tested as a box rather
+   than added to the wall list: a wall is something you cross, a desk is
+   somewhere you cannot be. The margin is the half-width of a pair of feet.
+   Without it a character hugs a rect exactly and is drawn with one boot inside
+   the couch, which is the same bug as walking through it with the amplitude
+   turned down. */
+type Box = { x0: number; y0: number; x1: number; y1: number };
+
+/** Half a footprint. Same order as the lounge's own 0.4 spot margin, smaller
+ *  because that one has to fit a whole standing figure and this only has to
+ *  keep a moving one off the varnish. */
+const FOOT = 0.15;
+
+const FLAT: ReadonlySet<string> = new Set(["rug", "cables"]);
+
+function boxOf(p: Prop): Box {
+  return { x0: p.x - FOOT, y0: p.y - FOOT,
+           x1: p.x + p.w + FOOT, y1: p.y + p.h + FOOT };
+}
+
+const inside = (b: Box, p: Spot) =>
+  p.x > b.x0 && p.x < b.x1 && p.y > b.y0 && p.y < b.y1;
+
+/** Segment against box, by slabs. Starting inside counts as a hit, which is
+ *  what makes the lifted-box rule above necessary rather than merely tidy. */
+function stabs(p: Spot, q: Spot, b: Box): boolean {
+  let t0 = 0, t1 = 1;
+  const d = [q.x - p.x, q.y - p.y];
+  const o = [p.x, p.y];
+  const lo = [b.x0, b.y0];
+  const hi = [b.x1, b.y1];
+  for (let k = 0; k < 2; k++) {
+    if (Math.abs(d[k]) < EPS) {
+      /* Parallel to this pair of edges: it either runs down the slab forever
+         or misses it entirely, and there is no t that decides which. */
+      if (o[k] <= lo[k] + EPS || o[k] >= hi[k] - EPS) return false;
+      continue;
+    }
+    let a = (lo[k] - o[k]) / d[k];
+    let b2 = (hi[k] - o[k]) / d[k];
+    if (a > b2) { const t = a; a = b2; b2 = t; }
+    if (a > t0) t0 = a;
+    if (b2 < t1) t1 = b2;
+    if (t1 - t0 <= EPS) return false;
+  }
+  return t1 > EPS && t0 < 1 - EPS;
+}
+
+/** Can these two points see each other: nothing solid on the line between
+ *  them, walls or furniture. `lifted` is the boxes an endpoint is standing in
+ *  and which therefore do not count for this walk. */
+function sight(p: Spot, q: Spot, walls: Seg[], boxes: Box[],
+               lifted: Box[]): boolean {
+  if (!clear(p, q, walls)) return false;
+  for (const b of boxes) {
+    if (lifted.length && lifted.includes(b)) continue;
+    if (stabs(p, q, b)) return false;
+  }
+  return true;
+}
+
 /** Drop every corner that was only there because the grid is square. Walks
  *  forward from the last kept point and takes the FURTHEST point it can still
  *  see, so a straight run down a corridor collapses to its two ends. */
-function pull(pts: Spot[], walls: Seg[]): Spot[] {
+function pull(pts: Spot[], see: (a: Spot, b: Spot) => boolean): Spot[] {
   if (pts.length < 3) return pts;
   const out: Spot[] = [pts[0]];
   let i = 0;
   while (i < pts.length - 1) {
     let j = pts.length - 1;
-    for (; j > i + 1; j--) if (clear(pts[i], pts[j], walls)) break;
+    for (; j > i + 1; j--) if (see(pts[i], pts[j])) break;
     out.push(pts[j]);
     i = j;
   }
@@ -156,10 +236,25 @@ class Heap {
 
 const SQ2 = Math.SQRT2;
 
+/* ONE ROUTER PER PLAN, EVEN WHEN TWO PANES ASK FOR IT. The grid is a fact
+   about the building, so both the floor pane and the overlay memo it on their
+   own render - and each got its own copy, its own thousand-cell rasterisation
+   and its own cold route cache, for the same plan object. Keyed on the plan
+   itself and weak, so a plan that goes out of scope takes its router with it. */
+const NAVS = new WeakMap<FloorPlan, Nav>();
+
 /** Build the router for one plan. Called once per plan, not per walk: the
  *  passability grid is a fact about the BUILDING, and rebuilding it per
  *  character per poll would be re-deriving the walls eight times a tick. */
 export function buildNav(plan: FloorPlan): Nav {
+  const hit = NAVS.get(plan);
+  if (hit) return hit;
+  const nav = makeNav(plan);
+  NAVS.set(plan, nav);
+  return nav;
+}
+
+function makeNav(plan: FloorPlan): Nav {
   const gw = Math.round(plan.cols / RES);
   const gh = Math.round(plan.rows / RES);
   const n = gw * gh;
@@ -202,6 +297,49 @@ export function buildNav(plan: FloorPlan): Nav {
     }
   }
 
+  /* Every solid footprint on the floor: the rooms' dressing and the corridor's
+     plants and noticeboard, which are as much in the way as a desk is. */
+  const all: Box[] = [];
+  for (const p of plan.props) if (!FLAT.has(p.kind)) all.push(boxOf(p));
+  for (const room of plan.rooms) {
+    for (const p of room.props) if (!FLAT.has(p.kind)) all.push(boxOf(p));
+  }
+  /* THINGS ON TOP OF OTHER THINGS ARE NOT SEPARATE OBSTACLES. Every desk in
+     the building has a monitor drawn standing on it, entirely within its
+     footprint - and a box that another box already contains can never block a
+     route the container does not. Dropping it is free, but the reason to do it
+     is the Director's office: the plan stands a visitor at (15,23), which is
+     INSIDE the big desk, so that desk gets lifted for the walk out - and the
+     monitor on it, being its own rect, stayed solid and left an invisible
+     bollard on the one route every agent in the building takes. */
+  const boxes = all.filter((b, i) => !all.some((o, j) =>
+    j !== i && o.x0 <= b.x0 && o.y0 <= b.y0 && o.x1 >= b.x1 && o.y1 >= b.y1
+    /* Identical rects contain each other; keep the first, drop the later. */
+    && (j < i || o.x0 < b.x0 || o.y0 < b.y0 || o.x1 > b.x1 || o.y1 > b.y1)));
+
+  /* Filled cells, unlike the walls above. A cell is blocked when its CENTRE is
+     inside a footprint, not when the footprint touches it at all: the grid is
+     half a cell and furniture lands on fractional coordinates, so "any overlap"
+     would grow every prop by up to a half cell on each side and close the
+     gap between the tech room's racks and its own doorway. The margin that
+     keeps a character off the varnish is in the box, where it is one number
+     rather than a property of the grid resolution. */
+  const blocked = new Uint8Array(n);
+  for (const b of boxes) {
+    const x0 = Math.max(0, Math.floor((b.x0 - RES / 2) / RES));
+    const x1 = Math.min(gw - 1, Math.ceil((b.x1 - RES / 2) / RES));
+    const y0 = Math.max(0, Math.floor((b.y0 - RES / 2) / RES));
+    const y1 = Math.min(gh - 1, Math.ceil((b.y1 - RES / 2) / RES));
+    for (let gy = y0; gy <= y1; gy++) {
+      const cy = gy * RES + RES / 2;
+      if (cy <= b.y0 || cy >= b.y1) continue;
+      for (let gx = x0; gx <= x1; gx++) {
+        const cx = gx * RES + RES / 2;
+        if (cx > b.x0 && cx < b.x1) blocked[gy * gw + gx] = 1;
+      }
+    }
+  }
+
   /* Scratch, allocated once. A* is run several times per poll and these are
      the only allocations big enough to be worth not making eight times. */
   const g = new Float64Array(n);
@@ -231,6 +369,7 @@ export function buildNav(plan: FloorPlan): Nav {
    *  passes through the point where two walls meet. */
   const step = (gx: number, gy: number, dx: number, dy: number): boolean => {
     const i = gy * gw + gx;
+    if (blocked[(gy + dy) * gw + (gx + dx)]) return false;
     if (dx > 0 && !openE[i]) return false;
     if (dx < 0 && !openE[i - 1]) return false;
     if (dy > 0 && !openS[i]) return false;
@@ -241,6 +380,10 @@ export function buildNav(plan: FloorPlan): Nav {
       const v = (gy + dy) * gw + gx;
       if (dy > 0 ? !openS[h] : !openS[h - gw]) return false;
       if (dx > 0 ? !openE[v] : !openE[v - 1]) return false;
+      /* And the corner itself has to be clear of furniture, or a character
+         squeezes diagonally between the desk and the wall it is pushed
+         against - a gap that exists on the grid and not in the picture. */
+      if (blocked[h] || blocked[v]) return false;
     }
     return true;
   };
@@ -306,15 +449,45 @@ export function buildNav(plan: FloorPlan): Nav {
       const hit = cache.get(key);
       if (hit) return hit;
 
+      /* The footprints this walk does not have to respect, because one of its
+         ends is already inside them. Almost always empty or one chair. */
+      const lifted = boxes.filter((b) => inside(b, from) || inside(b, to));
+      const see = (a: Spot, b: Spot) => sight(a, b, plan.walls, boxes, lifted);
+
       let out: Spot[];
       /* IN SIGHT OF EACH OTHER IS THE COMMON CASE and it must not pay for the
          grid: a character standing up from its desk, or shuffling one place
          along the queue, is a straight line and the search would return the
          same answer after several hundred pops. */
-      if (clear(from, to, plan.walls)) {
+      if (see(from, to)) {
         out = [from, to];
       } else {
+        /* The grid says those lifted boxes are solid, so open their cells for
+           the length of this search and put them back afterwards. Cheaper and
+           less error-prone than a second grid per walk, and the alternative -
+           letting the search start on a blocked cell and hoping - strands a
+           character at its own chair with no first step available. */
+        const reopened: number[] = [];
+        const open = (i: number) => {
+          if (blocked[i]) { blocked[i] = 0; reopened.push(i); }
+        };
+        for (const b of lifted) {
+          const x0 = Math.max(0, Math.floor(b.x0 / RES));
+          const x1 = Math.min(gw - 1, Math.floor(b.x1 / RES));
+          const y0 = Math.max(0, Math.floor(b.y0 / RES));
+          const y1 = Math.min(gh - 1, Math.floor(b.y1 / RES));
+          for (let gy = y0; gy <= y1; gy++) {
+            for (let gx = x0; gx <= x1; gx++) open(gy * gw + gx);
+          }
+        }
+        /* Both ends unconditionally, whatever the plan put there. A placement
+           the server sent is where the character IS; refusing to route to it
+           because a footprint moved on top of it would freeze somebody
+           somewhere they are not. */
+        open(idx(from));
+        open(idx(to));
         const path = search(idx(from), idx(to));
+        for (const i of reopened) blocked[i] = 1;
         /* NO ROUTE IS STILL A MOVE. A seat whose room was disabled mid-walk,
            or a coordinate the plan put in a sealed pocket, still has to end up
            where the poll says it is - dropping the character or freezing it
@@ -322,7 +495,7 @@ export function buildNav(plan: FloorPlan): Nav {
            is the one thing it exists not to do. It goes in a straight line and
            the geometry is wrong for one journey. */
         out = path
-          ? pull([from, ...path.map(centre), to], plan.walls)
+          ? pull([from, ...path.map(centre), to], see)
           : [from, to];
       }
 

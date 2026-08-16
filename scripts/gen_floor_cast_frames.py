@@ -110,12 +110,57 @@ def _sandbox() -> Path:
 ROOT = _sandbox()
 CAST = ROOT / ".bgate_out" / "art" / "cast"
 OUT = CAST / "anim"
+# ROOT is the ART project (bg-testbed); the rooms are art installed into the
+# HARNESS checkout, which is this file's own repo.
+ROOMS = (Path(__file__).resolve().parents[1]
+         / "frontend" / "public" / "img" / "floor" / "rooms")
 FRAMES = CAST / "frames"          # the single drawings, kept: they are the
                                   # expensive part and a restitch must be free
 
 # The same cast description gen_floor_cast_anims.py uses, and it has to STAY the
 # same: it is what stops the model swapping a jacket colour and still believing
 # it obeyed the reference.
+# WHICH WAY A WORKING FIGURE IS TURNED, AND WHY IT IS A PROMPT PROBLEM.
+#
+# The user marked every seat's station on the rendered floor with a circle and
+# drew an arrow for what it should be looking at. Four of those arrows point UP
+# - the audio console, the QA bench, the art canvas and the video edit bay are
+# all NORTH of where their seat stands - and two point DOWN.
+#
+# Mirroring cannot express that. The sprite is one drawing turned three-quarters
+# towards the camera, and a horizontal flip buys left and right and nothing
+# else, so every seat came back working with its back to the thing it was
+# working on. That is the first thing a reader notices and no amount of
+# repositioning fixes it.
+#
+# So the orientation is DRAWN. An arrow pointing away from the camera means the
+# figure is seen FROM BEHIND, over its shoulder, which is what a person bent
+# over a desk on the far side of a room actually looks like from a camera
+# angled down at seventy-odd degrees. An arrow pointing towards the camera
+# means the figure faces the viewer, which is the stock orientation.
+#
+# art IS DELIBERATELY ABSENT. Its painter was generated front-on, the user
+# looked at it and kept it, and re-cutting art to satisfy a rule it is already
+# excepted from would be spending to make something worse.
+ORIENT = {
+    "audio": "seen FROM BEHIND, its back to the viewer and its head bent to the "
+             "work in front of it, so the face is hidden and the shoulders and "
+             "the back of the head are what the camera sees",
+    "qa": "seen FROM BEHIND, its back to the viewer and its head bent to the "
+          "work in front of it, so the face is hidden",
+    "cinematic": "seen FROM BEHIND and turned slightly to ITS OWN LEFT, its back "
+                 "to the viewer, so the camera sees its shoulders and the back "
+                 "of its head",
+    "gameplay": "seen FROM BEHIND and turned slightly to ITS OWN LEFT, its back "
+                "to the viewer, slouched low",
+    "tech": "seen FROM BEHIND and turned slightly to ITS OWN LEFT, its back to "
+            "the viewer, bent over the bench in front of it",
+    "narrative": "FACING THE VIEWER, turned three-quarters towards the camera, "
+                 "head bent to the work in front of it",
+    "director": "FACING THE VIEWER, turned three-quarters towards the camera",
+}
+
+
 WHO = {
     "art": "a woman with black hair tied up in a bun with a pink hair tie, a "
            "pink long-sleeved top, a paint-spattered cream apron, dark blue "
@@ -287,6 +332,209 @@ ANIMS: dict[str, dict] = {
     },
 }
 
+# WHAT EACH SEAT IS ACTUALLY DOING WHEN IT IS WORKING.
+#
+# ONE GENERIC `working` FOR NINE SEATS WAS THE BUG. Every character on the floor
+# mimed the same keyboard, so an agent in the art room and an agent in the audio
+# room were the same drawing in different clothes, and the one thing the floor
+# pane exists to show - which craft is busy - was the one thing the sprite did
+# not say. The rooms are already drawn per craft; the cast was not.
+#
+# THESE OVERLAY ANIMS["working"], they do not replace the table. `grid` is not
+# restated - it comes from ANIMS and therefore still agrees with the sidecar the
+# stitch writes - and a seat with no entry here (generic) keeps the typing that
+# was always right for it.
+#
+# THE PROP IS HELD; THE FURNITURE IS NOT DRAWN. The easel, the mixing console,
+# the desk, the workbench and the camera on its tripod are already painted into
+# the room art at the coordinate the sprite stands on, so a second copy drawn
+# into the sprite sits on top of the real one - qa-working was rejected on the
+# last pass for exactly that ("drew its own desk into every cell"). What the
+# character can carry off the floor with them - a brush, a pen, a controller, a
+# handheld, a sheaf of pages - is drawn, because that is on their person. What
+# they cannot is mimed, which is what the stock `working` stance already did
+# with its keyboard.
+#
+# ONE PROP PER SEAT AND IT NEVER CHANGES. cinematic-working was rejected on the
+# last pass because its prop changed between cells - empty hands, a loose page,
+# a closed book, an open book - and stepped, the book appeared and disappeared
+# in his hands. Every stance below names exactly one object and every beat
+# leaves it in the same hand.
+#
+# THE AMPLITUDES ARE THE SAME ONES THE STOCK BEATS USE, for the same reason: the
+# floor draws this cell about 59px tall, so a brush stroke is a few pixels of
+# hand travel and a shoulder shift. A beat that asks for a swing gets a
+# different drawing rather than the next frame of the same one.
+NO_FURNITURE = ("There is NO desk, NO table, NO bench, NO easel, NO canvas, NO "
+                "monitor, NO screen and NO furniture of any kind anywhere in "
+                "the picture - only the character")
+WORKING: dict[str, dict] = {
+    "art": {
+        # PORTRAIT, because this pose STANDS. The stock working size is square
+        # for a seated body; a standing painter in a square frame comes back
+        # smaller to fit, and the slicer then scales it up from less ink.
+        "size": "1024x1536",
+        "stance": ("standing upright at work, the body turned three-quarters "
+                   "towards the viewer, both feet flat on the ground, one arm "
+                   "raised in front of the chest holding a single small "
+                   "paintbrush, the other arm bent at the waist holding a "
+                   "small oval palette. " + NO_FURNITURE + ", the brush and "
+                   "the palette"),
+        "beats": [
+            "the brush is at the top of its stroke, that arm raised highest "
+            "and that shoulder lifted",
+            "the brush has started down, the elbow just beginning to open",
+            "the brush is halfway down the stroke, the wrist level with the "
+            "shoulder",
+            "the brush is at the bottom of the stroke, that arm lowest and the "
+            "torso leaned in very slightly towards the work",
+            "the brush has lifted a little off the work and is beginning to "
+            "travel back up",
+            "the brush is partway back up, the elbow folding, the head dipped "
+            "very slightly towards the work",
+            "the brush is near the top of its return, the shoulder rising and "
+            "the head coming back up",
+            "the brush is back at the top of its stroke, the arm raised, about "
+            "to start down again",
+        ],
+    },
+    "audio": {
+        "stance": (ORIENT["audio"] + ", " + "seated on a plain dark office swivel chair, turned three-quarter "
+                   "s towards the viewer, leaning slightly forward with both hands o "
+                   "ut in front at waist height working the faders of a mixing desk  "
+                   "that is NOT drawn, wearing over-ear headphones "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "both hands level on the faders, the head down to the desk, nodding to the track",
+            "the left hand has pushed one fader up a little and the shoulder lifted with it",
+            "the left hand holds there while the right hand starts across the desk",
+            "the right hand has moved a little to the side and the head follows it",
+            "the right hand is at its furthest across, both shoulders square again",
+            "the right hand is coming back and the head begins to lift",
+            "the head is up, listening, both hands almost back at rest",
+            "the head lowers to the desk again and the hands settle level",
+        ],
+    },
+    "narrative": {
+        "stance": (ORIENT["narrative"] + ", " + "seated on a plain dark office swivel chair, turned three-quarter "
+                   "s towards the viewer, leaning forward over a table that is NOT d "
+                   "rawn, one hand holding a SHORT SLIM PEN at waist height and movi "
+                   "ng it as if writing, the other forearm resting beside it "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "the pen is at the start of the line, the head down to the work",
+            "the pen has moved a little along and the wrist has rolled slightly",
+            "the pen is halfway along the line, the forearm beginning to open",
+            "the pen is near the end of the line, the forearm extended further",
+            "the pen is at the end of the line, that hand at its furthest forward",
+            "the pen has lifted clear and the hand travels back, the head raised to think",
+            "the head is still raised and the hand is nearly back at the start",
+            "the pen comes back down and the head lowers to the work again",
+        ],
+    },
+    "gameplay": {
+        "stance": (ORIENT["gameplay"] + ", " + "seated low and slouched back as if on a couch, knees forward, tu "
+                   "rned three-quarters towards the viewer, both hands together in f "
+                   "ront at chest height holding a small game controller, thumbs wor "
+                   "king "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "slouched back, both thumbs on the sticks, the head level to the screen",
+            "the thumbs press in and the shoulders tense very slightly",
+            "the whole body leans a little to the left with the action",
+            "the lean is at its furthest left, the hands following the tilt",
+            "the body is coming back through centre, the thumbs still working",
+            "the body leans a little to the right, the head following",
+            "the lean is at its furthest right and the shoulders begin to drop",
+            "the body settles back to centre and the shoulders relax",
+        ],
+    },
+    "qa": {
+        "size": "1024x1536",
+        "stance": (ORIENT["qa"] + ", " + "seated on a plain dark office swivel chair, turned three-quarter "
+                   "s towards the viewer, leaning forward with both hands out in fro "
+                   "nt at waist height typing on a laptop that is NOT drawn, checkin "
+                   "g something "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "both hands on the keys, the head down to the screen",
+            "the right hand taps and lifts, the head still down",
+            "the left hand taps in turn and the shoulder dips",
+            "both hands pause flat and the head tilts, reading",
+            "the head is still tilted, one hand lifted clear",
+            "that hand comes back down and the head straightens",
+            "both hands typing again, the shoulders square",
+            "the hands settle and the head lowers back to the screen",
+        ],
+    },
+    "cinematic": {
+        "stance": (ORIENT["cinematic"] + ", " + "seated on a plain dark office swivel chair, turned three-quarter "
+                   "s towards the viewer, leaning slightly forward with both hands o "
+                   "ut in front at waist height on a keyboard and mouse that are NOT "
+                   " drawn, reviewing a cut "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "both hands settled and level, the head down to the screen",
+            "the left hand presses down and the shoulder dips with it",
+            "the left hand rises as the right hand begins to move across",
+            "the right hand has travelled a little to the side, the head following",
+            "the right hand is at its furthest across and has stopped",
+            "the right hand comes back and the head levels",
+            "both hands almost at rest, the head lifting to take in the whole cut",
+            "the hands settle level and the head lowers to the screen",
+        ],
+    },
+    "tech": {
+        "stance": (ORIENT["tech"] + ", " + "standing upright at a workbench that is NOT drawn, the body turn "
+                   "ed three-quarters towards the viewer and leaning forward over th "
+                   "e work, one hand holding a SMALL HAND TOOL down in front at wais "
+                   "t height and the other steadying the piece being worked on "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "leaning over the work, the tool down to it, both shoulders forward",
+            "the tool hand presses in a little and the head lowers with it",
+            "the tool hand eases back and the steadying hand adjusts its grip",
+            "the tool has moved a little across the work, the head following",
+            "the tool is at its furthest across and has stopped",
+            "the tool hand lifts clear and the head rises to inspect",
+            "the head is still up, the tool held clear, the other hand turning the piece",
+            "the tool comes back down and the head lowers to the work again",
+        ],
+    },
+    "director": {
+        "stance": (ORIENT["director"] + ", " + "seated on a high-backed office chair, turned three-quarters towa "
+                   "rds the viewer, leaning slightly forward with both hands out in  "
+                   "front at waist height on a keyboard that is NOT drawn, occasiona "
+                   "lly gesturing while talking "
+                   + ". " + NO_FURNITURE),
+        "beats": [
+            "both hands on the keys, the head level to the screen",
+            "the right hand lifts off into a small gesture at chest height",
+            "the gesture opens a little further, the head turning with it",
+            "the gesture is at its widest, the shoulders open",
+            "the hand begins to come back down, the head levelling",
+            "the hand is nearly back at the keys, the head returning to the screen",
+            "both hands on the keys again, typing",
+            "the hands settle level and the shoulders drop",
+        ],
+    },
+}
+
+
+def spec_for(name: str, anim: str) -> dict:
+    """The ANIMS entry for this animation, with this seat's craft laid over it.
+
+    OVERLAY RATHER THAN A SECOND TABLE. `grid` and `size` still come from ANIMS
+    unless a seat says otherwise, so the sidecar the stitch writes and the cut
+    the slicer makes cannot drift apart per seat - which is the silent failure
+    (sliced heads, not an error) the sidecar was added to end.
+    """
+    spec = ANIMS[anim]
+    if anim == "working" and name in WORKING:
+        return {**spec, **WORKING[name]}
+    return spec
+
+
 # THE FIXED HALF OF EVERY PROMPT, and both halves of it are load-bearing rather
 # than style notes. The CAMERA is the one the cast is already drawn to and the
 # one the floor pane counter-rotates the sprites by, so a frame drawn isometric
@@ -374,10 +622,46 @@ def frame_path(name: str, anim: str, i: int) -> Path:
     return FRAMES / f"{name}-{anim}-{i + 1}.png"
 
 
+def anchor_frame(name: str) -> Path | None:
+    """This character's own IDLE frame, on the flat field, as a single drawing.
+
+    THE RIGHT ANCHOR WAS ON DISK THE WHOLE TIME. Frame 1 of a working cycle was
+    being drawn against the six-pose MODEL SHEET, which settles who the person
+    is and settles nothing else - not the camera, not the field, not the scale -
+    so every one of those had to be re-argued in words for every seat. Then the
+    ROOM was added to argue the facing, and it fixed the facing and painted the
+    room in behind the figure, and because frame 1 anchors the cycle the bleed
+    reached all eight frames.
+
+    An installed idle frame has all of it already: the same character, the same
+    70-75 degree camera, the same pixel scale, the same flat navy field, drawn
+    and accepted. Anchoring on THAT leaves the prompt one job - turn them and
+    put them to work - which is the job it can actually do.
+
+    Cut from the installed strip rather than the frames directory: the strip is
+    what shipped, and the per-frame drawings for idle were bought long enough
+    ago that they are not all still on disk.
+    """
+    strip = REPO / "frontend" / "public" / "img" / "floor" / name / "idle.png"
+    if not strip.is_file():
+        return None
+    out = FRAMES / f"{name}-anchor.png"
+    if out.exists():
+        return out
+    im = Image.open(strip).convert("RGBA")
+    cell = im.height * 4 // 5          # the strip is 128x160 cells laid across
+    one = im.crop((0, 0, cell, im.height))
+    flat = Image.new("RGBA", one.size, FIELD + (255,))
+    flat.alpha_composite(one)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    flat.convert("RGB").save(out)
+    return out
+
+
 def one_frame(name: str, anim: str, i: int, refs: list[str],
               provider: str) -> dict:
     """Buy one drawing, unless it is already on disk."""
-    spec = ANIMS[anim]
+    spec = spec_for(name, anim)
     out = frame_path(name, anim, i)
     if out.exists():
         return {"ok": True, "skipped": True, "path": str(out)}
@@ -385,6 +669,31 @@ def one_frame(name: str, anim: str, i: int, refs: list[str],
                              beat=spec["beats"][i])
     if len(refs) > 1:
         prompt += CYCLE
+    if any(Path(r).name == f"{name}.png" and Path(r).parent.name == "rooms"
+           for r in refs):
+        prompt += (
+            "\n\nThe LAST reference image is the ROOM this character works in, "
+            "seen from the same camera. It shows the workstation they are "
+            "standing or sitting at. Pose them exactly as somebody using THAT "
+            "station would be posed, and turn their body the way that station "
+            "requires - if the station is at the TOP of that picture, the "
+            "character is working AWAY from the camera and is drawn from "
+            "behind. Do not draw the room, the station or any of its furniture "
+            "into this picture: only the character."
+            # NOT A REPEAT - THE LAST WORD. The room reference does its job on
+            # the facing and then keeps going: five of audio's eight frames came
+            # back with the studio's floor, wall and orange downlights painted
+            # in behind the figure. The slicer keys the background out by
+            # flooding a FLAT field, so a frame carrying a room is a frame that
+            # cannot be cut. Saying it once at the top was not enough against a
+            # reference image that is nothing but room, so the field is restated
+            # after the room clause, where it is read last.
+            "\n\nTHE BACKGROUND OF THIS PICTURE IS STILL A COMPLETELY FLAT, "
+            "PLAIN, EMPTY FIELD OF ONE SINGLE COLOUR, exactly as described "
+            "above. Do NOT copy the room's floor, walls, lighting, shadows or "
+            "any object from the reference into the background. The reference "
+            "is there ONLY to show how the body should be turned. Nothing but "
+            "the character and the flat field.")
     out.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     if provider == "kie":
@@ -417,7 +726,7 @@ def stitch(name: str, anim: str) -> bool:
     margin is harmless and a cell that is a different SIZE from its neighbours is
     not - which is what a naive paste of mixed-size drawings would produce.
     """
-    cols, rows = ANIMS[anim]["grid"]
+    cols, rows = spec_for(name, anim)["grid"]
     n = cols * rows
     paths = [frame_path(name, anim, i) for i in range(n)]
     if not all(p.exists() for p in paths):
@@ -448,7 +757,7 @@ def stitch(name: str, anim: str) -> bool:
 def complete(name: str, anim: str) -> bool:
     """Are all of this animation's drawings already on disk?"""
     return all(frame_path(name, anim, i).exists()
-               for i in range(len(ANIMS[anim]["beats"])))
+               for i in range(len(spec_for(name, anim)["beats"])))
 
 
 def main() -> int:
@@ -482,7 +791,7 @@ def main() -> int:
         print("every drawing is already on disk - nothing to buy")
         return 0
 
-    total = sum(sum(1 for i in range(len(ANIMS[a]["beats"]))
+    total = sum(sum(1 for i in range(len(spec_for(n, a)["beats"]))
                     if not frame_path(n, a, i).exists()) for n, a in jobs)
     print(f"{len(jobs)} sheets, {total} drawings to buy on {provider}",
           flush=True)
@@ -490,6 +799,37 @@ def main() -> int:
     bad = 0
     for n, a in jobs:
         sheet_ref = str(CAST / f"{n}-sheet.png")
+        # THE ROOM ITSELF IS A REFERENCE, AND NOT USING IT WAS THE MISTAKE.
+        #
+        # A `working` pose is only correct relative to the thing it is working
+        # at, and this script had been told about that thing in prose: "a mixing
+        # desk that is NOT drawn", "a laptop that is NOT drawn". The model was
+        # being asked to infer a station's height, its distance, and above all
+        # WHICH WAY THE BODY FACES, from a sentence - and it got the facing
+        # wrong for every seat whose station is north of it, because nothing in
+        # the words said the desk was behind the character rather than in front.
+        #
+        # The room is a finished picture sitting on disk at
+        # img/floor/rooms/<seat>.png. Handing it over costs one upload and lets
+        # the model see the console, the bench, the couch and the easel it is
+        # posing someone at. Only for `working`: idle, walk and handoff happen
+        # anywhere on the floor and a room would just pull them towards it.
+        room = ROOMS / f"{n}.png"
+        # THE ROOM IMAGE IS OFF, AND THE ORIENTATION IS CARRIED BY ORIENT.
+        #
+        # Handing the room over does fix the facing and it cannot be made to
+        # stop bleeding: told six ways not to, the model still paints the room
+        # in behind the figure, and because frame 1 is the cycle anchor the
+        # bleed then propagates into all eight. Audio came back with a slab of
+        # its own equipment rack welded to every frame.
+        #
+        # ORIENT already says the thing the room was being used to say - "seen
+        # FROM BEHIND, its back to the viewer" - in words, which cost nothing
+        # and cannot leak a background. Set BGATE_CAST_ROOM_REF=1 to put it back
+        # for a seat whose facing words alone cannot settle.
+        from os import environ
+        want_room = environ.get("BGATE_CAST_ROOM_REF", "") == "1"
+        extra = [str(room)] if want_room and a == "working" and room.is_file() else []
         if not Path(sheet_ref).is_file():
             print(f"FAIL {n}: no model sheet to anchor on", flush=True)
             bad += 1
@@ -497,14 +837,29 @@ def main() -> int:
         # FRAME 1 FIRST, ALONE, because it is the anchor every other frame of
         # this animation is drawn against. Running the whole cycle in parallel
         # off the model sheet alone is what makes a set instead of a cycle.
-        first = one_frame(n, a, 0, [sheet_ref], provider)
+        # THE ROOM ANCHORS FRAME 1 ONLY, AND THAT IS THE WHOLE TRICK.
+        #
+        # It is needed to settle which way the body faces, and it costs
+        # background: handed a reference that is nothing but room, the model
+        # paints the room in behind the figure, and five of audio's eight frames
+        # came back on a hazy studio floor instead of the flat field the slicer
+        # floods. Frame 1 only pays that once. Every later frame anchors on
+        # frame 1 instead, which is ALREADY turned the right way - the cycle
+        # anchor this script was built around was always the thing carrying
+        # orientation forward, so the room has nothing left to add after it.
+        # The character's own idle frame if there is one, the model sheet if
+        # not. See anchor_frame: a finished frame carries the camera, the scale
+        # and the field, and a model sheet carries none of them.
+        base = anchor_frame(n) if a == "working" else None
+        first = one_frame(n, a, 0, [str(base) if base else sheet_ref] + extra,
+                          provider)
         if not first.get("ok"):
             print(f"FAIL {n}-{a} frame 1: {first.get('error')}", flush=True)
             bad += 1
             continue
         print(f"ok   {n}-{a} 1  {first.get('seconds')}s", flush=True)
         refs = [sheet_ref, str(frame_path(n, a, 0))]
-        rest = range(1, len(ANIMS[a]["beats"]))
+        rest = range(1, len(spec_for(n, a)["beats"]))
         with futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
             fut = {pool.submit(one_frame, n, a, i, refs, provider): i
                    for i in rest}

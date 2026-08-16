@@ -5,12 +5,13 @@
  *      +--------+---------+--------+
  *      |gameplay| LOUNGE  |  qa    |   <- middle row
  *      +--------+---------+--------+
- *      |  art   |Director | (tech) |   <- bottom row
+ *      |  art   |DIRECTOR | (tech) |   <- bottom row
  *      +--------+---------+--------+
  *
  * NO MEETING ROOM. NO KITCHEN. NO CUBICLE BLOCKS. Craft rooms ring the
- * outside. The lounge is the middle. The Director is at the bottom.
- * Corridors run between everything.
+ * outside. The lounge is the middle. The Director is at the bottom, nearest the
+ * reader, because the Director is who you walk to. Corridors run between
+ * everything.
  *
  * THE UNIT IS A CELL, NOT A PIXEL, and that is deliberate: the pane is inside
  * a rail the user drags, so the whole building has to shrink without any of it
@@ -21,7 +22,7 @@
  * THE ARRANGEMENT RULE IS FIXED, THE ASSIGNMENT IS COMPUTED. A project can
  * disable a seat (or invent one), so no room below is hardcoded to a craft.
  * What is fixed is the shape of the building the user settled on: craft rooms
- * ring the outside, lounge center, Director bottom center.
+ * ring the outside, lounge centre, Director bottom centre.
  *
  * WALLS ARE SHARED, NOT DOUBLED. Every room hands in its four edges, identical
  * edges collapse to one segment, and the segment is drawn ONCE on the line
@@ -166,6 +167,24 @@ const PREFERRED_SLOT: Record<string, number> = {
 };
 
 type SlotDef = { x: number; y: number; door: Side };
+
+/* THE DIRECTOR IS AT THE BOTTOM, WHICH IS WHERE IT STARTED.
+ *
+ * It spent a while at the top. The office is the one room that wanted an
+ * exterior view, a window only belongs in a wall that faces outside, and the
+ * top row is the only row whose drawn wall is the building's edge - so the
+ * office moved up there to earn its window.
+ *
+ * The window was the cheaper half of that trade and it lost. Idle agents queue
+ * at the Director's door, and at the top of the map that queue forms furthest
+ * from the reader with the whole building in front of it; the Director is also
+ * the room a person looks for first, and putting it under the reader's thumb is
+ * worth more than a view. So the office came back down and the window came out
+ * of the room instead - see gen_floor_rooms.WHAT, which asks for a panelled
+ * interior wall where the skyline used to be.
+ */
+const OFF_X = C1;
+const OFF_Y = R2;
 
 const SLOTS: SlotDef[] = [
   { x: C0, y: R0, door: "s" },   // 0: top-left
@@ -473,6 +492,67 @@ function insideDoor(r: Rect, d: Door): Spot {
   }
 }
 
+/* WHERE A SEAT ACTUALLY WORKS, ROOM BY ROOM.
+ *
+ * This used to be one formula for all eight craft rooms - the middle of the
+ * room, 3.1 cells down - and that was right when every room was dressed from
+ * the same kit and every kit put its desk in the same place. It stopped being
+ * right the moment the rooms became paintings: the audio console runs along the
+ * back wall, the art room's empty canvas is off to the right of centre, the
+ * tech room's code desk is at the FRONT, and a character standing at the old
+ * coordinate was standing in the middle of the floor looking at nothing.
+ *
+ * READ OFF THE ART, NOT GUESSED. Each room's two layers were rendered with a
+ * cell grid over them and the number below is where that room's workstation is.
+ * If a room is re-bought and its furniture moves, this moves with it - which is
+ * the cost of painted rooms and is cheaper than the alternative, which is
+ * furniture that has to land on a coordinate this file chose.
+ *
+ * THE CHARACTER STANDS ON THE CAMERA SIDE OF WHAT IT IS WORKING AT, or just
+ * behind it where the station is a desk you sit behind. Both work because the
+ * props layer is sorted by row: a station NORTH of the character is drawn
+ * before them and they stand in front of it, a station SOUTH is drawn after and
+ * they sit behind it. That is the whole reason the layer split exists, and it
+ * is what lets the art room's painter overlap the canvas they are painting.
+ */
+/** A station is where the seat stands AND which way it is turned. `face` is
+ *  only ever left or right, because that is all the art can do: the cast is
+ *  drawn three-quarters towards the camera and the sprite is mirrored, so a
+ *  seat whose work is north or south of it simply keeps the drawn orientation.
+ *  Left out entirely for those, rather than written as a lie. */
+type Station = Spot & { face?: "left" | "right" };
+
+const STATION: Record<string, Station> = {
+  /* MARKED BY HAND ON THE RENDERED FLOOR, not derived. The user drew a circle
+     on each room where its seat should stand and an arrow for what it should be
+     looking at; these are those circles in cells. Nothing computes them, and
+     nothing should: which of the four surfaces in the audio room is "the
+     workstation" is a judgement about the picture, not a property of it. */
+  audio: { x: 2.2, y: 4.85 },                   // on the chair at the console
+  narrative: { x: 4.3, y: 4.60 },                  // at the writing table, table across the lap
+  cinematic: { x: 6.4, y: 3.70, face: "right" },// on the chair at the edit bay
+  gameplay: { x: 5.0, y: 6.05, face: "right" }, // on the couch, facing the screen
+  qa: { x: 3.9, y: 2.55 },                         // at the test bench
+  art: { x: 5.2, y: 3.60 },                     // in front of the empty canvas
+  director: { x: 4.0, y: 4.20 },                // in the chair, desk across the lap
+  tech: { x: 2.2, y: 6.00, face: "right" },        // at the workshop bench
+};
+
+/** Which way this seat faces at its own station, if the art can show it. */
+export function stationFace(role: string): "left" | "right" | null {
+  return STATION[role]?.face ?? null;
+}
+
+
+/** This seat's station in absolute cells, or the old centre-of-room default.
+ *  A project can invent a seat, and an invented seat has no painting to read a
+ *  station off - the default is where its generic desk kit still puts one. */
+function stationFor(role: string, rect: Rect): Spot {
+  const at = STATION[role];
+  return at ? { x: rect.x + at.x, y: rect.y + at.y }
+            : { x: rect.x + rect.w / 2, y: rect.y + 3.1 };
+}
+
 function craftRoom(seat: Seat, slot: SlotDef): PlanRoom {
   const rect: Rect = { x: slot.x, y: slot.y, w: ROOM_W, h: ROOM_H };
   const doorAt = slot.door === "n" || slot.door === "s"
@@ -483,13 +563,7 @@ function craftRoom(seat: Seat, slot: SlotDef): PlanRoom {
     id: seat.role, kind: "seat", seat: seat.role, label: labelFor(seat),
     persona: seat.persona,
     rect, doors: [door], props: dressRoom(seat.role, rect),
-    /* AT THE CHAIR, NOT ON THE DESK. The shared kit puts the desk across
-       y+1 to y+2.3 and the chair at y+2.6 to y+3.6, so a character standing at
-       y+2.5 was drawn straddling the desk itself - and, because a figure is
-       2.7 cells tall measured up from its feet, its head went through the wall
-       behind. y+3.1 seats it on its own chair with the whole figure inside the
-       room, which is both what the furniture says and what the wall allows. */
-    desk: { x: rect.x + rect.w / 2, y: rect.y + 3.1 },
+    desk: stationFor(seat.role, rect),
     stand: insideDoor(rect, door),
   };
 }
@@ -565,8 +639,13 @@ export function planFloor(seats: Seat[]): FloorPlan {
   ];
   rooms.push({
     id: "lounge", kind: "lounge", label: "Lounge", rect: loungeRect,
+    /* THREE WAYS IN, NOT FOUR. The lounge had an opening on every side, which
+       was symmetrical and wrong once the rooms were painted: the north wall is
+       the one the picture puts its shelving and its wall art against, so a
+       doorway punched through it opened a hole in the middle of the dressing.
+       South, east and west still reach every corridor the lounge touches, so
+       nothing is cut off - the north gap was the one that bought no route. */
     doors: [
-      { side: "n", at: ROOM_W / 2 - 1.5, len: 3 },
       { side: "s", at: ROOM_W / 2 - 1.5, len: 3 },
       { side: "w", at: ROOM_H / 2 - 1.5, len: 3 },
       { side: "e", at: ROOM_H / 2 - 1.5, len: 3 },
@@ -576,8 +655,8 @@ export function planFloor(seats: Seat[]): FloorPlan {
     stand: { x: C1 + ROOM_W / 2, y: R1 + ROOM_H - 1.5 },
   });
 
-  /* DIRECTOR'S OFFICE: bottom center. */
-  const officeRect: Rect = { x: C1, y: R2, w: ROOM_W, h: ROOM_H };
+  /* DIRECTOR'S OFFICE: bottom centre - the room you walk to. */
+  const officeRect: Rect = { x: OFF_X, y: OFF_Y, w: ROOM_W, h: ROOM_H };
   const officeDoor: Door = { side: "n", at: ROOM_W / 2 - DOOR_LEN / 2, len: DOOR_LEN };
   if (director) {
     rooms.push({
@@ -599,50 +678,52 @@ export function planFloor(seats: Seat[]): FloorPlan {
            the desk, the monitor on it, the chair behind it, and the desk SPOT
            below. Moving furniture without moving the coordinate a character
            stands at is how a desk ends up drawn through somebody's chest. */
-        { kind: "desk", x: C1 + 2.2, y: R2 + 2.2, w: 3.6, h: 1.5,
+        { kind: "desk", x: OFF_X + 2.2, y: OFF_Y + 2.2, w: 3.6, h: 1.5,
           sprite: `${S}/prop-desk.png` },
-        { kind: "monitor", x: C1 + 3.35, y: R2 + 2.25, w: 1.3, h: 0.65,
+        { kind: "monitor", x: OFF_X + 3.35, y: OFF_Y + 2.25, w: 1.3, h: 0.65,
           sprite: `${S}/prop-monitor.png` },
         // The throne, tucked BEHIND the desk so the desk draws over its base
         // and the seat reads as the far side of the table.
-        { kind: "chair", x: C1 + 3.6, y: R2 + 1.25, w: 0.9, h: 0.9,
+        { kind: "chair", x: OFF_X + 3.6, y: OFF_Y + 1.25, w: 0.9, h: 0.9,
           sprite: `${S}/prop-chair.png` },
-        { kind: "cabinet", x: C1 + 5.3, y: R2 + 0.35, w: 2.4, h: 1.9,
+        { kind: "cabinet", x: OFF_X + 5.3, y: OFF_Y + 0.35, w: 2.4, h: 1.9,
           sprite: SIG_SPRITE.director },
         /* THE EGO WALL: three framed things in a row, evenly spaced and
            identical, which is the entire joke. */
-        { kind: "frame", x: C1 + 0.35, y: R2 + 0.2, w: 0.65, h: 0.5 },
-        { kind: "frame", x: C1 + 1.2, y: R2 + 0.2, w: 0.65, h: 0.5 },
-        { kind: "frame", x: C1 + 2.05, y: R2 + 0.2, w: 0.65, h: 0.5 },
+        { kind: "frame", x: OFF_X + 0.35, y: OFF_Y + 0.2, w: 0.65, h: 0.5 },
+        { kind: "frame", x: OFF_X + 1.2, y: OFF_Y + 0.2, w: 0.65, h: 0.5 },
+        { kind: "frame", x: OFF_X + 2.05, y: OFF_Y + 0.2, w: 0.65, h: 0.5 },
         // The drinks cabinet, stopping above the first row of standing spots.
-        { kind: "cabinet", x: C1 + 0.25, y: R2 + 2.4, w: 0.85, h: 1.2 },
-        { kind: "plant", x: C1 + 7.0, y: R2 + 2.6, w: 0.9, h: 0.9,
+        { kind: "cabinet", x: OFF_X + 0.25, y: OFF_Y + 2.4, w: 0.85, h: 1.2 },
+        { kind: "plant", x: OFF_X + 7.0, y: OFF_Y + 2.6, w: 0.9, h: 0.9,
           sprite: `${S}/prop-plant.png` },
         // The visitors' couch nobody is invited to sit on.
-        { kind: "sofa", x: C1 + 6.4, y: R2 + 3.6, w: 1.4, h: 1.9,
+        { kind: "sofa", x: OFF_X + 6.4, y: OFF_Y + 3.6, w: 1.4, h: 1.9,
           sprite: `${S}/prop-couch.png` },
         // The rug that says this floor is nicer than yours.
-        { kind: "rug", x: C1 + 1.2, y: R2 + 3.2, w: 5.4, h: 3.2 },
+        { kind: "rug", x: OFF_X + 1.2, y: OFF_Y + 3.2, w: 5.4, h: 3.2 },
         // The cat's cushion, where a visitor's chair should be. Flat, so the
         // Director is drawn standing ON it rather than behind it.
-        { kind: "rug", x: C1 + 3.3, y: R2 + 3.0, w: 1.4, h: 0.9 },
+        { kind: "rug", x: OFF_X + 3.3, y: OFF_Y + 3.0, w: 1.4, h: 0.9 },
       ],
-      desk: { x: C1 + ROOM_W / 2, y: R2 + 3.9 },
+      desk: stationFor(director.role, officeRect),
       stand: insideDoor(officeRect, officeDoor),
     });
   }
 
-  /* Corridor props: what tells you the space between rooms is FLOOR. */
-  const props: Prop[] = [
-    { kind: "plant", x: C1 - 2, y: R1 - 2, w: 1.1, h: 1.1,
-      sprite: `${S}/prop-plant.png` },
-    { kind: "plant", x: C2 + 0.6, y: R1 - 2, w: 1.1, h: 1.1,
-      sprite: `${S}/prop-plant.png` },
-    { kind: "board", x: C2 + 0.6, y: R2 + 1.5, w: 1.2, h: 1.6,
-      sprite: `${S}/prop-whiteboard.png` },
-    { kind: "plant", x: C1 - 2, y: R2 + 2, w: 1.1, h: 1.1,
-      sprite: `${S}/prop-plant.png` },
-  ];
+  /* NOTHING IN THE CORRIDORS. There were three plants and a whiteboard here to
+     say "the space between the rooms is floor, not a gap", which was the right
+     job when the rooms were flat tinted rectangles and the corridor needed
+     something to prove it was a surface. The painted rooms do that now: the
+     tile runs up to a wall with a room behind it, and the corridor reads as
+     floor without being furnished.
+
+     What these had become instead was four generic sprites from the old prop
+     kit standing among nine hand-painted rooms, which is where the eye goes
+     first and for the wrong reason. Empty is better than nearly-right, and a
+     generated set was tried in between and was worse than either - see the note
+     in floorRender where the corridor layer used to be drawn. */
+  const props: Prop[] = [];
 
   /* ── walls ──────────────────────────────────────────────────────────────
      Every room's four edges, identical edges collapsed to one, doors cut
@@ -743,21 +824,26 @@ export function planFloor(seats: Seat[]): FloorPlan {
     lounge.push({ x: C1 + ROOM_W / 2, y: R1 + ROOM_H - 1.6 });
   }
 
-  /* Queue outside the Director's door, running west through the corridor. */
-  const doorX = C1 + officeDoor.at + officeDoor.len / 2;
+  /* QUEUE OUTSIDE THE DIRECTOR'S DOOR, running west through the corridor.
+     Derived from the door's own side rather than from a row constant: the
+     office moved to the top row and its door flipped to the south with it, and
+     a hard-coded `R2 - 1.2` would have left the queue standing in the corridor
+     at the far end of the building from the door it is supposed to be at. */
+  const doorX = OFF_X + officeDoor.at + officeDoor.len / 2;
+  const queueY = officeDoor.side === "s" ? OFF_Y + ROOM_H + 1.2 : OFF_Y - 1.2;
   const queue: Spot[] = [];
   for (let i = 0; i < 8; i++) {
     const x = doorX - 1.6 - i * 1.8;
     if (x < 1.2) break;
-    queue.push({ x, y: R2 - 1.2 });
+    queue.push({ x, y: queueY });
   }
-  if (!queue.length) queue.push({ x: doorX, y: R2 - 1.2 });
+  if (!queue.length) queue.push({ x: doorX, y: queueY });
 
   const office: Spot[] = [];
   for (let i = 0; i < 6; i++) {
     office.push({
-      x: C1 + 1.6 + (i % 3) * 2,
-      y: R2 + ROOM_H - 1.2 - Math.floor(i / 3) * 1.8,
+      x: OFF_X + 1.6 + (i % 3) * 2,
+      y: OFF_Y + ROOM_H - 1.2 - Math.floor(i / 3) * 1.8,
     });
   }
 

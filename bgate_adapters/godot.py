@@ -155,6 +155,60 @@ def version() -> dict:
     return {"path": exe, "version": found}
 
 
+# --script requires a SceneTree/MainLoop script. Handing Godot anything else
+# does NOT produce a console error: on Windows it raises a BLOCKING OS message
+# box ("Can't load the script ... doesn't inherit from SceneTree or MainLoop"),
+# even under --headless. The process then hangs until the timeout, the caller
+# is told "call quit()" - the wrong hint - and the popup is left on the
+# operator's desktop, one per retry. So the inheritance rule is checked HERE,
+# before a process exists, and the refusal goes back on the same channel the
+# agent actually reads.
+_MAINLOOP_BASES = {"SceneTree", "MainLoop"}
+# Bases an agent actually writes that positively cannot drive --script. An
+# identifier NOT in this set and not in _MAINLOOP_BASES is let through: it may
+# be a user class whose chain reaches SceneTree, and a false refusal here would
+# block a legitimate run.
+_NOT_MAINLOOP_BASES = {
+    "Object", "RefCounted", "Resource", "Node", "CanvasItem", "CanvasLayer",
+    "Node2D", "Node3D", "Control", "Window", "Area2D", "Area3D",
+    "CharacterBody2D", "CharacterBody3D", "RigidBody2D", "RigidBody3D",
+    "StaticBody2D", "StaticBody3D", "AnimatableBody2D", "AnimatableBody3D",
+    "Sprite2D", "Sprite3D", "AnimatedSprite2D", "Camera2D", "Camera3D",
+    "Label", "Button", "Panel", "Timer", "AudioStreamPlayer",
+}
+_EXTENDS_RE = re.compile(r"^\s*(?:class_name\s+\w+\s+)?extends\s+([\"']?)([^\s\"']+)\1")
+
+
+def _script_gate(script: str) -> Optional[dict]:
+    """Refuse a script --script cannot run, before Godot is spawned."""
+    base = None
+    for line in script.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        m = _EXTENDS_RE.match(stripped)
+        if m:
+            quoted, base = m.group(1), m.group(2)
+            if quoted:  # extends "res://..." - chain unknowable, let Godot try
+                return None
+            break
+    if base in _MAINLOOP_BASES:
+        return None
+    if base is not None and base not in _NOT_MAINLOOP_BASES:
+        return None  # custom class name - the chain may reach SceneTree
+    got = f"`extends {base}`" if base else "no extends clause (implicit RefCounted)"
+    return {
+        "ok": False,
+        "error": f"script cannot run under --script: {got}. "
+                 "A headless run must `extends SceneTree` (or MainLoop).",
+        "hint": "start the script with `extends SceneTree`, do the work in "
+                "`func _init():`, and end with `quit()`. To exercise a Node "
+                "script, load it from a SceneTree script instead: "
+                "var n = load(\"res://path.gd\").new(); root.add_child(n)",
+        "seconds": 0.0,
+    }
+
+
 def run_script(script: str, project_dir: Optional[str] = None,
                timeout: int = 120) -> dict:
     """Run a GDScript file headless (a SceneTree script) and capture output.
@@ -164,6 +218,10 @@ def run_script(script: str, project_dir: Optional[str] = None,
     """
     import tempfile
     import time
+
+    refused = _script_gate(script)
+    if refused is not None:
+        return refused
 
     exe = find_godot()
     # The scratch dir is torn down in a finally, INCLUDING on the timeout path.

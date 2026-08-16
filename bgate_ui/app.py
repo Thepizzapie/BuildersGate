@@ -38,6 +38,7 @@ from bgate_ui import autodeploy as _autodeploy
 from bgate_ui import redact as _redact
 from bgate_ui import dispatch as _dispatch
 from bgate_ui import followup as _followup
+from bgate_ui import phases as _phases
 from bgate_ui import steerpump as _steerpump
 from bgate_ui import routes as _routes
 
@@ -1258,8 +1259,26 @@ def agent_log(item_id: int, tail: int = 60, all_runs: bool = False) -> dict:
 @app.get("/api/agent-activity/{item_id}")
 def agent_activity(item_id: int) -> dict:
     """Readable live feed of what a dispatched agent is doing — parsed from its
-    stream-json log into tool calls, messages, and the final result."""
-    return _dispatch.read_activity(str(_root()), item_id)
+    stream-json log into tool calls, messages, and the final result.
+
+    THE FILES AND PICTURES A STEP TOUCHED ARE STAMPED HERE, not left to chance.
+    phases.look() writes `files`/`images` onto step dicts, and because the feed
+    ring hands out the very dicts the console's phase build had already mutated,
+    the inspector saw those keys on some runs and not on others — whichever
+    endpoint happened to have been called first for that item. The panel draws
+    thumbnails and file names off them now, so it asks for them itself.
+
+    Only unstamped steps are scanned. look() stats every path-shaped token it
+    finds, and this is polled every three seconds for as long as a panel is
+    open; a step is immutable once parsed, so scanning one twice is pure waste.
+    """
+    feed = _dispatch.read_activity(str(_root()), item_id)
+    fresh = [s for s in (feed.get("steps") or []) if not s.get("looked")]
+    if fresh:
+        _phases.look(_root(), [{"steps": fresh}])
+        for step in fresh:
+            step["looked"] = True
+    return feed
 
 
 @app.get("/api/artifacts")

@@ -2389,6 +2389,46 @@ def _add_step(state: dict, step: dict) -> None:
         del state["steps"][:len(state["steps"]) - MAX_STEPS]
 
 
+def _tool_subject(name: str, inp: dict) -> str:
+    """WHAT a call was about, not merely which tool it was.
+
+    The inspector drew a run as a row of verbs — Read, Grep, Grep, Read, Bash —
+    so a forty-step run was thirty-five interchangeable words. The subject was
+    always in the payload; this is the one place that decides which key carries
+    it, because the answer is per-tool: Grep's subject is its PATTERN and the
+    path is context, while Read's subject is the path itself.
+
+    Pattern-first for the searches is the specific fix. ``path`` came first in
+    the old flat or-chain, so every Grep in a run that searched one file printed
+    that same path and said nothing about what was being looked for — and Glob,
+    which has no ``path`` and no ``query``, printed nothing at all. The path
+    still rides along on the end, because phases.look() mines this string for
+    the files a step touched and dropping it would empty the file rail.
+    """
+    def val(key: str) -> str:
+        got = inp.get(key)
+        return " ".join(str(got).split()) if isinstance(got, (str, int)) else ""
+
+    if name in ("Grep", "Glob"):
+        return " · ".join(x for x in (val("pattern"), val("path")) if x)
+    if name == "Bash":
+        return val("command")
+    if name in ("Read", "Write", "Edit", "MultiEdit"):
+        return val("file_path") or val("path")
+    if name == "NotebookEdit":
+        return val("notebook_path")
+    if name in ("WebFetch", "WebSearch"):
+        return val("url") or val("query")
+    if name in ("Task", "Agent"):
+        return val("description") or val("subagent_type")
+    if name == "TodoWrite":
+        # Its input is the whole list; any one item of it is a misleading label.
+        return ""
+    return (val("path") or val("file_path") or val("name") or val("title")
+            or val("role") or val("query") or val("pattern")
+            or val("description") or val("command") or val("prompt"))
+
+
 def _blocks(ev: dict) -> list:
     """Content blocks of a stream-json message. Some CLI builds send ``content``
     as a bare string; iterating that yields characters and explodes on .get."""
@@ -2444,12 +2484,13 @@ def _absorb(state: dict, raw: bytes) -> None:
             elif block.get("type") == "tool_use":
                 name = str(block.get("name", "?"))
                 inp = block.get("input") if isinstance(block.get("input"), dict) else {}
-                hint = (inp.get("path") or inp.get("file_path") or inp.get("role")
-                        or inp.get("title") or inp.get("query") or inp.get("prompt")
-                        or inp.get("command") or "")
-                _add_step(state, {"kind": "tool",
-                                  "name": name.replace("mcp__builders-gate__", ""),
-                                  "hint": str(hint)[:120]})
+                short = name.replace("mcp__builders-gate__", "")
+                # 200, not 120: a Bash hint is a command line, and the old cap
+                # cut most of them off inside the `cd "<long path>" &&` prefix
+                # every dispatched agent opens with — the chip said what
+                # directory it was standing in and never what it ran there.
+                _add_step(state, {"kind": "tool", "name": short,
+                                  "hint": _tool_subject(short, inp)[:200]})
     elif etype == "user":
         for block in _blocks(ev):
             if block.get("type") == "tool_result":
@@ -2602,11 +2643,12 @@ def _absorb_codex(state: dict, etype: str, ev: dict) -> None:
     if kind in ("mcp_tool_call", "tool_call"):
         name = str(item.get("tool") or item.get("name") or "?")
         args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
-        hint = (args.get("path") or args.get("prompt") or args.get("name")
-                or args.get("seat") or args.get("title") or "")
-        _add_step(state, {"kind": "tool",
-                          "name": name.replace(f"mcp__{_runners.MCP_SERVER_NAME}__", ""),
-                          "hint": str(hint)[:120]})
+        short = name.replace(f"mcp__{_runners.MCP_SERVER_NAME}__", "")
+        # Same subject rules as the claude path — a codex run drawn as a column
+        # of bare verbs is exactly as unreadable.
+        _add_step(state, {"kind": "tool", "name": short,
+                          "hint": (_tool_subject(short, args)
+                                   or str(args.get("seat") or ""))[:200]})
         return
     if kind in ("file_change", "patch_apply"):
         changes = item.get("changes") if isinstance(item.get("changes"), list) else []

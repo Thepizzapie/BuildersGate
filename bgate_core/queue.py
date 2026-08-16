@@ -39,7 +39,17 @@ SATISFIED = ("done",)
 # of them ends up grabbing an escalation a human was supposed to read.
 #   qa-gate-escalation — two agents could not agree and a human has to decide.
 #   chat — a message to the director; the console dispatches those itself.
-HELD_SOURCES = ("qa-gate-escalation", "chat")
+#   failure-escalation — an item failed past its automatic-retry cap. The whole
+#     point of the cap is that nothing else is spent on it until a person has
+#     read the failure, so an escalation an auto-dispatcher picked up would be
+#     the harness paying to rediscover the blocker it just stopped paying for.
+HELD_SOURCES = ("qa-gate-escalation", "chat", "failure-escalation")
+
+# The source stamped on that escalation. Named here rather than in the router
+# that files them because the hold above and the filing must never drift apart:
+# a rename in one place and not the other silently makes escalations
+# auto-dispatchable again, which is the exact failure the tuple exists to stop.
+FAILURE_ESCALATION_SOURCE = "failure-escalation"
 # A row created in two statements — INSERT with a placeholder, then UPDATE with
 # the real text — is briefly dispatchable with nothing in it.
 PLACEHOLDER_BRIEF = "(preparing%"
@@ -735,6 +745,36 @@ def stop(root: str | os.PathLike[str], item_id: int, by: str = "",
     _emit(root, "item.stopped", ref=str(item_id),
           payload={**_item_event_payload(item), "by": actor})
     return item
+
+
+def note_auto_retry(root: str | os.PathLike[str], item_id: int) -> int:
+    """Record that the HARNESS bought this item another round. Returns the total.
+
+    Written next to the other item writes, and in the same transaction style,
+    because the number is a spend control: the follow-up router's cap on
+    automatic re-dispatch is enforced against this column and nothing else. A
+    counter kept in the router's memory resets when the dashboard restarts, and
+    a cap that a restart clears is a cap that a structurally-broken item (a
+    missing key, a credit block) escapes by simply failing long enough.
+
+    Deliberately separate from ``attempts``: that counts every round the item
+    has had, including a human's reopen and a QA rejection. Charging a person's
+    own retry against the automatic budget would deny the one free attempt to
+    the items somebody is already working on.
+
+    Best-effort on a project whose database predates the column (migration
+    0041) — a bookkeeping write must not lose the reopen it is describing. It
+    returns 0 in that case, which reads as 'no automatic retries recorded', and
+    the caller's cap is then enforced by ``attempts`` alone.
+    """
+    try:
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE work_item SET auto_retries = COALESCE(auto_retries, 0) + 1 "
+                "WHERE id = ?", (int(item_id),))
+        return int(get(root, item_id).get("auto_retries") or 0)
+    except Exception:
+        return 0
 
 
 def was_stopped(item: dict) -> bool:

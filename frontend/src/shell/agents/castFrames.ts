@@ -20,15 +20,15 @@
  * steps() count that walks it. Getting them from one number is what
  * stops a strip being stepped through at the wrong width. */
 export const CAST_FRAMES: Record<string, Record<string, number>> = {
-  art: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  audio: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  narrative: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  gameplay: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  qa: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  cinematic: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  tech: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  director: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
-  generic: { idle: 8, sitting: 8, walk: 8, working: 8, handoff: 4 },
+  art: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  audio: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  narrative: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  gameplay: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  qa: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  cinematic: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  tech: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  director: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
+  generic: { idle: 16, sitting: 16, walk: 16, working: 16, handoff: 4 },
 };
 
 /** How many frames <seat>'s <anim> strip has.

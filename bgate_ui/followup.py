@@ -20,7 +20,12 @@ not happen.
 
 THE FIVE BRANCHES, in the order the plan states them:
 
-    1. item.failed        reopen it (if followup.auto_reopen_failures) or leave it
+    1. item.failed        retry it ONCE (if followup.auto_reopen_failures), and
+                          once that budget is spent — or a human stopped it, or
+                          there is nobody to run a retry — hand it to the
+                          DIRECTOR as an escalation instead of retrying. The cap
+                          lives on the item (work_item.auto_retries), not in this
+                          process, because a restart must not refill it
     2. gate mode 'agent'  today's QA spawn, behaviour unchanged
     3. gate mode 'builders'  the item is held in review; say so and do nothing
                           else — the chain staying blocked is that mode's point
@@ -97,7 +102,35 @@ COLLAPSE_AT = 3
 # dispatches those itself) and the escalation exists precisely because a human
 # has to decide.
 DEBRIEF_SOURCE = "completion"
-NEVER_DEBRIEF_SOURCES = ("qa-gate", "qa-gate-escalation", "completion", "chat")
+NEVER_DEBRIEF_SOURCES = ("qa-gate", "qa-gate-escalation", "completion", "chat",
+                         _queue.FAILURE_ESCALATION_SOURCE)
+
+# The source stamped on a failure escalation (defined in bgate_core.queue, which
+# also holds it back from every auto-dispatcher), and the sources that never
+# produce one.
+#
+# THIS LIST IS THE LOOP GUARD AND IT IS THE POINT. An escalation says "#41 failed
+# and nobody can retry it" — if that item can itself fail into a second
+# escalation, the board grows one director item per failure per failure, and the
+# thing that was supposed to stop a runaway becomes one. The debrief ('completion')
+# and the QA escalation are on the list for the same reason: they are the
+# harness talking to the director about a failure, and a failure of that
+# conversation is not a new subject.
+FAIL_ESCALATION_SOURCE = _queue.FAILURE_ESCALATION_SOURCE
+NEVER_ESCALATE_SOURCES = (FAIL_ESCALATION_SOURCE, _qa_gate.ESCALATION_SOURCE,
+                          DEBRIEF_SOURCE, "chat")
+
+# Above the QA gate (8) and level with the QA escalation (9). A blocked item is
+# the most valuable thing on a director's queue: it is usually upstream of work
+# that has not failed YET.
+FAIL_ESCALATION_PRIORITY = 9
+
+# How many times the harness may re-dispatch one failed item on its own, when
+# the registry cannot be read. ONE. The live value is
+# followup.max_auto_retries; this is the fallback, and it errs low for the same
+# reason qa_gate.MAX_ROUNDS errs at its shipped value — a router that cannot
+# read its cap must not run uncapped.
+MAX_AUTO_RETRIES = 1
 
 # Below the QA gate (8) and the escalation (9): a debrief is a decision about
 # work that already landed, so it must not outrank verifying that it landed.
@@ -167,6 +200,12 @@ def load_settings(root: str | os.PathLike[str]) -> dict:
         "max_per_hour": int(_get("followup.max_per_hour", 4) or 4),
         "max_age_min": int(_get("followup.max_age_min", 30) or 30),
         "auto_reopen_failures": bool(_get("followup.auto_reopen_failures", False)),
+        # int(... or 0) would turn a deliberate 0 into the default; a person who
+        # set the automatic budget to zero means zero, and quietly restoring one
+        # retry is the harness spending money it was told not to.
+        "max_auto_retries": _as_int(_get("followup.max_auto_retries",
+                                         MAX_AUTO_RETRIES), MAX_AUTO_RETRIES),
+        "escalate_failures": bool(_get("followup.escalate_failures", True)),
         "max_rounds": int(_get("qa.max_rounds", _qa_gate.MAX_ROUNDS)
                           or _qa_gate.MAX_ROUNDS),
         # Per project, not per machine. Falls back to the module default rather
@@ -179,6 +218,20 @@ def load_settings(root: str | os.PathLike[str]) -> dict:
         "webhook": str(_get("notify.webhook", "") or ""),
         "quiet_hours": str(_get("notify.quiet_hours", "") or ""),
     }
+
+
+def _as_int(value, fallback: int) -> int:
+    """int(), but 0 survives and rubbish falls back. Never negative.
+
+    ``int(x or default)`` is the idiom used elsewhere in this file and it is
+    wrong for a ceiling that is allowed to be zero: it reads a deliberate 0 as
+    "unset" and restores the default, which for an automatic-retry budget means
+    buying an agent the operator explicitly refused.
+    """
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return int(fallback)
 
 
 def in_quiet_hours(window: str, when: Optional[time.struct_time] = None) -> bool:
@@ -286,6 +339,7 @@ def snapshot(root: str | os.PathLike[str], batch: Iterable[dict], *,
         "qa": {},
         "successors": {},
         "debrief_open": {},
+        "fail_escalated": {},
         "debriefs_last_hour": _debriefs_since(root, minutes=60),
         "advanced": {},
         "age_min": {},
@@ -329,6 +383,7 @@ def snapshot(root: str | os.PathLike[str], batch: Iterable[dict], *,
             for s in _successors(root, item_id)]
         guard_ref = debrief_ref(item)
         board["debrief_open"][guard_ref] = _debrief_exists(root, guard_ref)
+        board["fail_escalated"][item_id] = fail_escalated(root, item_id)
         chain_id = str(item.get("chain_id") or "")
         board["advanced"][f"{chain_id or 'item-' + ref}/{item_id}"] = \
             _advanced_seen(root, chain_id, item_id)
@@ -375,6 +430,29 @@ def _debrief_exists(root, guard_ref: str) -> bool:
     except Exception:
         # An unreadable board must not be read as "no debrief yet" — that is the
         # direction that spends money. Claim one exists and skip this tick.
+        return True
+    return row is not None
+
+
+def fail_escalated(root, item_id: int) -> bool:
+    """Has this item already been escalated for FAILING, ever?
+
+    One per item for the life of the item, in any status — the same rule
+    ``qa_gate.escalated`` uses and for the same reason: without it, an item
+    sitting at its retry cap files a fresh escalation every time anything
+    re-emits its failure (at-least-once delivery, the backstop sweep, a
+    dashboard restart replaying the batch), and the director's queue fills with
+    copies of one argument.
+
+    An unreadable board answers YES. The two wrong answers are not
+    symmetrical: claiming "not escalated" files duplicates, claiming
+    "escalated" delays one notice by a tick.
+    """
+    try:
+        row = db.connect(root).execute(
+            "SELECT 1 FROM work_item WHERE source = ? AND source_ref = ? LIMIT 1",
+            (FAIL_ESCALATION_SOURCE, str(int(item_id)))).fetchone()
+    except Exception:
         return True
     return row is not None
 
@@ -494,7 +572,7 @@ def decide(events: Iterable[dict], settings: dict, board: dict) -> list[dict]:
 
         # -- branch 1: failed ------------------------------------------------
         if kind == "item.failed":
-            actions.extend(_branch_failed(ev, item, settings))
+            actions.extend(_branch_failed(ev, item, settings, board))
             continue
 
         # -- branch 3: the builder's gate is holding it ----------------------
@@ -539,37 +617,130 @@ def decide(events: Iterable[dict], settings: dict, board: dict) -> list[dict]:
     return actions
 
 
-def _branch_failed(ev: dict, item: dict, settings: dict) -> list[dict]:
-    """Branch 1. Reopen the failure, or leave it and say why it was left."""
+def _branch_failed(ev: dict, item: dict, settings: dict,
+                   board: Optional[dict] = None) -> list[dict]:
+    """Branch 1. Retry the failure ONCE, then hand it to the director.
+
+    WHAT THIS REPLACED. A failed item sat on the board with a red marker until a
+    human noticed it. The floor drew a red seat, the agent was gone, and the
+    CAUSE — very often an upstream blocker that will fail every subsequent
+    attempt the same way — reached nobody who could act on it.
+
+    WHY IT IS NOT SIMPLY "RETRY UNTIL IT LANDS". Naive auto-retry is a token
+    bonfire. An item that failed for a structural reason — a missing API key, a
+    credit block, an asset that does not exist, a lane the seat cannot write to
+    — fails identically every round, and the loop spends real money
+    rediscovering that. MEASURED: item #405 failed on a kie credit block that
+    was ALREADY FILED as its own separate item. No number of retries could have
+    fixed it; each one would have been billed to learn the same sentence.
+
+    So the order of the guards below is the design, and it is deliberately
+    biased towards NOT spending:
+
+      1. a human stopped this run          -> do nothing at all
+      2. the source is an escalation/debrief -> do nothing (the loop guard)
+      3. the automatic retry budget is gone -> escalate, do not retry
+      4. no live dispatcher                 -> escalate, do not retry
+      5. otherwise                          -> one retry, and count it on the row
+
+    Escalating is the cheap branch and the default: the item it files is queued
+    for the director and NEVER dispatched (queue.HELD_SOURCES holds it back from
+    every auto-dispatcher), so the failure reaches somebody who can decide
+    without buying an agent to deliver the news.
+    """
+    board = board or {}
     item_id = int(item["id"])
     attempts = int(item.get("attempts") or 0)
     cap = int(settings.get("max_rounds") or _qa_gate.MAX_ROUNDS)
     rounds = attempts + 1
-    if not settings.get("auto_reopen_failures"):
+    auto = int(item.get("auto_retries") or 0)
+    auto_cap = _as_int(settings.get("max_auto_retries"), MAX_AUTO_RETRIES)
+
+    # 1. A HUMAN ENDED THIS RUN. queue.stop banks a stop as 'failed' on purpose
+    # (reopen, the QA query, the chain interlock and the console's lanes all key
+    # on that status), and dispatch's reaper announces it with item.failed like
+    # any other — so without this check pressing STOP would buy the agent back
+    # immediately, which is the precise opposite of what the button means. Not
+    # escalated either: the person who stopped it already knows, and filing them
+    # a director item about their own decision is how a channel earns its mute.
+    if _queue.was_stopped(item):
+        return [_action("skip", 1, ev, f"item:{item_id}",
+                        f"a human stopped #{item_id} — a stop is a decision, "
+                        "not a fault, and it is never retried automatically")]
+
+    # 2. THE LOOP GUARD. See NEVER_ESCALATE_SOURCES: an escalation that can
+    # escalate its own failure is the runaway this whole branch exists to stop.
+    source = str(item.get("source") or "")
+    if source in NEVER_ESCALATE_SOURCES:
+        return [_action("skip", 1, ev, f"source:{source}",
+                        f"source {source!r} is the harness reporting a failure "
+                        "to the director — its own failure is not a new "
+                        "subject, and escalating it would be the loop this "
+                        "branch exists to break")]
+
+    retry_off = not settings.get("auto_reopen_failures")
+    budget_gone = auto >= auto_cap or rounds >= cap
+    no_dispatcher = not board.get("dispatcher", True)
+    if retry_off or budget_gone or no_dispatcher:
+        why = ("followup.auto_reopen_failures is off" if retry_off else
+               "there is no live dispatcher to run a retry" if no_dispatcher
+               else f"its automatic retry budget is spent ({auto} of {auto_cap} "
+                    f"automatic rounds used, {rounds} attempts in total)")
+        return _escalate_actions(ev, item, settings, board, why,
+                                 auto=auto, auto_cap=auto_cap, rounds=rounds)
+
+    # 5. ONE MORE ROUND, and the count goes on the ROW — see queue.note_auto_retry.
+    # `auto` is carried into the action so apply_action can refuse if the
+    # counter moved between deciding and acting (at-least-once delivery replays
+    # batches, and a replay that retried again is the cap not holding).
+    return [_action(
+        "reopen", 1, ev, f"item:{item_id}:failed",
+        f"auto-reopening #{item_id} — automatic retry {auto + 1} of {auto_cap}",
+        item=item_id, attempts=attempts, auto_retries=auto,
+        reason=("AUTO-REOPENED by the follow-up router — the previous attempt "
+                f"reported FAILED (attempt {rounds}; automatic retry "
+                f"{auto + 1} of {auto_cap}, and there is no third chance: if "
+                "this fails again the item goes to the director instead of "
+                "being run again).\n\nREAD THE FAILURE BEFORE YOU START. If it "
+                "names something you cannot fix from this seat — a missing key, "
+                "a credit block, an asset that does not exist, a path this seat "
+                "cannot write to — do NOT repeat the run. Say so in your result "
+                "note and fail fast; a second identical failure is the cheapest "
+                "outcome available at that point.\n\nWhat it said:\n\n"
+                + (str(item.get("result") or "(no result note)")[:1200])))]
+
+
+def _escalate_actions(ev: dict, item: dict, settings: dict, board: dict,
+                      why: str, auto: int, auto_cap: int,
+                      rounds: int) -> list[dict]:
+    """The no-retry half of branch 1: hand the failure to the director.
+
+    Returns a skip with a stated reason rather than silence when the feature is
+    off or the item already has an escalation, because "nothing happened and
+    nobody could say why" is the state this whole branch was written to remove.
+
+    ``settings.get(..., True)`` and not ``settings.get(...)``: a settings dict
+    written by hand — a test, an older caller — that has no opinion means ON.
+    The failure reaching nobody is the bug; the feature is the fix.
+    """
+    item_id = int(item["id"])
+    if (board.get("fail_escalated") or {}).get(item_id):
+        return [_action("skip", 1, ev, f"fail-escalation:{item_id}",
+                        f"#{item_id} has already been escalated once, which is "
+                        "the whole cap — a second copy of one argument helps "
+                        "nobody")]
+    if not settings.get("escalate_failures", True):
         # No notice of its own: item.failed is in the default notify.kinds, so
         # the notice path already tells the human. A second line for the same
         # failure is how a channel earns its mute.
         return [_action("skip", 1, ev, f"item:{item_id}",
-                        "followup.auto_reopen_failures is off — the failure is "
-                        "left for a human, which is the default")]
-    if rounds >= cap:
-        return [_action(
-            "notify", 1, ev, f"activity:e{int(ev.get('id') or 0)}",
-            f"#{item_id} has failed {rounds} time(s) and will not be reopened "
-            "automatically again",
-            cause="failure_capped", count=1, refs=[str(item_id)],
-            kinds=["item.failed"],
-            summary=f"#{item_id} [{item.get('seat') or ''}] failed on attempt "
-                    f"{rounds} of {cap} — the retry cap is reached, so it is "
-                    "waiting for a human",
-            detail=str(item.get("result") or "")[:600])]
+                        "followup.escalate_failures is off — the failure is "
+                        "left on the board for a human")]
     return [_action(
-        "reopen", 1, ev, f"item:{item_id}:failed",
-        f"auto-reopening #{item_id} for attempt {rounds + 1} of {cap}",
-        item=item_id, attempts=attempts,
-        reason=("AUTO-REOPENED by the follow-up router — the previous attempt "
-                f"reported FAILED (attempt {rounds} of {cap}). What it said:\n\n"
-                + (str(item.get("result") or "(no result note)")[:1200])))]
+        "fail_escalate", 1, ev, f"fail-escalation:{item_id}",
+        f"escalating #{item_id} to the director — {why}",
+        item=item_id, reason=why, auto_retries=auto, auto_cap=auto_cap,
+        rounds=rounds)]
 
 
 def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
@@ -874,6 +1045,8 @@ def apply_action(root: str | os.PathLike[str], action: dict) -> dict:
     try:
         if kind == "reopen":
             return {**out, **_do_reopen(root, action)}
+        if kind == "fail_escalate":
+            return {**out, **_do_fail_escalate(root, action)}
         if kind == "qa_spawn":
             return {**out, **_do_qa_spawn(root, action)}
         if kind == "qa_escalate":
@@ -899,12 +1072,68 @@ def _do_reopen(root, action: dict) -> dict:
         return {"why": "the item is no longer failed — already reopened"}
     if int(item.get("attempts") or 0) != int(action.get("attempts") or 0):
         return {"why": "the round counter moved — somebody already retried it"}
+    # THE CAP, RE-CHECKED AT THE MOMENT OF SPENDING. Delivery is at-least-once,
+    # so the batch that decided this can be replayed after a crash, and a replay
+    # that retried a second time is the cap not holding. The snapshot's value is
+    # carried in the action and compared here rather than trusted.
+    if int(item.get("auto_retries") or 0) != int(action.get("auto_retries") or 0):
+        return {"why": "the automatic-retry counter moved — this retry was "
+                       "already bought once"}
+    if _queue.was_stopped(item):
+        # Belt and braces against the one mistake that is unrecoverable here:
+        # buying back an agent a person deliberately killed. The decision
+        # already refuses it; between deciding and acting somebody may have
+        # pressed STOP.
+        return {"why": "a human stopped this item — never retried automatically"}
+    # Counted BEFORE the reopen. reopen() flips the status back to 'queued',
+    # which is the moment autodeploy may pick it up; a counter written after
+    # that has a window in which the item is running again with its budget
+    # apparently untouched.
+    _queue.note_auto_retry(root, item_id)
     _queue.reopen(root, item_id, str(action.get("reason") or "reopened"))
     activity.log(root, LEDGER_KIND,
                  f"auto-reopened #{item_id} after a failure — attempt "
-                 f"{int(item.get('attempts') or 0) + 2}",
+                 f"{int(item.get('attempts') or 0) + 2}, automatic retry "
+                 f"{int(item.get('auto_retries') or 0) + 1}",
                  seat=item.get("seat") or "", ref=str(item_id))
     return {"ok": True, "item": item_id, "why": str(action.get("why") or "")}
+
+
+def _do_fail_escalate(root, action: dict) -> dict:
+    """File ONE director item about a failure nobody is going to retry.
+
+    QUEUED, NEVER DISPATCHED — the same shape as ``qa_gate._escalate`` and for a
+    stronger reason. The cap that produced this escalation exists because more
+    agent time on this item is expected to be wasted; buying an agent to
+    announce that would spend the money the cap just refused.
+    ``queue.HELD_SOURCES`` carries the other half of that promise: no
+    auto-dispatcher may pick this row up either.
+
+    The guard is re-run here, not trusted from the snapshot, because the batch
+    that decided it can be replayed and because the same item can fail twice
+    inside one batch.
+    """
+    item_id = int(action.get("item") or 0)
+    item = _item(root, item_id)
+    if item is None:
+        return {"why": "the item is gone"}
+    if fail_escalated(root, item_id):
+        return {"why": "already escalated once, which is the whole cap"}
+    if str(item.get("source") or "") in NEVER_ESCALATE_SOURCES:
+        return {"why": "this item IS an escalation — it does not escalate itself"}
+    row = _queue.add(
+        root, "director",
+        f"FAILED: #{item_id} [{item.get('seat') or ''}] "
+        f"{str(item.get('title') or '')[:60]} — decide what happens to it",
+        brief=failure_escalation_brief(root, item, action),
+        priority=FAIL_ESCALATION_PRIORITY,
+        source=FAIL_ESCALATION_SOURCE, source_ref=str(item_id))
+    activity.log(root, LEDGER_KIND,
+                 f"#{item_id} failed and was escalated to the director — "
+                 f"{str(action.get('reason') or '')[:120]}",
+                 seat="director", ref=str(item_id))
+    return {"ok": True, "escalation": int(row["id"]), "item": item_id,
+            "why": str(action.get("why") or "")}
 
 
 def _do_qa_spawn(root, action: dict) -> dict:
@@ -1047,6 +1276,118 @@ def _do_notify(root, action: dict) -> dict:
 # ---------------------------------------------------------------------------
 # The debrief brief
 # ---------------------------------------------------------------------------
+def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
+                             action: Optional[dict] = None) -> str:
+    """The brief a failure escalation carries.
+
+    IT MUST BE OBVIOUS IN THE FIRST LINE THAT THIS IS NOT NEW WORK. A director
+    item titled after a failed art item reads exactly like a request to make the
+    art, and a director that starts doing it has re-dispatched the failing work
+    by hand — around the cap, on the director's seat, unlaned.
+
+    Everything a decision needs is here so it can be made ONCE: what failed, in
+    which seat, what it actually said, how many rounds it has had and how much
+    of that the harness bought on its own, what the harness observed it write
+    before it died, and the standing suspicion that matters most — that the
+    cause is an upstream blocker which will fail every future attempt the same
+    way, and may already be filed as its own item.
+    """
+    action = action or {}
+    item_id = int(item.get("id") or 0)
+    seat = str(item.get("seat") or "")
+    auto = int(action.get("auto_retries") or item.get("auto_retries") or 0)
+    auto_cap = int(action.get("auto_cap") or 0)
+    rounds = int(action.get("rounds") or (int(item.get("attempts") or 0) + 1))
+    lines: list[str] = []
+    lines.append(
+        f"ESCALATION — this is NOT a request to do the work. Work item "
+        f"#{item_id} [{seat}] FAILED and the harness has stopped retrying it. "
+        "Nothing further has been dispatched against it, and nothing will be "
+        "until you decide.\n")
+    lines.append(
+        "You hold the director seat. Read the failure, then take exactly ONE of "
+        "the moves at the bottom and close THIS item saying which and why. Do "
+        "not do the failed item's work yourself: that is seat work, and doing "
+        "it here is unlaned, unlogged, unbudgeted and ungated — and it walks "
+        "straight around the retry cap that filed this.\n")
+
+    lines.append("WHAT FAILED")
+    lines.append(f"  #{item_id} [{seat}] \"{str(item.get('title') or '')[:120]}\"")
+    lines.append(f"  Round {rounds} in total; {auto} of {auto_cap} automatic "
+                 f"retries used. ${float(item.get('total_cost_usd') or 0):.2f} "
+                 "spent on this item so far.")
+    lines.append(f"  Why it stopped here: {str(action.get('reason') or 'unknown')}")
+    result = str(item.get("result") or "").strip()
+    lines.append("  What it said when it failed:")
+    lines.append("  " + (result[:1400].replace("\n", "\n  ") if result
+                         else "(nothing — it died without a result note, which "
+                              "usually means a ceiling kill or a crash rather "
+                              "than a reported failure)"))
+    lines.append("")
+
+    lines.append("THE THING TO SUSPECT FIRST — AN UPSTREAM BLOCKER")
+    lines.append(
+        "  A failure that would succeed on a retry has already had its retry. "
+        "What is left is usually STRUCTURAL: a missing or unfunded API key, a "
+        "provider credit block, an asset or scene that does not exist yet, a "
+        "path this seat's lanes do not let it write, a dependency that landed "
+        "wrong. Those fail identically every attempt, so the fix is never "
+        "'run it again' — it is to name the blocker and, if it is not already "
+        "on the board as its own item, PUT IT THERE. MEASURED: #405 failed on "
+        "a credit block that was already filed separately, and nothing "
+        "connected the two.")
+    lines.append("  Check before deciding: is anything else on the board "
+                 "failing the same way? A same-cause cluster is one blocker, "
+                 "not N bugs, and it is worth one item rather than N.")
+    lines.append("")
+
+    lines.append("WHAT THE HARNESS OBSERVED IT WRITE (not the agent's own list)")
+    try:
+        observed = writelog.summary(root, f"item-{item_id}")
+    except Exception:
+        observed = ""
+    if observed:
+        lines.append("  " + observed.replace("\n", "\n  ")
+                     + "\n  A stop or a ceiling kill often lands AFTER the "
+                       "valuable work — check what survived before assuming "
+                       "the round was wasted.")
+    else:
+        lines.append("  Nothing was recorded. Either it wrote no files, or the "
+                     "write hook is not installed in this project — "
+                     "`bgate hook-status` answers which, and until it does the "
+                     "absence is not evidence.")
+    lines.append("")
+
+    lines.append(_chain_block(root, item))
+    lines.append(_budget_block(root))
+
+    lines.append("YOUR MOVES — pick exactly one")
+    lines.append(
+        "  1. FILE THE BLOCKER. If the cause is upstream, queue_add the work "
+        "that actually clears it (or queue_add_chain if clearing it and "
+        "redoing this have an order — they usually do), and say in your result "
+        "note that #%d waits on it. Do not reopen #%d until the blocker is "
+        "gone: that is the money pump." % (item_id, item_id))
+    lines.append(
+        "  2. RE-SCOPE AND REOPEN ONCE. If the brief was the problem, rewrite "
+        f"it so the next attempt cannot fail the same way (queue_update "
+        f"#{item_id}), then queue_reopen it. Name what you changed. A reopen "
+        "that changes nothing buys the same failure at full price.")
+    lines.append(
+        "  3. ASK THE HUMAN. ask_human(question, refs) when the call is not "
+        "yours — spending more money, a key or account that needs paying for, "
+        "a pillar. If that tool is not in your list, put the question in your "
+        "result note and stop there; do not guess.")
+    lines.append(
+        f"  4. CUT IT. queue_update #{item_id} to park or cancel it. A failure "
+        "nobody is going to fix is worth closing honestly rather than leaving "
+        "red on the board forever.")
+    lines.append("")
+    lines.append("Then queue_complete THIS item (done) with the move you took. "
+                 "Do not re-file the failed item's work as new work.")
+    return "\n".join(lines)
+
+
 def debrief_brief(root: str | os.PathLike[str], item: dict) -> str:
     """The brief a director debrief carries. Everything it needs to decide once.
 

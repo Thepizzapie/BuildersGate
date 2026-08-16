@@ -1399,21 +1399,69 @@ body.ptn-open .bg4 {
 .bg4-said p {
   margin: 0; font: 400 12.5px/1.55 var(--sans); color: var(--text);
 }
+/* What a HUMAN said back. Same weight as the agent's prose - it is prose - but
+   marked, because "do it the other way" arriving mid-run explains everything
+   after it and reads as the agent contradicting itself otherwise. */
+.bg4-said.steer { border-left: 2px solid var(--accent); padding-left: 8px }
+.bg4-said.steer > svg, .bg4-said.steer > i { color: var(--accent) }
 
-/* A run of tool calls, drawn as chips rather than as one row each. */
-.bg4-beat { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0 10px }
-.bg4-call { min-width: 0 }
-.bg4-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 8px; border-radius: 999px; cursor: pointer;
-  font: 500 11px/1 var(--mono); color: var(--text-3);
-  background: var(--solid-1); border: 1px solid var(--line);
+/* ── the tool timeline ──────────────────────────────────────────────────────
+   One row per thing that happened, and the row NAMES ITS SUBJECT. This was a
+   wrap of pill chips reading Read / Grep / Grep / Read / Bash, which fits forty
+   calls in a small space and tells you nothing about any of them: the verb is
+   the half of a tool call nobody needs. Mono and dim so the agent's own
+   sentences still win the page. */
+.bg4-tl { padding: 1px 0 }
+.bg4-tl-head {
+  display: flex; align-items: baseline; gap: 7px; width: 100%; min-width: 0;
+  border: 0; background: transparent; padding: 3px 0; cursor: pointer;
+  text-align: left; color: var(--text-3); font: 400 11px/1.5 var(--mono);
 }
-.bg4-chip:hover:not(:disabled) { color: var(--text-2); border-color: var(--line-strong) }
-.bg4-chip:disabled { cursor: default; opacity: .7 }
-.bg4-chip.bad { color: var(--bad); border-color: var(--bad-line) }
-.bg4-chip .err { font-size: 10px; text-transform: uppercase; letter-spacing: .04em }
-.bg4-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.bg4-tl-head > i { align-self: center; font-size: 12px; color: var(--text-3) }
+.bg4-tl-head:disabled { cursor: default }
+.bg4-tl-head:hover:not(:disabled) .subj { color: var(--accent) }
+.bg4-tl-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+/* The verb keeps a fixed column so the subjects line up down the panel - a
+   ragged left edge on the informative half is what makes a list unscannable. */
+.bg4-tl-head .verb {
+  flex: 0 0 auto; min-width: 58px; color: var(--text-3); opacity: .75;
+}
+.bg4-tl-head .subj {
+  flex: 1 1 auto; min-width: 0; color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bg4-tl-head .subj.none { opacity: .45 }
+/* "the same call, four times" - the count is the only thing the fold hides. */
+.bg4-tl-head .mult {
+  flex: 0 0 auto; font-size: 10px; color: var(--text-3);
+  border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
+}
+.bg4-tl-head .err {
+  flex: 0 0 auto; font: 500 9px var(--mono); letter-spacing: .12em;
+  text-transform: uppercase; color: var(--bad);
+  border: 1px solid var(--bad-line); border-radius: 3px; padding: 1px 5px;
+}
+/* A failure is legible from the gutter, without opening anything. */
+.bg4-tl.bad { border-left: 2px solid var(--bad-line); padding-left: 8px }
+.bg4-tl.bad .bg4-tl-head, .bg4-tl.bad .bg4-tl-head > i { color: var(--bad) }
+.bg4-tl-err {
+  margin: 1px 0 5px; padding-left: 65px;
+  font: 400 10.5px/1.5 var(--mono); color: var(--bad);
+  overflow-wrap: anywhere;
+}
+.bg4-tl.bad .bg4-tl-err { padding-left: 0 }
+/* What it was looking at, in line. A run that opened four references and
+   re-read its own render said so only in ninety-character absolute paths. */
+.bg4-tl-shots { display: flex; gap: 5px; padding: 3px 0 5px 65px; flex-wrap: wrap }
+.bg4-tl-shot {
+  padding: 0; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--solid-1); cursor: pointer; line-height: 0; overflow: hidden;
+}
+.bg4-tl-shot:hover { border-color: var(--accent) }
+.bg4-tl-shot img {
+  width: 54px; height: 54px; object-fit: cover; display: block;
+  image-rendering: pixelated;
+}
 
 /* ── what the agent made ───────────────────────────────────────────────────── */
 

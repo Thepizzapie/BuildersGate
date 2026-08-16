@@ -1983,6 +1983,33 @@ _MIGRATIONS: list = [
     """
     ALTER TABLE seat_config ADD COLUMN personality TEXT;
     """,
+    # 0041 — HOW MANY TIMES THE HARNESS ITSELF RETRIED THIS ITEM.
+    #
+    # A failed item used to sit on the board with a red marker until a human
+    # noticed. The follow-up router can send it back for another round, and the
+    # obvious next step — send it back until it lands — is a token bonfire: an
+    # item that failed for a STRUCTURAL reason (a missing API key, a credit
+    # block, an asset that does not exist, a lane the seat cannot write to)
+    # fails identically every time. MEASURED: item #405 failed on a kie credit
+    # block that was already filed as its own separate item; no number of
+    # retries could ever have fixed it, and every one of them would have been
+    # billed.
+    #
+    # SO THE CAP IS THE FEATURE, AND A CAP HELD IN MEMORY IS NOT A CAP. The
+    # dashboard restarts, the router's counters go with it, and the item is
+    # retried from zero — which is the same unbounded loop with extra steps.
+    # This column is the cap's storage.
+    #
+    # NOT `attempts`, which already exists and is deliberately left alone:
+    # attempts counts EVERY round including a human's reopen and a QA
+    # rejection, so spending the automatic budget on a human's own retry would
+    # deny the one automatic attempt to exactly the items a person is already
+    # working on. Two counters because they answer two questions: "how many
+    # rounds has this had" and "how much of that did the harness buy on its
+    # own".
+    """
+    ALTER TABLE work_item ADD COLUMN auto_retries INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
