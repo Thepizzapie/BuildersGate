@@ -38,11 +38,15 @@ export function OpenCli() {
     }
   }
 
+  /* SUBTLE ON PURPOSE. It sits beside auto-deploy in the session's own corner
+     of the bar, not among the compose verbs, so it reads as a utility rather
+     than as a fifth thing competing with send. */
   return (
-    <Button variant="default" size="compact-xs" disabled={busy} onClick={open}
-            leftSection={<Ti name="terminal-2" size={13} />}
+    <Button variant="subtle" size="compact-xs" color="gray" disabled={busy}
+            onClick={open} px={6}
+            leftSection={<Ti name="terminal-2" size={12} />}
             title="open a terminal on this project as a new Claude session">
-      open in CLI
+      CLI
     </Button>
   );
 }

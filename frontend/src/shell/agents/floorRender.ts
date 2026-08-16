@@ -1607,6 +1607,49 @@ export class FloorRenderer {
       ctx.lineWidth = 1;
       ctx.strokeRect(px + cell * 0.15, py - artH * 0.3, cell * 0.3, cell * 0.35);
     }
+
+    /* WHAT THIS PERSON IS ACTUALLY DOING, ON THE PERSON.
+     *
+     * A seat whose last item FAILED stands in its own room - and so does one
+     * that is dispatched, and one that is mid-chain. Three different situations
+     * drawn as the same figure in the same place, which is how a floor with
+     * nothing running at all reads as a studio full of working agents. It was
+     * reported exactly that way: "I see agents running but no indication",
+     * about two seats that had both failed.
+     *
+     * The room's nameplate already turned red and the floor already pulsed, and
+     * neither was enough: both are furniture, and the eye goes to the person.
+     * So the marker goes over the head, where a reader is already looking.
+     *
+     * ONLY THE STATES A READER MUST ACT ON. Idle needs no badge - the lounge
+     * says it - and running needs none either, because a character at a desk in
+     * a lit room is already unambiguous. A badge on every state is a floor of
+     * badges, which is the same as none. */
+    const badge = p.state === "failed" ? { text: "!", fill: "#ef4444" }
+                : p.state === "waiting" ? { text: "?", fill: "#f59e0b" }
+                : null;
+    if (badge) {
+      const r = Math.max(4, cell * 0.36);
+      const bx = px + cell * 0.62;
+      const by = py - artH - r * 0.2;
+      /* A dark disc under it, so the mark survives a light floor and a busy
+         room behind it. */
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.beginPath();
+      ctx.arc(bx, by, r * 1.12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = badge.fill;
+      ctx.beginPath();
+      ctx.arc(bx, by, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1a1a1f";
+      ctx.font = `bold ${Math.round(r * 1.5)}px "Segoe UI", Arial, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(badge.text, bx, by + r * 0.08);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
   }
 
   /* ONE SPEECH BUBBLE, NINE-SLICED FROM A GENERATED SPRITE.
