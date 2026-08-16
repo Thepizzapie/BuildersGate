@@ -1559,7 +1559,17 @@ async function rebuildNow(){
   const el = document.getElementById("play-fresh");
   if (el) el.innerHTML = "exporting from current source…";
   const r = await mutate("/api/play/rebuild", {quiet:true});
-  if (!r.ok) toast("rebuild failed - " + r.error);
+  if (!r.ok){
+    /* THE FAILURE STAYS ON SCREEN. A toast is gone in four seconds and this is
+       the one message that names what to install - and refreshing over it would
+       redraw "build is behind", which is true, unhelpful, and exactly what the
+       user just tried to fix. */
+    if (el) el.innerHTML = `<span style="color:var(--ember)">rebuild failed</span> · `
+      + `${esc(r.error || "godot could not export")} `
+      + `<button class="qbtn small ghost" onclick="rebuildNow()">try again</button>`;
+    toast("rebuild failed - " + r.error);
+    return;
+  }
   await refreshBuildFreshness();
 }
 
@@ -1572,6 +1582,8 @@ async function loadGame(){
       <div class="playhint">exporting the game from latest source - a few seconds</div>`;
     const r = await mutate("/api/play/rebuild", {quiet:true});
     if (!r.ok){
+      /* NAMES THE CAUSE, and offers the stale build anyway - a missing export
+         template is not a reason to refuse to play what is already built. */
       holder.innerHTML = `<div class="playhint" style="color:var(--ember)">rebuild failed: ${esc(r.error)}</div>
         <button class="playbtn" onclick="bootFrame()">boot anyway (stale)</button>`;
       toast("rebuild failed - " + r.error);
