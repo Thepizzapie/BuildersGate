@@ -475,9 +475,34 @@ SETTINGS: tuple[Setting, ...] = (
         key="followup.auto_reopen_failures", group="Follow-up", kind=BOOL,
         default=False, store=("registry", "followup.auto_reopen_failures"),
         help="Reopen a failed item with the failure text instead of leaving it "
-             "for a human, up to qa.max_rounds attempts. Off: a failure that "
-             "retries itself unattended is how one broken brief spends a "
-             "night's budget."),
+             "for a human, up to followup.max_auto_retries automatic rounds. "
+             "Off: a failure that retries itself unattended is how one broken "
+             "brief spends a night's budget. Whether this is on or off, the "
+             "failure still reaches the director — see "
+             "followup.escalate_failures."),
+    Setting(
+        key="followup.max_auto_retries", group="Follow-up", kind=INT, default=1,
+        minimum=0, maximum=2, store=("registry", "followup.max_auto_retries"),
+        help="How many times the harness may re-dispatch ONE failed item on "
+             "its own before handing it to the director instead. One, and the "
+             "ceiling of two is not a suggestion: an item that fails for a "
+             "structural reason — a missing key, a credit block, an asset that "
+             "does not exist, a lane the seat cannot write to — fails "
+             "identically every round, so every retry past the first is money "
+             "spent rediscovering the same blocker. 0 disables automatic "
+             "retries entirely and escalates on the first failure. The count "
+             "is stored on the item, so a dashboard restart does not hand it a "
+             "fresh budget."),
+    Setting(
+        key="followup.escalate_failures", group="Follow-up", kind=BOOL,
+        default=True, store=("registry", "followup.escalate_failures"),
+        help="When a failure is not going to be retried automatically, file "
+             "ONE item for the director naming the failing item, its seat and "
+             "what it said, so a person or the director decides what happens "
+             "next. On by default because it costs nothing — the escalation is "
+             "queued and never dispatched to an agent — and because the "
+             "alternative is what this replaced: a red marker on the board "
+             "that nothing acts on until somebody happens to look."),
 
     # -- Notifications ------------------------------------------------------
     Setting(
