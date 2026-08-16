@@ -377,14 +377,17 @@ SETTINGS: tuple[Setting, ...] = (
              "and another agent will not settle it — it is a money pump."),
     Setting(
         key="qa.gated_seats", group="Gates", kind=LIST,
-        default=("art", "gameplay", "audio", "narrative"),
-        choices=("art", "gameplay", "audio", "narrative", "tech"),
+        default=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
+        choices=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
         store=("registry", "qa.gated_seats"), human_only=True,
         help="Which maker seats get an automatic QA reviewer when their work "
              "is completed. Was a hardcoded tuple in the gate, so a studio that "
              "wanted QA on art alone had to edit harness source — which changed "
-             "it for every project on the machine and needed a restart. "
-             "director and qa are never gated: that is recursion, not review."),
+             "it for every project on the machine and needed a restart. Every "
+             "maker seat is on by default now: the old four left tech and "
+             "cinematic completions closing on the agent's word alone, which "
+             "made quality structurally uneven by seat. director and qa are "
+             "never gated: that is recursion, not review."),
     Setting(
         key="signoff.hours", group="Gates", kind=INT, default=8,
         minimum=1, maximum=168, store=("registry", "signoff.hours"),

@@ -66,8 +66,18 @@ def list_for_task(root: str | os.PathLike[str], work_item_id: int) -> list[dict]
 def resolve_for_task(root: str | os.PathLike[str], work_item_id: Optional[int],
                      *, kind: Optional[str] = None) -> list[dict]:
     """The LAYERED reference set an art task should condition on: the task's own
-    anchors first (highest priority), then the global pins not already covered.
-    Each entry: {ref, kind, note, path, scope: 'task'|'global'}."""
+    anchors first (highest priority), then the global pins that still belong.
+    Each entry: {ref, kind, note, path, scope: 'task'|'global'}.
+
+    A TASK WITH ANCHORS DOES NOT INHERIT EVERY PIN. It used to: task anchors
+    first, then EVERY global pin not already covered — so a UI-bar task
+    conditioned on every character, concept and second-character pin in the
+    project, and the irrelevant identities bled into the output. When the task
+    has anchors, they ARE its identity set, and the only globals still added
+    are the STYLE pins — the project's look applies to everything. A task with
+    no anchors keeps the old behaviour (the global pins are all there is), and
+    an explicit ``kind`` was always the caller narrowing for itself.
+    """
     seen: set[str] = set()
     layered: list[dict] = []
     if work_item_id is not None:
@@ -79,7 +89,10 @@ def resolve_for_task(root: str | os.PathLike[str], work_item_id: Optional[int],
             seen.add(r["resolved_path"])
             layered.append({"ref": r["ref"], "kind": r["kind"], "note": r["note"],
                             "path": r["resolved_path"], "scope": "task"})
+    anchored = bool(layered)
     for g in refs.list_refs(root, kind=kind):
+        if anchored and not kind and g.get("kind") != "style":
+            continue
         path = g.get("path")
         if not path or path in seen:
             continue

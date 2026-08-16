@@ -51,7 +51,7 @@ from bgate_core import activity, db, gates as _gates, queue as _queue, \
 # unreadable settings doc, on the same reasoning as MAX_ROUNDS below — a gate
 # that cannot read its own configuration keeps the coverage it always had rather
 # than silently reviewing nothing.
-GATED_SEATS = ("art", "gameplay", "audio", "narrative")
+GATED_SEATS = ("art", "gameplay", "audio", "narrative", "tech", "cinematic")
 
 # Rounds of QA an item may go through before a human is asked to arbitrate.
 # 3 = the original attempt plus two fix rounds; past that the disagreement is
@@ -112,8 +112,14 @@ def _brief_for(item: dict, cap: int = MAX_ROUNDS) -> str:
     return (
         f"AUTO-QA GATE for work item #{item['id']} ({item['seat']}): "
         f"\"{item['title']}\" — the {item['seat']} seat reports it DONE. "
-        "Verify that claim like the picky owner, per your seat workflow "
-        "(seat_brief has the full checklist).\n\n"
+        "Verify that claim like the picky owner.\n\n"
+        "THE VERDICT STANDARD IS THE ITEM'S OWN PROMISE — title, brief, "
+        "result note — not your seat's whole checklist. The checklist "
+        "(seat_brief) is your LENS for how to check what the item touched; "
+        "it is not a list of extra demands. Failing this item for something "
+        "its brief never asked for does not improve the work, it buys a "
+        "bounce round about scope — put genuinely-noticed unrelated problems "
+        "in one line of your result instead, for the director to price.\n\n"
         f"THE CLAIM (its result note): {(item.get('result') or '(none)')[:1200]}\n\n"
         "Protocol:\n"
         "1. Establish what the item promised (title + brief + result note + its "

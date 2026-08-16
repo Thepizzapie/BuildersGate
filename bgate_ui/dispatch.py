@@ -400,7 +400,10 @@ def _verify_rule(root: str) -> str:
         pass
     godot = engine == "godot" or (root_path / "game" / "project.godot").is_file()
     if not godot:
-        return "LOOK at what you produce and prove it works before you land it."
+        return ("run the narrowest real check that proves the change does "
+                "what the item asked - a build, the affected script, opening "
+                "the produced file - and LOOK at what you produce before you "
+                "land it.")
     parts = ["godot_check_project after structural changes"]
     try:
         tests = sorted(p for p in (root_path / "game" / "tests").glob("*.gd"))
@@ -589,7 +592,19 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         "result dispatches NOBODY; only a queue row does. Handing work on IS "
         "part of finishing yours, and a result paragraph that names the items "
         "you filed is a finished handoff.\n"
-        f"3. Verify per house norms: {_verify_rule(root)}\n"
+        "   ROUTE ONLY WHAT THIS ITEM NEEDS. The test for filing work is "
+        "'does my item need this done to be finished' - not 'did I notice "
+        "something'. An improvement you merely noticed is one line in your "
+        "result paragraph; the director decides whether noticed work gets "
+        "bought. The same test bounds your reading: your brief and the files "
+        "your item touches are the job, and reviewing your peers' work, "
+        "unrelated systems or the whole board is spend on somebody else's "
+        "item.\n"
+        f"3. VERIFY, THEN CLAIM. {_verify_rule(root)}\n"
+        "   Your result paragraph must SAY WHAT YOU RAN AND WHAT IT SHOWED - "
+        "the check's name and its outcome, one line. A completion that names "
+        "no check is an unverified claim, and both the reviewer and the "
+        "harness read it as one.\n"
         f"4. Mark the item: call queue_complete with item_id={item['id']} and a "
         "one-paragraph result (status 'done', or 'failed' with the honest "
         "reason). That paragraph IS the record - no separate note is owed.\n"

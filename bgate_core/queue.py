@@ -429,6 +429,26 @@ def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
     except Exception:
         return result          # bookkeeping must never fail a completion
     if not observed:
+        # THE ABSENCE IS EVIDENCE TOO — for a MACHINE's 'done' on a maker
+        # seat. "I finished the sprite work" over a run the hook watched
+        # write nothing is exactly the claim-versus-record gap this function
+        # exists to surface, and silence here let it read as consistent.
+        # Still attached, still not enforced: some legitimate items write
+        # nothing (a review, an answer), and the reviewer — not a regex — is
+        # who weighs it. Human closes are not stamped; a human hand-closing
+        # someone else's run is not the claimant.
+        try:
+            from . import activity as _act
+            row = get(root, item_id)
+            if (status == "done" and _act.is_machine(_act.current_actor())
+                    and (row.get("seat") or "") not in ("director", "qa")
+                    and (row.get("source") or "") != "chat"):
+                return (result.rstrip() + "\n\n" if result.strip() else "") + \
+                    ("HARNESS NOTE: the hook observed NO file writes from "
+                     "this item's runs. If this item was supposed to change "
+                     "the project, the claim above is unbacked.")
+        except Exception:
+            pass
         return result
     return (result.rstrip() + "\n\n" + observed) if result.strip() else observed
 

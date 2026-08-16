@@ -77,7 +77,10 @@ class TestScan:
         qa_gate._scan_once(root, EPOCH)
         assert len(_gates(root)) == 1
 
-    @pytest.mark.parametrize("seat", ("qa", "director", "tech"))
+    # tech WAS on this list: the old default left tech and cinematic closing
+    # on the agent's word alone, and both are gated now. qa and director stay
+    # ungated forever — that is recursion, not review.
+    @pytest.mark.parametrize("seat", ("qa", "director"))
     def test_ungated_seats_are_ignored(self, root, dispatched, seat):
         _done(root, seat, f"{seat} deliverable")
         qa_gate._scan_once(root, EPOCH)

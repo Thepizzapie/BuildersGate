@@ -1300,6 +1300,14 @@ def lane_owners(root: str | os.PathLike[str], path: str) -> list[str]:
 # where it is quoted, and a final pass shrinks whatever is still biggest until
 # the payload fits. Everything cut is named in ``truncated``.
 MAX_REFS = 20
+# Which seats get the pinned-reference shelf in their brief at all. Pins are
+# image-generation anchors — identity and look for a generator to condition
+# on — and they went into EVERY seat's brief regardless: a tech agent editing
+# GDScript read twenty character sheets it had no tool that could use, and the
+# irrelevant surface is one of the places off-brief wandering starts. The
+# seats that generate keep the shelf; everyone else has ref_list one call away
+# if a task genuinely needs it.
+PINNED_REF_SEATS = ("art", "cinematic")
 MAX_ARTIFACTS = 20
 MAX_CANON = 30
 MAX_FEEDBACK = 12
@@ -1654,7 +1662,8 @@ def brief(root: str | os.PathLike[str], role: str, note_limit: int = 10) -> dict
         "dimension": dimension,
         "workflow": workflow_for(role, dimension, seat.get("workflow", "")),
         "write_lanes": seat["write_globs"],
-        "pinned_refs": cap(_refs.list_refs(root), MAX_REFS, "ref_list"),
+        "pinned_refs": (cap(_refs.list_refs(root), MAX_REFS, "ref_list")
+                        if role in PINNED_REF_SEATS else []),
         "approved_artifacts": cap(artifact_rows, MAX_ARTIFACTS, "artifact list"),
         "bible": bible_view,
         "canon": cap([{"kind": e["kind"], "name": e["name"], "summary": e["summary"]}
