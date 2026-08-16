@@ -301,3 +301,135 @@ class TestTheWholeLoopTerminates:
         filed = [r for r in queue.list_items(root)
                  if r["source"] == queue.FAILURE_ESCALATION_SOURCE]
         assert len(filed) == 1
+
+
+class TestTheEscalationReachesTheSession:
+    """The held card becomes a decision that gets MADE.
+
+    An escalation is still held from every auto-dispatcher — that promise is
+    untouched — but a project whose human uses the console's director session
+    hands it to THAT session, which can investigate and act. A project where
+    that session has never existed keeps the shipped behaviour: held for the
+    dashboard.
+    """
+
+    def _fail_and_escalate(self, root):
+        item = queue.add(root, "art", "doomed sprite")
+        queue.set_status(root, int(item["id"]), "dispatched")
+        queue.set_status(root, int(item["id"]), "failed", "kie 402: no credit")
+        action = followup._action(
+            "fail_escalate", 1, _ev(1, int(item["id"])),
+            f"fail-escalation:{item['id']}", "budget spent",
+            item=int(item["id"]), reason="budget spent",
+            auto_retries=1, auto_cap=1, rounds=2)
+        return int(item["id"]), followup.apply_action(root, action)
+
+    def test_no_known_session_leaves_the_escalation_held(self, root):
+        item_id, applied = self._fail_and_escalate(root)
+        assert applied.get("session") is False
+        esc = queue.get(root, int(applied["escalation"]))
+        assert esc["status"] == "queued"        # the shipped behaviour
+
+    def test_a_known_session_takes_the_escalation(self, root, monkeypatch):
+        from bgate_ui import directorsession, runners
+
+        directorsession._write_sidecar(root, {"cli_session_id": "s1"})
+        taken = {}
+
+        def fake_submit(r, item_id, prompt, reseed_context=""):
+            taken.update({"item_id": int(item_id), "prompt": prompt})
+            return {"ok": True}
+
+        monkeypatch.setattr(directorsession, "submit", fake_submit)
+        monkeypatch.setattr(runners, "find_claude", lambda: "claude")
+        item_id, applied = self._fail_and_escalate(root)
+        assert applied.get("session") is True
+        esc = queue.get(root, int(applied["escalation"]))
+        assert esc["status"] == "dispatched"    # the session holds it now
+        assert taken["item_id"] == int(applied["escalation"])
+        # the prompt names the FAILED item so the session can act on it
+        assert f"#{item_id}" in taken["prompt"]
+        assert "queue_reopen" in taken["prompt"]
+
+    def test_a_crashing_handoff_releases_the_escalation(self, root, monkeypatch):
+        from bgate_ui import directorsession, runners
+
+        directorsession._write_sidecar(root, {"cli_session_id": "s1"})
+
+        def boom(*a, **k):
+            raise RuntimeError("no pipe")
+
+        monkeypatch.setattr(directorsession, "submit", boom)
+        monkeypatch.setattr(runners, "find_claude", lambda: "claude")
+        item_id, applied = self._fail_and_escalate(root)
+        assert applied.get("session") is False
+        esc = queue.get(root, int(applied["escalation"]))
+        assert esc["status"] == "queued"        # released, not stranded
+
+    def test_the_switch_turns_it_off(self, root, monkeypatch):
+        from bgate_core import settings as core_settings
+        from bgate_ui import directorsession
+
+        directorsession._write_sidecar(root, {"cli_session_id": "s1"})
+        core_settings.set(root, "followup.escalation_to_session", False)
+        item_id, applied = self._fail_and_escalate(root)
+        assert applied.get("session") is False
+        assert queue.get(root, int(applied["escalation"]))["status"] == "queued"
+
+
+class TestTheFailedSweep:
+    """A failure whose item.failed event was lost is found anyway.
+
+    events.emit is best-effort, so a locked database can eat the one event the
+    router keys on — and a purely cursor-driven router then never retries or
+    escalates that failure. The sweep routes it through the SAME branch, so
+    every guard is the code the event path runs.
+    """
+
+    def _lost_failure(self, root, minutes_old: int = 30) -> int:
+        item = queue.add(root, "art", "quietly dead")
+        queue.set_status(root, int(item["id"]), "dispatched")
+        queue.set_status(root, int(item["id"]), "failed", "kie 402")
+        with db.tx(root) as conn:
+            conn.execute(
+                "UPDATE work_item SET updated_at = "
+                "datetime('now', ?) WHERE id = ?",
+                (f"-{int(minutes_old)} minutes", int(item["id"])))
+        return int(item["id"])
+
+    def test_a_lost_failure_is_escalated_by_the_sweep(self, root):
+        item_id = self._lost_failure(root)
+        applied = followup.sweep_failed(
+            root, _settings(auto_reopen_failures=False))
+        assert applied, "the sweep found nothing"
+        filed = [r for r in queue.list_items(root)
+                 if r["source"] == queue.FAILURE_ESCALATION_SOURCE]
+        assert len(filed) == 1
+        assert filed[0]["source_ref"] == str(item_id)
+
+    def test_the_sweep_is_idempotent(self, root):
+        self._lost_failure(root)
+        followup.sweep_failed(root, _settings(auto_reopen_failures=False))
+        again = followup.sweep_failed(
+            root, _settings(auto_reopen_failures=False))
+        assert again == []
+        filed = [r for r in queue.list_items(root)
+                 if r["source"] == queue.FAILURE_ESCALATION_SOURCE]
+        assert len(filed) == 1
+
+    def test_a_fresh_failure_is_left_to_the_event_path(self, root):
+        # Inside the grace window the event is presumed still in the batch.
+        self._lost_failure(root, minutes_old=0)
+        assert followup.sweep_failed(
+            root, _settings(auto_reopen_failures=False)) == []
+
+    def test_a_human_stop_is_not_swept(self, root):
+        item = queue.add(root, "art", "stopped on purpose")
+        queue.set_status(root, int(item["id"]), "dispatched")
+        queue.stop(root, int(item["id"]), by="human@box")
+        with db.tx(root) as conn:
+            conn.execute("UPDATE work_item SET updated_at = "
+                         "datetime('now', '-30 minutes') WHERE id = ?",
+                         (int(item["id"]),))
+        assert followup.sweep_failed(
+            root, _settings(auto_reopen_failures=False)) == []

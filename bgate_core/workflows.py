@@ -485,6 +485,17 @@ def _queue_step(root: str | os.PathLike[str], run: dict, snapshot: dict,
     """One agent step -> one queue item, tagged so we can find it again."""
     seat = spec.get("seat") or ""
     run_id = int(run["id"])
+    # THE SAME CLAIM THE GENERATE AND TOOL PATHS TAKE, for the same money.
+    # advance() runs concurrently from the dashboard poll and from worker
+    # cascades; two ticks that both read this node 'pending' both queued a
+    # step — two work items, both dispatchable, two paid sessions for one
+    # node, and the second _set_node hid the first item's id so the orphan
+    # was unattributable. The conditional UPDATE lets exactly one through;
+    # the loser returns the row the winner is already writing.
+    if not _claim(root, run_id, spec["id"], was="pending", now="queued"):
+        return _node_rows(root, run_id).get(spec["id"]) or _set_node(
+            root, run_id, spec["id"], "queued",
+            message="claimed by a concurrent tick")
     try:
         item = _queue.add(
             root, seat,

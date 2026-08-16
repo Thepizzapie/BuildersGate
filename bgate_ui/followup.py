@@ -743,6 +743,53 @@ def _escalate_actions(ev: dict, item: dict, settings: dict, board: dict,
         rounds=rounds)]
 
 
+def sweep_failed(root, settings: dict) -> list[dict]:
+    """The backstop for an ``item.failed`` event that was never written.
+
+    events.emit is best-effort by design (a locked database drops the row
+    rather than failing the work), and the failure branch is purely
+    cursor-driven — so a failure whose event was lost was retried and
+    escalated by NOTHING: red on the board, invisible to the router, forever.
+    qa_gate.sweep already exists for exactly this gap on the completion side;
+    this is the failed side, and it reuses the branch itself rather than
+    approximating it, so every guard (human stop, loop sources, the retry
+    budget, the one-escalation cap) is the same code the event path runs.
+
+    Bounded and idempotent: recent failures only, a grace window so a failure
+    whose event is still sitting in the current batch is not routed twice
+    (both paths' guards would catch it anyway — the window just makes the
+    normal case cheap), and the already-escalated filter means a project with
+    nothing lost costs one query.
+    """
+    marks = ", ".join("?" * len(NEVER_ESCALATE_SOURCES))
+    try:
+        rows = db.connect(root).execute(
+            "SELECT id FROM work_item WHERE status = 'failed' "
+            "AND updated_at >= datetime('now', '-12 hours') "
+            "AND updated_at <= datetime('now', '-10 minutes') "
+            "AND (stopped_by IS NULL OR stopped_by = '') "
+            f"AND source NOT IN ({marks}) "
+            "ORDER BY updated_at DESC LIMIT 20",
+            tuple(NEVER_ESCALATE_SOURCES)).fetchall()
+    except Exception:
+        return []
+    missed = [int(r["id"]) for r in rows
+              if not fail_escalated(root, int(r["id"]))]
+    if not missed:
+        return []
+    synthetic = [{"id": i, "kind": "item.failed", "ref": str(item_id)}
+                 for i, item_id in enumerate(missed, start=1)]
+    board = snapshot(root, synthetic, settings=settings)
+    actions = decide(synthetic, settings, board)
+    applied = [apply_action(root, action) for action in actions
+               if action.get("kind") != "skip"]
+    if applied:
+        activity.log(root, LEDGER_KIND,
+                     f"failed-item sweep routed {len(applied)} failure(s) "
+                     "whose events were lost", seat="director")
+    return applied
+
+
 def _branch_qa(ev: dict, item: dict, settings: dict, board: dict) -> list[dict]:
     """Branch 2. Today's QA spawn, unchanged, now driven by the cursor.
 
@@ -1102,12 +1149,15 @@ def _do_reopen(root, action: dict) -> dict:
 def _do_fail_escalate(root, action: dict) -> dict:
     """File ONE director item about a failure nobody is going to retry.
 
-    QUEUED, NEVER DISPATCHED — the same shape as ``qa_gate._escalate`` and for a
-    stronger reason. The cap that produced this escalation exists because more
-    agent time on this item is expected to be wasted; buying an agent to
-    announce that would spend the money the cap just refused.
+    QUEUED, NEVER AUTO-DISPATCHED — the same shape as ``qa_gate._escalate``
+    and for a stronger reason. The cap that produced this escalation exists
+    because more agent time on this item is expected to be wasted; buying a
+    WORKER agent to announce that would spend the money the cap just refused.
     ``queue.HELD_SOURCES`` carries the other half of that promise: no
-    auto-dispatcher may pick this row up either.
+    auto-dispatcher may pick this row up either. What CAN take it is the
+    console's director session — a decider, not a worker; see
+    :func:`_hand_to_director_session` — and when no such session exists the
+    row is held for the dashboard exactly as shipped.
 
     The guard is re-run here, not trusted from the snapshot, because the batch
     that decided it can be replayed and because the same item can fail twice
@@ -1132,8 +1182,70 @@ def _do_fail_escalate(root, action: dict) -> dict:
                  f"#{item_id} failed and was escalated to the director — "
                  f"{str(action.get('reason') or '')[:120]}",
                  seat="director", ref=str(item_id))
+    handed = _hand_to_director_session(root, row, item)
     return {"ok": True, "escalation": int(row["id"]), "item": item_id,
-            "why": str(action.get("why") or "")}
+            "session": handed, "why": str(action.get("why") or "")}
+
+
+def _hand_to_director_session(root, escalation: dict, failed_item: dict) -> bool:
+    """Give a freshly-filed escalation to the console's director session.
+
+    THE HALF THAT WAS MISSING. An escalation is held from every auto-dispatcher
+    (queue.HELD_SOURCES) because it is a decision, not a task — and shipped,
+    the only decider was a human opening the dashboard, so every failure
+    dead-ended there. The director session IS a decider: the same persistent
+    session the human talks to, bounded by console.max_usd, able to read the
+    failure, reopen with a corrected brief, or say plainly what needs a human.
+    HELD_SOURCES is untouched — this is not an auto-dispatcher buying a worker,
+    it is the director taking its own item.
+
+    Fully guarded and honest about declining: False leaves the escalation held
+    for the dashboard exactly as before, which is the shipped behaviour and
+    the correct one whenever the session cannot run.
+    """
+    try:
+        if not _settings.get(root, "followup.escalation_to_session"):
+            return False
+        from bgate_ui import directorsession as _director
+        from bgate_ui import runners as _runners
+
+        # ONLY A SESSION THIS PROJECT ALREADY USES. A live process, or a
+        # resume marker left by one, is the human's own console director; a
+        # project where that session has never existed gets the shipped
+        # behaviour (held for the dashboard) rather than the harness
+        # cold-starting a spending session nobody has ever opened.
+        known = (_director.status(str(root)).get("live")
+                 or _director._read_sidecar(root).get("cli_session_id"))
+        if not known:
+            return False
+        if not _runners.find_claude():
+            return False
+        esc_id = int(escalation["id"])
+        if not _queue.reserve(root, esc_id):
+            return False
+        prompt = (
+            f"{str(escalation.get('title') or '')}\n\n"
+            f"{str(escalation.get('brief') or '')}\n\n----\n\n"
+            "You are handling this as the director session. Investigate the "
+            "failure for real — the failed item's result note, its log under "
+            ".bgate/agents/, the files it touched — then ACT: queue_reopen "
+            f"(#{int(failed_item.get('id') or 0)}) with a brief that fixes "
+            "what actually went wrong, file the underlying blocker as its own "
+            "work item, or, if only the human can decide, say exactly what "
+            "you need from them. Your reply is the record on this escalation.")
+        _director.submit(str(root), esc_id, prompt)
+        activity.log(root, LEDGER_KIND,
+                     f"escalation #{esc_id} handed to the director session",
+                     seat="director", ref=str(esc_id))
+        return True
+    except Exception:
+        # Never let the handoff lose the escalation: a raise here would fail
+        # apply_action after the item was already filed. Held is the fallback.
+        try:
+            _queue.release(root, int(escalation["id"]))
+        except Exception:
+            pass
+        return False
 
 
 def _do_qa_spawn(root, action: dict) -> dict:
@@ -1685,6 +1797,11 @@ def tick(root: str | os.PathLike[str]) -> dict:
         # uses, so finding nothing costs one query.
         try:
             _qa_gate.sweep(root)
+        except Exception:
+            pass
+        # The failed side of the same gap — see sweep_failed.
+        try:
+            sweep_failed(root, settings)
         except Exception:
             pass
         # THE SLICE CHECK — the only thing in the harness that reviews the GAME.

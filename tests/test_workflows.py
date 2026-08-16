@@ -276,3 +276,23 @@ class TestHttp:
         got = client.get("/api/workflows/runs/999")
         assert got.status_code == 404
         assert got.json()["error"]["code"] == "not_found"
+
+
+class TestConcurrentTicksCannotDoubleQueue:
+    def test_two_ticks_queue_one_step_once(self, root):
+        """advance() runs from the dashboard poll AND from worker cascades.
+        Two ticks that both read a node 'pending' used to file two work items
+        for it — two paid sessions for one step, with the second _set_node
+        hiding the first item's id. The claim lets exactly one through."""
+        run = workflows.start(root, graph())
+        run_row = workflows._run_row(root, run["id"])
+        snapshot, specs, order, ups = workflows._graph_of(root, run["id"])
+        # 'tech' is pending; simulate both ticks passing the pending read.
+        a = workflows._queue_step(root, run_row, snapshot, specs["tech"],
+                                  5, 5, False)
+        b = workflows._queue_step(root, run_row, snapshot, specs["tech"],
+                                  5, 5, False)
+        rows = [r for r in queue.list_items(root)
+                if r.get("source_ref") == f"run:{run['id']}:tech"]
+        assert len(rows) == 1
+        assert int(b["work_item_id"]) == int(a["work_item_id"])

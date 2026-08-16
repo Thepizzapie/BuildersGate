@@ -141,6 +141,7 @@ LABELS: dict[str, str] = {
     "followup.auto_reopen_failures": "Reopen failed tasks automatically",
     "followup.max_auto_retries": "Most automatic retries per task",
     "followup.escalate_failures": "Raise a director item when work fails",
+    "followup.escalation_to_session": "Hand failure escalations to the director session",
     # Notifications
     "notify.in_app": "Show notifications in the app",
     "notify.kinds": "What to be notified about",
@@ -477,12 +478,15 @@ SETTINGS: tuple[Setting, ...] = (
              "fire eight hours of debriefs at a board that has moved on."),
     Setting(
         key="followup.auto_reopen_failures", group="Follow-up", kind=BOOL,
-        default=False, store=("registry", "followup.auto_reopen_failures"),
+        default=True, store=("registry", "followup.auto_reopen_failures"),
         help="Reopen a failed item with the failure text instead of leaving it "
              "for a human, up to followup.max_auto_retries automatic rounds. "
-             "Off: a failure that retries itself unattended is how one broken "
-             "brief spends a night's budget. Whether this is on or off, the "
-             "failure still reaches the director — see "
+             "ON by default: shipped off, the retry rail existed and never "
+             "fired, so ONE failure stopped a whole chain until a human "
+             "noticed — the exact dead-end this feature was built to remove. "
+             "The runaway-spend risk lives in the CAP, which is 1 with a hard "
+             "ceiling of 2, not in this switch. Whether this is on or off, "
+             "the failure still reaches the director — see "
              "followup.escalate_failures."),
     Setting(
         key="followup.max_auto_retries", group="Follow-up", kind=INT, default=1,
@@ -507,6 +511,19 @@ SETTINGS: tuple[Setting, ...] = (
              "queued and never dispatched to an agent — and because the "
              "alternative is what this replaced: a red marker on the board "
              "that nothing acts on until somebody happens to look."),
+    Setting(
+        key="followup.escalation_to_session", group="Follow-up", kind=BOOL,
+        default=True, store=("registry", "followup.escalation_to_session"),
+        human_only=True,
+        help="Hand a filed failure escalation straight to the console's "
+             "director session, which investigates the failure and acts — "
+             "reopen with a corrected brief, file the fix as new work, or "
+             "explain what needs your decision. This is what makes an "
+             "escalation a decision that gets MADE rather than a card that "
+             "waits: shipped as held-only, every failure dead-ended until a "
+             "human opened the dashboard. Off returns to that — the "
+             "escalation is filed and held for you. Spend is bounded by "
+             "console.max_usd; no worker agent is bought either way."),
 
     # -- Notifications ------------------------------------------------------
     Setting(
