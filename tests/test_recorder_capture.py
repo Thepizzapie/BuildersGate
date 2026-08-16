@@ -38,10 +38,21 @@ class TestItNeverPointsGdigrabAtAWindow:
         assert not any(a.startswith("title=") for a in args), (
             "back to `title=` — that is the black-recording bug returning")
 
-    def test_no_window_is_a_desktop_grab_too(self):
+    def test_no_window_is_a_desktop_grab_cropped_to_one_screen(self, monkeypatch):
+        """The fallback is ONE monitor, never every monitor at once.
+
+        This used to assert the opposite - that an untargeted grab took the
+        whole canvas - and the whole canvas is the virtual desktop. Measured on
+        the machine that reported it: 5760x1080 across three screens, so every
+        recording was an editor, a browser and a wallpaper with the game a third
+        of the way across. "I do not like how playtest records all screens."
+        """
+        monkeypatch.setattr(recorder, "primary_rect",
+                            lambda: {"x": 0, "y": 0, "width": 1920, "height": 1080})
         args = _args(None)
         assert args[args.index("-i") + 1] == "desktop"
-        assert "-video_size" not in args, "an uncropped grab takes the whole canvas"
+        assert args[args.index("-video_size") + 1] == "1920x1080"
+        assert args[args.index("-offset_x") + 1] == "0"
 
 
 class TestTheCrop:
@@ -64,13 +75,30 @@ class TestTheCrop:
         args = _args("Downsizing")
         assert args[args.index("-offset_x") + 1] == "-1920"
 
-    def test_an_unlocatable_window_records_uncropped_rather_than_nothing(
+    def test_an_unlocatable_window_falls_back_to_one_screen_not_all_of_them(
             self, monkeypatch):
+        """Still records rather than dropping the session - but bounded.
+
+        A black recording is useless and a three-monitor one is embarrassing;
+        one screen is neither.
+        """
         monkeypatch.setattr(recorder, "window_rect", lambda _t: None)
+        monkeypatch.setattr(recorder, "primary_rect",
+                            lambda: {"x": 0, "y": 0, "width": 1920, "height": 1080})
+        args, note = recorder._video_input("Downsizing", 30)
+        assert args[args.index("-i") + 1] == "desktop"
+        assert args[args.index("-video_size") + 1] == "1920x1080"
+        assert "could not be located" in note
+
+    def test_with_no_monitor_metrics_it_still_records(self, monkeypatch):
+        """Off Windows, or if the metrics call fails, an uncropped grab beats no
+        recording at all - and the note says which one happened."""
+        monkeypatch.setattr(recorder, "window_rect", lambda _t: None)
+        monkeypatch.setattr(recorder, "primary_rect", lambda: None)
         args, note = recorder._video_input("Downsizing", 30)
         assert args[args.index("-i") + 1] == "desktop"
         assert "-video_size" not in args
-        assert "could not be located" in note
+        assert "whole desktop" in note
 
     def test_the_note_says_what_is_really_being_captured(self, monkeypatch):
         monkeypatch.setattr(recorder, "window_rect",

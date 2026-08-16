@@ -359,6 +359,42 @@ def window_rect(title: str) -> Optional[dict]:
     return {"x": left, "y": top, "width": width, "height": height}
 
 
+# The primary monitor, which is what "the screen" means to a person.
+_SM_CXSCREEN, _SM_CYSCREEN = 0, 1
+
+
+def primary_rect() -> Optional[dict]:
+    """The PRIMARY monitor's rectangle, or None off Windows.
+
+    THE FALLBACK MUST NOT BE THE VIRTUAL DESKTOP. `gdigrab -i desktop` with no
+    crop captures every monitor stitched together - on a three-screen machine
+    that is a recording of an editor, a browser and somebody's wallpaper, with
+    the game a third of the way across. It was reported exactly that way: "I do
+    not like how playtest records all screens."
+
+    One screen is bounded, is what a person means by "record my screen", and is
+    still honest about being wider than the game. The primary monitor's origin
+    is (0,0) by definition on Windows, which is what makes this a two-metric
+    call rather than a monitor enumeration.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+
+    try:
+        user32 = ctypes.windll.user32
+        width = int(user32.GetSystemMetrics(_SM_CXSCREEN))
+        height = int(user32.GetSystemMetrics(_SM_CYSCREEN))
+    except Exception:
+        return None
+    # Even dimensions, for the same reason window_rect enforces them: an odd
+    # crop is rejected when the input is opened, before any filter runs.
+    width, height = width // 2 * 2, height // 2 * 2
+    if width <= 0 or height <= 0:
+        return None
+    return {"x": 0, "y": 0, "width": width, "height": height}
+
+
 def _video_input(window_title: Optional[str], fps: int) -> tuple[list[str], str]:
     """The ffmpeg input args for the video stream, plus what they will capture.
 
@@ -367,13 +403,24 @@ def _video_input(window_title: Optional[str], fps: int) -> tuple[list[str], str]
     a whole-desktop capture is embarrassing, a black one is useless.
     """
     args = ["-f", "gdigrab", "-framerate", str(fps), "-draw_mouse", "1"]
+
+    def _one_screen(why: str) -> tuple[list[str], str]:
+        """Fall back to ONE monitor, never to every monitor at once."""
+        screen = primary_rect()
+        if not screen:
+            return [*args, "-i", "desktop"], f"the whole desktop — {why}"
+        return ([*args, "-offset_x", "0", "-offset_y", "0",
+                 "-video_size", f"{screen['width']}x{screen['height']}",
+                 "-i", "desktop"],
+                f"the primary monitor ({screen['width']}x{screen['height']}) — {why}")
+
     if not window_title:
-        return [*args, "-i", "desktop"], "the whole desktop"
+        return _one_screen("no window was named and none matched the project name")
     rect = window_rect(window_title)
     if not rect:
-        return ([*args, "-i", "desktop"],
-                f"the whole desktop — {window_title!r} could not be located, so "
-                "the crop was dropped rather than the recording")
+        return _one_screen(
+            f"{window_title!r} could not be located, so the crop fell back to "
+            "one screen rather than the recording being dropped")
     args += ["-offset_x", str(rect["x"]), "-offset_y", str(rect["y"]),
              "-video_size", f"{rect['width']}x{rect['height']}"]
     return ([*args, "-i", "desktop"],
