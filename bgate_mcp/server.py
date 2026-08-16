@@ -367,6 +367,43 @@ def _contained(root: str) -> str:
         "result note and name the project, so a human decides.")
 
 
+def _contained_path(target, what: str = "path"):
+    """A RAW filesystem argument, allowed for this session — or a refusal.
+
+    The seated-session mirror of :func:`_contained` for tools whose target is
+    not ``project_dir``: a ``godot_project`` directory, an ``out_path``, a
+    ``blend_file``, an ``out_dir``. The module comment at the top of this file
+    names the exact attack these carried: ``scene_set_property`` against
+    another game's scene, with ``project_dir`` omitted, resolved the PINNED
+    root, passed every gate, and wrote into the other game — because only the
+    project root was ever asked about, never the argument doing the writing.
+
+    Same rules as _contained: seated sessions only, and a target outside
+    EVERY project is the lane story (the hook's), not this gate's. The check
+    resolves which project the target belongs to and puts that root through
+    the same aegis decision a project_dir would face.
+    """
+    text = str(target or "").strip()
+    if not text:
+        return target
+    if not _seat() or _aegis.mode() == "off":
+        return target
+    if not os.environ.get("BGATE_ROOT", "").strip():
+        return target
+    try:
+        from bgate_core import db as _db
+
+        resolved = _Path(text).expanduser().resolve()
+        probe = resolved if resolved.is_dir() else resolved.parent
+        owner = _db.resolve_root(probe)
+    except Exception:
+        return target
+    if owner is None:
+        return target
+    _contained(str(owner))
+    return target
+
+
 def _root(scratch: bool = False) -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
     Also loads the project's .env and the machine-wide one, in that order.
@@ -648,6 +685,17 @@ def _tool(fn: Optional[Callable] = None, *,
                         "refused": "containment",
                         "pinned_root": os.environ.get("BGATE_ROOT", "").strip(),
                         "seat": _seat()}
+            except Exception as exc:
+                # THE NET UNDER THE 200 PER-TOOL try/excepts. Almost every
+                # tool body carries its own `except Exception: return _fail`,
+                # but "almost" is the operative word: a tool whose body lacks
+                # one (or whose except clause itself raises) used to surface
+                # to the model as a raw MCP protocol error with no ok/error
+                # shape. Same _fail sentence either way, so a body that
+                # already catches loses nothing and a body that forgot is no
+                # longer a different kind of failure. The per-tool copies can
+                # now be deleted at leisure; this makes their absence safe.
+                return _fail(exc)
             finally:
                 _CALL_TOOL.reset(name_token)
                 _CALL_ROOT.reset(token)
@@ -1499,6 +1547,8 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
     worth fixing before the asset reaches a level. Pair with godot_import_asset.
     """
     try:
+        _contained_path(out_path, "out_path")
+        _contained_path(blend_file, "blend_file")
         return _blender.export_gltf(out_path, blend_file=blend_file,
                                     script=script, timeout=timeout)
     except Exception as exc:
@@ -1559,6 +1609,7 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
     file outside it, and an unregistered asset is one no reviewer ever sees.
     """
     try:
+        _contained_path(out_path, "out_path")
         result = _blender.combine(parts, out_path, rig=rig,
                                   root_name=root_name, timeout=timeout)
         if result.get("ok"):
@@ -1619,6 +1670,8 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
     # keys and spend land in the project the CALL named rather than whatever a
     # previous call left behind.
     try:
+        _contained_path(out_dir, "out_dir")
+        _contained_path(godot_project, "godot_project")
         root = _root()
     except Exception:
         root = None
@@ -4535,6 +4588,7 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     not the Builders Gate root - that one is `project_dir`.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
     except Exception as exc:
         return _fail(exc)
@@ -4777,6 +4831,7 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     godot_project: the directory holding project.godot.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
                                      timeout=timeout)
         warning = (result.get("alpha_mode") or {}).get("warning")
@@ -4899,6 +4954,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     """
     stem = name or _Path(glb).stem
     try:
+        _contained_path(godot_project, "godot_project")
         shot_dir = str(_Path(_root()) / ".bgate_out" / "3d" /
                        _run_tag(label or stem))
     except Exception:
@@ -4982,7 +5038,13 @@ def _terrain(layout: str, source: int, atlas_x: int, atlas_y: int,
 
 
 def _res_pair(godot_project: str, path: str, suffix: str) -> tuple[_Path, str]:
-    """A res:// path and its file on disk, from either form."""
+    """A res:// path and its file on disk, from either form.
+
+    THE CONTAINMENT GATE RUNS HERE, once, for every scene tool: the
+    ``godot_project`` argument is the write target's real address, and it used
+    to go straight to the adapter while only ``project_dir`` was gated.
+    """
+    _contained_path(godot_project, "godot_project")
     gd = _Path(godot_project).expanduser().resolve()
     if not (gd / "project.godot").is_file():
         raise ValueError(f"no project.godot in {gd} - that is not a Godot project")
@@ -7675,6 +7737,7 @@ def sfx_rerender(recipe_path: str, out_path: str = "") -> dict:
     recipe_path may be absolute or relative to the project root.
     """
     try:
+        _contained_path(out_path, "out_path")
         from bgate_core import sfx as _sfx
 
         root = _root()

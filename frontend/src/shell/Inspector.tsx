@@ -47,7 +47,7 @@ function clip(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-/** `C:\Users\adria\Desktop\downsizing\game\scenes\floor_0.tscn` is 55 characters
+/** `C:\Users\robin\Desktop\downsizing\game\scenes\floor_0.tscn` is 55 characters
  *  of which 15 identify the file. The parent directory stays because
  *  `floor_0.tscn` alone does not distinguish game/scenes from a backup. */
 function shortPath(raw: string): string {

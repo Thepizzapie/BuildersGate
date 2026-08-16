@@ -34,7 +34,18 @@ def _work_item_rebuild(conn: sqlite3.Connection) -> None:
     REFERENCES clauses in child tables to follow the new name, so without
     ``legacy_alter_table`` task_ref/asset/artifact_revision end up pointing at
     ``work_item_old`` and lose their parent when it is dropped.
+
+    RE-RUNNABLE, because migrate() cannot fold a callable into one commit and
+    a crash between the step and its user_version bump replays it. This one
+    was NOT re-runnable (_work_item_drop_scope_tier was; these two predate
+    the lesson): a replay renamed the MODERN table away and copied back only
+    this migration's column subset — silently zeroing actor, cost, attempts
+    and the chain columns on every row. The guard is the same shape as the
+    drop-column step's: the presence of a column this step creates.
     """
+    if any(r[1] == "actor"
+           for r in conn.execute("PRAGMA table_info(work_item)")):
+        return          # already applied; a replay must not rebuild again
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("PRAGMA legacy_alter_table = ON")
@@ -112,8 +123,14 @@ def _work_item_chain_rebuild(conn: sqlite3.Connection) -> None:
     ALTERed, hence the second full rebuild rather than two ALTERs.
 
     Same 12-step dance and the same two pragmas as _work_item_rebuild — see its
-    docstring for why ``legacy_alter_table`` is not optional here.
+    docstring for why ``legacy_alter_table`` is not optional here, and for the
+    replay guard both rebuilds now carry (a crash before the user_version bump
+    replays the step, and an unguarded replay copies back only this
+    migration's column subset).
     """
+    if any(r[1] == "chain_id"
+           for r in conn.execute("PRAGMA table_info(work_item)")):
+        return          # already applied; a replay must not rebuild again
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("PRAGMA legacy_alter_table = ON")

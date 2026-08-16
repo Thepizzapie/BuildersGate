@@ -21,6 +21,7 @@ import { type FloorPlan, type PlanRoom, type Prop, type Rect, type Spot,
 import { type Occupant } from "./occupancy";
 import { type Nav } from "./route";
 import { castFrames } from "./castFrames";
+import { SEAT_COLOR } from "../nav";
 
 /* ── image cache ─────────────────────────────────────────────────────────── */
 
@@ -104,11 +105,13 @@ const PROP_STRIP = 0.35;
 
 /* ── colours ─────────────────────────────────────────────────────────────── */
 
-const SEAT_HEX: Record<string, string> = {
-  director: "#f59e0b", narrative: "#ef4444", gameplay: "#ec4899",
-  tech: "#06b6d4", art: "#f472b6", audio: "#10b981",
-  qa: "#8b5cf6", cinematic: "#3b82f6",
-};
+/* ONE PALETTE, NOT THREE. This was its own hex table, nav.ts carried a
+   second, and the CSS variables a third — with DISAGREEING values, so the
+   floor's selection wash and nameplates were literally different colours from
+   the rail and the board for the same seat, and a palette edit needed three
+   synchronized changes. nav.SEAT_COLOR is the source now; the floor tints
+   derive from it exactly as they derived from the local copy. */
+const SEAT_HEX: Record<string, string> = SEAT_COLOR;
 /* WALLS HAVE HEIGHT NOW, so they need three tones rather than one: the top
    surface you look down on, the face that turns toward the camera, and the
    shadow the wall throws on the floor in front of it. A single flat colour is

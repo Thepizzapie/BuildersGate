@@ -227,3 +227,48 @@ class TestQueueClaimNext:
         # And the well runs dry honestly: nothing ready means finish the shift.
         again = await call("queue_claim_next")
         assert again.get("empty") is True
+
+
+class TestRawPathContainment:
+    """The gate the raw-path tools lacked: godot_project/out_path arguments
+    now pass through _contained_path, which puts the TARGET's own project
+    through the same aegis decision project_dir faces. These test the wiring
+    (the seated refusal itself is aegis's, tested with _contained)."""
+
+    def test_res_pair_asks_containment_about_the_godot_project(
+            self, root, monkeypatch):
+        from bgate_mcp import server
+
+        asked = {}
+
+        def spy(target, what="path"):
+            asked["target"] = str(target)
+            return target
+
+        monkeypatch.setattr(server, "_contained_path", spy)
+        gd = root / "game"
+        gd.mkdir(exist_ok=True)
+        (gd / "project.godot").write_text("", encoding="utf-8")
+        server._res_pair(str(gd), "scenes/x.tscn", ".tscn")
+        assert asked["target"] == str(gd)
+
+    def test_a_refusal_travels_out_as_the_tools_error(self, root, monkeypatch):
+        from bgate_mcp import server
+
+        def refuse(target, what="path"):
+            raise server.ContainmentRefused("not your tree")
+
+        monkeypatch.setattr(server, "_contained_path", refuse)
+        gd = root / "game"
+        gd.mkdir(exist_ok=True)
+        (gd / "project.godot").write_text("", encoding="utf-8")
+        import pytest as _pytest
+
+        with _pytest.raises(server.ContainmentRefused):
+            server._res_pair(str(gd), "scenes/x.tscn", ".tscn")
+
+    def test_seatless_sessions_pass_untouched(self, root, monkeypatch):
+        from bgate_mcp import server
+
+        monkeypatch.delenv("BGATE_SEAT", raising=False)
+        assert server._contained_path(str(root)) == str(root)

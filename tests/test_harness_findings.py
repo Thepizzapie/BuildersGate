@@ -104,8 +104,12 @@ def test_an_ordinary_setting_is_still_writable_by_an_agent(root, as_agent):
 # #5 — QA coverage was a hardcoded tuple with no override
 # ---------------------------------------------------------------------------
 
-def test_gated_seats_defaults_to_the_old_hardcoded_tuple(root):
-    assert qa_gate.gated_seats(root) == ("art", "gameplay", "audio", "narrative")
+def test_gated_seats_defaults_to_every_maker_seat(root):
+    # The old four left tech and cinematic closing on the agent's word alone;
+    # every maker seat is gated by default now. director and qa stay out:
+    # that is recursion, not review.
+    assert qa_gate.gated_seats(root) == (
+        "art", "gameplay", "audio", "narrative", "tech", "cinematic")
 
 
 def test_a_project_can_narrow_qa_to_one_seat(root, as_human):

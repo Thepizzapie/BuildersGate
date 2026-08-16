@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { readJSON } from "../../bridge";
 import { usePoll } from "../../hooks";
 
@@ -46,9 +46,18 @@ export function useJSON<T extends Record<string, unknown>>(
   enabled: boolean,
 ): T & { __error?: string } {
   const [data, setData] = useState<T & { __error?: string }>(fallback);
+  /* THE STALE-RESPONSE GUARD. When `path` changes, the old path's in-flight
+     response can land AFTER the new path's immediate fetch and overwrite it —
+     entity A's data under entity B's header until the next tick, which on the
+     slow panels is up to a minute. Same bug class the poll-key fix below
+     closed once already; this closes the other half. A sequence number
+     beats an AbortController here because the loser must also not WRITE. */
+  const seq = useRef(0);
   const refresh = useCallback(async () => {
     if (!path) return;
-    setData(await readJSON<T>(path, fallback));
+    const mine = ++seq.current;
+    const got = await readJSON<T>(path, fallback);
+    if (mine === seq.current) setData(got);
     // fallback is a fresh literal on every render and would restart the timer
     // on every tick if it were a dependency; it is only ever read, never kept.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1007,6 +1007,17 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     except OSError as exc:
         return _refused("spawn_failed", f"cannot create the agent log dir: {exc}")
     log_path = log_dir / f"item-{item_id}.log"
+    # The log appends across every re-dispatch of this item FOREVER — nothing
+    # rotated it, and a bounced item's log is documented at 10MB per run. One
+    # rolled generation at spawn keeps the previous rounds readable (the QA
+    # brief points at the path) without the file growing for the project's
+    # life. Run markers + byte cursors already scope every reader to THIS run,
+    # so a shrunk file only ever costs a tailer a re-read.
+    try:
+        if log_path.stat().st_size >= 20 * 1024 * 1024:
+            os.replace(log_path, log_path.with_suffix(".log.1"))
+    except OSError:
+        pass
 
     env = {
         # NOT os.environ. See _scrubbed_environ: the dashboard's whole

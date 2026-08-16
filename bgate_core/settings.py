@@ -1177,6 +1177,53 @@ def _audit_guard(root, s: Setting, was: Any, now: Any) -> None:
 # ---------------------------------------------------------------------------
 # Description — the UI renders from this, not from a template per switch
 # ---------------------------------------------------------------------------
+# Fields whose CHOICES are live facts about this machine, not registry
+# constants: which providers hold a key, which model ids their adapters can
+# actually route. Served by bgate_core.modelcatalog, filtered to configured
+# providers, so the panel's pickers cannot offer a model that fails on its
+# first call with a missing-key error. The static declaration stays as the
+# fallback for a catalog that will not import.
+_DYNAMIC_CHOICES: dict[str, str] = {
+    "art.provider": "image-providers",
+    "art.model": "image-models",
+    "cinematic.model": "video-models",
+    "music.model": "music-models",
+    "voice.model": "speech-models",
+    "text.model": "text-models",
+    "dispatch.model": "agent-models",
+    "dispatch.model_art": "agent-models",
+    "console.model": "agent-models",
+    "brainstorm.model": "agent-models",
+}
+
+
+def _choices_for(root, s: Setting) -> list:
+    want = _DYNAMIC_CHOICES.get(s.key)
+    if not want:
+        return list(s.choices)
+    try:
+        from bgate_core import modelcatalog
+
+        live = modelcatalog.options(root, want)
+    except Exception:
+        live = []
+    if not live:
+        live = list(s.choices)
+    # The stored value survives in the list even when its provider's key was
+    # removed — a picker that hides the current value reads as data loss.
+    current = str(_resolve(root, s)[0] or "").strip()
+    if current and current not in live:
+        live = [current] + live
+    if not live:
+        return list(s.choices)
+    # An ENUM must keep every legal value reachable; the catalog only orders
+    # and augments it. A blank entry on the STRING pickers is "provider
+    # default", which set() accepts because "" is these settings' default.
+    if s.kind == ENUM:
+        live += [c for c in s.choices if c not in live]
+    return live
+
+
 def _field(root, s: Setting) -> dict:
     value, src, var = _resolve(root, s)
     stored_present, stored_raw = _stored(root, s)
@@ -1184,7 +1231,7 @@ def _field(root, s: Setting) -> dict:
         "key": s.key,
         "group": s.group,
         "kind": s.kind,
-        "choices": list(s.choices),
+        "choices": _choices_for(root, s),
         "value": value,
         "human_only": s.human_only,
         "default": list(s.default) if s.kind == LIST else s.default,

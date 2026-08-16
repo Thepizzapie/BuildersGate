@@ -1790,6 +1790,10 @@ def tick(root: str | os.PathLike[str]) -> dict:
         # that has been down for a fortnight is not caught up by holding rows for
         # it, and since() reports the gap honestly instead.
         _events.prune(root, keep_days=KEEP_DAYS)
+        # The activity ledger too — the one durable store that had NO deleter
+        # anywhere while this line promised the events table a diet. 90 days:
+        # it is the audit trail the drawer reads, not a 14-day event window.
+        activity.prune(root, keep_days=90)
     if count % SWEEP_EVERY == 0:
         # The backstop for an event that was never written: events.emit is
         # best-effort, so a completion that hit a locked database is invisible to

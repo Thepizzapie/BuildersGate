@@ -145,6 +145,9 @@ def _notify_line(root: str | os.PathLike[str], line: dict) -> None:
         from datetime import datetime, timezone
 
         path = os.path.join(str(root), ".bgate", "notify.jsonl")
+        from bgate_core.queue import _rotate_notify
+
+        _rotate_notify(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),

@@ -327,6 +327,15 @@ function control(f: Field, locked: boolean, save: (k: string, v: unknown) => voi
                           value={(f.value as string[]) || []}
                           onChange={(v) => save(f.key, v)} />;
     default:
+      // A string field that ships choices is a MODEL PICKER: the backend
+      // filled them from the live model catalog (configured providers only).
+      // Searchable because the lists run long; clearable because "" means
+      // "the provider's own default" for every one of these.
+      if (f.choices && f.choices.length)
+        return <Select {...common} data={f.choices} value={String(f.value ?? "")}
+                       w={220} searchable clearable
+                       placeholder="provider default"
+                       onChange={(v) => save(f.key, v ?? "")} />;
       return <TextInput {...common} defaultValue={String(f.value ?? "")} w={220}
                         onBlur={(e) => {
                           if (e.currentTarget.value !== String(f.value ?? ""))

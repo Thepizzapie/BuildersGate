@@ -205,7 +205,11 @@ def session_owner(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 _REDIRECT_WRITE = {">", ">>", ">|", "&>", ">&", "&>>"}
 _REDIRECT_READ = {"<", "<<", "<<<", "<&"}
-_SEPARATORS = {";", "|", "||", "&&", "&", "(", ")", "{", "}", "\n"}
+# NO "\n" HERE, deliberately: shlex with whitespace_split consumes a newline
+# as ordinary whitespace, so a newline token never reaches this set — which is
+# exactly how `ls\nrm -rf game/` was once judged as the program `ls` with
+# three extra arguments. Lines are split BEFORE lexing (see _logical_lines).
+_SEPARATORS = {";", "|", "||", "&&", "&", "(", ")", "{", "}"}
 _FD_PREFIX = {"1", "2", "&"}
 
 # Wrappers that carry the real command as their tail.
@@ -240,6 +244,11 @@ _SNIPPET_WRITES = re.compile(
     r"""\.write\s*\(|shutil\.(?:copy|move|rmtree)|"""
     r"""os\.(?:remove|unlink|rename|replace|mkdir|makedirs|rmdir|truncate)|"""
     r"""writeFileSync|appendFileSync|fs\.(?:write|unlink|rename|mkdir)|"""
+    # perl spells a write as a mode SIGIL in the filename argument -
+    # open(F, ">x") / open(F, ">>x") - and python's [rbt+]*[wax] shape
+    # cannot see it; `unlink` is perl's os.remove.
+    r"""open\s*\([^)]*['"]\s*>{1,2}|\bunlink\b|"""
+    r"""subprocess\.(?:run|call|check_call|check_output|Popen)|os\.system|"""
     r"""File\.write|IO\.write|Remove-Item|Set-Content|Out-File""",
     re.I | re.X)
 
@@ -361,8 +370,8 @@ def _snippets(args: list[str]) -> list[str]:
     return out
 
 
-def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str]]:
-    """One simple command -> (write targets, reasons it is unanalysable)."""
+def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str], str]:
+    """One simple command -> (write targets, unanalysable reasons, program)."""
     writes: list[str] = []
     unclear: list[str] = []
     args: list[str] = []
@@ -395,7 +404,7 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str]]:
 
     program, rest = _program(args)
     if not program:
-        return writes, unclear
+        return writes, unclear, program
 
     positional = _positional(rest)
     if program in _ALL_ARGS:
@@ -428,6 +437,15 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str]]:
             unclear.append(
                 f"`git {sub}` rewrites the working tree - it can overwrite any "
                 "seat's files and the paths it touches are not knowable here")
+    elif program == "eval":
+        # eval's arguments ARE a shell command. shlex has already unquoted
+        # them, so `eval 'echo x > game/foo.gd'` arrives as one clean payload
+        # token — re-analysed with the same rules. The module used to claim
+        # eval'd snippets fail closed while eval was in no table at all: a
+        # one-token bypass of the whole gate.
+        inner = analyse_bash(" ".join(rest))
+        writes.extend(inner["writes"])
+        unclear.extend(inner["unclear"])
     elif program in _SHELLS:
         # `bash -c "echo x > game/foo.gd"` is just another shell command - read
         # it with the same rules rather than guessing at it with a regex.
@@ -435,13 +453,50 @@ def _scan_segment(tokens: list[str]) -> tuple[list[str], list[str]]:
             inner = analyse_bash(snippet)
             writes.extend(inner["writes"])
             unclear.extend(inner["unclear"])
-    elif program in _INTERPRETERS:
+    # NOT an elif: perl sits in _INPLACE **and** _INTERPRETERS, and an elif
+    # chain let the in-place branch shadow the snippet check — so
+    # `perl -e '<writing code>'` without -i never reached the fail-closed
+    # path the docstring promised. Shells are excluded because their branch
+    # above already re-analysed the snippet properly.
+    if program in _INTERPRETERS and program not in _SHELLS:
         for snippet in _snippets(rest):
             if _SNIPPET_WRITES.search(snippet):
                 unclear.append(
                     f"a {program} -c snippet that writes files; this hook cannot "
                     "tell which ones")
-    return writes, unclear
+    return writes, unclear, program
+
+
+_HEREDOC_RE = re.compile(r"<<-?\s*(?:\"([^\"]+)\"|'([^']+)'|([A-Za-z_][\w-]*))")
+
+
+def _logical_lines(command: str) -> list[tuple[str, str]]:
+    """Physical lines of a command -> (command line, its heredoc body).
+
+    Lines are the shell's own statement separator and have to be split BEFORE
+    lexing: shlex with whitespace_split eats a newline as ordinary whitespace,
+    so a multi-line command collapsed into one token stream and every write on
+    line two or later passed every gate.
+
+    A heredoc body is DATA belonging to the line that opened it, not commands
+    — it is peeled off and returned beside its line so the caller can grade it
+    as a snippet instead of parsing prose as shell. ``<<<`` is a word, never a
+    heredoc, and is masked before the delimiter scan.
+    """
+    out: list[tuple[str, list[str]]] = []
+    pending: list[str] = []          # open heredoc delimiters, in order
+    for raw in str(command or "").split("\n"):
+        if pending:
+            if raw.strip() == pending[0]:
+                pending.pop(0)
+            elif out:
+                out[-1][1].append(raw)
+            continue
+        found = [a or b or c for a, b, c in
+                 _HEREDOC_RE.findall(raw.replace("<<<", " "))]
+        out.append((raw, []))
+        pending.extend(found)
+    return [(line, "\n".join(body)) for line, body in out]
 
 
 def analyse_bash(command: str) -> dict:
@@ -449,27 +504,66 @@ def analyse_bash(command: str) -> dict:
 
     Returns ``{"writes": [raw path strings], "unclear": [reasons]}``. ``unclear``
     is the fail-closed channel: something writes and we cannot name the target.
-    """
-    try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lex.whitespace_split = True
-        tokens = list(lex)
-    except ValueError:
-        # Unbalanced quotes. If it clearly writes, refuse; otherwise stay out.
-        if _RAW_WRITES.search(command):
-            return {"writes": [],
-                    "unclear": ["the command could not be parsed (unbalanced "
-                                "quotes?) and it writes"]}
-        return {"writes": [], "unclear": []}
 
+    ``cd`` IS MODELLED, because it was the containment bypass: relative write
+    targets used to resolve against the session's cwd unconditionally, so
+    ``cd ../other-game && echo x > game/foo.gd`` was judged as a write into
+    THIS project's game/ — in-lane, in-project, allowed — while the shell wrote
+    into the other one. A resolvable cd shifts every later relative target; an
+    unresolvable one (``cd $DIR``, ``cd -``, bare ``cd``) makes later relative
+    writes unclear rather than guessed.
+    """
     writes: list[str] = []
     unclear: list[str] = []
-    for segment in _split_segments(_collapse_fd_dups(tokens)):
-        seg_writes, seg_unclear = _scan_segment(segment)
-        writes.extend(seg_writes)
-        unclear.extend(seg_unclear)
-    writes = [w for w in writes if w.strip()
-              and w.strip().lower() not in _NOT_A_FILE]
+    cd_to = ""            # where the command has cd'd so far ("" = nowhere)
+    cd_unknown = False
+    for line, heredoc in _logical_lines(command):
+        if not line.strip():
+            continue
+        try:
+            lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            tokens = list(lex)
+        except ValueError:
+            # Unbalanced quotes. If it clearly writes, refuse; else stay out.
+            if _RAW_WRITES.search(line):
+                unclear.append("the command could not be parsed (unbalanced "
+                               "quotes?) and it writes")
+            continue
+        for segment in _split_segments(_collapse_fd_dups(tokens)):
+            seg_writes, seg_unclear, program = _scan_segment(segment)
+            if program == "cd":
+                target = next((t for t in segment[1:]
+                               if not t.startswith("-")), "")
+                if not target or any(ch in target for ch in "$`~"):
+                    cd_unknown = True
+                elif os.path.isabs(target) or target[1:2] == ":":
+                    cd_to, cd_unknown = target, False
+                else:
+                    cd_to = os.path.join(cd_to, target) if cd_to else target
+                continue
+            if heredoc and program in _INTERPRETERS \
+                    and program not in _SHELLS \
+                    and _SNIPPET_WRITES.search(heredoc):
+                # `python <<EOF` is `-c` with extra steps: the body is the
+                # script, and one that writes fails closed like a -c snippet.
+                seg_unclear.append(
+                    f"a {program} heredoc script that writes files; this hook "
+                    "cannot tell which ones")
+            for w in seg_writes:
+                if not w.strip() or w.strip().lower() in _NOT_A_FILE:
+                    continue
+                if os.path.isabs(w) or w[1:2] == ":":
+                    writes.append(w)
+                elif cd_unknown:
+                    seg_unclear.append(
+                        f"a relative write ({w}) after a cd whose target this "
+                        "hook cannot resolve")
+                elif cd_to:
+                    writes.append(os.path.join(cd_to, w))
+                else:
+                    writes.append(w)
+            unclear.extend(seg_unclear)
     return {"writes": writes, "unclear": unclear}
 
 
@@ -490,6 +584,9 @@ def decide(payload: dict, seat: str, owner: str = "",
     if tool == "Bash":
         return _decide_bash(str(tool_input.get("command") or ""), payload,
                             seat, owner, mode)
+    if tool == "PowerShell":
+        return _decide_powershell(str(tool_input.get("command") or ""),
+                                  payload, seat, owner, mode)
 
     key = _PATH_KEYS.get(tool)
     if key is not None:
@@ -771,6 +868,46 @@ def _worker_route(root, rel: str, seat: str) -> str:
             "widen the owning seat with seat_configure(role, write_globs=[...]) "
             " - an agent may not widen its own lanes. Then continue with "
             "whatever part of your task IS inside your lanes.")
+
+
+# Write-shaped PowerShell. Cmdlets, their default aliases, redirection, and
+# the .NET escape hatch. Deliberately broad: this is a fence, not a parser.
+_PS_WRITES = re.compile(
+    r"set-content|add-content|out-file|new-item|remove-item|move-item|"
+    r"copy-item|rename-item|clear-content|start-process|invoke-expression|"
+    r"\biex\b|\bsc\b|\bni\b|\bri\b|\bmi\b|\bcpi\b|\brm\b|\bmv\b|\bcp\b|"
+    r"\bdel\b|\bmkdir\b|\bmd\b|>|\[io\.file\]|::write",
+    re.I)
+
+
+def _decide_powershell(command: str, payload: dict, seat: str,
+                       owner: str, mode: str = "block") -> tuple[int, str]:
+    """PowerShell is FENCED, not parsed.
+
+    The desktop harness offers a PowerShell tool that only ``Bash`` handling
+    ever saw — ``Set-Content game/foo.gd`` walked past every lane, lock and
+    lease. Building a second analyser for a second shell's grammar is how this
+    hook stops being 'deliberately small', so instead: a command that LOOKS
+    like it writes is refused for an enforced seat with directions to the
+    checked tools, and everything read-shaped passes. Same fail-closed policy
+    and the same softenings as an unparseable Bash command: outside a project
+    nothing is protected, and a seatless session's collide/warn mode is
+    advisory here exactly as it is there.
+    """
+    if not command.strip():
+        return ALLOW, ""
+    if not _PS_WRITES.search(command):
+        return ALLOW, ""
+    from bgate_core import db
+    if db.resolve_root(_session_cwd(payload)) is None:
+        return ALLOW, ""
+    if mode in ("collide", "warn"):
+        return ALLOW, ""
+    return BLOCK, (
+        "[builders-gate] refusing a PowerShell command that appears to write: "
+        "seat lanes cannot be read off PowerShell syntax, so writes there are "
+        "not checkable. Use Write/Edit on the specific file, or Bash with "
+        "explicit paths - both are checked precisely.")
 
 
 def _decide_bash(command: str, payload: dict, seat: str,

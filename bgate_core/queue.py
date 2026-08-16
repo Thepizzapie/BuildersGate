@@ -286,6 +286,23 @@ def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
     return rows(conn.execute(sql, params))
 
 
+def _rotate_notify(path: str, cap_bytes: int = 5 * 1024 * 1024) -> None:
+    """Roll notify.jsonl aside when it outgrows the cap. Best-effort.
+
+    The stream was append-only for the life of a project with no rotation and
+    no lock — migration 0016's own comment names torn multi-process lines on
+    Windows as a real failure of exactly this file, and it also simply grew
+    forever. One rolled generation (.1) keeps a consumer's recent history; a
+    tailer that sees the file shrink re-reads from zero, which every cursor
+    reader in this repo (events, feeds) already survives.
+    """
+    try:
+        if os.path.getsize(path) >= cap_bytes:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def _notify(root: str | os.PathLike[str], item: dict) -> None:
     """Append a status-transition event to .bgate/notify.jsonl (best-effort).
 
@@ -307,6 +324,7 @@ def _notify(root: str | os.PathLike[str], item: dict) -> None:
         import json as _json
         from datetime import datetime, timezone
         path = os.path.join(str(root), ".bgate", "notify.jsonl")
+        _rotate_notify(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
