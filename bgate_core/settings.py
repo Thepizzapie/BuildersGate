@@ -77,7 +77,7 @@ REGISTRY_KEY = "settings"
 # Group order is the display order, in both the panel and `bgate doctor`.
 # "Community" arrived with the streamer chat settings and was never added here,
 # so every one of those entries declared a group the registry did not admit.
-GROUPS = ("Dispatch", "Gates", "Art", "Generators", "Follow-up",
+GROUPS = ("Dispatch", "Gates", "Art", "Generators", "Modules", "Follow-up",
           "Notifications", "Budget", "Console", "Privacy", "Community")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
@@ -141,6 +141,8 @@ LABELS: dict[str, str] = {
     "music.model": "Preferred music model",
     "voice.model": "Preferred speech voice",
     "text.model": "Model for prompt-writing calls",
+    # Modules
+    "modules.disabled": "Features switched off for this project",
     # Follow-up
     "followup.director_debrief": "Ask the director to review finished work",
     "followup.max_per_hour": "Most reviews to raise in an hour",
@@ -187,6 +189,7 @@ GROUP_ICONS: dict[str, str] = {
     "Notifications": "bell",
     "Budget": "coin",
     "Console": "terminal-2",
+    "Modules": "puzzle",
     "Privacy": "eye-off",
     "Community": "users",
     "Generators": "sparkles",
@@ -519,6 +522,22 @@ SETTINGS: tuple[Setting, ...] = (
         help="The model promptwriter uses for prompt-polish calls. Blank is "
              "the historical default (gpt-4o-mini)."),
 
+    # -- Modules -------------------------------------------------------------
+    Setting(
+        key="modules.disabled", group="Modules", kind=LIST, default=(),
+        choices=("floor", "brainstorm", "music", "cinematic", "voice",
+                 "playtest", "three_d"),
+        store=("registry", "modules.disabled"), human_only=True,
+        help="Optional features this project has switched off — chosen on the "
+             "first-run card and changeable here. A disabled module's MCP "
+             "tools are not registered (agents stop paying context for tools "
+             "they will never call — new sessions only, a running server "
+             "keeps its registry), its panes leave the dashboard, and doctor "
+             "stops grading its dependencies. The core — board, seats, "
+             "canon, image generation, Godot — has no switch: a module "
+             "nobody can ship without would be a checkbox that only exists "
+             "to be mis-unchecked."),
+
     # -- Follow-up ----------------------------------------------------------
     Setting(
         key="followup.director_debrief", group="Follow-up", kind=BOOL,
@@ -783,7 +802,8 @@ BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}
 # The subset the browser needs. It rides in the index page's bootstrap next to
 # the cache-busting module srcs rather than costing a second fetch on load, and
 # every consumer keeps its hardcoded fallback for a bootstrap that is missing.
-CLIENT_KEYS = ("console.poll_live_ms", "console.poll_idle_ms", "graph.phase_cap",
+CLIENT_KEYS = ("modules.disabled",
+               "console.poll_live_ms", "console.poll_idle_ms", "graph.phase_cap",
                "notify.in_app")
 
 
@@ -1038,9 +1058,17 @@ def client(root: str | os.PathLike[str]) -> dict:
     values = {}
     for key in CLIENT_KEYS:
         try:
-            values[key.split(".", 1)[1]] = get(root, key)
+            value = get(root, key)
         except Exception:
             continue
+        if isinstance(value, (list, tuple)):
+            # Structured values keep their FULL key: the short-name scheme
+            # exists for the poll-rate numbers the JS has always read, and
+            # "disabled" floating free of its module context is a collision
+            # waiting for the next list setting.
+            values[key] = list(value)
+        else:
+            values[key.split(".", 1)[1]] = value
     return values
 
 

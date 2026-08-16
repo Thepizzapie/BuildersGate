@@ -150,7 +150,11 @@ class TestStoresItDescribes:
 
     def test_client_settings_are_all_declared(self, root):
         got = settings.client(root)
-        assert got and all(isinstance(v, (int, float, bool)) for v in got.values())
+        # Scalars ride under short names; structured values (modules.disabled)
+        # keep their full key and are JSON-safe lists.
+        assert got and all(isinstance(v, (int, float, bool, list))
+                           for v in got.values())
+        assert all("." in k for k, v in got.items() if isinstance(v, list))
 
 
 class TestGuardSwitches:

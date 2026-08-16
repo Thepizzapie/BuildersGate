@@ -19,6 +19,8 @@
  * stream a third and fourth time behind an extra click.
  */
 
+import { moduleOff } from "../bridge";
+
 export type ScreenId = string;
 
 export type Screen = {
@@ -33,7 +35,7 @@ export type Screen = {
 
 export type Area = { id: string; label: string; icon: string; screens: Screen[] };
 
-export const AREAS: Area[] = [
+const RAW_AREAS: Area[] = [
   {
     id: "command", label: "Command", icon: "layout-dashboard",
     screens: [
@@ -98,6 +100,26 @@ export const AREAS: Area[] = [
 /** What the header says about each screen. The note is the screen's own answer
  *  to "how much of what am I looking at" — filled in with live counts by the
  *  shell where it can. */
+/* SCREENS FOLLOW THE PROJECT'S MODULE CHOICES. A screen whose module is
+   switched off (Settings > Modules, or the first-run checklist) leaves the
+   rail entirely — a tab for a feature the project declined is the bloat the
+   switch exists to remove. Filtered once at module init: the bootstrap shim
+   in <head> runs before this bundle, so the answer is already on window. */
+const SCREEN_MODULE: Record<string, string> = {
+  brainstorm: "brainstorm",
+  playtests: "playtest",
+};
+
+export const AREAS: Area[] = RAW_AREAS
+  .map((a) => ({
+    ...a,
+    screens: a.screens.filter((s) => {
+      const m = SCREEN_MODULE[s.id];
+      return !m || !moduleOff(m);
+    }),
+  }))
+  .filter((a) => a.screens.length > 0);
+
 export const SCREEN_NOTE: Record<string, string> = {
   floor: "everything, newest first",
   history: "finished work",

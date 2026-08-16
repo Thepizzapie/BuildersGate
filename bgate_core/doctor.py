@@ -551,6 +551,28 @@ def check(root: Optional[str] = None, *, refresh: bool = False) -> dict:
 
     with _lock:
         _cache[key] = (time.monotonic(), {n: dict(r) for n, r in report.items()})
+
+    # A DISABLED MODULE'S DEPENDENCY IS NOT A FAULT. A project that switched
+    # playtest capture and 3D off must not open doctor to red rows about
+    # ffmpeg and Blender — a report that grades features you deliberately
+    # declined teaches you to ignore the report. Rows are marked, not
+    # removed, so "why isn't blender listed" has an answer on the row itself;
+    # a row two modules share stays graded while either is on.
+    if root:
+        try:
+            from bgate_core import modules as _modules
+
+            off = _modules.disabled(root)
+            for name, row in report.items():
+                if off and not _modules.doctor_row_enabled(name, off):
+                    # The probe's finding stands (available says what is
+                    # true); the marker says nobody here needs it.
+                    row["module_disabled"] = True
+                    row["reason"] = ((row.get("reason") or "")
+                                     + " (module disabled — not required for "
+                                       "this project)").strip()
+        except Exception:
+            pass
     return report
 
 

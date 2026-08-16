@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Alert, Button, Divider, Group, Paper, Select, Stack, Text, TextInput, Title,
+  Alert, Button, Checkbox, Divider, Group, Paper, Select, Stack, Text,
+  TextInput, Title, Tooltip,
 } from "@mantine/core";
 import { Ti } from "../shell/Ti";
 import { mutate, readJSON } from "../bridge";
@@ -53,7 +54,11 @@ function oncePerValue<T extends { value: string }>(items: T[]): T[] {
  * project and this page was served without one, so every fetch the shell has
  * queued is carrying nothing — a re-render would leave a signed-out page. */
 
-type ProjectInfo = { cwd?: string; known?: Record<string, string>; kinds?: string[] };
+type ModuleInfo = { name: string; label: string; blurb: string; pip: string };
+type ProjectInfo = {
+  cwd?: string; known?: Record<string, string>; kinds?: string[];
+  modules?: ModuleInfo[];
+};
 
 const KINDS = [
   { id: "2d", label: "2D",
@@ -78,6 +83,12 @@ export default function FirstRun() {
   const [name, setName] = useState("");
   const [pitch, setPitch] = useState("");
   const [kind, setKind] = useState("2d");
+  /* Which optional features this project ships WITHOUT. Everything is on by
+     default -- the checklist exists for the person who considers the floor or
+     the music pipeline bloat, not to make a newcomer decide seven things
+     before they have a project. Stored as modules.disabled; changeable later
+     in Settings > Modules. */
+  const [off, setOff] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
@@ -127,7 +138,9 @@ export default function FirstRun() {
     if (!name.trim()) { setErr("give it a name first"); return; }
     setErr(""); setBusy("create");
     const r = await mutate("/api/project", {
-      quiet: true, body: { name: name.trim(), kind, pitch: pitch.trim() },
+      quiet: true,
+      body: { name: name.trim(), kind, pitch: pitch.trim(),
+              modules_off: [...off] },
     });
     if (!r.ok) { setErr(r.error || "could not create that project"); setBusy(null); return; }
     location.reload();
@@ -205,6 +218,38 @@ export default function FirstRun() {
               ))}
             </Group>
           </div>
+
+          {(info.modules || []).length > 0 && (
+            <Stack gap={6}>
+              <Text size="sm" fw={600}>Optional features</Text>
+              <Text size="xs" c="dimmed">
+                Everything is on by default; untick what this project will not
+                use. Changeable any time in Settings.
+              </Text>
+              <Group gap="xs">
+                {(info.modules || []).map((m) => {
+                  const enabled = !off.has(m.name);
+                  const box = (
+                    <Checkbox key={m.name} size="xs" checked={enabled}
+                              label={m.label}
+                              onChange={() => setOff((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(m.name)) next.delete(m.name);
+                                else next.add(m.name);
+                                return next;
+                              })} />
+                  );
+                  return (
+                    <Tooltip key={m.name} multiline w={260} withArrow
+                             label={m.blurb + (m.pip ? `
+Needs: ${m.pip}` : "")}>
+                      <span>{box}</span>
+                    </Tooltip>
+                  );
+                })}
+              </Group>
+            </Stack>
+          )}
 
           {where && (
             <Text size="xs" c="dimmed" ff="var(--mono)">{where}</Text>

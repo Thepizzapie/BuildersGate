@@ -709,7 +709,43 @@ def _tool(fn: Optional[Callable] = None, *,
             "project_dir", inspect.Parameter.KEYWORD_ONLY, default=None,
             annotation=Annotated[Optional[str],
                                  Field(default=None, description=_PROJECT_DIR_DOC)])])
+    if not _module_registers(fn.__name__):
+        # A DISABLED MODULE'S TOOL IS NEVER REGISTERED — the whole point of
+        # the switch: ~200 tool schemas ride in every agent's context on
+        # every turn, and a project that turned cinematics off stops paying
+        # for cinematic_* on every one of them. The function itself is
+        # returned intact so any internal caller keeps working; it is only
+        # absent from the MCP registry this process serves.
+        return wrapper
     return mcp.tool()(wrapper)
+
+
+# Which modules the PINNED project has switched off, resolved once: the tool
+# registry is built at import, one process per session, and the session is
+# pinned to one project (BGATE_ROOT at dispatch, cwd for a hand-started one).
+# A session no project claims — or any failure reading the choice — registers
+# everything: a missing feature must only ever be the result of a stored
+# decision, never of a broken read.
+_MODULES_OFF: Optional[set] = None
+
+
+def _module_registers(tool_name: str) -> bool:
+    global _MODULES_OFF
+    if _MODULES_OFF is None:
+        try:
+            from bgate_core import modules as _modules
+
+            root = os.environ.get("BGATE_ROOT", "").strip()
+            if not root:
+                root = str(_project.require_root())
+            _MODULES_OFF = _modules.disabled(root)
+        except Exception:
+            _MODULES_OFF = set()
+    if not _MODULES_OFF:
+        return True
+    from bgate_core import modules as _modules
+
+    return _modules.tool_enabled(tool_name, _MODULES_OFF)
 
 
 def _fail(exc: Exception) -> dict:

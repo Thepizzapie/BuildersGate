@@ -197,6 +197,16 @@ export function setting(key: string, fallback: number, lo: number, hi: number): 
   return Number.isFinite(raw) && raw > 0 ? Math.max(lo, Math.min(raw, hi)) : fallback;
 }
 
+/** Is this optional feature module switched off for the project?
+ *  Read from the same page-bootstrap the poll intervals ride in
+ *  (modules.disabled is a client-delivered setting), so the answer exists
+ *  before anything renders. Unknown or unreadable answers OFF=false: a
+ *  broken read must cost nothing, never a pane. */
+export function moduleOff(name: string): boolean {
+  const raw = (window.BGATE_SETTINGS || {})["modules.disabled"];
+  return Array.isArray(raw) && raw.map(String).includes(name);
+}
+
 /** Feed the notification bell the console state we just read. */
 export function notifyUpdate(state: unknown): void {
   try { window.Notify?.update?.(state); } catch { /* never the console's problem */ }
