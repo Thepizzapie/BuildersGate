@@ -139,6 +139,8 @@ LABELS: dict[str, str] = {
     "followup.max_per_hour": "Most reviews to raise in an hour",
     "followup.max_age_min": "Skip reviewing work older than this",
     "followup.auto_reopen_failures": "Reopen failed tasks automatically",
+    "followup.max_auto_retries": "Most automatic retries per task",
+    "followup.escalate_failures": "Raise a director item when work fails",
     # Notifications
     "notify.in_app": "Show notifications in the app",
     "notify.kinds": "What to be notified about",
@@ -155,6 +157,8 @@ LABELS: dict[str, str] = {
     # Console
     "console.poll_live_ms": "Refresh rate while work is running",
     "console.poll_idle_ms": "Refresh rate when nothing is running",
+    "console.model": "Model the director console session runs on",
+    "console.max_usd": "Spending limit for one console session",
     "graph.phase_cap": "Most steps to show per agent on the graph",
     "brainstorm.runner": "Which assistant the brainstorm room uses",
     "brainstorm.model": "Model the brainstorm room uses",
@@ -592,6 +596,23 @@ SETTINGS: tuple[Setting, ...] = (
              "long-running agent otherwise paints a node taller than the "
              "canvas."),
     Setting(
+        key="console.model", group="Console", kind=STRING, default="opus",
+        store=("registry", "console.model"), scope=MACHINE,
+        env="BGATE_CONSOLE_MODEL", human_only=True,
+        help="The model the director console session runs on. This session is "
+             "the human's own counterpart — it investigates, arbitrates and "
+             "delegates — so it defaults to a stronger model than the seats it "
+             "dispatches. Named rather than inherited, for the same reason "
+             "dispatch.model is."),
+    Setting(
+        key="console.max_usd", group="Console", kind=FLOAT, default=15.0,
+        minimum=0.0, maximum=10000.0, store=("registry", "console.max_usd"),
+        human_only=True,
+        help="Ceiling for one console session's conversation, in USD. The "
+             "session outlives any single process (it resumes across dashboard "
+             "restarts), so this bounds the CONVERSATION; clearing the console "
+             "starts a fresh one. 0 means no ceiling."),
+    Setting(
         key="brainstorm.runner", group="Console", kind=STRING, default="claude",
         store=("registry", "brainstorm.runner"), scope=MACHINE,
         env="BGATE_BRAINSTORM_RUNNER", human_only=True,
@@ -963,7 +984,13 @@ def _write(root, s: Setting, value: Any) -> None:
         _ws.set(root, seat, doc_key, doc)
         return
     if kind == "registry":
-        doc = _registry_doc(root)
+        # NOT _registry_doc. That helper swallows a failed read into {} so a
+        # PANEL can render defaults, and this is a read-modify-REPLACE: writing
+        # that {} back would silently reset every other registry-stored setting
+        # to its default because one transient "database is locked" happened at
+        # read time. A save that cannot read what it is about to rewrite must
+        # fail loudly instead — the caller retries; nothing is lost.
+        doc = _ws.get(root, REGISTRY_SEAT, REGISTRY_KEY, {})
         doc[s.store[1]] = value
         doc["updated_at"] = _now()
         doc["by"] = _actor()

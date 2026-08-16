@@ -1986,6 +1986,15 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
     except Exception as exc:
         errors.append(f"brainstorm partners: {type(exc).__name__}: {exc}")
 
+    # The console's director session too — and with more reason than the
+    # brainstorm partner: that one can only talk, this one can act.
+    try:
+        from bgate_ui import directorsession as _directorsession
+
+        _directorsession.stop_all(root)
+    except Exception as exc:
+        errors.append(f"console director: {type(exc).__name__}: {exc}")
+
     settled = {}
     try:
         settled = reconcile(root)

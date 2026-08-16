@@ -48,16 +48,36 @@ def client(root, monkeypatch):
 
 @pytest.fixture()
 def spawned(monkeypatch):
-    """Record dispatches instead of starting a claude process."""
-    calls: list[int] = []
+    """Record dispatches instead of starting a claude process.
+
+    Two spawn paths now leave the console: an @seat turn dispatches a worker
+    (dispatch.dispatch), a director turn submits to the persistent session
+    (directorsession.submit). Both are recorded, neither starts a process —
+    a fixture that neutered only the first would have every director-turn
+    test quietly launching a real claude in a background thread.
+
+    ``calls`` keeps its shape (a list of item ids) for the tests that predate
+    the session; ``calls.prompts`` carries what the session would have heard.
+    """
+    class Calls(list):
+        prompts: dict[int, str]
+
+    calls = Calls()
+    prompts = calls.prompts = {}
 
     def fake(root, item_id, **kw):
         calls.append(int(item_id))
         _queue.set_status(root, int(item_id), "dispatched")
         return {"ok": True, "item_id": int(item_id), "pid": 4242}
 
+    def fake_submit(root, item_id, prompt, reseed_context=""):
+        calls.append(int(item_id))
+        prompts[int(item_id)] = str(prompt)
+        return {"ok": True, "item_id": int(item_id)}
+
     monkeypatch.setattr("bgate_ui.dispatch.dispatch", fake)
     monkeypatch.setattr("bgate_ui.dispatch.find_claude", lambda: "claude")
+    monkeypatch.setattr("bgate_ui.directorsession.submit", fake_submit)
     return calls
 
 
@@ -120,12 +140,15 @@ class TestTheMessageSurvives:
 
     def test_the_director_is_told_to_stamp_the_lineage_line(self, client, root, spawned):
         got = client.post("/api/console/say", json={"text": "make a thing"}).json()
-        brief = _queue.get(root, got["turn_id"])["brief"]
+        # The instruction rides the SESSION PROMPT now, not the brief: the
+        # brief is the transcript's copy, the prompt is what the director
+        # hears. The stamp format must be the one the console graph parses.
         from bgate_ui.routes.orchestrator import DELEGATED_FROM
 
-        assert f"{DELEGATED_FROM}{got['turn_id']}" in brief
-        # and it must answer, not just queue silently
-        assert "queue_complete" in brief
+        prompt = spawned.prompts[got["turn_id"]]
+        assert f"{DELEGATED_FROM}{got['turn_id']}" in prompt.replace("`", "")
+        # and the human's words arrive verbatim, first
+        assert prompt.startswith("make a thing")
 
     def test_an_empty_message_is_refused_before_anything_is_created(self, client, root):
         assert client.post("/api/console/say", json={"text": "   "}).status_code == 400
@@ -434,11 +457,13 @@ class TestSteerBox:
         assert got["ok"] is True
         assert [m["text"] for m in steerbox.pending(root)] == ["use the pinned ref"]
 
-    def test_the_director_is_told_the_channel_exists(self, client, root, spawned):
-        turn = client.post("/api/console/say",
-                           json={"text": "the art agent is going off-model"}).json()
-        brief = _queue.get(root, turn["turn_id"])["brief"]
-        assert "agent_steer" in brief
+    def test_the_director_is_told_the_channel_exists(self):
+        # The guidance lives in the session's standing prompt now — it is a
+        # fact about the director, not about any one turn.
+        from bgate_ui import directorsession
+
+        assert "agent_steer" in directorsession.DIRECTOR_SYSTEM
+        assert "queue_reopen" in directorsession.DIRECTOR_SYSTEM
 
 
 # ---------------------------------------------------------------------------
@@ -446,11 +471,15 @@ class TestSteerBox:
 # ---------------------------------------------------------------------------
 class TestARefusedTurnSurvives:
     def test_the_item_stays_on_the_board_with_the_reason(self, client, root, monkeypatch):
+        # The dispatch-refusal path belongs to ADDRESSED turns now — a
+        # director turn goes to the persistent session instead. The contract
+        # under test is unchanged: a refused turn is still a turn.
         monkeypatch.setattr(
             "bgate_ui.dispatch.dispatch",
             lambda *a, **k: {"ok": False, "code": "dirty_tree",
                              "error": "2 uncommitted change(s) in the tree"})
-        got = client.post("/api/console/say", json={"text": "do a thing"}).json()
+        got = client.post("/api/console/say",
+                          json={"text": "do a thing", "seat": "art"}).json()
         assert got["dispatched"] is False
         assert got["refusal"]["code"] == "dirty_tree"
         assert _queue.get(root, got["turn_id"])["status"] == "queued"
