@@ -1386,3 +1386,54 @@ body.ptn-open .bg4 {
 .bg4-cli-go.ghost:hover { color: var(--text); border-color: var(--line-strong) }
 .bg4-cli-go:disabled { opacity: .5; cursor: progress }
 .bg4-cli-go:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+/* ── the run, folded ───────────────────────────────────────────────────────── */
+
+/* WHAT THE AGENT SAID, promoted. It is the only entry in the feed written for a
+   human, and it used to be a collapsed row with a JSON-width slice under it. */
+.bg4-said {
+  display: grid; grid-template-columns: 16px 1fr; gap: 8px;
+  padding: 8px 0 10px;
+}
+.bg4-said > svg, .bg4-said > i { color: var(--text-3); margin-top: 2px }
+.bg4-said p {
+  margin: 0; font: 400 12.5px/1.55 var(--sans); color: var(--text);
+}
+
+/* A run of tool calls, drawn as chips rather than as one row each. */
+.bg4-beat { display: flex; flex-wrap: wrap; gap: 5px; padding: 2px 0 10px }
+.bg4-call { min-width: 0 }
+.bg4-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 999px; cursor: pointer;
+  font: 500 11px/1 var(--mono); color: var(--text-3);
+  background: var(--solid-1); border: 1px solid var(--line);
+}
+.bg4-chip:hover:not(:disabled) { color: var(--text-2); border-color: var(--line-strong) }
+.bg4-chip:disabled { cursor: default; opacity: .7 }
+.bg4-chip.bad { color: var(--bad); border-color: var(--bad-line) }
+.bg4-chip .err { font-size: 10px; text-transform: uppercase; letter-spacing: .04em }
+.bg4-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+/* ── what the agent made ───────────────────────────────────────────────────── */
+
+.bg4-made { margin-bottom: 14px }
+.bg4-made-strip {
+  display: flex; gap: 6px; overflow-x: auto; padding: 6px 0 2px;
+}
+.bg4-made-thumb {
+  position: relative; flex: 0 0 auto; padding: 0; cursor: pointer;
+  width: 62px; height: 62px; border-radius: 4px; overflow: hidden;
+  background: var(--solid-1); border: 1px solid var(--line);
+}
+.bg4-made-thumb:hover { border-color: var(--accent) }
+.bg4-made-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.bg4-made-thumb img { width: 100%; height: 100%; object-fit: cover; display: block }
+.bg4-made-thumb .dot {
+  position: absolute; right: 3px; bottom: 3px;
+  width: 14px; height: 14px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--solid-2); border: 1px solid var(--line); color: var(--text-3);
+}
+.bg4-made-thumb .dot.ok { background: var(--good-line); border-color: var(--good-line); color: #10240f }
+.bg4-made-thumb .dot.no { background: var(--bad-line); border-color: var(--bad-line); color: #2a0d0d }

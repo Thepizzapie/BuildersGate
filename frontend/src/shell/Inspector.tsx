@@ -1,56 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Ti } from "./Ti";
 import { ResumeInCli } from "./ResumeInCli";
+import { AgentMade } from "./AgentMade";
 import { SEAT_COLOR } from "./nav";
 import { setSelection, useSelection } from "./selection";
 import { askText, mutate, readJSON, toast, watchAgent } from "../bridge";
 import { say } from "./agents/api";
 import { usePoll } from "../hooks";
 
-/* The inspector — what you selected, in a panel that pops out over the stage.
- *
- * The old dashboard put this behind a MODAL: you clicked a running agent, an
- * overlay covered the floor, and closing it to look at the next row lost your
- * place. This has no scrim and traps nothing, so the floor underneath stays
- * clickable and the panel just follows your selection — inspecting six agents
- * is six clicks, not six open-read-close cycles.
- *
- * It is also not a permanent column, which was the prototype's shape and the
- * first thing built here: 340px is a third of a laptop's usable width, held
- * whether or not anything is selected, and most of the time nothing is.
- *
- * WHEN THE THING IS AN AGENT, this is a live log: /api/agent-activity is the
- * same feed the console reads, rendered as the stepper the prototype drew. Tool
- * calls are steps; the assistant's own sentences are steps; the last one is the
- * one happening now. Nothing is invented — a run with two steps shows two.
- */
-
-type Step = { kind: string; name?: string; text?: string; result?: string };
-type Activity = { steps: Step[]; running: boolean; final?: { text?: string } | null };
-
-/* ── reading a step's result ───────────────────────────────────────────────
- *
- * A tool result is a JSON blob on one line. Truncating it to 160 characters
- * shows the opening brace and the first key, which for a failure is
- * `{ "ok": false, "error": "RateLimitError: …` — the answer starts exactly
- * where the slice ends. So the row is a control now, and these three decide
- * what it shows before you press it.
- */
-
-/** Pretty-print if it parses, otherwise hand back the text unchanged. Never
- *  throws: a step's payload is whatever the agent wrote, which is often not
- *  JSON at all (a `say` step is prose). */
-function pretty(raw: string): string {
-  const t = raw.trim();
-  if (!t.startsWith("{") && !t.startsWith("[")) return raw;
-  try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return raw; }
-}
-
-/** The collapsed line. Whitespace-collapsed so a pre-formatted blob does not
- *  render as one word followed by 140 spaces. */
-function oneLine(raw: string): string {
-  return raw.replace(/\s+/g, " ").trim().slice(0, 160);
-}
 
 /** Did this step fail? Read from the payload rather than from the step's own
  *  kind, because a tool that returns `{ok:false}` is recorded as a completed
@@ -68,6 +25,89 @@ function failed(raw: string): boolean {
   return /"ok"\s*:\s*false/.test(t)
       || /"error"\s*:\s*"[^"]/.test(t)
       || t.trimStart().startsWith("Traceback (most recent");
+}
+
+type Step = { kind: string; name?: string; text?: string; result?: string };
+type Activity = { steps: Step[]; running: boolean; final?: { text?: string } | null };
+
+/* â”€â”€ reading a step's result â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ *
+ * A tool result is a JSON blob on one line. Truncating it to 160 characters
+ * shows the opening brace and the first key, which for a failure is
+ * `{ "ok": false, "error": "RateLimitError: â€¦` â€” the answer starts exactly
+ * where the slice ends. So the row is a control now, and these three decide
+ * what it shows before you press it.
+ */
+
+/** Pretty-print if it parses, otherwise hand back the text unchanged. Never
+ *  throws: a step's payload is whatever the agent wrote, which is often not
+ *  JSON at all (a `say` step is prose). */
+function pretty(raw: string): string {
+  const t = raw.trim();
+  if (!t.startsWith("{") && !t.startsWith("[")) return raw;
+  try { return JSON.stringify(JSON.parse(t), null, 2); } catch { return raw; }
+}
+
+/** The collapsed line. Whitespace-collapsed so a pre-formatted blob does not
+ *  render as one word followed by 140 spaces. */
+
+
+/* A RUN, AS BEATS RATHER THAN AS A LOG.
+ *
+ * The feed is a flat list of say / tool / result, and it was drawn one row per
+ * entry with a slice of raw JSON under each. A forty-step run was therefore
+ * forty rows of plumbing with the agent's own sentences buried among them at
+ * exactly the same weight - which is dense in the worst way: everything is
+ * shown and nothing is legible.
+ *
+ * Two foldings, both of which remove rows without removing information:
+ *
+ *   a tool and the result that follows it are ONE beat. They always come in
+ *   pairs, and "godot_run" then "result {ok:true...}" is one thing that
+ *   happened, drawn as two. Halving the rows costs nothing because the pair's
+ *   verdict - did it work - is the only part worth seeing at a glance, and it
+ *   moves onto the tool's own row.
+ *
+ *   consecutive tool beats collapse into a run of chips. Eight file reads in a
+ *   row is one activity, not eight events, and a reader scanning for what went
+ *   wrong should not have to scroll past it.
+ *
+ * WHAT IS NEVER FOLDED IS WHAT THE AGENT SAID. `say` is the only entry written
+ * for a human, so it keeps its own full-width row and its whole text. That is
+ * the inversion this needed: prose promoted, plumbing compressed.
+ */
+type Beat =
+  | { kind: "say"; text: string }
+  | { kind: "tools"; calls: { name: string; raw: string; bad: boolean }[] };
+
+function foldSteps(steps: Step[]): Beat[] {
+  const out: Beat[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.kind === "say") {
+      const text = (s.text || "").trim();
+      if (text) out.push({ kind: "say", text });
+      continue;
+    }
+    if (s.kind === "result") {
+      /* A result with no tool before it - the feed's ring dropped the call, or
+         a re-dispatch cut the log. Kept rather than lost, under its own name. */
+      const raw = s.text || s.result || "";
+      out.push({ kind: "tools",
+                 calls: [{ name: "result", raw, bad: failed(raw) }] });
+      continue;
+    }
+    // A tool: take the result that follows it, if that is what follows it.
+    const next = steps[i + 1];
+    const raw = next && next.kind === "result"
+      ? (next.text || next.result || "") : "";
+    if (raw) i += 1;
+    const call = { name: s.name || s.kind, raw, bad: failed(raw) };
+    const last = out[out.length - 1];
+    if (last && last.kind === "tools") last.calls.push(call);
+    else out.push({ kind: "tools", calls: [call] });
+  }
+  return out;
 }
 
 export function Inspector() {
@@ -118,7 +158,7 @@ export function Inspector() {
      shell unmounted, and the classic console left showing through underneath.
      That is the "blank screen with a sliver down the left" this panel caused
      every single time somebody clicked an agent. */
-  const [opened, setOpened] = useState<Record<number, boolean>>({});
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
 
   /* GIVING AN IDLE SEAT SOMETHING TO DO. The floor's lounge is where a seat
      with no work stands, and the only useful thing to say about one is what it
@@ -237,6 +277,10 @@ export function Inspector() {
             </button>
           </div>
         )}
+        {/* WHAT IT MADE COMES BEFORE WHAT IT DID. Somebody opening an art
+            agent wants the picture, not the fortieth tool call - and this draws
+            nothing at all on a run that produced no artifacts. */}
+        {!composing && itemId != null && <AgentMade itemId={itemId} />}
         {!composing && (
         <div className="bg4-insp-eyebrow" style={{ marginBottom: 8 }}>
           {sel.kind === "event" ? "Event" : "Steps"}
@@ -248,46 +292,51 @@ export function Inspector() {
             <div className="body"><div className="lab">{sel.title}</div></div>
           </div>
         )}
-        {steps.map((s, i) => {
-          const now = running && i === steps.length - 1;
-          const raw = s.text || s.result || "";
-          const open = !!opened[i];
-          const bad = failed(raw);
+        {foldSteps(steps).map((beat, i) => {
+          if (beat.kind === "say") {
+            /* THE AGENT'S OWN WORDS, at full width and unclipped. This was a
+               collapsed row with a 160-character slice under it, which is the
+               one thing in the feed that was already written to be read. */
+            return (
+              <div className="bg4-said" key={i}>
+                <Ti name="message-2" size={13} />
+                <p>{beat.text}</p>
+              </div>
+            );
+          }
+          const anyBad = beat.calls.some((c) => c.bad);
           return (
-            <div className={`bg4-step ${now ? "now" : "done"}${bad ? " bad" : ""}`} key={i}>
-              <div className="gut">
-                <span className="dot">
-                  <Ti name={bad ? "alert-triangle"
-                            : s.kind === "tool" ? "tool" : "message-2"} size={12} />
-                </span>
-                {i < steps.length - 1 && <span className="rail" />}
-              </div>
-              <div className="body">
-                {/* THE WHOLE ROW OPENS IT. A 160-character slice of a tool
-                    result is the first line of a JSON object — `{ "ok": false,
-                    "error": "RateLimit…` — so a run could fail and the reason
-                    sat one character past the cut with nothing to click. */}
-                <button className="bg4-steprow"
-                        onClick={() => raw && setOpened({ ...opened, [i]: !open })}
-                        disabled={!raw}>
-                  <span className="lab">{s.name || s.kind}</span>
-                  {bad && <span className="err">failed</span>}
-                  {raw && (
-                    <Ti name={open ? "chevron-down" : "chevron-right"} size={12} />
-                  )}
-                </button>
-                {raw && !open && <div className="sub">{oneLine(raw)}</div>}
-                {raw && open && (
-                  <div className="bg4-stepfull">
-                    <pre>{pretty(raw)}</pre>
-                    <button className="bg4-copy"
-                            onClick={() => {
-                              void navigator.clipboard?.writeText(raw);
-                              toast("copied");
-                            }}>copy</button>
+            <div className={`bg4-beat${anyBad ? " bad" : ""}`} key={i}>
+              {beat.calls.map((c, j) => {
+                const key = `${i}:${j}`;
+                const open = !!opened[key];
+                return (
+                  <div className="bg4-call" key={j}>
+                    {/* THE WHOLE CHIP OPENS IT. A tool result is a JSON object
+                        whose first line is `{ "ok": false, "error": …` - the
+                        reason a run failed used to sit one character past the
+                        cut with nothing to click. */}
+                    <button className={`bg4-chip${c.bad ? " bad" : ""}`}
+                            onClick={() => c.raw && setOpened({ ...opened, [key]: !open })}
+                            disabled={!c.raw}
+                            title={c.raw ? "show what it returned" : "no result recorded"}>
+                      <Ti name={c.bad ? "alert-triangle" : "tool"} size={11} />
+                      <span>{c.name}</span>
+                      {c.bad && <span className="err">failed</span>}
+                    </button>
+                    {open && c.raw && (
+                      <div className="bg4-stepfull">
+                        <pre>{pretty(c.raw)}</pre>
+                        <button className="bg4-copy"
+                                onClick={() => {
+                                  void navigator.clipboard?.writeText(c.raw);
+                                  toast("copied");
+                                }}>copy</button>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })}
             </div>
           );
         })}
