@@ -16,7 +16,8 @@
  * This file converts cells to pixels and draws.
  */
 
-import { type FloorPlan, type PlanRoom, type Prop, type Spot } from "./floorplan";
+import { type FloorPlan, type PlanRoom, type Prop, type Rect, type Spot,
+         stationFace } from "./floorplan";
 import { type Occupant } from "./occupancy";
 import { type Nav } from "./route";
 import { castFrames } from "./castFrames";
@@ -39,6 +40,68 @@ function getImg(src: string): HTMLImageElement | null {
   return null;
 }
 
+/* ── the painted rooms ───────────────────────────────────────────────────── */
+
+/* EACH ROOM IS ONE DRAWING, keyed by the room's plan id.
+ *
+ * These are the user's concept redrawn room by room at 48 pixels to the cell -
+ * see scripts/gen_floor_rooms.py for why the unit is a room rather than a prop,
+ * and it comes down to one thing: the concept works because it is a single
+ * drawing whose rooms share a palette, a pixel grid and a light angle. Buying
+ * furniture one piece at a time cannot produce that however the prompt is
+ * worded, and it also leaves the composition to be guessed at in floorplan.ts.
+ *
+ * A ROOM WITHOUT ONE STILL DRAWS. A project can invent a seat, and an invented
+ * seat has no painting; bakeFloor falls through to the procedural surface it
+ * always had, so the floor degrades to its old look for that one room rather
+ * than to a hole. */
+const ROOM_ART = "/static/img/floor/rooms";
+
+/* THE ROOM IN TWO LAYERS.
+ *
+ * `<room>-floor.png` is the empty shell: its floor, its walls, and a doorway
+ * drawn into the wall that needs one. `<room>-props.png` is everything standing
+ * in it, on transparency, registered to the same frame. Both are generated from
+ * the finished single-layer room by scripts/gen_floor_layers.py, which is what
+ * makes them line up.
+ *
+ * WHY TWO LAYERS AND NOT ONE PICTURE. One picture is one layer, so a character
+ * is always drawn in front of all of it. Every depth cue then has to be faked -
+ * and the doorway, which had to be a dark rectangle stamped over finished art,
+ * read as a hole punched in a drawing. With the props on their own layer the
+ * furniture can be sorted against the cast, and the door can simply be part of
+ * the wall the artist drew.
+ *
+ * THE FALLBACK CHAIN IS DELIBERATE AND HAS THREE LINKS. A room with layers uses
+ * them; a room with only the old single image still draws, exactly as it did; a
+ * room with neither - a seat a project invented - falls through to the
+ * procedural floor and its planned prop rects. Nothing anywhere below has to
+ * know which of the three it got. */
+function backdropFor(room: PlanRoom): HTMLImageElement | null {
+  return getImg(`${ROOM_ART}/${room.id}-floor.png`)
+      || getImg(`${ROOM_ART}/${room.id}.png`);
+}
+
+function propsFor(room: PlanRoom): HTMLImageElement | null {
+  return getImg(`${ROOM_ART}/${room.id}-props.png`);
+}
+
+/* HOW FINELY THE PROPS LAYER IS SLICED FOR THE SORT, in cells.
+ *
+ * The layer is drawn as horizontal strips, each entered into the same y-sort
+ * the cast is in at its own row's depth - which is what a per-scanline sort
+ * does, and it is correct for anything standing on the ground plane: a
+ * character south of a sofa's base has the sofa's strips drawn before them, and
+ * a character north of it has them drawn after.
+ *
+ * The number is a straight trade. Coarser strips put a character in front of or
+ * behind a whole band of furniture at once, which shows as a foot clipped by a
+ * desk edge; finer strips cost a drawImage each. At 0.35 a seven-cell room is
+ * twenty strips, so nine rooms are about a hundred and eighty calls a frame -
+ * nothing beside the cast's own sprite work, and fine enough that a seam has
+ * never been visible at any cell size the pane uses. */
+const PROP_STRIP = 0.35;
+
 /* ── colours ─────────────────────────────────────────────────────────────── */
 
 const SEAT_HEX: Record<string, string> = {
@@ -51,10 +114,18 @@ const SEAT_HEX: Record<string, string> = {
    shadow the wall throws on the floor in front of it. A single flat colour is
    what made the building read as a diagram of a floor rather than a place with
    things standing up in it. */
-const WALL_TOP = "#4b4a58";
-const WALL_FACE = "#33323d";
-const WALL_FACE_LIT = "#3e3d4a";
-const WALL_OUTER = "#565565";
+/* THESE WERE TUNED AGAINST A PROCEDURAL FLOOR AND ARE NOW TUNED AGAINST THE
+   PAINTINGS. The old set sat two or three stops above everything around it,
+   which was right when a room was a flat tinted rectangle and the wall had to
+   be the thing with shape in it. Against a painted room it inverted: the walls
+   became the brightest thing on the floor, and a wall segment running under a
+   room - lighter than the room, lighter than the corridor, ending at a doorway
+   - stopped reading as a wall at all and started reading as a grey slab lying
+   on the carpet. Sampled off the concept's own corridor instead of picked. */
+const WALL_TOP = "#34353f";
+const WALL_FACE = "#23242c";
+const WALL_FACE_LIT = "#2c2d36";
+const WALL_OUTER = "#3a3b46";
 
 /* HOW TALL A WALL IS, IN CELLS. Not a real height - the camera is a fixed
    three-quarter and this is the number of cells of FACE drawn below a wall's
@@ -504,8 +575,15 @@ export class FloorRenderer {
     const cell = this.cell;
     const W = Math.ceil(plan.cols * cell);
     const H = Math.ceil(plan.rows * cell);
+    /* THE PAINTINGS ARE PART OF THE KEY, and leaving them out was a bug waiting
+       to happen rather than a nicety: the images load over the network after
+       the first frame, so the first bake runs with none of them decoded and
+       every room falls through to the procedural floor. Without their state in
+       the key that bake is cached and the paintings never appear until
+       something else - a seat change, a resize - happens to invalidate it. */
     const key = plan.cols + "x" + plan.rows + "@" + cell.toFixed(2) + ":"
-      + plan.rooms.map((r) => r.id + (r.seat || "")).join(",");
+      + plan.rooms.map((r) => r.id + (r.seat || "")
+                              + (backdropFor(r) ? "*" : "")).join(",");
     if (this.bakeKey === key && this.baked) return;
     if (W < 2 || H < 2) return;
 
@@ -518,10 +596,10 @@ export class FloorRenderer {
     /* THE CORRIDOR: institutional tile, laid in ONE grid running through the
        whole building rather than per room, because a corridor is a continuous
        surface and a per-room grid would draw seams where there is no seam. */
-    g.fillStyle = "#191a1f";
+    g.fillStyle = "#212229";
     g.fillRect(0, 0, W, H);
     const tileN = Math.max(6, cell * 1.6);
-    g.strokeStyle = "rgba(255,255,255,0.028)";
+    g.strokeStyle = "rgba(255,255,255,0.045)";
     g.lineWidth = 1;
     for (let x = 0; x <= W; x += tileN) {
       g.beginPath();
@@ -561,6 +639,60 @@ export class FloorRenderer {
       g.beginPath();
       g.rect(rx, ry, rw, rh);
       g.clip();
+
+      /* THE PAINTED ROOM, IF THERE IS ONE, AND IT REPLACES EVERYTHING BELOW.
+         Each room is a single drawing redrawn from the user's concept at 48
+         pixels to the cell (scripts/gen_floor_rooms.py), so its floor, its
+         furniture, its walls and the dressing on them arrive already composed
+         and already lit. The procedural path underneath - a base colour, a
+         surface texture, a worn traffic lane, skirting - exists to make an
+         empty rectangle read as a room, and a room that has been drawn does not
+         need it. Running both would put a generated tile grid under a painted
+         floor, which is the one way to make good art look cheap.
+
+         IT IS BAKED RATHER THAN BLITTED PER FRAME for the same reason the rest
+         of this is: nine 384x336 images redrawn sixty times a second is real
+         work to produce a picture that never changes. What DOES change - the
+         light in the room, the selection wash, the failure glow, the cast - is
+         drawn over the top of the bake in draw(). */
+      const art = backdropFor(room);
+      if (art) {
+        g.imageSmoothingEnabled = false;
+        g.drawImage(art, rx, ry, rw, rh);
+
+        /* SET INTO THE BUILDING, NOT LAID ON TOP OF IT.
+         *
+         * A painting blitted edge to edge into a rectangle is a picture on a
+         * wall: every one of its four sides ends in a hard seam at exactly the
+         * same value, and nine of them side by side read as flat overlays
+         * however good the paintings are. What was missing is the thing a real
+         * room has at its edges - it is a hole in a solid building, so it is
+         * darker where the structure around it shades it.
+         *
+         * So: a soft inward shade on all four sides, deepest at the top where
+         * the back wall meets the ceiling and lightest at the bottom where the
+         * floor runs out toward the camera. It is a few percent of black and it
+         * does more for the depth than anything else in this function, because
+         * it is the only thing that puts the room BEHIND the plane of the
+         * corridor rather than on it. */
+        const inset = Math.max(3, cell * 0.42);
+        const shade = (gr: CanvasGradient, a: number) => {
+          gr.addColorStop(0, "rgba(0,0,0," + a + ")");
+          gr.addColorStop(1, "rgba(0,0,0,0)");
+          g.fillStyle = gr;
+        };
+        shade(g.createLinearGradient(0, ry, 0, ry + inset * 1.2), 0.30);
+        g.fillRect(rx, ry, rw, inset * 1.2);
+        shade(g.createLinearGradient(rx, 0, rx + inset, 0), 0.26);
+        g.fillRect(rx, ry, inset, rh);
+        shade(g.createLinearGradient(rx + rw, 0, rx + rw - inset, 0), 0.26);
+        g.fillRect(rx + rw - inset, ry, inset, rh);
+        shade(g.createLinearGradient(0, ry + rh, 0, ry + rh - inset), 0.22);
+        g.fillRect(rx, ry + rh - inset, rw, inset);
+
+        g.restore();
+        continue;
+      }
 
       g.fillStyle = SURFACE_BASE[surface];
       g.fillRect(rx, ry, rw, rh);
@@ -818,13 +950,43 @@ export class FloorRenderer {
       }
     }
 
+    /* WHICH WALLS THE PAINTINGS ALREADY SUPPLY, AND THEREFORE WHICH THIS MUST
+       NOT DRAW AGAIN.
+     *
+     * Each painted room is drawn square on: a back wall as a horizontal band
+     * across the top of the image, and side walls as vertical bands down the
+     * left and right. So for a room with a painting, its NORTH, EAST and WEST
+     * walls already exist inside the picture, and drawing the renderer's own
+     * extruded wall on the same line paints a second wall over the first.
+     *
+     * THAT DOUBLING IS WHY THE ROOMS READ AS OVERLAYS. Two walls a few pixels
+     * apart, one painted and one drawn, do not read as a thick wall - they read
+     * as a picture of a room lying on top of a diagram of a building, which is
+     * exactly the complaint. The top row escaped it only because the building's
+     * outer wall covers that line, which is why rows two and three were the
+     * ones that looked wrong.
+     *
+     * THE SOUTH WALL IS STILL OURS. Nothing paints it: the camera looks at the
+     * floor from the south, so a room drawn square on has no near wall at all.
+     * It is also the wall most doors are in, and it is the only thing that
+     * gives the room a thickness against the corridor below it. */
+    const artRooms = plan.rooms.filter((r) => backdropFor(r));
+    const paintedWall = (w: { dir: "h" | "v"; a: number; s: number; e: number }) =>
+      artRooms.some((r) => {
+        const { x, y, w: rw2, h: rh2 } = r.rect;
+        return w.dir === "h"
+          ? w.a === y && w.s >= x - 0.01 && w.e <= x + rw2 + 0.01
+          : (w.a === x || w.a === x + rw2)
+            && w.s >= y - 0.01 && w.e <= y + rh2 + 0.01;
+      });
+
     /* VERTICAL WALLS FIRST, IN THE BASE LAYER. Their faces are edge-on to this
        camera, so they are a thin lit ridge rather than a surface, and nothing
        meaningful ever has to be drawn in front of one. They go down before the
        y-sorted pass so a character crossing a doorway is never cut in half by
        the jamb beside it. */
     for (const w of plan.walls) {
-      if (w.dir !== "v") continue;
+      if (w.dir !== "v" || paintedWall(w)) continue;
       const x = w.a * cell;
       const y0 = w.s * cell;
       const h = (w.e - w.s) * cell;
@@ -852,7 +1014,7 @@ export class FloorRenderer {
        onto the floor, the face turned toward the camera, and the cap you look
        down on. */
     for (const w of plan.walls) {
-      if (w.dir !== "h") continue;
+      if (w.dir !== "h" || paintedWall(w)) continue;
       drawables.push({
         y: w.a + WALL_H,
         draw: () => {
@@ -880,15 +1042,104 @@ export class FloorRenderer {
           /* The cap. */
           ctx.fillStyle = WALL_TOP;
           ctx.fillRect(x, yTop - capH, wide, capH);
-          ctx.fillStyle = "rgba(255,255,255,0.07)";
+          ctx.fillStyle = "rgba(255,255,255,0.035)";
           ctx.fillRect(x, yTop - capH, wide, Math.max(1, capH * 0.4));
         },
       });
     }
 
-    /* Props. */
+    /* DOORS ARE PAINTED, NOT PUNCHED - AND THIS SPACE IS THE RECORD OF WHY.
+     *
+     * A room bought as one picture comes back with four solid walls, so the
+     * rooms whose door is in a wall the painting supplies had no entrance. The
+     * first fix drew the opening here: a dark rectangle at the door's position,
+     * with jambs and a lit sill, punched through the painted wall.
+     *
+     * It looked like damage. A hole stamped into a finished drawing reads as a
+     * hole however carefully its edges are shaded, because everything around it
+     * was composed by an artist and it was not - and where the wall behind it
+     * had a bookcase against it, the opening cut the bookcase in half.
+     *
+     * So the doorway is drawn by whoever draws the room. gen_floor_rooms.py
+     * asks for a real doorframe in the wall that needs one, in the room's own
+     * style and composed with the furniture around it, and this function has
+     * nothing left to do. The plan still owns where doors ARE - routing and the
+     * wall gaps read plan.doors exactly as before - it just stopped trying to
+     * illustrate them. */
+
+    /* PROPS, EXCEPT THE ONES ALREADY PAINTED INTO THE ROOM.
+     *
+     * A room with a backdrop has its furniture IN the backdrop - that is what
+     * buying the room as one drawing bought - so re-drawing the planned props
+     * over it puts a generic sprite desk on top of a painted one. The planner
+     * still lists them and that is deliberate rather than dead weight: the
+     * rects are the room's FOOTPRINTS, which is what keeps the standing spots
+     * off the furniture and what a room falls back to when its painting is
+     * missing.
+     *
+     * THE RADIO IS THE EXCEPTION AND IT IS THE ONLY ONE. Everything else here
+     * is scenery; the radio is a control with two states, drawn by hand because
+     * a still image cannot say whether it is playing. Painting it into the
+     * lounge would have left a picture of a radio that could not be clicked
+     * beside the real one.
+     */
+    /* THE PROPS LAYER, SLICED INTO THE SORT. This is the pass the whole
+       two-layer split exists for: each strip of painted furniture goes into the
+       same ordered list as the characters, at the depth of the floor row it
+       stands on, so occlusion is decided by the sort that was already there
+       rather than by another special case. */
+    /* NO CORRIDOR DRESSING. It was generated - one whole-floor layer lifted
+       out of the concept and masked to the walkways - and it was rejected on
+       sight. Worth recording why rather than just deleting it: the concept
+       dresses its corridors mostly by hanging things ON the outsides of the
+       rooms, and lifted onto a transparent layer those lose the wall they were
+       mounted to. A filtering pass kept only the free-standing pieces, which
+       left nineteen objects scattered on open tile with nothing to belong to.
+       Corridor furniture needs a wall behind it; that means drawing it INTO the
+       rooms' outer faces, not floating it on the floor between them. */
+    const layers: { art: HTMLImageElement; rect: Rect }[] = [];
+    for (const room of plan.rooms) {
+      const art = propsFor(room);
+      if (art) layers.push({ art, rect: room.rect });
+    }
+
+    for (const { art, rect } of layers) {
+      const { x: rxc, y: ryc, w: rwc, h: rhc } = rect;
+      const bands = Math.max(1, Math.round(rhc / PROP_STRIP));
+      for (let i = 0; i < bands; i++) {
+        const sy = (art.naturalHeight * i) / bands;
+        const dy = ryc + (rhc * i) / bands;
+        const dh = rhc / bands;
+        drawables.push({
+          y: dy + dh,
+          draw: () => {
+            ctx.imageSmoothingEnabled = false;
+            /* Rounded outward on both edges so consecutive strips overlap by
+               under a pixel rather than leaving a hairline of floor between
+               them - a seam every few pixels down a room is far more visible
+               than a row of pixels drawn twice. */
+            const py0 = Math.floor(dy * cell);
+            const py1 = Math.ceil((dy + dh) * cell);
+            ctx.drawImage(art,
+              0, sy, art.naturalWidth, art.naturalHeight / bands,
+              Math.round(rxc * cell), py0,
+              Math.round(rwc * cell), py1 - py0);
+          },
+        });
+      }
+    }
+
     const allProps = [
-      ...plan.rooms.flatMap(r => r.props),
+      ...plan.rooms.flatMap((r) => {
+        /* A ROOM WITH A PAINTED PROPS LAYER HAS ITS FURNITURE THERE ALREADY, so
+           the planned rects draw nothing - they stay in the plan because they
+           are the FOOTPRINTS that keep people from standing inside the desk.
+           A room with only a backdrop and no props layer is in the same
+           position. The radio is the one exception either way: it is a control
+           with two states, and a painted radio cannot show whether it plays. */
+        const painted = propsFor(r) || backdropFor(r);
+        return painted ? r.props.filter((p) => p.kind === "radio") : r.props;
+      }),
       ...plan.props,
     ];
     for (const prop of allProps) {
@@ -908,10 +1159,48 @@ export class FloorRenderer {
 
     /* THE OUTER WALL, after the building rather than before it, because it is
        the one wall the whole floor sits inside and nothing is ever in front of
-       it. */
-    ctx.strokeStyle = WALL_OUTER;
-    ctx.lineWidth = Math.max(3, cell * 0.22);
-    ctx.strokeRect(0, 0, plan.cols * cell, plan.rows * cell);
+       it.
+     *
+     * IT IS A WALL WITH THICKNESS NOW, NOT A STROKE. A one-line strokeRect gave
+     * the building a hairline border, and a hairline border around nine painted
+     * rooms is a frame around a picture - it says "this is a drawing of a floor"
+     * at the exact edge where the eye looks for the building to be solid. The
+     * concept's outer wall is a broad slab with a lit cap and a shadow falling
+     * inward off it, which is what the three passes below are: the slab, the lip
+     * the light catches along its top, and the shade it throws onto the corridor
+     * inside it. */
+    const W2 = plan.cols * cell;
+    const H2 = plan.rows * cell;
+    const t2 = Math.max(4, cell * 0.5);
+
+    ctx.fillStyle = WALL_OUTER;
+    ctx.fillRect(0, 0, W2, t2);
+    ctx.fillRect(0, H2 - t2, W2, t2);
+    ctx.fillRect(0, 0, t2, H2);
+    ctx.fillRect(W2 - t2, 0, t2, H2);
+
+    /* The lit cap along the top of the slab, brightest on the north face - the
+       one turned most toward the light. */
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(0, 0, W2, Math.max(1, t2 * 0.34));
+    ctx.fillStyle = "rgba(255,255,255,0.03)";
+    ctx.fillRect(0, 0, Math.max(1, t2 * 0.3), H2);
+    ctx.fillRect(W2 - Math.max(1, t2 * 0.3), 0, Math.max(1, t2 * 0.3), H2);
+
+    /* And the shadow it casts inward, which is what turns the slab from a
+       painted band into something standing up around the floor. */
+    const drop = cell * 0.6;
+    const sh = (gr: CanvasGradient) => {
+      gr.addColorStop(0, "rgba(0,0,0,0.42)");
+      gr.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = gr;
+    };
+    sh(ctx.createLinearGradient(0, t2, 0, t2 + drop));
+    ctx.fillRect(t2, t2, W2 - t2 * 2, drop);
+    sh(ctx.createLinearGradient(t2, 0, t2 + drop, 0));
+    ctx.fillRect(t2, t2, drop, H2 - t2 * 2);
+    sh(ctx.createLinearGradient(W2 - t2, 0, W2 - t2 - drop, 0));
+    ctx.fillRect(W2 - t2 - drop, t2, drop, H2 - t2 * 2);
 
     /* THE SPEECH BUBBLE, above everything including the nameplates, because a
        line half behind a plate is a line nobody reads.
@@ -1574,7 +1863,19 @@ export class FloorRenderer {
       ctx.imageSmoothingEnabled = false;
       ctx.save();
       ctx.translate(px, py - artH);
-      if (moving && ch.facingRight) {
+      /* WHICH WAY THE FIGURE IS TURNED.
+         Walking, it faces the way it is going. STANDING AT ITS OWN STATION, it
+         faces its station - the edit bay is on the right of the video room, the
+         television is up and right of the gameplay couch, the workshop bench is
+         right of where tech stands - and a figure working with its back to the
+         thing it is working on is the first thing a reader notices.
+         Only left and right, because that is the whole of what mirroring a
+         sprite can say; a seat whose work is straight up or down keeps the
+         drawn orientation rather than being turned to a lie. */
+      const facingRight = moving
+        ? ch.facingRight
+        : anim === "working" && stationFace(p.seat) === "right";
+      if (facingRight) {
         ctx.translate(artW / 2, 0);
         ctx.scale(-1, 1);
         ctx.translate(-artW / 2, 0);

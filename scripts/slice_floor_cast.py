@@ -227,15 +227,54 @@ GRID = {
 # in-betweening (see `breath_cycle` and `beat_cycle`) where the drawings that
 # were bought or cut are fewer.
 #
-# EIGHT BECAUSE THE MOTION NEEDS IT, not because it is a round number. A breath
-# sampled at four points spends half its length at the top or the bottom and
-# reads as a pulse; at eight, the turn at each end is a frame of its own. It is
-# also the count the repo's other cast already uses (frontend/public/img/agents,
-# 8 frames of 128x160), so the two renderers can be read against each other.
+# SIXTEEN BECAUSE EIGHT WAS VISIBLY CHOPPY, and the arithmetic says where. The
+# renderer (floorRender.ANIM_SPEED) runs each cycle over a FIXED duration and
+# steps the whole strip across it, so the frame count IS the frame rate:
 #
-# FOUR FOR THE HANDOFF because it is a bounded gesture that plays once - raise,
-# extend, hold - and the sheets that were bought for it were bought at four.
-TARGET_FRAMES = {"idle": 8, "sitting": 8, "walk": 8, "working": 8, "handoff": 4}
+#   idle    2800ms / 8  = 350ms/frame = 2.9fps      / 16 = 5.7fps
+#   sitting 3200ms / 8  = 400ms/frame = 2.5fps      / 16 = 5.0fps
+#   working 1200ms / 8  = 150ms/frame = 6.7fps      / 16 = 13fps
+#   walk     720ms / 8  =  90ms/frame =  11fps      / 16 = 22fps
+#
+# Idle and sitting were the worst two and they are what most of the floor is
+# doing most of the time - a standing agent updating under three times a second
+# reads as a stutter rather than as a breath. Doubling the count halves the
+# frame time at the same cycle duration.
+#
+# IT COSTS NO GENERATIONS. The count is not the number of drawings: `cycle_for`
+# steps whatever drawings exist up to this contract by in-betweening (see
+# `breath_cycle`, `beat_cycle`, `handoff_cycle`), and the five bought eight-frame
+# walks are still the only real drawings in their strips - they now carry one
+# in-between apiece rather than none.
+#
+# THE HANDOFF STAYS AT FOUR, AND IT WAS TRIED AT EIGHT FIRST. Every looping
+# strip can be stepped up because its in-between is a deformation the drawings
+# already contain - a chest, a bounce, a lean. The handoff's in-between is the
+# arm and the page SLIDING BACK IN along the axis they came out on, which only
+# exists where two consecutive drawings differ in how far the ink reaches past
+# the body. Measured on the six bought sheets (`outboard`, per segment, in
+# installed-cell pixels):
+#
+#   audio      8, none,   34, none
+#   narrative  6,    3,   33, none
+#   gameplay  11,   18,   13, none
+#   tech       7, none,   34, none
+#   qa         6,   24, none,    9
+#   cinematic  7,   14,   14,    7
+#
+# Four of the six were bought with their last two drawings at the same reach -
+# the extend and the hold are the same silhouette - so there is no travel
+# between them to put a frame on, and audio and tech have a second such pair in
+# the middle. At eight those seats came out with frame 7 identical to frame 6
+# and `check_distinct` failed the run, which is the correct outcome: the fix is
+# to buy eight handoff drawings, not to invent an arm the sheet does not
+# contain. Only cinematic could hold eight, and one seat animating at twice the
+# rate of the other eight is worse than all nine agreeing.
+#
+# It is also the cheapest thing to leave short. The handoff plays ONCE and holds
+# on its last frame, so it is on screen for a fraction of the time a breath is.
+TARGET_FRAMES = {"idle": 16, "sitting": 16, "walk": 16, "working": 16,
+                 "handoff": 4}
 
 
 def grid_for(name: str, anim: str) -> tuple[int, int]:
@@ -290,7 +329,25 @@ PASS = {
     "idle": {"art", "audio", "cinematic", "gameplay", "qa", "tech"},
     "sitting": {"cinematic", "narrative", "qa"},
     "walk": {"art", "cinematic", "gameplay", "narrative", "qa"},
-    "working": {"audio", "gameplay", "narrative"},
+    # EVERY SEAT, because every seat's working was REBOUGHT on the craft pass.
+    # The three that were here before (audio, gameplay, narrative) were passed
+    # for a generic keyboard mime that every seat shared, which was the bug: the
+    # rooms are drawn per craft and the cast was not, so the art room and the
+    # audio room were the same drawing in different clothes. The typing sheets
+    # they were passed for are kept under anim/superseded/ rather than in
+    # rejected/ - they were right for what they were asked, and what was asked
+    # changed.
+    #
+    # GENERIC IS IN THE LIST TOO, though its craft did not change - it has no
+    # craft, and the stock typing was always right for it. It was bought
+    # because raising the loops to sixteen frames left it the last strip
+    # in-betweening from the model sheet's two typing cells, and a one-pixel
+    # bounce over sixteen phases quantises to the same offset twice (frames 3
+    # and 2, 6 and 5, 11 and 10, 14 and 13 came out identical on every run that
+    # still fell back). Eight real drawings is the fix that does not involve
+    # inflating a motion that is correctly tiny.
+    "working": {"art", "audio", "narrative", "gameplay", "qa", "cinematic",
+                "tech", "director", "generic"},
     "handoff": {"audio", "cinematic", "gameplay", "narrative", "qa", "tech"},
 }
 
@@ -332,15 +389,6 @@ RETRY = {
                         "seated cells are a rest and a hands-up, which is the "
                         "same pair the model sheet holds, so there is nothing "
                         "here the fallback does not already give",
-    "cinematic-working": "reading a book, no keyboard anywhere in the sheet, and "
-                         "the prop CHANGES between cells - empty hands, a loose "
-                         "page, a closed book, an open book. Stepped, the book "
-                         "appears and disappears in his hands",
-    "qa-working": "drew its own desk into every cell - the floor plan already "
-                  "puts a desk at that coordinate, so the sprite would stack a "
-                  "second one on top of it. The model sheet's own working pose "
-                  "has no desk in it, which is why the fallback is the better "
-                  "picture here and not just the safer one",
 }
 
 # SHEETS THAT WERE ON THE RETRY LIST AND CAME OFF IT, with what settled it. A
@@ -353,6 +401,28 @@ RETRY = {
 # (65,79,64), (61,74,62), (61,75,62) - a spread of four levels out of 255, on a
 # sprite that is drawn about 48px wide. That is under this sheet's own JPEG
 # noise. Six real frames of the right cycle, installed.
+#
+# cinematic-working and qa-working came off the list on the craft pass, and not
+# because the rejections were wrong - they were right, and both were rejected
+# for a fault the PROMPT caused rather than the model. cinematic-working's prop
+# changed between cells because the old prompt named no prop at all, so each
+# cell invented one; qa-working drew its own desk because the old stance said
+# "as if typing on a keyboard that is not drawn" and said nothing about the
+# desk. The rebought sheets are drawn from per-seat stances that name exactly
+# one prop and forbid the furniture by name (gen_floor_cast_frames.WORKING), and
+# they are anchored one drawing at a time on frame 1 of their own cycle, which
+# is what stops a prop drifting between cells in the first place.
+
+# WHICH SEATS' `working` IS A STANDING POSE. Everything else about the installed
+# height is measured off the model sheet, and the model sheet only holds ONE
+# working pose: the character seated with its hands on the keys. That was true
+# of every seat until the craft pass, and now it is false for three - a painter
+# at an easel, a tester at a bench and a camera operator behind a tripod are all
+# on their feet. Scaling those to the seated ruler shrinks them by the seated
+# ratio (about four fifths), so the character would visibly SHRINK the moment it
+# sat down to work in the art room and grow again when it stood up to walk.
+# These three are measured against the standing pose instead.
+WORKING_STANDS = {"art", "qa", "cinematic"}
 
 # THE INSTALLED CELL. 128x160 is the size the repo's other cast already uses
 # (frontend/public/img/agents, 8 frames of 128x160), and matching it means the
@@ -395,9 +465,19 @@ FOOT_BAND = 0.22       # the bottom slice of the ink whose centre is "the feet"
 # standing still for three seconds shifts their weight, and two cell pixels is
 # under one screen pixel of it at the size this renders.
 #
-# THE SEATED SWAY IS HALF THE STANDING ONE for the same reason its breath is
-# smaller: a seated body is braced against a chair, and a torso sliding two
-# pixels across a fixed seat reads as the chair moving underneath it.
+# THE SEATED SWAY WAS HALF THE STANDING ONE AND COULD NOT STAY THERE. The
+# reasoning for one pixel was sound - a seated body is braced against a chair -
+# but a one-pixel quadrature term can only ever take three values after whole-
+# pixel rounding, and sixteen phases need more resolution than that. Measured on
+# the files at TARGET_FRAMES 16, every one of the nine casts came out with
+# sitting frames 1 and 0, 8 and 7, 9 and 7, and 15 and 0 byte-identical: the
+# chest curve is symmetric about the top of the breath, so the sway is the only
+# thing separating the inhale from the exhale, and where it rounded to zero the
+# two halves collapsed onto each other. Two pixels gives it five values and all
+# sixteen frames come out distinct. It is the same two pixels the standing sway
+# uses, whose own note is the argument for why that is still not much: at
+# --cell * 2.7 it is under one screen pixel. The seated breath stays smaller
+# than the standing one - that part was never the problem.
 #
 # THE TRAVEL IS DELIBERATELY SMALL. The floor renders the cell at --cell * 2.7,
 # about 59px at the default 22px cell, so four cell pixels is between one and
@@ -416,7 +496,7 @@ FOOT_BAND = 0.22       # the bottom slice of the ink whose centre is "the feet"
 # which bounces and leans the whole figure between the drawings it has; the
 # handoff is a gesture with a travel of its own and goes through
 # `handoff_cycle`.
-BREATHES = {"idle": (4.0, 2.0), "sitting": (3.0, 1.0)}
+BREATHES = {"idle": (4.0, 2.0), "sitting": (3.0, 2.0)}
 
 # THE BOUNCE AND THE LEAN, per animation that is a set of BEATS rather than a
 # breath: peak vertical travel and peak lateral travel of the whole figure, in
@@ -843,9 +923,79 @@ def beat_cycle(keyed: list[Image.Image], n: int, scale: float,
     return out
 
 
-def handoff_cycle(offer: Image.Image, rest: Image.Image, n: int,
+# THE SMALLEST OUTBOARD INK THAT COUNTS AS A REACH, in installed-cell pixels.
+#
+# IT IS THREE RATHER THAN THE SIX IT WAS, because what is measured changed. Six
+# was calibrated when the only measurement was the whole gesture against the
+# standing pose - a whole arm and a page, tens of pixels - and six was safely
+# below it while still refusing a page drawn in front of the chest. The handoff
+# now measures each drawing against the one BEFORE it, and one step of a
+# four-drawing raise is a fraction of that: audio, narrative and tech all came
+# out with handoff frames 3 and 2 identical because a real five-pixel step was
+# being read as no reach at all. Three is still above the pixel or two of
+# silhouette wobble that keying and rescaling leave behind.
+MIN_REACH = 3
+
+
+def outboard(offer: Image.Image, behind: Image.Image):
+    """(which side the arm reaches, how far past `behind` it gets, where to cut).
+
+    Both cells are already placed at one scale with their feet on one line, so
+    the only way the offering pose differs from the one behind it is ink out
+    past the side of that body - the forearm and the page. Everything inboard is
+    the same character standing in the same place.
+
+    None where there is nothing measurably outboard: the model drew the page in
+    front of the chest, or these two drawings are the same moment twice. The
+    caller must not invent a travel there - an arm that is not in the drawing
+    cannot be animated out of it.
+    """
+    ob, bb = offer.getbbox(), behind.getbbox()
+    if not ob or not bb:
+        return None
+    out_r, out_l = ob[2] - bb[2], bb[0] - ob[0]
+    if max(out_r, out_l) < MIN_REACH:
+        return None
+    right = out_r >= out_l
+    return right, (out_r if right else out_l), (bb[2] if right else bb[0])
+
+
+def slide_in(cell: Image.Image, right: bool, split: int, back: int,
+             drop: int) -> Image.Image:
+    """One placed cell with its outboard arm slid `back` px in and `drop` down.
+
+    The arm goes on TOP of the body, because that is where it is: drawn back
+    against the chest it is in front of the character, not behind it.
+    """
+    out = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
+    inboard = (0, 0, split, CELL_H) if right else (split, 0, CELL_W, CELL_H)
+    arm = (split, 0, CELL_W, CELL_H) if right else (0, 0, split, CELL_H)
+    out.alpha_composite(cell.crop(inboard), (inboard[0], 0))
+    moved = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
+    moved.paste(cell.crop(arm), (arm[0] + (-back if right else back), drop))
+    out.alpha_composite(moved)
+    return out
+
+
+def handoff_cycle(keyed: list[Image.Image], rest: Image.Image, n: int,
                   scale: float) -> list[Image.Image]:
-    """`n` frames of a page being raised and offered, out of two drawings.
+    """`n` frames of a page being raised and offered, out of `k` drawings.
+
+    IT TAKES THE WHOLE SET NOW, NOT JUST THE FIRST DRAWING, and that is a fix
+    rather than a generalisation for its own sake. It used to be handed
+    `keyed[0]` because the six bought four-frame handoff sheets never reached it
+    - at TARGET_FRAMES 4 they were already long enough and were installed as
+    cut. Raising the contract to eight put them through here, and a function
+    that reads one drawing would have thrown three PAID drawings away per seat
+    and synthesised the whole gesture from the first.
+
+    THE DRAWINGS ARE THE KEYFRAMES OF THE REACH. The gesture is a single
+    monotonic extension - raise, extend, hold - so drawn frame j sits at
+    extension e_j along the ease below, and an output frame that lands between
+    two of them takes the LATER drawing with its outboard ink slid back towards
+    where the earlier one has it. Later rather than earlier on purpose: sliding
+    ink IN is subtracting reach the drawing already contains, where sliding it
+    out would be inventing reach it does not.
 
     THE TRAVEL IS MEASURED OFF THE TWO SILHOUETTES, not invented. Placed at one
     scale with their feet on one line, the standing pose and the offering pose
@@ -858,46 +1008,95 @@ def handoff_cycle(offer: Image.Image, rest: Image.Image, n: int,
     because the stylesheet plays this once and HOLDS there: the pose a delivery
     ends on is the pose that was drawn, not something this function made.
 
-    IT REFUSES RATHER THAN GUESSES. If the offering pose has no ink outboard of
-    the standing one - the model drew the page in front of the chest, or the
-    character is the one whose arm barely leaves its side - there is no measured
-    travel to slide along, and inventing one would be animating an arm that is
-    not there. The caller gets a single frame back and installs the still, which
-    is what shipped before this existed and is honest about having nothing.
+    EACH DRAWING IS MEASURED AGAINST THE ONE BEHIND IT IN THE GESTURE - the
+    previous drawing, or the standing rest pose for the first - so what slides
+    is only the reach that drawing ADDED, never the whole extension. Measuring
+    every drawn frame against the rest pose instead would slide the hold frame's
+    arm all the way back to the hip to make its in-between, which is a second
+    copy of the raise rather than the moment between an extend and a hold.
+
+    THE TRAVEL IS MEASURED OFF THE SILHOUETTES, not invented. See `outboard`.
+    The last frame is the last drawing untouched, which matters because the
+    stylesheet plays this once and HOLDS there: the pose a delivery ends on is
+    the pose that was drawn, not something this function made.
+
+    IT REFUSES RATHER THAN GUESSES. Where a pair has no measurable outboard ink -
+    the model drew the page in front of the chest, or two drawings are the same
+    moment twice - that segment's in-betweens are the drawing itself rather than
+    an invented slide, and where NO pair has any, the caller gets a single frame
+    back and installs the still. That is what shipped before this existed and is
+    honest about having nothing.
     """
-    o, r_ = place(offer, scale), place(rest, scale)
-    ob, rb = o.getbbox(), r_.getbbox()
-    if not ob or not rb:
-        return [o]
-    # Which side the arm reaches out on, and where the body stops. Both come off
-    # the standing silhouette, so "the body" is this character's own width and
-    # not a constant that would be wrong for the cat in the suit.
-    out_r, out_l = ob[2] - rb[2], rb[0] - ob[0]
-    if max(out_r, out_l) < 6:         # nothing measurably outboard: see above
-        return [o]
-    right = out_r >= out_l
-    reach = out_r if right else out_l
-    split = rb[2] if right else rb[0]
+    placed = [place(f, scale) for f in keyed]
+    k = len(placed)
+    # The measurement basis for each drawing: the one before it, and the
+    # standing pose before the first. `rest` is the model sheet's own standing
+    # cell, so "the body" is this character's own width and not a constant that
+    # would be wrong for the cat in the suit.
+    span = [outboard(placed[j], placed[j - 1] if j else place(rest, scale))
+            for j in range(k)]
+    if all(s is None for s in span):
+        return [placed[-1]]
+    # Which drawing each output frame is on or approaching, and how far through
+    # that drawing's own segment it is. u is in (0, 1]; u == 1 is the drawing
+    # itself, untouched, and every segment ends on one.
+    phase = []
+    for i in range(n):
+        p = (i + 1) / n
+        j = min(k - 1, max(0, math.ceil(p * k - 1e-9) - 1))
+        phase.append((j, p * k - j))
+
+    # HOW FAR THE ARM IS SLID BACK, PER FRAME, AND WHY IT IS NOT JUST THE CURVE.
+    # The gesture EASES OUT rather than running at a constant speed: an arm
+    # extending decelerates into the offer, and a linear ramp reads as the page
+    # being shoved. Squared, which for a single drawing (k == 1, u == p) is
+    # exactly the 1 - (1 - p)**2 ease this used before it took a set.
+    #
+    # BUT AN EASE-OUT SAMPLED ON A WHOLE-PIXEL GRID CRUSHES ITS OWN TAIL. The
+    # last two frames of an eight-frame gesture sit at (1/8)**2 and 0 of the
+    # travel, which is under half a pixel apart on any reach this cast has, so
+    # both rounded to zero and the strip ended on the same picture twice - art,
+    # audio, gameplay, narrative and tech all reported handoff frame 7 identical
+    # to frame 6. So the rounded travel is walked back from the end of each
+    # segment and forced to strictly increase, one pixel at a time, up to the
+    # reach that was actually MEASURED and never past it. Inside the tail that
+    # is a pixel of real arm per frame instead of none; everywhere else the
+    # curve is already more than a pixel apart and the pass changes nothing.
+    #
+    # WHERE THE MEASURED REACH RUNS OUT, IT STOPS. A segment with fewer pixels
+    # of travel than it has frames cannot show a different arm in each of them,
+    # and inventing the difference would be drawing an arm the sheet does not
+    # contain. The duplicate survives and `check_distinct` names it, which is
+    # the honest outcome and the one that says which sheet to rebuy.
+    back = [0] * n
+    for i in range(n - 1, -1, -1):
+        j, u = phase[i]
+        s = span[j]
+        if s is None:
+            continue
+        raw = iround(s[1] * (1 - u) ** 2)
+        nxt = phase[i + 1] if i + 1 < n else None
+        if nxt and nxt[0] == j and raw <= back[i + 1]:
+            raw = back[i + 1] + 1
+        back[i] = min(raw, s[1])
+
+    # A retracted arm hangs lower than a held-out one, and the drop is tied to
+    # HOW FAR THIS FRAME WAS SLID rather than to where it sits in the gesture.
+    # That is what keeps a drawn frame untouched: a drawing that is already at
+    # its own phase has been slid nowhere, so it is dropped nowhere either, and
+    # the paid pose survives into the strip exactly as it was drawn. For a
+    # single drawing the two definitions coincide, which is the case this had
+    # before it took a set.
+    total = sum(s[1] for s in span if s) or 1
     frames = []
     for i in range(n):
-        # The gesture EASES OUT rather than running at a constant speed: an arm
-        # extending decelerates into the offer, and a linear ramp reads as the
-        # page being shoved. The last frame is t == 1 exactly, which is the
-        # untouched drawing.
-        t = 1 - (1 - (i + 1) / n) ** 2
-        back = iround(reach * (1 - t)) * (-1 if right else 1)
-        # A retracted arm hangs lower than a held-out one.
-        drop = iround(3 * (1 - t))
-        cell = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
-        inboard = (0, 0, split, CELL_H) if right else (split, 0, CELL_W, CELL_H)
-        arm = (split, 0, CELL_W, CELL_H) if right else (0, 0, split, CELL_H)
-        cell.alpha_composite(o.crop(inboard), (inboard[0], 0))
-        # The arm goes on TOP of the body, because that is where it is: drawn
-        # back against the chest it is in front of the character, not behind it.
-        moved = Image.new("RGBA", (CELL_W, CELL_H), (0, 0, 0, 0))
-        moved.paste(o.crop(arm), (arm[0] + back, drop))
-        cell.alpha_composite(moved)
-        frames.append(cell)
+        j = phase[i][0]
+        s = span[j]
+        if s is None or not back[i]:
+            frames.append(placed[j])
+            continue
+        frames.append(slide_in(placed[j], s[0], s[2], back[i],
+                               iround(3 * back[i] / total)))
     return frames
 
 
@@ -958,7 +1157,7 @@ def cycle_for(anim: str, keyed: list[Image.Image], scale: float,
     if anim in BREATHES:
         return breath_cycle(keyed, n, scale, *BREATHES[anim])
     if anim == "handoff":
-        return handoff_cycle(keyed[0], rest, n, scale)
+        return handoff_cycle(keyed, rest, n, scale)
     return beat_cycle(keyed, n, scale, *BEATS[anim])
 
 
@@ -984,7 +1183,15 @@ def build(name: str) -> dict[str, int]:
         # the standing target, times how tall this pose is RELATIVE to standing
         # on the model sheet. A seated frame is genuinely shorter and must stay
         # shorter, or the character grows every time it sits down.
-        target = STAND_H * (ref_h.get(anim, ref_h["idle"]) / ref_h["idle"])
+        #
+        # WHICH MODEL-SHEET POSE IS THE RULER IS NOT ALWAYS THE ANIMATION'S OWN.
+        # The sheet holds one working pose and it is seated, so it is the wrong
+        # ruler for the three seats whose craft is done standing - see
+        # WORKING_STANDS.
+        ruler_anim = ("idle" if anim == "working" and name in WORKING_STANDS
+                      else anim)
+        target = STAND_H * (ref_h.get(ruler_anim, ref_h["idle"])
+                            / ref_h["idle"])
 
         # WHERE THE DRAWINGS COME FROM - a bought sheet, the passed cells of a
         # partly-right one, or the model sheet - and then ONE path installs
