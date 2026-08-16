@@ -832,7 +832,17 @@ async function openSession(id){
       <h2>What the recording captured</h2>
       <div class="tele-kinds">
         ${Object.entries(T.by_kind).sort((a,b)=>b[1]-a[1]).map(([k,n])=>
-          `<span class="chip">${esc(k)} ×${n}</span>`).join("") || `<span class="chip drift">no telemetry - this session was audio only</span>`}
+          `<span class="chip">${esc(k)} ×${n}</span>`).join("")
+          /* THE BADGE NAMES ITS CAUSE NOW, AND OFFERS THE FIX.
+             It said "no telemetry - this session was audio only" and nothing
+             else, on a project that had been recording for 28 sessions with the
+             addon never installed. That is the point at which the absence costs
+             the user something, which is exactly where this panel's own rule
+             says it belongs - it just never said WHY, so there was nothing to
+             act on. `installable` comes from the same preflight check that now
+             reports it before a session too. */
+          || `<span class="chip drift">no telemetry - this session was audio only</span>
+              <span class="tele-why" id="tele-why">checking why…</span>`}
         ${T.fps ? `<span class="chip">fps ${T.fps.min}–${T.fps.max} · avg ${T.fps.avg}</span>` : ""}
       </div>
 
@@ -867,6 +877,9 @@ async function openSession(id){
     </div>`;
   document.getElementById("review-video")?.addEventListener("timeupdate", syncTranscript);
   PtReview.mount(document.getElementById("pt-triage"), d, {seek:seekReview});
+  /* Only when the recording actually came back empty - the "checking why…"
+     placeholder is not rendered otherwise, and this is a no-op then. */
+  explainNoTelemetry();
 }
 /* Session time vs video time. The capture starts a beat after the session does,
  * so every timestamp the backend stores (transcript, markers, telemetry) is in
@@ -1702,6 +1715,41 @@ function togglePtWhy(){
  * What is deliberately absent: `bgate doctor`, pip, and any other terminal
  * instruction. The footer used to send people to a command line to find out
  * what a panel already knew. */
+/* WHY A RECORDING HAS NO TELEMETRY, and the one-press fix when there is one.
+   Asked only when a recording actually came back without events - the moment it
+   costs somebody something. */
+async function explainNoTelemetry(){
+  const el = document.getElementById("tele-why");
+  if (!el) return;
+  const pf = await readJSON("/api/playtest/preflight", {});
+  const t = (pf.checks || {}).telemetry || {};
+  if (t.ok){
+    el.textContent = "the addon is installed - the game emitted nothing this session";
+    return;
+  }
+  el.innerHTML = `${esc(t.reason || "the game has no telemetry autoload")} `
+    + (t.installable
+        ? `<button class="qbtn small" onclick="installTelemetry(this)">Install the addon</button>`
+        : "");
+}
+
+async function installTelemetry(btn){
+  if (btn){ btn.disabled = true; btn.textContent = "installing…"; }
+  const r = await mutate("/api/playtest/telemetry/install", {quiet:true});
+  if (!r.ok){
+    toast("could not install the addon - " + r.error);
+    if (btn){ btn.disabled = false; btn.textContent = "Install the addon"; }
+    return;
+  }
+  /* SAYS WHAT IT DID AND WHAT IS STILL NEEDED. The autoload is registered, but
+     Godot has to reopen the project before it runs - promising telemetry on the
+     very next recording would be the same kind of lie this replaced. */
+  const el = document.getElementById("tele-why");
+  if (el) el.textContent = "addon installed - reopen the game in Godot, then "
+    + "record again and events will arrive";
+  toast("telemetry addon installed", "ok");
+}
+
 function renderPtRows(rows){
   if (!rows.length) return "";
   return `<ul class="pt-checks">${rows.map(([name, c]) => {

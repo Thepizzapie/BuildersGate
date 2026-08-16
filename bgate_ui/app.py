@@ -1865,6 +1865,22 @@ def pt_promote(item_id: int, payload: Optional[dict] = None) -> dict:
         raise _api.bad_request(str(exc), item_id=item_id)
 
 
+@app.post("/api/playtest/telemetry/install")
+def pt_install_telemetry() -> dict:
+    """Put the BGate telemetry addon in this game and register its autoloads.
+
+    AN EXPLICIT ACTION, NOT A SIDE EFFECT. `bgate adopt` deliberately does not
+    do this: it writes .gitignore, CLAUDE.md and the database and leaves every
+    existing file byte-identical, and project.godot is the user's file. A tool
+    that edits your engine config because you pointed it at your repo is what
+    makes people afraid to run it. So it is offered where the absence hurts -
+    the playtest panel, which now reports the missing autoload as a degraded
+    check - and it happens when somebody presses the button.
+    """
+    from bgate_core import adopt as _adopt
+    return _adopt.install_telemetry(_root())
+
+
 @app.post("/api/playtest/items/{item_id}/dismiss")
 def pt_dismiss(item_id: int) -> dict:
     try:

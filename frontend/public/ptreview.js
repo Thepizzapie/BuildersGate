@@ -394,7 +394,9 @@ window.PtReview = (() => {
           title="Show the item this was folded into">${icon("select") || "&#8594;"}</button>`;
     }
     if (item.status === "promoted") {
-      return `<span class="ptr-tag good">filed</span>
+      /* "accepted", not "filed". The item has been judged real and given an
+         owner; nothing has been queued. */
+      return `<span class="ptr-tag good">accepted</span>
         ${more(item)}`;
     }
     if (item.status === "dismissed") {
@@ -486,7 +488,13 @@ window.PtReview = (() => {
         ${item.work.result ? `<span class="res">${E(item.work.result)}</span>` : ""}
         <button class="ptr-b" data-a="work" data-to="${item.work.id}">show work</button>
       </div>` : item.status === "promoted"
-        ? `<div class="ptr-work"><span>filed - the queue item is being created</span></div>` : ""}
+        /* THIS SAID "the queue item is being created". Nothing was being
+           created, then or ever - it is the sentence that made a dead end look
+           like a queue. What is true: the seat sees this in its brief the next
+           time it runs, and somebody still has to give it work to do. */
+        ? `<div class="ptr-work"><span>accepted for ${E(item.seat || "a seat")} -
+             it shows in that seat's brief. No work item is created by
+             promoting; queue one when you want it acted on.</span></div>` : ""}
     </div>`;
   }
 
@@ -585,7 +593,16 @@ window.PtReview = (() => {
                "nothing heard clearly, no seat, no classifier match, no telemetry",
                g.quiet),
           fold("praise", "praise", "nothing to action - worth reading", g.praise),
-          fold("filed", "filed as work", "already promoted to a seat", g.filed, true),
+          /* NOT "filed as work", WHICH WAS FALSE. Promotion assigns the item
+             to a seat and authors NO work item - playtest.promote says so in as
+             many words, and a check of this project's database found zero work
+             items with source='playtest' behind six items labelled "filed". A
+             label that claims work exists is worse than no label: it is the
+             reason somebody waits for agents that were never dispatched. */
+          fold("filed", "accepted for a seat",
+               "assigned to a seat, and waiting to be turned into work - promoting "
+               "does not queue anything by itself",
+               g.filed, true),
           fold("binned", "binned and merged", "kept in the record, out of the way",
                g.binned, true),
         ].filter(Boolean).join("");
@@ -699,7 +716,7 @@ window.PtReview = (() => {
     busy = true;
     const r = await mutate(`/api/playtest/items/${id}/promote`, {
       body: { seat, kind: kindEl ? kindEl.value : item.kind },
-      ok: `#${id} filed with ${seat}` });
+      ok: `#${id} accepted for ${seat} - not queued yet` });
     busy = false;
     if (!r.ok) return;
     drawers.delete(Number(id));

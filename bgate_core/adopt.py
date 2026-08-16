@@ -253,6 +253,145 @@ def would_clobber(directory: str | os.PathLike[str]) -> list[str]:
     return doomed
 
 
+# ---------------------------------------------------------------------------
+# The telemetry autoload — the difference between a recording and evidence
+# ---------------------------------------------------------------------------
+# WHY THIS IS NOT PART OF adopt(). scaffold overlays templates/shared/ onto
+# every project it CREATES, so a scaffolded game gets addons/bgate and its
+# autoloads for free. An ADOPTED game never did, and nothing else installed them
+# - so a project that came in through `bgate adopt` could record playtests
+# forever and never emit a single event. Observed exactly that way: a real
+# project with 28 sessions, 59 pieces of feedback, zero rows in playtest_event,
+# and a review screen that said "NO TELEMETRY - THIS SESSION WAS AUDIO ONLY"
+# every time without ever naming the missing addon.
+#
+# The obvious fix - have adopt install it - was tried and REVERTED, because
+# adopt's promise is that it writes .gitignore, CLAUDE.md and the database and
+# leaves every existing file byte-identical. project.godot is the user's file.
+# Two tests hold that line and they are right to: a tool that edits your engine
+# config as a side effect of being pointed at your repo is exactly what makes
+# people afraid to run it. So this is an EXPLICIT action instead, offered where
+# the absence actually hurts.
+#
+# ADDITIVE AND RE-RUNNABLE. The script is
+# copied only when absent or stale, and the autoload lines are merged into the
+# existing [autoload] section rather than replacing it - an adopted game has its
+# own autoloads and losing them would be the one unrecoverable thing adopt is
+# built never to do.
+_AUTOLOADS = (
+    ("BGateTelemetry", "res://addons/bgate/bgate_telemetry.gd"),
+    ("BGateTuner", "res://addons/bgate/bgate_tuner.gd"),
+)
+
+
+def _merge_autoloads(config: Path, entries=_AUTOLOADS) -> dict:
+    """Add the BGate autoloads to project.godot, keeping every existing one.
+
+    Godot's config is INI-shaped but not INI: values are GDScript literals and
+    configparser mangles them. So this is a line-level edit, which is also what
+    keeps somebody's hand-written comments and ordering intact.
+    """
+    try:
+        text = config.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"action": "skipped", "why": f"cannot read project.godot: {exc}"}
+
+    missing = [(name, path) for name, path in entries
+               if f"\n{name}=" not in "\n" + text]
+    if not missing:
+        return {"action": "unchanged", "path": str(config)}
+
+    lines = text.splitlines()
+    added = [f'{name}="*{path}"' for name, path in missing]
+
+    if "[autoload]" in text:
+        at = lines.index("[autoload]")
+        # After the section header and any blank line under it, so the file
+        # keeps the shape Godot itself writes.
+        insert = at + 1
+        while insert < len(lines) and not lines[insert].strip():
+            insert += 1
+        lines[insert:insert] = added
+    else:
+        # A project with no autoloads at all: append a section rather than
+        # guessing where one belongs among the others.
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += ["[autoload]", ""] + added
+
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"action": "merged", "path": str(config),
+            "added": [name for name, _ in missing]}
+
+
+def telemetry_status(directory: str | os.PathLike[str]) -> dict:
+    """Is the BGate telemetry autoload registered in this game?
+
+    Asked of project.godot rather than of the addon folder: a script sitting in
+    addons/ that nothing autoloads emits exactly as much as no script at all,
+    and that is the failure this reports.
+    """
+    base = Path(directory).expanduser().resolve()
+    game = project.game_dir(base)
+    config = (game / "project.godot") if game else None
+    if config is None or not config.is_file():
+        return {"ok": True, "reason": "", "installable": False,
+                "why": "no Godot project here, so there is nothing to instrument"}
+    try:
+        text = config.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return {"ok": True, "reason": "", "installable": False,
+                "why": f"cannot read project.godot ({exc})"}
+    if "BGateTelemetry" in text:
+        return {"ok": True, "reason": "", "installable": False,
+                "path": str(config)}
+    return {
+        "ok": False,
+        "installable": True,
+        "path": str(config),
+        "reason": ("the game has no BGate telemetry autoload, so a recording "
+                   "captures picture and sound but no game events"),
+        "fix": "install the addon (one file and one autoload line)",
+    }
+
+
+def install_telemetry(directory: str | os.PathLike[str]) -> dict:
+    """Put the BGate addon in the game and register its autoloads.
+
+    Returns {action, ...}. Never raises: a project that cannot take the addon
+    (no game dir, a read-only tree) must still adopt.
+    """
+    base = Path(directory).expanduser().resolve()
+    game = project.game_dir(base)
+    if game is None or not (game / "project.godot").is_file():
+        return {"action": "skipped", "why": "no Godot project to install into"}
+
+    source = TEMPLATES_DIR / "shared" / "addons" / "bgate"
+    if not source.is_dir():
+        return {"action": "skipped", "why": "the addon is missing from this build"}
+
+    dest = game / "addons" / "bgate"
+    copied: list[str] = []
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for script in sorted(source.glob("*.gd")):
+            target = dest / script.name
+            # OVERWRITE ONLY WHAT WE SHIP, and only when it differs. The addon
+            # is ours; a project that edited it gets the edit replaced on a
+            # re-adopt, which is the same deal as every other stamped file.
+            new = script.read_bytes()
+            if not target.exists() or target.read_bytes() != new:
+                target.write_bytes(new)
+                copied.append(script.name)
+    except OSError as exc:
+        return {"action": "failed", "why": f"could not write the addon: {exc}"}
+
+    merged = _merge_autoloads(game / "project.godot")
+    return {"action": "installed" if (copied or merged.get("action") == "merged")
+                      else "unchanged",
+            "path": str(dest), "scripts": copied, "autoload": merged}
+
+
 def adopt(directory: str | os.PathLike[str], name: str = "", pitch: str = "",
           dimension: Optional[str] = None, engine: str = "godot") -> dict:
     """Adopt an existing project. Additive only, and safe to re-run.

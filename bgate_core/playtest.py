@@ -209,6 +209,12 @@ REQUIRED_CHECKS = frozenset({"ffmpeg", "mic", "window", "native_game"})
 OPTIONAL_COSTS = {
     "transcriber": "no speech-to-text — the video and audio are still recorded, "
                    "you just will not get a searchable transcript",
+    # The one that went unreported for 28 sessions. The review screen said
+    # "NO TELEMETRY - THIS SESSION WAS AUDIO ONLY" every time and never once
+    # said why, so nobody could act on it.
+    "telemetry": "no game events — the recording is picture and sound only, so "
+                 "nothing lines a spoken complaint up against what the game was "
+                 "doing at that second",
 }
 
 
@@ -226,6 +232,13 @@ def preflight(mic_device: Optional[int] = None, window_title: Optional[str] = No
 
     checks["mic"] = recorder.probe_mic(mic_device)
     checks["transcriber"] = transcribe.available()
+
+    # DEGRADES, NEVER BLOCKS. A session with no telemetry is still worth
+    # recording - it is just audio and video - but the absence has to be SAID,
+    # because the only place it showed before was a badge on the finished
+    # recording that named no cause and offered no fix.
+    from . import adopt as _adopt
+    checks["telemetry"] = _adopt.telemetry_status(root or ".")
 
     if native:
         from bgate_adapters import godot

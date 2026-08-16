@@ -318,3 +318,61 @@ class TestStampedBriefing:
         text = (dest / "CLAUDE.md").read_text(encoding="utf-8")
         assert "Neon Drift" in text
         assert "__PROJECT_NAME__" not in text
+
+
+class TestTheTelemetryAutoload:
+    """An adopted game never got the addon, so it recorded nothing.
+
+    scaffold overlays templates/shared onto every project it CREATES, so a
+    scaffolded game has addons/bgate and its autoloads. Adoption did not, and
+    nothing else installed them - a real project reached 28 sessions and 59
+    pieces of feedback with zero rows in playtest_event, while its review screen
+    said "NO TELEMETRY" every time without ever naming the missing addon.
+    """
+
+    def _game(self, tmp_path, body: str):
+        game = tmp_path / "game"
+        game.mkdir(parents=True)
+        (game / "project.godot").write_text(body, encoding="utf-8")
+        return tmp_path
+
+    def test_it_installs_the_addon_and_registers_the_autoloads(self, tmp_path):
+        root = self._game(tmp_path, '[application]\nconfig/name="G"\n')
+        out = adopt.install_telemetry(root)
+        assert out["action"] == "installed"
+        assert "bgate_telemetry.gd" in out["scripts"]
+        cfg = (root / "game" / "project.godot").read_text(encoding="utf-8")
+        assert 'BGateTelemetry="*res://addons/bgate/bgate_telemetry.gd"' in cfg
+        assert (root / "game" / "addons" / "bgate" / "bgate_telemetry.gd").is_file()
+
+    def test_it_keeps_autoloads_the_project_already_had(self, tmp_path):
+        """The one unrecoverable thing adopt must never do."""
+        root = self._game(
+            tmp_path,
+            '[autoload]\n\nAudio="*res://scripts/audio.gd"\n'
+            'PauseMenu="*res://scenes/pause_menu.tscn"\n')
+        adopt.install_telemetry(root)
+        cfg = (root / "game" / "project.godot").read_text(encoding="utf-8")
+        assert 'Audio="*res://scripts/audio.gd"' in cfg
+        assert 'PauseMenu="*res://scenes/pause_menu.tscn"' in cfg
+        assert "BGateTelemetry" in cfg
+
+    def test_a_project_with_no_autoload_section_gets_one(self, tmp_path):
+        root = self._game(tmp_path, '[application]\nconfig/name="G"\n')
+        adopt.install_telemetry(root)
+        cfg = (root / "game" / "project.godot").read_text(encoding="utf-8")
+        assert cfg.count("[autoload]") == 1
+        assert "BGateTelemetry" in cfg
+
+    def test_running_it_twice_changes_nothing(self, tmp_path):
+        root = self._game(tmp_path, '[application]\nconfig/name="G"\n')
+        adopt.install_telemetry(root)
+        before = (root / "game" / "project.godot").read_text(encoding="utf-8")
+        assert adopt.install_telemetry(root)["action"] == "unchanged"
+        assert (root / "game" / "project.godot").read_text(encoding="utf-8") == before
+
+    def test_a_project_with_no_godot_still_adopts(self, tmp_path):
+        """Never fail an adopt over an addon."""
+        out = adopt.install_telemetry(tmp_path)
+        assert out["action"] == "skipped"
+        assert "no Godot project" in out["why"]
