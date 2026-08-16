@@ -58,11 +58,25 @@ def available(root: Any = None) -> dict:
         return {"available": False,
                 "reason": "OPENAI_API_KEY not set — put it in the project's "
                           ".env (gitignored, loaded per project)"}
-    return {"available": True, "model": _model()}
+    return {"available": True, "model": _model(root)}
 
 
-def _model() -> str:
-    return os.environ.get("BGATE_PROMPT_MODEL", DEFAULT_MODEL)
+def _model(root: Any = None) -> str:
+    """Env, then the stored preference (text.model), then the cheap default —
+    the same precedence every other model choice in the registry follows."""
+    forced = (os.environ.get("BGATE_PROMPT_MODEL") or "").strip()
+    if forced:
+        return forced
+    if root is not None:
+        try:
+            from bgate_core import settings as _settings
+
+            preferred = str(_settings.get(root, "text.model") or "").strip()
+            if preferred:
+                return preferred
+        except Exception:
+            pass
+    return DEFAULT_MODEL
 
 
 def expand(text: str, *, subject: str = "", task_kind: str = "",
@@ -95,7 +109,7 @@ def expand(text: str, *, subject: str = "", task_kind: str = "",
 
         client = OpenAI(timeout=timeout)
         reply = client.chat.completions.create(
-            model=_model(),
+            model=_model(root),
             messages=[{"role": "system", "content": _SYSTEM},
                       {"role": "user", "content": ask}],
             temperature=0.7,
@@ -115,6 +129,6 @@ def expand(text: str, *, subject: str = "", task_kind: str = "",
     if len(written) > 1 and written[0] == written[-1] and written[0] in "\"'":
         written = written[1:-1].strip()
 
-    return {"ok": True, "text": written, "model": _model(),
+    return {"ok": True, "text": written, "model": _model(root),
             "seconds": round(time.monotonic() - started, 2),
             "estimated_usd": USD_PER_CALL}

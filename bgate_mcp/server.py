@@ -2900,7 +2900,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         # tool simply never passed the choice along.
         result = _chroma.generate(prompt, str(out),
                                   provider=_providers.provider_for(
-                                      task_kind, asked=provider),
+                                      task_kind, asked=provider, root=root),
                                   model=model,
                                   task_kind=task_kind,
                                   keyed=True if transparent else None,
@@ -2980,7 +2980,11 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
-        result = _chroma.generate(prompt, str(out), provider="openai",
+        # WAS hardcoded "openai" with no parameter — the pin image_generate's
+        # comment calls the defect, fixed in one tool out of five. A Krea-only
+        # setup got "OPENAI_API_KEY not set" from every edit.
+        result = _chroma.generate(prompt, str(out),
+                                  provider=_providers.provider_for(root=root),
                                   keyed=bool(transparent), ref_paths=resolved,
                                   size=size, quality=quality, transparent=False,
                                   root=root, logical_name=_Path(filename).stem,
@@ -3097,7 +3101,9 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     from bgate_adapters import imagegen
     rel = _items.rel_art_path(spec["item_class"], spec["name"])
     out = root / rel
-    result = _chroma.generate(spec["prompt"], str(out), provider="openai",
+    result = _chroma.generate(spec["prompt"], str(out),
+                              provider=_providers.provider_for("item",
+                                                               root=root),
                               task_kind="item", quality=quality, root=root,
                               logical_name=spec["name"],
                               work_item_id=_work_item_id())
@@ -3689,14 +3695,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_quality: str = "high", fps: float = 8.0,
                   res_dir: str = "assets/sprites", max_retries: int = 1,
                   max_cost_usd: float = 0.0, timeout: int = 300,
-                  max_seconds: int = 1800, provider: str = "openai",
+                  max_seconds: int = 1800, provider: str = "",
                   model: str = "", ref_strength: float = 0.6,
                   archetypes: Optional[list[str]] = None, view: str = "",
                   palette_lock: str = "auto", palette_colors: int = 64,
                   sheet_padding: int = 0, anchor_views: int = 3) -> dict:
     """PAINTED sprite set - REFERENCE-FIRST for consistency.
 
-    provider: "openai" (gpt-image, default) or "krea". They condition on the
+    provider: blank means the project's stored preference (art.provider),
+    then the identity routing. "openai" and "krea" condition on the
     reference in genuinely different ways, and it changes what you get:
     gpt-image EDITS the reference image, which holds identity hard but drags
     the reference's own lighting along; a STYLE REFERENCE at `ref_strength`
@@ -3808,6 +3815,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
         root = _Path(_scratch_root())
+        # An unnamed provider is the preference, then the identity routing —
+        # the old default was the literal string "openai", which agents never
+        # overrode, so the routing rule and the stored preference were both
+        # unreachable from the most expensive tool here.
+        provider = _providers.provider_for("sheet", asked=provider, root=root)
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
@@ -4339,7 +4351,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 @_tool
 def image_talkhead(subject: str, name: str, anchor: str = "",
                    res_dir: str = "assets/portraits", cell: int = 128,
-                   fps: float = 10.0, provider: str = "krea",
+                   fps: float = 10.0, provider: str = "",
                    model: str = "", ref_strength: float = 0.7,
                    drift_limit: float = 0.0, max_retries: int = 2,
                    quality: str = "medium", timeout: int = 300) -> dict:
@@ -4385,6 +4397,11 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
         from bgate_core import talkhead as _th
 
         root = _Path(_scratch_root())
+        # Same resolution as image_sprites: preference, then identity routing.
+        # The old default was the literal "krea", which failed a krea-less
+        # setup unless the agent thought to override it.
+        provider = _providers.provider_for("portrait", asked=provider,
+                                           root=root)
         refused = _gate_images(str(root), _th.FRAME_COUNT if hasattr(_th, 'FRAME_COUNT') else 4,
                                quality, f"painting a talking head for {name!r}")
         if refused:
@@ -7520,7 +7537,17 @@ def voice_speak(text: str, out_path: str = "",
         # the same table the adapter bills from; an unpriced model quotes
         # None there rather than 0.0, and an unknown price must not read
         # as free, so it is gated at the most expensive known rate.
-        speak_model = str(model or _deepgram.DEFAULT_SPEAK_MODEL)
+        # Explicit ask, then the stored preference, then the adapter default.
+        speak_model = str(model or "").strip()
+        if not speak_model:
+            try:
+                from bgate_core import settings as _settings_mod
+
+                speak_model = str(_settings_mod.get(root, "voice.model")
+                                  or "").strip()
+            except Exception:
+                speak_model = ""
+        speak_model = speak_model or str(_deepgram.DEFAULT_SPEAK_MODEL)
         per_1k = _deepgram.USD_PER_1K_CHARS.get(speak_model)
         if per_1k is None:
             known = [v for v in _deepgram.USD_PER_1K_CHARS.values()
@@ -7539,7 +7566,12 @@ def voice_speak(text: str, out_path: str = "",
         target = (_Path(root) / rel).resolve()
         # The same refusal deps.safe_under makes on the HTTP side: a path that
         # leaves the project is refused before anything is written, not after.
-        if not str(target).startswith(str(_Path(root).resolve())):
+        # relative_to, NOT startswith: a prefix compare passes
+        # C:\proj-evil\x.wav for a root of C:\proj, which is an escape into
+        # any sibling directory sharing the root's name prefix.
+        try:
+            target.relative_to(_Path(root).resolve())
+        except ValueError:
             raise ValueError(f"{rel} escapes the project root")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(result["audio"])

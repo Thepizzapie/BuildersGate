@@ -77,8 +77,8 @@ REGISTRY_KEY = "settings"
 # Group order is the display order, in both the panel and `bgate doctor`.
 # "Community" arrived with the streamer chat settings and was never added here,
 # so every one of those entries declared a group the registry did not admit.
-GROUPS = ("Dispatch", "Gates", "Art", "Follow-up", "Notifications",
-          "Budget", "Console", "Privacy", "Community")
+GROUPS = ("Dispatch", "Gates", "Art", "Generators", "Follow-up",
+          "Notifications", "Budget", "Console", "Privacy", "Community")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
 # imported from events.py so that a settings panel still renders when the event
@@ -134,6 +134,13 @@ LABELS: dict[str, str] = {
     "art.runner": "Which tool generates images",
     "art.image_backend": "Image provider",
     "art.auto_approve": "Accept generated art without review",
+    # Generators
+    "art.provider": "Preferred image provider",
+    "art.model": "Preferred image model",
+    "cinematic.model": "Preferred video model",
+    "music.model": "Preferred music model",
+    "voice.model": "Preferred speech voice",
+    "text.model": "Model for prompt-writing calls",
     # Follow-up
     "followup.director_debrief": "Ask the director to review finished work",
     "followup.max_per_hour": "Most reviews to raise in an hour",
@@ -459,6 +466,58 @@ SETTINGS: tuple[Setting, ...] = (
              "turnaround at four angles per asset registers four candidates, "
              "and that volume is usually the real complaint. Rejection stays "
              "available to agents either way; this only unblocks approval."),
+
+    # -- Generators: the preferred provider and models -----------------------
+    # There was NO stored preference anywhere: every choice was key-presence
+    # probing plus hardcoded per-tool defaults, so a person with a paid,
+    # preferred service watched the harness route work to whichever key
+    # happened to probe first. These are the single write point; every picker
+    # consults them before probing.
+    Setting(
+        key="art.provider", group="Generators", kind=ENUM, default="auto",
+        choices=("auto", "openai", "krea", "kie", "local"),
+        store=("registry", "art.provider"), scope=MACHINE,
+        env="BGATE_ART_PROVIDER", human_only=True,
+        help="Which image provider generation goes to. `auto` keeps the "
+             "routing rules (identity work to the reference-strongest "
+             "configured provider, everything else by key-presence order). A "
+             "named provider is honoured the way an explicit ask is: even "
+             "with its key missing, you get THAT provider's error naming the "
+             "key to set — never a silent substitution billed to a service "
+             "you did not choose."),
+    Setting(
+        key="art.model", group="Generators", kind=STRING, default="",
+        store=("registry", "art.model"), scope=MACHINE,
+        env="BGATE_ART_MODEL", human_only=True,
+        help="The image model, when a generation names none itself. Must be a "
+             "model of the provider actually in use (gpt-image-1, "
+             "krea-2-large, nano-banana-2, …); blank takes that provider's "
+             "own default. A stale value after switching providers fails with "
+             "the provider's unknown-model error rather than being silently "
+             "dropped."),
+    Setting(
+        key="cinematic.model", group="Generators", kind=STRING, default="",
+        store=("registry", "cinematic.model"), scope=MACHINE,
+        human_only=True,
+        help="The video model a cinematic sequence plans onto when the plan "
+             "names none. Blank is the adapter default (seedance-2). "
+             "Validated against the registered video models at plan time, "
+             "same as an explicit choice."),
+    Setting(
+        key="music.model", group="Generators", kind=STRING, default="",
+        store=("registry", "music.model"), scope=MACHINE, human_only=True,
+        help="The music model when a request names none. Blank is the "
+             "adapter default (V5)."),
+    Setting(
+        key="voice.model", group="Generators", kind=STRING, default="",
+        store=("registry", "voice.model"), scope=MACHINE, human_only=True,
+        help="The speech voice/model when a line names none. Blank is the "
+             "adapter default (aura-2-thalia-en)."),
+    Setting(
+        key="text.model", group="Generators", kind=STRING, default="",
+        store=("registry", "text.model"), scope=MACHINE, human_only=True,
+        help="The model promptwriter uses for prompt-polish calls. Blank is "
+             "the historical default (gpt-4o-mini)."),
 
     # -- Follow-up ----------------------------------------------------------
     Setting(

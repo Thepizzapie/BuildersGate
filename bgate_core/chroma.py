@@ -706,6 +706,18 @@ def generate(prompt: str, out_path: str | os.PathLike[str], *,
     from bgate_adapters import imagegen, kie, krea, localgen
     from bgate_core import artdirection
 
+    # THE MODEL PREFERENCE, applied at the one seam every image passes
+    # through. A generation that names its model keeps it; one that does not
+    # takes the project's stored choice (art.model) before falling to the
+    # adapter's per-provider default — which was the only voice until now.
+    if not (model or "").strip() and root is not None:
+        try:
+            from bgate_core import settings as _settings
+
+            model = str(_settings.get(root, "art.model") or "").strip()
+        except Exception:
+            pass
+
     provider = str(provider or "").strip().lower()
     if keyed is None:
         keyed = needs_key(task_kind)

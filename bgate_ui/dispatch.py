@@ -810,6 +810,16 @@ def _live_count() -> int:
     return sum(1 for e in _live.values() if e["proc"].poll() is None)
 
 
+def _art_model_pref(root: str) -> str:
+    """The stored image-model preference (art.model), or ""."""
+    try:
+        from bgate_core import settings as _settings
+
+        return str(_settings.get(root, "art.model") or "").strip()
+    except Exception:
+        return ""
+
+
 def dispatch(root: str, item_id: int, **kwargs) -> dict:
     """Spawn one agent for one item, with the start RESERVED against a race.
 
@@ -1024,7 +1034,15 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # identity and can approve its own work - it did, until this line.
         "BGATE_ACTOR": f"agent:item-{item_id}",
         # Director directive: gpt-image-2 is banned - force 1 for every gen.
-        "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL", "gpt-image-1"),
+        # Reconciled with the stored preference: the machine env still wins,
+        # then art.model WHEN it names an openai model (this variable is read
+        # only by the gpt-image adapter, so a krea/kie preference does not
+        # belong in it — those reach the adapters through chroma.generate's
+        # model seam instead), then the ban's default.
+        "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL")
+        or (_art_model_pref(root)
+            if _art_model_pref(root).startswith(("gpt-image", "dall-e"))
+            else "gpt-image-1"),
     }
     # The flags each CLI needs to stream its work live are that CLI's business - # see runners.py, which also records what each one CANNOT do (steering, cost)
     # so the rest of this module stops assuming both.

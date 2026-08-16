@@ -256,7 +256,8 @@ def by_id(provider_id: str) -> Provider:
         + ", ".join(p.id for p in PROVIDERS))
 
 
-def provider_for(task_kind: str = "", *, asked: str = "") -> str:
+def provider_for(task_kind: str = "", *, asked: str = "",
+                 root: str | os.PathLike | None = None) -> str:
     """Which image provider this KIND of work goes to. Not merely a default.
 
     2D CHARACTER WORK GOES TO KREA WHENEVER KREA IS CONFIGURED, and it is a
@@ -284,6 +285,23 @@ def provider_for(task_kind: str = "", *, asked: str = "") -> str:
     """
     if (asked or "").strip():
         return asked.strip().lower()
+
+    # THE STORED PREFERENCE, between the explicit ask and the routing rules.
+    # There was no such thing anywhere: a person with a paid, preferred
+    # service watched work go to whichever key probed first, per tool. A
+    # named preference behaves exactly like an explicit ask — honoured even
+    # with its key missing, so the failure names THAT provider's key rather
+    # than silently billing a service nobody chose. `auto` (the default) is
+    # the routing below, unchanged.
+    if root is not None:
+        try:
+            from bgate_core import settings as _settings
+
+            preferred = str(_settings.get(root, "art.provider") or "").strip().lower()
+        except Exception:
+            preferred = ""
+        if preferred and preferred != "auto":
+            return preferred
 
     from bgate_adapters import krea
 

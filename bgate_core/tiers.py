@@ -126,7 +126,11 @@ DEFAULT_TIER = "standard"
 
 # Models that can lay out several frames in one image. Everything absent is
 # assumed unable — proven by the sweep, not inferred from marketing copy.
-SHEET_CAPABLE = {"krea-2-medium", "krea-2-large", "gpt-image-1"}
+# nano-banana-2 is the measured sheet WINNER (see providers.provider_for's
+# duck-sheet table: eight frames a row, correct back/front rows, clean key);
+# it was absent here only because the ladder never offered it as a rung.
+SHEET_CAPABLE = {"krea-2-medium", "krea-2-large", "gpt-image-1",
+                 "nano-banana-2"}
 
 
 class NoSuchTier(ValueError):
@@ -144,16 +148,65 @@ def _check(kind: str, tier: str) -> None:
         raise NoSuchTier(f"unknown tier {tier!r} — tiers are {list(TIERS)}")
 
 
-def resolve(kind: str, tier: str = DEFAULT_TIER) -> dict:
+# What each NON-ladder provider substitutes with, when the measured rung's
+# provider has no key at all. The models are the providers' reference-capable
+# defaults; nano-banana-2's flat price is the one measured on the duck sheet.
+_SUBSTITUTES: dict[str, tuple[str, float]] = {
+    "openai": ("gpt-image-1", 0.042),
+    "kie": ("nano-banana-2", 0.06),
+    "local": ("", 0.0),
+}
+
+
+def _configured(provider: str) -> bool:
+    import os
+
+    env = {"krea": "KREA_API_KEY", "openai": "OPENAI_API_KEY",
+           "kie": "KIE_API_KEY"}.get(provider)
+    return bool((os.environ.get(env) or "").strip()) if env else False
+
+
+def resolve(kind: str, tier: str = DEFAULT_TIER, root=None) -> dict:
     """The provider and model for this job, plus what it will cost.
 
     Raises rather than silently downgrading: a model that cannot lay out a
     sheet must never be handed an animation, because the failure is a portrait
     that looks fine in isolation and is useless in the game.
+
+    THE LADDER IS MEASURED AND THE LADDER STAYS PRIMARY — a stored provider
+    preference does not override rungs that were chosen by head-to-head
+    evidence. What the preference (via providers.provider_for) DOES decide is
+    the fallback: when the rung's provider has no key at all, the old shape
+    failed the node outright on a project whose only funded account was
+    elsewhere. Now the configured/preferred provider substitutes with its own
+    reference-capable default, the swap is named in ``note``, and a
+    sheet-needing kind still refuses a substitute that cannot lay out a sheet.
     """
     _check(kind, tier)
     provider, model = LADDERS[kind][tier]
     needs = CAPABILITIES[kind]
+
+    if root is not None and not _configured(provider):
+        try:
+            from bgate_core import providers as _providers
+
+            alt = _providers.provider_for(kind, root=root)
+        except Exception:
+            alt = ""
+        if alt and alt != provider and alt in _SUBSTITUTES \
+                and (_configured(alt) or alt == "local"):
+            alt_model, alt_usd = _SUBSTITUTES[alt]
+            if needs["sheet"] and alt_model and alt_model not in SHEET_CAPABLE:
+                raise NoSuchTier(
+                    f"the {kind} ladder runs on {provider}, which has no key "
+                    f"here, and {alt_model} ({alt}) cannot lay out the "
+                    "multi-frame sheet this kind needs — configure "
+                    f"{provider}, or name a capable {{provider, model}} "
+                    "explicitly")
+            return {"kind": kind, "tier": tier, "provider": alt,
+                    "model": alt_model, "usd": alt_usd, "needs": dict(needs),
+                    "note": f"substituted for the measured {provider} rung — "
+                            f"{provider} has no key configured here"}
 
     if needs["sheet"] and model not in SHEET_CAPABLE:
         raise NoSuchTier(
