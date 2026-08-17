@@ -199,9 +199,17 @@ export function Settings() {
               have to read; a glyph is the thing you actually navigate by once
               you have been here twice. The name comes from the registry
               (settings.GROUP_ICONS) so a new group cannot arrive iconless. */}
-          {[...groups.map((g) => g.name), ...Object.keys(PANELS)].map((name) => {
+          {/* MERGED, NOT APPENDED. The registry grew a group named
+              Generators (the provider/model pickers) while PANELS already
+              carried one (the key panels), and appending both rendered two
+              identical rail entries - selection is by NAME, so the first one
+              could never show its own fields. One entry, both contents. */}
+          {[...groups.map((g) => g.name),
+            ...Object.keys(PANELS).filter((p) => !groups.some((x) => x.name === p)),
+          ].map((name) => {
             const g = groups.find((x) => x.name === name);
-            const hits = PANELS[name] ? (panelHit(name) ? 1 : 0) : (g?.fields.length ?? 0);
+            const hits = (g?.fields.length ?? 0)
+              + (PANELS[name] && panelHit(name) ? 1 : 0);
             /* Dimmed, never hidden. A destination that disappears while you are
                reading it is worse than one that says "nothing in here matches",
                and the count is how you find the group your search DID land in
@@ -229,6 +237,12 @@ export function Settings() {
             <AgentFleet active={active} />
           ) : group === GENERATORS ? (
             <section className="bg4-settings-group">
+              {/* The registry half first: the provider and model pickers,
+                  which live beside the keys they depend on. */}
+              <Stack gap={0}>
+                {(groups.find((x) => x.name === GENERATORS)?.fields ?? [])
+                  .map((f) => <Row key={f.key} f={f} onSave={save} />)}
+              </Stack>
               {/* THREE CLASSIC PANELS, HOSTED NOT REBUILT. providerkeys.js is
                   the only surface in the product that may write an API key - deliberately not an MCP tool - and localsetup.js owns both the
                   local-generation and the agent-CLI panes. React renders the

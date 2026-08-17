@@ -271,6 +271,77 @@ end;
 const
   OptionalComponents = 'floor,voice,playtest';
 
+{ THE FOOTER MATCHES THE ROWS, BY CONSTRUCTION. Inno's stock label is the
+  selected files PLUS the uninstaller it will write, and the uninstaller
+  belongs to no row — so the page always summed ~4MB short of its own footer
+  and read as a counting error (it was reported as exactly that, twice, with
+  a calculator in the screenshot). The label is ours now: the sum of the
+  size figures actually painted on the rows, digit for digit, with the
+  uninstaller named separately instead of hidden in the total. Summed in
+  tenths of a MB as integers, from the very strings the list displays, so
+  the arithmetic a person does on screen is the arithmetic shown. }
+var
+  OldComponentsClick: TNotifyEvent;
+  OldTypeChange: TNotifyEvent;
+
+function RowTenths(const S: String): Integer;
+var
+  T: String;
+  DotPos: Integer;
+begin
+  { "176.3 MB" -> 1763. Anything unparseable counts zero rather than wrong. }
+  T := Trim(S);
+  if Pos(' ', T) > 0 then
+    T := Copy(T, 1, Pos(' ', T) - 1);
+  DotPos := Pos('.', T);
+  if DotPos = 0 then
+    Result := StrToIntDef(T, 0) * 10
+  else
+    Result := StrToIntDef(Copy(T, 1, DotPos - 1), 0) * 10
+              + StrToIntDef(Copy(T, DotPos + 1, 1), 0);
+end;
+
+procedure UpdateSpaceLabel();
+var
+  I, Total: Integer;
+begin
+  Total := 0;
+  for I := 0 to WizardForm.ComponentsList.Items.Count - 1 do
+    if WizardForm.ComponentsList.Checked[I] then
+      Total := Total + RowTenths(WizardForm.ComponentsList.ItemSubItem[I]);
+  WizardForm.ComponentsDiskSpaceLabel.Caption :=
+    'Selected: ' + IntToStr(Total div 10) + '.' + IntToStr(Total mod 10) +
+    ' MB, plus about 4 MB for the uninstaller.';
+end;
+
+procedure ComponentsListClickCheck(Sender: TObject);
+begin
+  if OldComponentsClick <> nil then
+    OldComponentsClick(Sender);
+  UpdateSpaceLabel();
+end;
+
+procedure TypesComboChange(Sender: TObject);
+begin
+  if OldTypeChange <> nil then
+    OldTypeChange(Sender);
+  UpdateSpaceLabel();
+end;
+
+procedure InitializeWizard();
+begin
+  OldComponentsClick := WizardForm.ComponentsList.OnClickCheck;
+  WizardForm.ComponentsList.OnClickCheck := @ComponentsListClickCheck;
+  OldTypeChange := WizardForm.TypesCombo.OnChange;
+  WizardForm.TypesCombo.OnChange := @TypesComboChange;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpSelectComponents then
+    UpdateSpaceLabel();
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Dir, Path, Json, Name: String;
