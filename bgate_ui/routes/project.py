@@ -153,16 +153,19 @@ def project_create(request: Request, payload: dict) -> dict:
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
                             engine="godot", dimension=kind)
 
-    # The wizard's module choices, stored before anything reads them. Unknown
-    # names are refused by the setting's own choices validation; an empty or
-    # absent list is the default (everything on).
-    off = [str(m).strip() for m in (payload.get("modules_off") or [])
-           if str(m).strip()]
-    # The wizard sends the list (its checklist pre-unticks three_d for 2D and
-    # the human's word is final). A caller that sent none gets the same 2D
-    # default the CLI applies.
-    if "modules_off" not in payload and kind == "2d":
-        off = ["three_d"]
+    # THE PROJECT'S MODULE CHOICE IS SEEDED, NOT ASKED. The first-run card
+    # asked (a checklist between the template cards and Create) and the owner
+    # called it what it was: an installer question on a create-a-game form.
+    # What gets installed is the setup wizard's component page, which writes
+    # the MACHINE defaults; a new project inherits those, plus the 2D rule
+    # (a 2D game does not open Blender), plus anything an API caller passed
+    # explicitly. Settings > Modules is where a project changes its mind.
+    off_set = _modules.machine_defaults()
+    off_set |= {str(m).strip() for m in (payload.get("modules_off") or [])
+                if str(m).strip()}
+    if kind == "2d":
+        off_set.add("three_d")
+    off = sorted(off_set)
     if off:
         try:
             _settings.set(root, "modules.disabled", off)

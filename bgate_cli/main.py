@@ -387,21 +387,22 @@ def _store_modules_off(root, without: str) -> str:
     Unknown names warn and are dropped — a typo must not silently disable the
     nearest real feature.
     """
-    names = [w.strip() for w in (without or "").split(",") if w.strip()]
-    if not names:
-        return ""
     from bgate_core import modules, settings
 
+    names = [w.strip() for w in (without or "").split(",") if w.strip()]
     known = [n for n in names if n in modules.MODULES]
     unknown = [n for n in names if n not in modules.MODULES]
+    # The machine defaults — the setup wizard's component page — seed every
+    # new project; --without adds to them for this one.
+    seeded = sorted(modules.machine_defaults() | set(known))
     lines = []
     if unknown:
         lines.append(f"warning: no module named {', '.join(unknown)} — "
                      f"modules are: {', '.join(modules.names())}")
-    if known:
+    if seeded:
         try:
-            settings.set(root, "modules.disabled", known)
-            lines.append("switched off: " + ", ".join(known)
+            settings.set(root, "modules.disabled", seeded)
+            lines.append("switched off: " + ", ".join(seeded)
                          + "  (change later in Settings > Modules)")
         except Exception as exc:
             lines.append(f"warning: could not store module choices ({exc}) — "

@@ -154,3 +154,38 @@ class TestTheFloorAssetsPack:
         assert any("audio/floor" in p for p in patterns)
         assert "builders-gate-floor-assets" in str(
             cfg["project"]["optional-dependencies"]["floor"])
+
+
+class TestMachineDefaults:
+    """The installer's component page writes ~/.bgate/modules.json; projects
+    without a stored choice inherit it, and creation seeds from it."""
+
+    def _write_machine(self, names):
+        import json
+        import os
+        from pathlib import Path
+
+        home = Path(os.environ["BGATE_HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "modules.json").write_text(
+            json.dumps({"disabled": names}), encoding="utf-8")
+
+    def test_an_unstored_project_inherits_the_machine_file(self, root):
+        self._write_machine(["music", "not-a-module"])
+        assert modules.disabled(root) == {"music"}   # unknowns dropped
+
+    def test_a_stored_choice_beats_the_machine_file(self, root):
+        self._write_machine(["music"])
+        settings.set(root, "modules.disabled", ["floor"])
+        assert modules.disabled(root) == {"floor"}
+
+    def test_creation_seeds_the_union(self, tmp_path):
+        from bgate_cli import main
+
+        self._write_machine(["music"])
+        assert main.init_project("Seeded", kind="2d",
+                                 dest=str(tmp_path / "seeded")) == 0
+        assert modules.disabled(tmp_path / "seeded") == {"music", "three_d"}
+
+    def test_no_file_means_everything_on(self):
+        assert modules.machine_defaults() == set()

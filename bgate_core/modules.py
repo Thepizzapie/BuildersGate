@@ -97,13 +97,43 @@ def catalog() -> list[dict]:
     return out
 
 
+def machine_defaults() -> set[str]:
+    """The MACHINE's default switched-off modules — what the installer wrote.
+
+    The setup wizard's component page is where "install only what I need"
+    is decided, and its answer lands in ``~/.bgate/modules.json`` (BGATE_HOME
+    aware) as ``{"disabled": [...]}``. New projects seed their own stored
+    choice from this; a project that has stored a choice never consults it
+    again, so Settings > Modules remains the per-project word. Unknown names
+    are dropped, same rule as the stored list.
+    """
+    try:
+        import json as _json
+
+        from bgate_core import project as _project
+
+        path = _project.user_dir() / "modules.json"
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        raw = data.get("disabled") or ()
+    except Exception:
+        return set()
+    return {str(m).strip() for m in raw if str(m).strip() in MODULES}
+
+
 def disabled(root) -> set[str]:
     """The project's switched-off modules. Unknown names are dropped rather
     than obeyed — a typo in a stored list must not silently disable the
-    nearest real feature, and must not survive a rename as a ghost."""
+    nearest real feature, and must not survive a rename as a ghost.
+
+    A project that has never stored a choice takes the machine defaults —
+    the installer's component page — so an install that declined music is
+    music-less on every project until a project says otherwise.
+    """
     try:
         from bgate_core import settings as _settings
 
+        if _settings.source(root, "modules.disabled") != "stored":
+            return machine_defaults()
         stored = _settings.get(root, "modules.disabled") or ()
     except Exception:
         return set()

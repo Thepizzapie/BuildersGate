@@ -118,14 +118,102 @@ LicenseFile=..\LICENSE
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Messages]
+; The stock page talks about "components" and disk space, which reads wrong
+; here: most of these entries are FEATURE switches (they gate tools, panes and
+; doctor rows machine-wide), and only the floor's art moves the size number.
+; Say what the page actually decides.
+WizardSelectComponents=Choose features
+SelectComponentsDesc=Which parts of Builders Gate do you want?
+SelectComponentsLabel2=Untick anything you will not use. Everything can be changed later in Settings. Playtest transcripts use Voice's speech-to-text.
+
+; ── components: install only what you need ──────────────────────────────────
+; THE WIZARD IS WHERE "WHAT GETS INSTALLED" IS DECIDED. Each optional feature
+; is a component; unticking one both skips its payload (the floor's art,
+; and voice's ~175MB whisper stack) and records the choice as this
+; machine's default in ~/.bgate/modules.json — which every new project
+; inherits: the feature's MCP tools are not registered, its panes leave the
+; dashboard, doctor stops grading its dependencies. A project can still turn
+; anything back on later in Settings > Modules; re-running this installer
+; re-opens the machine-wide choice.
+; Labels are SHORT on purpose: this is a Windows checkbox list, not a brochure,
+; and a line of em-dash prose per row is what made the page read as clutter.
+; No "&&" anywhere — the components list prints ampersands literally, so the
+; Inno escape renders as a double ampersand.
+[Types]
+Name: "full"; Description: "Full installation"
+Name: "compact"; Description: "Essentials only"
+Name: "custom"; Description: "Custom"; Flags: iscustom
+
+[Components]
+; NO ExtraDiskSpaceRequired PADDING ON CORE, and this was measured, not
+; guessed: padding core 4MB to absorb the uninstaller moved the footer by
+; the same 4MB (rows 297.3 / footer 301.3 on screen), because Inno counts a
+; component's extra space in both places. The footer is files plus the
+; uninstaller; the uninstaller belongs to no row; the ~4MB difference is
+; every Inno installer's arithmetic and cannot be closed without shipping
+; no uninstaller.
+Name: "core"; Description: "Builders Gate (required)"; \
+    Types: full compact custom; Flags: fixed
+Name: "floor"; Description: "Studio floor view"; Types: full
+Name: "voice"; Description: "Voice (speech in and out)"; Types: full
+Name: "playtest"; Description: "Playtest recording"; Types: full
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
     GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Files]
 ; The whole onedir tree. recursesubdirs picks up _internal/, which is where
-; everything except the launcher lives.
-Source: "{#SourceDir}\*"; DestDir: "{app}"; \
+; everything except the launcher lives. Feature payloads are carved out into
+; their components below — a leading backslash anchors an Excludes pattern at
+; the start of the relative path, and naming a directory skips it whole.
+;
+; A COMPONENT WITH NO BYTES LOOKS LIKE A SWITCH THAT DOES NOTHING (it was
+; reported exactly that way), so every component that HAS real bytes in the
+; bundle owns them. The local speech stack is the big one: faster-whisper and
+; its runtime (ctranslate2, onnxruntime, av, tokenizers, hf_xet) are ~175MB
+; that only voice input and playtest transcripts use; numpy serves that stack
+; and the playtest recorder; the sounddevice data dir is capture-only. All of
+; these are OPTIONAL pip extras in the source install, so their imports are
+; already guarded and their absence is a configuration the code has always
+; supported. Music, cinematics and brainstorm are honestly a few kilobytes of
+; already-bundled code, so those rows stay sizeless feature switches, which
+; is what the page's own copy now says.
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Components: core; \
+    Excludes: "\_internal\bgate_ui\static\img\floor,\_internal\bgate_ui\static\audio\floor,\_internal\av,\_internal\av.libs,\_internal\ctranslate2,\_internal\onnxruntime,\_internal\faster_whisper,\_internal\tokenizers,\_internal\hf_xet,\_internal\_sounddevice_data"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\bgate_ui\static\img\floor\*"; \
+    DestDir: "{app}\_internal\bgate_ui\static\img\floor"; Components: floor; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\bgate_ui\static\audio\floor\*"; \
+    DestDir: "{app}\_internal\bgate_ui\static\audio\floor"; Components: floor; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+; The whisper stack is VOICE's. Playtest transcripts are speech-to-text,
+; that is the voice feature doing work for playtest, and the wizard says
+; so; a playtest-without-voice install records sessions with no
+; transcripts, exactly what the guarded adapter has always reported when
+; whisper is absent. numpy lives in CORE: both voice and playtest need
+; it, and a file shared between two components is displayed on both
+; rows while installing once, which made the rows sum 22MB past the
+; footer (reported as "counts still look wrong", because they were).
+Source: "{#SourceDir}\_internal\av\*"; DestDir: "{app}\_internal\av"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\av.libs\*"; DestDir: "{app}\_internal\av.libs"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\ctranslate2\*"; DestDir: "{app}\_internal\ctranslate2"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\onnxruntime\*"; DestDir: "{app}\_internal\onnxruntime"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\faster_whisper\*"; DestDir: "{app}\_internal\faster_whisper"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\tokenizers\*"; DestDir: "{app}\_internal\tokenizers"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\_internal\hf_xet\*"; DestDir: "{app}\_internal\hf_xet"; \
+    Components: voice; Flags: ignoreversion recursesubdirs createallsubdirs
+; The capture device layer: playtest recording only.
+Source: "{#SourceDir}\_internal\_sounddevice_data\*"; \
+    DestDir: "{app}\_internal\_sounddevice_data"; Components: playtest; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -165,6 +253,60 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
   if IsAppRunning() then
-    Result := 'Builders Gate is running. Close it and click Retry —' + #13#10 +
-              'the installer cannot replace files the app has open.';
+    Result := 'Builders Gate is running. Close it and click Retry.' + #13#10 +
+              'The installer cannot replace files the app has open.';
+end;
+
+{ THE COMPONENT PAGE'S OTHER HALF. Ticking decides which files land; this
+  records the same answer as the machine's module defaults, which every new
+  project inherits (bgate_core.modules.machine_defaults). Written as the JSON
+  the app already reads — ~/.bgate/modules.json, a single "disabled" list.
+  No literal braces in this comment: a Pascal brace-comment ends at the first
+  closing brace, wherever it appears.
+
+  A silent run never touches an existing file: /SILENT is the upgrade path,
+  its component set is whatever Inno remembered, and overwriting a choice the
+  user made by hand with a remembered default would be the installer editing
+  their settings behind their back. }
+const
+  OptionalComponents = 'floor,voice,playtest';
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Dir, Path, Json, Name: String;
+  Parts: TStringList;
+  I: Integer;
+  First: Boolean;
+begin
+  if CurStep <> ssPostInstall then
+    exit;
+  Dir := ExpandConstant('{%USERPROFILE}') + '\.bgate';
+  Path := Dir + '\modules.json';
+  if WizardSilent() and FileExists(Path) then
+    exit;
+  Parts := TStringList.Create;
+  try
+    Parts.CommaText := OptionalComponents;
+    Json := '{"disabled": [';
+    First := True;
+    for I := 0 to Parts.Count - 1 do
+    begin
+      Name := Parts[I];
+      if not WizardIsComponentSelected(Name) then
+      begin
+        if not First then
+          Json := Json + ', ';
+        Json := Json + '"' + Name + '"';
+        First := False;
+      end;
+    end;
+    Json := Json + ']}';
+    if not DirExists(Dir) then
+      CreateDir(Dir);
+    { Best effort, like every side write here: a machine default that could
+      not be recorded is every module on, which is the shipped behaviour. }
+    SaveStringToFile(Path, Json, False);
+  finally
+    Parts.Free;
+  end;
 end;
