@@ -132,6 +132,53 @@ class TestCheck:
         assert ad.check(root, p, anchors=[])["ok"] is True
 
 
+class TestPinnedPalette:
+    def test_hexes_come_out_of_a_locked_palette_section(self, root):
+        bible.add(root, "constraint", "PALETTE LOCKED",
+                  "Every asset uses exactly: #1a1c2c #ffcd75 and 29366f", rank=0)
+        assert ad.palette_pinned(root) == [
+            (0x1a, 0x1c, 0x2c), (0xff, 0xcd, 0x75), (0x29, 0x36, 0x6f)]
+
+    def test_mentioning_a_colour_is_not_pinning_a_palette(self, root):
+        """A style section may name a hex in passing ("the villain wears
+        #ff0000") without meaning "and nothing else exists"."""
+        bible.add(root, "constraint", "ART DIRECTION LOCKED",
+                  "pixel art, the villain wears #ff0000", rank=0)
+        assert ad.palette_pinned(root) == []
+
+    def test_an_unlocked_palette_section_does_not_pin(self, root):
+        bible.add(root, "constraint", "Palette ideas",
+                  "maybe #101010 and #f0f0f0?", rank=0)
+        assert ad.palette_pinned(root) == []
+
+    def test_no_bible_means_no_palette_and_no_crash(self, root):
+        assert ad.palette_pinned(root) == []
+
+    def test_off_palette_fraction_is_exact(self, tmp_path):
+        from PIL import Image
+        img = Image.new("RGBA", (4, 1))
+        img.putdata([(10, 10, 10, 255), (10, 10, 10, 255),
+                     (99, 99, 99, 255),          # off-palette
+                     (50, 50, 50, 0)])           # transparent - not counted
+        p = tmp_path / "x.png"
+        img.save(p)
+        assert ad.off_palette_fraction(p, [(10, 10, 10)]) == pytest.approx(1 / 3)
+
+    def test_check_measures_but_never_gates_on_the_pinned_palette(
+            self, root, tmp_path):
+        """check() runs on RAW generations, before the conform pass has run —
+        a hard flag here would reject every image the pipeline was about to
+        fix. The hard gate lives post-conform, in image_sprites."""
+        from PIL import Image
+        bible.add(root, "constraint", "PALETTE LOCKED", "#0a0a0a #f0f0f0", rank=0)
+        p = tmp_path / "raw.png"
+        Image.new("RGBA", (8, 8), (200, 30, 30, 255)).save(p)
+        verdict = ad.check(root, p, anchors=[])
+        assert verdict["measured"]["palette_pinned"] == 2
+        assert verdict["measured"]["off_palette"] == 1.0
+        assert verdict["ok"] is True
+
+
 class TestWiring:
     def test_chroma_generate_appends_the_clause(self, brief, monkeypatch, tmp_path):
         """The one door every generation walks through must carry the bible."""

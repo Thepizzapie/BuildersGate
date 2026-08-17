@@ -182,6 +182,29 @@ class TestPaletteLock:
         grad.save(smooth)
         assert spritekit.looks_limited_palette(smooth) is False
 
+    def test_locking_defringes_the_silhouette(self, tmp_path):
+        """The halo bug a human caught on the first real conform: a dim edge
+        blend snaps to whichever palette entry is nearest — sometimes a LIGHT
+        one — and stray anti-aliasing flecks get dressed in a palette colour
+        and become visible. Stray ink evaporates; a lone mismatched edge pixel
+        takes its neighbours' colour; the interior is never touched."""
+        from PIL import Image
+
+        palette = [(200, 40, 40), (240, 240, 240)]
+        img = Image.new("RGBA", (32, 32), (0, 0, 0, 0))
+        img.paste((200, 40, 40, 255), (8, 8, 24, 24))     # the body
+        img.putpixel((2, 2), (20, 20, 25, 255))           # stray AA fleck
+        img.putpixel((8, 8), (230, 230, 230, 255))        # halo pixel -> light
+        frame = tmp_path / "f.png"
+        img.save(frame)
+
+        got = spritekit.lock_palette(frame, palette)
+        assert got["ok"] is True
+        out = Image.open(frame).convert("RGBA")
+        assert out.getpixel((2, 2)) == (0, 0, 0, 0), "stray ink survived"
+        assert out.getpixel((8, 8))[:3] == (200, 40, 40), "halo kept its colour"
+        assert out.getpixel((16, 16))[:3] == (200, 40, 40), "interior edited"
+
     def test_no_reference_is_reported_rather_than_guessed(self, tmp_path):
         """Locking to the batch's own colours would average in whatever drifted,
         which is the opposite of the point."""

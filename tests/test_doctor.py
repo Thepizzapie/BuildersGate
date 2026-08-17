@@ -66,6 +66,11 @@ def everything_present(monkeypatch):
                         lambda: {"name": "local_image", "available": True,
                                  "detail": "ComfyUI at http://127.0.0.1:8188, "
                                            "model sdxl", "optional": True})
+    monkeypatch.setattr("bgate_adapters.aseprite.available",
+                        lambda: {"available": True, "path": "C:/aseprite.exe"})
+    monkeypatch.setattr("bgate_adapters.aseprite.version",
+                        lambda: {"path": "C:/aseprite.exe",
+                                 "version": "Aseprite 1.3.18.2-x64"})
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
 
@@ -97,6 +102,12 @@ def nothing_present(monkeypatch):
                         lambda: {"name": "local_image", "available": False,
                                  "detail": "BGATE_COMFY_T2I_WORKFLOW is not set",
                                  "optional": True})
+    # find_aseprite reads real install dirs off the filesystem, not just PATH —
+    # same trap as ffmpegbin.local_bin above: the developing machine owns a
+    # copy, and "a bare machine" must not inherit it.
+    monkeypatch.setattr("bgate_adapters.aseprite.available",
+                        lambda: {"available": False,
+                                 "reason": "Aseprite not found."})
     # DERIVED FROM THE PROVIDER REGISTRY, for the same reason this module's
     # other list is derived from doctor.CHECKS: this line named OPENAI_API_KEY
     # alone, so the moment `art_key` started counting every provider, a machine

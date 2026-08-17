@@ -61,7 +61,7 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 # edit here.
 CHECKS = ("python", "art_key", "local_runtimes", "agent_cli", "ffmpeg",
           "ffprobe", "blender", "godot", "godot_web_templates", "whisper",
-          "imageto3d", "local_image")
+          "imageto3d", "local_image", "aseprite")
 
 # Rows that SUMMARISE A REGISTRY rather than probe one binary on PATH.
 #
@@ -120,6 +120,11 @@ MIN_REQUIRED = {
     # LOCAL 2D generation is unavailable and every hosted path still works. It
     # is the row that makes "no API key" a configuration rather than a wall.
     "local_image": "",
+    # The Lua surface this project scripts (json global, tag.repeats,
+    # --script-param) is a 1.3 feature set; a 1.2 install reads as too old,
+    # not as broken scripts. Optional row: red costs .aseprite masters and
+    # palette derivation, nothing else.
+    "aseprite": "1.3",
 }
 
 CACHE_SECONDS = 5.0
@@ -337,6 +342,28 @@ def _probe_blender() -> dict:
     return _finish("blender", found.get("path", ""), found.get("version", ""))
 
 
+def _probe_aseprite() -> dict:
+    """Aseprite — .aseprite masters, hand-edit round trips, palette derivation.
+
+    Optional in the same sense as blender: a red row costs the features that
+    need it and nothing else. It is also a PAID product, so unlike ffmpeg
+    there is no fetch button — the fix is an install or BGATE_ASEPRITE.
+    """
+    from bgate_adapters import aseprite
+
+    probe = aseprite.available()
+    if not probe.get("available"):
+        return _missing("aseprite", probe.get("reason", "aseprite not found"))
+    try:
+        found = aseprite.version()
+    except Exception as exc:
+        return _row(available=True, path=probe.get("path", ""),
+                    min_required=MIN_REQUIRED["aseprite"],
+                    reason=f"found the binary but it would not report a version "
+                           f"({type(exc).__name__}: {exc})")
+    return _finish("aseprite", found.get("path", ""), found.get("version", ""))
+
+
 def _probe_godot() -> dict:
     from bgate_adapters import godot
 
@@ -487,6 +514,7 @@ _PROBES: dict[str, Callable[[], dict]] = {
     "whisper": _probe_whisper,
     "imageto3d": _probe_imageto3d,
     "local_image": _probe_local_image,
+    "aseprite": _probe_aseprite,
 }
 
 

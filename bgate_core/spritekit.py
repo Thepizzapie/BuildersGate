@@ -357,6 +357,16 @@ def lock_palette(path: Any, palette: Sequence[Sequence[int]], *,
         # into every transparent pixel it touched.
         out.paste((0, 0, 0, 0), (0, 0),
                   alpha.point(lambda a: 255 if a <= 8 else 0))
+        # DEFRINGE, AFTER THE SNAP. Generators blend the silhouette's edge
+        # toward the (former) background, and those blend pixels hide against
+        # transparency — until quantisation maps a dim halo pixel to whichever
+        # palette entry is nearest in RGB, which can be a LIGHT one, and the
+        # sprite grows a rim of bright speckles it never visibly had. Found by
+        # a human on the first real conform; every A/B before it looked clean
+        # at 1x. Two mechanical repairs, both scoped to the silhouette edge:
+        # stray ink with no body evaporates, and an edge pixel wearing a
+        # colour none of its neighbours wear takes its neighbours' colour.
+        _defringe(out)
         out.save(dst)
     except Exception as exc:                                    # noqa: BLE001
         return {"ok": False, "path": str(src), "colors": len(entries),
@@ -367,6 +377,60 @@ def lock_palette(path: Any, palette: Sequence[Sequence[int]], *,
             "changed": round(changed, 4),
             "note": f"every opaque pixel snapped to one of {len(entries)} "
                     "reference colours — palette drift is now unrepresentable"}
+
+
+def _defringe(img) -> int:
+    """Silhouette-edge repair, in place on an RGBA image. Returns pixels touched.
+
+    Two rules, both restricted to pixels TOUCHING transparency so the figure's
+    interior is never edited:
+
+      * STRAY INK: an opaque pixel with at most one opaque neighbour is debris
+        — a fleck of anti-aliasing that survived keying, invisible at 1x until
+        quantisation dressed it in a palette colour. It becomes transparent.
+      * HALO: an edge pixel whose colour matches NONE of its opaque neighbours
+        is a background blend the snap sent to the wrong palette entry. It
+        takes the most common colour among those neighbours — a colour the
+        edge already wears, so the repair cannot introduce anything new.
+
+    One pass, reading the original and writing a copy, so a repair never
+    cascades into eating the outline pixel by pixel.
+    """
+    width, height = img.size
+    src = img.load()
+    original = img.copy().load()
+    touched = 0
+    for y in range(height):
+        for x in range(width):
+            if original[x, y][3] <= 8:
+                continue
+            neighbours = []
+            transparent = 0
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if not dx and not dy:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if not (0 <= nx < width and 0 <= ny < height):
+                        transparent += 1
+                        continue
+                    pixel = original[nx, ny]
+                    if pixel[3] <= 8:
+                        transparent += 1
+                    else:
+                        neighbours.append(pixel[:3])
+            if not transparent:
+                continue                     # interior — never edited
+            if len(neighbours) <= 1:
+                src[x, y] = (0, 0, 0, 0)     # stray ink
+                touched += 1
+            elif original[x, y][:3] not in neighbours:
+                counts: dict[tuple, int] = {}
+                for rgb in neighbours:
+                    counts[rgb] = counts.get(rgb, 0) + 1
+                src[x, y] = (*max(counts, key=counts.get), original[x, y][3])
+                touched += 1
+    return touched
 
 
 def _fraction_differing(before, after, alpha) -> float:

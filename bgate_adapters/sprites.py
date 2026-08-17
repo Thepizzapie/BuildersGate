@@ -298,6 +298,7 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
                      airborne: tuple[str, ...] = AIRBORNE, arc: float = 0.22,
                      timing: dict | None = None,
                      palette_lock: bool = False, palette_colors: int = 64,
+                     target_palette: list[tuple[int, int, int]] | None = None,
                      pad: int = 0) -> dict:
     """Assemble individually-generated pose images into the sheet+tres contract.
 
@@ -511,9 +512,16 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
     # resize is where a LANCZOS filter invents intermediate colours that were
     # never in the character; before, because the sheet has to be built from the
     # frames that ship, not from the ones that existed halfway through.
+    # The target is the BIBLE's pinned palette when the project has one
+    # (target_palette — the same colours every asset in the game gets), and
+    # the reference's own colours otherwise (per-character consistency, the
+    # only anchor available before a palette is pinned).
     palette_note = None
     if palette_lock:
-        palette = _kit.master_palette(ref_path, palette_colors) if ref_path else []
+        if target_palette:
+            palette = [tuple(int(c) for c in colour) for colour in target_palette]
+        else:
+            palette = _kit.master_palette(ref_path, palette_colors) if ref_path else []
         if not palette:
             palette_note = {"ok": False, "colors": 0,
                             "note": "palette lock asked for but there is no "
@@ -526,11 +534,14 @@ def from_pose_images(pose_files: list[tuple[str, str]], *, out_dir: str,
                 got = _kit.lock_palette(frame_files[pose], palette)
                 if got.get("ok"):
                     moved.append(got["changed"])
+            source = "bible" if target_palette else "reference"
+            owner = ("the project's pinned" if target_palette
+                     else "the reference's")
             palette_note = {
-                "ok": True, "colors": len(palette),
+                "ok": True, "colors": len(palette), "source": source,
                 "mean_changed": round(sum(moved) / len(moved), 4) if moved else 0.0,
-                "note": f"every frame quantised to the reference's {len(palette)} "
-                        "colours — a colour the character does not have is now "
+                "note": f"every frame quantised to {owner} {len(palette)} "
+                        "colours — a colour outside the palette is now "
                         "unrepresentable, so palette drift cannot recur",
             }
 

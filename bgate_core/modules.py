@@ -175,7 +175,8 @@ def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
 # wrong about the spine breaks a workflow silently.
 CRAFTS: dict[str, tuple[str, ...]] = {
     "image": ("image_", "item_", "cutout_", "vfx_animate",
-              "animation_curves", "art_tournament_standings"),
+              "animation_curves", "art_tournament_standings",
+              "aseprite_", "palette_pin"),
     "three_d": ("blender_", "character_generate", "godot_retarget_check"),
     "music": ("kie_music_", "music_"),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),

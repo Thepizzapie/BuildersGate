@@ -272,6 +272,23 @@ class TestFromPoseImages:
         tres = Path(got["tres"]).read_text(encoding="utf-8")
         assert '&"idle"' in tres and '&"jab"' in tres
 
+    def test_a_pinned_target_palette_beats_the_reference_palette(self, tmp_path):
+        """With target_palette (the bible's), the lock snaps to IT — the
+        reference's own colours stop being the target the moment the project
+        pins one, because the pin is the project saying "these, everywhere"."""
+        from PIL import Image
+
+        files = [("idle", self._blob(tmp_path, "idle", (300, 200, 700, 1400)))]
+        target = [(10, 10, 10), (250, 250, 250)]
+        got = sprites.from_pose_images(
+            files, out_dir=str(tmp_path / "o"), name="t",
+            frame_size=(160, 240), palette_lock=True, target_palette=target,
+            ref_path=files[0][1])
+        assert got["ok"] is True
+        assert got["palette"]["source"] == "bible"
+        opaque = {p[:3] for p in Image.open(got["sheet"]).getdata() if p[3] > 0}
+        assert opaque <= set(target)   # the blob's red is unrepresentable now
+
     def test_missing_and_empty_files_fail_alone(self, tmp_path):
         from PIL import Image
 

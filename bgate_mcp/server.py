@@ -45,6 +45,7 @@ import inspect
 import itertools
 import json as _json
 import os
+import tempfile as _tempfile
 import threading
 import time as _time
 from pathlib import Path as _Path
@@ -91,6 +92,7 @@ from bgate_core import search as _search
 from bgate_core import animspec as _animspec
 from bgate_core import spritekit as _spritekit
 from bgate_core import vfx as _vfx
+from bgate_core import artdirection as _artdirection
 
 # THE ONE CHANNEL THAT CANNOT BE DROPPED BY CHANGING DIRECTORY.
 #
@@ -3208,6 +3210,17 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
         return {"ok": False, "name": spec["name"], "error": result.get("error"),
                 "alpha": result.get("alpha"), "prompt": spec["prompt"]}
 
+    # Project-palette conform, BEFORE the preview is archived — the preview a
+    # human approves must be the pixels that ship. Advisory when it cannot run;
+    # an item minted without a pinned palette is the pre-palette status quo.
+    conform = None
+    palette = _artdirection.palette_pinned(root)
+    if palette:
+        got = _spritekit.lock_palette(result["path"], palette)
+        conform = ({"ok": True, "colors": len(palette), "source": "bible",
+                    "changed": got.get("changed")}
+                   if got.get("ok") else got)
+
     archived = _archive_preview(result["path"], f"item-{spec['name']}")
     _register_artifact(spec["name"], result["path"], producer="item_generate",
                        model=result.get("model", ""), prompt=spec["prompt"],
@@ -3226,11 +3239,14 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     man_path.parent.mkdir(parents=True, exist_ok=True)
     man_path.write_text(_json.dumps(man, indent=2), encoding="utf-8")
     indexed = _index_item(root, man)
-    return {"ok": True, "name": spec["name"], "item_class": spec["item_class"],
-            "slot": spec["slot"], "sprite": rel,
-            "manifest": _items.rel_manifest_path(spec["name"]),
-            "indexed": indexed,
-            "preview": archived or result["path"]}
+    out_row = {"ok": True, "name": spec["name"], "item_class": spec["item_class"],
+               "slot": spec["slot"], "sprite": rel,
+               "manifest": _items.rel_manifest_path(spec["name"]),
+               "indexed": indexed,
+               "preview": archived or result["path"]}
+    if conform:
+        out_row["palette"] = conform
+    return out_row
 
 
 @_tool
@@ -3457,6 +3473,259 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
         return _fail(exc)
 
 
+def _ase_anim_specs(animations: dict, timing: Optional[dict],
+                    fps: float) -> list[dict]:
+    """The per-frame durations aseprite.master needs, from the sheet's own plan.
+
+    ``animations`` is {anim: frame_count} in sheet order; ``timing`` is the
+    animspec dict image_sprites already carries. Holds are relative, so a hold
+    of 2.0 at 8fps is 250ms — the master plays exactly what the .tres plays.
+    """
+    from bgate_adapters.sprites import NO_LOOP
+    specs = []
+    for anim, count in animations.items():
+        spec = (timing or {}).get(anim) or {}
+        anim_fps = float(spec.get("fps") or fps) or 8.0
+        holds = list(spec.get("holds") or [])
+        holds += [1.0] * (int(count) - len(holds))
+        loop = spec.get("loop")
+        if loop is None:
+            loop = anim not in NO_LOOP
+        specs.append({"name": str(anim).replace(":", "_").replace("|", "_"),
+                      "durations_ms": [max(1, round(float(h) * 1000.0 / anim_fps))
+                                       for h in holds[:int(count)]],
+                      "loop": bool(loop)})
+    return specs
+
+
+def _ase_master_for(sheet: str, cell: tuple[int, int],
+                    animations: dict, timing: Optional[dict],
+                    fps: float) -> Optional[dict]:
+    """Best-effort .aseprite master beside the sheet. None when Aseprite is absent.
+
+    Never raises and never fails the sheet: the master is a convenience for
+    hand edits, and a machine without Aseprite still ships the same PNG+tres.
+    """
+    from bgate_adapters import aseprite as _ase
+    if not _ase.available().get("available"):
+        return None
+    out = str(_Path(sheet).with_suffix(".aseprite"))
+    try:
+        got = _ase.master(sheet, out, cell=cell,
+                          anims=_ase_anim_specs(animations, timing, fps))
+    except Exception as exc:                                    # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    got["master"] = out
+    return got
+
+
+@_tool
+def aseprite_status() -> dict:
+    """Is Aseprite usable on this machine? Path and version, or what to do.
+
+    Aseprite is OPTIONAL: sheets, conform and .tres still work without it.
+    What needs it: .aseprite masters (aseprite_master, auto-built by
+    image_sprites), re-export of hand-edited masters (aseprite_export), and
+    palette derivation from refs (palette_pin without explicit colors)."""
+    from bgate_adapters import aseprite as _ase
+    try:
+        info = _ase.available()
+        if info.get("available"):
+            info.update(_ase.version())
+        return {"ok": True, **info}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def palette_pin(colors: Optional[list[str]] = None,
+                max_colors: int = 32) -> dict:
+    """PIN THE PROJECT PALETTE in the art bible - the fix for uneven pixel art.
+
+    Generated "pixel art" carries thousands of smeared colours per sheet, and
+    every sheet invents its own, which is why assets look mushy alone and
+    mismatched together. Pinning writes a LOCKED bible constraint listing the
+    palette; from then on every image_sprites sheet, item and vfx set is
+    conformed to exactly these colours, artdirection measures compliance on
+    every generation, and drift becomes unrepresentable rather than reviewable.
+
+    colors: explicit hex list ("#1a1c2c" or "1a1c2c"). Omitted: derived from
+    the pinned style refs (ref_pin kind="style") - Aseprite quantises them to
+    at most max_colors; without Aseprite, the refs' dominant colours are used.
+    Re-running replaces the pinned palette. 16-40 colours is the useful range:
+    fewer flattens faces, more stops being a palette."""
+    try:
+        root = _root()
+        hexes: list[str] = []
+        source = "explicit"
+        if colors:
+            for entry in colors:
+                text = str(entry).strip().lstrip("#").lower()
+                if len(text) != 6 or any(c not in "0123456789abcdef" for c in text):
+                    return {"ok": False, "error": f"not a hex colour: {entry!r}"}
+                if text not in hexes:
+                    hexes.append(text)
+        else:
+            anchors = _artdirection.anchors_for(root, limit=4)
+            if not anchors:
+                return {"ok": False, "error":
+                        "no colors given and no style refs pinned to derive "
+                        "from - pass colors=[...] or ref_pin a style image first"}
+            from bgate_adapters import aseprite as _ase
+            if _ase.available().get("available"):
+                source = "derived (aseprite quantise over style refs)"
+                seen: list[str] = []
+                for anchor in anchors:
+                    with _tempfile.TemporaryDirectory() as tmp:
+                        got = _ase.conform(anchor, str(_Path(tmp) / "q.png"),
+                                           max_colors=max(2, int(max_colors)))
+                    for hexcode in got.get("palette") or []:
+                        if hexcode not in seen:
+                            seen.append(hexcode)
+                hexes = seen
+            else:
+                source = "derived (dominant ref colours - no aseprite)"
+                for anchor in anchors:
+                    for r, g, b in _chroma.palette_of(anchor, colors=max_colors):
+                        hexcode = f"{r:02x}{g:02x}{b:02x}"
+                        if hexcode not in hexes:
+                            hexes.append(hexcode)
+            if len(hexes) > int(max_colors):
+                # Multiple refs can each contribute a near-duplicate ramp; cap
+                # by re-quantising the union down to the asked-for size.
+                from PIL import Image as _Img
+                strip = _Img.new("RGB", (len(hexes), 1))
+                strip.putdata([tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+                               for h in hexes])
+                quant = strip.quantize(colors=int(max_colors),
+                                       method=_Img.Quantize.MEDIANCUT)
+                table = quant.getpalette() or []
+                used = sorted(set(quant.getdata()))
+                hexes = [f"{table[i * 3]:02x}{table[i * 3 + 1]:02x}"
+                         f"{table[i * 3 + 2]:02x}" for i in used]
+        if not hexes:
+            return {"ok": False, "error": "no colours to pin"}
+
+        body = ("Every shipped 2D asset uses exactly these colours - sheets, "
+                "items and VFX are conformed to them automatically:\n"
+                + " ".join(f"#{h}" for h in hexes))
+        existing = next(
+            (s for s in _bible.list_sections(root, "constraint")
+             if _artdirection.PALETTE_TITLE in str(s.get("title") or "")), None)
+        if existing:
+            _bible.update(root, int(existing["id"]), body=body)
+            section_id = int(existing["id"])
+        else:
+            section_id = _bible.add(root, "constraint",
+                                    _artdirection.PALETTE_TITLE, body)["id"]
+        _log("art", f"pinned {len(hexes)}-colour project palette ({source})")
+        return {"ok": True, "section_id": section_id, "source": source,
+                "colors": [f"#{h}" for h in hexes], "count": len(hexes),
+                "note": "every future sheet/item/vfx conforms to this palette; "
+                        "regenerate or re-conform existing art to migrate it"}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def aseprite_master(sheet: str, cell: list[int],
+                    anims: Optional[list[dict]] = None,
+                    fps: float = 8.0) -> dict:
+    """Sheet PNG -> tagged .aseprite MASTER, the file a human edits.
+
+    The master is a playable animation - each cell a real frame, each
+    animation a named tag with its authored timing - so fixes happen with
+    onion-skin and scrub instead of nudging pixels in a flat strip. Written
+    beside the sheet. image_sprites builds one automatically; this tool is
+    for sheets that predate that or came from elsewhere.
+
+    cell: [width, height] of one frame. anims: [{name, frames, fps?, loop?}]
+    in sheet order; omitted, the whole sheet becomes one looping "default".
+    After editing in Aseprite, aseprite_export brings it back as sheet + an
+    EXACT SpriteFrames .tres."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, sheet)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no sheet at {rel}"}
+        from bgate_adapters import aseprite as _ase
+        from PIL import Image as _Img
+        cw, ch = int(cell[0]), int(cell[1])
+        with _Img.open(src) as im:
+            width, height = im.size
+        if width % cw or height % ch:
+            return {"ok": False, "error":
+                    f"cell {cw}x{ch} does not tile the {width}x{height} sheet"}
+        total = (width // cw) * (height // ch)
+        if anims:
+            animations = {str(a["name"]): int(a.get("frames") or 1) for a in anims}
+            timing = {str(a["name"]): {"fps": float(a["fps"])} for a in anims
+                      if a.get("fps")}
+            for a in anims:
+                if a.get("loop") is not None:
+                    timing.setdefault(str(a["name"]), {})["loop"] = bool(a["loop"])
+            claimed = sum(animations.values())
+            if claimed > total:
+                return {"ok": False, "error":
+                        f"anims claim {claimed} frames but the sheet has {total}"}
+        else:
+            animations, timing = {"default": total}, {}
+        got = _ase.master(str(src), str(src.with_suffix(".aseprite")),
+                          cell=(cw, ch),
+                          anims=_ase_anim_specs(animations, timing, float(fps)))
+        got["master"] = _assets.normalize_path(root, src.with_suffix(".aseprite"))
+        return got
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def aseprite_export(master: str, res_dir: str = "assets/sprites",
+                    out_dir: str = "") -> dict:
+    """Hand-edited .aseprite -> sheet PNG + EXACT SpriteFrames .tres.
+
+    The export JSON states every frame's rect, duration and tag, so the .tres
+    is a translation of facts, not a grid guess - per-animation speeds and
+    per-frame holds survive exactly as authored in Aseprite. This is the way
+    back from a hand edit: fix frames in Aseprite, save, call this, import
+    the pair into the game at res://<res_dir>/. Output lands beside the
+    master (or in out_dir), named <stem>_sheet.png + <stem>_frames.tres."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, master)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no master at {rel}"}
+        from bgate_adapters import aseprite as _ase
+        from bgate_core import asejson as _asejson
+        stem = src.stem.removesuffix("_sheet")
+        dest = (root / out_dir) if out_dir else src.parent
+        dest.mkdir(parents=True, exist_ok=True)
+        sheet_path = dest / f"{stem}_sheet.png"
+        data_path = dest / f"{stem}_frames.json"
+        data = _ase.export(str(src), str(sheet_path), str(data_path))
+        tres_path = dest / f"{stem}_frames.tres"
+        tres_path.write_text(
+            _asejson.spriteframes_text(data, sheet_path.name, res_dir),
+            encoding="utf-8")
+        frames = data.get("frames") or []
+        tags = [t.get("name") for t in
+                (data.get("meta") or {}).get("frameTags") or []]
+        try:
+            _assets.track(root, sheet_path)
+        except Exception:
+            pass
+        return {"ok": True,
+                "sheet": _assets.normalize_path(root, sheet_path),
+                "tres": _assets.normalize_path(root, tres_path),
+                "data": _assets.normalize_path(root, data_path),
+                "frames": len(frames), "animations": tags or ["default"],
+                "res_dir": res_dir}
+    except Exception as exc:
+        return _fail(exc)
+
+
 def vfx_animate(key_frame: str, name: str, motion: str = "burst",
                 frames: int = 4, peak: int = 1, cell: Optional[list[int]] = None,
                 fps: float = 14.0, res_dir: str = "assets/vfx",
@@ -3512,7 +3781,8 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
         res = _vfx.animate(
             str(src), str(dest), name, motion=motion, frames=int(frames),
             peak=int(peak), cell=tuple(cell) if cell else (64, 64),
-            fps=float(fps), res_dir=res_dir, loop=loop, overrides=overrides)
+            fps=float(fps), res_dir=res_dir, loop=loop, overrides=overrides,
+            target_palette=_artdirection.palette_pinned(str(root)) or None)
         if not res.get("ok"):
             return res
         _register_artifact(name, res["sheet"], producer="vfx_animate",
@@ -4269,12 +4539,22 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # painterly work with real gradients is left alone, because locking it
         # would band the shading and that is a downgrade nobody ordered.
         lock_mode = str(palette_lock or "auto").strip().lower()
+        # A palette PINNED IN THE BIBLE outranks the auto guess: pinning is the
+        # project saying "these colours, everywhere", and it names the target
+        # (the auto path can only lock to the reference's own colours). An
+        # explicit palette_lock="off" still wins — a human's off is an off.
+        pinned_palette = _artdirection.palette_pinned(str(root))
         if lock_mode in ("auto", ""):
-            do_lock = _spritekit.looks_limited_palette(ref_path)
-            lock_why = ("the reference reads as flat / limited-palette art, "
-                        "where locking is free" if do_lock else
-                        "the reference reads as painterly (many near-identical "
-                        "shades), where locking would band the shading - left off")
+            if pinned_palette:
+                do_lock = True
+                lock_why = (f"the project pins a {len(pinned_palette)}-colour "
+                            "palette in the art bible - every sheet conforms to it")
+            else:
+                do_lock = _spritekit.looks_limited_palette(ref_path)
+                lock_why = ("the reference reads as flat / limited-palette art, "
+                            "where locking is free" if do_lock else
+                            "the reference reads as painterly (many near-identical "
+                            "shades), where locking would band the shading - left off")
         else:
             do_lock = lock_mode in ("on", "true", "yes", "1")
             lock_why = f"palette_lock={palette_lock!r}, set explicitly"
@@ -4286,6 +4566,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
                 ref_path=ref_path, timing=timing or None,
                 palette_lock=do_lock, palette_colors=palette_colors,
+                target_palette=pinned_palette or None,
                 pad=max(0, int(sheet_padding)))
             asm.setdefault("failed", [])
             asm["failed"].extend(pose_errors)
@@ -4392,6 +4673,37 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                                             consistency)
                 except Exception:
                     pass
+            # PALETTE: recorded like consistency is, and GATED HERE rather than
+            # in artdirection.check - check() runs on raw generations before
+            # anything has conformed them, so a hard flag there would reject
+            # every image the pipeline was about to fix. Here the conform has
+            # either run or failed to, which is the fact worth gating on.
+            pal = assembled.get("palette") or {}
+            if pinned_palette:
+                try:
+                    off = _artdirection.off_palette_fraction(
+                        assembled["sheet"], pinned_palette)
+                    pal["off_palette"] = round(off, 4)
+                except Exception as exc:
+                    pal["off_palette_error"] = str(exc)
+                assembled["palette"] = pal
+                try:
+                    _artifacts.record_check(_root(), assembled["sheet"], "palette",
+                                            {"ok": bool(pal.get("ok")),
+                                             **{k: pal[k] for k in
+                                                ("colors", "source", "off_palette")
+                                                if k in pal}})
+                except Exception:
+                    pass
+                if do_lock and not pal.get("ok"):
+                    assembled["ok"] = False
+                    assembled["stage"] = "palette"
+                    assembled["error"] = (
+                        "the project pins a palette but this sheet could not be "
+                        f"conformed to it: {pal.get('note') or 'conform failed'}. "
+                        "The sheet was kept for inspection but MUST NOT be "
+                        "installed as-is.")
+
             cons_note = ""
             if consistency.get("ok"):
                 cons_note = (f", consistency min {consistency.get('min')}"
@@ -4421,6 +4733,18 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "The sheet and preview were kept for inspection but MUST NOT be "
                     "installed as-is - tighten character_prompt on the drifting "
                     "detail, or lower the floor if this is as good as the model gets.")
+
+            # The .aseprite master, built whether or not a gate flipped ok -
+            # a flagged sheet is exactly the one somebody opens to fix by
+            # hand, and the master is how they do that with onion-skin
+            # instead of a flat strip. Best-effort: absent Aseprite, absent
+            # key, nothing changes.
+            ase = _ase_master_for(assembled["sheet"],
+                                  (frame_width, frame_height),
+                                  assembled.get("animations") or {},
+                                  timing or None, fps)
+            if ase is not None:
+                assembled["aseprite"] = ase
 
             seq = assembled.get("sequence") or {}
             seq_note = (f", height-jitter in {seq['flagged']}"

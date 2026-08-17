@@ -9,6 +9,41 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+
+- **A project palette, pinned once and enforced everywhere.** Generated "pixel
+  art" carries thousands of smeared colours per sheet and every sheet invents
+  its own — measured at 7-10k unique colours on real shipped 384×160 sheets,
+  which is the mushy, uneven look, and why characters do not match each other.
+  `palette_pin` writes a LOCKED bible constraint (explicit hexes, or derived
+  from the pinned style refs); from then on every `image_sprites` sheet, minted
+  item and VFX set is conformed to exactly those colours, `artdirection.check`
+  reports the off-palette fraction on every generation, and a sheet that could
+  not be conformed fails with `stage: "palette"` the same way an off-model one
+  fails with `stage: "consistency"`. Drift stops being reviewable and becomes
+  unrepresentable.
+
+- **Aseprite as a first-class adapter** (`bgate_adapters/aseprite.py`,
+  discovered from `BGATE_ASEPRITE` → PATH → the usual install dirs, with a
+  doctor row; optional, and paid — so unlike ffmpeg there is no fetch button).
+  What it buys:
+  - `aseprite_master` — a stitched sheet becomes a tagged `.aseprite` whose
+    frames carry the animspec timing, so a human fixes frames with onion-skin
+    and scrub instead of nudging pixels in a flat strip. `image_sprites`
+    builds one automatically beside every sheet, including flagged ones —
+    those are exactly the sheets somebody opens to repair.
+  - `aseprite_export` — a hand-edited master comes back as sheet PNG plus a
+    SpriteFrames `.tres` translated from Aseprite's own frame-data JSON
+    (`bgate_core/asejson.py`): exact rects, per-animation speeds and
+    per-frame holds from the authored millisecond timing (GCD-reduced),
+    play-once tags, ping-pong baked into the frame list. The first `.tres`
+    emitter in the project built from facts rather than a layout it either
+    constructed or guessed.
+  - `palette_pin` derivation — without explicit colours, the pinned style
+    refs are quantised through Aseprite's indexed conversion (dithering off,
+    deliberately: dither noise is the per-pixel unevenness this exists to
+    remove), falling back to PIL when Aseprite is absent.
+
 ## [0.1.42]
 
 The director you talk to is a real session, a failed item no longer stops
