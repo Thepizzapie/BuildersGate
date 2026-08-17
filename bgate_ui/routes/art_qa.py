@@ -55,12 +55,23 @@ def _reviewer_brief(target: str, candidates: list[dict]) -> str:
     for c in candidates:
         refs = _ref_paths(c)
         ref_str = "; ".join(refs) if refs else "(no reference on record — flag this)"
-        lines.append(
+        entry = (
             f"- artifact_id={c['id']}  logical_name={c['logical_name']}  "
             f"revision={c.get('revision')}  model={c.get('model') or 'unknown'}\n"
             f"    candidate_path: {c['path']}\n"
             f"    reference(s):   {ref_str}"
         )
+        # Playable loops, when the producer wrote them. Read shows one frame
+        # of a GIF, so the agent is pointed at the sheet for stills — but a
+        # human opening the brief (or the dashboard) gets motion, and the
+        # motion findings ride the artifact's metadata either way.
+        gifs = {k: v for k, v in
+                ((c.get("metadata") or {}).get("animation_previews") or {}).items()
+                if k != "_archived"}
+        if gifs:
+            entry += "\n    animation_preview(s): " + "; ".join(
+                f"{anim}: {path}" for anim, path in gifs.items())
+        lines.append(entry)
     listing = "\n".join(lines) if lines else "(no candidates were found to review)"
     return (
         "You are an INDEPENDENT art-consistency reviewer — you did NOT make these "

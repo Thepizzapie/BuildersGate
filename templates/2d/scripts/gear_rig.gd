@@ -36,6 +36,8 @@ const SLOT_Z := {
 
 @onready var _body: AnimatedSprite2D = $Base
 var _layers := {}            # slot -> AnimatedSprite2D
+var _offsets := {}           # slot -> {anim: Array[Vector2|null] per frame}
+var _base_offset := {}       # slot -> Vector2 (the static fallback)
 var _facing_right := true
 
 
@@ -67,7 +69,14 @@ func set_facing(right: bool) -> void:
 	scale.x = 1.0 if right else -1.0
 
 
-func equip(slot: String, frames: SpriteFrames, offset := Vector2.ZERO) -> void:
+## `offsets` is the parsed <name>_offsets.json the sprite pipeline writes from
+## rig-sidecar anchors (Aseprite slices or spriteedit labels): {"cell": [w, h],
+## "animations": {anim: [[x, y] | null, ...]}} with [x, y] in CELL pixels, one
+## entry per frame in play order. A null frame (no anchor authored there) falls
+## back to the static `offset`, so partial coverage degrades to today's
+## behaviour instead of to a weapon snapping to the origin.
+func equip(slot: String, frames: SpriteFrames, offset := Vector2.ZERO,
+		offsets := {}) -> void:
 	var layer: AnimatedSprite2D = _layers.get(slot)
 	if layer == null:
 		push_warning("GearRig: no layer for slot '%s'" % slot)
@@ -75,6 +84,26 @@ func equip(slot: String, frames: SpriteFrames, offset := Vector2.ZERO) -> void:
 	layer.sprite_frames = frames
 	layer.position = offset
 	layer.visible = true
+	_base_offset[slot] = offset
+	_offsets.erase(slot)
+	var anims: Dictionary = offsets.get("animations", {})
+	var cell: Array = offsets.get("cell", [])
+	if anims.size() > 0 and cell.size() == 2:
+		# Anchor coords are cell-local (origin the cell's top-left); layer
+		# positions are relative to the rig origin, which sits at the centred
+		# body cell's middle — so the conversion is one subtraction, done once.
+		var half := Vector2(float(cell[0]) / 2.0, float(cell[1]) / 2.0)
+		var table := {}
+		for anim in anims:
+			var entries: Array = anims[anim]
+			var converted := []
+			for entry in entries:
+				if entry is Array and entry.size() == 2:
+					converted.append(Vector2(float(entry[0]), float(entry[1])) - half)
+				else:
+					converted.append(null)
+			table[anim] = converted
+		_offsets[slot] = table
 
 
 func unequip(slot: String) -> void:
@@ -82,6 +111,8 @@ func unequip(slot: String) -> void:
 	if layer:
 		layer.visible = false
 		layer.sprite_frames = null
+	_offsets.erase(slot)
+	_base_offset.erase(slot)
 
 
 func is_equipped(slot: String) -> bool:
@@ -109,5 +140,16 @@ func _process(_dt: float) -> void:
 			var count := layer.sprite_frames.get_frame_count(anim)
 			layer.frame = min(frame, max(0, count - 1))
 			layer.self_modulate.a = 1.0
+			# Per-frame anchor, when this slot carries an offsets table for
+			# the current animation — the weapon FOLLOWS THE HAND instead of
+			# hovering at one average position for the whole swing.
+			var table: Dictionary = _offsets.get(slot, {})
+			if table.has(anim):
+				var entries: Array = table[anim]
+				var idx: int = min(layer.frame, entries.size() - 1)
+				if idx >= 0 and entries[idx] != null:
+					layer.position = entries[idx]
+				else:
+					layer.position = _base_offset.get(slot, Vector2.ZERO)
 		else:
 			layer.self_modulate.a = 0.0

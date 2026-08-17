@@ -44,6 +44,33 @@ repository at first publication. There is no earlier release history to record.
     deliberately: dither noise is the per-pixel unevenness this exists to
     remove), falling back to PIL when Aseprite is absent.
 
+- **Animations you can watch.** Every review surface judged motion on stills —
+  a pop or a loop hitch is obvious in two seconds of playback and invisible in
+  a grid. `image_sprites`, `vfx_animate` and `aseprite_export` now write one
+  playable GIF per animation at the authored timing (pure Pillow, one palette
+  for the whole GIF so the preview cannot flicker), archive one into the
+  dashboard gallery — which lists and animates `.gif` now, and the preview
+  archive keeps a file's real suffix instead of renaming everything `.png` —
+  and hand the QA reviewer brief an `animation_preview(s)` line per candidate.
+
+- **Hand edits are re-graded on the way back in.** `aseprite_export` was the
+  one art door with no mirror on it: it now slices the exported sheet by its
+  own frame JSON and runs `motion_report` plus the pinned-palette check,
+  recorded on the artifact like every generated sheet's — advisory, because a
+  human changed the file on purpose, so findings report rather than refuse.
+
+- **Aseprite slices become exact gear anchors.** Drag a slice named after a
+  rig slot (`main_hand`, `muzzle`, ...) over the hand in the master, key it
+  per frame, and `aseprite_export` merges it into the sheet's `.rig.json`
+  (never overwriting a label a person placed in the sprite editor) and emits
+  `<name>_offsets.json` — per-frame anchor positions in play order. The 2D
+  template's `gear_rig.gd` gained the matching `offsets` parameter: the
+  weapon follows the hand frame by frame instead of hovering at one average
+  position, and a frame without an anchor falls back to the static offset
+  rather than snapping to the origin. `gear.py`'s provenance ladder finally
+  learned what rigmap documented all along: an anchor a person placed
+  (`authored`, and now `slice`) counts as measured.
+
 ## [0.1.42]
 
 The director you talk to is a real session, a failed item no longer stops

@@ -116,6 +116,54 @@ def spriteframes_text(data: dict, sheet_filename: str, res_dir: str) -> str:
     return "\n".join(lines)
 
 
+def slice_labels(data: dict) -> tuple[list[dict], list[str]]:
+    """Aseprite slices -> rig-sidecar label rows. (labels, skipped_names).
+
+    A slice is how a human marks an anchor IN Aseprite — drag a named rect
+    over the hand, key it per frame — and it rides the same export JSON the
+    .tres already comes from. Slice-key bounds are CANVAS coordinates (the
+    cw×ch sprite), which is exactly the cell-local frame the rig sidecar
+    stores, so no grid math happens here at all.
+
+    The slice NAME is the slot, and it must be one of rigmap.KNOWN_SLOTS —
+    an unknown name is reported back, never invented into the taxonomy: a
+    typo'd "main_hnd" that silently became a new slot would be invisible to
+    every reader filtering on the real one.
+
+    The anchor point is the bounds centre; a slice with an explicit pivot
+    (set in Aseprite's slice properties) uses that instead, since a pivot is
+    the author saying "this exact pixel", offset from the bounds origin.
+    """
+    from bgate_core import rigmap
+
+    labels: list[dict] = []
+    skipped: list[str] = []
+    for entry in (data.get("meta") or {}).get("slices") or []:
+        raw = str(entry.get("name") or "").strip()
+        slot = rigmap.slot_name(raw)
+        if slot not in rigmap.KNOWN_SLOTS:
+            skipped.append(raw or "(unnamed)")
+            continue
+        for key in entry.get("keys") or []:
+            bounds = key.get("bounds") or {}
+            try:
+                frame = int(key.get("frame", 0))
+                x0, y0 = float(bounds["x"]), float(bounds["y"])
+                w, h = float(bounds["w"]), float(bounds["h"])
+            except (KeyError, TypeError, ValueError):
+                skipped.append(f"{raw}@{key.get('frame')}")
+                continue
+            pivot = key.get("pivot")
+            if isinstance(pivot, dict) and "x" in pivot and "y" in pivot:
+                x, y = x0 + float(pivot["x"]), y0 + float(pivot["y"])
+            else:
+                x, y = x0 + w / 2.0, y0 + h / 2.0
+            labels.append({"slot": slot, "frame": frame,
+                           "x": round(x, 1), "y": round(y, 1),
+                           "source": "slice"})
+    return labels, skipped
+
+
 def _hold(value: int) -> str:
     return f"{max(1, int(value)):.1f}"
 

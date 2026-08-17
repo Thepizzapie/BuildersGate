@@ -62,11 +62,17 @@ MAX_CELLS = 16
 
 # Anchor provenance, weakest last. Callers report these verbatim — the whole
 # point is that a reader can tell which anchors were read off real art.
+AUTHORED = "authored"                  # a person pointed at the pixel (spriteedit)
+SLICE = "slice"                        # a person dragged a slice in Aseprite
 MEASURED = "measured"                  # >=2 gear sheets agreed; grip intersection
 MEASURED_SINGLE = "measured_single"    # one sheet only; centroid of the whole gear
 INFERRED_HAND = "inferred_hand"        # learned hand palette, clustered on the body
 INFERRED_SILHOUETTE = "inferred_silhouette"  # no palette match; body extremity
-MEASURED_SOURCES = (MEASURED, MEASURED_SINGLE)
+# Human-authored tiers count as measured — rigmap has documented `authored` as
+# outranking every inferred source since it existed, but this tuple never
+# learned that, so Anchor.measured was False for the one kind of anchor a
+# person had explicitly placed.
+MEASURED_SOURCES = (AUTHORED, SLICE, MEASURED, MEASURED_SINGLE)
 
 # One body animation can need MORE than one gear layer: a dual-wield swing drives
 # a main-hand layer and an off-hand layer off the same body frames, and the game

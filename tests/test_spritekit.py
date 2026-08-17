@@ -487,3 +487,109 @@ class TestAnimspec:
         assert rows["idle"]["steps"] > rows["idle"]["generated"]
         assert rows["walk"]["steps"] == rows["walk"]["generated"]
         assert all(row["why"] for row in rows.values())
+
+
+class TestFacingReport:
+    """The generated-frames facing vote — row_report had one for months while
+    the path that buys frames one API call at a time never ran it. Found by a
+    human on the first real 8-frame walk: two frames facing camera in a set
+    asked to face right, motion report clean."""
+
+    @staticmethod
+    def _head(tmp_path, name, eye_side):
+        """A figure whose head band carries a dark 'visor' left or right."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (64, 96), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rectangle((20, 4, 44, 28), fill=(210, 190, 170, 255))    # head
+        d.rectangle((24, 30, 40, 90), fill=(120, 130, 150, 255))   # body
+        ex = (36, 42) if eye_side > 0 else (22, 28)
+        d.rectangle((ex[0], 12, ex[1], 20), fill=(25, 20, 20, 255))
+        p = tmp_path / f"{name}.png"
+        img.save(p)
+        return str(p)
+
+    def _set(self, tmp_path, sides):
+        ordered = [f"walk/{i}" for i in range(len(sides))]
+        files = {pose: self._head(tmp_path, f"f{i}", side)
+                 for i, (pose, side) in enumerate(zip(ordered, sides))}
+        return ordered, files
+
+    def test_the_minority_is_the_finding(self, tmp_path):
+        ordered, files = self._set(tmp_path, [1, 1, -1, 1, 1, 1])
+        got = spritekit.facing_report(ordered, files)
+        [finding] = got["findings"]
+        assert finding["kind"] == "facing_flip"
+        assert finding["frames"] == ["walk/2"]
+
+    def test_a_unanimous_set_is_clean(self, tmp_path):
+        ordered, files = self._set(tmp_path, [1, 1, 1, 1])
+        assert spritekit.facing_report(ordered, files)["findings"] == []
+
+    def test_a_split_set_is_ambiguous_not_a_verdict(self, tmp_path):
+        """Half the frames are wrong either way — pretending to know which
+        half helps nobody."""
+        ordered, files = self._set(tmp_path, [1, 1, -1, -1])
+        got = spritekit.facing_report(ordered, files)
+        assert got.get("ambiguous") is True and got["findings"] == []
+
+    def test_sheet_report_carries_the_finding_and_flags_the_anim(self, tmp_path):
+        ordered, files = self._set(tmp_path, [1, 1, 1, -1, 1, 1])
+        got = spritekit.sheet_report(ordered, files)
+        assert "walk" in got["flagged"]
+        kinds = {f["kind"] for f in got["animations"]["walk"]["findings"]}
+        assert "facing_flip" in kinds
+        assert got["facing"]["voters"] == 6
+
+
+class TestHeightOutlier:
+    """Set-median height check — the adjacent-pair jitter check cannot see a
+    first and last frame that are both drawn tall, because they are never a
+    pair. Found by a human bracketing a real 8-frame walk."""
+
+    @staticmethod
+    def _figure_h(tmp_path, name, height):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (64, 200), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rectangle((24, 199 - height, 40, 199), fill=(150, 60, 40, 255))
+        p = tmp_path / f"{name}.png"
+        img.save(p)
+        return str(p)
+
+    def _set(self, tmp_path, heights, anim="walk"):
+        ordered = [f"{anim}/{i}" for i in range(len(heights))]
+        files = {pose: self._figure_h(tmp_path, f"h{i}", h)
+                 for i, (pose, h) in enumerate(zip(ordered, heights))}
+        return ordered, files
+
+    def test_a_tall_bracket_is_flagged_against_the_median(self, tmp_path):
+        ordered, files = self._set(tmp_path, [160, 144, 145, 146, 144, 158])
+        got = spritekit.facing_report(ordered, files)
+        [finding] = [f for f in got["findings"] if f["kind"] == "height_outlier"]
+        assert set(finding["frames"]) == {"walk/0", "walk/5"}
+
+    def test_stride_variation_under_the_threshold_is_not_a_finding(self, tmp_path):
+        ordered, files = self._set(tmp_path, [140, 144, 146, 145, 142, 146])
+        got = spritekit.facing_report(ordered, files)
+        assert [f for f in got["findings"] if f["kind"] == "height_outlier"] == []
+
+    def test_airborne_animations_do_not_vote(self, tmp_path):
+        """A jump tucks its legs — shorter drawn height is the pose, not a
+        defect."""
+        ordered, files = self._set(tmp_path, [144, 145, 120, 146, 145],
+                                   anim="jump")
+        got = spritekit.facing_report(ordered, files, airborne=("jump",))
+        assert got["findings"] == [] and got["heights"] == {}
+
+    def test_a_fifty_fifty_scale_fork_is_still_a_finding(self, tmp_path):
+        """Three tall + three short leaves no minority, and the outlier vote
+        rightly refuses to pick a side — but a 33% spread is wrong no matter
+        which half is right. Measured on a real nb2 walk."""
+        ordered, files = self._set(tmp_path, [154, 154, 103, 103, 154, 102])
+        got = spritekit.facing_report(ordered, files)
+        [finding] = [f for f in got["findings"] if f["kind"] == "height_split"]
+        assert set(finding["frames"]) == set(ordered)
+        assert "walk/2" in finding["note"] and "walk/5" in finding["note"]

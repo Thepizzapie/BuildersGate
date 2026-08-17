@@ -184,7 +184,10 @@ def from_painted_sheet(image_path: str, pose_names: list[str], *, out_dir: str,
         frame.paste(resized, _kit.place_offset(fw, fh, resized.width,
                                                resized.height,
                                                _kit.anchor_x(resized)))
-        dest = out / f"{name}_{pose}.png"
+        # "anim/idx" pose names are directories to a filesystem — the other
+        # two emitters flatten the slash and this one crashed on the first
+        # multi-frame painted strip instead.
+        dest = out / f"{name}_{pose.replace('/', '_')}.png"
         frame.save(dest)
         frame_files[pose] = str(dest)
         ordered.append(pose)

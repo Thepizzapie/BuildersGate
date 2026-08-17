@@ -842,7 +842,12 @@ def _archive_preview(src: str, label: str) -> Optional[str]:
         previews = root / ".bgate" / "previews"
         previews.mkdir(parents=True, exist_ok=True)
         safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40]
-        dest = previews / f"{time.strftime('%Y%m%d-%H%M%S')}_{safe or 'render'}.png"
+        # The SOURCE suffix, not a hardcoded .png: this used to copy a GIF's
+        # bytes under a .png name, which browsers would sniff and animate but
+        # the API would serve with the wrong type. An archive that renames a
+        # file's format is lying about the one fact its name carries.
+        suffix = _Path(src).suffix.lower() or ".png"
+        dest = previews / f"{time.strftime('%Y%m%d-%H%M%S')}_{safe or 'render'}{suffix}"
         shutil.copy2(src, dest)
         return str(dest)
     except Exception:
@@ -3498,6 +3503,44 @@ def _ase_anim_specs(animations: dict, timing: Optional[dict],
     return specs
 
 
+def _gif_previews(frame_map: dict, sheet: str, name: str,
+                  timing: Optional[dict], fps: float) -> dict[str, str]:
+    """One playable GIF per animation, beside the sheet. {} on any failure.
+
+    ``frame_map`` is {pose: path} in sheet order, pose names "anim/idx" or
+    bare — the same grouping rule _group_frames uses. The first animation's
+    GIF is also archived so the dashboard gallery shows motion, not a grid.
+    """
+    try:
+        from bgate_adapters.sprites import NO_LOOP
+        from bgate_core import animgif as _animgif
+
+        by_anim: dict[str, list[str]] = {}
+        for pose, path in frame_map.items():
+            by_anim.setdefault(str(pose).split("/", 1)[0], []).append(path)
+        written = _animgif.write_gifs(by_anim, str(_Path(sheet).parent), name,
+                                      timing=timing, fps=fps, no_loop=NO_LOOP,
+                                      scale=2 if _gif_cells_small(frame_map) else 1)
+        if written:
+            first = next(iter(written.values()))
+            archived = _archive_preview(first, f"anim-{name}")
+            if archived:
+                written["_archived"] = archived
+        return written
+    except Exception:                                           # noqa: BLE001
+        return {}
+
+
+def _gif_cells_small(frame_map: dict) -> bool:
+    """Upscale the preview 2x when the frames are small enough to squint at."""
+    try:
+        from PIL import Image
+        with Image.open(next(iter(frame_map.values()))) as im:
+            return max(im.size) <= 128
+    except Exception:                                           # noqa: BLE001
+        return False
+
+
 def _ase_master_for(sheet: str, cell: tuple[int, int],
                     animations: dict, timing: Optional[dict],
                     fps: float) -> Optional[dict]:
@@ -3690,7 +3733,17 @@ def aseprite_export(master: str, res_dir: str = "assets/sprites",
     per-frame holds survive exactly as authored in Aseprite. This is the way
     back from a hand edit: fix frames in Aseprite, save, call this, import
     the pair into the game at res://<res_dir>/. Output lands beside the
-    master (or in out_dir), named <stem>_sheet.png + <stem>_frames.tres."""
+    master (or in out_dir), named <stem>_sheet.png + <stem>_frames.tres.
+
+    Also, when present in the master:
+    - SLICES named after rig slots (main_hand, off_hand, muzzle, ... - drag
+      one over the hand, key it per frame) become EXACT per-frame anchors:
+      merged into <stem>_sheet.rig.json and emitted as <stem>_offsets.json,
+      which gear_rig.gd's `offsets` parameter consumes. Hand-authored labels
+      in the sidecar are never overwritten.
+    - Every tag gets a playable GIF preview at the authored timing, and the
+      export is re-graded (motion_report + pinned-palette check) ADVISORY -
+      a human edited this on purpose, so findings report, never refuse."""
     try:
         root = _Path(_root())
         rel = _assets.normalize_path(root, master)
@@ -3716,14 +3769,183 @@ def aseprite_export(master: str, res_dir: str = "assets/sprites",
             _assets.track(root, sheet_path)
         except Exception:
             pass
-        return {"ok": True,
-                "sheet": _assets.normalize_path(root, sheet_path),
-                "tres": _assets.normalize_path(root, tres_path),
-                "data": _assets.normalize_path(root, data_path),
-                "frames": len(frames), "animations": tags or ["default"],
-                "res_dir": res_dir}
+        result = {"ok": True,
+                  "sheet": _assets.normalize_path(root, sheet_path),
+                  "tres": _assets.normalize_path(root, tres_path),
+                  "data": _assets.normalize_path(root, data_path),
+                  "frames": len(frames), "animations": tags or ["default"],
+                  "res_dir": res_dir}
+        result.update(_ase_export_review(root, data, sheet_path, stem))
+        result.update(_ase_export_anchors(data, sheet_path, stem))
+        return result
     except Exception as exc:
         return _fail(exc)
+
+
+def _ase_export_review(root: _Path, data: dict, sheet_path: _Path,
+                       stem: str) -> dict:
+    """Re-grade a re-exported master, advisory, plus playable GIF previews.
+
+    Every other art path passes motion_report and the palette check; a hand
+    edit was the one door with no mirror on it. Advisory on purpose - a
+    human changed this file deliberately, so a finding is for their eyes,
+    not a refusal. Never raises: the pair on disk is the deliverable and it
+    is already written.
+    """
+    import tempfile as _tf
+
+    out: dict = {}
+    try:
+        from PIL import Image as _Img
+
+        from bgate_core import animgif as _animgif
+
+        frames = data.get("frames") or []
+        tags = list((data.get("meta") or {}).get("frameTags") or [])
+        if not tags:
+            tags = [{"name": "default", "from": 0, "to": len(frames) - 1}]
+        with _tf.TemporaryDirectory(prefix="bgate-ase-review-") as tmp, \
+                _Img.open(sheet_path) as sheet_img:
+            sheet = sheet_img.convert("RGBA")
+            ordered: list[str] = []
+            frame_files: dict[str, str] = {}
+            by_anim: dict[str, list[str]] = {}
+            no_loop: set[str] = set()
+            for tag in tags:
+                name = str(tag.get("name") or "default")
+                lo, hi = int(tag.get("from", 0)), int(tag.get("to", -1))
+                if not (0 <= lo <= hi < len(frames)):
+                    continue
+                if str(tag.get("repeat") or "") == "1":
+                    no_loop.add(name)
+                for i, frame in enumerate(range(lo, hi + 1)):
+                    rect = frames[frame].get("frame") or {}
+                    cell = sheet.crop((rect["x"], rect["y"],
+                                       rect["x"] + rect["w"],
+                                       rect["y"] + rect["h"]))
+                    path = str(_Path(tmp) / f"{name}_{i}.png")
+                    cell.save(path)
+                    label = f"{name}/{i}"
+                    ordered.append(label)
+                    frame_files[label] = path
+                    by_anim.setdefault(name, []).append(path)
+            if ordered:
+                out["motion"] = _spritekit.sheet_report(
+                    ordered, frame_files, no_loop=no_loop)
+                previews: dict[str, str] = {}
+                for anim, paths in by_anim.items():
+                    lo = next(int(t.get("from", 0)) for t in tags
+                              if str(t.get("name") or "default") == anim)
+                    durs = [max(20, int(frames[lo + i].get("duration") or 100))
+                            for i in range(len(paths))]
+                    # Scale by CELL size, not sheet size — a 12-frame strip is
+                    # 768px wide while its cells are still 64px sprites nobody
+                    # can review unscaled.
+                    first_rect = (frames[0].get("frame") or {}) if frames else {}
+                    small = max(int(first_rect.get("w") or 0),
+                                int(first_rect.get("h") or 0)) <= 128
+                    dest = sheet_path.parent / f"{stem}_{anim}.gif"
+                    got = _animgif.write_gif(paths, str(dest), durations=durs,
+                                             loop=anim not in no_loop,
+                                             scale=2 if small else 1)
+                    if got.get("ok"):
+                        previews[anim] = str(dest)
+                if previews:
+                    first = next(iter(previews.values()))
+                    archived = _archive_preview(first, f"anim-{stem}")
+                    if archived:
+                        previews["_archived"] = archived
+                    out["animation_previews"] = previews
+        pinned = _artdirection.palette_pinned(str(root))
+        if pinned:
+            off = _artdirection.off_palette_fraction(sheet_path, pinned)
+            out["palette"] = {
+                "ok": off == 0.0, "source": "bible", "off_palette": round(off, 4),
+                "note": ("on the pinned palette" if off == 0.0 else
+                         f"{off:.1%} of the ink is off the pinned palette - a "
+                         "hand edit introduced outside colours; re-conform or "
+                         "extend the palette with palette_pin")}
+        for key in ("motion", "palette"):
+            if key in out:
+                try:
+                    _artifacts.record_check(str(root), str(sheet_path), key,
+                                            out[key])
+                except Exception:
+                    pass
+    except Exception as exc:                                    # noqa: BLE001
+        out["review_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _ase_export_anchors(data: dict, sheet_path: _Path, stem: str) -> dict:
+    """Slices -> rig sidecar labels + the runtime offsets file. {} when none.
+
+    Slice labels replace only earlier SLICE labels; a label a person placed
+    in spriteedit (`authored`) wins over one from the same person's Aseprite
+    session only because the sidecar was there first and stomping it would
+    lose work silently - the report says when that happened.
+    """
+    out: dict = {}
+    try:
+        from PIL import Image as _Img
+
+        from bgate_core import asejson as _asejson
+        from bgate_core import rigmap as _rigmap
+
+        labels, skipped = _asejson.slice_labels(data)
+        if not labels and not skipped:
+            return {}
+        rig = _rigmap.load(sheet_path)
+        frames = data.get("frames") or []
+        first = (frames[0].get("frame") or {}) if frames else {}
+        with _Img.open(sheet_path) as im:
+            sheet_size = im.size
+        cw, ch = int(first.get("w") or 0), int(first.get("h") or 0)
+        if cw and ch and sheet_size[0] % cw == 0 and sheet_size[1] % ch == 0:
+            rig["grid"] = {"cell_w": cw, "cell_h": ch,
+                           "cols": sheet_size[0] // cw,
+                           "rows": sheet_size[1] // ch}
+        # Tags become the sidecar's animations so offsets_json knows play order.
+        anims = []
+        for tag in (data.get("meta") or {}).get("frameTags") or []:
+            lo, hi = int(tag.get("from", 0)), int(tag.get("to", -1))
+            if 0 <= lo <= hi < len(frames):
+                anims.append({"name": str(tag.get("name") or "default"),
+                              "frames": list(range(lo, hi + 1)),
+                              "loop": str(tag.get("repeat") or "") != "1"})
+        if anims:
+            rig["animations"] = anims
+        kept = [lab for lab in rig.get("labels") or []
+                if lab.get("source") != "slice"]
+        taken = {(lab["slot"], lab["frame"]) for lab in kept}
+        shadowed = []
+        merged = list(kept)
+        for lab in labels:
+            if (lab["slot"], lab["frame"]) in taken:
+                shadowed.append(f"{lab['slot']}@{lab['frame']}")
+                continue
+            merged.append(lab)
+        rig["labels"] = merged
+        _rigmap.save(sheet_path, rig, sheet_size=sheet_size)
+        saved = _rigmap.load(sheet_path)
+        offsets_path = sheet_path.parent / f"{stem}_offsets.json"
+        slots = _rigmap.slots_used(saved)
+        primary = "main_hand" if "main_hand" in slots else (slots[0] if slots else "")
+        if primary:
+            offsets_path.write_text(
+                _json.dumps(_rigmap.offsets_json(saved, primary), indent=2),
+                encoding="utf-8")
+        out["anchors"] = {
+            "slots": slots,
+            "labels": len([lab for lab in saved["labels"]
+                           if lab.get("source") == "slice"]),
+            "rig": str(_rigmap.sidecar_path(sheet_path)),
+            "offsets": str(offsets_path) if primary else "",
+            **({"skipped_slices": skipped} if skipped else {}),
+            **({"kept_authored": shadowed} if shadowed else {})}
+    except Exception as exc:                                    # noqa: BLE001
+        out["anchors_error"] = f"{type(exc).__name__}: {exc}"
+    return out
 
 
 def vfx_animate(key_frame: str, name: str, motion: str = "burst",
@@ -3785,11 +4007,18 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
             target_palette=_artdirection.palette_pinned(str(root)) or None)
         if not res.get("ok"):
             return res
+        previews_gif = _gif_previews(
+            {f"default/{i}": p for i, p in enumerate(res["frames"])},
+            res["sheet"], name,
+            {"default": {"loop": res["loop"]}}, float(fps))
+        if previews_gif:
+            res["animation_previews"] = previews_gif
         _register_artifact(name, res["sheet"], producer="vfx_animate",
                            refs=[str(src)],
                            metadata={"motion": motion, "frames": frames,
                                      "anchor": res["anchor"],
-                                     "coverage": res["coverage"]})
+                                     "coverage": res["coverage"],
+                                     "animation_previews": previews_gif})
         for key in ("sheet", "tres"):
             res[key] = _assets.normalize_path(root, res[key])
         res["frames"] = [_assets.normalize_path(root, p) for p in res["frames"]]
@@ -4647,6 +4876,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             frame_map = assembled.get("frames", {})
             assembled["consistency"] = consistency
 
+            # PLAYABLE previews, one GIF per animation, at the sheet's own
+            # timing. Motion review has only ever had stills; a pop or a loop
+            # hitch is obvious in two seconds of playback and invisible in a
+            # grid. Best-effort, before registration so they ride metadata.
+            previews_gif = _gif_previews(frame_map, assembled["sheet"], name,
+                                         timing, fps)
+            if previews_gif:
+                assembled["animation_previews"] = previews_gif
+
             artifact = _register_artifact(
                 name, assembled["sheet"], producer="image_sprites",
                 prompt=character_prompt,
@@ -4654,6 +4892,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 metadata={"poses": poses, "frames": frame_map,
                           "failed": assembled.get("failed", []),
                           "preview": archived or "",
+                          "animation_previews": previews_gif,
                           "consistency": consistency,
                           "sequence": assembled.get("sequence"),
                           "motion": assembled.get("motion"),

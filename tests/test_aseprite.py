@@ -234,3 +234,69 @@ class TestRealAseprite:
         text = asejson.spriteframes_text(data, "out.png", "assets/sprites")
         assert '"speed": 12.5' in text          # gcd(80,160,240)=80
         assert '"loop": false' in text and '&"idle"' in text
+
+
+# ---------------------------------------------------------------------------
+# Slices -> rig labels
+# ---------------------------------------------------------------------------
+def _sliced(slices):
+    data = _export(_RECTS, [{"name": "idle", "from": 0, "to": 2}])
+    data["meta"]["slices"] = slices
+    return data
+
+
+class TestSliceLabels:
+    def test_bounds_centre_becomes_a_cell_local_label(self):
+        labels, skipped = asejson.slice_labels(_sliced([
+            {"name": "main_hand",
+             "keys": [{"frame": 1, "bounds": {"x": 2, "y": 3, "w": 4, "h": 6}}]}]))
+        assert skipped == []
+        assert labels == [{"slot": "main_hand", "frame": 1,
+                           "x": 4.0, "y": 6.0, "source": "slice"}]
+
+    def test_a_pivot_wins_over_the_centre(self):
+        """A pivot is the author saying "this exact pixel"; it is stored
+        relative to the slice bounds origin."""
+        [label], _ = asejson.slice_labels(_sliced([
+            {"name": "muzzle",
+             "keys": [{"frame": 0, "bounds": {"x": 10, "y": 10, "w": 8, "h": 8},
+                       "pivot": {"x": 1, "y": 2}}]}]))
+        assert (label["x"], label["y"]) == (11.0, 12.0)
+
+    def test_an_unknown_slice_name_is_reported_not_invented(self):
+        """A typo'd "main_hnd" that silently became a new slot would be
+        invisible to every reader filtering on the real one."""
+        labels, skipped = asejson.slice_labels(_sliced([
+            {"name": "main_hnd",
+             "keys": [{"frame": 0, "bounds": {"x": 0, "y": 0, "w": 2, "h": 2}}]}]))
+        assert labels == [] and skipped == ["main_hnd"]
+
+    def test_no_slices_is_the_quiet_normal_case(self):
+        assert asejson.slice_labels(
+            _export(_RECTS, [])) == ([], [])
+
+
+@requires_aseprite
+class TestRealSlices:
+    def test_a_slice_authored_in_aseprite_rides_the_export_json(self, tmp_path):
+        from PIL import Image
+
+        sheet = tmp_path / "s.png"
+        Image.new("RGBA", (16, 8), (200, 40, 40, 255)).save(sheet)
+        master = tmp_path / "m.aseprite"
+        aseprite.master(str(sheet), str(master), cell=(8, 8),
+                        anims=[{"name": "idle", "durations_ms": [100, 100]}])
+        lua = """
+local spr = app.open(app.params.src)
+local s = spr:newSlice(Rectangle(2, 3, 4, 2))
+s.name = "main_hand"
+spr:saveAs(app.params.src)
+print("BGATE:" .. json.encode({ok=true}))
+"""
+        assert aseprite._run_script(lua, {"src": str(master)})["ok"]
+        data = aseprite.export(str(master), str(tmp_path / "out.png"),
+                               str(tmp_path / "out.json"))
+        labels, skipped = asejson.slice_labels(data)
+        assert skipped == []
+        assert labels and labels[0]["slot"] == "main_hand"
+        assert (labels[0]["x"], labels[0]["y"]) == (4.0, 4.0)

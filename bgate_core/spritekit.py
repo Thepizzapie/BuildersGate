@@ -672,7 +672,137 @@ def sheet_report(ordered: Sequence[str], frame_files: dict[str, str], *,
         anims[anim] = report
         if report["flagged"]:
             flagged.append(anim)
-    return {"ok": True, "animations": anims, "flagged": flagged}
+
+    # FACING, across the WHOLE set, not per animation. A yaw flip is invisible
+    # to every measurement above — the silhouette of a head is the silhouette
+    # of a head from either side, so overlap reads fine — and the row_report
+    # path has had this vote for months while the GENERATED path, the one that
+    # buys its frames one API call at a time, never ran it. Found by a human on
+    # the first 8-frame walk this pipeline produced: two frames facing the
+    # camera in a set asked to face right, motion report clean.
+    facing = facing_report(ordered, frame_files, airborne=airborne)
+    if facing.get("findings"):
+        odd_anims = sorted({pose.partition("/")[0]
+                            for f in facing["findings"]
+                            for pose in f.get("frames", [])})
+        for anim in odd_anims:
+            if anim in anims:
+                anims[anim]["findings"].extend(
+                    [f for f in facing["findings"]
+                     if any(p.partition("/")[0] == anim for p in f["frames"])])
+                anims[anim]["flagged"] = True
+            if anim not in flagged:
+                flagged.append(anim)
+    return {"ok": True, "animations": anims, "flagged": flagged,
+            "facing": facing}
+
+
+#: How far a frame's drawn height may sit from the SET median before it is an
+#: outlier. Distinct from _sequence_flags' adjacent-pair jitter: a first and
+#: last frame drawn tall are not adjacent to each other, bracket the set, and
+#: sailed through the pairwise check on a real 8-frame walk — while being the
+#: first thing a human saw on the sheet. Calibrated on that sheet (median
+#: 145.5px): the honest six sat within 3.8% — stride genuinely changes drawn
+#: height — and the worst offender at 5.8%. The margin is thin and that is the
+#: honest shape of the signal: below 5% this fires on real stride variation,
+#: and a mild offender (the same sheet's other bad frame, at 4.5%) is left to
+#: the facing vote, which caught it.
+HEIGHT_OUTLIER_FRAC = 0.05
+
+#: Full-set height spread past which the set is broken even when no minority
+#: exists to name. Genuine stride measured ≤6%; the real failure this catches
+#: measured 33% (a 50/50 fork into two character scales).
+HEIGHT_SPLIT_FRAC = 0.12
+
+
+def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
+                  airborne: Iterable[str] = ()) -> dict:
+    """Per-frame geometry against the whole set: facing vote + height outliers.
+
+    Facing: :func:`head_skew` per frame (where the face's dark detail sits in
+    the head band), majority vote over every frame with a readable skew.
+    Frames on the losing side are the finding; a set that splits down the
+    middle is reported ``ambiguous`` instead — half the frames are wrong
+    either way, and pretending to know which half helps nobody.
+
+    Height: trimmed ink height against the set MEDIAN. The area anchor
+    normalises visual mass, so a frame drawn at a more front-facing angle
+    (narrower silhouette, same area) comes out TALLER — a height outlier is
+    usually the shadow of a camera-angle drift no silhouette measure can name
+    directly. Airborne animations are excluded: a jump tucks its legs.
+    """
+    airborne = set(airborne)
+    skews: list[tuple[str, float]] = []
+    heights: list[tuple[str, int]] = []
+    for pose in ordered:
+        path = frame_files.get(pose)
+        if not path:
+            continue
+        try:
+            img = _open(path)
+            value = head_skew(img)
+            bbox = img.getbbox()
+        except Exception:                                       # noqa: BLE001
+            continue
+        skews.append((pose, value))
+        if bbox and pose.partition("/")[0] not in airborne:
+            heights.append((pose, bbox[3] - bbox[1]))
+    voters = [(pose, s) for pose, s in skews if abs(s) >= FACING_SKEW_MIN]
+    out = {"skews": {pose: round(s, 3) for pose, s in skews},
+           "heights": dict(heights),
+           "voters": len(voters), "findings": []}
+
+    if len(heights) >= 4:
+        ordered_h = sorted(h for _, h in heights)
+        median = ordered_h[len(ordered_h) // 2]
+        tall = [(pose, h) for pose, h in heights
+                if median and abs(h - median) / median > HEIGHT_OUTLIER_FRAC]
+        if tall and len(tall) * 2 < len(heights):
+            out["findings"].append({
+                "kind": "height_outlier",
+                "frames": [pose for pose, _ in tall], "iou": None,
+                "note": f"drawn height sits off the set's median ({median}px) "
+                        f"by more than {HEIGHT_OUTLIER_FRAC:.0%}: "
+                        + ", ".join(f"{p} at {h}px" for p, h in tall)
+                        + ". With the area anchor holding mass constant, a "
+                          "taller frame is usually a narrower one — the model "
+                          "drifted toward a more front-facing angle. Re-roll "
+                          "these frames."})
+        elif median and (ordered_h[-1] - ordered_h[0]) / median > HEIGHT_SPLIT_FRAC:
+            # No MINORITY to name — but a spread this wide is wrong no matter
+            # which half is right. Found on a real nb2 walk that forked 50/50
+            # into 103px and 154px knights: the outlier vote correctly refused
+            # to pick a side and then said nothing at all about a 33% split.
+            short_half = [p for p, h in heights if h - ordered_h[0] < ordered_h[-1] - h]
+            out["findings"].append({
+                "kind": "height_split",
+                "frames": [p for p, _ in heights], "iou": None,
+                "note": f"the set splits into two heights "
+                        f"({ordered_h[0]}-{ordered_h[-1]}px, "
+                        f"{(ordered_h[-1] - ordered_h[0]) / median:.0%} of median) "
+                        f"with no minority to blame — {', '.join(short_half)} "
+                        "sit in the short cluster. Genuine stride varies a few "
+                        "percent; this is two drawings of the character at two "
+                        "scales. Re-roll one cluster against the other."})
+
+    if len(voters) >= 3:
+        right = sum(1 for _, s in voters if s > 0)
+        left = len(voters) - right
+        if right == left:
+            out["ambiguous"] = True
+        else:
+            majority = 1 if right > left else -1
+            odd = [pose for pose, s in voters
+                   if (1 if s > 0 else -1) != majority]
+            if odd and len(odd) * 2 < len(voters):
+                out["findings"].append({
+                    "kind": "facing_flip", "frames": odd, "iou": None,
+                    "note": f"{len(odd)} frame(s) face the other way from the "
+                            "rest of the set — the head's dark detail (visor, "
+                            "eyes, muzzle) sits on the wrong side. Re-roll "
+                            "these frames; a mirror flip in paint also works "
+                            "when the design is symmetric enough."})
+    return out
 
 
 def _split_figure(path: str) -> bool:

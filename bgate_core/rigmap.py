@@ -336,6 +336,36 @@ def slots_used(data: dict) -> list[str]:
     return sorted({lab["slot"] for lab in data.get("labels") or []})
 
 
+def offsets_json(data: dict, slot: str = "main_hand") -> dict:
+    """The runtime carrier: per-frame anchor offsets, keyed the way the game
+    plays them — ``{animations: {anim: [[x, y] | null, ...]}}``.
+
+    This is the file gear_rig.gd's ``offsets`` parameter eats. Entries are in
+    each animation's PLAY ORDER (the .tres consumes frames the same way), and
+    a frame without a label is ``null`` — the rig falls back to the static
+    offset there rather than snapping to (0,0), so partial coverage degrades
+    to today's behaviour instead of to a teleporting weapon.
+
+    Cell-local pixels, same space the labels are authored in. The consumer
+    subtracts its own sprite centring; what this file promises is only "the
+    anchor is HERE in this frame's cell".
+    """
+    want = slot_name(slot)
+    by_frame = {lab["frame"]: lab for lab in data.get("labels") or []
+                if lab["slot"] == want}
+    grid = data.get("grid") or {}
+    anims: dict[str, list] = {}
+    for anim in data.get("animations") or []:
+        entries = []
+        for frame in anim.get("frames") or []:
+            lab = by_frame.get(int(frame))
+            entries.append([lab["x"], lab["y"]] if lab else None)
+        anims[anim["name"]] = entries
+    return {"slot": want,
+            "cell": ([grid["cell_w"], grid["cell_h"]] if grid else None),
+            "animations": anims}
+
+
 def coverage(data: dict) -> dict:
     """Which frames carry which slots, and which are still bare.
 

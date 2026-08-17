@@ -319,7 +319,7 @@ def export(master_path: str, sheet_out: str, data_out: str, *,
         raise AsepriteError(f"no such master: {master_path}")
     proc = _spawn([exe, "-b", str(src),
                    "--sheet", str(sheet_out), "--data", str(data_out),
-                   "--sheet-type", "rows", "--list-tags",
+                   "--sheet-type", "rows", "--list-tags", "--list-slices",
                    "--format", "json-array"], timeout=timeout)
     if proc.returncode != 0 or not Path(data_out).is_file():
         tail = ((proc.stderr or "") + (proc.stdout or "")).strip()
