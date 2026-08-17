@@ -27,7 +27,6 @@ nothing), it just has no cinematic tools to dispatch against.
 """
 from __future__ import annotations
 
-from typing import Optional
 
 # name -> what the module is and what it gates. `tools` are PREFIXES matched
 # against MCP tool names at registration; `doctor` names the doctor rows that

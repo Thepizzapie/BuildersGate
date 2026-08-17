@@ -1006,16 +1006,27 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return _refused("spawn_failed", f"cannot create the agent log dir: {exc}")
-    log_path = log_dir / f"item-{item_id}.log"
+    # int(), not the raw parameter. The rotation below is a path expression and
+    # this name is the only caller-derived part of it; forcing the id through
+    # int() at the boundary means no separator, traversal or wildcard can reach
+    # a filename, whatever a future caller passes.
+    log_path = log_dir / f"item-{int(item_id)}.log"
     # The log appends across every re-dispatch of this item FOREVER — nothing
     # rotated it, and a bounced item's log is documented at 10MB per run. One
     # rolled generation at spawn keeps the previous rounds readable (the QA
     # brief points at the path) without the file growing for the project's
     # life. Run markers + byte cursors already scope every reader to THIS run,
     # so a shrunk file only ever costs a tailer a re-read.
+    #
+    # CONTAINED BEFORE IT IS TOUCHED. `root` is registry-supplied rather than
+    # request-supplied, but os.replace() is a destructive sink and a rename is
+    # not somewhere to reason from provenance alone: the check proves the file
+    # about to be rotated is inside the log directory this function just built.
     try:
-        if log_path.stat().st_size >= 20 * 1024 * 1024:
-            os.replace(log_path, log_path.with_suffix(".log.1"))
+        rotated = log_dir / (log_path.name + ".1")
+        if (_contained(str(log_path), str(log_dir))
+                and log_path.stat().st_size >= 20 * 1024 * 1024):
+            os.replace(log_path, rotated)
     except OSError:
         pass
 

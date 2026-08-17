@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from bgate_core import db, queue, refs, search, seats, task_refs
 

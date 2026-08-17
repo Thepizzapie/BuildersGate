@@ -25,7 +25,6 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
 
 # The Claude Code CLI's model aliases — what every *agent* model setting
 # takes. 'fable' is the Claude 5 flagship alias; the full ids also work but

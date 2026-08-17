@@ -52,7 +52,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from bgate_core import activity as _activity
 from bgate_core import queue as _queue
