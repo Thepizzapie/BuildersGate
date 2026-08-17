@@ -158,6 +158,11 @@ def project_create(request: Request, payload: dict) -> dict:
     # absent list is the default (everything on).
     off = [str(m).strip() for m in (payload.get("modules_off") or [])
            if str(m).strip()]
+    # The wizard sends the list (its checklist pre-unticks three_d for 2D and
+    # the human's word is final). A caller that sent none gets the same 2D
+    # default the CLI applies.
+    if "modules_off" not in payload and kind == "2d":
+        off = ["three_d"]
     if off:
         try:
             _settings.set(root, "modules.disabled", off)

@@ -680,6 +680,27 @@ def _inject_token(html: str) -> str:
     return shim + html
 
 
+# THE FLOOR'S ASSETS MAY LIVE IN A SEPARATE PACKAGE. The wheel excludes
+# static/img/floor and static/audio/floor (~30MB of decoration — see the
+# `floor` extra in pyproject); a source checkout still has them, and an
+# install that added builders-gate-floor-assets serves them from that package
+# instead. Mounted BEFORE the general /static mount because starlette matches
+# mounts in registration order, and only when the local tree is absent — the
+# checkout's own files always win. No assets anywhere: the paths 404 and the
+# floor draws the procedural fallback it has always carried.
+try:
+    if not (_STATIC / "img" / "floor").is_dir():
+        import bgate_floor_assets  # the optional pack
+
+        _pack = Path(bgate_floor_assets.path())
+        for _sub, _mount in (("img", "/static/img/floor"),
+                             ("audio", "/static/audio/floor")):
+            if (_pack / _sub).is_dir():
+                app.mount(_mount, StaticFiles(directory=str(_pack / _sub)),
+                          name=f"floor-assets-{_sub}")
+except Exception:
+    pass  # no pack is a quieter floor, never a broken dashboard
+
 # Per-seat workspace JS modules live under static/ and load as /static/seats/*.js.
 # StaticFiles is part of starlette (ships with FastAPI) — no new dependency.
 app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")

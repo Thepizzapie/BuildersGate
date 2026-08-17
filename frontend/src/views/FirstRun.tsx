@@ -89,6 +89,9 @@ export default function FirstRun() {
      before they have a project. Stored as modules.disabled; changeable later
      in Settings > Modules. */
   const [off, setOff] = useState<Set<string>>(new Set());
+  /* Which boxes the human has actually clicked. The 2D default below may
+     pre-untick three_d, but it must never fight a choice someone made. */
+  const touched = useRef<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState("");
 
@@ -114,6 +117,19 @@ export default function FirstRun() {
     // take focus, so autoFocus at mount would have been a no-op here.
     nameRef.current?.focus();
   }, [armed]);
+
+  /* A 2D project defaults the 3D pipeline off — cutout and sprite work never
+     opens Blender. Follows the kind cards until the human touches the box,
+     then their word is final. */
+  useEffect(() => {
+    if (touched.current.has("three_d")) return;
+    setOff((prev) => {
+      const next = new Set(prev);
+      if (kind === "2d") next.add("three_d");
+      else next.delete("three_d");
+      return next;
+    });
+  }, [kind]);
 
   const known = Object.entries(info.known || {}).sort((a, b) =>
     a[0].localeCompare(b[0]));
@@ -232,12 +248,15 @@ export default function FirstRun() {
                   const box = (
                     <Checkbox key={m.name} size="xs" checked={enabled}
                               label={m.label}
-                              onChange={() => setOff((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(m.name)) next.delete(m.name);
-                                else next.add(m.name);
-                                return next;
-                              })} />
+                              onChange={() => {
+                                touched.current.add(m.name);
+                                setOff((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(m.name)) next.delete(m.name);
+                                  else next.add(m.name);
+                                  return next;
+                                });
+                              }} />
                   );
                   return (
                     <Tooltip key={m.name} multiline w={260} withArrow

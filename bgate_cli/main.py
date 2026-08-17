@@ -336,6 +336,13 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
 
     project.init(root, name, pitch=pitch, engine="godot", dimension=kind)
+    # A 2D project defaults the 3D pipeline OFF — cutout/sprite work never
+    # opens Blender, and the default should match the kind just chosen.
+    # Re-enable any time in Settings > Modules; an explicit --without wins.
+    if kind == "2d" and "three_d" not in (without or ""):
+        without = (without + ",three_d") if without else "three_d"
+        print("3D pipeline switched off for a 2D project - re-enable in "
+              "Settings > Modules if you want Blender work here")
     off_note = _store_modules_off(root, without)
     if off_note:
         print(off_note)

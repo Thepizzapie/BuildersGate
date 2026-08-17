@@ -741,11 +741,19 @@ def _module_registers(tool_name: str) -> bool:
             _MODULES_OFF = _modules.disabled(root)
         except Exception:
             _MODULES_OFF = set()
-    if not _MODULES_OFF:
-        return True
     from bgate_core import modules as _modules
 
-    return _modules.tool_enabled(tool_name, _MODULES_OFF)
+    if _MODULES_OFF and not _modules.tool_enabled(tool_name, _MODULES_OFF):
+        return False
+    # THE SEAT'S CRAFT, on top of the project's modules. A dispatched seat
+    # registers only the craft surfaces it practises plus the shared spine —
+    # a gameplay agent stops carrying every blender_ and cinematic_ schema on
+    # every turn. Scoped-off is per process and per seat, exactly like the
+    # module gate; BGATE_SEAT_TOOLS=all is the escape hatch for a session
+    # that genuinely needs everything (say so in the dispatch env).
+    if (os.environ.get("BGATE_SEAT_TOOLS", "").strip().lower()) == "all":
+        return True
+    return _modules.seat_tool_enabled(tool_name, _seat())
 
 
 def _fail(exc: Exception) -> dict:

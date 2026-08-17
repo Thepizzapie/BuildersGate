@@ -36,8 +36,9 @@ MODULES: dict[str, dict] = {
     "floor": {
         "label": "Studio floor",
         "blurb": "The animated office-floor view of your agents. Pure "
-                 "spectacle — the board shows the same facts as a list.",
-        "tools": (), "extras": (), "doctor": (),
+                 "spectacle — the board shows the same facts as a list. Its "
+                 "art and ambience are the optional assets pack (~30MB).",
+        "tools": (), "extras": ("floor",), "doctor": (),
     },
     "brainstorm": {
         "label": "Brainstorm rooms",
@@ -131,6 +132,68 @@ def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
     if not needers:
         return True          # a core row is nobody's option
     return any(m not in off for m in needers)
+
+
+# ---------------------------------------------------------------------------
+# Seat tool surfaces — which CRAFT a dispatched seat actually practises
+# ---------------------------------------------------------------------------
+# Modules trim the registry per PROJECT; crafts trim it per SEAT. A gameplay
+# agent carried every cinematic_, blender_ and kie_music_ schema in its
+# context on every turn — tools it has no lane, no brief step and no business
+# calling. Craft groups are the unambiguous generation/authoring surfaces;
+# everything outside them (queue, seats, bible, lore, godot, scene, assets,
+# refs, checks) is the SHARED SPINE and stays universal, because guessing
+# wrong about the spine breaks a workflow silently.
+CRAFTS: dict[str, tuple[str, ...]] = {
+    "image": ("image_", "item_", "cutout_", "vfx_animate",
+              "animation_curves", "art_tournament_standings"),
+    "three_d": ("blender_", "character_generate", "godot_retarget_check"),
+    "music": ("kie_music_", "music_"),
+    "cinematic": ("cinematic_", "storyboard_", "kie_video_"),
+    "voice": ("voice_",),
+    "sfx": ("sfx_",),
+    "playtest": ("playtest_",),
+    "dialogue": ("dialogue_",),
+    "quest": ("quest_",),
+    "level": ("level_",),
+    "verdicts": ("art_qa_verdict", "art_tournament_verdict"),
+    "brainstorm": ("brainstorm_",),
+}
+
+# Which crafts each dispatched seat holds. Absent seats — and the director,
+# whose whole job is reaching across crafts — are unscoped. `brainstorm`
+# belongs to no seat: the room is its own read-only process, and deploying a
+# plan is seatless director work.
+SEAT_CRAFTS: dict[str, tuple[str, ...]] = {
+    "art": ("image", "three_d"),
+    "gameplay": ("playtest", "level", "quest"),
+    "tech": ("level", "three_d"),
+    "audio": ("music", "voice", "sfx"),
+    # narrative holds `cinematic` for the storyboard half — scripts and
+    # boards are writing work — not for shot generation, which spends.
+    "narrative": ("dialogue", "quest", "cinematic"),
+    "qa": ("playtest", "verdicts"),
+    "cinematic": ("cinematic", "image"),
+}
+
+
+def seat_tool_enabled(tool_name: str, seat: str) -> bool:
+    """Does this seat's registry include this tool?
+
+    Fail open three ways on purpose: no seat (a human's session), an unknown
+    seat (a project invented one — its surface is unknowable, so it gets
+    everything), and any tool outside every craft group (the shared spine).
+    A wrongly-hidden tool is a silently broken workflow; a wrongly-shown one
+    costs only context.
+    """
+    held = SEAT_CRAFTS.get((seat or "").strip().lower())
+    if held is None:
+        return True
+    for craft, prefixes in CRAFTS.items():
+        for prefix in prefixes:
+            if tool_name.startswith(prefix):
+                return craft in held
+    return True
 
 
 def pip_hint(for_modules) -> str:
