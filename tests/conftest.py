@@ -64,6 +64,25 @@ def _isolated_user_dir(tmp_path_factory, monkeypatch):
                        str(tmp_path_factory.mktemp("bgate_home")))
 
 
+@pytest.fixture(autouse=True)
+def _no_provider_keys(monkeypatch):
+    """No test sees a real provider key, or another test's leaked one.
+
+    envfile.load_env loads a project's .env into process-global os.environ
+    with never-overwrite semantics, so one test writing a key into its
+    project's .env used to leak it into every LATER test in the run — which
+    made provider-selection behaviour (tiers' keyless-rung substitution,
+    provider_for's probe order) pass in isolation and fail in the full sweep,
+    in whichever order the leak landed. It is also the billing guard: a test
+    that accidentally reaches a paid API should find no key, whatever is set
+    on the developer's machine. Tests that need a key set their own with
+    monkeypatch.setenv, which layers on top of this cleanly.
+    """
+    for var in ("OPENAI_API_KEY", "KREA_API_KEY", "KIE_API_KEY",
+                "DEEPGRAM_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture()
 def anyio_backend():
     return "asyncio"

@@ -4352,9 +4352,25 @@ def silhouette_verdict(report: dict, *, min_ratio: float = 0.15,
             "thresholds": {"min_ratio": min_ratio, "max_ratio": max_ratio}}
 
 
-def _plate_provider(name: str):
-    """The module that generates a plate. krea or the gpt-image path."""
-    if (name or "").strip().lower() == "krea":
+def _plate_provider(name: str, root=None):
+    """The module that generates a plate. krea or the gpt-image path.
+
+    A blank name consults the project's preference (art.provider) and the
+    identity routing before defaulting — the old shape was krea-only-if-
+    literally-named, else openai, so the stored preference could never reach
+    the one generation that decides what the whole character looks like. Only
+    krea and openai can paint a plate here; any other answer (kie, local)
+    keeps the gpt-image path it always took.
+    """
+    chosen = (name or "").strip().lower()
+    if not chosen and root is not None:
+        try:
+            from bgate_core import providers as _providers
+
+            chosen = _providers.provider_for("anchor", root=root)
+        except Exception:
+            chosen = ""
+    if chosen == "krea":
         from bgate_adapters import krea
         return krea
     from bgate_adapters import imagegen
@@ -4485,7 +4501,7 @@ def character(prompt: str, out_dir: str | os.PathLike[str], *,
     # framed head to feet — which is what made the skeleton fit at limbs=1.0
     # with no compensation. Drop it and the generator invents a stance and the
     # skeleton has to be bent to whatever it chose.
-    shot = _plate_provider(provider).generate(
+    shot = _plate_provider(provider, root=root).generate(
         plate_prompt, str(raw_plate), size=size, task_kind="character",
         ref_paths=[tpl["pose_front"]], ref_strength=0.45, root=root)
     step = {"step": "plate", "ok": bool(shot.get("ok")),

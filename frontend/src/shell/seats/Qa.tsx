@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Ti } from "../Ti";
 import { askText, mutate, readJSON, toast, watchAgent } from "../../bridge";
 import { Head, Nothing, Tag, ReadError, Banner } from "./prims";
@@ -155,11 +155,23 @@ type Job = {
 };
 
 /** Poll a 202'd job to a terminal state. A run that is not watched is a button
- *  that lies about being finished, and an error nobody ever sees. */
-async function awaitJob(id: number, onStage: (s: string) => void): Promise<Job> {
+ *  that lies about being finished, and an error nobody ever sees.
+ *
+ *  `alive` ends the WATCH, not the job: navigating away used to leave this
+ *  loop firing a request every 1.4s for up to ~12 minutes and calling
+ *  setState on a component that was gone. The job itself keeps running
+ *  server-side and its outcome lands on the board either way. */
+async function awaitJob(id: number, onStage: (s: string) => void,
+                        alive: () => boolean = () => true): Promise<Job> {
   for (let i = 0; i < 500; i++) {
+    if (!alive())
+      return { state: "detached", terminal: true,
+               error: "stopped watching — the job continues on the server" };
     const j = await readJSON<Job>(`/api/jobs/${id}`, {});
     if (j.__error) return { state: "failed", terminal: true, error: j.__error };
+    if (!alive())
+      return { state: "detached", terminal: true,
+               error: "stopped watching — the job continues on the server" };
     onStage(j.stage || j.state || "running");
     if (j.terminal) return j;
     await new Promise((r) => window.setTimeout(r, 1400));
@@ -168,6 +180,12 @@ async function awaitJob(id: number, onStage: (s: string) => void): Promise<Job> 
 }
 
 export function Qa({ seat, active, tab }: SeatBodyProps) {
+  /* awaitJob's leash — see its docstring. */
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [busy, setBusy] = useState("");
   const [stage, setStage] = useState("");
   /* Bumped after any write, so the panel shows the consequence of the button
@@ -255,7 +273,9 @@ export function Qa({ seat, active, tab }: SeatBodyProps) {
       toast(r.error || `${label} did not start`, "bad");
       return null;
     }
-    const job = await awaitJob(r.data.job_id, setStage);
+    const job = await awaitJob(r.data.job_id, setStage,
+                               () => mounted.current);
+    if (!mounted.current) return null;
     setBusy(""); setStage("");
     setNonce((n) => n + 1);
     if (job.state === "cancelled") { toast(`${label} was cancelled`, "warn"); return null; }

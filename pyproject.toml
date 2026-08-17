@@ -56,6 +56,12 @@ record = ["sounddevice>=0.4", "numpy>=1.26"]
 # window too. The frameless title bar lives on that primary path, which is what
 # finally made the absence visible.
 desktop = ["pywebview>=5.0", "comtypes>=1.2"]
+# The studio floor's paintings and ambience — ~30MB that used to ride in EVERY
+# wheel whether or not a project ever opened the floor. Now a separate
+# distribution (packaging/build_floor_assets.py builds it from this repo's own
+# trees); without it the floor draws its procedural fallback and stays silent.
+# A source checkout has the files either way and never needs this.
+floor = ["builders-gate-floor-assets"]
 # Building the downloadable BuildersGate.exe — see packaging/build_exe.py.
 build = ["pyinstaller>=6.14", "pywebview>=5.0"]
 
@@ -105,6 +111,15 @@ bgate_engine = ["*.md", "schemas/**/*"]
 # only works from a source checkout -- the same class of bug as the wheel
 # that shipped with no JavaScript.
 templates = ["**/*", "**/.gitignore"]
+
+[tool.setuptools.exclude-package-data]
+# The floor's paintings and ambience are the OPTIONAL assets pack (the `floor`
+# extra; packaging/build_floor_assets.py). ~30MB of a 39MB static tree, paid
+# by every install for one decorative pane. The dashboard serves these paths
+# from the assets package when it is installed and the floor degrades to its
+# procedural surface when it is not — bgate_ui.app's fallback mounts.
+bgate_ui = ["static/img/floor/*", "static/img/floor/**/*",
+            "static/audio/floor/*", "static/audio/floor/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

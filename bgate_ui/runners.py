@@ -387,6 +387,42 @@ def _claude_chat_args(exe: str, *, system: str, model: Optional[str],
         + (["--max-budget-usd", f"{max_usd:.2f}"] if max_usd > 0 else [])
 
 
+def _claude_director_args(exe: str, *, system: str, model: Optional[str],
+                          max_usd: float = 0.0, resume: str = "") -> list[str]:
+    """The director console's session: a FULL Claude Code session, held open.
+
+    The third argv shape, and the one the console chat was missing. The other
+    two are its parents: _claude_args is the capability surface (the dispatch
+    tool set plus the whole builders-gate server), _claude_chat_args is the
+    lifecycle (one process, stdin held open, one `result` per turn, --resume to
+    continue the CLI's own conversation across dashboard restarts). This is the
+    first with the second, because the human asked for exactly that: the thing
+    they get by opening a terminal in the project and running `claude`, wired
+    behind the console instead.
+
+    --append-system-prompt, NOT --system-prompt. The chat shape replaces the
+    default prompt because "a coding agent with a working directory" is the
+    wrong frame for a read-only room. It is the RIGHT frame here — the whole
+    complaint with the switchboard was a director that could not investigate —
+    so the director framing is appended to the stock prompt rather than
+    replacing it.
+
+    No --max-turns. The dispatch shape carries one because a work item is a
+    bounded errand; a conversation is not, and the ceiling that fits it is the
+    budget one (--max-budget-usd, the CLI's own, plus the session ceiling the
+    caller tracks across respawns).
+    """
+    return [exe, "-p", "--permission-mode", "acceptEdits",
+            "--input-format", "stream-json", "--output-format", "stream-json",
+            "--verbose", "--replay-user-messages",
+            "--allowedTools", f"mcp__{MCP_SERVER_NAME}", "Read", "Edit", "Write",
+            "Glob", "Grep", "Bash"] \
+        + (["--resume", resume] if resume else []) \
+        + ["--append-system-prompt", system] \
+        + (["--model", model] if model else []) \
+        + (["--max-budget-usd", f"{max_usd:.2f}"] if max_usd > 0 else [])
+
+
 # `find` is late-bound through this module's own globals rather than holding the
 # function object, so monkeypatching `runners.find_claude` (which the dispatch
 # tests do, to stand a fake CLI up on disk) is actually seen by the table.

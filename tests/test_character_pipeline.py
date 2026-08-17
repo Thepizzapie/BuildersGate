@@ -29,7 +29,8 @@ def stub(monkeypatch, tmp_path):
             calls["plate"] = {"prompt": prompt, **kw}
             return {"ok": True, "path": out, "estimated_usd": 0.06}
 
-    monkeypatch.setattr(blender, "_plate_provider", lambda name: _Provider)
+    monkeypatch.setattr(blender, "_plate_provider",
+                        lambda name, root=None: _Provider)
     monkeypatch.setattr(blender, "_key_plate", lambda src, dst: (0.18, ""))
     monkeypatch.setattr(blender, "rig", lambda *a, **k: dict(
         calls.__setitem__("rig", k) or {},

@@ -15,8 +15,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, Request
 
+from bgate_core import activity as _activity
+from bgate_core import modules as _modules
 from bgate_core import project as _project
 from bgate_core import scaffold as _scaffold
+from bgate_core import settings as _settings
 from bgate_core.util import slugify
 from bgate_ui import api
 from bgate_ui.deps import root as _root
@@ -96,6 +99,10 @@ def project_read() -> dict:
         "templates": _scaffold.list_templates(),
         "kinds": list(_scaffold.KINDS),
         "known": _project.known_projects(),
+        # The optional-feature checklist the first-run card renders — every
+        # module with its blurb and the pip command that lights it up fully,
+        # so "what gets installed" is a choice made where the choosing is.
+        "modules": _modules.catalog(),
     }
     try:
         found = _root()
@@ -145,6 +152,29 @@ def project_create(request: Request, payload: dict) -> dict:
 
     project = _project.init(root, name, pitch=(payload.get("pitch") or "").strip(),
                             engine="godot", dimension=kind)
+
+    # THE PROJECT'S MODULE CHOICE IS SEEDED, NOT ASKED. The first-run card
+    # asked (a checklist between the template cards and Create) and the owner
+    # called it what it was: an installer question on a create-a-game form.
+    # What gets installed is the setup wizard's component page, which writes
+    # the MACHINE defaults; a new project inherits those, plus the 2D rule
+    # (a 2D game does not open Blender), plus anything an API caller passed
+    # explicitly. Settings > Modules is where a project changes its mind.
+    off_set = _modules.machine_defaults()
+    off_set |= {str(m).strip() for m in (payload.get("modules_off") or [])
+                if str(m).strip()}
+    if kind == "2d":
+        off_set.add("three_d")
+    off = sorted(off_set)
+    if off:
+        try:
+            _settings.set(root, "modules.disabled", off)
+        except Exception as exc:
+            # The project exists and works; a failed preference write must not
+            # roll that back. Say so instead.
+            _activity.log(root, "project",
+                          f"could not store module choices ({exc}) — "
+                          "set them in Settings", seat="director")
 
     # Point the RUNNING server at what it just made. _root() reads BGATE_ROOT
     # first and otherwise walks up from the cwd — and the new project is a

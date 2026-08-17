@@ -13,6 +13,7 @@ import { BrainstormFoot } from "./Brainstorm";
 import { Composer, type Aim } from "./Composer";
 import { ResumeInCli } from "../ResumeInCli";
 import { FloorPane } from "./FloorPane";
+import { moduleOff } from "../../bridge";
 import { type Linked } from "./AssetLink";
 import { Cat } from "./Cat";
 import { Streamer } from "./Streamer";
@@ -544,8 +545,12 @@ function Live({
                                 label: <span><Ti name="layout-list" size={12} /> Board</span> },
                               { value: "graph",
                                 label: <span><Ti name="sitemap" size={12} /> Graph</span> },
-                              { value: "floor",
-                                label: <span><Ti name="building" size={12} /> Floor</span> },
+                              /* The floor is a MODULE — a project that
+                                 switched it off gets no third segment, and a
+                                 restored pane preference of "floor" falls
+                                 back to the board below. */
+                              ...(moduleOff("floor") ? [] : [{ value: "floor",
+                                label: <span><Ti name="building" size={12} /> Floor</span> }]),
                             ]} />
           <span style={{ flex: 1 }} />
           <Badge size="sm" variant="default" leftSection={<Ti name="clock" size={11} />}>
@@ -562,7 +567,7 @@ function Live({
                       click. */
                    queueView={tab !== "queue" ? null
                      : pane === "graph" ? <GraphPane state={state} />
-                     : pane === "floor" ? <FloorPane state={state} />
+                     : pane === "floor" && !moduleOff("floor") ? <FloorPane state={state} />
                      : null} />
       </div>
     </>

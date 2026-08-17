@@ -128,7 +128,13 @@ def resolve_for_section(root: str | os.PathLike[str], section_id: Optional[int],
             seen.add(r["resolved_path"])
             layered.append({"ref": r["ref"], "kind": r["kind"], "note": r["note"],
                             "path": r["resolved_path"], "scope": "bible"})
+    # Same restraint as task_refs.resolve_for_task, same reason: a section
+    # with anchors keeps its identity set, and only the style pins — the
+    # project's look — ride along uninvited.
+    anchored = bool(layered)
     for g in refs.list_refs(root, kind=kind):
+        if anchored and not kind and g.get("kind") != "style":
+            continue
         path = g.get("path")
         if not path or path in seen:
             continue

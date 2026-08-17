@@ -400,7 +400,10 @@ def _verify_rule(root: str) -> str:
         pass
     godot = engine == "godot" or (root_path / "game" / "project.godot").is_file()
     if not godot:
-        return "LOOK at what you produce and prove it works before you land it."
+        return ("run the narrowest real check that proves the change does "
+                "what the item asked - a build, the affected script, opening "
+                "the produced file - and LOOK at what you produce before you "
+                "land it.")
     parts = ["godot_check_project after structural changes"]
     try:
         tests = sorted(p for p in (root_path / "game" / "tests").glob("*.gd"))
@@ -589,7 +592,19 @@ def _prompt_for(root: str, item: dict, native_images: bool = False) -> str:
         "result dispatches NOBODY; only a queue row does. Handing work on IS "
         "part of finishing yours, and a result paragraph that names the items "
         "you filed is a finished handoff.\n"
-        f"3. Verify per house norms: {_verify_rule(root)}\n"
+        "   ROUTE ONLY WHAT THIS ITEM NEEDS. The test for filing work is "
+        "'does my item need this done to be finished' - not 'did I notice "
+        "something'. An improvement you merely noticed is one line in your "
+        "result paragraph; the director decides whether noticed work gets "
+        "bought. The same test bounds your reading: your brief and the files "
+        "your item touches are the job, and reviewing your peers' work, "
+        "unrelated systems or the whole board is spend on somebody else's "
+        "item.\n"
+        f"3. VERIFY, THEN CLAIM. {_verify_rule(root)}\n"
+        "   Your result paragraph must SAY WHAT YOU RAN AND WHAT IT SHOWED - "
+        "the check's name and its outcome, one line. A completion that names "
+        "no check is an unverified claim, and both the reviewer and the "
+        "harness read it as one.\n"
         f"4. Mark the item: call queue_complete with item_id={item['id']} and a "
         "one-paragraph result (status 'done', or 'failed' with the honest "
         "reason). That paragraph IS the record - no separate note is owed.\n"
@@ -795,6 +810,16 @@ def _live_count() -> int:
     return sum(1 for e in _live.values() if e["proc"].poll() is None)
 
 
+def _art_model_pref(root: str) -> str:
+    """The stored image-model preference (art.model), or ""."""
+    try:
+        from bgate_core import settings as _settings
+
+        return str(_settings.get(root, "art.model") or "").strip()
+    except Exception:
+        return ""
+
+
 def dispatch(root: str, item_id: int, **kwargs) -> dict:
     """Spawn one agent for one item, with the start RESERVED against a race.
 
@@ -820,6 +845,23 @@ def dispatch(root: str, item_id: int, **kwargs) -> dict:
         _starting.add(item_id)
     try:
         return _spawn(root, item_id, **kwargs)
+    except Exception:
+        # Every ANTICIPATED refusal inside _spawn releases its own reservation
+        # (_refused). This is the unanticipated one — _git raising instead of
+        # returning unavailable, a prompt builder blowing up — which used to
+        # strand the item in 'dispatched' with no process: refused by future
+        # dispatches ("not queued"), invisible to the watchdog, unstuck only by
+        # the next restart's reconcile(). release() is conditional
+        # (dispatched -> queued) and the registry check keeps it away from the
+        # one path where a process DID start and the failure came after.
+        with _lock:
+            started = item_id in _live
+        if not started:
+            try:
+                _queue.release(root, item_id)
+            except Exception:
+                pass
+        raise
     finally:
         with _lock:
             _starting.discard(item_id)
@@ -964,7 +1006,29 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return _refused("spawn_failed", f"cannot create the agent log dir: {exc}")
-    log_path = log_dir / f"item-{item_id}.log"
+    # int(), not the raw parameter. The rotation below is a path expression and
+    # this name is the only caller-derived part of it; forcing the id through
+    # int() at the boundary means no separator, traversal or wildcard can reach
+    # a filename, whatever a future caller passes.
+    log_path = log_dir / f"item-{int(item_id)}.log"
+    # The log appends across every re-dispatch of this item FOREVER — nothing
+    # rotated it, and a bounced item's log is documented at 10MB per run. One
+    # rolled generation at spawn keeps the previous rounds readable (the QA
+    # brief points at the path) without the file growing for the project's
+    # life. Run markers + byte cursors already scope every reader to THIS run,
+    # so a shrunk file only ever costs a tailer a re-read.
+    #
+    # CONTAINED BEFORE IT IS TOUCHED. `root` is registry-supplied rather than
+    # request-supplied, but os.replace() is a destructive sink and a rename is
+    # not somewhere to reason from provenance alone: the check proves the file
+    # about to be rotated is inside the log directory this function just built.
+    try:
+        rotated = log_dir / (log_path.name + ".1")
+        if (_contained(str(log_path), str(log_dir))
+                and log_path.stat().st_size >= 20 * 1024 * 1024):
+            os.replace(log_path, rotated)
+    except OSError:
+        pass
 
     env = {
         # NOT os.environ. See _scrubbed_environ: the dashboard's whole
@@ -992,7 +1056,15 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
         # identity and can approve its own work - it did, until this line.
         "BGATE_ACTOR": f"agent:item-{item_id}",
         # Director directive: gpt-image-2 is banned - force 1 for every gen.
-        "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL", "gpt-image-1"),
+        # Reconciled with the stored preference: the machine env still wins,
+        # then art.model WHEN it names an openai model (this variable is read
+        # only by the gpt-image adapter, so a krea/kie preference does not
+        # belong in it — those reach the adapters through chroma.generate's
+        # model seam instead), then the ban's default.
+        "BGATE_IMAGE_MODEL": os.environ.get("BGATE_IMAGE_MODEL")
+        or (_art_model_pref(root)
+            if _art_model_pref(root).startswith(("gpt-image", "dall-e"))
+            else "gpt-image-1"),
     }
     # The flags each CLI needs to stream its work live are that CLI's business - # see runners.py, which also records what each one CANNOT do (steering, cost)
     # so the rest of this module stops assuming both.
@@ -1328,10 +1400,29 @@ def _watch_completion(root: str, item_id: int, poll_s: float = 2.0,
         # mistaken for a corpse.
         silent = _last_output_age_s(root, entry)
         if silent is not None and silent >= STALL_S:
-            _trip(root, item_id, entry,
-                  f"killed: no output of any kind for {silent // 60} minutes - "
-                  "the session was hung, not working")
-            return
+            # THE IN-FLIGHT-TOOL GRACE. With peers live, the age above is the
+            # run's own log only — and a log goes quiet for the whole of a
+            # long atomic MCP call. The tool_use event at issue time is the
+            # run's own proof it is working, so an open call defers to the
+            # hard runtime ceiling instead of reading as a hang.
+            tool = _in_flight_tool(root, item_id)
+            if tool:
+                if not entry.get("stall_grace_logged"):
+                    entry["stall_grace_logged"] = True
+                    try:
+                        from bgate_core import activity as _act
+
+                        _act.log(root, "dispatch",
+                                 f"item {item_id}: silent {silent // 60}m but "
+                                 f"inside a {tool} call — letting it run",
+                                 ref=str(item_id))
+                    except Exception:
+                        pass
+            else:
+                _trip(root, item_id, entry,
+                      f"killed: no output of any kind for {silent // 60} "
+                      "minutes - the session was hung, not working")
+                return
         # THE COST CEILING ONLY EXISTS WHERE COST IS REPORTED. A runner that
         # emits tokens and no price makes _observed_cost read 0.00 forever, so
         # this branch would sit there looking like a live guard while spending
@@ -1821,6 +1912,17 @@ def _pids_path(root: str) -> Path:
     return Path(root) / ".bgate" / "agents" / "pids.json"
 
 
+# The pid ledger is read-modify-write, and its writers live on DIFFERENT
+# THREADS of this process: the autodeploy tick, request-thread dispatches, the
+# followup router's QA spawn, and every run's watchdog at reap. Unlocked, two
+# overlapping spawns both read, both write, and one entry vanishes — which is
+# an agent the restart sweep can never find, i.e. exactly the orphan the
+# ledger exists to kill. One lock, held across the whole read-modify-write.
+# (A parallel dashboard PROCESS could still race the file; that dashboard also
+# sweeps, so the loss there is redundancy, not the only net.)
+_pids_lock = threading.Lock()
+
+
 def _read_pids(root: str) -> dict:
     try:
         return json.loads(_pids_path(root).read_text(encoding="utf-8"))
@@ -1836,26 +1938,28 @@ def _record_pid(root: str, pid: int, item_id: int) -> None:
     claude session the user started themselves. See :func:`_is_recorded_agent`.
     """
     try:
-        path = _pids_path(root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data = _read_pids(root)
-        ident = _proc_identity(pid)
-        data[str(pid)] = {"item_id": item_id, "spawned_at": time.time(),
-                          "name": ident.get("name", ""),
-                          "started": ident.get("started")}
-        path.write_text(json.dumps(data), encoding="utf-8")
+        with _pids_lock:
+            path = _pids_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = _read_pids(root)
+            ident = _proc_identity(pid)
+            data[str(pid)] = {"item_id": item_id, "spawned_at": time.time(),
+                              "name": ident.get("name", ""),
+                              "started": ident.get("started")}
+            path.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
 
 
 def _unrecord_pid(root: str, pid: int) -> None:
     try:
-        path = _pids_path(root)
-        if not path.is_file():
-            return
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if data.pop(str(pid), None) is not None:
-            path.write_text(json.dumps(data), encoding="utf-8")
+        with _pids_lock:
+            path = _pids_path(root)
+            if not path.is_file():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.pop(str(pid), None) is not None:
+                path.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
 
@@ -1985,6 +2089,15 @@ def kill_all(root: str, *, reason: str = "", actor: str = "") -> dict:
         thinking = _brainsession.stop_all(root).get("stopped") or []
     except Exception as exc:
         errors.append(f"brainstorm partners: {type(exc).__name__}: {exc}")
+
+    # The console's director session too — and with more reason than the
+    # brainstorm partner: that one can only talk, this one can act.
+    try:
+        from bgate_ui import directorsession as _directorsession
+
+        _directorsession.stop_all(root)
+    except Exception as exc:
+        errors.append(f"console director: {type(exc).__name__}: {exc}")
 
     settled = {}
     try:
@@ -2200,43 +2313,68 @@ def _scan_steer_echoes(entry: dict) -> None:
     current turn ends - that gap is the 'late to inject' feeling. The echo of
     the injected user message in the output log is the moment of consumption,
     so sent_at -> echo time IS the injection latency. Incremental tail read
-    (cursor per entry), so a 10MB log costs nothing per poll."""
+    (cursor per entry), so a 10MB log costs nothing per poll.
+
+    Under _feed_lock, which the module header already promised for these
+    cursors: status() runs on request threads for /api/agents AND
+    /api/console/state, which poll independently, and two interleaved scans
+    double-advanced log_scan_pos — steers falsely marked consumed (echo lost
+    in the other scan's chunk) and corrupted latency numbers."""
     import time as _time
     pending = [s for s in entry.get("steers", ()) if isinstance(s, dict)
                and s.get("consumed_at") is None]
     if not pending:
         return
-    try:
-        with open(entry["log"], "rb") as fh:
-            fh.seek(entry.get("log_scan_pos", 0))
-            chunk = entry.get("log_scan_rem", b"") + fh.read()
-            entry["log_scan_pos"] = fh.tell()
-    except OSError:
-        return
-    lines = chunk.split(b"\n")
-    entry["log_scan_rem"] = lines.pop()  # possibly-partial last line
-    now = _time.time()
-    for line in lines:
-        if b"STEER FROM THE DIRECTOR" not in line or b'"user"' not in line:
-            continue
-        for s in entry["steers"]:
-            if isinstance(s, dict) and s.get("consumed_at") is None:
-                s["consumed_at"] = now
-                break
+    with _feed_lock:
+        try:
+            with open(entry["log"], "rb") as fh:
+                fh.seek(entry.get("log_scan_pos", 0))
+                chunk = entry.get("log_scan_rem", b"") + fh.read()
+                entry["log_scan_pos"] = fh.tell()
+        except OSError:
+            return
+        lines = chunk.split(b"\n")
+        entry["log_scan_rem"] = lines.pop()  # possibly-partial last line
+        now = _time.time()
+        for line in lines:
+            if b"STEER FROM THE DIRECTOR" not in line or b'"user"' not in line:
+                continue
+            for s in entry["steers"]:
+                if isinstance(s, dict) and s.get("consumed_at") is None:
+                    s["consumed_at"] = now
+                    break
 
 
 def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
-    """Seconds since the agent last produced ANY observable output - log write
-    or a file under .bgate_out / game assets. Long atomic MCP calls (a 30-min
-    image_sprites batch) log nothing until they return, which made healthy
-    agents look hung and got them manually killed; file mtimes are the real
-    heartbeat. Shallow capped scan, cheap enough for the dashboard poll."""
+    """Seconds since THIS RUN last produced observable output.
+
+    Two signals, and the second is the fix for two opposite bugs:
+
+    * the run's own log mtime — every event the CLI emits touches it, so a
+      working agent moves it constantly;
+    * the project's file mtimes (.bgate_out, game assets), counted ONLY WHILE
+      THIS RUN IS THE PROJECT'S ONLY LIVE ONE. Long atomic MCP calls (a 30-min
+      image_sprites batch) log nothing until they return, which made healthy
+      agents look hung and got them manually killed — file mtimes are the real
+      heartbeat there. But the mtimes are project-global: with two agents
+      live, one worker's writes reset EVERY run's silence clock, so a wedged
+      peer held its concurrency slot for the 2h hard ceiling instead of
+      STALL_S, and reap_orphans adopted corpses on the strength of a
+      neighbour's output. A multi-run project falls back to the per-run
+      signals: the log, plus the in-flight-tool grace in the watchdog.
+    """
     import time as _t
     newest = 0.0
     try:
         newest = os.path.getmtime(entry["log"])
     except OSError:
         pass
+    with _lock:
+        peers = sum(1 for i, e in _live.items()
+                    if e is not entry and e["proc"].poll() is None
+                    and _pkey(e.get("root") or root) == _pkey(root))
+    if peers:
+        return int(_t.time() - newest) if newest else None
     budget = 400  # max entries visited - keep the poll snappy
     stack = [(Path(root) / ".bgate_out", 0), (Path(root) / "game" / "assets", 0)]
     while stack and budget > 0:
@@ -2258,6 +2396,26 @@ def _last_output_age_s(root: str, entry: dict) -> Optional[int]:
         except OSError:
             continue
     return int(_t.time() - newest) if newest else None
+
+
+def _in_flight_tool(root: str, item_id: int) -> str:
+    """The name of a tool call this run has ISSUED and not yet heard back, or
+    "". The per-run replacement for the global-mtime heartbeat when several
+    agents are live: an agent inside a long atomic MCP call is working, not
+    hung, and its own log proves it — the tool_use event is written at issue
+    time and the matching tool_result only on return."""
+    try:
+        feed = read_activity(root, item_id, limit=0)
+    except Exception:
+        return ""
+    open_tool = ""
+    for step in feed.get("steps") or []:
+        kind = str(step.get("kind") or "")
+        if kind == "tool":
+            open_tool = str(step.get("name") or "a tool")
+        elif kind == "result":
+            open_tool = ""
+    return open_tool
 
 
 def status(root: str) -> list[dict]:

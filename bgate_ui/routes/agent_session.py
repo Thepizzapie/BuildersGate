@@ -58,8 +58,8 @@ def _project_slug(project_root: Path) -> str:
 
     Its own scheme: the absolute path with every character that is not a letter,
     digit or dash replaced by a dash. Derived here rather than guessed at from
-    one example - `C:\\Users\\adria\\Desktop\\bg-testbed` becomes
-    `C--Users-adria-Desktop-bg-testbed`, which is drive letter, colon and both
+    one example - `C:\\Users\\robin\\Desktop\\bg-testbed` becomes
+    `C--Users-robin-Desktop-bg-testbed`, which is drive letter, colon and both
     separators all collapsing to single dashes.
     """
     return re.sub(r"[^A-Za-z0-9-]", "-", str(project_root))

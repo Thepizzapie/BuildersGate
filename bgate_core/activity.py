@@ -112,6 +112,26 @@ def log(root: str | os.PathLike[str], kind: str, summary: str, *,
         pass  # see module docstring
 
 
+def prune(root: str | os.PathLike[str], keep_days: int = 90) -> int:
+    """Trim the ledger to a window. Returns rows deleted.
+
+    The activity table was the ONE durable store in the project with no
+    deleter anywhere — one row per lock, queue move, note and status line,
+    for the life of the project, while the events table (younger) got a prune
+    from day one. 90 days, not events' 14: this is the audit ledger the
+    drawer and the dedupe queries read, and it is cheap — but 'cheap forever'
+    was the same claim events.prune exists to retire.
+    """
+    try:
+        with db.tx(root) as conn:
+            cur = conn.execute(
+                "DELETE FROM activity WHERE created_at < "
+                "datetime('now', ?)", (f"-{int(keep_days)} days",))
+            return int(cur.rowcount or 0)
+    except Exception:
+        return 0  # see module docstring — the ledger never breaks the work
+
+
 def recent(root: str | os.PathLike[str], limit: int = 50,
            seat: Optional[str] = None, after_id: int = 0) -> list[dict]:
     conn = db.connect(root)

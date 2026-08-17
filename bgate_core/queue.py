@@ -94,7 +94,7 @@ def clip_result(text: str) -> str:
 def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
         priority: int = 0, source: str = "manual", source_ref: str = "",
         chain_id: str = "", chain_pos: int = 0,
-        depends_on: Optional[int] = None) -> dict:
+        depends_on: Optional[int] = None, chain_self: bool = False) -> dict:
     # A `scope_tier_id` used to be filed here and run through scope.enforce
     # first — the cut line's one gate. It never refused an item in the product's
     # life: untiered work was deliberately allowed through, and nothing was ever
@@ -116,6 +116,12 @@ def add(root: str | os.PathLike[str], seat: str, title: str, brief: str = "",
              int(depends_on) if depends_on is not None else None),
         )
         item_id = int(cur.lastrowid)
+        if chain_self:
+            # The first link of a chain names the chain after its OWN row id,
+            # inside the same transaction — see _chain_id_from for the race
+            # the old select-max mint had.
+            conn.execute("UPDATE work_item SET chain_id = ? WHERE id = ?",
+                         (_chain_id_from(item_id), item_id))
     waits = f" (waits for #{int(depends_on)})" if depends_on is not None else ""
     activity.log(root, "queue",
                  f"queued for {seat}: {title.strip()[:80]}{waits}",
@@ -158,7 +164,7 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
     if len(links) == 1:
         raise ValueError("a one-link chain is just an item — use queue_add")
 
-    chain_id = (chain_id or "").strip() or _new_chain_id(root)
+    chain_id = (chain_id or "").strip()
     made: list[dict] = []
     previous: Optional[int] = None
     for pos, link in enumerate(links, start=1):
@@ -167,7 +173,10 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
                    priority=int(link.get("priority") or 0),
                    source=str(link.get("source") or source),
                    source_ref=str(link.get("source_ref") or source_ref),
-                   chain_id=chain_id, chain_pos=pos, depends_on=previous)
+                   chain_id=chain_id, chain_pos=pos, depends_on=previous,
+                   chain_self=not chain_id and pos == 1)
+        if not chain_id:
+            chain_id = str(item["chain_id"])
         previous = int(item["id"])
         made.append(item)
     activity.log(root, "queue",
@@ -187,17 +196,18 @@ def add_chain(root: str | os.PathLike[str], links: list[dict],
     return made
 
 
-def _new_chain_id(root: str | os.PathLike[str]) -> str:
-    """A short, human-sayable chain id. Sequential per project rather than a
-    uuid: these get read aloud and typed into briefs ("chain c3"), and a uuid is
-    neither."""
-    row = db.connect(root).execute(
-        "SELECT chain_id FROM work_item WHERE chain_id LIKE 'c%' "
-        "ORDER BY id DESC LIMIT 1").fetchone()
-    last = 0
-    if row and str(row["chain_id"] or "")[1:].isdigit():
-        last = int(str(row["chain_id"])[1:])
-    return f"c{last + 1}"
+def _chain_id_from(first_item_id: int) -> str:
+    """A short, human-sayable chain id: ``c<first link's own item id>``.
+
+    It USED to be sequential (SELECT the highest c-number, add one) — which is
+    a select-then-insert with no reservation, and there are two writers in two
+    processes (the MCP server's queue_add_chain and the dashboard). Two
+    concurrent chains minted the same ``cN`` and merged: debriefs, stall
+    detection and "what is blocked behind this" all key on chain_id. The first
+    link's item id is allocated by SQLite atomically, so it costs nothing and
+    cannot collide; the numbers are merely no longer consecutive, and nothing
+    ever parsed them as a sequence."""
+    return f"c{int(first_item_id)}"
 
 
 def get(root: str | os.PathLike[str], item_id: int) -> dict:
@@ -276,6 +286,23 @@ def list_items(root: str | os.PathLike[str], status: Optional[str] = None,
     return rows(conn.execute(sql, params))
 
 
+def _rotate_notify(path: str, cap_bytes: int = 5 * 1024 * 1024) -> None:
+    """Roll notify.jsonl aside when it outgrows the cap. Best-effort.
+
+    The stream was append-only for the life of a project with no rotation and
+    no lock — migration 0016's own comment names torn multi-process lines on
+    Windows as a real failure of exactly this file, and it also simply grew
+    forever. One rolled generation (.1) keeps a consumer's recent history; a
+    tailer that sees the file shrink re-reads from zero, which every cursor
+    reader in this repo (events, feeds) already survives.
+    """
+    try:
+        if os.path.getsize(path) >= cap_bytes:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+
+
 def _notify(root: str | os.PathLike[str], item: dict) -> None:
     """Append a status-transition event to .bgate/notify.jsonl (best-effort).
 
@@ -297,6 +324,7 @@ def _notify(root: str | os.PathLike[str], item: dict) -> None:
         import json as _json
         from datetime import datetime, timezone
         path = os.path.join(str(root), ".bgate", "notify.jsonl")
+        _rotate_notify(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(_json.dumps({
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -419,6 +447,26 @@ def _with_observed_writes(root, item_id: int, status: str, result: str) -> str:
     except Exception:
         return result          # bookkeeping must never fail a completion
     if not observed:
+        # THE ABSENCE IS EVIDENCE TOO — for a MACHINE's 'done' on a maker
+        # seat. "I finished the sprite work" over a run the hook watched
+        # write nothing is exactly the claim-versus-record gap this function
+        # exists to surface, and silence here let it read as consistent.
+        # Still attached, still not enforced: some legitimate items write
+        # nothing (a review, an answer), and the reviewer — not a regex — is
+        # who weighs it. Human closes are not stamped; a human hand-closing
+        # someone else's run is not the claimant.
+        try:
+            from . import activity as _act
+            row = get(root, item_id)
+            if (status == "done" and _act.is_machine(_act.current_actor())
+                    and (row.get("seat") or "") not in ("director", "qa")
+                    and (row.get("source") or "") != "chat"):
+                return (result.rstrip() + "\n\n" if result.strip() else "") + \
+                    ("HARNESS NOTE: the hook observed NO file writes from "
+                     "this item's runs. If this item was supposed to change "
+                     "the project, the claim above is unbacked.")
+        except Exception:
+            pass
         return result
     return (result.rstrip() + "\n\n" + observed) if result.strip() else observed
 
@@ -626,14 +674,30 @@ def complete(root: str | os.PathLike[str], item_id: int, result: str = "",
         item = set_status(root, item_id, "review", result=result)
     else:
         item = set_status(root, item_id, "done", result=result)
-    try:
-        with db.tx(root) as conn:
-            conn.execute(
-                "UPDATE work_item SET closed_by = ?, gate_skip = ? WHERE id = ?",
-                (closer[:120], 1 if skip_gate else 0, item_id))
-        item = get(root, item_id)
-    except Exception:
-        pass            # bookkeeping must never lose a completion
+    # NOT droppable telemetry, retried and then SHOUTED. gate_skip is policy:
+    # losing it means the QA gate pays a reviewer for a hand-close — the exact
+    # failure migration 0017 exists to prevent — with zero trace the stamp was
+    # lost. The completion itself must still never be lost to this, so a
+    # second failure logs the loss loudly instead of raising.
+    for attempt in (0, 1):
+        try:
+            with db.tx(root) as conn:
+                conn.execute(
+                    "UPDATE work_item SET closed_by = ?, gate_skip = ? "
+                    "WHERE id = ?",
+                    (closer[:120], 1 if skip_gate else 0, item_id))
+            item = get(root, item_id)
+            break
+        except Exception as exc:
+            if attempt:
+                try:
+                    activity.log(root, "queue",
+                                 f"LOST STAMP on #{item_id}: closed_by/"
+                                 f"gate_skip could not be written "
+                                 f"({type(exc).__name__}) — the QA gate may "
+                                 "review a hand-close", ref=str(item_id))
+                except Exception:
+                    pass
     kind = _COMPLETION_KINDS.get(item["status"])
     if kind:
         _emit(root, kind, ref=str(item_id), payload=_item_event_payload(item))
@@ -728,14 +792,28 @@ def stop(root: str | os.PathLike[str], item_id: int, by: str = "",
         f"stopped by {actor} — this run was ended by hand, "
         "it did not die on its own")
     item = set_status(root, item_id, "failed", result=said)
-    try:
-        with db.tx(root) as conn:
-            conn.execute(
-                "UPDATE work_item SET stopped_by = ?, "
-                "stopped_at = datetime('now') WHERE id = ?", (actor, item_id))
-        item = get(root, item_id)
-    except Exception:
-        pass            # bookkeeping must never lose the stop itself
+    # stopped_by is policy, not telemetry: was_stopped() reads it to keep the
+    # follow-up router from auto-retrying a run a human deliberately ended.
+    # Same retry-then-shout shape as the gate_skip stamp in complete().
+    for attempt in (0, 1):
+        try:
+            with db.tx(root) as conn:
+                conn.execute(
+                    "UPDATE work_item SET stopped_by = ?, "
+                    "stopped_at = datetime('now') WHERE id = ?",
+                    (actor, item_id))
+            item = get(root, item_id)
+            break
+        except Exception as exc:
+            if attempt:
+                try:
+                    activity.log(root, "queue",
+                                 f"LOST STAMP on #{item_id}: stopped_by could "
+                                 f"not be written ({type(exc).__name__}) — "
+                                 "the router may auto-retry a human stop",
+                                 ref=str(item_id))
+                except Exception:
+                    pass
     # ON THE HEARTBEAT AS A STOP, not just as another 'failed'. set_status above
     # already appended its line, but it ran before the column was stamped and it
     # says exactly what a crash says. A watcher tailing the stream during a STOP

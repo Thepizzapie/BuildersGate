@@ -1322,6 +1322,21 @@ def _providers(root: str | os.PathLike[str]) -> list[str]:
     except Exception:
         pass
 
+    # THE STORED PREFERENCE LEADS THE CHAIN. The order above is the failover
+    # rationale, not the choice: a project that named art.provider tries it
+    # first and only then walks the rest. Only reordered when the preferred
+    # provider is actually in the configured list — an unconfigured
+    # preference must not turn "try everything" into "fail on the favourite".
+    try:
+        from bgate_core import settings as _settings
+
+        preferred = str(_settings.get(root, "art.provider") or "").strip().lower()
+        if preferred in out:
+            out.remove(preferred)
+            out.insert(0, preferred)
+    except Exception:
+        pass
+
     if not out:
         raise StoryboardError(
             "no image provider configured - set OPENAI_API_KEY, KREA_API_KEY or "

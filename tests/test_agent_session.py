@@ -81,8 +81,8 @@ def test_the_project_slug_matches_claude_codes_own_scheme():
     guess about somebody else's scheme, and a wrong guess silently reports every
     session as unresumable.
     """
-    assert _project_slug(r"C:\Users\adria\Desktop\bg-testbed") == \
-        "C--Users-adria-Desktop-bg-testbed"
+    assert _project_slug(r"C:\Users\robin\Desktop\bg-testbed") == \
+        "C--Users-robin-Desktop-bg-testbed"
     assert _project_slug("/home/x/games/thing") == "-home-x-games-thing"
 
 

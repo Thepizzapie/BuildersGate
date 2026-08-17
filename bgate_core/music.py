@@ -162,6 +162,18 @@ def generate(root: str | os.PathLike[str], prompt: str, *, name: str = "",
         raise MusicError("a music generation needs a prompt")
     stem = slugify(name or _stem_from(text))
 
+    # An unnamed model takes the stored preference (music.model) before the
+    # adapter default; build_music validates it like any explicit choice.
+    if not str(suno.get("model") or "").strip():
+        try:
+            from bgate_core import settings as _settings
+
+            preferred = str(_settings.get(root, "music.model") or "").strip()
+            if preferred:
+                suno["model"] = preferred
+        except Exception:
+            pass
+
     refusal = _budget_refusal(root)
     if refusal:
         return {"ok": False, "error": refusal, "stage": "spend_gate",

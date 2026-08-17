@@ -869,7 +869,7 @@ def plan(root: str | os.PathLike[str], name: str, shots: list, *,
     # written against ITS limits — a 15-second shot is legal on one model and
     # not on another, and discovering that at the first generation means the
     # whole list has to be rewritten after money has already moved.
-    chosen = _resolve_model(model)
+    chosen = _resolve_model(model, root=root)
     # The bed is contained at plan time for the same reason the shot paths are:
     # earliest refusal, and the shot list is what gets reviewed. assemble()
     # checks again because that is the last gate before ffmpeg reads it.
@@ -1260,8 +1260,13 @@ def _coverage_warnings(shots: list[dict], places: list[dict]) -> list[str]:
     return out
 
 
-def _resolve_model(model: str = "") -> str:
+def _resolve_model(model: str = "", root=None) -> str:
     """A registered video model name, or a refusal that lists the real ones.
+
+    An unnamed model takes the stored preference (cinematic.model) before the
+    adapter default, and the preference is validated exactly like an explicit
+    choice — a stale name fails at plan time naming the registered models,
+    never silently swapped.
 
     Validated at PLAN time as well as at generate time, because the shot list is
     written against this model's limits: seconds ranges differ per model, so a
@@ -1270,7 +1275,15 @@ def _resolve_model(model: str = "") -> str:
     """
     from bgate_adapters import kie
 
-    chosen = str(model or "").strip() or kie.DEFAULT_VIDEO_MODEL
+    chosen = str(model or "").strip()
+    if not chosen and root is not None:
+        try:
+            from bgate_core import settings as _settings
+
+            chosen = str(_settings.get(root, "cinematic.model") or "").strip()
+        except Exception:
+            chosen = ""
+    chosen = chosen or kie.DEFAULT_VIDEO_MODEL
     if chosen not in kie.VIDEO_MODELS:
         raise CinematicError(
             f"{chosen!r} is not a registered video model — known: "

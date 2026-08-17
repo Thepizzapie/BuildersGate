@@ -56,6 +56,22 @@ class TestChainShape:
         with pytest.raises(ValueError):
             queue.add_chain(root, [{"seat": "tech", "title": "solo"}])
 
+
+    def test_the_chain_id_is_the_first_links_own_row_id(self, root):
+        """The mint used to be select-max-plus-one, which two processes could
+        run concurrently and merge two unrelated chains under one id. The
+        first link's row id is allocated atomically and cannot collide."""
+        first, second = _chain(root)
+        assert first["chain_id"] == f"c{first['id']}"
+        assert second["chain_id"] == first["chain_id"]
+
+    def test_an_explicit_chain_id_is_honoured(self, root):
+        made = queue.add_chain(root, [
+            {"seat": "tech", "title": "one"},
+            {"seat": "art", "title": "two"},
+        ], chain_id="c-custom")
+        assert [m["chain_id"] for m in made] == ["c-custom", "c-custom"]
+
     def test_chain_ids_do_not_collide(self, root):
         a = _chain(root)[0]["chain_id"]
         b = _chain(root)[0]["chain_id"]

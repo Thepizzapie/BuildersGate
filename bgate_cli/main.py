@@ -1,9 +1,9 @@
 """bgate — the console entrypoint.
 
-    bgate init NAME [--kind 2d|3d] [--dir DIR] [--pitch TEXT]
+    bgate init NAME [--kind 2d|3d] [--dir DIR] [--pitch TEXT] [--without floor,music,...]
                     [--force] [--replace]
                                 create a project + a runnable game, and print where
-    bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json]
+    bgate adopt [DIR] [--name N] [--pitch TEXT] [--kind 2d|3d|2d+3d] [--json] [--without floor,music,...]
                                 point Builders Gate at a game you ALREADY have.
                                 Never scaffolds, never overwrites. (default: .)
     bgate use [DIR|NAME]        make a project the active one for later commands
@@ -300,7 +300,8 @@ def hook_status(project_dir: str = "", as_json: bool = False) -> int:
 
 
 def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
-                 force: bool = False, replace: bool = False) -> int:
+                 force: bool = False, replace: bool = False,
+                 without: str = "") -> int:
     """Create the project store AND a runnable game, then say where it landed.
 
     The first-run gap the audit named: the only way to make a project was an MCP
@@ -335,6 +336,16 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
         return 2
 
     project.init(root, name, pitch=pitch, engine="godot", dimension=kind)
+    # A 2D project defaults the 3D pipeline OFF — cutout/sprite work never
+    # opens Blender, and the default should match the kind just chosen.
+    # Re-enable any time in Settings > Modules; an explicit --without wins.
+    if kind == "2d" and "three_d" not in (without or ""):
+        without = (without + ",three_d") if without else "three_d"
+        print("3D pipeline switched off for a 2D project - re-enable in "
+              "Settings > Modules if you want Blender work here")
+    off_note = _store_modules_off(root, without)
+    if off_note:
+        print(off_note)
     # The scaffold writes project.godot, scenes/ and scripts/ straight into
     # <root>, while the default seat lanes are written against <root>/game.
     # Left alone, the gameplay seat cannot write the very scripts this command
@@ -367,12 +378,45 @@ def init_project(name: str, kind: str = "2d", dest: str = "", pitch: str = "",
     return 0
 
 
+def _store_modules_off(root, without: str) -> str:
+    """Store ``--without floor,music`` module choices. Returns a note to print.
+
+    The CLI half of the first-run card's checklist: the same
+    ``modules.disabled`` setting, written at creation so the very first
+    dashboard open and the very first agent session already respect it.
+    Unknown names warn and are dropped — a typo must not silently disable the
+    nearest real feature.
+    """
+    from bgate_core import modules, settings
+
+    names = [w.strip() for w in (without or "").split(",") if w.strip()]
+    known = [n for n in names if n in modules.MODULES]
+    unknown = [n for n in names if n not in modules.MODULES]
+    # The machine defaults — the setup wizard's component page — seed every
+    # new project; --without adds to them for this one.
+    seeded = sorted(modules.machine_defaults() | set(known))
+    lines = []
+    if unknown:
+        lines.append(f"warning: no module named {', '.join(unknown)} — "
+                     f"modules are: {', '.join(modules.names())}")
+    if seeded:
+        try:
+            settings.set(root, "modules.disabled", seeded)
+            lines.append("switched off: " + ", ".join(seeded)
+                         + "  (change later in Settings > Modules)")
+        except Exception as exc:
+            lines.append(f"warning: could not store module choices ({exc}) — "
+                         "set modules.disabled in Settings instead")
+    return "\n".join(lines)
+
+
 def _mb(n: int) -> str:
     return f"{n / (1024 * 1024):.1f}MB"
 
 
 def adopt_project(directory: str = "", name: str = "", pitch: str = "",
-                  kind: str = "", as_json: bool = False) -> int:
+                  kind: str = "", as_json: bool = False,
+                  without: str = "") -> int:
     """Adopt an EXISTING game and print what we understood about it.
 
     The printout is not decoration. The person running this has months of work
@@ -401,6 +445,8 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
         print(f"error: {exc}")
         return 2
 
+    off_note = _store_modules_off(target, without)
+
     if as_json:
         print(json.dumps(report, indent=2))
         return 0
@@ -408,6 +454,8 @@ def adopt_project(directory: str = "", name: str = "", pitch: str = "",
     found = report["detected"]
     proj = report["project"]
     verb = "re-adopted" if report["already_adopted"] else "adopted"
+    if off_note:
+        print(off_note)
     print(f"{verb} {proj['name']} — {report['path']}")
     print()
     if found["godot"]:
@@ -959,7 +1007,7 @@ def main() -> int:
                     return rest[index]
             return default
 
-        flagged = {"--kind", "--dir", "--pitch"}
+        flagged = {"--kind", "--dir", "--pitch", "--without"}
         skip: set[int] = set()
         for i, token in enumerate(rest):
             if token in flagged:
@@ -980,7 +1028,8 @@ def main() -> int:
                             # replacement is still legitimate; it just has to be
                             # asked for, and it takes a .bak first.
                             force="--force" in rest or "--replace" in rest,
-                            replace="--replace" in rest)
+                            replace="--replace" in rest,
+                            without=opt("--without"))
 
     if cmd == "adopt":
         rest = args[1:]
@@ -992,7 +1041,7 @@ def main() -> int:
                     return rest[index]
             return default
 
-        flagged = {"--name", "--pitch", "--kind"}
+        flagged = {"--name", "--pitch", "--kind", "--without"}
         skip: set[int] = set()
         for i, token in enumerate(rest):
             if token in flagged:
@@ -1001,7 +1050,8 @@ def main() -> int:
                       if i not in skip and not a.startswith("-")]
         return adopt_project(positional[0] if positional else "",
                              name=opt("--name"), pitch=opt("--pitch"),
-                             kind=opt("--kind"), as_json="--json" in rest)
+                             kind=opt("--kind"), as_json="--json" in rest,
+                             without=opt("--without"))
 
     if cmd in ("use", "switch", "select"):
         positional = [a for a in args[1:] if not a.startswith("-")]

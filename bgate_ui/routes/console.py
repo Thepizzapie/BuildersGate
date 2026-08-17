@@ -9,11 +9,14 @@ and none of that shape was visible.
 So this module backs a different reading of the same data:
 
   * ``POST /api/console/say`` — a message to the director. It becomes a work
-    item (``source='chat'``) and is dispatched immediately. The brief tells the
-    director to answer the human AND to delegate the pieces, stamping each child
-    with the same ``DELEGATED-FROM: #id`` line the delegate endpoint uses — so
-    the children of a sentence are recoverable from the database after a reload,
-    not held in a JS variable.
+    item (``source='chat'``) and is answered by the PERSISTENT director session
+    (bgate_ui.directorsession): one full-capability Claude Code session per
+    project, held open between messages and resumed across restarts, which
+    settles the row with its reply. Children it delegates are stamped with the
+    same ``DELEGATED-FROM: #id`` line the delegate endpoint uses — so the
+    children of a sentence are recoverable from the database after a reload,
+    not held in a JS variable. An ``@seat`` address still dispatches a seat
+    worker per message, unchanged.
 
   * ``GET /api/console/state`` — everything the view paints, in ONE request:
     the conversation turns with their live replies, the board, the delegation
@@ -44,10 +47,11 @@ from bgate_core import steerbox as _steerbox
 from bgate_core import workspace as _ws
 from bgate_ui import api as _api
 from bgate_ui import autodeploy as _autodeploy
+from bgate_ui import directorsession as _director
 from bgate_ui import dispatch as _dispatch
 from bgate_ui import phases as _phases
 from bgate_ui.deps import root
-from bgate_ui.routes.orchestrator import DELEGATED_FROM, _lineage
+from bgate_ui.routes.orchestrator import _lineage
 
 router = APIRouter()
 
@@ -84,7 +88,7 @@ def _signoff_hours(root_dir) -> float:
     except Exception:
         return float(SIGNOFF_HOURS)
 
-# The human's message, verbatim, inside the brief. See _chat_brief.
+# The human's message, verbatim, inside the brief. See _turn_brief.
 SAID_OPEN = "<<<SAID"
 SAID_CLOSE = "SAID>>>"
 
@@ -202,62 +206,44 @@ def _chain_state(conn, items: list[dict]) -> None:
             it["waiting_on"] = dep
 
 
-def _chat_brief(text: str, turn_id: int) -> str:
-    """What the director is actually told when a human types a sentence.
-
-    Two jobs, in this order, and the order matters: ANSWER, then delegate. A
-    director that silently queues five items and says nothing reads as a
-    hung page — the reply is the only thing the human sees immediately.
+def _turn_brief(text: str) -> str:
+    """What the turn's work item STORES — the transcript's copy, not a prompt.
 
     The human's own words are fenced. A work item's title is capped at 80
     characters and a paragraph typed into the console is routinely longer, so
     without a fence the transcript could only ever redisplay a truncated first
     line — the message the human actually sent would exist nowhere. The fence
     is also what lets the transcript survive a reload without a second store.
+
+    THIS IS NO LONGER WHAT THE DIRECTOR READS. The switchboard era dispatched
+    a fresh seat-worker per message and the brief was its whole world, so the
+    brief carried a routing script ("answer and route, ten tool calls is a
+    bug") — and a director that may not investigate deflects, which is what
+    the human reported. The director is now a persistent full session
+    (bgate_ui.directorsession); the prompt it hears is
+    directorsession.turn_prompt, and the row here is the durable record.
     """
-    return (
-        "You are the DIRECTOR of this game project, talking to the human who "
-        "owns it. They said this to you in the console:\n\n"
-        f"{SAID_OPEN}\n{text}\n{SAID_CLOSE}\n\n"
-        "YOU ARE A SWITCHBOARD, NOT A RESEARCHER. Answer and route. The seat "
-        "you hand a piece to reads its own brief, its own bible and its own "
-        "notes when it starts — you do not need any of that to decide WHO does "
-        "it, and gathering it is how a five-second routing decision turns into "
-        "a minute of tool calls and a bill. Specifically:\n"
-        "  · do NOT call seat_brief — that is the working agent's first call, "
-        "not yours;\n"
-        "  · call queue_list(status='queued') or queue_list(status='dispatched') "
-        "ONLY if you need to avoid duplicating work already on the board, and "
-        "read the titles, not the briefs;\n"
-        "  · read the bible only if the ask itself is about canon.\n"
-        "Two or three tool calls is a good turn. Ten is a bug.\n\n"
-        "Do these, in order:\n"
-        "1. WORK OUT WHAT THEY MEAN, from the message itself. If it is "
-        "ambiguous in a way that changes who should do it, ask them — one "
-        "question beats a wrong delegation.\n"
-        "2. If the ask is about work ALREADY RUNNING — a correction, a change of "
-        "mind, 'not like that' — do not queue a new item for it. Call "
-        "queue_list(status='dispatched') to see who is live and "
-        "agent_steer(item_id, text) to say it to that agent mid-run. Steering "
-        "is cheaper and faster than letting a wrong run finish and re-queueing "
-        "it, and it is the difference between a director and a dispatcher.\n"
-        "3. If — and only if — the ask is NEW work that should be done, delegate "
-        "it. For each piece call queue_add(seat=..., title=<short imperative>, "
-        "brief=<a self-contained brief the working agent can act on with no "
-        "other context>). Do not implement anything yourself, and do not split "
-        "a single coherent task into fragments.\n"
-        f"   EVERY brief you write MUST START with this exact line, verbatim:\n"
-        f"     {DELEGATED_FROM}{turn_id}\n"
-        "   That line is the only durable record that this piece came from "
-        "this message — the console graph reads it to draw the edge. Write it "
-        "first, then a blank line, then the real brief.\n"
-        "4. Finish with queue_complete for THIS item "
-        f"(work item id={turn_id}) and make the summary your ANSWER TO THE "
-        "HUMAN: what you understood, what you queued and to which seats, who "
-        "you steered and what you told them (or why you did neither), and "
-        "anything you need them to decide. Plain sentences, no preamble — it is "
-        "rendered straight into the chat.\n"
-    )
+    return (f"{SAID_OPEN}\n{text}\n{SAID_CLOSE}\n\n"
+            "(a console turn, answered by the director session)")
+
+
+def _reseed_context(conn, limit: int = 6) -> str:
+    """The recent conversation as plain text — the fallback context for a
+    director session that could not be resumed. Small on purpose: the real
+    memory is the CLI's own session; this is what stops a forced restart from
+    answering with total amnesia."""
+    rows = conn.execute(
+        "SELECT * FROM work_item WHERE source = ? ORDER BY id DESC LIMIT ?",
+        (CHAT_SOURCE, limit)).fetchall()
+    lines = []
+    for row in reversed(rows):
+        asked = said(row["brief"]) or row["title"] or ""
+        if asked:
+            lines.append(f"THEM: {asked[:600]}")
+        reply = (row["result"] or "").strip()
+        if reply:
+            lines.append(f"YOU (earlier): {reply[:600]}")
+    return "\n\n".join(lines)
 
 
 def said(brief: str) -> str:
@@ -321,7 +307,26 @@ def _turn_rows(conn, limit: int, *, after: int = 0, span: tuple = ()) -> list[di
 
 def _reply(root_dir, item: dict) -> dict:
     """The director's side of one turn: its final summary if it has finished,
-    its last words if it has not, and whether it is still talking."""
+    its last words if it has not, and whether it is still talking.
+
+    Two kinds of turn arrive here and the payload shape is one. A dispatched
+    turn (an @seat address, or history from the switchboard era) has a per-item
+    agent feed. A director-session turn has no feed of its own — the session
+    outlives any item — so its live half comes from directorsession.status,
+    and its session_id is the SESSION's, which is the better answer anyway:
+    resuming it in a terminal picks up the whole conversation, not one turn.
+    """
+    live = _director.status(str(root_dir))
+    if int(live.get("current_item") or 0) == int(item["id"]):
+        return {
+            "text": "",
+            "thinking": (live.get("thinking") or "")[:400],
+            "running": True,
+            "steps": [],
+            "step_count": 0,
+            "session_id": live.get("cli_session_id") or "",
+            "cost": None,
+        }
     feed = _dispatch.read_activity(str(root_dir), int(item["id"]), limit=STEPS)
     final = feed.get("final") or {}
     text = ""
@@ -344,8 +349,11 @@ def _reply(root_dir, item: dict) -> dict:
         "step_count": feed.get("step_count") or 0,
         # THE CLAUDE SESSION THIS TURN WAS, so somebody who would rather work in
         # a terminal can resume it with its whole context instead of restating
-        # the conversation. See dispatch.read_activity.
-        "session_id": feed.get("session_id") or "",
+        # the conversation. A director turn falls back to the console SESSION's
+        # id — the per-item feed never had one for those.
+        "session_id": feed.get("session_id")
+        or (live.get("cli_session_id") or ""
+            if item.get("seat") == "director" else ""),
         "cost": final.get("cost"),
     }
 
@@ -798,20 +806,41 @@ def console_say(payload: dict) -> dict:
         # Out-of-scope is a ValueError subclass and reads as a real sentence.
         raise _api.bad_request(str(exc))
     turn_id = int(turn["id"])
-    # The brief names the turn's own id (children stamp it), so it can only be
-    # written once the row exists.
-    #
-    # A SEAT GETS THE SENTENCE, NOT THE DIRECTOR'S BRIEF. _chat_brief tells its
-    # reader to answer and delegate, which is the director's job and nobody
-    # else's — handing it to the art seat would have art filing work for other
-    # seats. An addressed turn is the human's own words plus where they came
-    # from.
+
+    if seat == "director":
+        # THE DIRECTOR IS A SESSION, NOT A DISPATCH. The turn is still a work
+        # item — the transcript, the DELEGATED-FROM lineage and the archive
+        # all read work items — but it is answered by the persistent
+        # full-capability session in bgate_ui.directorsession, which settles
+        # the row with its reply. reserve() marks it dispatched the same
+        # atomic way a dispatch would, so the board and the graph read a live
+        # turn identically either way.
+        _queue.update(r, turn_id, brief=_turn_brief(text))
+        if not _queue.reserve(r, turn_id):
+            return {"ok": True, "turn_id": turn_id, "dispatched": False,
+                    "refusal": {"code": "not_queued",
+                                "message": "the turn was claimed by something "
+                                           "else before the session could "
+                                           "take it"}}
+        conn = db.connect(r)
+        try:
+            context = _reseed_context(conn)
+        except Exception:
+            context = ""
+        _director.submit(str(r), turn_id,
+                         _director.turn_prompt(text, turn_id),
+                         reseed_context=context)
+        return {"ok": True, "turn_id": turn_id, "dispatched": True,
+                "seat": seat, "session": True}
+
+    # A SEAT GETS THE SENTENCE, NOT A DIRECTOR PROMPT. An addressed turn is
+    # the human's own words plus where they came from, dispatched to that
+    # seat's worker exactly as before.
     _queue.update(r, turn_id, brief=(
-        _chat_brief(text, turn_id) if seat == "director"
-        else (text + "\n\n---\n"
-              + f"Addressed to the {seat} seat from the director's console. "
-              "This is the human's own wording, not a brief written for you; "
-              "if it is not yours to do, say so rather than doing it anyway.")))
+        text + "\n\n---\n"
+        + f"Addressed to the {seat} seat from the director's console. "
+        "This is the human's own wording, not a brief written for you; "
+        "if it is not yours to do, say so rather than doing it anyway."))
 
     result = _dispatch.dispatch(str(r), turn_id, actor="console")
     if not result.get("ok"):
@@ -835,6 +864,15 @@ def console_clear() -> dict:
     transcript reads from.
     """
     r = root()
+    # A cleared console is a NEW conversation, so the director session ends
+    # with it: stop the process and drop the resume marker, or the "fresh"
+    # console would resume a session still carrying everything the human just
+    # archived away. The archived turns keep their replies either way.
+    try:
+        _director.stop(str(r))
+        _director.forget(str(r))
+    except Exception:
+        pass
     conn = db.connect(r)
     doc = _session_doc(r)
     before = int(doc.get("cleared_before") or 0)

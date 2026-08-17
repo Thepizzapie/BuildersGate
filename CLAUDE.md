@@ -64,6 +64,14 @@ bgate init emberfall --kind 2d
 Creates a NEW directory named after the project. It does not scaffold into the
 directory you are standing in, which surprises people.
 
+Both `init` and `adopt` take `--without floor,music,...` to switch optional
+feature modules off (floor, brainstorm, music, cinematic, voice, playtest,
+three_d): their MCP tools are not registered, their panes leave the dashboard,
+and doctor stops grading their dependencies. The first-run card in the
+dashboard offers the same checklist, and Settings > Modules changes it later.
+Do not pre-emptively disable anything the user did not ask about — everything
+on is the default and the right one.
+
 ## Keys
 
 There are two places, and for a first-time setup you almost always want the

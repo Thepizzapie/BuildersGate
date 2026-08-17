@@ -367,6 +367,43 @@ def _contained(root: str) -> str:
         "result note and name the project, so a human decides.")
 
 
+def _contained_path(target, what: str = "path"):
+    """A RAW filesystem argument, allowed for this session — or a refusal.
+
+    The seated-session mirror of :func:`_contained` for tools whose target is
+    not ``project_dir``: a ``godot_project`` directory, an ``out_path``, a
+    ``blend_file``, an ``out_dir``. The module comment at the top of this file
+    names the exact attack these carried: ``scene_set_property`` against
+    another game's scene, with ``project_dir`` omitted, resolved the PINNED
+    root, passed every gate, and wrote into the other game — because only the
+    project root was ever asked about, never the argument doing the writing.
+
+    Same rules as _contained: seated sessions only, and a target outside
+    EVERY project is the lane story (the hook's), not this gate's. The check
+    resolves which project the target belongs to and puts that root through
+    the same aegis decision a project_dir would face.
+    """
+    text = str(target or "").strip()
+    if not text:
+        return target
+    if not _seat() or _aegis.mode() == "off":
+        return target
+    if not os.environ.get("BGATE_ROOT", "").strip():
+        return target
+    try:
+        from bgate_core import db as _db
+
+        resolved = _Path(text).expanduser().resolve()
+        probe = resolved if resolved.is_dir() else resolved.parent
+        owner = _db.resolve_root(probe)
+    except Exception:
+        return target
+    if owner is None:
+        return target
+    _contained(str(owner))
+    return target
+
+
 def _root(scratch: bool = False) -> str:
     """The project root for THIS call: project_dir > BGATE_ROOT > walk up from cwd.
     Also loads the project's .env and the machine-wide one, in that order.
@@ -648,6 +685,17 @@ def _tool(fn: Optional[Callable] = None, *,
                         "refused": "containment",
                         "pinned_root": os.environ.get("BGATE_ROOT", "").strip(),
                         "seat": _seat()}
+            except Exception as exc:
+                # THE NET UNDER THE 200 PER-TOOL try/excepts. Almost every
+                # tool body carries its own `except Exception: return _fail`,
+                # but "almost" is the operative word: a tool whose body lacks
+                # one (or whose except clause itself raises) used to surface
+                # to the model as a raw MCP protocol error with no ok/error
+                # shape. Same _fail sentence either way, so a body that
+                # already catches loses nothing and a body that forgot is no
+                # longer a different kind of failure. The per-tool copies can
+                # now be deleted at leisure; this makes their absence safe.
+                return _fail(exc)
             finally:
                 _CALL_TOOL.reset(name_token)
                 _CALL_ROOT.reset(token)
@@ -661,7 +709,51 @@ def _tool(fn: Optional[Callable] = None, *,
             "project_dir", inspect.Parameter.KEYWORD_ONLY, default=None,
             annotation=Annotated[Optional[str],
                                  Field(default=None, description=_PROJECT_DIR_DOC)])])
+    if not _module_registers(fn.__name__):
+        # A DISABLED MODULE'S TOOL IS NEVER REGISTERED — the whole point of
+        # the switch: ~200 tool schemas ride in every agent's context on
+        # every turn, and a project that turned cinematics off stops paying
+        # for cinematic_* on every one of them. The function itself is
+        # returned intact so any internal caller keeps working; it is only
+        # absent from the MCP registry this process serves.
+        return wrapper
     return mcp.tool()(wrapper)
+
+
+# Which modules the PINNED project has switched off, resolved once: the tool
+# registry is built at import, one process per session, and the session is
+# pinned to one project (BGATE_ROOT at dispatch, cwd for a hand-started one).
+# A session no project claims — or any failure reading the choice — registers
+# everything: a missing feature must only ever be the result of a stored
+# decision, never of a broken read.
+_MODULES_OFF: Optional[set] = None
+
+
+def _module_registers(tool_name: str) -> bool:
+    global _MODULES_OFF
+    if _MODULES_OFF is None:
+        try:
+            from bgate_core import modules as _modules
+
+            root = os.environ.get("BGATE_ROOT", "").strip()
+            if not root:
+                root = str(_project.require_root())
+            _MODULES_OFF = _modules.disabled(root)
+        except Exception:
+            _MODULES_OFF = set()
+    from bgate_core import modules as _modules
+
+    if _MODULES_OFF and not _modules.tool_enabled(tool_name, _MODULES_OFF):
+        return False
+    # THE SEAT'S CRAFT, on top of the project's modules. A dispatched seat
+    # registers only the craft surfaces it practises plus the shared spine —
+    # a gameplay agent stops carrying every blender_ and cinematic_ schema on
+    # every turn. Scoped-off is per process and per seat, exactly like the
+    # module gate; BGATE_SEAT_TOOLS=all is the escape hatch for a session
+    # that genuinely needs everything (say so in the dispatch env).
+    if (os.environ.get("BGATE_SEAT_TOOLS", "").strip().lower()) == "all":
+        return True
+    return _modules.seat_tool_enabled(tool_name, _seat())
 
 
 def _fail(exc: Exception) -> dict:
@@ -1499,6 +1591,8 @@ def blender_export_gltf(out_path: str, blend_file: Optional[str] = None,
     worth fixing before the asset reaches a level. Pair with godot_import_asset.
     """
     try:
+        _contained_path(out_path, "out_path")
+        _contained_path(blend_file, "blend_file")
         return _blender.export_gltf(out_path, blend_file=blend_file,
                                     script=script, timeout=timeout)
     except Exception as exc:
@@ -1559,6 +1653,7 @@ def blender_combine(parts: list, out_path: str, rig: str = "",
     file outside it, and an unregistered asset is one no reviewer ever sees.
     """
     try:
+        _contained_path(out_path, "out_path")
         result = _blender.combine(parts, out_path, rig=rig,
                                   root_name=root_name, timeout=timeout)
         if result.get("ok"):
@@ -1619,6 +1714,8 @@ def character_generate(prompt: str, out_dir: str, name: str = "character",
     # keys and spend land in the project the CALL named rather than whatever a
     # previous call left behind.
     try:
+        _contained_path(out_dir, "out_dir")
+        _contained_path(godot_project, "godot_project")
         root = _root()
     except Exception:
         root = None
@@ -2900,7 +2997,7 @@ def image_generate(prompt: str, filename: str, size: str = "1024x1024",
         # tool simply never passed the choice along.
         result = _chroma.generate(prompt, str(out),
                                   provider=_providers.provider_for(
-                                      task_kind, asked=provider),
+                                      task_kind, asked=provider, root=root),
                                   model=model,
                                   task_kind=task_kind,
                                   keyed=True if transparent else None,
@@ -2980,7 +3077,11 @@ def image_edit(prompt: str, ref_images: list[str], filename: str,
         out = _art_out(root, filename)
         from bgate_adapters import imagegen
         resolved = [_refs.resolve(root, r) for r in ref_images]
-        result = _chroma.generate(prompt, str(out), provider="openai",
+        # WAS hardcoded "openai" with no parameter — the pin image_generate's
+        # comment calls the defect, fixed in one tool out of five. A Krea-only
+        # setup got "OPENAI_API_KEY not set" from every edit.
+        result = _chroma.generate(prompt, str(out),
+                                  provider=_providers.provider_for(root=root),
                                   keyed=bool(transparent), ref_paths=resolved,
                                   size=size, quality=quality, transparent=False,
                                   root=root, logical_name=_Path(filename).stem,
@@ -3097,7 +3198,9 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     from bgate_adapters import imagegen
     rel = _items.rel_art_path(spec["item_class"], spec["name"])
     out = root / rel
-    result = _chroma.generate(spec["prompt"], str(out), provider="openai",
+    result = _chroma.generate(spec["prompt"], str(out),
+                              provider=_providers.provider_for("item",
+                                                               root=root),
                               task_kind="item", quality=quality, root=root,
                               logical_name=spec["name"],
                               work_item_id=_work_item_id())
@@ -3689,14 +3792,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                   ref_quality: str = "high", fps: float = 8.0,
                   res_dir: str = "assets/sprites", max_retries: int = 1,
                   max_cost_usd: float = 0.0, timeout: int = 300,
-                  max_seconds: int = 1800, provider: str = "openai",
+                  max_seconds: int = 1800, provider: str = "",
                   model: str = "", ref_strength: float = 0.6,
                   archetypes: Optional[list[str]] = None, view: str = "",
                   palette_lock: str = "auto", palette_colors: int = 64,
                   sheet_padding: int = 0, anchor_views: int = 3) -> dict:
     """PAINTED sprite set - REFERENCE-FIRST for consistency.
 
-    provider: "openai" (gpt-image, default) or "krea". They condition on the
+    provider: blank means the project's stored preference (art.provider),
+    then the identity routing. "openai" and "krea" condition on the
     reference in genuinely different ways, and it changes what you get:
     gpt-image EDITS the reference image, which holds identity hard but drags
     the reference's own lighting along; a STYLE REFERENCE at `ref_strength`
@@ -3808,6 +3912,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
         root = _Path(_scratch_root())
+        # An unnamed provider is the preference, then the identity routing —
+        # the old default was the literal string "openai", which agents never
+        # overrode, so the routing rule and the stored preference were both
+        # unreachable from the most expensive tool here.
+        provider = _providers.provider_for("sheet", asked=provider, root=root)
         art_dir = root / ".bgate_out" / "art" / name
         from bgate_adapters import imagegen, sprites as _sp
 
@@ -4339,7 +4448,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
 @_tool
 def image_talkhead(subject: str, name: str, anchor: str = "",
                    res_dir: str = "assets/portraits", cell: int = 128,
-                   fps: float = 10.0, provider: str = "krea",
+                   fps: float = 10.0, provider: str = "",
                    model: str = "", ref_strength: float = 0.7,
                    drift_limit: float = 0.0, max_retries: int = 2,
                    quality: str = "medium", timeout: int = 300) -> dict:
@@ -4385,6 +4494,11 @@ def image_talkhead(subject: str, name: str, anchor: str = "",
         from bgate_core import talkhead as _th
 
         root = _Path(_scratch_root())
+        # Same resolution as image_sprites: preference, then identity routing.
+        # The old default was the literal "krea", which failed a krea-less
+        # setup unless the agent thought to override it.
+        provider = _providers.provider_for("portrait", asked=provider,
+                                           root=root)
         refused = _gate_images(str(root), _th.FRAME_COUNT if hasattr(_th, 'FRAME_COUNT') else 4,
                                quality, f"painting a talking head for {name!r}")
         if refused:
@@ -4518,6 +4632,7 @@ def godot_run(script: str, godot_project: Optional[str] = None,
     not the Builders Gate root - that one is `project_dir`.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         return _godot.run_script(script, project_dir=godot_project, timeout=timeout)
     except Exception as exc:
         return _fail(exc)
@@ -4760,6 +4875,7 @@ def godot_import_asset(godot_project: str, src_path: str, dest_rel: str = "asset
     godot_project: the directory holding project.godot.
     """
     try:
+        _contained_path(godot_project, "godot_project")
         result = _godot.import_asset(godot_project, src_path, dest_rel=dest_rel,
                                      timeout=timeout)
         warning = (result.get("alpha_mode") or {}).get("warning")
@@ -4882,6 +4998,7 @@ def godot_deliver_asset(godot_project: str, glb: str, name: str = "",
     """
     stem = name or _Path(glb).stem
     try:
+        _contained_path(godot_project, "godot_project")
         shot_dir = str(_Path(_root()) / ".bgate_out" / "3d" /
                        _run_tag(label or stem))
     except Exception:
@@ -4965,7 +5082,13 @@ def _terrain(layout: str, source: int, atlas_x: int, atlas_y: int,
 
 
 def _res_pair(godot_project: str, path: str, suffix: str) -> tuple[_Path, str]:
-    """A res:// path and its file on disk, from either form."""
+    """A res:// path and its file on disk, from either form.
+
+    THE CONTAINMENT GATE RUNS HERE, once, for every scene tool: the
+    ``godot_project`` argument is the write target's real address, and it used
+    to go straight to the adapter while only ``project_dir`` was gated.
+    """
+    _contained_path(godot_project, "godot_project")
     gd = _Path(godot_project).expanduser().resolve()
     if not (gd / "project.godot").is_file():
         raise ValueError(f"no project.godot in {gd} - that is not a Godot project")
@@ -7520,7 +7643,17 @@ def voice_speak(text: str, out_path: str = "",
         # the same table the adapter bills from; an unpriced model quotes
         # None there rather than 0.0, and an unknown price must not read
         # as free, so it is gated at the most expensive known rate.
-        speak_model = str(model or _deepgram.DEFAULT_SPEAK_MODEL)
+        # Explicit ask, then the stored preference, then the adapter default.
+        speak_model = str(model or "").strip()
+        if not speak_model:
+            try:
+                from bgate_core import settings as _settings_mod
+
+                speak_model = str(_settings_mod.get(root, "voice.model")
+                                  or "").strip()
+            except Exception:
+                speak_model = ""
+        speak_model = speak_model or str(_deepgram.DEFAULT_SPEAK_MODEL)
         per_1k = _deepgram.USD_PER_1K_CHARS.get(speak_model)
         if per_1k is None:
             known = [v for v in _deepgram.USD_PER_1K_CHARS.values()
@@ -7539,7 +7672,12 @@ def voice_speak(text: str, out_path: str = "",
         target = (_Path(root) / rel).resolve()
         # The same refusal deps.safe_under makes on the HTTP side: a path that
         # leaves the project is refused before anything is written, not after.
-        if not str(target).startswith(str(_Path(root).resolve())):
+        # relative_to, NOT startswith: a prefix compare passes
+        # C:\proj-evil\x.wav for a root of C:\proj, which is an escape into
+        # any sibling directory sharing the root's name prefix.
+        try:
+            target.relative_to(_Path(root).resolve())
+        except ValueError:
             raise ValueError(f"{rel} escapes the project root")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(result["audio"])
@@ -7643,6 +7781,7 @@ def sfx_rerender(recipe_path: str, out_path: str = "") -> dict:
     recipe_path may be absolute or relative to the project root.
     """
     try:
+        _contained_path(out_path, "out_path")
         from bgate_core import sfx as _sfx
 
         root = _root()

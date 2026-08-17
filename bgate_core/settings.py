@@ -77,8 +77,8 @@ REGISTRY_KEY = "settings"
 # Group order is the display order, in both the panel and `bgate doctor`.
 # "Community" arrived with the streamer chat settings and was never added here,
 # so every one of those entries declared a group the registry did not admit.
-GROUPS = ("Dispatch", "Gates", "Art", "Follow-up", "Notifications",
-          "Budget", "Console", "Privacy", "Community")
+GROUPS = ("Dispatch", "Gates", "Art", "Generators", "Modules", "Follow-up",
+          "Notifications", "Budget", "Console", "Privacy", "Community")
 
 # The event vocabulary a notification can be asked for. Kept here rather than
 # imported from events.py so that a settings panel still renders when the event
@@ -134,11 +134,23 @@ LABELS: dict[str, str] = {
     "art.runner": "Which tool generates images",
     "art.image_backend": "Image provider",
     "art.auto_approve": "Accept generated art without review",
+    # Generators
+    "art.provider": "Preferred image provider",
+    "art.model": "Preferred image model",
+    "cinematic.model": "Preferred video model",
+    "music.model": "Preferred music model",
+    "voice.model": "Preferred speech voice",
+    "text.model": "Model for prompt-writing calls",
+    # Modules
+    "modules.disabled": "Features switched off for this project",
     # Follow-up
     "followup.director_debrief": "Ask the director to review finished work",
     "followup.max_per_hour": "Most reviews to raise in an hour",
     "followup.max_age_min": "Skip reviewing work older than this",
     "followup.auto_reopen_failures": "Reopen failed tasks automatically",
+    "followup.max_auto_retries": "Most automatic retries per task",
+    "followup.escalate_failures": "Raise a director item when work fails",
+    "followup.escalation_to_session": "Hand failure escalations to the director session",
     # Notifications
     "notify.in_app": "Show notifications in the app",
     "notify.kinds": "What to be notified about",
@@ -155,6 +167,8 @@ LABELS: dict[str, str] = {
     # Console
     "console.poll_live_ms": "Refresh rate while work is running",
     "console.poll_idle_ms": "Refresh rate when nothing is running",
+    "console.model": "Model the director console session runs on",
+    "console.max_usd": "Spending limit for one console session",
     "graph.phase_cap": "Most steps to show per agent on the graph",
     "brainstorm.runner": "Which assistant the brainstorm room uses",
     "brainstorm.model": "Model the brainstorm room uses",
@@ -175,6 +189,7 @@ GROUP_ICONS: dict[str, str] = {
     "Notifications": "bell",
     "Budget": "coin",
     "Console": "terminal-2",
+    "Modules": "puzzle",
     "Privacy": "eye-off",
     "Community": "users",
     "Generators": "sparkles",
@@ -372,14 +387,17 @@ SETTINGS: tuple[Setting, ...] = (
              "and another agent will not settle it — it is a money pump."),
     Setting(
         key="qa.gated_seats", group="Gates", kind=LIST,
-        default=("art", "gameplay", "audio", "narrative"),
-        choices=("art", "gameplay", "audio", "narrative", "tech"),
+        default=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
+        choices=("art", "gameplay", "audio", "narrative", "tech", "cinematic"),
         store=("registry", "qa.gated_seats"), human_only=True,
         help="Which maker seats get an automatic QA reviewer when their work "
              "is completed. Was a hardcoded tuple in the gate, so a studio that "
              "wanted QA on art alone had to edit harness source — which changed "
-             "it for every project on the machine and needed a restart. "
-             "director and qa are never gated: that is recursion, not review."),
+             "it for every project on the machine and needed a restart. Every "
+             "maker seat is on by default now: the old four left tech and "
+             "cinematic completions closing on the agent's word alone, which "
+             "made quality structurally uneven by seat. director and qa are "
+             "never gated: that is recursion, not review."),
     Setting(
         key="signoff.hours", group="Gates", kind=INT, default=8,
         minimum=1, maximum=168, store=("registry", "signoff.hours"),
@@ -452,6 +470,74 @@ SETTINGS: tuple[Setting, ...] = (
              "and that volume is usually the real complaint. Rejection stays "
              "available to agents either way; this only unblocks approval."),
 
+    # -- Generators: the preferred provider and models -----------------------
+    # There was NO stored preference anywhere: every choice was key-presence
+    # probing plus hardcoded per-tool defaults, so a person with a paid,
+    # preferred service watched the harness route work to whichever key
+    # happened to probe first. These are the single write point; every picker
+    # consults them before probing.
+    Setting(
+        key="art.provider", group="Generators", kind=ENUM, default="auto",
+        choices=("auto", "openai", "krea", "kie", "local"),
+        store=("registry", "art.provider"), scope=MACHINE,
+        env="BGATE_ART_PROVIDER", human_only=True,
+        help="Which image provider generation goes to. `auto` keeps the "
+             "routing rules (identity work to the reference-strongest "
+             "configured provider, everything else by key-presence order). A "
+             "named provider is honoured the way an explicit ask is: even "
+             "with its key missing, you get THAT provider's error naming the "
+             "key to set — never a silent substitution billed to a service "
+             "you did not choose."),
+    Setting(
+        key="art.model", group="Generators", kind=STRING, default="",
+        store=("registry", "art.model"), scope=MACHINE,
+        env="BGATE_ART_MODEL", human_only=True,
+        help="The image model, when a generation names none itself. Must be a "
+             "model of the provider actually in use (gpt-image-1, "
+             "krea-2-large, nano-banana-2, …); blank takes that provider's "
+             "own default. A stale value after switching providers fails with "
+             "the provider's unknown-model error rather than being silently "
+             "dropped."),
+    Setting(
+        key="cinematic.model", group="Generators", kind=STRING, default="",
+        store=("registry", "cinematic.model"), scope=MACHINE,
+        human_only=True,
+        help="The video model a cinematic sequence plans onto when the plan "
+             "names none. Blank is the adapter default (seedance-2). "
+             "Validated against the registered video models at plan time, "
+             "same as an explicit choice."),
+    Setting(
+        key="music.model", group="Generators", kind=STRING, default="",
+        store=("registry", "music.model"), scope=MACHINE, human_only=True,
+        help="The music model when a request names none. Blank is the "
+             "adapter default (V5)."),
+    Setting(
+        key="voice.model", group="Generators", kind=STRING, default="",
+        store=("registry", "voice.model"), scope=MACHINE, human_only=True,
+        help="The speech voice/model when a line names none. Blank is the "
+             "adapter default (aura-2-thalia-en)."),
+    Setting(
+        key="text.model", group="Generators", kind=STRING, default="",
+        store=("registry", "text.model"), scope=MACHINE, human_only=True,
+        help="The model promptwriter uses for prompt-polish calls. Blank is "
+             "the historical default (gpt-4o-mini)."),
+
+    # -- Modules -------------------------------------------------------------
+    Setting(
+        key="modules.disabled", group="Modules", kind=LIST, default=(),
+        choices=("floor", "brainstorm", "music", "cinematic", "voice",
+                 "playtest", "three_d"),
+        store=("registry", "modules.disabled"), human_only=True,
+        help="Optional features this project has switched off — chosen on the "
+             "first-run card and changeable here. A disabled module's MCP "
+             "tools are not registered (agents stop paying context for tools "
+             "they will never call — new sessions only, a running server "
+             "keeps its registry), its panes leave the dashboard, and doctor "
+             "stops grading its dependencies. The core — board, seats, "
+             "canon, image generation, Godot — has no switch: a module "
+             "nobody can ship without would be a checkbox that only exists "
+             "to be mis-unchecked."),
+
     # -- Follow-up ----------------------------------------------------------
     Setting(
         key="followup.director_debrief", group="Follow-up", kind=BOOL,
@@ -473,12 +559,15 @@ SETTINGS: tuple[Setting, ...] = (
              "fire eight hours of debriefs at a board that has moved on."),
     Setting(
         key="followup.auto_reopen_failures", group="Follow-up", kind=BOOL,
-        default=False, store=("registry", "followup.auto_reopen_failures"),
+        default=True, store=("registry", "followup.auto_reopen_failures"),
         help="Reopen a failed item with the failure text instead of leaving it "
              "for a human, up to followup.max_auto_retries automatic rounds. "
-             "Off: a failure that retries itself unattended is how one broken "
-             "brief spends a night's budget. Whether this is on or off, the "
-             "failure still reaches the director — see "
+             "ON by default: shipped off, the retry rail existed and never "
+             "fired, so ONE failure stopped a whole chain until a human "
+             "noticed — the exact dead-end this feature was built to remove. "
+             "The runaway-spend risk lives in the CAP, which is 1 with a hard "
+             "ceiling of 2, not in this switch. Whether this is on or off, "
+             "the failure still reaches the director — see "
              "followup.escalate_failures."),
     Setting(
         key="followup.max_auto_retries", group="Follow-up", kind=INT, default=1,
@@ -503,6 +592,19 @@ SETTINGS: tuple[Setting, ...] = (
              "queued and never dispatched to an agent — and because the "
              "alternative is what this replaced: a red marker on the board "
              "that nothing acts on until somebody happens to look."),
+    Setting(
+        key="followup.escalation_to_session", group="Follow-up", kind=BOOL,
+        default=True, store=("registry", "followup.escalation_to_session"),
+        human_only=True,
+        help="Hand a filed failure escalation straight to the console's "
+             "director session, which investigates the failure and acts — "
+             "reopen with a corrected brief, file the fix as new work, or "
+             "explain what needs your decision. This is what makes an "
+             "escalation a decision that gets MADE rather than a card that "
+             "waits: shipped as held-only, every failure dead-ended until a "
+             "human opened the dashboard. Off returns to that — the "
+             "escalation is filed and held for you. Spend is bounded by "
+             "console.max_usd; no worker agent is bought either way."),
 
     # -- Notifications ------------------------------------------------------
     Setting(
@@ -591,6 +693,23 @@ SETTINGS: tuple[Setting, ...] = (
         help="How many phase rows the graph draws per item before it stops. A "
              "long-running agent otherwise paints a node taller than the "
              "canvas."),
+    Setting(
+        key="console.model", group="Console", kind=STRING, default="opus",
+        store=("registry", "console.model"), scope=MACHINE,
+        env="BGATE_CONSOLE_MODEL", human_only=True,
+        help="The model the director console session runs on. This session is "
+             "the human's own counterpart — it investigates, arbitrates and "
+             "delegates — so it defaults to a stronger model than the seats it "
+             "dispatches. Named rather than inherited, for the same reason "
+             "dispatch.model is."),
+    Setting(
+        key="console.max_usd", group="Console", kind=FLOAT, default=15.0,
+        minimum=0.0, maximum=10000.0, store=("registry", "console.max_usd"),
+        human_only=True,
+        help="Ceiling for one console session's conversation, in USD. The "
+             "session outlives any single process (it resumes across dashboard "
+             "restarts), so this bounds the CONVERSATION; clearing the console "
+             "starts a fresh one. 0 means no ceiling."),
     Setting(
         key="brainstorm.runner", group="Console", kind=STRING, default="claude",
         store=("registry", "brainstorm.runner"), scope=MACHINE,
@@ -683,7 +802,8 @@ BY_KEY: dict[str, Setting] = {s.key: s for s in SETTINGS}
 # The subset the browser needs. It rides in the index page's bootstrap next to
 # the cache-busting module srcs rather than costing a second fetch on load, and
 # every consumer keeps its hardcoded fallback for a bootstrap that is missing.
-CLIENT_KEYS = ("console.poll_live_ms", "console.poll_idle_ms", "graph.phase_cap",
+CLIENT_KEYS = ("modules.disabled",
+               "console.poll_live_ms", "console.poll_idle_ms", "graph.phase_cap",
                "notify.in_app")
 
 
@@ -938,9 +1058,17 @@ def client(root: str | os.PathLike[str]) -> dict:
     values = {}
     for key in CLIENT_KEYS:
         try:
-            values[key.split(".", 1)[1]] = get(root, key)
+            value = get(root, key)
         except Exception:
             continue
+        if isinstance(value, (list, tuple)):
+            # Structured values keep their FULL key: the short-name scheme
+            # exists for the poll-rate numbers the JS has always read, and
+            # "disabled" floating free of its module context is a collision
+            # waiting for the next list setting.
+            values[key] = list(value)
+        else:
+            values[key.split(".", 1)[1]] = value
     return values
 
 
@@ -963,7 +1091,13 @@ def _write(root, s: Setting, value: Any) -> None:
         _ws.set(root, seat, doc_key, doc)
         return
     if kind == "registry":
-        doc = _registry_doc(root)
+        # NOT _registry_doc. That helper swallows a failed read into {} so a
+        # PANEL can render defaults, and this is a read-modify-REPLACE: writing
+        # that {} back would silently reset every other registry-stored setting
+        # to its default because one transient "database is locked" happened at
+        # read time. A save that cannot read what it is about to rewrite must
+        # fail loudly instead — the caller retries; nothing is lost.
+        doc = _ws.get(root, REGISTRY_SEAT, REGISTRY_KEY, {})
         doc[s.store[1]] = value
         doc["updated_at"] = _now()
         doc["by"] = _actor()
@@ -1071,6 +1205,53 @@ def _audit_guard(root, s: Setting, was: Any, now: Any) -> None:
 # ---------------------------------------------------------------------------
 # Description — the UI renders from this, not from a template per switch
 # ---------------------------------------------------------------------------
+# Fields whose CHOICES are live facts about this machine, not registry
+# constants: which providers hold a key, which model ids their adapters can
+# actually route. Served by bgate_core.modelcatalog, filtered to configured
+# providers, so the panel's pickers cannot offer a model that fails on its
+# first call with a missing-key error. The static declaration stays as the
+# fallback for a catalog that will not import.
+_DYNAMIC_CHOICES: dict[str, str] = {
+    "art.provider": "image-providers",
+    "art.model": "image-models",
+    "cinematic.model": "video-models",
+    "music.model": "music-models",
+    "voice.model": "speech-models",
+    "text.model": "text-models",
+    "dispatch.model": "agent-models",
+    "dispatch.model_art": "agent-models",
+    "console.model": "agent-models",
+    "brainstorm.model": "agent-models",
+}
+
+
+def _choices_for(root, s: Setting) -> list:
+    want = _DYNAMIC_CHOICES.get(s.key)
+    if not want:
+        return list(s.choices)
+    try:
+        from bgate_core import modelcatalog
+
+        live = modelcatalog.options(root, want)
+    except Exception:
+        live = []
+    if not live:
+        live = list(s.choices)
+    # The stored value survives in the list even when its provider's key was
+    # removed — a picker that hides the current value reads as data loss.
+    current = str(_resolve(root, s)[0] or "").strip()
+    if current and current not in live:
+        live = [current] + live
+    if not live:
+        return list(s.choices)
+    # An ENUM must keep every legal value reachable; the catalog only orders
+    # and augments it. A blank entry on the STRING pickers is "provider
+    # default", which set() accepts because "" is these settings' default.
+    if s.kind == ENUM:
+        live += [c for c in s.choices if c not in live]
+    return live
+
+
 def _field(root, s: Setting) -> dict:
     value, src, var = _resolve(root, s)
     stored_present, stored_raw = _stored(root, s)
@@ -1078,7 +1259,7 @@ def _field(root, s: Setting) -> dict:
         "key": s.key,
         "group": s.group,
         "kind": s.kind,
-        "choices": list(s.choices),
+        "choices": _choices_for(root, s),
         "value": value,
         "human_only": s.human_only,
         "default": list(s.default) if s.kind == LIST else s.default,

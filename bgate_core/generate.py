@@ -81,7 +81,7 @@ def _int(value: Any, default: int, lo: int, hi: int) -> int:
 # What this node is going to do, and what it will cost
 # ---------------------------------------------------------------------------
 
-def plan(config: dict, *, style_refs: int = 0) -> dict:
+def plan(config: dict, *, style_refs: int = 0, root: Any = None) -> dict:
     """Resolve a node's config into a concrete provider + model + price.
 
     Two ways in, on purpose. ``{task_kind, tier}`` is the one a non-engineer
@@ -150,7 +150,7 @@ def plan(config: dict, *, style_refs: int = 0) -> dict:
             note = ""
     elif task_kind:
         try:
-            resolved = _tiers.resolve(task_kind, tier)
+            resolved = _tiers.resolve(task_kind, tier, root=root)
         except _tiers.NoSuchTier as exc:
             raise GenerateRefused(str(exc)) from exc
         provider, model = resolved["provider"], resolved["model"]
@@ -301,7 +301,7 @@ def run(root: str | os.PathLike[str], *, run_id: int, node_id: str,
                 "or set config.prompt", "artifacts": [], "usd": 0.0}
 
     try:
-        spec = plan(config, style_refs=len(style_refs))
+        spec = plan(config, style_refs=len(style_refs), root=root)
     except GenerateRefused as exc:
         return {"ok": False, "error": str(exc), "artifacts": [], "usd": 0.0}
 
