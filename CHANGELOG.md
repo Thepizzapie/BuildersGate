@@ -9,6 +9,102 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+## [0.1.42]
+
+The director you talk to is a real session, a failed item no longer stops
+everything behind it, and the installer asks what you actually want.
+
+### Added
+
+- **The console's director is a persistent Claude Code session.** Every message
+  used to spawn a fresh seat worker holding a switchboard prompt and no memory
+  of the message before it, which is why it deflected instead of investigating.
+  It is now one full-capability session per project: the same tools a dispatched
+  agent gets plus the whole MCP server, its conversation held open between
+  messages and resumed by the CLI's own session id across restarts. Turns are
+  still work items, so the transcript, the delegation lineage and the archive are
+  unchanged. `console.model` and `console.max_usd` bound it; running out of
+  budget arrives as a reply rather than a failure.
+
+- **A preferred provider and model, honoured everywhere.** There was no stored
+  preference in the product at all: every generation probed for whichever key
+  happened to be set, and five tools hardcoded a provider outright, so a paid
+  account you had chosen lost to one you had not. The new Generators settings
+  are read by every generation surface, and their model pickers are filled from
+  what this machine can actually reach — providers with a key set, and only the
+  models the adapters can genuinely drive.
+
+- **Optional features are modules, chosen when you install.** The setup wizard
+  gained a feature page: the studio floor's art, voice, and playtest capture are
+  components you can decline, and declining one skips its payload, keeps its
+  tools out of every agent's context, drops its panes from the dashboard and
+  stops `bgate doctor` grading its dependencies. The choice becomes this
+  machine's default, which new projects inherit and any project can override in
+  Settings.
+
+- **A dispatched seat gets its own craft's tools, not all of them.** Every agent
+  carried all 213 tool definitions on every turn, including whole crafts it has
+  no lane for. A gameplay agent now registers 108, an audio agent 106; the
+  shared spine (board, seats, bible, engine, assets) stays universal, and the
+  director keeps everything.
+
+### Changed
+
+- **A failure is retried and then acted on.** The retry rail existed and never
+  fired: it shipped switched off, and the escalation it fell back to was filed
+  with a source every dispatcher refuses, so one failed item stopped its whole
+  chain until somebody noticed. Automatic retry is on by default (still capped
+  at one, recorded on the item), and an escalation past the cap is handed to the
+  director session, which reads the failure and reopens the item with a brief
+  that names what actually went wrong.
+
+- **Agents stay on the item they were given.** Recall matched any single word of
+  a query, a task with its own reference anchors inherited every other pin in the
+  project, and the QA reviewer judged work against its whole seat checklist
+  rather than what the item promised — which bought fix rounds about scope. All
+  three are corrected, every maker seat now gets a reviewer, and a completion
+  claimed over a run that wrote nothing says so on the record.
+
+- **A 2D project starts without the 3D pipeline**, because cutout and sprite work
+  never opens Blender. Re-enable it in Settings.
+
+### Fixed
+
+- **Five ways past the write gate.** A multi-line Bash command was judged by its
+  first line alone, so anything on line two wrote unchecked; `eval` was invisible
+  to the parser; `cd elsewhere && write` was graded against the project you
+  started in; a heredoc-fed interpreter and a `perl -e` snippet both slipped the
+  fail-closed path. All five are closed and tested, and PowerShell — which the
+  desktop harness offers and the hook never saw — is now refused rather than
+  ignored when it looks like a write.
+
+- **Tools that took a raw path could reach another game.** Only the project
+  argument was ever checked, so a scene or export path pointing somewhere else
+  was written without the containment gate being asked. The gate now runs on the
+  target's own project, which is the attack the module has described since it was
+  written.
+
+- **Dispatch races that cost real runs.** An unexpected error between reserving
+  an item and starting its process left the item marked dispatched with nothing
+  running; the pid ledger was written without a lock, so overlapping dispatches
+  lost entries and left agents nothing could reap; stall detection read the whole
+  project's file times, so a busy neighbour hid a hung agent for two hours; two
+  concurrent ticks could buy two agents for one workflow step; and two chains
+  filed at once could take the same id.
+
+- **Stores that grew forever.** The activity ledger had no prune anywhere, agent
+  logs appended across every re-dispatch, and the notification stream was
+  append-only with a documented torn-write risk. All three are bounded now.
+
+- **Settings could be silently reset.** A transient read failure while saving one
+  registry setting rewrote the whole document with defaults, taking every other
+  stored setting with it.
+
+- **The dashboard's Generators entry appeared twice** and the pickers behind it
+  were unreachable, a stale response could paint one entity's data under
+  another's header, and a job watch kept polling for twelve minutes after you
+  left the screen.
+
 ## [0.1.412]
 
 The app opened a black window if you had ever renamed a project.
@@ -2504,7 +2600,9 @@ version.
 - The audio seat workspace is a deliberate v1 (library, playback, cue sheet).
 - The dashboard's error surfacing is uneven; see `docs/ui-ux-audit.md`.
 
-[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.40...HEAD
+[Unreleased]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.42...HEAD
+[0.1.42]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.412...v0.1.42
+[0.1.412]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.41...v0.1.412
 [0.1.40]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.35...v0.1.40
 [0.1.32]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/Thepizzapie/BuildersGate/compare/v0.1.30...v0.1.31
