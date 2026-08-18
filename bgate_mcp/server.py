@@ -7021,6 +7021,17 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     scene/tileset: res:// paths, or paths relative to that directory.
     """
     try:
+        # THE SAME GATE sidescroll_generate holds in the other direction.
+        # Under gravity a connected floor guarantees nothing — you cannot
+        # walk upward — so rooms-and-corridors geometry in a platformer is
+        # the wrong geometry, not a style choice.
+        view = _gameview.load(_root())
+        if view == "side_scroller":
+            return {"ok": False, "error": (
+                "this project's view is 'side_scroller'. Rooms and corridors "
+                "are top-down geometry — use sidescroll_generate, which "
+                "builds for this character's jump, or game_view_set if the "
+                "declared view is wrong.")}
         if wall_layout not in _WALL_LAYOUTS:
             raise ValueError(
                 f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")

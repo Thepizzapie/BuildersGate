@@ -406,3 +406,25 @@ class TestLevelTools:
                          scene="scenes/level.tscn", tileset="tiles/small.tres",
                          wall_layout="grid16", wall_columns=4, create=True)
         assert out["ok"] and out["written"]
+
+    async def test_a_side_scroller_project_is_refused_the_top_down_geometry(
+            self, root, game):
+        """Under gravity a connected floor guarantees nothing, so the guard
+        points at the generator that builds for the jump instead."""
+        from bgate_core import gameview
+        gameview.save(root, "side_scroller")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
+                         create=True)
+        assert out["ok"] is False and "sidescroll_generate" in out["error"]
+        assert not (game / "scenes" / "level.tscn").exists()
+
+    async def test_a_top_down_project_is_refused_the_platformer_geometry(
+            self, game):
+        """The mirror of the guard above: the default view is top_down, and
+        sidescroll_generate refuses it before touching the scene."""
+        out = await call("sidescroll_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
+                         create=True)
+        assert out["ok"] is False and "game_view_set" in out["error"]
+        assert not (game / "scenes" / "level.tscn").exists()
