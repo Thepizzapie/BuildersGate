@@ -68,6 +68,8 @@ from bgate_core import levelgen as _levelgen
 from bgate_core import gameview as _gameview
 from bgate_core import props as _props
 from bgate_core import propsheet as _propsheet
+from bgate_core import jump as _jumpmod
+from bgate_core import sidescroll as _sidescroll
 from bgate_core import providers as _providers
 from bgate_core import scenewire as _scenewire
 from bgate_core import tilemap as _tilemap
@@ -2950,6 +2952,12 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
             "luminance": {"floor": round(floor_lum), "wall": round(float(toned.mean()))}}
 
 
+#: The share of the wanted masks a generated sheet must actually contain.
+#: Below this it is a failed roll, not a partial success — every missing mask
+#: is a hole the level draws when that neighbour shape comes up.
+MIN_TILE_COVERAGE = 0.6
+
+
 @_tool
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      bits: int = 8, terrain: str = "light",
@@ -3157,6 +3165,27 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             sources, tile_size=(tile_px, tile_px), physics=bool(collide))
         tres_path = out_dir / f"{name}.tres"
         tres_path.write_text(tres_text, encoding="utf-8")
+
+        # COVERAGE IS THE VERDICT, not a detail in a sub-dict. A sheet with
+        # five of forty-seven masks is not a tileset that came back with a
+        # note; it is a failed generation, and reporting ok:True with the
+        # number buried is how it gets installed and only noticed when the
+        # level draws holes. RD coverage varies wildly per roll, so this
+        # refuses and the caller re-rolls rather than shipping the bad one.
+        share = len(table) / max(1, len(wanted))
+        if share < MIN_TILE_COVERAGE:
+            return {"ok": False, "name": name, "atlas": str(atlas_png),
+                    "coverage": {"have": len(table), "want": len(wanted),
+                                 "share": round(share, 2),
+                                 "missing": missing},
+                    "spent_usd": round(spent, 3),
+                    "error": (
+                        f"only {len(table)} of {len(wanted)} masks came back "
+                        f"({share:.0%}) — a level built on this draws holes "
+                        "wherever a missing mask is needed. The generation is "
+                        "the problem, not the writer: re-roll, or drop to "
+                        "bits=4 which needs 16 masks instead of 47. The sheet "
+                        "is kept so you can look at what came back.")}
 
         result = {"ok": True, "name": name,
                   "atlas": str(atlas_png), "tileset": str(tres_path),
@@ -6534,6 +6563,178 @@ def prop_generate(name: str, style: str = "", types: str = "",
     except Exception as exc:
         return _fail(exc)
 
+
+
+@_tool
+def sidescroll_generate(godot_project: str, scene: str, tileset: str,
+                        length: int = 160, height: int = 16, seed: int = 0,
+                        run: float = 9.0, jump_speed: float = 18.0,
+                        gravity: float = 40.0, body_cells: int = 2,
+                        difficulty: float = 0.5, segments: str = "",
+                        solid_source: int = 0, solid_layout: str = "grid16",
+                        solid_columns: int = 4,
+                        solid_atlas_x: int = 0, solid_atlas_y: int = 0,
+                        prop_manifest: str = "", prop_source: int = 1,
+                        prop_types: str = "", prop_spacing: int = 9,
+                        parent: str = ".", solid_name: str = "Solid",
+                        prop_name: str = "Props",
+                        create: bool = False, dry_run: bool = False) -> dict:
+    """GENERATE A SIDE-SCROLLING LEVEL and write it into a scene.
+
+    The platformer counterpart of `level_generate`, and a separate tool because
+    it is a separate problem. `level_generate` partitions a SPACE into rooms and
+    guarantees the floor is one connected region. Under gravity that guarantee
+    is meaningless — you cannot walk upward — so this builds a SEQUENCE of
+    segments left to right and guarantees something else entirely: that the
+    goal can be REACHED, by a character with this exact jump.
+
+    THE JUMP IS AN INPUT, not a detail. `run`, `jump_speed` and `gravity` are
+    in CELLS PER SECOND, and every segment sizes itself from what they allow: a
+    pit is never wider than this character clears, a pipe never taller than it
+    rises. An unclearable gap is unrepresentable rather than generated and
+    rejected. Pass the SAME numbers to your player scene — a level built for one
+    jump and played with another is the failure this parameterisation exists to
+    prevent.
+
+    IT REFUSES AN UNPLAYABLE LEVEL rather than reporting one. The checks are
+    `reachable` (the goal is in the flood fill of jump arcs from spawn),
+    `clearance` (the body fits where it must pass), `softlock` (nowhere you can
+    land and never leave) and `stranded` (no platform outside its own jump).
+    A finding here is a bug to report, not a difficulty dial.
+
+    `segments` is a comma list from flat, pit, stair, hop, blocks, pipe — "" for
+    all of them. `prop_manifest` is what `prop_generate` wrote; pass it and the
+    props are placed and drawn, and you never type an atlas coordinate.
+
+    Returns the ASCII map, which is the cheapest way to see a level before
+    anything is spent on art for it.
+    """
+    try:
+        root = _root()
+        view = _gameview.load(root)
+        if view != "side_scroller":
+            return {"ok": False, "error": (
+                f"this project's view is {view!r}. A side-scrolling level in a "
+                f"{view} game is the wrong geometry, not a style choice — set "
+                "it with game_view_set if that is what you meant.")}
+
+        spec = _jumpmod.JumpSpec(run=run, jump_speed=jump_speed,
+                                 gravity=gravity, body=(1, max(1, body_cells)))
+        kinds = tuple(segments.replace(",", " ").split()) or None
+        level = _sidescroll.plan(length, height, seed=seed, spec=spec,
+                                 difficulty=difficulty, kinds=kinds)
+        verdict = _sidescroll.check(level, spec)
+        if not verdict["ok"]:
+            return {"ok": False, "error": (
+                "this level cannot be played by the character it was built "
+                "for — that is a generator bug, not a difficulty setting"),
+                "findings": verdict["findings"],
+                "ascii": _sidescroll.ascii_map(level, width=min(length, 120))}
+
+        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+        if not tiles_disk.is_file():
+            return {"ok": False, "error": (
+                f"no tileset at {tiles_res} - generate or import it first; a "
+                "level cannot pick tiles from nothing")}
+        parsed_set = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        fresh = not scene_disk.is_file()
+        if fresh and not create:
+            return {"ok": False, "error": (
+                f"no scene at {scene_res}. Pass create=true to start a new "
+                "one, or point at an existing scene.")}
+        text = (_EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
+                if fresh else
+                scene_disk.read_text(encoding="utf-8", errors="replace"))
+
+        solid = {tuple(c) for c in level["solid"]}
+        terrain = _terrain(solid_layout, solid_source, solid_atlas_x,
+                           solid_atlas_y, solid_columns, solid_name)
+        cells = _autotile.resolve(sorted(solid), terrain,
+                                  region=(0, 0, length, height))
+        layers = [{"name": solid_name, "terrain": solid_name,
+                   "cells": cells, "unmapped": {}}]
+
+        prop_report: dict = {}
+        if prop_manifest:
+            man = _read_prop_manifest(root, prop_manifest)
+            want = tuple(prop_types.replace(",", " ").split()) or \
+                tuple(man["types"])
+            # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
+            # prop on except the surface itself, and `jump.surfaces` already
+            # knows which cells those are — the same function the reachability
+            # gate uses, so a prop can never sit where the player cannot.
+            stand = sorted(_jumpmod.surfaces(solid, body=spec.body))
+            import random as _random
+
+            rng = _random.Random(seed)
+            placed, used = [], []
+            for cell in stand:
+                if any(abs(cell[0] - u) < max(2, prop_spacing) for u in used):
+                    continue
+                name = want[rng.randrange(len(want))]
+                spot = man["atlas"].get(name)
+                if isinstance(spot, dict):
+                    spot = next(iter(spot.values()))
+                if not spot:
+                    continue
+                placed.append({"x": cell[0], "y": cell[1],
+                               "source": int(prop_source),
+                               "ax": int(spot[0]), "ay": int(spot[1]),
+                               "alt": 0})
+                used.append(cell[0])
+            if placed:
+                layers.append({"name": prop_name, "terrain": prop_name,
+                               "cells": placed, "unmapped": {}})
+            prop_report = {"placed": len(placed), "types": list(want),
+                           "manifest": prop_manifest}
+
+        absent = {}
+        for layer in layers:
+            want_at = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
+            gaps = sorted((ax, ay) for src, ax, ay in want_at
+                          if (ax, ay) not in set(map(tuple,
+                              parsed_set["sources"][src]["tiles"])))
+            if gaps:
+                absent[layer["name"]] = [list(g) for g in gaps]
+        if absent:
+            return {"ok": False, "error": (
+                f"{tiles_res} does not define these atlas tiles: {absent}. A "
+                "cell pointing at an undefined tile draws nothing and says "
+                "nothing.")}
+
+        wired = _scenewire.wire_tilemap(text, tiles_res, layers,
+                                        parent=parent,
+                                        owns=[solid_name, prop_name])
+        if dry_run:
+            written = {"written": False}
+        elif fresh:
+            scene_disk.parent.mkdir(parents=True, exist_ok=True)
+            scene_disk.write_text(wired["text"], encoding="utf-8")
+            written = {"written": True, "created": True}
+        else:
+            written = _scenewire.apply(scene_disk, wired["text"], root=_root())
+
+        if not dry_run:
+            _log("level", f"side-scroller {length}x{height} seed {seed} "
+                          f"into {scene_res}", ref=scene_res)
+        return {"ok": True, "scene": scene_res, "tileset": tiles_res,
+                "seed": seed, "size": [length, height],
+                "spawn": level["spawn"], "goal": level["goal"],
+                "segments": len(level["segments"]),
+                "jump": level["limits"],
+                "playable": verdict,
+                "props": prop_report,
+                "layers": wired["layers"], "summary": wired["summary"],
+                "written": written.get("written", False),
+                "created": bool(written.get("created")),
+                "ascii": _sidescroll.ascii_map(level, width=min(length, 120)),
+                "next": ("give your player scene the SAME run/jump_speed/"
+                         "gravity — a level built for one jump and played "
+                         "with another is not the level that was checked")}
+    except Exception as exc:
+        return _fail(exc)
 
 @_tool
 def game_view_get() -> dict:
