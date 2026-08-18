@@ -172,13 +172,18 @@ def _animation_body(prompt: str, action: str, image_b64: str,
     w, h = int(size[0]), int(size[1])
     if not (32 <= w <= 256 and 32 <= h <= 256):
         raise RetroDiffusionError(f"size {w}x{h} outside RD's 32..256")
+    # remove_bg deliberately OFF. RD's server-side keying eats any interior
+    # colour near the background — a white undershirt, pale jeans — and hands
+    # back sprites with transparent HOLES through the body, discovered on a
+    # 45-strip run viewed against a light background. The caller keys the
+    # flat background itself (see key_background): a corner-seeded flood only
+    # removes background CONNECTED to the outside, so pale garments survive.
     body = {
         "prompt": prompt,
         "prompt_style": f"rd_advanced_animation__{action}",
         "width": w, "height": h, "num_images": 1,
         "frames_duration": frames,
         "return_spritesheet": True,
-        "remove_bg": True,
     }
     if image_b64:
         body["input_image"] = image_b64
@@ -239,6 +244,49 @@ def animate(start_frame: str | os.PathLike[str], action: str, *,
             "usd": result.get("balance_cost"),
             "balance": result.get("remaining_balance"),
             "frames": frames, "size": [int(size[0]), int(size[1])]}
+
+
+def key_background(img, *, tolerance: int = 28) -> "object":
+    """Flood-key an RD sheet's flat background to transparency. Returns RGBA.
+
+    Seeded from all four borders, spreading only through pixels within
+    ``tolerance`` of the border's own dominant colour — background connected
+    to the outside vanishes, interior regions of a similar colour (a white
+    shirt, pale jeans) DO NOT, because the flood cannot reach them through
+    the figure's outline. This is the client-side answer to remove_bg's
+    holes; the two differ exactly on enclosed pale pixels, which is the
+    difference that matters.
+    """
+    from collections import Counter, deque
+
+    import numpy as np
+    from PIL import Image
+
+    rgba = img.convert("RGBA")
+    a = np.array(rgba)
+    rgb = a[..., :3].astype(int)
+    h, w = rgb.shape[:2]
+    border = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]])
+    bg = Counter(map(tuple, border)).most_common(1)[0][0]
+    near = (np.abs(rgb - np.array(bg)).sum(axis=2) <= tolerance * 3)
+    seen = np.zeros((h, w), bool)
+    q = deque()
+    for x in range(w):
+        for y in (0, h - 1):
+            if near[y, x] and not seen[y, x]:
+                seen[y, x] = True; q.append((y, x))
+    for y in range(h):
+        for x in (0, w - 1):
+            if near[y, x] and not seen[y, x]:
+                seen[y, x] = True; q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and near[ny, nx] and not seen[ny, nx]:
+                seen[ny, nx] = True; q.append((ny, nx))
+    a[seen] = 0
+    return Image.fromarray(a)
 
 
 # ---------------------------------------------------------------------------

@@ -91,7 +91,10 @@ class TestAnimate:
         assert body["prompt"] == "confident steps"      # subject only, no style words
         assert body["width"] == 96 and body["height"] == 80  # from the frame
         assert body["frames_duration"] == 4
-        assert body["return_spritesheet"] is True and body["remove_bg"] is True
+        assert body["return_spritesheet"] is True
+        # remove_bg must NOT be sent: RD keys holes through pale garments;
+        # the adapter's key_background floods from the border instead.
+        assert "remove_bg" not in body
         assert body["async"] is True
         # input flattened to RGB PNG — decodes, and carries no alpha
         from io import BytesIO

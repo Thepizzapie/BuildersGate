@@ -689,6 +689,8 @@ def sheet_report(ordered: Sequence[str], frame_files: dict[str, str], *,
             continue
         facing = facing_report(group, frame_files, airborne=airborne,
                                expected=_direction_of(anim))
+        facing["findings"].extend(
+            flicker_report(group, frame_files)["findings"])
         facing_all[anim] = facing
         if facing.get("findings") and anim in anims:
             anims[anim]["findings"].extend(facing["findings"])
@@ -734,7 +736,8 @@ HEIGHT_SPLIT_FRAC = 0.12
 
 
 def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
-                  airborne: Iterable[str] = (), expected: str = "") -> dict:
+                  airborne: Iterable[str] = (), expected: str = "",
+                  reference: str = "") -> dict:
     """Per-frame geometry against the whole set: facing vote + height outliers.
 
     Facing: :func:`head_skew` per frame (where the face's dark detail sits in
@@ -812,7 +815,40 @@ def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
         # single most shipped defect in the reference project (ten of the
         # drone's twenty facings), and one internal consistency can never see,
         # because a uniformly backwards sheet is perfectly consistent.
+        # WHICH SIGN MEANS "CORRECT" is style-dependent: head_skew reads
+        # dark detail, which is a visor on a knight (face side) and a hair
+        # mass on a pale-faced office worker (BACK of head) — the compass
+        # table called a KNOWN-GOOD shipped strip backwards. A reference
+        # frame from a known-correct strip is style-independent ground
+        # truth: the set must lean the way its own seed leans. The compass
+        # table is the fallback when no reference exists.
         lean = _DIRECTION_LEAN.get(str(expected or "").strip().lower(), 0)
+        if reference:
+            try:
+                ref_skew = head_skew(_open(reference))
+                if abs(ref_skew) >= FACING_SKEW_MIN:
+                    lean = 1 if ref_skew > 0 else -1
+                elif lean:
+                    # The seed itself is faceless (a back view): the lean
+                    # table's face-visible claim is wrong for this strip.
+                    lean = 0
+            except Exception:                                   # noqa: BLE001
+                pass
+        if lean and len(voters) * 2 < len(skews):
+            # DECLARED FACE-VISIBLE, DRAWN FACELESS. Abstaining when no face
+            # is readable is right for an undeclared set and exactly wrong
+            # for one whose contract says east: a working strip that turned
+            # its whole cast to a back view sailed through as "no verdict"
+            # while a human called it immediately.
+            out["findings"].append({
+                "kind": "turned_away", "iou": None,
+                "frames": [pose for pose, s in skews
+                           if abs(s) < FACING_SKEW_MIN],
+                "note": f"declared {expected!r} (a face-visible direction) "
+                        "but most frames show no readable face detail — the "
+                        "camera turned away from the declared side. "
+                        "Regenerate with the facing pinned in the prompt, or "
+                        "re-declare the direction if the turn is intended."})
         if lean:
             majority_sign = 1 if right > left else (-1 if left > right else 0)
             if majority_sign and majority_sign != lean:
@@ -933,6 +969,64 @@ def set_drift(groups: dict[str, Sequence[str]]) -> dict:
                         "from a conforming sheet."})
     return {"findings": findings, "measured": measured,
             "flagged": bool(findings)}
+
+
+
+#: Per-frame share of the strip's CONSENSUS ink a frame may lack before it is
+#: a flicker. Calibrated on a 45-strip floor-cast run: strips a human called
+#: bugged (white pants on half the frames, a jacket that vanishes) measured
+#: 0.11-0.13 worst-frame; honest strips sat at or under 0.05.
+FLICKER_LOST_MAX = 0.08
+
+
+def flicker_report(ordered: Sequence[str], frame_files: dict[str, str]) -> dict:
+    """Frames whose INK disagrees with the strip's consensus — garment-colour
+    flicker, vanishing clothing, hallucinated props. {findings, lost}.
+
+    Reuses the band-novelty machinery row_report has had all along
+    (_ink_palette_hist/_novelty), pointed at FRAMES: for each frame, how much
+    of the other frames' pooled colour mass is missing from it ("lost"), and
+    how much of its own colour appears nowhere else ("added"). Lost is the
+    stronger signal — a white-pants frame is missing the real trousers.
+    """
+    from PIL import Image
+
+    cells = []
+    labels = []
+    for pose in ordered:
+        path = frame_files.get(pose)
+        if not path:
+            continue
+        try:
+            cells.append(Image.open(path).convert("RGBA"))
+            labels.append(pose)
+        except Exception:                                       # noqa: BLE001
+            continue
+    if len(cells) < 3:
+        return {"findings": [], "lost": {}}
+    hists = [_ink_palette_hist([c]) for c in cells]
+    lost: dict[str, float] = {}
+    added: dict[str, float] = {}
+    for i, hist in enumerate(hists):
+        others = [o for j, o in enumerate(hists) if j != i]
+        merged: dict = {}
+        for other in others:
+            for key, share in other.items():
+                merged[key] = merged.get(key, 0.0) + share / len(others)
+        lost[labels[i]] = round(_novelty(merged, [hist]), 4)
+        added[labels[i]] = round(_novelty(hist, others), 4)
+    bad = [pose for pose, v in lost.items() if v > FLICKER_LOST_MAX]
+    findings = []
+    if bad and len(bad) * 2 <= len(labels) + 1:
+        findings.append({
+            "kind": "ink_flicker", "frames": bad, "iou": None,
+            "note": f"{len(bad)} frame(s) are missing a large share of the "
+                    "strip's consensus colours — clothing changed colour or "
+                    "vanished on those frames (worst "
+                    f"{max(lost[p] for p in bad):.0%} of consensus ink "
+                    f"absent, limit {FLICKER_LOST_MAX:.0%}). Re-roll the "
+                    "strip; this does not repair frame by frame."})
+    return {"findings": findings, "lost": lost, "added": added}
 
 
 def _yaw_gap(magnitudes: list[tuple[str, float]]) -> Optional[dict]:

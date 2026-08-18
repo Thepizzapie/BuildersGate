@@ -3545,7 +3545,8 @@ _RD_PROMPTS = {"walk": "confident, steady steps",
 @_tool
 def animation_generate(character: str, action: str,
                        source_sheet: str = "", prompt: str = "",
-                       frames: int = 0, max_cost_usd: float = 2.0) -> dict:
+                       frames: int = 0, max_retries: int = 1,
+                       max_cost_usd: float = 2.0) -> dict:
     """CONTRACT-DRIVEN character animation via Retro Diffusion.
 
     Reads the sprite contract (sprite_contract_get) for this character+action:
@@ -3627,29 +3628,62 @@ def animation_generate(character: str, action: str,
             picks = [round(i * (rd_frames - 1) / (keep - 1))
                      for i in range(keep)]
         for direction in drawn:
-            got = _rd.animate(starts["frames"][direction], rd_action,
-                              frames=rd_frames, size=(cw, ch), prompt=motion,
-                              root=str(root))
-            spent += float(got.get("usd") or 0.0)
-            sheet_img = _Img.open(
-                _io.BytesIO(_b64mod.b64decode(got["sheet_b64"]))).convert("RGBA")
-            cols = max(1, sheet_img.width // cw)
-            for i, src_index in enumerate(picks):
-                r, c = divmod(src_index, cols)
-                cell = sheet_img.crop((c * cw, r * ch,
-                                       (c + 1) * cw, (r + 1) * ch))
-                path = out_dir / f"{character}_{act}_{direction}_{i}.png"
-                cell.save(path)
-                if pinned:
-                    _spritekit.lock_palette(str(path), pinned)
-                label = f"{act}_{direction}/{i}"
-                frame_files[label] = str(path)
+            # RE-ROLL LOOP. RD is stochastic: the same seed frame can come
+            # back with white trousers on half the frames one run and clean
+            # the next. A flagged strip is re-bought (bounded by max_retries
+            # and the cost ceiling) and the roll with the fewest findings is
+            # the one that ships — the hr_bard pattern, automated.
+            best = None
+            attempts = max(1, 1 + int(max_retries))
+            for attempt in range(attempts):
+                if attempt and max_cost_usd and spent + est / max(1, len(drawn)) > max_cost_usd:
+                    break
+                got = _rd.animate(starts["frames"][direction], rd_action,
+                                  frames=rd_frames, size=(cw, ch), prompt=motion,
+                                  root=str(root))
+                spent += float(got.get("usd") or 0.0)
+                sheet_img = _rd.key_background(_Img.open(
+                    _io.BytesIO(_b64mod.b64decode(got["sheet_b64"]))))
+                cols = max(1, sheet_img.width // cw)
+                trial_files: dict[str, str] = {}
+                trial_order: list[str] = []
+                for i, src_index in enumerate(picks):
+                    r, c = divmod(src_index, cols)
+                    cell = sheet_img.crop((c * cw, r * ch,
+                                           (c + 1) * cw, (r + 1) * ch))
+                    path = out_dir / (f"{character}_{act}_{direction}_{i}"
+                                      + (f"_try{attempt}" if attempt else "")
+                                      + ".png")
+                    cell.save(path)
+                    if pinned:
+                        _spritekit.lock_palette(str(path), pinned)
+                    label = f"{act}_{direction}/{i}"
+                    trial_files[label] = str(path)
+                    trial_order.append(label)
+                report = _spritekit.facing_report(
+                    trial_order, trial_files, expected=direction,
+                    reference=starts["frames"][direction])
+                report["findings"].extend(_spritekit.flicker_report(
+                    trial_order, trial_files)["findings"])
+                trial = {"files": trial_files, "order": trial_order,
+                         "findings": report["findings"],
+                         "balance": got.get("balance"), "attempt": attempt}
+                if best is None or len(trial["findings"]) < len(best["findings"]):
+                    best = trial
+                if not trial["findings"]:
+                    break
+            # promote the winning attempt to the canonical filenames
+            for i, label in enumerate(best["order"]):
+                src = _Path(best["files"][label])
+                dest = out_dir / f"{character}_{act}_{direction}_{i}.png"
+                if src != dest:
+                    src.replace(dest)
+                frame_files[label] = str(dest)
                 ordered.append(label)
-            group = [p for p in ordered if p.startswith(f"{act}_{direction}/")]
-            report = _spritekit.facing_report(group, frame_files)
             per_dir[direction] = {
-                "findings": report["findings"],
-                "balance": got.get("balance"),
+                "findings": best["findings"],
+                "attempts": best["attempt"] + 1,
+                "balance": best["balance"],
             }
 
         # Contract-shaped sheet: one row per drawn direction, in drawn order.
