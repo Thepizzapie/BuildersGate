@@ -47,6 +47,11 @@ SKY = 8
 #: long empty stretch for exactly this reason.
 INTRO = 0.08
 
+#: Cells held back from the kernel's limit when spacing floating platforms.
+#: The kernel models a LANDING; a body also needs somewhere to stop, and a jump
+#: sized to the exact maximum lands on the last pixel of the perch.
+HOP_MARGIN = 2
+
 #: Cells the camera shows ahead of the player, for the blind-leap check. A
 #: jump whose landing is further than this is committed on faith.
 SCREEN_AHEAD = 12
@@ -129,14 +134,25 @@ def _seg_hop(rng, x0, y, limits, height, hard) -> tuple:
     count = rng.randint(2, 3)
     cells: set = set()
     px, py = x0, y
+    width = 0
     for _ in range(count):
         rise = rng.randint(0, min(2, limits.rise))
-        step = rng.randint(3, max(3, min(limits.gap, limits.rise_gap)))
-        px, py = px + step, max(SKY, py - rise)
-        cells |= {(px + i, py) for i in range(rng.randint(2, 4))}
-    landing = px + 4
-    cells |= _floor(landing, 4, y, height)
-    return cells, y, landing + 4 - x0, {"kind": "hop", "platforms": count}
+        # THE GAP IS FROM THE FAR EDGE OF THE LAST PLATFORM, not its start.
+        # Measuring from the start made every jump longer than intended by the
+        # platform's own width, and this was the one segment a body could not
+        # actually cross while the reachability gate called the level clean.
+        span = min(limits.gap, limits.rise_gap if rise else limits.gap)
+        step = rng.randint(2, max(2, span - HOP_MARGIN))
+        px = px + width + step
+        py = max(SKY, py - rise)
+        # WIDE ENOUGH TO LAND ON. A two-cell perch is a coin-flip for anything
+        # moving at run speed, and the kernel models a landing, not a landing
+        # plus the stopping distance.
+        width = rng.randint(3, 5)
+        cells |= {(px + i, py) for i in range(width)}
+    landing = px + width + 2
+    cells |= _floor(landing, 5, y, height)
+    return cells, y, landing + 5 - x0, {"kind": "hop", "platforms": count}
 
 
 def _seg_blocks(rng, x0, y, limits, height, hard) -> tuple:
