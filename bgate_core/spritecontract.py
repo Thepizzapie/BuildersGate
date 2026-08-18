@@ -328,8 +328,12 @@ def contract_for(root: str | os.PathLike[str], character: str = "",
     elif base_act.get("drawn"):
         drawn = base_act["drawn"]
     out["drawn"] = list(drawn)
-    if base["layout"] == "grid_rows":
-        out["rows"] = list(drawn)
+    # Rows follow the RESOLVED drawn set under every layout, not only
+    # grid_rows: a strip-layout override to a station facing ("working is
+    # drawn north") still needs its start frame sliced from a north row —
+    # keeping the project's default rows here pointed the slicer at pixels
+    # of the wrong facing.
+    out["rows"] = list(drawn)
 
     spec = {}
     spec.update(base_act)

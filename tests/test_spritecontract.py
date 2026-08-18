@@ -90,6 +90,16 @@ class TestResolution:
         assert got["drawn"] == ["ne", "se"]
         assert got["mirror"] == {"nw": "ne", "sw": "se"}
 
+
+    def test_rows_follow_an_override_under_strip_layout_too(self, root):
+        """A station-facing override ("working is drawn north") on a strip
+        contract must move the ROWS with it — the start-frame slicer reads
+        rows, and default rows pointed it at pixels of the wrong facing."""
+        sc.apply_preset(root, "sidescroller", {
+            "characters": {"audio": {"actions": {"working": {"drawn": ["n"]}}}}})
+        got = sc.contract_for(root, "audio", "working")
+        assert got["drawn"] == ["n"] and got["rows"] == ["n"]
+
     def test_a_facing_left_without_pixels_or_flip_is_reported(self, root):
         sc.apply_preset(root, "four_corner",
                         {"characters": {"solo": {"drawn": ["nw"]}}})
