@@ -6745,6 +6745,9 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
         prop_report: dict = {}
         if prop_manifest:
             man = _read_prop_manifest(root, prop_manifest)
+            prop_source = _manifest_source(tiles_disk, man)
+            parsed_set = _tilemap.parse_tileset(
+                tiles_disk.read_text(encoding="utf-8", errors="replace"))
             want = tuple(prop_types.replace(",", " ").split()) or \
                 tuple(man["types"])
             # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
@@ -7003,6 +7006,35 @@ def _read_prop_manifest(root, ref: str) -> dict:
     return man
 
 
+def _manifest_source(tiles_disk: _Path, man: dict) -> int:
+    """The tileset source id of the manifest's atlas, ADDING it if absent.
+
+    The seam nobody closed: prop_generate installs an atlas and writes a
+    manifest, the level generators place cells referencing it by source id —
+    and the tileset had never been told the atlas exists, so every prop cell
+    pointed at a source the resource did not define. The manifest carries
+    everything a source needs (texture, tiles, spans, origins, animation);
+    this hands it to the tileset once and is idempotent after that.
+    """
+    def _keyed(d):
+        return {tuple(int(v) for v in k.split(",")): tuple(vv)
+                for k, vv in (d or {}).items()}
+
+    text = tiles_disk.read_text(encoding="utf-8", errors="replace")
+    got = _tilemap.append_source(text, {
+        "texture": man["texture"],
+        "tiles": [tuple(t) for t in (man.get("tiles") or [])],
+        "region": (int(man.get("tile_px") or 32),) * 2,
+        "sizes": _keyed(man.get("sizes")),
+        "origins": _keyed(man.get("origins")),
+        "animation": {tuple(int(v) for v in k.split(",")): dict(vv)
+                      for k, vv in (man.get("animation") or {}).items()},
+    })
+    if not got["reused"]:
+        tiles_disk.write_text(got["text"], encoding="utf-8")
+    return got["id"]
+
+
 #: Where each prop TYPE sits on its atlas when the caller says nothing — one
 #: row, in `props.DEFAULT_TYPES` order, because that is how a generated prop
 #: sheet is packed and a default nobody has to think about is the point.
@@ -7238,6 +7270,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             if prop_manifest:
                 man = _read_prop_manifest(_root(), prop_manifest)
                 atlas = man["atlas"]
+                prop_source = _manifest_source(tiles_disk, man)
                 if not want:
                     want = tuple(man["types"])
             else:

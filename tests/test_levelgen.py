@@ -594,6 +594,36 @@ class TestThePlayerCarriesItsOwnJump:
                          player_scene="bare.tscn", create=True)
         assert out["ok"] is False and "speed" in out["error"]
 
+    async def test_a_prop_manifest_teaches_the_tileset_its_atlas(
+            self, root, platformer):
+        """The seam the acceptance run hit live: prop cells referenced a
+        source id the tileset never defined — KeyError in the gap check,
+        and had it slipped past, Godot would draw nothing and say nothing.
+        The manifest now becomes a source on first use."""
+        from bgate_core import tilemap
+
+        (root / "assets" / "tiles").mkdir(parents=True, exist_ok=True)
+        (root / "assets" / "tiles" / "props.json").write_text(
+            json.dumps({
+                "name": "p", "view": "side_scroller", "tile_px": 16,
+                "texture": "res://assets/tiles/p_props.png",
+                "types": ["barrel"], "atlas": {"barrel": [0, 0]},
+                "tiles": [[0, 0]], "sizes": {}, "origins": {},
+                "animation": {}}), encoding="utf-8")
+        out = await call("sidescroll_generate", godot_project=str(platformer),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         player_scene="player.tscn",
+                         prop_manifest="assets/tiles/props.json",
+                         length=80, height=14, seed=3, create=True)
+        assert out["ok"], out.get("error")
+        assert out["props"]["placed"] > 0
+        back = tilemap.parse_tileset(
+            (platformer / "tiles" / "dungeon.tres").read_text(
+                encoding="utf-8"))
+        assert any(s["texture"] == "res://assets/tiles/p_props.png"
+                   for s in back["sources"].values())
+
     async def test_the_scene_override_beats_the_script_default(
             self, platformer):
         """Same precedence the engine uses. Half a gravity means twice the

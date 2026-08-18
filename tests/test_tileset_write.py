@@ -35,6 +35,36 @@ class TestRoundTrip:
                                   tile_size=(16, 16))
         assert a == b, "coordinate order must not change the bytes"
 
+    def test_a_source_can_be_appended_without_rewriting_the_file(self):
+        """The prop-manifest seam: the atlas prop_generate installs has to
+        become a SOURCE of the level's tileset, and rewriting the whole file
+        would drop whatever the parser does not round-trip."""
+        text = tilemap.write_tileset(_one(), tile_size=(32, 32),
+                                     physics=True)
+        got = tilemap.append_source(text, {
+            "texture": "res://assets/tiles/props.png",
+            "tiles": [(0, 0), (1, 0)],
+            "sizes": {(1, 0): (1, 2)},
+            "origins": {(0, 0): (0, -8)},
+            "animation": {(0, 0): {"frames": 2, "speed": 6.0}}})
+        assert got["reused"] is False and got["id"] == 1
+        back = tilemap.parse_tileset(got["text"])
+        assert sorted(back["sources"]) == [0, 1]
+        assert back["sources"][1]["texture"] == "res://assets/tiles/props.png"
+        assert back["sources"][0]["tiles"] == [(0, 0), (0, 1), (1, 0)]
+        # the original bytes are still there, physics line included
+        assert "physics_layer_0/collision_layer = 1" in got["text"]
+        assert 'sources/1 = SubResource("TileSetAtlasSource_1")' in got["text"]
+
+    def test_appending_the_same_texture_twice_reuses_the_source(self):
+        text = tilemap.write_tileset(_one(), tile_size=(32, 32))
+        one = tilemap.append_source(text, {
+            "texture": "res://p.png", "tiles": [(0, 0)]})
+        two = tilemap.append_source(one["text"], {
+            "texture": "res://p.png", "tiles": [(0, 0)]})
+        assert two["reused"] is True and two["id"] == one["id"]
+        assert two["text"] == one["text"]
+
     def test_isometric_shape_survives(self):
         text = tilemap.write_tileset(_one(), tile_size=(32, 16),
                                      shape=tilemap.ISOMETRIC,
