@@ -451,92 +451,116 @@ def _turn_image(cell, how: str):
 # Compositing — the last free fill
 # ---------------------------------------------------------------------------
 def composite(image, table: dict, wanted: Sequence[int], *,
-              tile_size: tuple[int, int]) -> dict:
-    """Build missing masks QUADRANT BY QUADRANT from tiles that exist.
+              tile_size: tuple[int, int],
+              colours: Optional[Sequence[Sequence[float]]] = None) -> dict:
+    """Build missing masks by CARVING VOID into a full floor tile.
 
     Flipping and turning cannot reach every shape: a four-bit set whose art
     has no straight corridor piece (N|S, E|W) cannot rotate one into being,
     and a BSP dungeon is mostly corridors — the masks missing after
     :func:`synthesise` are exactly the ones the level needs most.
 
-    But each quadrant of a tile is decided by only the TWO sides that touch
-    it: the north-west corner of a tile looks the way it does because of what
-    lies north and west. So a missing mask can be assembled from four donors,
-    each agreeing with the target on its own two sides. On organic terrain the
-    joins are invisible; on anything with strong linework they will not be,
-    and every composited tile is reported as composited so a human can look.
+    THE OBVIOUS CONSTRUCTION IS WRONG AND WAS SHIPPED ONCE. Taking each
+    quadrant from a different donor cuts the tile across its middle, which is
+    precisely where a corridor's floor has to run: the result was two
+    disconnected halves with a seam between them, and every corridor in the
+    level was drawn out of them. It reads as ridges and beading and a human
+    spotted it immediately.
 
-    Runs AFTER synthesise, because a whole tile is always better than four
-    quarters of other tiles.
+    So the floor is never cut. Start from the FULL tile — continuous floor,
+    real art — and for each side the target wants void, carve in that donor's
+    OWN void pixels, restricted to the half of the tile that side owns. The
+    middle stays whole, the edges are real generated art, and nothing is
+    stitched through the part that has to be continuous.
+
+    ``colours`` is the terrain-centroid pair from :func:`detect`; without it
+    the darker terrain is assumed to be the void.
     """
     from PIL import Image
 
     img = image.convert("RGBA")
     tw, th = int(tile_size[0]), int(tile_size[1])
     cols = max(1, img.width // tw)
-    hw, hh = tw // 2, th // 2
     have = dict(table)
     built: dict[int, dict] = {}
     new_tiles: list = []
 
-    # (quadrant box, the two side bits that decide it)
-    quads = (
-        ((0, 0, hw, hh), (BIT_N, BIT_W)),
-        ((hw, 0, tw, hh), (BIT_N, BIT_E)),
-        ((0, hh, hw, th), (BIT_S, BIT_W)),
-        ((hw, hh, tw, th), (BIT_S, BIT_E)),
-    )
+    full = BIT_N | BIT_E | BIT_S | BIT_W
+    base_at = have.get(full)
+    if base_at is None:
+        return {"image": img, "table": dict(table), "built": {},
+                "still_missing": [m for m in wanted if table.get(m) is None],
+                "reason": "no full-floor tile to carve from"}
 
-    def cell_for(mask: int):
-        queued = next((n for n in new_tiles if n[0] == mask), None)
-        if queued is not None:
-            return queued[1]
-        at = have.get(mask)
-        if at is None:
-            return None
+    def cell(at):
         return img.crop((at[0] * tw, at[1] * th, at[0] * tw + tw,
                          at[1] * th + th))
+
+    # Which pixels of a tile are VOID (the terrain the target is NOT made of).
+    if colours is not None:
+        ca, cb = colours[0], colours[1]
+        base_px = list(cell(base_at).convert("RGB").getdata())
+        base_mean = _mean(base_px)
+        floor_c = ca if _dist(base_mean, ca) <= _dist(base_mean, cb) else cb
+        void_c = cb if floor_c is ca else ca
+
+        def is_void(px):
+            return _dist(px[:3], void_c) < _dist(px[:3], floor_c)
+    else:
+        def is_void(px):
+            return (px[0] + px[1] + px[2]) / 3.0 < 60
+
+    #: Which half of the tile a side owns — a donor's void is only trusted
+    #: where that side can actually see it.
+    halves = {
+        BIT_N: (0, 0, tw, th // 2), BIT_S: (0, th // 2, tw, th),
+        BIT_W: (0, 0, tw // 2, th), BIT_E: (tw // 2, 0, tw, th),
+    }
 
     for mask in wanted:
         if have.get(mask) is not None:
             continue
-        patch = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        patch = cell(base_at).copy()
+        px = patch.load()
         donors: list[int] = []
         ok = True
-        for box, bits_pair in quads:
-            donor = next(
-                (m for m in sorted(have)
-                 if have.get(m) is not None
-                 and all((m & b) == (mask & b) for b in bits_pair)),
-                None)
+        for bit, (x0, y0, x1, y1) in halves.items():
+            if mask & bit:
+                continue                       # this side is floor: leave it
+            # a donor that ALSO has void on this side, closest otherwise
+            donor = min(
+                (m for m in have
+                 if have.get(m) is not None and not (m & bit)),
+                key=lambda m: bin((m ^ mask) & full).count("1"),
+                default=None)
             if donor is None:
                 ok = False
                 break
-            src = cell_for(donor)
-            if src is None:
-                ok = False
-                break
-            patch.paste(src.crop(box), (box[0], box[1]))
             donors.append(donor)
+            dcell = cell(have[donor])
+            dpx = dcell.load()
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    if is_void(dpx[x, y]):
+                        px[x, y] = dpx[x, y]
         if not ok:
             continue
         new_tiles.append((mask, patch, donors))
         have[mask] = None
-        built[mask] = {"from": donors}
+        built[mask] = {"carved_from": donors}
 
     if not new_tiles:
         return {"image": img, "table": dict(table), "built": {},
-                "still_missing": [m for m in wanted
-                                  if table.get(m) is None]}
+                "still_missing": [m for m in wanted if table.get(m) is None]}
 
     extra_rows = (len(new_tiles) + cols - 1) // cols
     out = Image.new("RGBA", (img.width, img.height + extra_rows * th),
                     (0, 0, 0, 0))
     out.alpha_composite(img, (0, 0))
     base_row = img.height // th
-    for i, (mask, patch, _donors) in enumerate(new_tiles):
+    for i, (mask, patch, _d) in enumerate(new_tiles):
         tx, ty = i % cols, base_row + i // cols
-        out.alpha_composite(patch, (tx * tw, ty * th))
+        out.paste(patch, (tx * tw, ty * th))
         have[mask] = (tx, ty)
     return {"image": out, "table": have, "built": built,
             "still_missing": [m for m in wanted if have.get(m) is None]}
@@ -552,9 +576,6 @@ def repack(image, table: dict, wanted: Sequence[int], *,
     order is what makes the output a STANDARD tileset rather than one only
     this pipeline can read — and it is why level_generate's built-in layouts
     work against it without being handed a table.
-
-    Returns ``{image, table}`` with the table now trivially m -> (m%cols,
-    m//cols).
     """
     from PIL import Image
 
@@ -571,7 +592,160 @@ def repack(image, table: dict, wanted: Sequence[int], *,
         src = img.crop((at[0] * tw, at[1] * th, at[0] * tw + tw,
                         at[1] * th + th))
         tx, ty = i % columns, i // columns
-        out.alpha_composite(src, (tx * tw, ty * th))
+        out.paste(src, (tx * tw, ty * th))
         packed[mask] = (tx, ty)
     return {"image": out, "table": packed, "columns": columns,
             "count": len(masks)}
+
+#: How deep the void reaches in from a tile edge, as a fraction of the tile.
+#: Every edge in the set uses the SAME inset — that is what makes tiles line
+#: up, and generated art does not provide it: measured on a real Retro
+#: Diffusion terrain sheet, tiles with one void side ranged from 61% to 82%
+#: floor and tiles with two ranged 28% to 73%, so the floor boundary jumped in
+#: and out between neighbours. That reads as bulges along every room edge and
+#: as a corridor thinner than the corridor beside it.
+EDGE_INSET = 0.28
+
+
+def normalise_edges(image, table: dict, wanted: Sequence[int], *,
+                    tile_size: tuple[int, int],
+                    colours: Sequence[Sequence[float]],
+                    inset: float = EDGE_INSET) -> dict:
+    """Rebuild every mask with a CONSISTENT edge inset, keeping the art.
+
+    The model's texture is kept — floor from its own full tile, void from its
+    own void regions — but the GEOMETRY is imposed: void reaches exactly
+    ``inset`` of the way in from each side the mask says is void, on every
+    tile. That is the property a hand-made autotile set has by construction
+    and a generated one does not, and without it neighbours disagree about
+    where the floor stops.
+
+    What this deliberately gives up: the ragged, per-tile organic outlines the
+    model drew. They are lovely in isolation and they are exactly what does
+    not tile. The texture inside the band is still the model's own, so the
+    result is not a flat stencil.
+    """
+    from PIL import Image
+
+    img = image.convert("RGBA")
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    full = BIT_N | BIT_E | BIT_S | BIT_W
+    base_at = table.get(full)
+    if base_at is None:
+        return {"ok": False, "reason": "no full-floor tile to build from"}
+
+    ca, cb = colours[0], colours[1]
+
+    def cell(at):
+        return img.crop((at[0] * tw, at[1] * th, at[0] * tw + tw,
+                         at[1] * th + th))
+
+    base = cell(base_at).convert("RGBA")
+    base_mean = _mean(list(base.convert("RGB").getdata()))
+    floor_c = ca if _dist(base_mean, ca) <= _dist(base_mean, cb) else cb
+    void_c = cb if floor_c is ca else ca
+
+    # A patch of real VOID texture, taken from wherever the sheet has the most
+    # of it, so the band is the model's own darkness rather than flat black.
+    best, best_count = None, -1
+    for mask, at in table.items():
+        if at is None:
+            continue
+        c = cell(at)
+        px = list(c.convert("RGB").getdata())
+        n = sum(1 for p in px if _dist(p, void_c) < _dist(p, floor_c))
+        if n > best_count:
+            best, best_count = c, n
+    void_tile = best
+
+    bw, bh = max(1, round(tw * inset)), max(1, round(th * inset))
+    out_tiles: dict[int, Image.Image] = {}
+    for mask in wanted:
+        tile = base.copy()
+        vpx = void_tile.load()
+        tpx = tile.load()
+        bands = []
+        if not mask & BIT_N:
+            bands.append((0, 0, tw, bh))
+        if not mask & BIT_S:
+            bands.append((0, th - bh, tw, th))
+        if not mask & BIT_W:
+            bands.append((0, 0, bw, th))
+        if not mask & BIT_E:
+            bands.append((tw - bw, 0, tw, th))
+        for x0, y0, x1, y1 in bands:
+            for y in range(y0, y1):
+                for x in range(x0, x1):
+                    src = vpx[x, y]
+                    # only paint where the donor is genuinely void, so the
+                    # band keeps its texture instead of becoming a rectangle
+                    if _dist(src[:3], void_c) < _dist(src[:3], floor_c):
+                        tpx[x, y] = src
+                    else:
+                        tpx[x, y] = (int(void_c[0]), int(void_c[1]),
+                                     int(void_c[2]), 255)
+        out_tiles[mask] = tile
+
+    cols = 4 if len(wanted) <= 16 else 8
+    rows = (len(wanted) + cols - 1) // cols
+    sheet = Image.new("RGBA", (cols * tw, rows * th), (0, 0, 0, 0))
+    packed: dict[int, tuple[int, int]] = {}
+    for i, mask in enumerate(wanted):
+        tx, ty = i % cols, i // cols
+        sheet.paste(out_tiles[mask], (tx * tw, ty * th))
+        packed[mask] = (tx, ty)
+    return {"ok": True, "image": sheet, "table": packed, "inset": inset}
+
+# ---------------------------------------------------------------------------
+# Collision
+# ---------------------------------------------------------------------------
+def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
+                       inset: float = EDGE_INSET,
+                       solid_void: bool = True) -> dict:
+    """A collision polygon per mask, derived from the SAME inset the art uses.
+
+    Not traced from pixels. The tiles were rebuilt with one known inset by
+    :func:`normalise_edges`, so the walkable region of every tile is a
+    rectangle known exactly — tracing the art would rediscover that rectangle
+    with jitter and hand Godot a fifty-point polygon per tile for nothing.
+
+    ``solid_void=True`` gives the collider the VOID (what stops the player),
+    which is what a top-down dungeon wants: the floor is walkable and the dark
+    is wall. The void of a tile is up to four edge bands, so this returns one
+    polygon per band rather than trying to express a ring as a single convex
+    shape — Godot takes several polygons per tile and each band is convex.
+
+    Coordinates are centred on the tile, which is the space Godot's tile
+    collision uses: (0, 0) is the middle, not the corner.
+    """
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    bw, bh = max(1, round(tw * inset)), max(1, round(th * inset))
+    hw, hh = tw / 2.0, th / 2.0
+
+    def rect(x0, y0, x1, y1):
+        return [(round(x0 - hw, 2), round(y0 - hh, 2)),
+                (round(x1 - hw, 2), round(y0 - hh, 2)),
+                (round(x1 - hw, 2), round(y1 - hh, 2)),
+                (round(x0 - hw, 2), round(y1 - hh, 2))]
+
+    out: dict[int, list] = {}
+    for mask in masks:
+        bands = []
+        if solid_void:
+            if not mask & BIT_N:
+                bands.append(rect(0, 0, tw, bh))
+            if not mask & BIT_S:
+                bands.append(rect(0, th - bh, tw, th))
+            if not mask & BIT_W:
+                bands.append(rect(0, 0, bw, th))
+            if not mask & BIT_E:
+                bands.append(rect(tw - bw, 0, tw, th))
+        else:
+            x0 = bw if not mask & BIT_W else 0
+            x1 = tw - bw if not mask & BIT_E else tw
+            y0 = bh if not mask & BIT_N else 0
+            y1 = th - bh if not mask & BIT_S else th
+            if x1 > x0 and y1 > y0:
+                bands.append(rect(x0, y0, x1, y1))
+        out[mask] = bands
+    return out

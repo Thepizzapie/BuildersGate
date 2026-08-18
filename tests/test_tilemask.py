@@ -153,3 +153,69 @@ class TestSeams:
         rep = tilemask.seam_report(sheet, table, tile_size=(16, 16),
                                    colours=self._colours(got), limit=0.05)
         assert rep["checked"] > 0
+
+
+class TestNormaliseEdges:
+    """The defect that survived every other check: generated tiles draw each
+    edge at a DIFFERENT depth, so neighbours disagree about where the floor
+    stops and the boundary bulges. Measured on real art: one-void tiles
+    61-82% floor, two-void 28-73%."""
+
+    def _set(self):
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (16 * 3, 16), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        # full floor, then two edge tiles drawn at WILDLY different insets
+        d.rectangle([0, 0, 15, 15], fill=GREY)
+        d.rectangle([16, 0, 31, 15], fill=GREY)
+        d.rectangle([16, 0, 18, 15], fill=GREEN)          # thin void band
+        d.rectangle([32, 0, 47, 15], fill=GREY)
+        d.rectangle([32, 0, 43, 15], fill=GREEN)          # fat void band
+        return img
+
+    def test_every_tile_ends_up_with_the_same_inset(self):
+        import numpy as np
+        img = self._set()
+        got = tilemask.detect(img, tile_size=(16, 16), bits=4)
+        floor = max(got["terrains"].values(), key=lambda t: t["colour"][0])
+        colours = [got["terrains"]["a"]["colour"], got["terrains"]["b"]["colour"]]
+        table = dict(floor["table"])
+        norm = tilemask.normalise_edges(img, table, list(range(16)),
+                                        tile_size=(16, 16), colours=colours)
+        assert norm["ok"] is True
+        arr = np.asarray(norm["image"].convert("RGB")).astype(int)
+        lum = arr.mean(axis=2)
+        by_voids = {}
+        for m in range(16):
+            tx, ty = norm["table"][m]
+            frac = float((lum[ty*16:(ty+1)*16, tx*16:(tx+1)*16] > 60).mean())
+            by_voids.setdefault(4 - bin(m).count("1"), []).append(frac)
+        for voids, fracs in by_voids.items():
+            assert max(fracs) - min(fracs) < 0.12, (voids, fracs)
+
+    def test_it_refuses_without_a_full_floor_tile_to_build_from(self):
+        img = self._set()
+        got = tilemask.detect(img, tile_size=(16, 16), bits=4)
+        colours = [got["terrains"]["a"]["colour"], got["terrains"]["b"]["colour"]]
+        out = tilemask.normalise_edges(img, {3: (0, 0)}, list(range(16)),
+                                       tile_size=(16, 16), colours=colours)
+        assert out["ok"] is False and "full-floor" in out["reason"]
+
+
+class TestCollisionPolygons:
+    def test_a_fully_open_tile_has_no_collider(self):
+        polys = tilemask.collision_polygons([N | E | S | W], tile_size=(32, 32))
+        assert polys[N | E | S | W] == []
+
+    def test_one_band_per_void_side(self):
+        polys = tilemask.collision_polygons([N | E | S, N | S, 0],
+                                            tile_size=(32, 32))
+        assert len(polys[N | E | S]) == 1        # void on W only
+        assert len(polys[N | S]) == 2            # corridor: void E and W
+        assert len(polys[0]) == 4                # isolated: void all round
+
+    def test_coordinates_are_centred_on_the_tile(self):
+        """Godot's tile collision space puts (0,0) at the MIDDLE."""
+        [band] = tilemask.collision_polygons([N | E | S], tile_size=(32, 32))[N | E | S]
+        xs = [p[0] for p in band]
+        assert min(xs) == -16.0, band

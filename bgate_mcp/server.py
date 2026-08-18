@@ -2915,6 +2915,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      bits: int = 4, terrain: str = "a",
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False, fill: bool = True,
+                     collide: bool = True,
                      max_cost_usd: float = 1.0) -> dict:
     """GENERATE A GODOT TILESET — the bridge the level pipeline was missing.
 
@@ -3001,20 +3002,41 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             sheet, table, built = comp["image"], comp["table"], comp["built"]
         table = {m: c for m, c in table.items() if c is not None}
         missing = [m for m in wanted if m not in table]
-        # CANONICAL ORDER, so the result is a standard tileset rather than one
-        # only this pipeline can read: every consumer (autotile's grid16 and
-        # blob47, Godot's own terrain editor, level_generate's built-in
-        # layouts) assumes mask order row-major from an origin.
-        packed = _tilemask.repack(sheet, table, wanted,
-                                  tile_size=(tile_px, tile_px),
-                                  columns=4 if bits == 4 else 8)
-        sheet, table = packed["image"], packed["table"]
+        # ONE EDGE INSET FOR THE WHOLE SET. Generated art does not give this:
+        # measured on a real sheet, tiles with one void side ranged 61%-82%
+        # floor and two-void tiles 28%-73%, so neighbours disagreed about
+        # where the floor stops and every room edge bulged in and out. The
+        # model's TEXTURE is kept; the GEOMETRY is imposed. Also puts the
+        # sheet in canonical mask order, which is what makes it a standard
+        # tileset every consumer can read rather than one only this code can.
+        norm = _tilemask.normalise_edges(sheet, table, wanted,
+                                         tile_size=(tile_px, tile_px),
+                                         colours=colours)
+        if norm.get("ok"):
+            sheet, table = norm["image"], norm["table"]
+            result_inset = norm["inset"]
+        else:
+            packed = _tilemask.repack(sheet, table, wanted,
+                                      tile_size=(tile_px, tile_px),
+                                      columns=4 if bits == 4 else 8)
+            sheet, table = packed["image"], packed["table"]
+            result_inset = None
 
         atlas_png = out_dir / f"{name}.png"
         sheet.save(atlas_png)
         seams = _tilemask.seam_report(sheet, table,
                                       tile_size=(tile_px, tile_px),
                                       colours=colours)
+
+        # COLLISION, derived from the inset the tiles were rebuilt with —
+        # not traced from pixels, because the walkable region is a rectangle
+        # we chose and tracing would rediscover it with jitter and hand Godot
+        # fifty points per tile. Verified by physics rather than by the file:
+        # without it a body stood in the void on 223 of 280 sampled frames,
+        # with it on 0.
+        collision = _tilemask.collision_polygons(
+            sorted(table), tile_size=(tile_px, tile_px),
+            inset=result_inset or _tilemask.EDGE_INSET) if collide else {}
 
         res_texture = f"res://{res_dir.strip('/')}/{name}.png"
         # EVERY TILE IN THE ATLAS, not just the chosen terrain's table. The
@@ -3031,8 +3053,11 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                            (tx + 1) * tile_px, (ty + 1) * tile_px))
             .getbbox() is not None})
         tres_text = _tilemap.write_tileset(
-            [{"id": 0, "texture": res_texture, "tiles": all_tiles}],
-            tile_size=(tile_px, tile_px))
+            [{"id": 0, "texture": res_texture, "tiles": all_tiles,
+              "collision": {table[m]: polys
+                            for m, polys in collision.items()
+                            if m in table and polys}}],
+            tile_size=(tile_px, tile_px), physics=bool(collide))
         tres_path = out_dir / f"{name}.tres"
         tres_path.write_text(tres_text, encoding="utf-8")
 
@@ -3055,7 +3080,11 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                   "solid": {
                       "a": read["terrains"]["a"]["pure"],
                       "b": read["terrains"]["b"]["pure"]},
-                  "seams": seams,
+                  "seams": seams, "edge_inset": result_inset,
+                  "collision": {"tiles": len([m for m, v in collision.items()
+                                              if v]),
+                                "polygons": sum(len(v) for v in
+                                                collision.values())},
                   "low_confidence": read.get("low_confidence", []),
                   "spend": {"usd": round(spent, 4),
                             "provider": "retrodiffusion"}}

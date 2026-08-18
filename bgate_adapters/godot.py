@@ -2881,17 +2881,33 @@ func _init() -> void:
             var sid := ts.get_source_id(i)
             var src := ts.get_source(sid)
             var coords := []
+            var polys := 0
+            var tiles_with_collision := 0
             if src is TileSetAtlasSource:
                 var atlas: TileSetAtlasSource = src
                 for k in range(atlas.get_tiles_count()):
                     var c := atlas.get_tile_id(k)
                     coords.append([c.x, c.y])
+                    # COLLISION IS THE CLAIM, so count the actual shapes: a
+                    # tileset that loads is not a tileset that collides, and
+                    # Godot drops polygons silently when the physics layer
+                    # they reference does not exist.
+                    if ts.get_physics_layers_count() > 0:
+                        var data := atlas.get_tile_data(c, 0)
+                        if data != null:
+                            var n := data.get_collision_polygons_count(0)
+                            polys += n
+                            if n > 0:
+                                tiles_with_collision += 1
             coords.sort_custom(func(a, b): return a[1] < b[1] or (a[1] == b[1] and a[0] < b[0]))
-            sources[str(sid)] = {"class": src.get_class(), "tiles": coords}
+            sources[str(sid)] = {"class": src.get_class(), "tiles": coords,
+                                 "collision_polygons": polys,
+                                 "tiles_with_collision": tiles_with_collision}
         out["ok"] = true
         out["tile_size"] = [ts.tile_size.x, ts.tile_size.y]
         out["tile_shape"] = int(ts.tile_shape)
         out["source_count"] = ts.get_source_count()
+        out["physics_layers"] = ts.get_physics_layers_count()
         out["sources"] = sources
     print("BGATE_JSON_START")
     print(JSON.stringify(out))

@@ -222,7 +222,8 @@ def parse_tileset(text: str) -> dict:
 
 
 def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
-                  shape: int = SQUARE, layout: int = DIAMOND_RIGHT) -> str:
+                  shape: int = SQUARE, layout: int = DIAMOND_RIGHT,
+                  physics: bool = False) -> str:
     """A Godot 4 TileSet resource over one or more atlas textures.
 
     THE OTHER HALF OF :func:`parse_tileset`, and the piece whose absence kept
@@ -270,6 +271,12 @@ def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
             "tiles": tiles,
             "region": (int(region[0]), int(region[1])),
             "origin": tuple(int(v) for v in (entry.get("origin") or (0, 0))),
+            # Carried through the normalisation, which it was not: the emit
+            # loop reads from THIS dict, so a collision map left behind here
+            # is a collision map that silently never reaches the file.
+            "collision": {(int(cx), int(cy)): polys
+                          for (cx, cy), polys
+                          in (entry.get("collision") or {}).items()},
         })
     if len({s["id"] for s in clean}) != len(clean):
         raise TileError("two atlas sources share one source id")
@@ -293,9 +300,30 @@ def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
                        f"{src['origin'][1]})")
         for x, y in src["tiles"]:
             out.append(f"{x}:{y}/0 = 0")
+            # A tile with no polygon is WALKABLE-BY-OMISSION, which is the
+            # right default. A tile can need SEVERAL — a corridor is solid on
+            # two sides, an isolated tile on four — and each band is its own
+            # convex polygon because a ring is not one.
+            #
+            # NO polygons_count LINE. Godot infers the count from the highest
+            # polygon_N present and writing the count explicitly made it drop
+            # every polygon silently: the resource loaded, the physics layer
+            # existed, and the engine reported zero shapes. Confirmed by
+            # having Godot author a tileset and reading back what it wrote —
+            # which is the only way to learn a format nobody documents.
+            for i, poly in enumerate((src.get("collision") or {}).get((x, y))
+                                     or []):
+                pts = ", ".join(f"{px}, {py}" for px, py in poly)
+                out.append(f"{x}:{y}/0/physics_layer_0/polygon_{i}/points "
+                           f"= PackedVector2Array({pts})")
         out.append("")
     out.append("[resource]")
     out.append(f"tile_size = Vector2i({tw}, {th})")
+    if physics:
+        # One physics layer on collision layer 1 — the default a 2D game
+        # starts from. Ordering and spelling copied from a tileset Godot
+        # saved itself; the per-tile polygons reference this layer by index.
+        out.append("physics_layer_0/collision_layer = 1")
     if shape != SQUARE:
         out.append(f"tile_shape = {int(shape)}")
         out.append(f"tile_layout = {int(layout)}")

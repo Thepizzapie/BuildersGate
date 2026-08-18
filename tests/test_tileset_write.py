@@ -85,3 +85,55 @@ class TestRefusals:
     def test_an_undrawable_tile_size(self):
         with pytest.raises(tilemap.TileError, match="not drawable"):
             tilemap.write_tileset(_one(), tile_size=(0, 16))
+
+
+class TestCollision:
+    """Godot's own format, learned by having Godot save a tileset and reading
+    it back — nobody documents this and two guesses were wrong. The engine
+    reported ZERO shapes for a resource that loaded fine, twice: once for an
+    extra `polygons_count` line Godot never writes, and once because the
+    collision map was dropped during source normalisation."""
+
+    def _poly(self):
+        return [[(-16, -16), (-7, -16), (-7, 16), (-16, 16)]]
+
+    def test_polygons_reach_the_file_in_godots_own_shape(self):
+        text = tilemap.write_tileset(
+            [{"id": 0, "texture": "res://a.png", "tiles": [(0, 0)],
+              "collision": {(0, 0): self._poly()}}],
+            tile_size=(32, 32), physics=True)
+        assert "physics_layer_0/collision_layer = 1" in text
+        assert ("0:0/0/physics_layer_0/polygon_0/points = "
+                "PackedVector2Array(-16, -16, -7, -16, -7, 16, -16, 16)") in text
+
+    def test_no_polygons_count_line(self):
+        """Godot infers the count and DROPS every polygon when the count is
+        written explicitly — the resource still loads, reporting no shapes."""
+        text = tilemap.write_tileset(
+            [{"id": 0, "texture": "res://a.png", "tiles": [(0, 0)],
+              "collision": {(0, 0): self._poly()}}],
+            tile_size=(32, 32), physics=True)
+        assert "polygons_count" not in text
+
+    def test_several_polygons_per_tile(self):
+        """A corridor is solid on two sides and an isolated tile on four; a
+        ring is not one convex polygon."""
+        text = tilemap.write_tileset(
+            [{"id": 0, "texture": "res://a.png", "tiles": [(0, 0)],
+              "collision": {(0, 0): [[(0, 0), (1, 0), (1, 1)],
+                                     [(2, 2), (3, 2), (3, 3)]]}}],
+            tile_size=(32, 32), physics=True)
+        assert "polygon_0/points" in text and "polygon_1/points" in text
+
+    def test_a_tile_with_no_polygon_is_walkable_by_omission(self):
+        text = tilemap.write_tileset(
+            [{"id": 0, "texture": "res://a.png", "tiles": [(0, 0), (1, 0)],
+              "collision": {(0, 0): self._poly()}}],
+            tile_size=(32, 32), physics=True)
+        assert "1:0/0/physics_layer_0" not in text
+
+    def test_no_physics_layer_unless_asked(self):
+        text = tilemap.write_tileset(
+            [{"id": 0, "texture": "res://a.png", "tiles": [(0, 0)]}],
+            tile_size=(32, 32))
+        assert "physics_layer" not in text
