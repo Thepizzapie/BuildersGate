@@ -2910,9 +2910,47 @@ def _pick_provider(asked: str = "") -> str:
     return "openai"
 
 
+def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> dict:
+    """One clean wall tile out of a generated wall sheet, toned to the floor.
+
+    Picks the most UNIFORM cell — a wall is a mass, and the least varied cell
+    is the one without a transition running through it — then scales its
+    luminance to sit below the floor. Generated wall art came back at 1.97x
+    the floor's brightness, which renders as lit paths around dark pits.
+    """
+    import numpy as np
+
+    best, best_var = None, float("inf")
+    for ty in range(wall_img.height // tile_px):
+        for tx in range(wall_img.width // tile_px):
+            cell = wall_img.crop((tx * tile_px, ty * tile_px,
+                                  (tx + 1) * tile_px, (ty + 1) * tile_px))
+            var = float(np.asarray(cell.convert("RGB")).astype(float).std())
+            if var < best_var:
+                best, best_var = cell, var
+    if best is None:
+        return {"ok": False, "error": "wall sheet held no tiles"}
+
+    arr = np.asarray(best.convert("RGB")).astype(float)
+    floor_arr = np.asarray(floor_sheet.convert("RGB")).astype(float)
+    floor_lum = float(floor_arr[floor_arr.mean(axis=2) > 45].mean())         if (floor_arr.mean(axis=2) > 45).any() else 90.0
+    wall_lum = float(arr.mean()) or 1.0
+    scale = (floor_lum * 0.62) / wall_lum
+    toned = np.clip(arr * scale, 0, 255).astype("uint8")
+
+    from PIL import Image
+
+    path = out_dir / f"{name}_wall.png"
+    Image.fromarray(toned).convert("RGBA").save(path)
+    return {"ok": True, "path": str(path), "uniformity": round(best_var, 1),
+            "tone_scale": round(scale, 2),
+            "luminance": {"floor": round(floor_lum), "wall": round(float(toned.mean()))}}
+
+
 @_tool
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
-                     bits: int = 4, terrain: str = "a",
+                     bits: int = 4, terrain: str = "light",
+                     wall_prompt: str = "",
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False, fill: bool = True,
                      collide: bool = True,
@@ -2932,9 +2970,11 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     checked, and a Godot TileSet.tres is written.
 
     `bits`: 4 for the 16-mask side set (what most 2D games use), 8 for blob47.
-    `terrain`: which of the two detected terrains to build the table for —
-    "a" and "b" are both returned, because a grass/stone sheet genuinely holds
-    two autotile sets sharing one atlas.
+    `terrain`: which detected terrain is the FLOOR — "light" (default) or
+    "dark". Stable across generations, unlike the raw "a"/"b" labels, which
+    come from a k-means split and swap between runs: asking for "a" once
+    built the table for the void and rendered every room black. Pass "a"/"b"
+    to override.
     `install=False` lands everything in .bgate_out/tiles/ for review; True also
     writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
 
@@ -2981,7 +3021,20 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         if not read.get("ok"):
             return {"ok": False, "stage": "detect", "error": read.get("reason"),
                     "raw": str(raw_png), "spend": {"usd": round(spent, 4)}}
-        which = terrain if terrain in read["terrains"] else "a"
+        # WHICH TERRAIN IS THE FLOOR, decided by MEANING not by label. "a"
+        # and "b" come out of a k-means split and swap freely between runs —
+        # one generation's "a" is stone and the next one's is the void, and
+        # asking for "a" built the mask table for the VOID, so every room
+        # rendered black while the walls looked right. "light"/"dark" are
+        # stable across generations; the raw labels remain as an override.
+        lum = {k: sum(v["colour"]) for k, v in read["terrains"].items()}
+        want = str(terrain or "light").strip().lower()
+        if want in read["terrains"]:
+            which = want
+        elif want == "dark":
+            which = min(lum, key=lum.get)
+        else:
+            which = max(lum, key=lum.get)
         picked = read["terrains"][which]
         colours = [read["terrains"]["a"]["colour"],
                    read["terrains"]["b"]["colour"]]
@@ -3028,6 +3081,27 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                                       tile_size=(tile_px, tile_px),
                                       colours=colours)
 
+        # WALLS, when asked for. A wall is a solid MASS whose shape comes
+        # from the level's wall ring, not a 16-mask terrain — so this needs
+        # one clean tile, not a set, and it is attached as a second source in
+        # the same resource (level_generate addresses floor and wall by
+        # source id). Toned DOWN relative to the floor on purpose: generated
+        # wall art came back brighter than the floor, which reads as lit
+        # paths around dark pits rather than as rooms with walls.
+        wall_source = None
+        if wall_prompt:
+            try:
+                got_w = _rd.tileset(wall_prompt, kind="tileset",
+                                    tile_px=int(tile_px), root=str(root))
+                spent += float(got_w.get("usd") or 0.0)
+                wimg = _Img.open(_io.BytesIO(
+                    _b64mod.b64decode(got_w["png_b64"]))).convert("RGBA")
+                wall_source = _wall_tile_from(wimg, sheet, tile_px, out_dir,
+                                              name)
+            except Exception as exc:                            # noqa: BLE001
+                wall_source = {"ok": False,
+                               "error": f"{type(exc).__name__}: {exc}"}
+
         # COLLISION, derived from the inset the tiles were rebuilt with —
         # not traced from pixels, because the walkable region is a rectangle
         # we chose and tracing would rediscover it with jitter and hand Godot
@@ -3052,12 +3126,24 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             if sheet.crop((tx * tile_px, ty * tile_px,
                            (tx + 1) * tile_px, (ty + 1) * tile_px))
             .getbbox() is not None})
+        sources = [{"id": 0, "texture": res_texture, "tiles": all_tiles,
+                    "collision": {table[m]: polys
+                                  for m, polys in collision.items()
+                                  if m in table and polys}}]
+        if wall_source and wall_source.get("ok"):
+            sources.append({
+                "id": 1,
+                "texture": f"res://{res_dir.strip('/')}/{name}_wall.png",
+                "tiles": [(0, 0)],
+                # The wall is solid all the way through, so its collider is
+                # the whole cell rather than an edge band.
+                "collision": {(0, 0): [[(-tile_px / 2, -tile_px / 2),
+                                        (tile_px / 2, -tile_px / 2),
+                                        (tile_px / 2, tile_px / 2),
+                                        (-tile_px / 2, tile_px / 2)]]}
+                if collide else {}})
         tres_text = _tilemap.write_tileset(
-            [{"id": 0, "texture": res_texture, "tiles": all_tiles,
-              "collision": {table[m]: polys
-                            for m, polys in collision.items()
-                            if m in table and polys}}],
-            tile_size=(tile_px, tile_px), physics=bool(collide))
+            sources, tile_size=(tile_px, tile_px), physics=bool(collide))
         tres_path = out_dir / f"{name}.tres"
         tres_path.write_text(tres_text, encoding="utf-8")
 
@@ -3069,7 +3155,8 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                                "detected": len(picked["table"]),
                                "synthesised": {str(m): f"{s}/{h}"
                                                for m, (s, h) in made.items()},
-                               "composited": {str(m): v["from"]
+                               "composited": {str(m): v.get("carved_from")
+                                                     or v.get("from")
                                               for m, v in built.items()},
                                "missing": missing},
                   "table": {str(m): list(c) for m, c in sorted(table.items())},
@@ -3081,6 +3168,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                       "a": read["terrains"]["a"]["pure"],
                       "b": read["terrains"]["b"]["pure"]},
                   "seams": seams, "edge_inset": result_inset,
+                  **({"wall": wall_source} if wall_source else {}),
                   "collision": {"tiles": len([m for m, v in collision.items()
                                               if v]),
                                 "polygons": sum(len(v) for v in
@@ -3101,6 +3189,8 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             dest_dir.mkdir(parents=True, exist_ok=True)
             import shutil as _sh
             _sh.copyfile(atlas_png, dest_dir / f"{name}.png")
+            if wall_source and wall_source.get("ok"):
+                _sh.copyfile(wall_source["path"], dest_dir / f"{name}_wall.png")
             (dest_dir / f"{name}.tres").write_text(tres_text, encoding="utf-8")
             result["installed"] = {
                 "atlas": str(dest_dir / f"{name}.png"),
