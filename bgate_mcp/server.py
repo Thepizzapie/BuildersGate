@@ -5735,6 +5735,18 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                             + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else "")
                             + cons_note + seq_note + motion_note,
                  ref=assembled["sheet"])
+        # A MINT IS NOT MOTION. These frames are independently painted
+        # stills — identity holds, but there is no cycle, and a character
+        # shipped straight from here reads stiff as a board in the running
+        # game. A screenshot cannot fail a motion check that never ran,
+        # which is exactly how one shipped.
+        assembled["next"] = (
+            "this sheet is the MINT: identity, anchors, a start frame per "
+            "drawn direction. The MOTION comes from animation_generate "
+            "(RD animates the character's own frames into real cycles, "
+            "~$0.14/direction) — sprite_contract_set first if the project "
+            "has no contract. Watch the animation_previews GIF before "
+            "shipping either; stiffness is invisible in a screenshot.")
         return assembled
     except Exception as exc:
         return _fail(exc)
