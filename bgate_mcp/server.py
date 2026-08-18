@@ -2911,6 +2911,204 @@ def _pick_provider(asked: str = "") -> str:
 
 
 @_tool
+def tileset_generate(name: str, prompt: str, tile_px: int = 32,
+                     bits: int = 4, terrain: str = "a",
+                     godot_project: str = "", res_dir: str = "assets/tiles",
+                     install: bool = False, fill: bool = True,
+                     max_cost_usd: float = 1.0) -> dict:
+    """GENERATE A GODOT TILESET — the bridge the level pipeline was missing.
+
+    levelgen, autotile, tilemap and wire_tilemap have all been real for a
+    while and all blocked on the same thing: nothing here could WRITE a
+    TileSet, so level_generate refused unless a human had already built one in
+    the Godot editor. This makes one.
+
+    prompt names the MATERIAL ("mossy grey stone floor meeting grass"), never
+    the rendering — the tile style carries the pixel art. Retro Diffusion
+    returns a TERRAIN SET (two terrains and the edges between them), the sheet
+    is read back into mask -> atlas coordinates off its own pixels, missing
+    masks are filled for free by mirroring tiles that exist, the seams are
+    checked, and a Godot TileSet.tres is written.
+
+    `bits`: 4 for the 16-mask side set (what most 2D games use), 8 for blob47.
+    `terrain`: which of the two detected terrains to build the table for —
+    "a" and "b" are both returned, because a grass/stone sheet genuinely holds
+    two autotile sets sharing one atlas.
+    `install=False` lands everything in .bgate_out/tiles/ for review; True also
+    writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
+
+    Coverage is reported, never faked: a partial tileset ships as partial with
+    the list of masks still missing, which autotile.resolve already degrades
+    honestly against.
+    """
+    try:
+        import base64 as _b64mod
+        import io as _io
+
+        from PIL import Image as _Img
+
+        from bgate_adapters import retrodiffusion as _rd
+        from bgate_core import autotile as _autotile
+        from bgate_core import tilemap as _tilemap
+        from bgate_core import tilemask as _tilemask
+
+        root = _Path(_root())
+        probe = _rd.available(str(root))
+        if not probe.get("available"):
+            return {"ok": False, "error": probe.get("reason")}
+        if bits not in (4, 8):
+            return {"ok": False, "error": "bits is 4 (16 masks) or 8 (blob47)"}
+
+        out_dir = root / ".bgate_out" / "tiles"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        spent = 0.0
+
+        got = _rd.tileset(prompt, kind="tileset", tile_px=int(tile_px),
+                          root=str(root))
+        spent += float(got.get("usd") or 0.0)
+        sheet = _Img.open(_io.BytesIO(
+            _b64mod.b64decode(got["png_b64"]))).convert("RGBA")
+
+        pinned = _artdirection.palette_pinned(str(root))
+        raw_png = out_dir / f"{name}_raw.png"
+        sheet.save(raw_png)
+        if pinned:
+            _spritekit.lock_palette(str(raw_png), pinned)
+            sheet = _Img.open(raw_png).convert("RGBA")
+
+        read = _tilemask.detect(sheet, tile_size=(tile_px, tile_px), bits=bits)
+        if not read.get("ok"):
+            return {"ok": False, "stage": "detect", "error": read.get("reason"),
+                    "raw": str(raw_png), "spend": {"usd": round(spent, 4)}}
+        which = terrain if terrain in read["terrains"] else "a"
+        picked = read["terrains"][which]
+        colours = [read["terrains"]["a"]["colour"],
+                   read["terrains"]["b"]["colour"]]
+
+        wanted = (list(range(16)) if bits == 4
+                  else _autotile.blob47_masks())
+        table = dict(picked["table"])
+        made: dict = {}
+        built: dict = {}
+        if fill:
+            # Whole tiles first (flip/rotate), quarters only for what is left:
+            # a real tile always beats four corners of other tiles.
+            syn = _tilemask.synthesise(sheet, table, wanted,
+                                       tile_size=(tile_px, tile_px))
+            sheet, table, made = syn["image"], syn["table"], syn["made"]
+            comp = _tilemask.composite(sheet, table, wanted,
+                                       tile_size=(tile_px, tile_px))
+            sheet, table, built = comp["image"], comp["table"], comp["built"]
+        table = {m: c for m, c in table.items() if c is not None}
+        missing = [m for m in wanted if m not in table]
+        # CANONICAL ORDER, so the result is a standard tileset rather than one
+        # only this pipeline can read: every consumer (autotile's grid16 and
+        # blob47, Godot's own terrain editor, level_generate's built-in
+        # layouts) assumes mask order row-major from an origin.
+        packed = _tilemask.repack(sheet, table, wanted,
+                                  tile_size=(tile_px, tile_px),
+                                  columns=4 if bits == 4 else 8)
+        sheet, table = packed["image"], packed["table"]
+
+        atlas_png = out_dir / f"{name}.png"
+        sheet.save(atlas_png)
+        seams = _tilemask.seam_report(sheet, table,
+                                      tile_size=(tile_px, tile_px),
+                                      colours=colours)
+
+        res_texture = f"res://{res_dir.strip('/')}/{name}.png"
+        # EVERY TILE IN THE ATLAS, not just the chosen terrain's table. The
+        # table is the autotiling vocabulary for ONE terrain; the resource is
+        # what Godot can paint with at all, and a coordinate missing from it
+        # cannot be placed by anything — level_generate refused a hand-picked
+        # floor tile for exactly this reason, and the tile was sitting in the
+        # atlas the whole time.
+        all_tiles = sorted({
+            (tx, ty)
+            for ty in range(sheet.height // tile_px)
+            for tx in range(sheet.width // tile_px)
+            if sheet.crop((tx * tile_px, ty * tile_px,
+                           (tx + 1) * tile_px, (ty + 1) * tile_px))
+            .getbbox() is not None})
+        tres_text = _tilemap.write_tileset(
+            [{"id": 0, "texture": res_texture, "tiles": all_tiles}],
+            tile_size=(tile_px, tile_px))
+        tres_path = out_dir / f"{name}.tres"
+        tres_path.write_text(tres_text, encoding="utf-8")
+
+        result = {"ok": True, "name": name,
+                  "atlas": str(atlas_png), "tileset": str(tres_path),
+                  "tile_px": tile_px, "bits": bits, "terrain": which,
+                  "terrain_colour": picked["colour"],
+                  "coverage": {"have": len(table), "want": len(wanted),
+                               "detected": len(picked["table"]),
+                               "synthesised": {str(m): f"{s}/{h}"
+                                               for m, (s, h) in made.items()},
+                               "composited": {str(m): v["from"]
+                                              for m, v in built.items()},
+                               "missing": missing},
+                  "table": {str(m): list(c) for m, c in sorted(table.items())},
+                  # The tiles that are SAFE AS A SOLID FILL — mask 15/255 is
+                  # "every neighbour is me", i.e. an interior. Surfaced because
+                  # a caller picking atlas coordinates by eye picks an edge
+                  # tile and paints a level entirely out of seams.
+                  "solid": {
+                      "a": read["terrains"]["a"]["pure"],
+                      "b": read["terrains"]["b"]["pure"]},
+                  "seams": seams,
+                  "low_confidence": read.get("low_confidence", []),
+                  "spend": {"usd": round(spent, 4),
+                            "provider": "retrodiffusion"}}
+
+        master = _tileset_master_for(str(atlas_png), out_dir / f"{name}.aseprite",
+                                     (tile_px, tile_px))
+        if master is not None:
+            result["aseprite"] = master
+
+        if install and godot_project:
+            proj = _Path(_assets.normalize_path(root, godot_project))
+            proj = proj if proj.is_absolute() else root / proj
+            dest_dir = proj / res_dir.strip("/")
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            import shutil as _sh
+            _sh.copyfile(atlas_png, dest_dir / f"{name}.png")
+            (dest_dir / f"{name}.tres").write_text(tres_text, encoding="utf-8")
+            result["installed"] = {
+                "atlas": str(dest_dir / f"{name}.png"),
+                "tileset": str(dest_dir / f"{name}.tres")}
+            # A NEWLY COPIED PNG DOES NOT EXIST AS FAR AS GODOT IS CONCERNED.
+            # Godot 4 loads textures through their .import metadata, so a
+            # tileset whose ExtResource names a never-imported file fails to
+            # load with no useful error — measured: the engine gate caught
+            # exactly this on the first end-to-end run, and the resource was
+            # perfectly well-formed. check_project already runs --import, so
+            # the pass exists; it just was not on this path.
+            result["import"] = _godot.check_project(str(proj))
+            # THE ONLY CHECK THAT COUNTS: our writer agreeing with our own
+            # parser proves nothing, because both were written against the
+            # same reading of a format neither owns.
+            result["engine"] = _godot.inspect_tileset(
+                str(proj), f"res://{res_dir.strip('/')}/{name}.tres")
+
+        _log("art", f"tileset {name}: {len(table)}/{len(wanted)} masks, "
+                    f"${spent:.2f}", ref=str(atlas_png))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _tileset_master_for(atlas: str, out, tile_size) -> Optional[dict]:
+    """Best-effort .aseprite tileset beside the atlas. None without Aseprite."""
+    from bgate_adapters import aseprite as _ase
+    if not _ase.available().get("available"):
+        return None
+    try:
+        return _ase.tileset_master(atlas, str(out), tile_size=tile_size)
+    except Exception as exc:                                    # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@_tool
 def image_generate(prompt: str, filename: str, size: str = "1024x1024",
                    quality: str = "medium", transparent: bool = False,
                    ref_images: Optional[list[str]] = None,
@@ -6035,6 +6233,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                    width: int = 48, height: int = 32, seed: int = 0,
                    floor_source: int = 0, floor_atlas_x: int = 0,
                    floor_atlas_y: int = 0,
+                   floor_layout: str = "solid",
+                   floor_columns: int = 4,
                    wall_source: int = 0, wall_layout: str = "blob47",
                    wall_atlas_x: int = 0, wall_atlas_y: int = 0,
                    wall_columns: int = 8,
@@ -6109,8 +6309,14 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                                corridor_width=corridor_width)
         layers = _levelgen.layers(
             level,
-            floor=_terrain("solid", floor_source, floor_atlas_x, floor_atlas_y,
-                           1, floor_name),
+            # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
+            # could only ever be one repeated tile — and with a terrain
+            # transition set that is the WHOLE look: the wall is drawn into
+            # the floor tiles' own edges, so a solid fill throws away every
+            # edge and corner the sheet came with and paints the level in
+            # one square.
+            floor=_terrain(floor_layout, floor_source, floor_atlas_x,
+                           floor_atlas_y, floor_columns, floor_name),
             wall=(None if wall_layout == "none" else
                   _terrain(wall_layout, wall_source, wall_atlas_x, wall_atlas_y,
                            wall_columns, wall_name)),

@@ -326,3 +326,71 @@ def export(master_path: str, sheet_out: str, data_out: str, *,
         raise AsepriteError(f"export failed ({proc.returncode}): {tail[-500:]}")
     with open(data_out, encoding="utf-8") as fh:
         return json.load(fh)
+
+# ---------------------------------------------------------------------------
+# Tilesets — the level-editor half
+# ---------------------------------------------------------------------------
+# Aseprite 1.3 tilemaps are a real level editor and the round trip is verified:
+# build a tileset, paint indices into a tilemap cel, save, reopen, read the same
+# indices back. That is what makes a GENERATED tileset editable rather than
+# final — the artist draws the masks generation could not reach, and detection
+# picks them up on the way back.
+_TILESET_LUA = r"""
+local p = app.params
+local src = app.open(p.atlas)
+if not src then print("BGATE:" .. json.encode({ok=false, error="unreadable atlas"})) return end
+local tw, th = tonumber(p.tw), tonumber(p.th)
+local cols = src.width // tw
+local rows = src.height // th
+local flat = Image(src.spec)
+flat:drawSprite(src, 1)
+
+local spr = Sprite(tw * cols, th * rows, src.colorMode)
+spr.gridBounds = Rectangle(0, 0, tw, th)
+app.command.NewLayer{ tilemap=true, gridBounds=Rectangle(0, 0, tw, th) }
+local lay = app.activeLayer
+local ts = lay.tileset
+
+local made = 0
+for ty = 0, rows - 1 do
+  for tx = 0, cols - 1 do
+    local t = spr:newTile(ts)
+    local img = Image(tw, th, src.colorMode)
+    for y = 0, th - 1 do
+      for x = 0, tw - 1 do
+        img:drawPixel(x, y, flat:getPixel(tx * tw + x, ty * th + y))
+      end
+    end
+    t.image = img
+    made = made + 1
+  end
+end
+
+local cel = spr:newCel(lay, 1)
+local tmap = cel.image
+for ty = 0, rows - 1 do
+  for tx = 0, cols - 1 do
+    tmap:drawPixel(tx, ty, ty * cols + tx + 1)
+  end
+end
+cel.image = tmap
+spr:saveAs(p.out)
+print("BGATE:" .. json.encode({ok=true, tiles=made, cols=cols, rows=rows}))
+"""
+
+
+def tileset_master(atlas, out, *, tile_size, timeout: int = 180) -> dict:
+    """An atlas PNG -> a .aseprite carrying a real TILESET and a tilemap layer.
+
+    The artist opens it and the tiles are tiles: draw the missing masks, sketch
+    a test level on the tilemap layer, save. Returns {ok, tiles, cols, rows}.
+    """
+    src = Path(atlas)
+    if not src.is_file():
+        raise AsepriteError(f"no atlas at {atlas}")
+    got = _run_script(_TILESET_LUA, {
+        "atlas": str(src), "out": str(out),
+        "tw": str(int(tile_size[0])), "th": str(int(tile_size[1])),
+    }, timeout=timeout)
+    got["master"] = str(out)
+    return got

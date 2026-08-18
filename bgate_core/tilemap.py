@@ -221,6 +221,91 @@ def parse_tileset(text: str) -> dict:
     }
 
 
+def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
+                  shape: int = SQUARE, layout: int = DIAMOND_RIGHT) -> str:
+    """A Godot 4 TileSet resource over one or more atlas textures.
+
+    THE OTHER HALF OF :func:`parse_tileset`, and the piece whose absence kept
+    the whole level chain dark: levelgen, autotile, encode_cells and
+    wire_tilemap were all real and all blocked on a resource nothing here could
+    produce, so a generated level needed a human to open the Godot editor first.
+
+    ``sources``: ``[{id, texture, tiles, region?, origin?}]`` — ``texture`` is
+    a ``res://`` path, ``tiles`` the ``(atlas_x, atlas_y)`` coordinates the
+    source DEFINES. A coordinate not listed here cannot be placed: Godot draws
+    nothing and reports nothing, which is the failure `_TILE_RE` exists to let
+    callers pre-empt.
+
+    Byte-stable — coordinates sorted, ids ordered — for the same reason
+    :func:`encode_cells` is: a regenerated tileset that differs only in line
+    order is a diff nobody can review.
+
+    The round trip is the cheap half of the check: ``parse_tileset`` reads this
+    back and must agree. It cannot catch a misconception the reader and writer
+    share, so the engine itself is the real referee — see godot.inspect_tileset.
+    """
+    if not sources:
+        raise TileError("a tileset needs at least one atlas source")
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    if tw < 1 or th < 1:
+        raise TileError(f"tile size {tw}x{th} is not drawable")
+
+    clean: list[dict] = []
+    for entry in sources:
+        texture = str(entry.get("texture") or "").strip()
+        if not texture:
+            raise TileError("an atlas source needs a texture path")
+        tiles = sorted({(int(x), int(y)) for x, y in (entry.get("tiles") or [])})
+        if not tiles:
+            # An empty source parses back as a source with no tiles, which
+            # level_generate then refuses one layer later with a coordinate
+            # list. Refusing here names the actual mistake.
+            raise TileError(f"atlas {texture} defines no tiles")
+        if any(x < 0 or y < 0 for x, y in tiles):
+            raise TileError(f"atlas {texture} has a negative tile coordinate")
+        region = entry.get("region") or (tw, th)
+        clean.append({
+            "id": int(entry.get("id", len(clean))),
+            "texture": texture,
+            "tiles": tiles,
+            "region": (int(region[0]), int(region[1])),
+            "origin": tuple(int(v) for v in (entry.get("origin") or (0, 0))),
+        })
+    if len({s["id"] for s in clean}) != len(clean):
+        raise TileError("two atlas sources share one source id")
+    clean.sort(key=lambda s: s["id"])
+
+    # load_steps counts the ext_resources plus the sub_resources plus one.
+    steps = len(clean) * 2 + 1
+    out = [f'[gd_resource type="TileSet" load_steps={steps} format=3]', ""]
+    for i, src in enumerate(clean, start=1):
+        out.append(f'[ext_resource type="Texture2D" path="{src["texture"]}" '
+                   f'id="{i}"]')
+    out.append("")
+    for i, src in enumerate(clean, start=1):
+        sub = f"TileSetAtlasSource_{src['id']}"
+        out.append(f'[sub_resource type="TileSetAtlasSource" id="{sub}"]')
+        out.append(f'texture = ExtResource("{i}")')
+        out.append(f"texture_region_size = Vector2i({src['region'][0]}, "
+                   f"{src['region'][1]})")
+        if src["origin"] != (0, 0):
+            out.append(f"texture_origin = Vector2i({src['origin'][0]}, "
+                       f"{src['origin'][1]})")
+        for x, y in src["tiles"]:
+            out.append(f"{x}:{y}/0 = 0")
+        out.append("")
+    out.append("[resource]")
+    out.append(f"tile_size = Vector2i({tw}, {th})")
+    if shape != SQUARE:
+        out.append(f"tile_shape = {int(shape)}")
+        out.append(f"tile_layout = {int(layout)}")
+    for src in clean:
+        out.append(f'sources/{src["id"]} = SubResource('
+                   f'"TileSetAtlasSource_{src["id"]}")')
+    out.append("")
+    return chr(10).join(out)
+
+
 # ---------------------------------------------------------------------------
 # Cell -> pixels
 # ---------------------------------------------------------------------------

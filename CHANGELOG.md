@@ -10,6 +10,36 @@ repository at first publication. There is no earlier release history to record.
 ## [Unreleased]
 
 ### Added
+- **Tilesets: the bridge that unblocked level generation.** `levelgen`,
+  `autotile`, `tilemap` and `wire_tilemap` were all real and all dark, because
+  every one of them needed a Godot `TileSet.tres` and nothing here could write
+  one — `level_generate` refused unless a human had built the resource in the
+  editor first. `tilemap.write_tileset` writes it, and the new
+  `tileset_generate` runs the whole path: Retro Diffusion's terrain styles for
+  the art, `tilemask.detect` to read each tile's neighbour mask off its own
+  pixels, free fills (mirror, rotate, then quadrant-compositing) to complete
+  the set, a seam check, a canonical repack so the atlas is a STANDARD tileset
+  any consumer can read, and an `.aseprite` tileset master so the artist can
+  draw what generation could not.
+
+  Verified by the engine rather than by ourselves: no Godot-authored TileSet
+  existed to check against, so `godot.inspect_tileset` loads the resource in
+  Godot and reports what it actually built. That gate earned its keep
+  immediately — the first end-to-end run produced a perfectly well-formed
+  resource that Godot could not load at all, because a freshly copied PNG has
+  no `.import` metadata and does not exist as far as the engine is concerned.
+  The install path now runs the import pass first.
+
+  Three bugs it exposed on the way, all fixed: the resource carried only the
+  chosen terrain's tiles, so most of the atlas was unplaceable; `level_generate`
+  pinned floors to `solid`, which throws away every edge and corner a terrain
+  set comes with; and `task_kind="tile"` was missing from `TEXTURE_KINDS`, so
+  `tileable=True` had always been a no-op for the one kind named after tiling.
+
+  Honest limits: coverage varies per generation (one roll reached 16/16, the
+  next 7/16 before fills), the composited straight-corridor tiles are visible
+  as slight beading along corridor edges, and isometric, props and collision
+  are not in this.
 
 - **Sprite contracts: declare the sheet, then generate to it.** Every game
   needs a different sheet shape — E/W side-scroller, four-corner top-down,

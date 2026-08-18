@@ -210,7 +210,11 @@ _WORLD = frozenset({"anchor", "animation", "background", "gear", "item", "prop",
 # Aliases are included because an agent naming this itself will reach for
 # "material" or "albedo" as readily as "texture", and a near-miss kind silently
 # means "unknown" — which is the failure mode this whole file exists to close.
-TEXTURE_KINDS = frozenset({"texture", "material", "albedo"})
+# "tile" belongs here and was missing, which made `tileable=True` a
+# no-op for the one kind actually named after tiling: form_clause only
+# appends the seamless directive for a TEXTURE kind, so every tile ever
+# generated asked for a tile and never asked for it to tile.
+TEXTURE_KINDS = frozenset({"texture", "material", "albedo", "tile"})
 DECAL_KINDS = frozenset({"decal", "logo", "insignia", "emblem", "sticker"})
 
 # Every kind any tool in this repo actually asks for, named rather than implied.

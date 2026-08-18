@@ -290,6 +290,70 @@ def key_background(img, *, tolerance: int = 28) -> "object":
 
 
 # ---------------------------------------------------------------------------
+# Tiles
+# ---------------------------------------------------------------------------
+#: The tile styles, with the size range each accepts. `tileset` returns a
+#: TERRAIN SET — two terrains and the edges between them — which is the
+#: autotile family, not one texture; measured on a $0.10 call that came back
+#: as a 4x5 grass/stone sheet.
+TILE_STYLES = {
+    "tileset": {"style": "rd_tile__tileset", "usd": 0.10, "px": (16, 32)},
+    "tileset_advanced": {"style": "rd_tile__tileset_advanced", "usd": 0.10,
+                         "px": (16, 32), "extra_prompt": True},
+    "single": {"style": "rd_tile__single_tile", "usd": 0.02, "px": (16, 64)},
+    "variation": {"style": "rd_tile__tile_variation", "usd": 0.02,
+                  "px": (16, 128), "needs_input": True},
+    "object": {"style": "rd_tile__tile_object", "usd": 0.02, "px": (16, 96)},
+    "scene_object": {"style": "rd_tile__scene_object", "usd": 0.02,
+                     "px": (64, 384)},
+}
+
+
+def tileset(prompt: str, *, kind: str = "tileset", tile_px: int = 32,
+            extra_prompt: str = "", input_image: Optional[str] = None,
+            palette: Optional[str] = None, root: Any = None,
+            timeout: float = 300.0) -> dict:
+    """A tile sheet from one of RD's tile styles. Returns {ok, png, usd, ...}.
+
+    ``prompt`` describes the MATERIAL ("mossy grey stone dungeon floor"), never
+    the rendering — the style carries the pixel art, same contract as the
+    animation call. ``kind`` picks from :data:`TILE_STYLES`; ``variation``
+    needs ``input_image`` and is how a missing mask gets filled from a tile
+    that already exists.
+
+    Synchronous: tile calls return in seconds, unlike the animation jobs.
+    """
+    spec = TILE_STYLES.get(kind)
+    if spec is None:
+        raise RetroDiffusionError(
+            f"unknown tile kind {kind!r} — one of {sorted(TILE_STYLES)}")
+    lo, hi = spec["px"]
+    if not (lo <= tile_px <= hi):
+        raise RetroDiffusionError(
+            f"{kind} draws {lo}-{hi}px tiles, not {tile_px}")
+    if spec.get("needs_input") and not input_image:
+        raise RetroDiffusionError(f"{kind} needs an input_image to vary")
+
+    body = {"prompt": prompt, "prompt_style": spec["style"],
+            "width": int(tile_px), "height": int(tile_px), "num_images": 1}
+    if extra_prompt and spec.get("extra_prompt"):
+        body["extra_prompt"] = extra_prompt
+    if input_image:
+        body["input_image"] = _b64_rgb(input_image, (255, 255, 255))
+    if palette:
+        body["input_palette"] = _b64_rgb(palette, (0, 0, 0))
+
+    got = _post("/inferences", body, root=root, timeout=timeout)
+    images = got.get("base64_images") or []
+    if not images:
+        raise RetroDiffusionError("tile call returned no images")
+    return {"ok": True, "png_b64": images[0],
+            "usd": got.get("balance_cost"),
+            "balance": got.get("remaining_balance"),
+            "kind": kind, "tile_px": int(tile_px)}
+
+
+# ---------------------------------------------------------------------------
 # Free utilities
 # ---------------------------------------------------------------------------
 def pixel_fixer(image: str | os.PathLike[str], *, neural: bool = False,
