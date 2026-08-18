@@ -515,10 +515,15 @@ class TestTheViewRoutesTheGeometry:
         assert out["coverage"] == {"have": 16, "want": 16,
                                    "constructed": True}
         assert len(calls) == 2 and all(k.get("tileable") for k in calls)
+        # 16 mask tiles + 3 interior variants, all defined in the resource
+        assert len(out["interior_variants"]) == 3
         parsed = tilemap.parse_tileset(
             open(out["tileset"], encoding="utf-8").read())
-        assert sorted(len(s["tiles"]) for s in parsed["sources"].values()) == [16]
+        assert sorted(len(s["tiles"]) for s in parsed["sources"].values()) == [19]
         assert out["collision"]["tiles"] > 0
+        import pathlib
+        side = pathlib.Path(out["tileset"]).with_name("kietiles.tiles.json")
+        assert json.loads(side.read_text(encoding="utf-8"))["variants"]
 
     async def test_the_iso_tileset_generator_refuses_rather_than_misreads(
             self, root, game):
@@ -574,6 +579,25 @@ class TestThePlayerCarriesItsOwnJump:
         text = (platformer / "scenes" / "level.tscn").read_text(
             encoding="utf-8")
         assert text.count('[node name="Player"') == 1
+
+    async def test_interior_variants_break_the_wallpaper(self, platformer):
+        """A sidecar beside the tileset scatters interior cells across the
+        variant tiles, deterministically — same seed, same bytes."""
+        (platformer / "tiles" / "dungeon.tiles.json").write_text(
+            json.dumps({"interior": [3, 3], "variants": [[4, 0], [5, 0]]}),
+            encoding="utf-8")
+        kw = dict(godot_project=str(platformer), scene="scenes/level.tscn",
+                  tileset="tiles/dungeon.tres", player_scene="player.tscn",
+                  length=80, height=14, seed=3, create=True)
+        out = await call("sidescroll_generate", **kw)
+        assert out["ok"], out.get("error")
+        assert out["tile_variants"] > 0
+        text_a = (platformer / "scenes" / "level.tscn").read_text(
+            encoding="utf-8")
+        await call("sidescroll_generate", **kw)
+        text_b = (platformer / "scenes" / "level.tscn").read_text(
+            encoding="utf-8")
+        assert text_a == text_b
 
     async def test_a_player_scene_that_does_not_exist_is_refused(
             self, platformer):

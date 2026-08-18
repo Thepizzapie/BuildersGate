@@ -3030,13 +3030,16 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         out_dir.mkdir(parents=True, exist_ok=True)
         spent = 0.0
 
-        def _texture(what: str, tag: str):
+        def _texture(what: str, tag: str, variants: int = 0):
             """One tile of material, painted by kie at canvas size.
 
             The tile is CUT from a 4x-tile downscale of the painting rather
             than the whole frame squeezed into one tile — squeezing turns a
             wall of bricks into noise; cutting keeps the material at a scale
-            where a brick is still a brick.
+            where a brick is still a brick. ``variants`` cuts that many MORE
+            tiles from other corners of the same painting: one interior tile
+            repeated is wallpaper, and the repeat is broken with crops the
+            generation already paid for.
             """
             raw = out_dir / f"{name}_{tag}_raw.png"
             got = _kie.generate_image(
@@ -3052,11 +3055,17 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             img = _Img.open(raw).convert("RGBA")
             zoom = img.resize((4 * tile_px, 4 * tile_px), _Img.LANCZOS)
             off = (4 * tile_px - tile_px) // 2
-            return zoom.crop((off, off, off + tile_px, off + tile_px)), cost
+            corners = ((0, 0), (3 * tile_px, 0), (0, 3 * tile_px),
+                       (3 * tile_px, 3 * tile_px))
+            extra = [zoom.crop((ox, oy, ox + tile_px, oy + tile_px))
+                     for ox, oy in corners[:variants]]
+            return (zoom.crop((off, off, off + tile_px, off + tile_px)),
+                    extra, cost)
 
-        floor_tile, usd = _texture(prompt, "floor")
+        floor_tile, floor_variants, usd = _texture(prompt, "floor",
+                                                   variants=3)
         spent += usd
-        void_tile, usd = _texture(
+        void_tile, _unused, usd = _texture(
             void_prompt or "deep darkness with the faintest rock texture, "
                            "near black", "void")
         spent += usd
@@ -3097,8 +3106,36 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         sheet, table = norm["image"], norm["table"]
         result_inset = norm["inset"]
 
+        # BREAK THE WALLPAPER. One interior tile repeated across a floor is
+        # the single loudest generated-level tell, so the atlas carries the
+        # variant crops as extra tiles after the mask set, and the level
+        # generators scatter them over interior cells. The sidecar is how
+        # they learn which tiles those are — a .tres cannot say it.
+        interior_at = table[15 if bits == 4 else 255]
+        cols = max(1, sheet.width // tile_px)
+        n0 = len(wanted)
+        rows_need = (n0 + len(floor_variants) + cols - 1) // cols
+        if rows_need * tile_px > sheet.height:
+            grown = _Img.new("RGBA", (sheet.width, rows_need * tile_px),
+                             (0, 0, 0, 0))
+            grown.paste(sheet, (0, 0))
+            sheet = grown
+        variant_coords = []
+        for j, vt in enumerate(floor_variants):
+            tx, ty = (n0 + j) % cols, (n0 + j) // cols
+            sheet.paste(vt, (tx * tile_px, ty * tile_px))
+            variant_coords.append((tx, ty))
+
         atlas_png = out_dir / f"{name}.png"
         sheet.save(atlas_png)
+        if pinned:
+            _spritekit.lock_palette(str(atlas_png), pinned)
+            sheet = _Img.open(atlas_png).convert("RGBA")
+        sidecar = {"interior": list(interior_at),
+                   "variants": [list(v) for v in variant_coords]}
+        sidecar_path = out_dir / f"{name}.tiles.json"
+        sidecar_path.write_text(_json.dumps(sidecar, indent=1),
+                                encoding="utf-8")
         seams = _tilemask.seam_report(sheet, table,
                                       tile_size=(tile_px, tile_px),
                                       colours=colours)
@@ -3182,7 +3219,8 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                   # "every neighbour is me", i.e. an interior. Surfaced because
                   # a caller picking atlas coordinates by eye picks an edge
                   # tile and paints a level entirely out of seams.
-                  "solid": list(table[max(wanted)]),
+                  "solid": list(interior_at),
+                  "interior_variants": [list(v) for v in variant_coords],
                   "seams": seams, "edge_inset": result_inset,
                   **({"wall": wall_source} if wall_source else {}),
                   "collision": {"tiles": len([m for m, v in collision.items()
@@ -3203,6 +3241,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             dest_dir.mkdir(parents=True, exist_ok=True)
             import shutil as _sh
             _sh.copyfile(atlas_png, dest_dir / f"{name}.png")
+            _sh.copyfile(sidecar_path, dest_dir / f"{name}.tiles.json")
             if wall_source and wall_source.get("ok"):
                 _sh.copyfile(wall_source["path"], dest_dir / f"{name}_wall.png")
             (dest_dir / f"{name}.tres").write_text(tres_text, encoding="utf-8")
@@ -5459,10 +5498,31 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if asm.get("ok"):
                 fm = asm.get("frames", {})
                 cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
+                # THE GEOMETRY RUNS EVEN WHEN THE JUDGE CANNOT. The vision
+                # judge is provider-gated and sits out without its key — and
+                # for one whole build that meant NO gate ran and a walk with
+                # two 40%-oversized frames shipped as ok:True. facing_report
+                # is free and local: its height findings join the flag set,
+                # so the re-roll loop chases them with or without a judge,
+                # and a judge that sat out is said out loud instead of
+                # reading as a pass.
+                if not cons.get("ok"):
+                    cons = {"ok": True, "min": None, "flagged": [],
+                            "scores": {},
+                            "judge": "unavailable - geometry only"}
+                geom = _spritekit.facing_report(
+                    [p for p in pose_order if p in fm], fm)
+                cons["geometry"] = geom["findings"]
+                geo_flag = {fr for f in geom["findings"]
+                            if f["kind"] == "height_outlier"
+                            for fr in f["frames"]}
+                cons["flagged"] = sorted(
+                    set(cons.get("flagged") or []) | geo_flag)
             return asm, cons
 
         assembled, consistency = _assemble_and_gate()
         best_min = consistency.get("min") if consistency.get("ok") else None
+        best_flags = len(consistency.get("flagged") or [])
         tries = max(0, int(max_retries))
         while (consistency.get("ok") and consistency.get("flagged") and tries > 0):
             tries -= 1
@@ -5493,8 +5553,19 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
             asm2, cons2 = _assemble_and_gate()
             new_min = cons2.get("min") if cons2.get("ok") else None
-            if new_min is not None and (best_min is None or new_min > best_min):
-                best_min = new_min; assembled, consistency = asm2, cons2
+            # Better means: the judge's floor rose — or, when the judge sat
+            # out and there is no floor to compare, fewer flagged frames.
+            # Without the second clause a geometry-only re-roll could never
+            # be kept: min stays None, None never beats None, every fix
+            # reverted.
+            better = (new_min is not None
+                      and (best_min is None or new_min > best_min))
+            if new_min is None and best_min is None:
+                better = len(cons2.get("flagged") or []) < best_flags
+            if better:
+                best_min = new_min
+                best_flags = len(cons2.get("flagged") or [])
+                assembled, consistency = asm2, cons2
                 for bak in backups.values():
                     try: os.remove(bak)
                     except Exception: pass
@@ -6739,6 +6810,7 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                            solid_atlas_y, solid_columns, solid_name)
         cells = _autotile.resolve(sorted(solid), terrain,
                                   region=(0, 0, length, height))
+        varied = _scatter_variants(cells, tiles_disk)
         layers = [{"name": solid_name, "terrain": solid_name,
                    "cells": cells, "unmapped": {}}]
 
@@ -6846,6 +6918,7 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                 "spawn": level["spawn"], "goal": level["goal"],
                 "spawn_px": spawn_px, "goal_px": goal_px,
                 "segments": len(level["segments"]),
+                "tile_variants": varied,
                 "jump": {**level["limits"], "source": jump_source},
                 "player": player_report,
                 "playable": verdict,
@@ -7004,6 +7077,35 @@ def _read_prop_manifest(root, ref: str) -> dict:
                         if isinstance(v, dict) else tuple(v))
                     for k, v in (man.get("atlas") or {}).items()}
     return man
+
+
+def _scatter_variants(cells: list, tiles_disk: _Path) -> int:
+    """Swap interior cells between the tileset's variant tiles, in place.
+
+    Reads the ``<name>.tiles.json`` sidecar tileset_generate writes; without
+    one this is a no-op, so hand-built tilesets are untouched. Deterministic
+    by coordinate — the same seed keeps producing byte-identical scenes.
+    """
+    side = tiles_disk.with_name(tiles_disk.stem + ".tiles.json")
+    if not side.is_file():
+        return 0
+    try:
+        meta = _json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    interior = tuple(meta.get("interior") or ())
+    variants = [tuple(v) for v in meta.get("variants") or []]
+    if not interior or not variants:
+        return 0
+    swapped = 0
+    for c in cells:
+        if (c["ax"], c["ay"]) != interior:
+            continue
+        pick = (c["x"] * 928_371 + c["y"] * 689_287) % (len(variants) + 1)
+        if pick:
+            c["ax"], c["ay"] = variants[pick - 1]
+            swapped += 1
+    return swapped
 
 
 def _manifest_source(tiles_disk: _Path, man: dict) -> int:
@@ -7258,6 +7360,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 if ly["name"] != floor_name:
                     ly["props"] = {**(ly.get("props") or {}),
                                    "y_sort_enabled": True}
+        varied = sum(_scatter_variants(ly["cells"], tiles_disk)
+                     for ly in layers)
 
         prop_report: dict = {}
         if props:
@@ -7362,6 +7466,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "seed": seed, "size": [width, height],
             "rooms": len(level["rooms"]),
             "corridors": len(level["corridors"]),
+            "tile_variants": varied,
             "connected": level["connected"],
             "spawn": level["spawn"], "exit": level["exit"],
             "layers": wired["layers"], "summary": wired["summary"],
