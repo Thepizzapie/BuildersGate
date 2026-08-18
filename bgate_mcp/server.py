@@ -5482,6 +5482,12 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             lock_why = f"palette_lock={palette_lock!r}, set explicitly"
 
         def _assemble_and_gate():
+            # ARITHMETIC BEFORE MONEY: a pure-scale outlier is the same
+            # drawing at the wrong size, so it is scaled to the set median
+            # for free here — the re-roll loop below is for defects a
+            # resize cannot fix.
+            fixed = _spritekit.normalise_heights(
+                [p for p, _ in pose_files], pose_path)
             asm = _sp.from_pose_images(
                 [(p, pose_path[p]) for p in pose_order],
                 out_dir=str(root / ".bgate_out" / "sprites"), name=name,
@@ -5513,6 +5519,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 geom = _spritekit.facing_report(
                     [p for p in pose_order if p in fm], fm)
                 cons["geometry"] = geom["findings"]
+                cons["height_fix"] = fixed["scaled"]
                 geo_flag = {fr for f in geom["findings"]
                             if f["kind"] == "height_outlier"
                             for fr in f["frames"]}

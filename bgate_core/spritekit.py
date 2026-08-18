@@ -735,6 +735,64 @@ HEIGHT_OUTLIER_FRAC = 0.05
 HEIGHT_SPLIT_FRAC = 0.12
 
 
+def normalise_heights(ordered: Sequence[str], frame_files: dict[str, str], *,
+                      airborne: Iterable[str] = (),
+                      frac: float = HEIGHT_OUTLIER_FRAC) -> dict:
+    """Scale pure-size outlier frames to the set's median height, IN PLACE.
+
+    The cheap half of a height finding. An oversized frame is usually the
+    same drawing at the wrong scale — the character, the palette and the
+    pose are all fine — and arithmetic fixes what a re-roll would re-gamble
+    money on. Only frames past ``frac`` of the median move, only a MINORITY
+    moves (half the set being 'wrong' means there is no majority to trust),
+    and the resample is NEAREST so a locked palette stays locked: no new
+    colours, no softened edges.
+
+    Bottom-anchored: feet are where a sprite meets the world, so the scaled
+    content keeps its baseline and its horizontal mass centre. Returns
+    ``{scaled: {pose: ratio}, median: px}`` — empty ``scaled`` means the set
+    was already one height, and calling this twice is a no-op.
+    """
+    from PIL import Image
+
+    airborne = set(airborne)
+    boxes: list[tuple[str, tuple]] = []
+    for pose in ordered:
+        path = frame_files.get(pose)
+        if not path or pose.partition("/")[0] in airborne:
+            continue
+        try:
+            bbox = _open(path).getbbox()
+        except Exception:                                       # noqa: BLE001
+            continue
+        if bbox:
+            boxes.append((pose, bbox))
+    if len(boxes) < 4:
+        return {"scaled": {}, "median": None}
+    heights = sorted(b[3] - b[1] for _, b in boxes)
+    median = heights[len(heights) // 2]
+    tall = [(p, b) for p, b in boxes
+            if median and abs((b[3] - b[1]) - median) / median > frac]
+    if not tall or len(tall) * 2 >= len(boxes):
+        return {"scaled": {}, "median": median}
+
+    scaled: dict[str, float] = {}
+    for pose, bbox in tall:
+        path = frame_files[pose]
+        img = _open(path).convert("RGBA")
+        content = img.crop(bbox)
+        ratio = median / (bbox[3] - bbox[1])
+        nw = max(1, round(content.width * ratio))
+        nh = max(1, round(content.height * ratio))
+        content = content.resize((nw, nh), Image.NEAREST)
+        out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        cx = (bbox[0] + bbox[2]) // 2
+        out.paste(content, (max(0, cx - nw // 2), max(0, bbox[3] - nh)))
+        out.save(path)
+        scaled[pose] = round(ratio, 3)
+    return {"scaled": scaled, "median": median}
+
+
 def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
                   airborne: Iterable[str] = (), expected: str = "",
                   reference: str = "") -> dict:

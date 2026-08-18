@@ -635,3 +635,65 @@ class TestYawDrift:
         ordered, files = self._set(tmp_path, [8, 9, 8, 9, 8, 9])
         got = spritekit.facing_report(ordered, files)
         assert [f for f in got["findings"] if f["kind"] == "yaw_drift"] == []
+
+
+class TestNormaliseHeights:
+    """The cheap half of a height finding: arithmetic, not a re-roll."""
+
+    def _figure(self, tmp_path, name, height, canvas=(128, 160), bottom=150):
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", canvas, (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        w = round(height * 0.4)
+        cx = canvas[0] // 2
+        d.rectangle((cx - w // 2, bottom - height, cx + w // 2, bottom),
+                    fill=(120, 100, 90, 255))
+        p = tmp_path / f"{name}.png"
+        img.save(p)
+        return str(p)
+
+    def _heights(self, files):
+        from PIL import Image
+
+        out = {}
+        for pose, path in files.items():
+            b = Image.open(path).getbbox()
+            out[pose] = (b[3] - b[1], b[3])
+        return out
+
+    def test_the_oversized_minority_is_scaled_onto_its_feet(self, tmp_path):
+        ordered = [f"walk/{i}" for i in range(6)]
+        sizes = [100, 100, 100, 100, 140, 142]
+        files = {p: self._figure(tmp_path, f"f{i}", s)
+                 for i, (p, s) in enumerate(zip(ordered, sizes))}
+        got = spritekit.normalise_heights(ordered, files)
+        assert set(got["scaled"]) == {"walk/4", "walk/5"}
+        # ImageDraw rectangles are inclusive, so drawn height is size+1
+        assert got["median"] in (100, 101)
+        after = self._heights(files)
+        for pose, (h, _bottom) in after.items():
+            assert abs(h - got["median"]) <= 6, (pose, h)
+        assert len({b for _, b in after.values()}) == 1, "feet moved"
+
+    def test_a_uniform_set_is_untouched_and_the_call_is_idempotent(
+            self, tmp_path):
+        ordered = [f"walk/{i}" for i in range(6)]
+        sizes = [100, 102, 99, 101, 100, 100]
+        files = {p: self._figure(tmp_path, f"u{i}", s)
+                 for i, (p, s) in enumerate(zip(ordered, sizes))}
+        assert spritekit.normalise_heights(ordered, files)["scaled"] == {}
+        files2 = {p: self._figure(tmp_path, f"v{i}", s)
+                  for i, (p, s) in enumerate(zip(ordered,
+                                                 [100] * 4 + [140, 140]))}
+        spritekit.normalise_heights(ordered, files2)
+        assert spritekit.normalise_heights(ordered, files2)["scaled"] == {}
+
+    def test_a_split_set_has_no_majority_to_trust(self, tmp_path):
+        """Half the frames 'wrong' means nobody knows which half — leave it
+        for the finding, do not silently rescale half a sheet."""
+        ordered = [f"walk/{i}" for i in range(6)]
+        sizes = [100, 100, 100, 140, 140, 140]
+        files = {p: self._figure(tmp_path, f"s{i}", s)
+                 for i, (p, s) in enumerate(zip(ordered, sizes))}
+        assert spritekit.normalise_heights(ordered, files)["scaled"] == {}
