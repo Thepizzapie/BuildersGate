@@ -29,6 +29,51 @@ class TestTheSpec:
         with pytest.raises(jump.JumpError, match="not a character"):
             _spec(body=(0, 2))
 
+
+class TestFromPixels:
+    """The handoff from a player scene's pixel tunables to cells."""
+
+    def test_the_template_players_numbers_convert(self):
+        """templates/2d's player.gd, through a 32px tile."""
+        s = jump.from_pixels(speed=220.0, jump_velocity=-380.0,
+                             gravity=980.0, fall_multiplier=1.6, tile_px=32)
+        assert s.run == pytest.approx(220.0 / 32)
+        assert s.jump_speed == pytest.approx(380.0 / 32)
+        assert s.gravity == pytest.approx(980.0 * 1.6 / 32)
+
+    def test_the_sign_of_jump_velocity_does_not_matter(self):
+        """Godot's up is negative; a jump is its magnitude."""
+        up = jump.from_pixels(speed=200, jump_velocity=-400, gravity=1000,
+                              tile_px=16)
+        down = jump.from_pixels(speed=200, jump_velocity=400, gravity=1000,
+                                tile_px=16)
+        assert up.jump_speed == down.jump_speed
+
+    def test_fall_multiplier_only_ever_shrinks_the_modelled_jump(self):
+        """The error must run in the safe direction: every generated gap is
+        clearable by the real character, never the reverse."""
+        flat = jump.from_pixels(speed=220, jump_velocity=-380, gravity=980,
+                                tile_px=32, fall_multiplier=1.0)
+        fast = jump.from_pixels(speed=220, jump_velocity=-380, gravity=980,
+                                tile_px=32, fall_multiplier=1.6)
+        assert fast.peak < flat.peak
+        assert fast.span < flat.span
+
+    def test_a_floaty_fall_does_not_stretch_the_model(self):
+        """fall_multiplier < 1 would WEAKEN the modelled gravity and emit
+        gaps the rise cannot clear — the rise gravity is the floor."""
+        soft = jump.from_pixels(speed=220, jump_velocity=-380, gravity=980,
+                                tile_px=32, fall_multiplier=0.5)
+        assert soft.gravity == pytest.approx(980.0 / 32)
+
+    def test_nonsense_is_refused_with_its_own_name(self):
+        with pytest.raises(jump.JumpError, match="tile"):
+            jump.from_pixels(speed=220, jump_velocity=-380, gravity=980,
+                             tile_px=0)
+        with pytest.raises(jump.JumpError, match="fall_multiplier"):
+            jump.from_pixels(speed=220, jump_velocity=-380, gravity=980,
+                             tile_px=32, fall_multiplier=0)
+
     def test_a_bigger_jump_reaches_higher(self):
         assert _spec(jump_speed=20).peak > _spec(jump_speed=14).peak
         assert _spec(gravity=80).peak < _spec(gravity=40).peak

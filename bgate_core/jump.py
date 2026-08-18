@@ -105,6 +105,40 @@ class JumpSpec:
                 "span_cells": round(self.span, 2)}
 
 
+def from_pixels(*, speed: float, jump_velocity: float, gravity: float,
+                tile_px: float, fall_multiplier: float = 1.0,
+                body=(1, 2)) -> JumpSpec:
+    """A JumpSpec from a player scene's own tunables, in pixels.
+
+    This is the handoff the level generator's contract depends on: a level is
+    checked against ONE jump, and the player scene holds that jump in pixels
+    per second while everything here is cells. Doing this division by hand is
+    how the two drift apart — the exact failure the parameterisation exists to
+    prevent — so it is a function with an opinion instead of a convention.
+
+    The opinion: ``fall_multiplier`` (Godot players fall faster than they
+    rise, because symmetric gravity reads as floaty) cannot be represented in
+    a single-gravity model, so the model takes the FALL gravity when it is the
+    stronger one. Stronger gravity shrinks every modelled arc — peak and span
+    both — so every pit and pipe the generator emits is clearable by the real
+    character. The error runs only in the safe direction: a level a shade
+    easier than the character's true limit, never one it cannot finish.
+
+    ``jump_velocity`` may carry Godot's up-is-negative sign; magnitude is what
+    a jump is.
+    """
+    if tile_px <= 0:
+        raise JumpError(f"a {tile_px}px tile cannot convert anything")
+    if fall_multiplier <= 0:
+        raise JumpError("fall_multiplier must be positive — a character that "
+                        "never falls never lands")
+    g_eff = float(gravity) * max(1.0, float(fall_multiplier))
+    return JumpSpec(run=float(speed) / tile_px,
+                    jump_speed=abs(float(jump_velocity)) / tile_px,
+                    gravity=g_eff / tile_px,
+                    body=body)
+
+
 def _arc(spec: JumpSpec, hold: float, speed: float, *,
          drop: bool = False) -> list:
     """One trajectory, as the cells its FEET pass through.

@@ -45,6 +45,7 @@ import inspect
 import itertools
 import json as _json
 import os
+import re as _re
 import tempfile as _tempfile
 import threading
 import time as _time
@@ -3009,6 +3010,18 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
 
         from bgate_adapters import retrodiffusion as _rd
         from bgate_core import autotile as _autotile
+
+        view = _gameview.load(_root())
+        if view == "isometric":
+            return {"ok": False, "error": (
+                "this project's view is 'isometric' and this generator "
+                "cannot honestly serve it yet: the mask detector reads "
+                "terrain off each tile's square boundary, and a diamond "
+                "tile's corners are transparent by construction — every "
+                "edge tile would be misread as interior and the set would "
+                "ship as confident garbage. Until a diamond-aware detector "
+                "exists, author or import an isometric TileSet in the Godot "
+                "editor — level_generate accepts it and checks its shape.")}
         from bgate_core import tilemap as _tilemap
         from bgate_core import tilemask as _tilemask
 
@@ -6565,6 +6578,64 @@ def prop_generate(name: str, style: str = "", types: str = "",
 
 
 
+# @export var speed := 220.0  |  @export var gravity: float = 980.0
+_EXPORT_VAR_RE = _re.compile(
+    r"^@export\s+var\s+(\w+)\s*(?::\s*\w+\s*=|:=|=)\s*(-?\d+(?:\.\d+)?)\s*$",
+    _re.MULTILINE)
+
+_JUMP_TUNABLES = ("speed", "jump_velocity", "gravity")
+
+
+def _player_jump(godot_dir: _Path, scene_disk: _Path) -> dict:
+    """The jump tunables a player scene actually carries, in pixels.
+
+    Two layers, same precedence the engine uses: the script's ``@export``
+    defaults, overridden by any value the scene file sets on its root node.
+    Returns ``{speed, jump_velocity, gravity, fall_multiplier, script}`` or
+    raises naming exactly what is missing — a guessed default here would
+    rebuild the drift this function exists to close.
+    """
+    text = scene_disk.read_text(encoding="utf-8", errors="replace")
+    parsed = _scenewire.parse(text)
+    if not parsed["nodes"]:
+        raise ValueError(f"{scene_disk.name} has no nodes")
+
+    vals: dict = {}
+    script_rel = ""
+    for ext in parsed["ext"]:
+        if str(ext.get("path", "")).endswith(".gd"):
+            script_rel = ext["path"][len("res://"):]
+            script_disk = (godot_dir / script_rel).resolve()
+            if script_disk.is_file():
+                body = script_disk.read_text(encoding="utf-8",
+                                             errors="replace")
+                for name, num in _EXPORT_VAR_RE.findall(body):
+                    vals[name] = float(num)
+            break
+
+    root_props = _scenewire.properties(text, parsed, parsed["nodes"][0])
+    for key in (*_JUMP_TUNABLES, "fall_multiplier"):
+        raw = root_props.get(key)
+        if raw is not None:
+            try:
+                vals[key] = float(str(raw))
+            except ValueError:
+                raise ValueError(
+                    f"{scene_disk.name} sets {key} = {raw!r}, which is not a "
+                    "number this can convert")
+
+    missing = [k for k in _JUMP_TUNABLES if k not in vals]
+    if missing:
+        raise ValueError(
+            f"{scene_disk.name} does not declare {missing} — looked at the "
+            f"scene's root node and {script_rel or 'no attached script'}. The "
+            "level is built FROM these numbers; without them there is nothing "
+            "to build for. templates/2d's player.gd exports all three.")
+    vals.setdefault("fall_multiplier", 1.0)
+    vals["script"] = script_rel
+    return vals
+
+
 @_tool
 def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                         length: int = 160, height: int = 16, seed: int = 0,
@@ -6576,6 +6647,7 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                         solid_atlas_x: int = 0, solid_atlas_y: int = 0,
                         prop_manifest: str = "", prop_source: int = 1,
                         prop_types: str = "", prop_spacing: int = 9,
+                        player_scene: str = "",
                         parent: str = ".", solid_name: str = "Solid",
                         prop_name: str = "Props",
                         create: bool = False, dry_run: bool = False) -> dict:
@@ -6592,9 +6664,19 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
     in CELLS PER SECOND, and every segment sizes itself from what they allow: a
     pit is never wider than this character clears, a pipe never taller than it
     rises. An unclearable gap is unrepresentable rather than generated and
-    rejected. Pass the SAME numbers to your player scene — a level built for one
-    jump and played with another is the failure this parameterisation exists to
-    prevent.
+    rejected.
+
+    `player_scene` IS THE WAY TO PASS THEM. Point it at the player's .tscn and
+    the tunables are read from the scene itself — its script's @export
+    defaults, overridden by anything the scene sets — converted to cells by
+    the tileset's own tile size, and the player is INSTANCED AT SPAWN in the
+    written scene. The loose run/jump_speed/gravity arguments are then ignored,
+    because two sources of the same number is the drift this parameter closes:
+    a level built for one jump and played with another is the failure the whole
+    parameterisation exists to prevent. `fall_multiplier` is honoured by
+    modelling with the fall gravity, so the error runs only in the safe
+    direction. Without `player_scene` the loose numbers are trusted as given —
+    then it is on you to keep the player scene agreeing with them.
 
     IT REFUSES AN UNPLAYABLE LEVEL rather than reporting one. The checks are
     `reachable` (the goal is in the flood fill of jump arcs from spawn),
@@ -6618,8 +6700,51 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                 f"{view} game is the wrong geometry, not a style choice — set "
                 "it with game_view_set if that is what you meant.")}
 
-        spec = _jumpmod.JumpSpec(run=run, jump_speed=jump_speed,
-                                 gravity=gravity, body=(1, max(1, body_cells)))
+        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+        if not tiles_disk.is_file():
+            return {"ok": False, "error": (
+                f"no tileset at {tiles_res} - generate or import it first; a "
+                "level cannot pick tiles from nothing")}
+        parsed_set = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        if parsed_set["shape"] != _tilemap.SQUARE:
+            return {"ok": False, "error": (
+                f"{tiles_res} is not a square-tile set (shape "
+                f"{parsed_set['shape']}). A platformer's cells are the squares "
+                "the jump arithmetic runs on — this tileset belongs to a "
+                "different projection.")}
+
+        jump_source = "arguments"
+        player_report: dict = {}
+        if player_scene:
+            player_disk, player_res = _res_pair(godot_project, player_scene,
+                                                ".tscn")
+            if not player_disk.is_file():
+                return {"ok": False, "error": (
+                    f"no player scene at {player_res} — the jump is read from "
+                    "the player, so the player has to exist first. "
+                    "godot_scaffold's 2d template ships one.")}
+            tw, th = parsed_set["tile_size"]
+            if tw != th:
+                return {"ok": False, "error": (
+                    f"{tiles_res} has {tw}x{th} tiles. The jump arithmetic "
+                    "runs on square cells; converting a player's pixels "
+                    "through a rectangular cell would be a guess in one axis.")}
+            tuned = _player_jump(_Path(godot_project), player_disk)
+            spec = _jumpmod.from_pixels(
+                speed=tuned["speed"], jump_velocity=tuned["jump_velocity"],
+                gravity=tuned["gravity"],
+                fall_multiplier=tuned["fall_multiplier"],
+                tile_px=tw, body=(1, max(1, body_cells)))
+            jump_source = "player_scene"
+            player_report = {"scene": player_res, "script": tuned["script"],
+                             "pixels": {k: tuned[k] for k in
+                                        (*_JUMP_TUNABLES, "fall_multiplier")}}
+        else:
+            spec = _jumpmod.JumpSpec(run=run, jump_speed=jump_speed,
+                                     gravity=gravity,
+                                     body=(1, max(1, body_cells)))
         kinds = tuple(segments.replace(",", " ").split()) or None
         level = _sidescroll.plan(length, height, seed=seed, spec=spec,
                                  difficulty=difficulty, kinds=kinds)
@@ -6631,14 +6756,6 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
                 "findings": verdict["findings"],
                 "ascii": _sidescroll.ascii_map(level, width=min(length, 120))}
 
-        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
-        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
-        if not tiles_disk.is_file():
-            return {"ok": False, "error": (
-                f"no tileset at {tiles_res} - generate or import it first; a "
-                "level cannot pick tiles from nothing")}
-        parsed_set = _tilemap.parse_tileset(
-            tiles_disk.read_text(encoding="utf-8", errors="replace"))
         fresh = not scene_disk.is_file()
         if fresh and not create:
             return {"ok": False, "error": (
@@ -6707,6 +6824,39 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
         wired = _scenewire.wire_tilemap(text, tiles_res, layers,
                                         parent=parent,
                                         owns=[solid_name, prop_name])
+
+        tw, th = parsed_set["tile_size"]
+        spawn_px = [round((level["spawn"][0] + 0.5) * tw, 1),
+                    round((level["spawn"][1] + 0.5) * th, 1)]
+        goal_px = [round((level["goal"][0] + 0.5) * tw, 1),
+                   round((level["goal"][1] + 0.5) * th, 1)]
+        if player_scene:
+            # The player goes INTO the scene, at spawn — placed here rather
+            # than left as a coordinate in the result, because a returned
+            # number is a step someone forgets and a placed node is not.
+            # Re-running MOVES the existing instance instead of stacking a
+            # second player, same discipline wire_tilemap holds for layers.
+            ptxt = wired["text"]
+            pparsed = _scenewire.parse(ptxt)
+            want = _scenewire._default_name(player_res)
+            if any(n["name"] == want and n.get("instance")
+                   for n in pparsed["nodes"]):
+                node_name = want if parent == "." else f"{parent}/{want}"
+                placed = "moved"
+            else:
+                w = _scenewire.wire(ptxt, player_res, parent=parent,
+                                    node_name=want)
+                ptxt, node_name = w["text"], w["node"]
+                node_name = (node_name if parent == "."
+                             else f"{parent}/{node_name}")
+                placed = "added"
+            ptxt = _scenewire.set_property(
+                ptxt, node_name, "position",
+                f"Vector2({spawn_px[0]}, {spawn_px[1]})")["text"]
+            wired["text"] = ptxt
+            player_report.update({"node": node_name, "placed": placed,
+                                  "position": spawn_px})
+
         if dry_run:
             written = {"written": False}
         elif fresh:
@@ -6722,17 +6872,22 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
         return {"ok": True, "scene": scene_res, "tileset": tiles_res,
                 "seed": seed, "size": [length, height],
                 "spawn": level["spawn"], "goal": level["goal"],
+                "spawn_px": spawn_px, "goal_px": goal_px,
                 "segments": len(level["segments"]),
-                "jump": level["limits"],
+                "jump": {**level["limits"], "source": jump_source},
+                "player": player_report,
                 "playable": verdict,
                 "props": prop_report,
                 "layers": wired["layers"], "summary": wired["summary"],
                 "written": written.get("written", False),
                 "created": bool(written.get("created")),
                 "ascii": _sidescroll.ascii_map(level, width=min(length, 120)),
-                "next": ("give your player scene the SAME run/jump_speed/"
-                         "gravity — a level built for one jump and played "
-                         "with another is not the level that was checked")}
+                "next": (("the player is in the scene with the jump the level "
+                          "was checked against — godot_run it")
+                         if player_scene else
+                         ("give your player scene the SAME run/jump_speed/"
+                          "gravity — or pass player_scene= and both halves "
+                          "of that sentence happen for you"))}
     except Exception as exc:
         return _fail(exc)
 
@@ -7043,6 +7198,19 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                              "first; a level cannot pick tiles from nothing")
         parsed_set = _tilemap.parse_tileset(
             tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        # THE TILESET'S SHAPE MUST AGREE WITH THE VIEW. A square set on an
+        # isometric project renders a plausible, wrong-looking grid — the
+        # exact silent failure tilemap.py documents — and the inverse draws
+        # diamonds flat. Neither errors in the engine, so it errors here.
+        iso = view == "isometric"
+        want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
+        if parsed_set["shape"] != want_shape:
+            raise ValueError(
+                f"{tiles_res} has tile shape {parsed_set['shape']} and this "
+                f"project's view is {view!r} (wants shape {want_shape}). "
+                "Godot renders the mismatch without complaint and it looks "
+                "wrong everywhere — fix the tileset or the declared view, "
+                "not this call.")
         have = sorted(parsed_set["sources"])
         wanted = {floor_source} | ({wall_source} if wall_layout != "none" else set())
         missing = sorted(w for w in wanted if w not in parsed_set["sources"])
@@ -7080,6 +7248,15 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                   _terrain(wall_layout, wall_source, wall_atlas_x, wall_atlas_y,
                            wall_columns, wall_name)),
             floor_name=floor_name, wall_name=wall_name)
+        if iso:
+            # Isometric is a depth sort or it is a lie: a wall drawn after
+            # the player standing south of it reads as the player inside the
+            # wall. The floor stays flat — nothing ever stands behind a
+            # floor — everything above it y-sorts.
+            for ly in layers:
+                if ly["name"] != floor_name:
+                    ly["props"] = {**(ly.get("props") or {}),
+                                   "y_sort_enabled": True}
 
         prop_report: dict = {}
         if props:
@@ -7112,7 +7289,9 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                     continue
                 node = prop_name if lname == "props" else f"{prop_name}{lname.title()}"
                 layers.append({"name": node, "terrain": node,
-                               "cells": part["cells"], "unmapped": {}})
+                               "cells": part["cells"], "unmapped": {},
+                               **({"props": {"y_sort_enabled": True}}
+                                  if iso and lname != "decals" else {})})
                 built["cells"] += part["cells"]
                 built["mirrored"] += part["mirrored"]
                 for k, v in part["types"].items():
