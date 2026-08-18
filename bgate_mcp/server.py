@@ -5742,11 +5742,13 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # which is exactly how one shipped.
         assembled["next"] = (
             "this sheet is the MINT: identity, anchors, a start frame per "
-            "drawn direction. The MOTION comes from animation_generate "
-            "(RD animates the character's own frames into real cycles, "
-            "~$0.14/direction) — sprite_contract_set first if the project "
-            "has no contract. Watch the animation_previews GIF before "
-            "shipping either; stiffness is invisible in a screenshot.")
+            "drawn direction. IF this character moves in-game, the motion "
+            "comes from animation_generate (RD animates the character's own "
+            "frames into real cycles, ~$0.14/direction) — "
+            "sprite_contract_set first if the project has no contract. A "
+            "character that never moves (portrait, static NPC) is done "
+            "here. Watch the animation_previews GIF before shipping "
+            "anything that moves; stiffness is invisible in a screenshot.")
         return assembled
     except Exception as exc:
         return _fail(exc)
