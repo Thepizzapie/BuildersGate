@@ -604,13 +604,27 @@ def repack(image, table: dict, wanted: Sequence[int], *,
 #: floor and tiles with two ranged 28% to 73%, so the floor boundary jumped in
 #: and out between neighbours. That reads as bulges along every room edge and
 #: as a corridor thinner than the corridor beside it.
-EDGE_INSET = 0.28
+#:
+#: It is a LIP, not a wall. 0.28 was the measured average of the model's own
+#: edge depth, and using it drew the boundary TWICE — once as the floor tile's
+#: carved edge and again as the wall layer occupying the neighbouring cell. A
+#: two-cell corridor then lost over half its width and rendered as a seam in the
+#: rock. The wall layer owns the wall; the floor only needs enough edge to stop
+#: reading as a poster pasted over stone.
+EDGE_INSET = 0.1
+
+#: How far a COLLIDER reaches in, which is deliberately NOT `EDGE_INSET`.
+#: They were one constant, and shrinking the visual lip to 0.1 silently shrank
+#: every collider with it — the player would have walked most of a tile into the
+#: stone before being stopped. What the art draws and where the game stops are
+#: two different questions and they get two different numbers.
+COLLIDER_INSET = 0.28
 
 
 def normalise_edges(image, table: dict, wanted: Sequence[int], *,
                     tile_size: tuple[int, int],
                     colours: Sequence[Sequence[float]],
-                    inset: float = EDGE_INSET) -> dict:
+                    inset: float = EDGE_INSET, clear: bool = False) -> dict:
     """Rebuild every mask with a CONSISTENT edge inset, keeping the art.
 
     The model's texture is kept — floor from its own full tile, void from its
@@ -619,6 +633,23 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
     tile. That is the property a hand-made autotile set has by construction
     and a generated one does not, and without it neighbours disagree about
     where the floor stops.
+
+    ``clear`` carves the void band to TRANSPARENT instead of painting the void
+    terrain into it, and WHICH ONE IS RIGHT depends entirely on what is behind
+    the floor layer — a question no measurement of the sheet can answer, which
+    is why it took a screenshot of the running game to settle:
+
+      * Behind a wall FILL (``levelgen.layers(wall_fill=True)``, the default),
+        leave it opaque. The band IS the wall face, the fill supplies the rock
+        behind it, and the two agree. Carving here punches a hole to the clear
+        colour and traces a light seam around every room.
+      * Over a bare canvas or a wall RING, carve. An opaque band paints over
+        whatever the layer beneath drew, which is what made every room edge read
+        as a protrusion and every narrow corridor as a black crack.
+
+    Carving also defringes the cut, because a clean rectangle is not a clean
+    edge: the model draws the transition as a ramp and its anti-aliased tail
+    survives the band.
 
     What this deliberately gives up: the ragged, per-tile organic outlines the
     model drew. They are lovely in isolation and they are exactly what does
@@ -659,6 +690,11 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
     void_tile = best
 
     bw, bh = max(1, round(tw * inset)), max(1, round(th * inset))
+    # FOUR-BIT OR EIGHT, inferred from what was asked for. In a 4-bit set the
+    # corner bits are simply absent, so carving "the corner bit is clear" would
+    # notch all four corners out of every tile — including the fully open one.
+    _CORNER_BITS = BIT_NE | BIT_SE | BIT_SW | BIT_NW
+    eight_bit = any(m & _CORNER_BITS for m in wanted)
     out_tiles: dict[int, Image.Image] = {}
     for mask in wanted:
         tile = base.copy()
@@ -673,9 +709,27 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
             bands.append((0, 0, bw, th))
         if not mask & BIT_E:
             bands.append((tw - bw, 0, tw, th))
+        # THE DIAGONAL CASES, and the reason a 16-tile set is not enough.
+        # A 4-bit mask cannot say "floor to the north and east, but void at the
+        # north-east corner", so at every step in a room's outline there is no
+        # tile to draw and the shadow band along the wall simply BREAKS. The
+        # corner is a nibble out of the tile and pure geometry, so it does not
+        # need new art — which is why a 47-tile set can be built from a 16-tile
+        # generation instead of asking the model for corners it draws badly.
+        if eight_bit:
+            for bit, sides, box in (
+                    (BIT_NE, BIT_N | BIT_E, (tw - bw, 0, tw, bh)),
+                    (BIT_SE, BIT_S | BIT_E, (tw - bw, th - bh, tw, th)),
+                    (BIT_SW, BIT_S | BIT_W, (0, th - bh, bw, th)),
+                    (BIT_NW, BIT_N | BIT_W, (0, 0, bw, bh))):
+                if (mask & sides) == sides and not mask & bit:
+                    bands.append(box)
         for x0, y0, x1, y1 in bands:
             for y in range(y0, y1):
                 for x in range(x0, x1):
+                    if clear:
+                        tpx[x, y] = (0, 0, 0, 0)
+                        continue
                     src = vpx[x, y]
                     # only paint where the donor is genuinely void, so the
                     # band keeps its texture instead of becoming a rectangle
@@ -684,9 +738,22 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
                     else:
                         tpx[x, y] = (int(void_c[0]), int(void_c[1]),
                                      int(void_c[2]), 255)
+        if clear:
+            # DEFRINGE THE CUT. A clean rectangle is not a clean edge: the
+            # model draws the floor/void transition as a ramp, so carving the
+            # band leaves the anti-aliased tail of it opaque just inside the
+            # cut. On a finished map that tail is a dark line, and the wall's
+            # own mortar showing through the hole beside it is a light one —
+            # together they read as a seam traced around every room. Anything
+            # still classifying as void is part of the void.
+            for y in range(th):
+                for x in range(tw):
+                    px = tpx[x, y]
+                    if px[3] and _dist(px[:3], void_c) < _dist(px[:3], floor_c):
+                        tpx[x, y] = (0, 0, 0, 0)
         out_tiles[mask] = tile
 
-    cols = 4 if len(wanted) <= 16 else 8
+    cols = 4 if len(wanted) <= 16 else 8   # grid16 is 4 wide, blob47 is 8
     rows = (len(wanted) + cols - 1) // cols
     sheet = Image.new("RGBA", (cols * tw, rows * th), (0, 0, 0, 0))
     packed: dict[int, tuple[int, int]] = {}
@@ -700,9 +767,9 @@ def normalise_edges(image, table: dict, wanted: Sequence[int], *,
 # Collision
 # ---------------------------------------------------------------------------
 def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
-                       inset: float = EDGE_INSET,
-                       solid_void: bool = True) -> dict:
-    """A collision polygon per mask, derived from the SAME inset the art uses.
+                       inset: float = COLLIDER_INSET,
+                       solid_void: bool = True, full: bool = False) -> dict:
+    """A collision polygon per mask, derived from a KNOWN inset.
 
     Not traced from pixels. The tiles were rebuilt with one known inset by
     :func:`normalise_edges`, so the walkable region of every tile is a
@@ -714,6 +781,11 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
     is wall. The void of a tile is up to four edge bands, so this returns one
     polygon per band rather than trying to express a ring as a single convex
     shape — Godot takes several polygons per tile and each band is convex.
+
+    ``full`` gives every mask one whole-tile collider instead of edge bands. It
+    is what a WALL layer wants: when the wall paints every non-floor cell (see
+    ``levelgen.layers(wall_fill=True)``) the wall tile is solid all the way
+    across, and the floor layer beside it needs no collider at all.
 
     Coordinates are centred on the tile, which is the space Godot's tile
     collision uses: (0, 0) is the middle, not the corner.
@@ -731,6 +803,9 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
     out: dict[int, list] = {}
     for mask in masks:
         bands = []
+        if full:
+            out[mask] = [rect(0, 0, tw, th)]
+            continue
         if solid_void:
             if not mask & BIT_N:
                 bands.append(rect(0, 0, tw, bh))

@@ -231,11 +231,17 @@ def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
     wire_tilemap were all real and all blocked on a resource nothing here could
     produce, so a generated level needed a human to open the Godot editor first.
 
-    ``sources``: ``[{id, texture, tiles, region?, origin?}]`` — ``texture`` is
+    ``sources``: ``[{id, texture, tiles, region?, origin?, origins?, collision?}]``
+    — ``texture`` is
     a ``res://`` path, ``tiles`` the ``(atlas_x, atlas_y)`` coordinates the
     source DEFINES. A coordinate not listed here cannot be placed: Godot draws
     nothing and reports nothing, which is the failure `_TILE_RE` exists to let
     callers pre-empt.
+
+    ``origin`` shifts every tile in the source; ``origins`` shifts ONE tile,
+    ``{(x, y): (dx, dy)}``. Per-tile is what a mounted prop needs: a torch drawn
+    centred in its wall cell reads as lying in the middle of the stone, and the
+    sprite has to sit against the cell's inner edge to read as bolted to a wall.
 
     Byte-stable — coordinates sorted, ids ordered — for the same reason
     :func:`encode_cells` is: a regenerated tileset that differs only in line
@@ -271,6 +277,23 @@ def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
             "tiles": tiles,
             "region": (int(region[0]), int(region[1])),
             "origin": tuple(int(v) for v in (entry.get("origin") or (0, 0))),
+            # {(x, y): (w, h)} — a tile spanning SEVERAL atlas cells, which is
+            # how a prop gets proportions: a pillar is one cell wide and two
+            # high, and drawing it into a 1x1 tile is what makes every prop look
+            # squat and flat.
+            "sizes": {(int(cx), int(cy)): (int(w), int(h))
+                      for (cx, cy), (w, h)
+                      in (entry.get("sizes") or {}).items()},
+            # {(x, y): {frames, columns?, speed?, durations?}} — a LOOPING
+            # tile animation, which Godot plays without a node. See the emit
+            # loop for the format, which is learned rather than documented.
+            "animation": {(int(cx), int(cy)): dict(spec)
+                          for (cx, cy), spec
+                          in (entry.get("animation") or {}).items()},
+            "origins": {(int(cx), int(cy)):
+                        (int(ox), int(oy))
+                        for (cx, cy), (ox, oy)
+                        in (entry.get("origins") or {}).items()},
             # Carried through the normalisation, which it was not: the emit
             # loop reads from THIS dict, so a collision map left behind here
             # is a collision map that silently never reaches the file.
@@ -278,6 +301,36 @@ def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
                           for (cx, cy), polys
                           in (entry.get("collision") or {}).items()},
         })
+    for src in clean:
+        # A SPANNING TILE OWNS THE CELLS IT COVERS. Godot logs "tiles are
+        # already present in the space the tile would cover" and then simply
+        # does not create the tile — the resource loads, the tile is missing,
+        # and the map draws nothing there. Refusing here names it.
+        owned: dict = {}
+        for x, y in src["tiles"]:
+            w, h = (src.get("sizes") or {}).get((x, y), (1, 1))
+            for dx in range(max(1, w)):
+                for dy in range(max(1, h)):
+                    at = (x + dx, y + dy)
+                    if at in owned:
+                        raise TileError(
+                            f"atlas {src['texture']}: tiles {owned[at]} and "
+                            f"{(x, y)} both cover cell {at} — a spanning tile "
+                            "owns every cell of its region, and Godot drops "
+                            "the loser without loading anything differently")
+                    owned[at] = (x, y)
+        # An animation's frames live in the cells to the RIGHT of the tile and
+        # are equally owned: defining one of them as its own tile is the same
+        # collision by another route.
+        for (x, y), spec in (src.get("animation") or {}).items():
+            w, _h = (src.get("sizes") or {}).get((x, y), (1, 1))
+            for f in range(1, int(spec.get("frames") or 1)):
+                at = (x + f * max(1, w), y)
+                if at in owned and owned[at] != (x, y):
+                    raise TileError(
+                        f"atlas {src['texture']}: tile {(x, y)} animates over "
+                        f"cell {at}, which tile {owned[at]} already defines")
+
     if len({s["id"] for s in clean}) != len(clean):
         raise TileError("two atlas sources share one source id")
     clean.sort(key=lambda s: s["id"])
@@ -299,7 +352,43 @@ def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
             out.append(f"texture_origin = Vector2i({src['origin'][0]}, "
                        f"{src['origin'][1]})")
         for x, y in src["tiles"]:
+            # ANIMATION IS A TILE PROPERTY, NOT AN ALTERNATIVE'S, and it is
+            # written BEFORE the `x:y/0 = 0` line that declares the tile.
+            # Both facts came from having Godot author one and reading it back:
+            # emitting `x:y/0/animation_columns` — the shape texture_origin
+            # genuinely uses — loaded without complaint and simply never played,
+            # which is the same silent-acceptance failure as polygons_count.
+            span = (src.get("sizes") or {}).get((x, y))
+            if span and span != (1, 1):
+                if span[0] < 1 or span[1] < 1:
+                    raise TileError(
+                        f"tile {x}:{y} spans {span[0]}x{span[1]} atlas cells, "
+                        "which is not a tile")
+                out.append(f"{x}:{y}/size_in_atlas = "
+                           f"Vector2i({span[0]}, {span[1]})")
+            anim = (src.get("animation") or {}).get((x, y))
+            if anim:
+                frames = int(anim.get("frames") or 0)
+                if frames < 2:
+                    raise TileError(
+                        f"tile {x}:{y} declares {frames} animation frames — an "
+                        "animation needs at least two, and one frame is a "
+                        "static tile that should not declare animation at all")
+                cols = int(anim.get("columns") or frames)
+                out.append(f"{x}:{y}/animation_columns = {cols}")
+                if anim.get("speed"):
+                    out.append(f"{x}:{y}/animation_speed = "
+                               f"{float(anim['speed'])}")
+                durations = list(anim.get("durations") or [])
+                for f in range(frames):
+                    d = durations[f] if f < len(durations) else 1.0
+                    out.append(f"{x}:{y}/animation_frame_{f}/duration = "
+                               f"{float(d)}")
             out.append(f"{x}:{y}/0 = 0")
+            nudge = (src.get("origins") or {}).get((x, y))
+            if nudge and nudge != (0, 0):
+                out.append(f"{x}:{y}/0/texture_origin = "
+                           f"Vector2i({nudge[0]}, {nudge[1]})")
             # A tile with no polygon is WALKABLE-BY-OMISSION, which is the
             # right default. A tile can need SEVERAL — a corridor is solid on
             # two sides, an isolated tile on four — and each band is its own

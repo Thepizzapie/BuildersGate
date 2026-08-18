@@ -219,3 +219,142 @@ class TestCollisionPolygons:
         [band] = tilemask.collision_polygons([N | E | S], tile_size=(32, 32))[N | E | S]
         xs = [p[0] for p in band]
         assert min(xs) == -16.0, band
+
+
+class TestVoidIsAHole:
+    """The defect that made every room read as a protrusion and every one-cell
+    corridor as a black crack: the void band was painted with the void
+    TERRAIN, opaque, so the floor layer covered the wall layer beneath it.
+    Nothing in the tileset or the scene could show that — it only appears on a
+    composited map, which is why it survived the engine gate."""
+
+    def _set(self):
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (16 * 3, 16), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 0, 15, 15], fill=GREY)
+        d.rectangle([16, 0, 31, 15], fill=GREY)
+        d.rectangle([16, 0, 18, 15], fill=GREEN)
+        d.rectangle([32, 0, 47, 15], fill=GREY)
+        d.rectangle([32, 0, 43, 15], fill=GREEN)
+        return img
+
+    def _norm(self, **kw):
+        img = self._set()
+        got = tilemask.detect(img, tile_size=(16, 16), bits=4)
+        colours = [got["terrains"]["a"]["colour"],
+                   got["terrains"]["b"]["colour"]]
+        floor = max(got["terrains"].values(), key=lambda t: t["colour"][0])
+        return tilemask.normalise_edges(img, dict(floor["table"]),
+                                        list(range(16)), tile_size=(16, 16),
+                                        colours=colours, **kw)
+
+    def test_carving_makes_the_band_a_hole(self):
+        import numpy as np
+        out = self._norm(clear=True)
+        a = np.asarray(out["image"])
+        assert (a[..., 3] == 0).any(), "nothing was carved"
+        # the fully-open tile keeps all four sides
+        tx, ty = out["table"][N | E | S | W]
+        assert (a[ty*16:(ty+1)*16, tx*16:(tx+1)*16, 3] == 255).all()
+        # an isolated tile is void on all four sides, so its rim is a hole
+        tx, ty = out["table"][0]
+        assert a[ty*16, tx*16, 3] == 0
+
+    def test_the_default_stays_opaque_because_the_wall_fill_is_behind_it(self):
+        """Settled by a screenshot of the running game, not by the sheet: with a
+        wall FILL behind the floor layer the band is the wall face, and carving
+        it punches through to the clear colour — a light seam traced around
+        every room."""
+        import numpy as np
+        a = np.asarray(self._norm()["image"])
+        assert (a[..., 3] == 255).all(), "the default must stay opaque"
+
+
+class TestColliderIsNotTheArtLip:
+    """These were one constant. Reducing the drawn lip to 0.1 — correct, because
+    the wall layer draws the wall — would have shrunk every collider to three
+    pixels, and the player would walk most of a tile into stone."""
+
+    def test_the_collider_does_not_follow_edge_inset(self):
+        assert tilemask.COLLIDER_INSET > tilemask.EDGE_INSET
+        [band] = tilemask.collision_polygons([N | E | S],
+                                             tile_size=(32, 32))[N | E | S]
+        width = max(p[0] for p in band) - min(p[0] for p in band)
+        assert width == round(32 * tilemask.COLLIDER_INSET)
+
+    def test_a_wall_layer_asks_for_the_whole_tile(self):
+        polys = tilemask.collision_polygons([N | E | S | W, 0],
+                                            tile_size=(32, 32), full=True)
+        for mask, got in polys.items():
+            assert len(got) == 1, mask
+            assert got[0] == [(-16.0, -16.0), (16.0, -16.0),
+                              (16.0, 16.0), (-16.0, 16.0)], mask
+
+
+class TestDiagonalsAreWhySixteenIsNotEnough:
+    """The defect: the shadow band along a wall BREAKS at every step in a room's
+    outline. A 4-bit mask cannot say "floor north and east, void at the
+    north-east corner", so there is no tile to draw there and the boundary has a
+    notch. The corner is a nibble out of the tile — pure geometry — so all 47
+    can be built from a 16-tile generation rather than asking a model for
+    corners it draws badly."""
+
+    def _built(self, masks):
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (16 * 3, 16), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rectangle([0, 0, 15, 15], fill=GREY)
+        d.rectangle([16, 0, 31, 15], fill=GREY)
+        d.rectangle([16, 0, 18, 15], fill=GREEN)
+        d.rectangle([32, 0, 47, 15], fill=GREY)
+        d.rectangle([32, 0, 43, 15], fill=GREEN)
+        got = tilemask.detect(img, tile_size=(16, 16), bits=4)
+        colours = [got["terrains"]["a"]["colour"], got["terrains"]["b"]["colour"]]
+        floor = max(got["terrains"].values(), key=lambda t: t["colour"][0])
+        return tilemask.normalise_edges(img, dict(floor["table"]), masks,
+                                        tile_size=(16, 16), colours=colours,
+                                        clear=True)
+
+    def test_all_forty_seven_masks_come_out(self):
+        from bgate_core import autotile
+        masks = autotile.blob47_masks()
+        out = self._built(masks)
+        assert out["ok"] is True
+        assert len(out["table"]) == 47
+        assert out["image"].size[0] // 16 == 8, "blob47 packs eight wide"
+
+    def test_a_missing_corner_bit_carves_that_corner(self):
+        import numpy as np
+        from bgate_core.autotile import E, N, NE, S, W
+        both = N | E | S | W
+        out = self._built([both | NE, both])        # with the corner, without
+        a = np.asarray(out["image"])
+        tx, ty = out["table"][both]                 # NE bit clear -> nibble
+        assert a[ty*16, tx*16 + 15, 3] == 0, "the north-east corner is void"
+        tx, ty = out["table"][both | NE]            # NE bit set -> unbroken
+        assert a[ty*16, tx*16 + 15, 3] == 255
+
+    def test_a_four_bit_set_is_not_notched_at_its_corners(self):
+        """The bug this inference exists for: in a 4-bit set the corner bits are
+        absent, not clear, so "the NE bit is unset" must not carve — it notched
+        all four corners out of every tile, the fully open one included."""
+        import numpy as np
+        from bgate_core.autotile import E, N, S, W
+        out = self._built(list(range(16)))
+        a = np.asarray(out["image"])
+        tx, ty = out["table"][N | E | S | W]
+        assert (a[ty*16:(ty+1)*16, tx*16:(tx+1)*16, 3] == 255).all()
+
+    def test_a_corner_bit_is_ignored_when_its_sides_are_not_floor(self):
+        """canonical8's rule, and the tile has to agree with it: a north-east
+        corner only describes a shape when north AND east are both filled."""
+        import numpy as np
+        from bgate_core.autotile import E, N, NE, canonical8
+        assert canonical8(NE) == 0
+        out = self._built([N | NE])                 # east is void anyway
+        a = np.asarray(out["image"])
+        tx, ty = out["table"][N | NE]
+        assert (a[ty*16:(ty+1)*16, tx*16 + 15, 3] == 0).all(), \
+            "the whole east band is void, corner or not"
+        assert E  # keeps the import honest

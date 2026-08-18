@@ -188,8 +188,20 @@ def test_layers_split_floor_and_wall_onto_their_own_tilemaps():
                           wall=autotile.Terrain.blob47(1))
     assert [ly["name"] for ly in out] == ["Floor", "Walls"]
     assert len(out[0]["cells"]) == len(level["floor"])
-    assert len(out[1]["cells"]) == len(level["walls"])
+    # walls FILL the rock by default; this test used to pin the one-cell ring,
+    # which is what left the rest of the map empty behind every wall
+    assert len(out[1]["cells"]) == len(level["solid"])
     assert out[1]["unmapped"] == {}
+
+
+def test_a_wall_ring_is_still_available_for_open_terrain():
+    """A ring is right when the level is not carved out of rock — an outdoor
+    map wants a wall edge, not a solid fill over everything that is not path."""
+    level = levelgen.plan(40, 32, seed=5)
+    out = levelgen.layers(level, floor=autotile.Terrain.solid(0, (0, 0)),
+                          wall=autotile.Terrain.blob47(1), wall_fill=False)
+    assert len(out[1]["cells"]) == len(level["walls"])
+    assert len(level["solid"]) > len(level["walls"])
 
 
 def test_every_layer_encodes_without_a_coordinate_collision():

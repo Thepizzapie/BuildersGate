@@ -275,7 +275,18 @@ def is_decal_kind(task_kind: str) -> bool:
     return str(task_kind or "").strip().lower() in DECAL_KINDS
 
 
+#: Texture kinds that must STILL forbid text. The no-text ban is dropped for
+#: textures because a material can legitimately carry a logo or stencilled
+#: lettering — but a terrain tile cannot: letters in a dungeon floor repeat
+#: across the whole level, and autotiling scatters them at every rotation. So
+#: "tile" takes the texture treatment (flat albedo, seamless, square) and keeps
+#: the ban.
+TEXTURE_KINDS_KEEPING_NO_TEXT = frozenset({"tile"})
+
+
 def _drops_no_text(kind: str) -> bool:
+    if kind in TEXTURE_KINDS_KEEPING_NO_TEXT:
+        return False
     return kind in TEXTURE_KINDS or kind in DECAL_KINDS
 
 

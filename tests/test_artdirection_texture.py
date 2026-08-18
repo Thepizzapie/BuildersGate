@@ -83,10 +83,17 @@ class TestOrdinary2DIsUntouched:
         assert ad.clause(brief) == CHARACTER_CLAUSE_BEFORE
 
     @pytest.mark.parametrize("kind", ["anchor", "sprite", "sheet", "portrait",
-                                      "prop", "tile", "vfx", "ui", "icon",
+                                      "prop", "vfx", "ui", "icon",
                                       "item", "gear", "background"])
     def test_no_existing_kind_grew_a_form_clause(self, kind):
         assert ad.form_clause(kind) == ""
+
+    def test_tile_is_a_texture_kind_now_and_that_was_the_point(self):
+        """"tile" was missing from TEXTURE_KINDS, so `tileable=True` did nothing
+        for the one kind actually named "tile" — this test used to pin that gap
+        as the contract. A tile IS a flat albedo map and wants the clause."""
+        assert ad.form_clause("tile") != ""
+        assert "TEXTURE MAP" in ad.form_clause("tile")
 
     @pytest.mark.parametrize("kind", ["anchor", "sprite", "sheet", "portrait",
                                       "prop", "tile", "vfx", "ui", "background"])
@@ -101,9 +108,22 @@ class TestOrdinary2DIsUntouched:
         readable outline. Every kind that had it keeps it."""
         assert any("silhouette" in d for d in ad.directives_for(kind))
 
-    @pytest.mark.parametrize("kind", ["anchor", "sprite", "prop", "tile", ""])
+    @pytest.mark.parametrize("kind", ["anchor", "sprite", "prop", ""])
     def test_no_existing_kind_is_forced_square(self, kind):
         assert imagegen.size_for("1536x1024", task_kind=kind) == "1536x1024"
+
+    def test_a_tile_sheet_is_squared_now_and_that_is_correct(self):
+        """"tile" became a texture kind — an atlas of NxN square cells wants a
+        square canvas, and a wide one wastes the request. This test used to pin
+        the opposite as contract."""
+        assert imagegen.size_for("1536x1024", task_kind="tile") == "1024x1024"
+
+    def test_a_tile_still_forbids_text_even_though_a_texture_does_not(self, brief):
+        """A material may carry a stencilled logo. A terrain tile may not: the
+        letters repeat across the whole level and autotiling scatters them at
+        every rotation."""
+        assert NO_TEXT in ad.clause(brief, task_kind="tile").lower()
+        assert NO_TEXT not in ad.clause(brief, task_kind="texture").lower()
 
 
 # ---------------------------------------------------------------------------

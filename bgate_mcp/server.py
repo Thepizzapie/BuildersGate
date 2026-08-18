@@ -65,6 +65,9 @@ from bgate_core import aegis as _aegis
 from bgate_core import assets as _assets
 from bgate_core import autotile as _autotile
 from bgate_core import levelgen as _levelgen
+from bgate_core import gameview as _gameview
+from bgate_core import props as _props
+from bgate_core import propsheet as _propsheet
 from bgate_core import providers as _providers
 from bgate_core import scenewire as _scenewire
 from bgate_core import tilemap as _tilemap
@@ -2949,7 +2952,7 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
 
 @_tool
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
-                     bits: int = 4, terrain: str = "light",
+                     bits: int = 8, terrain: str = "light",
                      wall_prompt: str = "",
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False, fill: bool = True,
@@ -2969,7 +2972,15 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     masks are filled for free by mirroring tiles that exist, the seams are
     checked, and a Godot TileSet.tres is written.
 
-    `bits`: 4 for the 16-mask side set (what most 2D games use), 8 for blob47.
+    `bits`: 8 for blob47 (the default), 4 for the 16-mask side set.
+
+    EIGHT IS THE DEFAULT BECAUSE FOUR HAS A VISIBLE DEFECT. A 4-bit mask cannot
+    say "floor to the north and east, void at the north-east corner", so at every
+    step in a room's outline there is no tile to draw and the shadow band along
+    the wall breaks — a row of notches down the level that reads as broken art.
+    The corner tiles are a nibble out of the tile and pure geometry, so
+    `normalise_edges` builds all 47 from the same generation a 16-mask set needs:
+    eight bits costs no extra image call and no extra money.
     `terrain`: which detected terrain is the FLOOR — "light" (default) or
     "dark". Stable across generations, unlike the raw "a"/"b" labels, which
     come from a k-means split and swap between runs: asking for "a" once
@@ -6305,11 +6316,298 @@ def _res_pair(godot_project: str, path: str, suffix: str) -> tuple[_Path, str]:
     return disk, f"res://{rel}"
 
 
+
+
+#: What each prop IS, in words a generator can draw. The CAMERA is not here —
+#: it comes from the project's view, per mount, so a prop set generated for a
+#: top-down game and one generated for a platformer differ by declaration
+#: rather than by whoever wrote the prompt that day.
+_PROP_SUBJECTS = {
+    "torch": "an iron wall torch bracket holding a burning flame, angled to "
+             "the RIGHT, the bracket ALONE with no wall behind it",
+    "sconce": "a stone wall sconce holding a burning flame, the sconce ALONE "
+              "with no wall behind it",
+    "banner": "a long narrow cloth banner hanging down, the banner ALONE",
+    "shelf": "a wooden wall shelf holding jars and clutter, the shelf ALONE",
+    "cobweb": "a dusty grey cobweb",
+    "barrel": "one wooden barrel with iron bands, standing upright so its "
+              "circular lid faces the camera",
+    "crate": "one wooden crate, standing so its square lid faces the camera",
+    "rubble": "a small pile of broken stone rubble lying on the ground",
+    "bones": "a scatter of old bones and a skull lying on the ground",
+    "chest": "a closed wooden treasure chest with iron fittings, its lid "
+             "facing the camera",
+    "pillar": "one round carved stone pillar, its circular capital facing the "
+              "camera",
+    "crack": "a thin jagged black crack splitting stone, just the fracture "
+             "line, thin and irregular",
+    "stain": "a dark blackish-brown stain soaked into stone, muted and almost "
+             "black, NOT orange and NOT red",
+    "drain": "a round iron grate drain, its circular grate facing the camera",
+    "altar": "a low rectangular carved stone altar slab, wide and low, its "
+             "flat top facing the camera, NOT a cube",
+    "well": "a low circular ring of stacked stone blocks forming a round "
+            "opening",
+    "statue": "a carved stone statue standing on a plinth",
+    "door": "a heavy closed wooden door with iron bands in a stone frame",
+    "arch": "an empty stone archway, the opening a flat dark shape",
+    "stairs_up": "a short flight of stone steps rising, the treads reading as "
+                 "stacked horizontal bars",
+    "stairs_down": "a dark square opening in the ground with stone steps "
+                   "descending into it",
+}
+
+_PROP_LOOK = (
+    "16-bit SNES-era pixel art game sprite, crisp hard pixel edges, no "
+    "anti-aliasing, flat solid pure black background, the object centred and "
+    "filling the frame, no ground shadow, no scene, no floor tile, no border, "
+    "no text, no logo"
+)
+
+
+@_tool
+def prop_generate(name: str, style: str = "", types: str = "",
+                  tile_px: int = 32, godot_project: str = "",
+                  res_dir: str = "assets/tiles", install: bool = False,
+                  max_cost_usd: float = 2.0) -> dict:
+    """GENERATE THE PROPS FOR A LEVEL - art, cleanup, atlas and manifest.
+
+    ONE CALL. You do not pack an atlas, you do not work out texture origins,
+    you do not build an atlas string, and you do not have to remember which
+    cleanup steps exist. Pass a name and the types you want; hand the manifest
+    this returns to `level_generate(prop_manifest=...)` and the props are in
+    the level.
+
+    THAT IS WHY THIS TOOL EXISTS. The first prop set was made by a hand-written
+    script, and the script silently dropped the palette conform and the
+    defringe: 32-pixel sprites carrying 600 colours, two thirds of them off the
+    pinned palette, with feathered edges. Nobody chose that. There was no
+    pipeline for the decision to live in, the way `animation_generate` is the
+    pipeline for a character cycle - so the steps were skipped by omission.
+
+    THE CHAIN, all of it mandatory:
+      * the project's VIEW decides the camera per prop mount (`game_view_get`)
+      * `props.art_spec` decides the canvas, the ground anchor and how many
+        DRAWINGS each type needs - a wall mount needs one per facing, because
+        the engine mirrors a sprite but NOT its texture_origin
+      * kie draws the sprite. RD is for motion and never for originating a look
+      * the background is keyed client-side, the sprite is stepped down in
+        halves to the contract box, its alpha is hardened to binary, and it is
+        conformed to the pinned palette
+      * the atlas packs on 2x2 slots so no spanning tile can overlap another,
+        which Godot answers by silently dropping the tile
+      * a MANIFEST is written beside the atlas with every coordinate, size,
+        facing and animation
+
+    `types` is a comma list, "" for the default set. `install=False` leaves
+    everything in `.bgate_out/props/` for review.
+    """
+    try:
+        from PIL import Image
+
+        from bgate_adapters import kie as _kie
+        from bgate_adapters import retrodiffusion as _rd
+
+        root = _Path(_root())
+        view = _gameview.load(root)
+        want = tuple(types.replace(",", " ").split()) or _props.DEFAULT_TYPES
+        for n in want:
+            _props.prop_type(n)
+            if not _gameview.supports(view, _props.PROP_TYPES[n]["mount"]):
+                return {"ok": False, "error": (
+                    f"{n} mounts on {_props.PROP_TYPES[n]['mount']!r}, which "
+                    f"means nothing in a {view} level")}
+
+        palette = _artdirection.palette_pinned(str(root))
+        if not palette:
+            return {"ok": False, "error": (
+                "no palette is pinned - call palette_pin first. A prop that "
+                "skips the conform carries hundreds of off-palette colours "
+                "and will not match the tileset it stands on.")}
+
+        specs = [_props.art_spec(n, tile_px=tile_px, view=view) for n in want]
+        drawings = sum(max(1, len(s["facings"])) for s in specs)
+        estimate = drawings * 0.02
+        if estimate > max_cost_usd:
+            return {"ok": False, "error": (
+                f"{drawings} drawings is about ${estimate:.2f}, over the "
+                f"${max_cost_usd:.2f} ceiling - raise max_cost_usd or ask for "
+                "fewer types")}
+
+        out_dir = root / ".bgate_out" / "props" / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        images: dict = {}
+        reports: dict = {}
+        spent = 0.0
+        for spec in specs:
+            subject = _PROP_SUBJECTS.get(spec["type"], spec["type"])
+            prompt = f"{subject}. {spec['camera']} {style or _PROP_LOOK}"
+            raw = out_dir / f"{spec['type']}_raw.png"
+            size = ("1024x1024" if spec["cells"][0] == spec["cells"][1]
+                    else "1024x2048" if spec["cells"][1] > spec["cells"][0]
+                    else "2048x1024")
+            got = _kie.generate_image(prompt, str(raw), model="nano-banana-2",
+                                      size=size, task_kind="prop",
+                                      root=str(root))
+            if not got.get("ok"):
+                return {"ok": False, "error": (
+                    f"{spec['type']} failed to generate: "
+                    f"{str(got.get('error'))[:200]}")}
+            spent += float(got.get("estimated_usd") or 0.02)
+            keyed = _rd.key_background(Image.open(raw))
+            img = keyed.get("image") if isinstance(keyed, dict) else keyed
+            fitted, rep = _propsheet.conform(img, size=spec["cell_px"],
+                                             art_size=spec["art_px"],
+                                             palette=palette)
+            dest = out_dir / f"{spec['type']}.png"
+            fitted.save(dest)
+            _spritekit.lock_palette(dest, palette, out_path=dest)
+            done = Image.open(dest)
+            images[spec["type"]] = done
+            reports[spec["type"]] = {**rep,
+                                     **_propsheet.measure(done, palette)}
+
+        packed = _propsheet.pack(images, want, tile_px=tile_px, view=view)
+        atlas_png = out_dir / f"{name}_props.png"
+        _propsheet.write(packed["image"], atlas_png)
+
+        # mount_origins wants a plan; one stub prop per drawing is enough to
+        # ask "what offset does this facing need", and it keeps the origin
+        # rule in ONE place instead of restating it here
+        stub = {"props": [{"type": n, "mount": _props.PROP_TYPES[n]["mount"],
+                           "faces": f, "x": 0, "y": 0}
+                          for n, f in _propsheet.slots_for(want, view=view)]}
+        origins = _props.mount_origins(stub, packed["atlas"],
+                                       tile_size=(tile_px, tile_px))
+        manifest = {
+            "name": name, "view": view, "tile_px": tile_px,
+            "texture": f"res://{res_dir}/{name}_props.png",
+            "types": list(want),
+            "atlas": {k: ({f: list(c) for f, c in v.items()}
+                          if isinstance(v, dict) else list(v))
+                      for k, v in packed["atlas"].items()},
+            "tiles": [list(c) for c in packed["tiles"]],
+            "sizes": {f"{k[0]},{k[1]}": list(v)
+                      for k, v in packed["sizes"].items()},
+            "origins": {f"{k[0]},{k[1]}": list(v) for k, v in origins.items()},
+            "animation": {f"{k[0]},{k[1]}": v for k, v in
+                          _propsheet.animation_frames(want, packed["atlas"],
+                                                      view=view).items()},
+            "spec": packed["spec"],
+        }
+        man_path = out_dir / f"{name}_props.json"
+        man_path.write_text(_json.dumps(manifest, indent=1), encoding="utf-8")
+
+        installed = None
+        if install and godot_project:
+            import shutil as _shutil
+
+            dest_dir = _Path(godot_project) / res_dir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            _shutil.copy(atlas_png, dest_dir / atlas_png.name)
+            _shutil.copy(man_path, dest_dir / man_path.name)
+            # a freshly copied PNG does not exist to Godot until --import runs
+            _godot.check_project(str(godot_project))
+            installed = f"res://{res_dir}/{man_path.name}"
+
+        dirty = sorted(k for k, v in reports.items()
+                       if v.get("off_palette", 0) > _propsheet.OFF_PALETTE_MAX
+                       or v.get("feathered", 0))
+        # a prop touching its own border is oversized or brought a background
+        bordered = sorted(k for k, v in reports.items()
+                          if v.get("border_fill", 0) > _propsheet.BORDER_MAX
+                          and _props.prop_type(k).get("footprint", 0.75) < 1.0)
+        _log("props", f"generated {len(want)} prop types for {name} ({view})",
+             ref=name)
+        return {"ok": True, "name": name, "view": view, "types": list(want),
+                "drawings": packed["slots"], "atlas": str(atlas_png),
+                "manifest": str(man_path),
+                "prop_manifest": installed or str(man_path),
+                "installed": installed, "spent_usd": round(spent, 3),
+                "reports": reports,
+                "findings": {**({"unconformed": dirty} if dirty else {}),
+                             **({"touches_border": bordered} if bordered
+                                else {})},
+                "next": ("level_generate(prop_manifest=<manifest>) - the atlas "
+                         "coordinates, sizes, origins and animation all come "
+                         "from that file; you do not pass them")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def game_view_get() -> dict:
+    """WHICH 2D VIEW THIS GAME IS, and everything that follows from it.
+
+    Read this BEFORE generating any level art or any prop. The view is not a
+    style preference, it decides what "correct" means: a barrel showing its lid
+    and a sliver of side is right for a top-down game and wrong for a
+    platformer, and a barrel showing two side faces is right for an isometric
+    game and wrong for both of the others.
+
+    It was not declared anywhere until now, and the cost was measured: a prop
+    batch prompted with "a high 3/4 top-down game view" came back ISOMETRIC —
+    to an image model "three-quarter" means the standard product render — and
+    every prop showed two side faces, to stand on a floor tileset drawn flat
+    top-down. The prompt was the proximate cause. The real one was that the
+    view lived in a prompt instead of in the project, so each agent re-derived
+    it and drifted.
+
+    The result carries the camera clause per prop mount (`cameras`), the tile
+    geometry, which prop mounts exist at all in this view, and how the level
+    generator checks playability. USE `cameras`, do not paraphrase it: the
+    clauses forbid the wrong reading BY NAME, because a clause that only says
+    what it wants inherits the model's default for everything it forgot to
+    forbid.
+    """
+    try:
+        root = _root()
+        view = _gameview.load(root)
+        out = _gameview.describe(view)
+        out["cameras"] = {m: _gameview.camera_clause(view, m)
+                          for m in _gameview.mounts(view)}
+        out["views_available"] = list(_gameview.VIEWS)
+        out["ok"] = True
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def game_view_set(view: str) -> dict:
+    """Declare which 2D view this game is: top_down, side_scroller, isometric.
+
+    DIRECTOR CALL, and it should be made before any level or prop art exists —
+    changing it later invalidates every prop that was drawn to the old camera,
+    because a sprite cannot be re-projected after the fact.
+
+    Accepts the obvious aliases (platformer, iso, top-down) and refuses
+    anything else by name rather than guessing.
+    """
+    try:
+        root = _root()
+        spec = _gameview.save(root, view)
+        _log("view", f"game view declared: {spec['view']}", ref=spec["view"])
+        out = _gameview.describe(spec["view"])
+        out["ok"] = True
+        out["warning"] = ("Art already drawn to a different camera cannot be "
+                          "re-projected — it has to be regenerated.")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
 @_tool
 def level_plan(width: int = 48, height: int = 32, seed: int = 0,
                min_leaf: int = 10, min_room: int = 4, margin: int = 1,
-               max_depth: int = 5, corridor_width: int = 1) -> dict:
+               max_depth: int = 5, corridor_width: int = 2,
+               room_fill: float = 0.8) -> dict:
     """Lay out a room-and-corridor level and show it, WITHOUT touching a scene.
+
+    `room_fill` is the share of its BSP cell a room must take, and it is the
+    difference between a dungeon and a set of thin rooms with slabs between
+    them: at 0 a room is a uniform-random slice of its cell, so the rest of the
+    cell stays solid. `corridor_width` defaults to 2 because a one-cell passage
+    loses most of its width to the wall the tile art draws inside its own edge.
 
     BSP: cut the map in two until a piece holds one room, put a room in each
     piece, then join the two halves of every cut on the way back up. That join
@@ -6335,7 +6633,8 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
         level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
                                min_room=min_room, margin=margin,
                                max_depth=max_depth,
-                               corridor_width=corridor_width)
+                               corridor_width=corridor_width,
+                               room_fill=room_fill)
         return {"ok": True, "seed": seed, "width": width, "height": height,
                 "rooms": level["rooms"], "room_count": len(level["rooms"]),
                 "corridor_count": len(level["corridors"]),
@@ -6345,6 +6644,109 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
                 "exit": level["exit"], "ascii": _levelgen.ascii_map(level)}
     except Exception as exc:
         return _fail(exc)
+
+
+def _read_prop_manifest(root, ref: str) -> dict:
+    """A prop manifest written by `prop_generate`, by res:// path or disk path.
+
+    Refuses a manifest whose view disagrees with the project's, because that is
+    art drawn to a camera this game does not use — every sprite in it shows the
+    wrong faces, and no placement rule can correct a projection after the fact.
+    """
+    from bgate_core import gameview as _gv
+
+    path = _Path(str(ref).replace("res://", "").strip()) if str(ref).startswith(
+        "res://") else _Path(str(ref))
+    if not path.is_absolute():
+        for base in (_Path(root), _Path(root) / ".bgate_out" / "props"):
+            if (base / path).exists():
+                path = base / path
+                break
+    if not path.exists():
+        raise ValueError(f"no prop manifest at {ref!r} — prop_generate writes "
+                         "one beside the atlas it packs")
+    man = _json.loads(path.read_text(encoding="utf-8"))
+    want = _gv.load(root)
+    if man.get("view") and man["view"] != want:
+        raise ValueError(
+            f"that prop sheet was drawn for a {man['view']} game and this "
+            f"project is {want} — the sprites show the wrong faces, and a "
+            "projection cannot be corrected after the fact. Regenerate it.")
+    man["atlas"] = {k: ({f: tuple(c) for f, c in v.items()}
+                        if isinstance(v, dict) else tuple(v))
+                    for k, v in (man.get("atlas") or {}).items()}
+    return man
+
+
+#: Where each prop TYPE sits on its atlas when the caller says nothing — one
+#: row, in `props.DEFAULT_TYPES` order, because that is how a generated prop
+#: sheet is packed and a default nobody has to think about is the point.
+_PROP_ATLAS_DEFAULT = {"torch": (0, 0), "barrel": (1, 0),
+                       "rubble": (2, 0), "altar": (3, 0)}
+
+
+def _prop_atlas(spec: str, source: int) -> dict:
+    """"torch=0,0 barrel=1,0;2,0" into the map `props.cells` takes.
+
+    Keyed on the prop TYPE, not its role: a torch and a banner are both wall
+    mounts, with different sprites and different mounting rules, and a single
+    entry for "wall" cannot express that.
+
+    Refuses a malformed spec rather than falling back to the default, because a
+    typo would otherwise put every prop on tile (0, 0) and the level would look
+    dressed with the wrong sprite everywhere.
+    """
+    if not spec.strip():
+        return dict(_PROP_ATLAS_DEFAULT)
+    out: dict = {}
+    for chunk in spec.split():
+        if "=" not in chunk:
+            raise ValueError(
+                f"prop_atlas entry {chunk!r} needs type=x,y — for example "
+                '"torch=0,0 barrel=1,0;2,0"')
+        kind, spots = chunk.split("=", 1)
+        kind, _, facing = kind.strip().partition(".")
+        if kind not in _props.PROP_TYPES:
+            raise ValueError(f"unknown prop type {kind!r}; "
+                             f"declared types are {sorted(_props.PROP_TYPES)}")
+        if facing and facing not in _props.MOUNTABLE_SIDES:
+            raise ValueError(
+                f"{kind}.{facing} is not a mountable facing; a wall's inner "
+                f"face points one of {list(_props.MOUNTABLE_SIDES)} "
+                "— \"n\" is the wall you see the back of")
+        coords = []
+        for one in spots.split(";"):
+            parts = one.split(",")
+            if len(parts) != 2:
+                raise ValueError(
+                    f"prop_atlas {kind}={one!r} is not an x,y atlas coordinate")
+            try:
+                coords.append((int(parts[0]), int(parts[1])))
+            except ValueError:
+                raise ValueError(
+                    f"prop_atlas {kind}={one!r} has a non-integer coordinate"
+                    ) from None
+        # "torch.e=0,0 torch.w=1,0" — ONE TILE PER FACING, which is what a
+        # seated wall mount needs: Godot's flip bit mirrors the sprite but NOT
+        # its texture_origin (measured in the engine), so a shared tile would
+        # seat the prop correctly on one wall and wrongly on the other.
+        if facing:
+            if not isinstance(out.get(kind), dict):
+                if kind in out:
+                    raise ValueError(
+                        f"prop_atlas gives {kind} both a plain entry and a "
+                        f"per-facing one ({kind}.{facing}) — pick one")
+                out[kind] = {}
+            out[kind][facing] = coords[0] if len(coords) == 1 else coords
+        else:
+            if isinstance(out.get(kind), dict):
+                raise ValueError(
+                    f"prop_atlas gives {kind} both a per-facing entry and a "
+                    "plain one — pick one")
+            out[kind] = coords if len(coords) > 1 else coords[0]
+    if not out:
+        raise ValueError("prop_atlas named no types")
+    return out
 
 
 @_tool
@@ -6358,9 +6760,15 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                    wall_atlas_x: int = 0, wall_atlas_y: int = 0,
                    wall_columns: int = 8,
                    min_leaf: int = 10, min_room: int = 4, margin: int = 1,
-                   max_depth: int = 5, corridor_width: int = 1,
+                   max_depth: int = 5, corridor_width: int = 2,
+                   room_fill: float = 0.8,
+                   props: bool = False, prop_manifest: str = "",
+                   prop_source: int = 0,
+                   prop_density: float = 0.1, prop_atlas: str = "",
+                   prop_types: str = "",
                    parent: str = ".", floor_name: str = "Floor",
-                   wall_name: str = "Walls", create: bool = False,
+                   wall_name: str = "Walls", prop_name: str = "Props",
+                   create: bool = False,
                    dry_run: bool = False) -> dict:
     """Generate a level and write it into a scene as TileMapLayer nodes.
 
@@ -6378,6 +6786,25 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                wall one cell thick.
       solid    one tile everywhere. No autotiling.
       none     no wall layer at all; floor only.
+
+    `props=True` adds a third layer of DRESSING — wall torches, clutter against
+    the architecture, cover in the rooms you walk through, a feature in the dead
+    ends. Placement is by what the room is for (see `bgate_core.props`) and every
+    solid prop is refused if it would break the level into two regions, checked
+    by flood filling rather than by reasoning about it. `prop_types` names the
+    sprites you actually have — "torch,barrel,rubble,altar" — and `prop_atlas`
+    says where each lives, "torch=0,0 barrel=1,0;2,0".
+
+    EACH TYPE DECLARES ITS OWN CONSTRAINTS and the placer obeys them instead of
+    assuming a prop goes anywhere. A wall mount occupies the WALL cell, so it is
+    attached rather than floating in the room beside it. A side-view or angled
+    sprite declares which walls it can be drawn on — `torch` is ("e", "w"), so it
+    never lands on a horizontal wall where a three-quarter view reads as pasted
+    on. Nothing mounts on the wall south of a room, whose inner face points away
+    from the camera, and nothing mounts on a corner, where the face it needs is
+    interrupted. If your north walls come back dark that is `no_side` in the
+    report, and the fix is a front-facing type such as `sconce` rather than a
+    wider tolerance. Godot's flip bit mirrors a sprite whose type allows it.
 
     THAT ORDER IS A CONVENTION, NOT A STANDARD. A sheet authored in Tilesetter
     or bought from an asset pack has its own order, and a wrong order draws a
@@ -6425,7 +6852,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
                                min_room=min_room, margin=margin,
                                max_depth=max_depth,
-                               corridor_width=corridor_width)
+                               corridor_width=corridor_width,
+                               room_fill=room_fill)
         layers = _levelgen.layers(
             level,
             # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
@@ -6440,6 +6868,55 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                   _terrain(wall_layout, wall_source, wall_atlas_x, wall_atlas_y,
                            wall_columns, wall_name)),
             floor_name=floor_name, wall_name=wall_name)
+
+        prop_report: dict = {}
+        if props:
+            want = tuple(prop_types.replace(",", " ").split()) or None
+            # THE MANIFEST IS THE EASY PATH and the one to use: prop_generate
+            # writes it, and it already knows every atlas coordinate, span,
+            # texture origin and animation. The loose prop_atlas/prop_types
+            # arguments stay for a hand-built sheet, but nobody should be
+            # typing atlas coordinates into a tool call to dress a level.
+            if prop_manifest:
+                man = _read_prop_manifest(_root(), prop_manifest)
+                atlas = man["atlas"]
+                if not want:
+                    want = tuple(man["types"])
+            else:
+                atlas = _prop_atlas(prop_atlas, prop_source)
+            walls = _levelgen.wall_ring({tuple(c) for c in level["floor"]})
+            plan_props = _props.plan(level, seed=seed, density=prop_density,
+                                     walls=walls, types=want,
+                                     view=_gameview.load(_root()))
+            # ONE LAYER PER DRAW LEVEL. A TileMapLayer holds a single tile
+            # per coordinate, so a crack in the floor and the barrel standing
+            # on it can only coexist as two layers — and the decals have to be
+            # under, which is what the LAYERS order is.
+            built = {"types": {}, "mirrored": 0, "cells": []}
+            for lname in _props.LAYERS:
+                part = _props.cells(plan_props, atlas, source=prop_source,
+                                    layer=lname)
+                if not part["cells"]:
+                    continue
+                node = prop_name if lname == "props" else f"{prop_name}{lname.title()}"
+                layers.append({"name": node, "terrain": node,
+                               "cells": part["cells"], "unmapped": {}})
+                built["cells"] += part["cells"]
+                built["mirrored"] += part["mirrored"]
+                for k, v in part["types"].items():
+                    built["types"][k] = built["types"].get(k, 0) + v
+            prop_report = {"placed": built["types"],
+                           "mirrored": built["mirrored"],
+                           "purposes": plan_props["purposes"],
+                           "layers": plan_props["layers"],
+                           "view": plan_props["view"],
+                           "skipped": plan_props["skipped"],
+                           "checks": plan_props["checks"]}
+            if not plan_props["checks"]["still_connected"]:
+                raise ValueError(
+                    "the props broke the level into more than one region — "
+                    "this should be impossible, every solid prop is gated on a "
+                    "flood fill, so treat it as a bug and not as a dial")
 
         # THE CHECK THAT MATTERS. The built-in layouts are complete by
         # construction - every mask has an entry - so "unmapped" can only ever
@@ -6466,7 +6943,15 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                   "says nothing - add the tiles to the atlas, move the layout "
                   "with *_atlas_x/_atlas_y, or change wall_layout.")
 
-        wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent)
+        # THE LAYERS THIS GENERATOR OWNS, so a run that produces fewer than the
+        # last one removes what it no longer makes. Turning props off left the
+        # old prop and decal layers in the scene, still drawing, and the scene
+        # loads perfectly — the level just quietly keeps dressing nobody asked
+        # for.
+        owns = [floor_name, wall_name, prop_name,
+                f"{prop_name}{'decals'.title()}"]
+        wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent,
+                                        owns=owns)
         if dry_run:
             written = {"written": False, "backup": None}
         elif fresh:
@@ -6493,6 +6978,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "dry_run": bool(dry_run),
             "ascii": _levelgen.ascii_map(level),
         }
+        if props:
+            result["props"] = prop_report
         if not dry_run:
             _log("level", f"generated {width}x{height} level seed {seed} "
                           f"({len(level['rooms'])} rooms) into {scene_res}",

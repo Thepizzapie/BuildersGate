@@ -177,7 +177,8 @@ CRAFTS: dict[str, tuple[str, ...]] = {
     "image": ("image_", "item_", "cutout_", "vfx_animate",
               "animation_curves", "art_tournament_standings",
               "aseprite_", "palette_pin",
-              "animation_generate", "sprite_contract_", "tileset_"),
+              "animation_generate", "sprite_contract_", "tileset_",
+              "game_view_", "prop_generate"),
     "three_d": ("blender_", "character_generate", "godot_retarget_check"),
     "music": ("kie_music_", "music_"),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),
@@ -186,7 +187,10 @@ CRAFTS: dict[str, tuple[str, ...]] = {
     "playtest": ("playtest_",),
     "dialogue": ("dialogue_",),
     "quest": ("quest_",),
-    "level": ("level_",),
+    # game_view_ is READ-ONLY-ish shared ground: the level craft
+    # needs it to know what a correct prop even looks like, and the
+    # image craft needs it to generate one.
+    "level": ("level_", "game_view_"),
     "verdicts": ("art_qa_verdict", "art_tournament_verdict"),
     "brainstorm": ("brainstorm_",),
 }
@@ -220,11 +224,18 @@ def seat_tool_enabled(tool_name: str, seat: str) -> bool:
     held = SEAT_CRAFTS.get((seat or "").strip().lower())
     if held is None:
         return True
-    for craft, prefixes in CRAFTS.items():
-        for prefix in prefixes:
-            if tool_name.startswith(prefix):
-                return craft in held
-    return True
+    # A TOOL MAY BELONG TO SEVERAL CRAFTS, and it is enabled if the seat holds
+    # ANY of them. This used to return on the first craft whose prefix matched,
+    # so a shared tool resolved to whichever craft happened to be declared
+    # first in CRAFTS — `game_view_` is in both `image` and `level`, and
+    # gameplay (which holds `level`, not `image`) was refused it because
+    # `image` is written higher in the dict. Dict order is not a permission
+    # model.
+    owners = {craft for craft, prefixes in CRAFTS.items()
+              if any(tool_name.startswith(p) for p in prefixes)}
+    if not owners:
+        return True
+    return bool(owners & set(held))
 
 
 def pip_hint(for_modules) -> str:
