@@ -65,7 +65,8 @@ CAPABILITIES: dict[str, str] = {
 # configured" — which was the same question only for as long as every provider
 # generated art. The first one that does not (deepgram) would have turned that
 # row green for a project that cannot make a single image.
-ART_CAPABILITIES = frozenset({"image_2d", "model_3d", "audio", "video"})
+ART_CAPABILITIES = frozenset({"image_2d", "animation_2d", "model_3d",
+                              "audio", "video"})
 
 
 class ProviderError(ValueError):
@@ -107,6 +108,11 @@ def _probe_krea(root: Any = None) -> dict:
 def _probe_kie(root: Any = None) -> dict:
     from bgate_adapters import kie
     return dict(kie.available(root))
+
+
+def _probe_retrodiffusion(root: Any = None) -> dict:
+    from bgate_adapters import retrodiffusion
+    return dict(retrodiffusion.available(root))
 
 
 def _probe_deepgram(root: Any = None) -> dict:
@@ -200,6 +206,21 @@ PROVIDERS: tuple[Provider, ...] = (
              "BGATE_KIE_USD_PER_CREDIT to your account's rate for dollar "
              "ledger rows.",
         probe=_probe_kie,
+    ),
+    # After the general image providers because it is not one: RD generates
+    # ANIMATION (and pixel-art stills, unused here) — the capability nothing
+    # above it has. The sprite contract's animation_generate names it
+    # directly rather than walking the auto-select order.
+    Provider(
+        id="retrodiffusion",
+        label="Retro Diffusion",
+        env="RETRO_DIFFUSION_API_KEY",
+        powers=("animation_2d",),
+        key_url="https://www.retrodiffusion.ai/app/devtools",
+        help="Purpose-trained pixel animation: walk/idle/attack cycles FROM "
+             "one of your own character frames ($0.14/cycle), plus free "
+             "pixel-grid repair. The model that knows what a walk cycle is.",
+        probe=_probe_retrodiffusion,
     ),
     # LAST, AND NOT IN THE AUTO-SELECT ORDER AT ALL, because it competes with
     # nothing above it: it is the only entry here that generates no art, so

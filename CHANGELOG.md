@@ -11,6 +11,43 @@ repository at first publication. There is no earlier release history to record.
 
 ### Added
 
+- **Sprite contracts: declare the sheet, then generate to it.** Every game
+  needs a different sheet shape — E/W side-scroller, four-corner top-down,
+  eight-direction — and that shape lived nowhere the pipeline could read;
+  the proof of cost is a shipped game whose runtime hand-encodes all of it
+  (cell size, direction rows, per-character drawn sides, per-action
+  exceptions, the flip rule) because generation could not be trusted to
+  agree with itself. `sprite_contract_set(preset=...)` now declares it once
+  — presets `single` / `sidescroller` / `four_corner` / `four_dir` /
+  `eight_dir`, plus per-character and per-(character, action) overrides —
+  and generation, the check battery, and the emitters all read it. A
+  contract that would generate contradictions (a mirror of an undrawn side,
+  a direction nobody makes) is refused, never repaired.
+
+- **`animation_generate`: contract-driven character animation via Retro
+  Diffusion** (new provider, `RETRO_DIFFUSION_API_KEY`, ~$0.14 per
+  direction). For each DRAWN direction it slices a start frame from the
+  character's own existing sheet, sends it to the purpose-trained animation
+  model (the motion testbed's verdict: general image models make clean
+  frames and no gait; this model's training data is the gait), conforms to
+  the pinned palette, grades every strip, and emits the contract-shaped
+  sheet + .tres with animations named `walk_nw`-style. Mirrored facings are
+  reported for runtime flip_h, not duplicated as pixels. Acceptance:
+  hr_bard's complete two-row walk regenerated into the shipped 384x160
+  format from one call, both rows battery-clean, $0.28.
+
+- **The battery learned directions.** Facing votes run per animation group
+  (a back row voting against a front row flagged a correct sheet), a
+  declared direction turns the vote into a verdict (`wrong_direction` — the
+  reference project shipped ten of twenty facings backwards), north-ish
+  directions deliberately abstain (head_skew reads face detail and a back
+  view carries hair — measured false positive on the first contract run),
+  and `set_drift` compares palette and scale ACROSS sheets, the
+  "same character in every sheet" floor no per-strip check could see.
+  `artsheet.frame_count` reads contract grids (non-square cells went
+  silently unmeasured), and the no-loop rule matches base actions so
+  `ko_sw` cannot loop in exactly one facing.
+
 - **A project palette, pinned once and enforced everywhere.** Generated "pixel
   art" carries thousands of smeared colours per sheet and every sheet invents
   its own — measured at 7-10k unique colours on real shipped 384×160 sheets,

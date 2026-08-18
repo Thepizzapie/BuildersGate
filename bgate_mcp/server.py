@@ -3478,6 +3478,295 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
         return _fail(exc)
 
 
+@_tool
+def sprite_contract_get(character: str = "", action: str = "") -> dict:
+    """The project's SPRITE CONTRACT - the declared shape of every sheet.
+
+    View (side / top-down / isometric), direction set, which directions are
+    DRAWN vs mirrored at runtime, cell size, layout, frames per action, and
+    per-character overrides. Generation, checks and emitters all read this;
+    it is how a four-corner top-down game and an E/W side-scroller use the
+    same pipeline. With character/action, returns the fully resolved contract
+    for that piece of work (override ladder applied)."""
+    try:
+        root = _root()
+        from bgate_core import spritecontract as _sc
+        if character or action:
+            return {"ok": True, **_sc.contract_for(root, character, action)}
+        return {"ok": True, **_sc.load(root),
+                "presets": sorted(_sc.PRESETS)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def sprite_contract_set(preset: str = "", patch: Optional[dict] = None) -> dict:
+    """Declare or change the sprite contract. preset one of single /
+    sidescroller / four_corner / four_dir / eight_dir, then patch overrides
+    individual fields (cell, actions, characters, ...). A preset REPLACES the
+    shape wholesale - half of one preset merged into another is how
+    contradictions are born. Without preset, patch edits the stored contract.
+
+    This is the swappable-config lever: setting a different preset reshapes
+    what every future generation produces, what the battery expects, and how
+    sheets are laid out, with no other changes anywhere."""
+    try:
+        root = _root()
+        from bgate_core import spritecontract as _sc
+        if preset:
+            saved = _sc.apply_preset(root, preset, patch)
+        else:
+            current = _sc.load(root)
+            current.update(patch or {})
+            saved = _sc.save(root, current)
+        _log("art", f"sprite contract set: {saved['preset']} "
+                    f"({len(saved['directions'])} directions, "
+                    f"{saved['cell'][0]}x{saved['cell'][1]})")
+        return {"ok": True, **saved}
+    except Exception as exc:
+        return _fail(exc)
+
+
+#: Game-side action names -> RD's advanced-animation styles. Anything not
+#: here becomes custom_action with the game name as the motion prompt, which
+#: costs more ($0.25 vs $0.14) and is exactly what custom_action is for.
+_RD_ACTIONS = {"walk": "walking", "run": "walking", "idle": "idle",
+               "jump": "jump", "crouch": "crouch", "attack": "attack",
+               "ability": "custom_action", "hurt": "custom_action",
+               "ko": "custom_action", "death": "custom_action"}
+_RD_PROMPTS = {"walk": "confident, steady steps",
+               "run": "fast, urgent running strides",
+               "hurt": "flinching backward from a hit",
+               "ability": "casting an ability with a flourish",
+               "ko": "collapsing to the ground, defeated",
+               "death": "collapsing to the ground, defeated"}
+
+
+@_tool
+def animation_generate(character: str, action: str,
+                       source_sheet: str = "", prompt: str = "",
+                       frames: int = 0, max_cost_usd: float = 2.0) -> dict:
+    """CONTRACT-DRIVEN character animation via Retro Diffusion.
+
+    Reads the sprite contract (sprite_contract_get) for this character+action:
+    which directions to draw, cell size, frame count, layout. For each DRAWN
+    direction it takes a start frame from the character's existing sheet,
+    sends it to RD's purpose-trained animation model (~$0.14/direction), runs
+    the full battery (facing, height, motion, palette conform when pinned),
+    and stitches the contract-shaped sheet + SpriteFrames .tres with
+    animations named {action}_{direction}. Mirrored directions are reported
+    for runtime flip_h - the contract's mirror map, no pixels duplicated.
+
+    source_sheet: the sheet whose row-0-per-direction cells seed each start
+    frame; defaults to the character's idle sheet, then the action's own.
+    Start-frame quality decides identity fidelity: in-distribution characters
+    (small, game-styled) come back intact; large detailed characters get
+    redrawn at ~70% and this tool says so rather than hiding it."""
+    try:
+        import base64 as _b64mod
+        import io as _io
+
+        from PIL import Image as _Img
+
+        from bgate_adapters import retrodiffusion as _rd
+        from bgate_core import spritecontract as _sc
+
+        root = _Path(_root())
+        contract = _sc.contract_for(str(root), character, action)
+        act = str(action).strip().lower()
+        drawn = contract["drawn"]
+        cw, ch = contract["cell"]
+        spec = contract.get("action") or {}
+        n_frames = int(frames or spec.get("frames") or 8)
+        # RD only generates 4/6/8/10/12/16; the CONTRACT owns the sheet's
+        # frame count. Generate the nearest count AT OR ABOVE and keep the
+        # first n_frames — a 2-frame hurt is the first two cells of a 4-frame
+        # flinch, not a format the game has to bend for.
+        eligible = [f for f in _rd.FRAME_COUNTS if f >= n_frames]
+        rd_frames = min(eligible) if eligible else max(_rd.FRAME_COUNTS)
+        keep = min(n_frames, rd_frames)
+        fps = float(spec.get("fps") or 8.0)
+        rd_action = _RD_ACTIONS.get(act, "custom_action")
+        motion = prompt or _RD_PROMPTS.get(act, f"{act} animation, smooth motion")
+
+        probe = _rd.available(str(root))
+        if not probe.get("available"):
+            return {"ok": False, "error": probe.get("reason")}
+        est = len(drawn) * _rd.ACTION_COST.get(rd_action, _rd.DEFAULT_ACTION_COST)
+        if max_cost_usd and est > max_cost_usd:
+            return {"ok": False, "error":
+                    f"{len(drawn)} direction(s) at {rd_action} ≈ ${est:.2f}, "
+                    f"over max_cost_usd={max_cost_usd:.2f}"}
+
+        starts = _anim_start_frames(root, character, act, contract, source_sheet)
+        if not starts.get("ok"):
+            return starts
+
+        out_dir = root / ".bgate_out" / "sprites"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pinned = _artdirection.palette_pinned(str(root))
+        per_dir: dict[str, dict] = {}
+        frame_files: dict[str, str] = {}
+        ordered: list[str] = []
+        spent = 0.0
+        loop = spec.get("loop")
+        if loop is None:
+            loop = act not in _sprites.NO_LOOP
+        # WHICH generated frames survive a trim is not "the first keep". A
+        # one-shot's payoff is its LAST frame — trimming a 4-frame collapse to
+        # its first 3 shipped a ko that never reached the floor. One-shots
+        # sample evenly INCLUDING the endpoint; loops stride the cycle so the
+        # wrap-around stays a genuine adjacent pair.
+        if keep >= rd_frames:
+            picks = list(range(rd_frames))
+        elif loop:
+            picks = [(i * rd_frames) // keep for i in range(keep)]
+        elif keep == 1:
+            picks = [rd_frames - 1]
+        else:
+            picks = [round(i * (rd_frames - 1) / (keep - 1))
+                     for i in range(keep)]
+        for direction in drawn:
+            got = _rd.animate(starts["frames"][direction], rd_action,
+                              frames=rd_frames, size=(cw, ch), prompt=motion,
+                              root=str(root))
+            spent += float(got.get("usd") or 0.0)
+            sheet_img = _Img.open(
+                _io.BytesIO(_b64mod.b64decode(got["sheet_b64"]))).convert("RGBA")
+            cols = max(1, sheet_img.width // cw)
+            for i, src_index in enumerate(picks):
+                r, c = divmod(src_index, cols)
+                cell = sheet_img.crop((c * cw, r * ch,
+                                       (c + 1) * cw, (r + 1) * ch))
+                path = out_dir / f"{character}_{act}_{direction}_{i}.png"
+                cell.save(path)
+                if pinned:
+                    _spritekit.lock_palette(str(path), pinned)
+                label = f"{act}_{direction}/{i}"
+                frame_files[label] = str(path)
+                ordered.append(label)
+            group = [p for p in ordered if p.startswith(f"{act}_{direction}/")]
+            report = _spritekit.facing_report(group, frame_files)
+            per_dir[direction] = {
+                "findings": report["findings"],
+                "balance": got.get("balance"),
+            }
+
+        # Contract-shaped sheet: one row per drawn direction, in drawn order.
+        plan = _spritekit.layout(len(ordered), cw, ch, columns=keep)
+        sheet_path = out_dir / f"{character}_{act}_sheet.png"
+        _sprites._stitch([frame_files[p] for p in ordered], sheet_path,  # noqa: SLF001
+                         plan=plan)
+        anims = [(f"{act}_{d}", keep) for d in drawn]
+        timing = {name: {"fps": fps, "loop": bool(loop)} for name, _ in anims}
+        tres_path = out_dir / f"{character}_{act}_frames.tres"
+        tres_path.write_text(
+            _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
+                sheet_path.name, anims, (cw, ch), fps, "assets/characters",
+                timing=timing, plan=plan),
+            encoding="utf-8")
+        previews = _gif_previews(frame_files, str(sheet_path),
+                                 f"{character}_{act}", timing, fps)
+        motion_report = _spritekit.sheet_report(
+            ordered, frame_files,
+            no_loop=() if loop else tuple(name for name, _ in anims))
+        # THE CROSS-DIRECTION CHECK — the consistency the per-strip battery
+        # cannot see: every direction of this action must contain the same
+        # character at the same scale on the same palette.
+        drift = _spritekit.set_drift({
+            f"{act}_{d}": [frame_files[p] for p in ordered
+                           if p.startswith(f"{act}_{d}/")]
+            for d in drawn})
+        # The .aseprite master, same as image_sprites builds — a contract
+        # sheet is exactly the thing somebody hand-fixes one frame of.
+        ase = _ase_master_for(str(sheet_path), (cw, ch),
+                              {name: rd_frames for name, _ in anims},
+                              timing, fps)
+        result = {"ok": True, "character": character, "action": act,
+                  "sheet": str(sheet_path), "tres": str(tres_path),
+                  "animations": {name: rd_frames for name, _ in anims},
+                  "mirror": contract["mirror"],
+                  "unplayable": contract.get("unplayable", []),
+                  "cell": [cw, ch], "frames_per_direction": rd_frames,
+                  "directions": per_dir, "motion": motion_report,
+                  "set": drift,
+                  **({"aseprite": ase} if ase is not None else {}),
+                  "animation_previews": previews,
+                  "start_frames": starts["frames"],
+                  "spend": {"usd": round(spent, 4), "calls": len(drawn),
+                            "provider": "retrodiffusion"}}
+        archived = _archive_preview(str(sheet_path), f"anim-{character}-{act}")
+        artifact = _register_artifact(
+            f"{character}_{act}", str(sheet_path),
+            producer="animation_generate",
+            refs=list(starts["frames"].values()),
+            metadata={"contract": {k: contract[k] for k in
+                                   ("preset", "view", "drawn", "cell", "layout")},
+                      "preview": archived or "",
+                      "animation_previews": previews,
+                      "motion": motion_report,
+                      "directions": {d: r["findings"] for d, r in per_dir.items()},
+                      "estimated_usd": round(spent, 4)})
+        if artifact:
+            result["artifact"] = artifact
+        _log("art", f"animated {character} {act}: {len(drawn)} direction(s), "
+                    f"${spent:.2f}", ref=str(sheet_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _anim_start_frames(root: _Path, character: str, action: str,
+                       contract: dict, source_sheet: str) -> dict:
+    """One start frame per drawn direction, sliced from an existing sheet.
+
+    The sheet's rows are directions (the contract's row order); the first
+    column of each row seeds that direction. Search order: an explicit
+    source_sheet, the character's idle sheet, the action's own sheet - idle
+    first because a neutral stance is the best seed for any motion.
+    """
+    from PIL import Image as _Img
+
+    slug = str(character).strip()
+    candidates = []
+    if source_sheet:
+        candidates.append(root / _assets.normalize_path(root, source_sheet))
+    for name in ("idle", action):
+        candidates.extend(root.glob(f"**/{slug}/{slug}_{name}.png"))
+        candidates.extend(root.glob(f"**/{slug}_{name}.png"))
+    sheet_path = next((c for c in candidates if c.is_file()), None)
+    if sheet_path is None:
+        return {"ok": False, "error":
+                f"no source sheet found for {slug!r} - pass source_sheet, or "
+                "generate a reference first (image_sprites / image_generate)"}
+    cw, ch = contract["cell"]
+    rows = contract["rows"]
+    out_dir = root / ".bgate_out" / "sprites" / "starts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames: dict[str, str] = {}
+    with _Img.open(sheet_path) as img:
+        sheet = img.convert("RGBA")
+        if sheet.height < ch * len(rows) or sheet.width < cw:
+            return {"ok": False, "error":
+                    f"{sheet_path.name} is {sheet.width}x{sheet.height}; the "
+                    f"contract expects rows of {cw}x{ch} cells x {len(rows)} "
+                    "direction row(s) - fix the contract or the sheet"}
+        for row_index, direction in enumerate(rows):
+            if direction not in contract["drawn"]:
+                continue
+            cell = sheet.crop((0, row_index * ch, cw, (row_index + 1) * ch))
+            dest = out_dir / f"{slug}_{action}_{direction}_start.png"
+            cell.save(dest)
+            frames[direction] = str(dest)
+    missing = [d for d in contract["drawn"] if d not in frames]
+    if missing:
+        return {"ok": False, "error":
+                f"source sheet rows cover {sorted(frames)} but the contract "
+                f"draws {contract['drawn']} - missing {missing}. Its rows and "
+                "the contract's disagree; set characters overrides to match."}
+    return {"ok": True, "frames": frames, "source": str(sheet_path)}
+
+
 def _ase_anim_specs(animations: dict, timing: Optional[dict],
                     fps: float) -> list[dict]:
     """The per-frame durations aseprite.master needs, from the sheet's own plan.

@@ -655,6 +655,17 @@ def _stitch(paths: list[str], out_path: Path, *,
 # would knock the fighter down forever. Applied by name in every emitter.
 NO_LOOP = ("ko", "death", "fall", "intro", "victory")
 
+# Direction suffixes the sprite contract appends to animation names
+# ("ko_sw", "attack_ne"). The no-loop rule matches the BASE action, because a
+# ko that loops in exactly one facing is the kind of bug nobody reproduces.
+_DIR_SUFFIXES = ("n", "ne", "e", "se", "s", "sw", "w", "nw")
+
+
+def _loop_base(anim: str) -> str:
+    """"ko_sw" -> "ko"; names without a direction suffix pass through."""
+    base, _, tail = str(anim).rpartition("_")
+    return base if base and tail in _DIR_SUFFIXES else anim
+
 
 def _sprite_frames_tres(sheet_filename: str, anims: list[tuple[str, int]],
                         size: tuple[int, int], fps: float, res_dir: str,
@@ -736,7 +747,7 @@ def _sprite_frames_tres(sheet_filename: str, anims: list[tuple[str, int]],
             for i in order)
         looping = spec.get("loop")
         if looping is None:
-            looping = anim not in no_loop
+            looping = _loop_base(anim) not in no_loop
         blocks.append(
             '{\n"frames": [%s],\n"loop": %s,\n"name": &"%s",\n"speed": %s\n}'
             % (frames, "true" if looping else "false", anim,

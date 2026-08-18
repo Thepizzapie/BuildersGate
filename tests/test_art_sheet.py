@@ -184,3 +184,21 @@ def test_no_pin_is_none_not_an_empty_card():
                            "metadata": {"size": "512x512", "ref_pins": []}},
                           root=".", slice_frames=False)
     assert out["pin"] is None
+
+
+class TestContractGrid:
+    """frame_count under a declared cell — the four-corner game's 96x80
+    cols x 2 grid is not a square strip, and the old rule went blind on
+    exactly the sheets that project ships."""
+
+    def test_a_declared_grid_counts_its_cells(self):
+        assert artsheet.frame_count("384x160", cell=(96, 80), rows=2) == 8
+        assert artsheet.frame_count("384x80", cell=(96, 80), rows=1) == 4
+
+    def test_a_sheet_that_disagrees_with_its_contract_is_not_guessed(self):
+        assert artsheet.frame_count("384x160", cell=(96, 80), rows=1) is None
+        assert artsheet.frame_count("100x160", cell=(96, 80), rows=2) is None
+
+    def test_without_a_contract_the_square_strip_rule_stands(self):
+        assert artsheet.frame_count("1536x512") == 3
+        assert artsheet.frame_count("384x160") is None

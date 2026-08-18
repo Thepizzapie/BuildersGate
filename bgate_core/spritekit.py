@@ -673,28 +673,46 @@ def sheet_report(ordered: Sequence[str], frame_files: dict[str, str], *,
         if report["flagged"]:
             flagged.append(anim)
 
-    # FACING, across the WHOLE set, not per animation. A yaw flip is invisible
-    # to every measurement above — the silhouette of a head is the silhouette
-    # of a head from either side, so overlap reads fine — and the row_report
-    # path has had this vote for months while the GENERATED path, the one that
-    # buys its frames one API call at a time, never ran it. Found by a human on
-    # the first 8-frame walk this pipeline produced: two frames facing the
-    # camera in a set asked to face right, motion report clean.
-    facing = facing_report(ordered, frame_files, airborne=airborne)
-    if facing.get("findings"):
-        odd_anims = sorted({pose.partition("/")[0]
-                            for f in facing["findings"]
-                            for pose in f.get("frames", [])})
-        for anim in odd_anims:
-            if anim in anims:
-                anims[anim]["findings"].extend(
-                    [f for f in facing["findings"]
-                     if any(p.partition("/")[0] == anim for p in f["frames"])])
-                anims[anim]["flagged"] = True
+    # FACING, per ANIMATION GROUP, not across the whole set. A yaw flip is
+    # invisible to every measurement above, and the generated path never ran
+    # this vote at all until a human caught two camera-facing frames in a walk.
+    # The grouping matters as much as the vote: under a sprite contract one
+    # sheet carries several DIRECTIONS ("walk_nw", "walk_sw"), and a back row
+    # voting against a front row would flag a perfectly correct sheet — the
+    # rows are SUPPOSED to disagree. Each animation votes alone; a direction
+    # suffix on the name declares which way its majority must lean, and a
+    # group whose vote contradicts its own name is `wrong_direction`.
+    facing_all: dict[str, dict] = {}
+    for anim, items in by_anim.items():
+        group = [pose for _, pose in sorted(items) if pose in frame_files]
+        if not group:
+            continue
+        facing = facing_report(group, frame_files, airborne=airborne,
+                               expected=_direction_of(anim))
+        facing_all[anim] = facing
+        if facing.get("findings") and anim in anims:
+            anims[anim]["findings"].extend(facing["findings"])
+            anims[anim]["flagged"] = True
             if anim not in flagged:
                 flagged.append(anim)
     return {"ok": True, "animations": anims, "flagged": flagged,
-            "facing": facing}
+            "facing": facing_all}
+
+
+#: Compass suffixes an animation name may carry under a sprite contract, and
+#: the east/west LEAN each implies for the head-skew sign (+1 right/east,
+#: -1 left/west, 0 no verdict). North-ish directions are 0 ON PURPOSE: they
+#: are BACK views, head_skew reads FACE detail, and a back of a head carries
+#: hair, not a face — measured on the first contract run, where a perfectly
+#: correct walk_nw row was called wrong_direction by its own hair highlight.
+_DIRECTION_LEAN = {"e": 1, "se": 1, "w": -1, "sw": -1,
+                   "n": 0, "s": 0, "ne": 0, "nw": 0}
+
+
+def _direction_of(anim: str) -> str:
+    """"walk_nw" -> "nw"; names without a direction suffix return ''."""
+    _, _, tail = str(anim).rpartition("_")
+    return tail if tail in _DIRECTION_LEAN else ""
 
 
 #: How far a frame's drawn height may sit from the SET median before it is an
@@ -716,7 +734,7 @@ HEIGHT_SPLIT_FRAC = 0.12
 
 
 def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
-                  airborne: Iterable[str] = ()) -> dict:
+                  airborne: Iterable[str] = (), expected: str = "") -> dict:
     """Per-frame geometry against the whole set: facing vote + height outliers.
 
     Facing: :func:`head_skew` per frame (where the face's dark detail sits in
@@ -788,6 +806,25 @@ def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
     if len(voters) >= 3:
         right = sum(1 for _, s in voters if s > 0)
         left = len(voters) - right
+        # A DECLARED direction ("walk_nw" under a sprite contract) turns the
+        # vote into a verdict: the majority must lean the declared way, and a
+        # group that votes against its own name is wrong as a WHOLE — the
+        # single most shipped defect in the reference project (ten of the
+        # drone's twenty facings), and one internal consistency can never see,
+        # because a uniformly backwards sheet is perfectly consistent.
+        lean = _DIRECTION_LEAN.get(str(expected or "").strip().lower(), 0)
+        if lean:
+            majority_sign = 1 if right > left else (-1 if left > right else 0)
+            if majority_sign and majority_sign != lean:
+                side = "east/right" if lean > 0 else "west/left"
+                out["findings"].append({
+                    "kind": "wrong_direction", "iou": None,
+                    "frames": [pose for pose, _ in voters],
+                    "note": f"declared {expected!r} (facing {side}) but the "
+                            "set's own majority leans the other way — the "
+                            "whole group was drawn facing backwards. Mirror "
+                            "the sheet, or regenerate from a start frame that "
+                            "actually faces the declared side."})
         if right == left:
             out["ambiguous"] = True
         else:
@@ -802,7 +839,132 @@ def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
                             "eyes, muzzle) sits on the wrong side. Re-roll "
                             "these frames; a mirror flip in paint also works "
                             "when the design is symmetric enough."})
+            else:
+                yaw = _yaw_gap([(p, abs(s)) for p, s in voters
+                                if (1 if s > 0 else -1) == majority])
+                if yaw:
+                    # A frame TOO frontal to vote (|skew| under the floor) is
+                    # not innocent, it is the furthest-rotated frame of all —
+                    # a flat-on head has no side for the detail to sit on.
+                    if "toward the camera" in yaw["note"]:
+                        flat = [pose for pose, s in skews
+                                if abs(s) < FACING_SKEW_MIN
+                                and pose not in yaw["frames"]]
+                        yaw["frames"].extend(flat)
+                    out["findings"].append(yaw)
     return out
+
+
+#: Where a magnitude gap in same-sign skews becomes a camera-angle finding.
+#: Calibrated on real sheets: an RD walk whose last three frames rotated
+#: toward camera clustered at |skew| 0.04-0.06 against a 0.11-0.14 profile
+#: majority (1.7x gap); an honest kie walk sat in one band, 0.061-0.081
+#: (1.16x worst adjacent step). The SIGN vote cannot see this — every frame
+#: still faces the same way, just not by the same amount.
+YAW_GAP_RATIO = 1.6
+
+
+#: Cross-sheet drift bounds. Within one character's SET (every direction of an
+#: action, every action of a character) the palette should be one palette and
+#: the drawn scale one scale — the "same person in every sheet" floor. Palette
+#: distance shares chroma's colour metric; height compares median drawn ink.
+SET_PALETTE_MAX = 120.0
+SET_HEIGHT_FRAC = 0.12
+
+
+def set_drift(groups: dict[str, Sequence[str]]) -> dict:
+    """Do these sheets contain the SAME character? {findings, measured}.
+
+    ``groups`` maps a label ("walk_nw", or "idle"/"attack" across actions) to
+    that group's frame paths. Two cheap cross-group measures: worst pairwise
+    palette distance (a colour one group has that no other group approaches)
+    and median drawn-height spread. Advisory findings, same shape as
+    motion_report's, because "these two sheets disagree" needs a human to say
+    which one is right.
+    """
+    from bgate_core import chroma
+
+    palettes: dict[str, list] = {}
+    heights: dict[str, int] = {}
+    for label, paths in groups.items():
+        pal: list = []
+        tall: list[int] = []
+        for path in paths:
+            pal.extend(chroma.palette_of(path, colors=8))
+            try:
+                img = _open(path)
+                bbox = img.getbbox()
+                if bbox:
+                    tall.append(bbox[3] - bbox[1])
+            except Exception:                                   # noqa: BLE001
+                continue
+        if pal:
+            palettes[label] = pal
+        if tall:
+            heights[label] = sorted(tall)[len(tall) // 2]
+
+    findings: list[dict] = []
+    measured: dict[str, Any] = {"palette": {}, "heights": dict(heights)}
+    labels = sorted(palettes)
+    for i, a in enumerate(labels):
+        for b in labels[i + 1:]:
+            worst = max((chroma.distance_to(c, palettes[b])
+                         for c in palettes[a]), default=0.0)
+            measured["palette"][f"{a}|{b}"] = round(worst, 1)
+            if worst > SET_PALETTE_MAX:
+                findings.append({
+                    "kind": "set_drift", "pair": f"{a}|{b}", "iou": None,
+                    "note": f"{a} carries a colour {worst:.0f} away from "
+                            f"anything in {b} — the sheets read as two "
+                            "different characters. Re-conform to the pinned "
+                            "palette, or regenerate the drifted sheet."})
+    if len(heights) >= 2:
+        ordered_h = sorted(heights.values())
+        median = ordered_h[len(ordered_h) // 2]
+        if median and (ordered_h[-1] - ordered_h[0]) / median > SET_HEIGHT_FRAC:
+            worst_labels = sorted(heights, key=heights.get)
+            findings.append({
+                "kind": "set_drift",
+                "pair": f"{worst_labels[0]}|{worst_labels[-1]}", "iou": None,
+                "note": f"drawn height ranges {ordered_h[0]}-{ordered_h[-1]}px "
+                        f"across the set ({(ordered_h[-1] - ordered_h[0]) / median:.0%} "
+                        "of median) — the character changes size between "
+                        "sheets. Regenerate the outlier against a start frame "
+                        "from a conforming sheet."})
+    return {"findings": findings, "measured": measured,
+            "flagged": bool(findings)}
+
+
+def _yaw_gap(magnitudes: list[tuple[str, float]]) -> Optional[dict]:
+    """A yaw-DEGREE cluster split among same-facing frames, or None.
+
+    Sorts |skew|, finds the widest adjacent ratio step; a step past
+    YAW_GAP_RATIO with at least two frames on each side splits the set into a
+    profile cluster and a more-frontal cluster (lower magnitude — the face
+    detail moves toward centre as the head turns to camera). The SMALLER
+    cluster is the finding, whichever side of the gap it sits on.
+    """
+    if len(magnitudes) < 4:
+        return None
+    ordered = sorted(magnitudes, key=lambda kv: kv[1])
+    gap_at, gap_ratio = 0, 1.0
+    for i in range(1, len(ordered)):
+        lo, hi = ordered[i - 1][1], ordered[i][1]
+        ratio = hi / lo if lo > 0 else float("inf")
+        if ratio > gap_ratio:
+            gap_ratio, gap_at = ratio, i
+    low, high = ordered[:gap_at], ordered[gap_at:]
+    if gap_ratio < YAW_GAP_RATIO or len(low) < 2 or len(high) < 2:
+        return None
+    minority = low if len(low) < len(high) else high
+    toward = "toward the camera" if minority is low else "further into profile"
+    return {"kind": "yaw_drift", "iou": None,
+            "frames": [p for p, _ in minority],
+            "note": f"{len(minority)} frame(s) hold the head at a different "
+                    f"angle — rotated {toward} relative to the rest (facing "
+                    f"detail offset {minority[0][1]:.2f}-{minority[-1][1]:.2f} "
+                    f"vs the majority's band). Same left/right facing, "
+                    "different camera angle; re-roll these frames."}
 
 
 def _split_figure(path: str) -> bool:

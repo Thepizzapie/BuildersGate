@@ -540,7 +540,10 @@ class TestFacingReport:
         assert "walk" in got["flagged"]
         kinds = {f["kind"] for f in got["animations"]["walk"]["findings"]}
         assert "facing_flip" in kinds
-        assert got["facing"]["voters"] == 6
+        # Facing now votes PER ANIMATION GROUP (a contract sheet carries
+        # several directions, and a back row voting against a front row would
+        # flag a correct sheet) — the report is keyed by animation.
+        assert got["facing"]["walk"]["voters"] == 6
 
 
 class TestHeightOutlier:
@@ -593,3 +596,42 @@ class TestHeightOutlier:
         [finding] = [f for f in got["findings"] if f["kind"] == "height_split"]
         assert set(finding["frames"]) == set(ordered)
         assert "walk/2" in finding["note"] and "walk/5" in finding["note"]
+
+
+class TestYawDrift:
+    """Same left/right facing, different camera ANGLE — the sign vote cannot
+    see it. Found by a human on an RD walk whose last three frames rotated
+    toward camera: same-sign skews clustered 0.11-0.14 vs 0.04-0.06."""
+
+    @staticmethod
+    def _skewed(tmp_path, name, offset):
+        """A figure whose head detail sits `offset` px right of head centre —
+        bigger offset reads as more profile."""
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGBA", (64, 96), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rectangle((20, 4, 44, 28), fill=(210, 190, 170, 255))
+        d.rectangle((24, 30, 40, 90), fill=(120, 130, 150, 255))
+        cx = 32 + offset
+        d.rectangle((cx - 2, 12, cx + 2, 20), fill=(25, 20, 20, 255))
+        p = tmp_path / f"{name}.png"
+        img.save(p)
+        return str(p)
+
+    def _set(self, tmp_path, offsets):
+        ordered = [f"walk/{i}" for i in range(len(offsets))]
+        files = {pose: self._skewed(tmp_path, f"y{i}", off)
+                 for i, (pose, off) in enumerate(zip(ordered, offsets))}
+        return ordered, files
+
+    def test_a_frontal_cluster_is_flagged(self, tmp_path):
+        ordered, files = self._set(tmp_path, [9, 9, 9, 9, 3, 3])
+        got = spritekit.facing_report(ordered, files)
+        yaw = [f for f in got["findings"] if f["kind"] == "yaw_drift"]
+        assert yaw and set(yaw[0]["frames"]) >= {"walk/4", "walk/5"}
+
+    def test_one_band_of_magnitudes_is_clean(self, tmp_path):
+        ordered, files = self._set(tmp_path, [8, 9, 8, 9, 8, 9])
+        got = spritekit.facing_report(ordered, files)
+        assert [f for f in got["findings"] if f["kind"] == "yaw_drift"] == []

@@ -176,7 +176,8 @@ def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
 CRAFTS: dict[str, tuple[str, ...]] = {
     "image": ("image_", "item_", "cutout_", "vfx_animate",
               "animation_curves", "art_tournament_standings",
-              "aseprite_", "palette_pin"),
+              "aseprite_", "palette_pin",
+              "animation_generate", "sprite_contract_"),
     "three_d": ("blender_", "character_generate", "godot_retarget_check"),
     "music": ("kie_music_", "music_"),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),
