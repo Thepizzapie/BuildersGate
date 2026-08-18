@@ -283,6 +283,25 @@ def test_image_status_reports_every_leg(root, monkeypatch):
     assert got["available"] == bool(got["providers"])
 
 
+def test_an_animation_key_does_not_claim_the_project_can_paint(root,
+                                                               monkeypatch):
+    """Retro Diffusion animates a sheet that already exists and mints
+    nothing. It is an art provider, so it is REPORTED — but counting it in
+    `providers` would tell a project holding only an animation key that it
+    can generate images, and the first thing to notice would be a
+    generation failing."""
+    import asyncio
+
+    import bgate_mcp.server as server
+
+    monkeypatch.setenv("BGATE_ROOT", str(root))
+    got = asyncio.run(server.image_status())
+    assert "retrodiffusion" in got["legs"], "the leg is reported"
+    assert "retrodiffusion" not in got["providers"], "but it cannot paint"
+    assert got["auto_picks"] not in ("retrodiffusion",)
+    assert "animation_providers" in got
+
+
 # ---------------------------------------------------------------------------
 # The migration mechanism my own column addition broke
 # ---------------------------------------------------------------------------

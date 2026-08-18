@@ -40,6 +40,12 @@ from bgate_core import envfile
 # table can report on that. cinematic.ffmpeg_status() is where that is asked.
 CAPABILITIES: dict[str, str] = {
     "image_2d": "2D images",
+    # ANIMATION IS NOT `image_2d`. A provider that paints a still is not a
+    # provider that can turn one into a cycle — Retro Diffusion animates an
+    # existing sheet and mints nothing, kie is the reverse — and a project
+    # that folded them together would report it can animate because it holds
+    # an image key, which is how a character ships as eleven stiff stills.
+    "animation_2d": "2D animation (cycles from an existing sheet)",
     "model_3d": "3D models",
     "audio": "music and sound",
     "video": "video",

@@ -2757,6 +2757,18 @@ def image_status() -> dict:
         except Exception as exc:
             legs["kie"] = {"available": False,
                            "reason": f"{type(exc).__name__}: {exc}"}
+        # RETRO DIFFUSION IS AN ART PROVIDER TOO, and this tool did not know —
+        # the same staleness krea hit, one provider later. It does not PAINT
+        # (that is the kie/openai/krea leg); it animates a sheet that already
+        # exists, which is its own credential and its own answer to "can this
+        # machine make the asset". A leg missing here reads as a leg that is
+        # unavailable.
+        try:
+            from bgate_adapters import retrodiffusion as _rdp
+            legs["retrodiffusion"] = dict(_rdp.available(root))
+        except Exception as exc:
+            legs["retrodiffusion"] = {"available": False,
+                                      "reason": f"{type(exc).__name__}: {exc}"}
         try:
             from bgate_adapters import localgen
             legs["local"] = dict(localgen.status(probe=True))
@@ -2764,13 +2776,25 @@ def image_status() -> dict:
             legs["local"] = {"available": False,
                              "reason": f"{type(exc).__name__}: {exc}"}
 
-        usable = [name for name, leg in legs.items() if leg.get("available")]
+        # PAINTING AND ANIMATING ARE DIFFERENT ANSWERS. Every leg is REPORTED,
+        # because "is my RD key working" is a real question and a missing leg
+        # reads as a broken one — but only the legs that can MINT an image
+        # count toward `available`/`auto_picks`, which is what a caller asks
+        # before generating art. Counting RD would tell a project holding only
+        # an animation key that it can paint, and the first thing to notice
+        # would be a generation failing.
+        PAINTERS = ("openai", "krea", "kie", "local")
+        usable = [name for name, leg in legs.items()
+                  if leg.get("available") and name in PAINTERS]
+        animators = [name for name, leg in legs.items()
+                     if leg.get("available") and name not in PAINTERS]
         return {
             # `available` answers about the LEG, not about one adapter: any
             # usable provider means painted art is available. A caller that only
             # reads this key gets the honest answer now.
             "available": bool(usable),
             "providers": usable,
+            "animation_providers": animators,
             "auto_picks": (usable[0] if usable else ""),
             "legs": legs,
             "project": root or "",
