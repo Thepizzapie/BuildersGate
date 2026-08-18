@@ -35,6 +35,30 @@ class TestLimitsComeFromTheJump:
 
 
 class TestTheGeneratorBuildsInsideTheJump:
+    def test_blocks_a_weak_jump_cannot_use_are_not_generated(self):
+        """Found by the engine acceptance run: a real player's fall
+        multiplier converts to a jump that rises 1 cell, and blocks kept
+        their 3-cell head clearance — standable cells nothing could reach,
+        refused as `stranded` on every seed. The segment must degrade to
+        flat, not generate its own refusal."""
+        weak = jump.JumpSpec(run=6.875, jump_speed=11.875, gravity=49.0)
+        assert ss.Limits(weak).rise < 3
+        for seed in range(6):
+            level = ss.plan(120, 16, seed=seed, spec=weak,
+                            kinds=("blocks", "flat"))
+            verdict = ss.check(level, weak)
+            assert verdict["ok"], (seed, verdict["findings"])
+        assert all(s["kind"] != "blocks"
+                   for s in level["segments"])
+
+    def test_blocks_still_appear_for_a_jump_that_can_use_them(self):
+        lim = ss.Limits(_spec())
+        assert lim.rise >= 3
+        level = ss.plan(160, 16, seed=1, spec=_spec(), kinds=("blocks",))
+        assert any(s["kind"] == "blocks" for s in level["segments"])
+        assert ss.check(level, _spec())["ok"]
+
+
     def test_a_level_too_small_to_run_in_is_refused(self):
         with pytest.raises(ss.LevelError, match="too small to hold a run"):
             ss.plan(20, 16)

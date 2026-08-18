@@ -490,6 +490,36 @@ class TestTheViewRoutesTheGeometry:
         floor = text[text.index('[node name="Floor"'):text.index('[node name="Walls"')]
         assert "y_sort_enabled" not in floor
 
+    async def test_a_tileset_is_composed_from_two_kie_textures(
+            self, game, monkeypatch):
+        """The provider rule: kie draws the materials, geometry does the
+        rest. Coverage is total by construction — no roll to fail."""
+        from PIL import Image
+
+        from bgate_adapters import kie
+        from bgate_core import tilemap
+
+        calls = []
+
+        def fake_generate(prompt, out_path, **kw):
+            calls.append(kw)
+            colour = (200, 180, 140, 255) if len(calls) == 1 else (20, 8, 30, 255)
+            Image.new("RGBA", (1024, 1024), colour).save(out_path)
+            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+
+        monkeypatch.setattr(kie, "generate_image", fake_generate)
+        out = await call("tileset_generate", name="kietiles",
+                         prompt="warm sandstone floor", bits=4)
+        assert out["ok"], out.get("error")
+        assert out["spend"]["provider"] == "kie"
+        assert out["coverage"] == {"have": 16, "want": 16,
+                                   "constructed": True}
+        assert len(calls) == 2 and all(k.get("tileable") for k in calls)
+        parsed = tilemap.parse_tileset(
+            open(out["tileset"], encoding="utf-8").read())
+        assert sorted(len(s["tiles"]) for s in parsed["sources"].values()) == [16]
+        assert out["collision"]["tiles"] > 0
+
     async def test_the_iso_tileset_generator_refuses_rather_than_misreads(
             self, root, game):
         """The mask detector reads square boundaries; a diamond's corners are

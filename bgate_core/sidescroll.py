@@ -160,9 +160,18 @@ def _seg_blocks(rng, x0, y, limits, height, hard) -> tuple:
 
     Placed at `rise` above the ground so they can be hit from below, and never
     so low that they become a ceiling the player cannot pass under.
+
+    Those two constraints can CROSS: a heavy jump (a real player's fall
+    multiplier, converted conservatively) may rise fewer cells than the body
+    needs to pass underneath. Blocks low enough to stand on would be a
+    ceiling, blocks high enough to walk under would be scenery the stranded
+    check rightly refuses — for that character this segment does not exist,
+    and it degrades to flat ground instead of generating its own refusal.
     """
     body_h = limits.spec.body[1]
     up = max(body_h + 1, min(limits.rise, 3))
+    if up > limits.rise:
+        return _seg_flat(rng, x0, y, limits, height, hard)
     n = rng.randint(2, 4)
     cells = _floor(x0, n + 4, y, height)
     cells |= {(x0 + 2 + i, y - up) for i in range(n)}

@@ -2953,18 +2953,14 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
             "luminance": {"floor": round(floor_lum), "wall": round(float(toned.mean()))}}
 
 
-#: The share of the wanted masks a generated sheet must actually contain.
-#: Below this it is a failed roll, not a partial success — every missing mask
-#: is a hole the level draws when that neighbour shape comes up.
-MIN_TILE_COVERAGE = 0.6
 
 
 @_tool
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
-                     bits: int = 8, terrain: str = "light",
+                     bits: int = 8, void_prompt: str = "",
                      wall_prompt: str = "",
                      godot_project: str = "", res_dir: str = "assets/tiles",
-                     install: bool = False, fill: bool = True,
+                     install: bool = False,
                      collide: bool = True,
                      max_cost_usd: float = 1.0) -> dict:
     """GENERATE A GODOT TILESET — the bridge the level pipeline was missing.
@@ -2974,12 +2970,19 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     TileSet, so level_generate refused unless a human had already built one in
     the Godot editor. This makes one.
 
-    prompt names the MATERIAL ("mossy grey stone floor meeting grass"), never
-    the rendering — the tile style carries the pixel art. Retro Diffusion
-    returns a TERRAIN SET (two terrains and the edges between them), the sheet
-    is read back into mask -> atlas coordinates off its own pixels, missing
-    masks are filled for free by mirroring tiles that exist, the seams are
-    checked, and a Godot TileSet.tres is written.
+    THE PROVIDER DIVISION IS A HOUSE RULE, not a convenience: kie draws every
+    static asset, Retro Diffusion only ever ANIMATES a sheet that already
+    exists. An earlier build of this tool generated on RD's tile styles and
+    its coverage varied 16/16 to 7/16 per roll — the kie path replaced it and
+    removed the roll entirely.
+
+    `prompt` names the FLOOR material, `void_prompt` what shows where there
+    is no floor (default: featureless darkness). kie paints each as a
+    material texture; the tile is cut from it and every mask tile is built
+    GEOMETRICALLY from those two — the same `normalise_edges` inset a
+    hand-made autotile set has by construction. Coverage is total by
+    construction, so the old partial-roll refusal has nothing to refuse; the
+    seam report and the engine load are the gates that remain.
 
     `bits`: 8 for blob47 (the default), 4 for the 16-mask side set.
 
@@ -2988,60 +2991,81 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
     step in a room's outline there is no tile to draw and the shadow band along
     the wall breaks — a row of notches down the level that reads as broken art.
     The corner tiles are a nibble out of the tile and pure geometry, so
-    `normalise_edges` builds all 47 from the same generation a 16-mask set needs:
     eight bits costs no extra image call and no extra money.
-    `terrain`: which detected terrain is the FLOOR — "light" (default) or
-    "dark". Stable across generations, unlike the raw "a"/"b" labels, which
-    come from a k-means split and swap between runs: asking for "a" once
-    built the table for the void and rendered every room black. Pass "a"/"b"
-    to override.
     `install=False` lands everything in .bgate_out/tiles/ for review; True also
     writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
 
-    Coverage is reported, never faked: a partial tileset ships as partial with
-    the list of masks still missing, which autotile.resolve already degrades
-    honestly against.
+    The atlas is also written as an Aseprite master — every AI-generated
+    sheet goes through the Aseprite cleanup, tilesets included.
     """
     try:
-        import base64 as _b64mod
-        import io as _io
-
         from PIL import Image as _Img
 
-        from bgate_adapters import retrodiffusion as _rd
+        from bgate_adapters import kie as _kie
         from bgate_core import autotile as _autotile
 
         view = _gameview.load(_root())
         if view == "isometric":
             return {"ok": False, "error": (
                 "this project's view is 'isometric' and this generator "
-                "cannot honestly serve it yet: the mask detector reads "
-                "terrain off each tile's square boundary, and a diamond "
-                "tile's corners are transparent by construction — every "
-                "edge tile would be misread as interior and the set would "
-                "ship as confident garbage. Until a diamond-aware detector "
-                "exists, author or import an isometric TileSet in the Godot "
-                "editor — level_generate accepts it and checks its shape.")}
+                "cannot honestly serve it yet: the mask tiles are carved as "
+                "square edge bands, and a diamond tile's edges run on the "
+                "diagonal — the square carve would ship as confident "
+                "garbage. Until a diamond-aware compositor exists, author "
+                "or import an isometric TileSet in the Godot editor — "
+                "level_generate accepts it and checks its shape.")}
         from bgate_core import tilemap as _tilemap
         from bgate_core import tilemask as _tilemask
 
         root = _Path(_root())
-        probe = _rd.available(str(root))
-        if not probe.get("available"):
-            return {"ok": False, "error": probe.get("reason")}
         if bits not in (4, 8):
             return {"ok": False, "error": "bits is 4 (16 masks) or 8 (blob47)"}
+        tile_px = int(tile_px)
+        if 2 * 0.02 > max_cost_usd:
+            return {"ok": False, "error": (
+                f"two texture drawings is about $0.04, over the "
+                f"${max_cost_usd:.2f} ceiling")}
 
         out_dir = root / ".bgate_out" / "tiles"
         out_dir.mkdir(parents=True, exist_ok=True)
         spent = 0.0
 
-        got = _rd.tileset(prompt, kind="tileset", tile_px=int(tile_px),
-                          root=str(root))
-        spent += float(got.get("usd") or 0.0)
-        sheet = _Img.open(_io.BytesIO(
-            _b64mod.b64decode(got["png_b64"]))).convert("RGBA")
+        def _texture(what: str, tag: str):
+            """One tile of material, painted by kie at canvas size.
 
+            The tile is CUT from a 4x-tile downscale of the painting rather
+            than the whole frame squeezed into one tile — squeezing turns a
+            wall of bricks into noise; cutting keeps the material at a scale
+            where a brick is still a brick.
+            """
+            raw = out_dir / f"{name}_{tag}_raw.png"
+            got = _kie.generate_image(
+                f"seamless repeating flat texture of {what}, viewed straight "
+                "on, even lighting, no border, no vignette, no objects, "
+                "fills the whole frame edge to edge",
+                str(raw), model="nano-banana-2", size="1024x1024",
+                task_kind="tile", tileable=True, root=str(root))
+            if not got.get("ok"):
+                raise ValueError(f"the {tag} texture failed to generate: "
+                                 f"{str(got.get('error'))[:200]}")
+            cost = float(got.get("estimated_usd") or 0.02)
+            img = _Img.open(raw).convert("RGBA")
+            zoom = img.resize((4 * tile_px, 4 * tile_px), _Img.LANCZOS)
+            off = (4 * tile_px - tile_px) // 2
+            return zoom.crop((off, off, off + tile_px, off + tile_px)), cost
+
+        floor_tile, usd = _texture(prompt, "floor")
+        spent += usd
+        void_tile, usd = _texture(
+            void_prompt or "deep darkness with the faintest rock texture, "
+                           "near black", "void")
+        spent += usd
+
+        # The working sheet is two tiles: the floor material and the void
+        # material. Everything else is geometry.
+        sheet = _Img.new("RGBA", (2 * tile_px, tile_px), (0, 0, 0, 0))
+        sheet.paste(floor_tile, (0, 0))
+        sheet.paste(void_tile, (tile_px, 0))
         pinned = _artdirection.palette_pinned(str(root))
         raw_png = out_dir / f"{name}_raw.png"
         sheet.save(raw_png)
@@ -3049,63 +3073,29 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             _spritekit.lock_palette(str(raw_png), pinned)
             sheet = _Img.open(raw_png).convert("RGBA")
 
-        read = _tilemask.detect(sheet, tile_size=(tile_px, tile_px), bits=bits)
-        if not read.get("ok"):
-            return {"ok": False, "stage": "detect", "error": read.get("reason"),
-                    "raw": str(raw_png), "spend": {"usd": round(spent, 4)}}
-        # WHICH TERRAIN IS THE FLOOR, decided by MEANING not by label. "a"
-        # and "b" come out of a k-means split and swap freely between runs —
-        # one generation's "a" is stone and the next one's is the void, and
-        # asking for "a" built the mask table for the VOID, so every room
-        # rendered black while the walls looked right. "light"/"dark" are
-        # stable across generations; the raw labels remain as an override.
-        lum = {k: sum(v["colour"]) for k, v in read["terrains"].items()}
-        want = str(terrain or "light").strip().lower()
-        if want in read["terrains"]:
-            which = want
-        elif want == "dark":
-            which = min(lum, key=lum.get)
-        else:
-            which = max(lum, key=lum.get)
-        picked = read["terrains"][which]
-        colours = [read["terrains"]["a"]["colour"],
-                   read["terrains"]["b"]["colour"]]
+        def _tile_mean(tx):
+            return _tilemask._mean(list(
+                sheet.crop((tx * tile_px, 0, (tx + 1) * tile_px, tile_px))
+                .convert("RGB").getdata()))
 
+        colours = [_tile_mean(0), _tile_mean(1)]
+        full = (_tilemask.BIT_N | _tilemask.BIT_E |
+                _tilemask.BIT_S | _tilemask.BIT_W)
         wanted = (list(range(16)) if bits == 4
                   else _autotile.blob47_masks())
-        table = dict(picked["table"])
-        made: dict = {}
-        built: dict = {}
-        if fill:
-            # Whole tiles first (flip/rotate), quarters only for what is left:
-            # a real tile always beats four corners of other tiles.
-            syn = _tilemask.synthesise(sheet, table, wanted,
-                                       tile_size=(tile_px, tile_px))
-            sheet, table, made = syn["image"], syn["table"], syn["made"]
-            comp = _tilemask.composite(sheet, table, wanted,
-                                       tile_size=(tile_px, tile_px))
-            sheet, table, built = comp["image"], comp["table"], comp["built"]
-        table = {m: c for m, c in table.items() if c is not None}
-        missing = [m for m in wanted if m not in table]
-        # ONE EDGE INSET FOR THE WHOLE SET. Generated art does not give this:
-        # measured on a real sheet, tiles with one void side ranged 61%-82%
-        # floor and two-void tiles 28%-73%, so neighbours disagreed about
-        # where the floor stops and every room edge bulged in and out. The
-        # model's TEXTURE is kept; the GEOMETRY is imposed. Also puts the
-        # sheet in canonical mask order, which is what makes it a standard
-        # tileset every consumer can read rather than one only this code can.
-        norm = _tilemask.normalise_edges(sheet, table, wanted,
-                                         tile_size=(tile_px, tile_px),
-                                         colours=colours)
-        if norm.get("ok"):
-            sheet, table = norm["image"], norm["table"]
-            result_inset = norm["inset"]
-        else:
-            packed = _tilemask.repack(sheet, table, wanted,
-                                      tile_size=(tile_px, tile_px),
-                                      columns=4 if bits == 4 else 8)
-            sheet, table = packed["image"], packed["table"]
-            result_inset = None
+        # ONE EDGE INSET FOR THE WHOLE SET, same machinery the RD path used
+        # to repair its sheets — here it is not a repair, it is the whole
+        # construction: full-floor donor at (0,0), void donor at (1,0), and
+        # every wanted mask carved between them. Coverage cannot be partial.
+        norm = _tilemask.normalise_edges(
+            sheet, {full: (0, 0), 0: (1, 0)}, wanted,
+            tile_size=(tile_px, tile_px), colours=colours)
+        if not norm.get("ok"):
+            return {"ok": False, "stage": "compose",
+                    "error": norm.get("reason"), "raw": str(raw_png),
+                    "spend": {"usd": round(spent, 4)}}
+        sheet, table = norm["image"], norm["table"]
+        result_inset = norm["inset"]
 
         atlas_png = out_dir / f"{name}.png"
         sheet.save(atlas_png)
@@ -3123,12 +3113,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         wall_source = None
         if wall_prompt:
             try:
-                got_w = _rd.tileset(wall_prompt, kind="tileset",
-                                    tile_px=int(tile_px), root=str(root))
-                spent += float(got_w.get("usd") or 0.0)
-                wimg = _Img.open(_io.BytesIO(
-                    _b64mod.b64decode(got_w["png_b64"]))).convert("RGBA")
-                wall_source = _wall_tile_from(wimg, sheet, tile_px, out_dir,
+                wtile, usd = _texture(wall_prompt, "wall")
+                spent += usd
+                wall_source = _wall_tile_from(wtile, sheet, tile_px, out_dir,
                                               name)
             except Exception as exc:                            # noqa: BLE001
                 wall_source = {"ok": False,
@@ -3179,56 +3166,30 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         tres_path = out_dir / f"{name}.tres"
         tres_path.write_text(tres_text, encoding="utf-8")
 
-        # COVERAGE IS THE VERDICT, not a detail in a sub-dict. A sheet with
-        # five of forty-seven masks is not a tileset that came back with a
-        # note; it is a failed generation, and reporting ok:True with the
-        # number buried is how it gets installed and only noticed when the
-        # level draws holes. RD coverage varies wildly per roll, so this
-        # refuses and the caller re-rolls rather than shipping the bad one.
-        share = len(table) / max(1, len(wanted))
-        if share < MIN_TILE_COVERAGE:
-            return {"ok": False, "name": name, "atlas": str(atlas_png),
-                    "coverage": {"have": len(table), "want": len(wanted),
-                                 "share": round(share, 2),
-                                 "missing": missing},
-                    "spent_usd": round(spent, 3),
-                    "error": (
-                        f"only {len(table)} of {len(wanted)} masks came back "
-                        f"({share:.0%}) — a level built on this draws holes "
-                        "wherever a missing mask is needed. The generation is "
-                        "the problem, not the writer: re-roll, or drop to "
-                        "bits=4 which needs 16 masks instead of 47. The sheet "
-                        "is kept so you can look at what came back.")}
-
         result = {"ok": True, "name": name,
                   "atlas": str(atlas_png), "tileset": str(tres_path),
-                  "tile_px": tile_px, "bits": bits, "terrain": which,
-                  "terrain_colour": picked["colour"],
+                  "tile_px": tile_px, "bits": bits,
+                  "colours": {"floor": [round(c) for c in colours[0]],
+                              "void": [round(c) for c in colours[1]]},
+                  # Coverage is total BY CONSTRUCTION — every mask is carved
+                  # from the two textures, so there is no roll to fail and
+                  # nothing to refuse. The seam report and the engine load
+                  # are the gates that remain.
                   "coverage": {"have": len(table), "want": len(wanted),
-                               "detected": len(picked["table"]),
-                               "synthesised": {str(m): f"{s}/{h}"
-                                               for m, (s, h) in made.items()},
-                               "composited": {str(m): v.get("carved_from")
-                                                     or v.get("from")
-                                              for m, v in built.items()},
-                               "missing": missing},
+                               "constructed": True},
                   "table": {str(m): list(c) for m, c in sorted(table.items())},
-                  # The tiles that are SAFE AS A SOLID FILL — mask 15/255 is
+                  # The tile that is SAFE AS A SOLID FILL — mask 15/255 is
                   # "every neighbour is me", i.e. an interior. Surfaced because
                   # a caller picking atlas coordinates by eye picks an edge
                   # tile and paints a level entirely out of seams.
-                  "solid": {
-                      "a": read["terrains"]["a"]["pure"],
-                      "b": read["terrains"]["b"]["pure"]},
+                  "solid": list(table[max(wanted)]),
                   "seams": seams, "edge_inset": result_inset,
                   **({"wall": wall_source} if wall_source else {}),
                   "collision": {"tiles": len([m for m, v in collision.items()
                                               if v]),
                                 "polygons": sum(len(v) for v in
                                                 collision.values())},
-                  "low_confidence": read.get("low_confidence", []),
-                  "spend": {"usd": round(spent, 4),
-                            "provider": "retrodiffusion"}}
+                  "spend": {"usd": round(spent, 4), "provider": "kie"}}
 
         master = _tileset_master_for(str(atlas_png), out_dir / f"{name}.aseprite",
                                      (tile_px, tile_px))
@@ -6540,6 +6501,13 @@ def prop_generate(name: str, style: str = "", types: str = "",
         man_path = out_dir / f"{name}_props.json"
         man_path.write_text(_json.dumps(manifest, indent=1), encoding="utf-8")
 
+        # EVERY AI-GENERATED SHEET GETS AN ASEPRITE MASTER — house rule, not
+        # a convenience. The props atlas was the one generated sheet that
+        # skipped the cleanup path; a human fixing one bad prop edits the
+        # master and aseprite_export brings it back, same as characters.
+        ase = _ase_master_for(str(atlas_png), (tile_px, tile_px), {}, None,
+                              fps=8.0)
+
         installed = None
         if install and godot_project:
             import shutil as _shutil
@@ -6563,6 +6531,7 @@ def prop_generate(name: str, style: str = "", types: str = "",
              ref=name)
         return {"ok": True, "name": name, "view": view, "types": list(want),
                 "drawings": packed["slots"], "atlas": str(atlas_png),
+                **({"aseprite": ase} if ase is not None else {}),
                 "manifest": str(man_path),
                 "prop_manifest": installed or str(man_path),
                 "installed": installed, "spent_usd": round(spent, 3),
