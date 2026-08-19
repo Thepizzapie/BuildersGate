@@ -99,20 +99,38 @@ async def test_a_human_can_still_set_lanes(wired):
 async def test_two_slow_tool_calls_overlap_instead_of_serialising(wired,
                                                                  monkeypatch):
     """The blocking-loop blocker, asserted as concurrency rather than as an
-    implementation detail: if the bodies ran on the loop, two 0.4s calls would
-    take 0.8s and every other seat would wait behind them."""
+    implementation detail: if the bodies ran on the loop, the two sleeps
+    would run back to back and every other seat would wait behind them.
+
+    MEASURED AS WINDOW OVERLAP, not against a wall-clock budget - the same
+    lesson the next test's docstring records. The first version demanded
+    both calls inside 0.7s, which is 0.3s of headroom for anyio's thread
+    spin-up on a shared runner; it passed everywhere and then failed once
+    on a busy Windows box at 1.28s, which read as "the calls serialised"
+    and was really "the runner stalled". Serialised execution has DISJOINT
+    sleep windows however slow the hardware; overlap is the property.
+    """
+    import threading
+
+    windows: list[tuple[float, float]] = []
+    note = threading.Lock()
+
     def slow(*args, **kwargs):
+        t0 = time.monotonic()
         time.sleep(0.4)
+        t1 = time.monotonic()
+        with note:
+            windows.append((t0, t1))
         return []
 
     monkeypatch.setattr(server._seats, "read_notes", slow)
 
-    started = time.monotonic()
     both = await asyncio.gather(call("seat_notes"), call("seat_notes"))
-    elapsed = time.monotonic() - started
 
     assert all("notes" in one for one in both)
-    assert elapsed < 0.7, f"the two calls serialised ({elapsed:.2f}s)"
+    (a0, a1), (b0, b1) = sorted(windows)
+    assert a0 < b1 and b0 < a1, \
+        f"the two calls serialised (windows {windows})"
 
 
 @pytest.mark.anyio
