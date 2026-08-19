@@ -532,26 +532,43 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
             f"a {width}-wide level cannot hold {rooms} rooms in a row — it "
             f"needs about {rooms * 6 + 2 * margin}")
 
-    # one column per room, room centred in it with vertical wander so the
-    # route bends instead of running dead straight
-    col = span / rooms
-    placed: list[Rect] = []
-    for i in range(rooms):
-        rw = min(room_w, int(col) - 2)
-        rw = max(5, rw)
-        rh = max(5, min(room_h, height - 2 * margin))
-        cx = int(margin + col * i + col / 2)
-        drift = int((rng.random() - 0.5) * 2 * jitter * (height - rh - 2 * margin))
-        cy = height // 2 + drift
-        x = max(margin, min(width - margin - rw, cx - rw // 2))
-        y = max(margin, min(height - margin - rh, cy - rh // 2))
-        placed.append(Rect(x, y, rw, rh))
+    # ROOMS PACK THE PLATE. A chain of rooms strung across the middle leaves
+    # the rest of the floor as dead grey, and a building does not have dead
+    # space in it — an office floor is rooms wall to wall, and the route is
+    # which ones you pass through, not where they sit. So the plate is cut
+    # into a grid of rooms that FILL it, sharing their walls the way rooms
+    # in a building do, and the route is a walk over that grid.
+    cols = max(2, min(rooms, (width - 2 * margin) // 9))
+    rows = max(1, -(-(rooms + max(0, side_rooms)) // cols))
+    cw = (width - 2 * margin) // cols
+    chh = (height - 2 * margin) // rows
+    if cw < 6 or chh < 6:
+        raise LevelError(
+            f"a {width}x{height} plate cannot hold {rooms} rooms plus "
+            f"{side_rooms} side — each needs about 6x6 with its walls")
+    grid: list[Rect] = []
+    for r in range(rows):
+        for c in range(cols):
+            x = margin + c * cw
+            y = margin + r * chh
+            # one cell of the gap belongs to the shared wall between rooms
+            grid.append(Rect(x, y, cw - 1, chh - 1))
 
-    main = list(range(rooms))
+    # THE ROUTE IS A WALK OVER THE GRID: along the top row, down, back along
+    # the next, so consecutive rooms are always neighbours and the corridor
+    # between them is a doorway rather than a trek.
+    order = []
+    for r in range(rows):
+        band = list(range(r * cols, min(len(grid), (r + 1) * cols)))
+        order += band if r % 2 == 0 else band[::-1]
+    placed = [grid[i] for i in order[:rooms + max(0, side_rooms)]]
+
+    main = list(range(min(rooms, len(placed))))
     # SIDE ROOMS HANG OFF THE CHAIN, never between two links of it: a detour
-    # you must pass through is not a detour, it is the route.
-    side: list[int] = []
-    for _ in range(max(0, side_rooms)):
+    # you must pass through is not a detour, it is the route. With a packed
+    # grid they are simply the rooms the walk does not need.
+    side: list[int] = list(range(len(main), len(placed)))
+    for _ in range(0):
         host = rng.randrange(1, rooms - 1) if rooms > 2 else 0
         base = placed[host]
         # A SIDE ROOM THAT DOES NOT FIT IS NOT A SIDE ROOM, and silently
@@ -584,16 +601,52 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     spread = tuple(range(corridor_width))
 
     def join(a: Rect, b: Rect):
+        # A DOORWAY, NOT A TREK. Two rooms that already share a wall are
+        # joined by cutting an opening in it; running a corridor between
+        # their centres instead carved a channel straight through both, which
+        # is how a packed floor turned back into a chain with holes in it.
+        gap_x = (a.x + a.w < b.x) or (b.x + b.w < a.x)
+        gap_y = (a.y + a.h < b.y) or (b.y + b.h < a.y)
+        left, right = (a, b) if a.x <= b.x else (b, a)
+        top, bottom = (a, b) if a.y <= b.y else (b, a)
+        # A DOOR IS A DOOR, NOT A MISSING WALL. At full corridor width and
+        # always centred, every opening landed on the same line and the row
+        # of them merged into one continuous channel — the packed floor read
+        # as open plan with pillars. Two cells, placed anywhere along the
+        # shared edge, is an opening you walk through.
+        w = max(1, min(2, corridor_width))
+        if not gap_y and abs((left.x + left.w) - right.x) <= 2:
+            lo = max(left.y, right.y)
+            hi = min(left.y + left.h, right.y + right.h)
+            if hi - lo >= w + 2:
+                mid = rng.randint(lo + 1, hi - w - 1)
+                cells = {(x, y)
+                         for x in range(left.x + left.w - 1, right.x + 1)
+                         for y in range(mid, mid + w)}
+                corridors.append({"from": list(a.center), "to": list(b.center),
+                                  "kind": "door", "cells": len(cells)})
+                return cells
+        if not gap_x and abs((top.y + top.h) - bottom.y) <= 2:
+            lo = max(top.x, bottom.x)
+            hi = min(top.x + top.w, bottom.x + bottom.w)
+            if hi - lo >= w + 2:
+                mid = rng.randint(lo + 1, hi - w - 1)
+                cells = {(x, y)
+                         for y in range(top.y + top.h - 1, bottom.y + 1)
+                         for x in range(mid, mid + w)}
+                corridors.append({"from": list(a.center), "to": list(b.center),
+                                  "kind": "door", "cells": len(cells)})
+                return cells
         pa, pb = a.center, b.center
         cells, path = _elbow(pa, pb, rng, width=corridor_width)
-        corridors.append({"from": list(pa), "to": list(pb),
+        corridors.append({"from": list(pa), "to": list(pb), "kind": "corridor",
                           "path": path, "cells": len(cells)})
         return cells
 
-    for i in range(rooms - 1):
+    for i in range(len(main) - 1):
         floor |= join(placed[i], placed[i + 1])
-    for j, idx in enumerate(side):
-        host = rng.randrange(1, rooms - 1) if rooms > 2 else 0
+    for idx in side:
+        host = rng.randrange(0, len(main))
         floor |= join(placed[idx], placed[host])
 
     floor = {c for c in floor
@@ -611,7 +664,7 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
         "solid": sorted(solid, key=lambda c: (c[1], c[0])),
         "connected": connected(floor),
         "spawn": list(ordered[0].center),
-        "exit": list(ordered[rooms - 1].center),
+        "exit": list(ordered[len(main) - 1].center),
         "main_path": main,
         "side": side,
     }
