@@ -2983,6 +2983,7 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      bits: int = 8, void_prompt: str = "",
                      wall_prompt: str = "", wall_lift: int = 0,
+                     reuse: bool = True,
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False,
                      collide: bool = True,
@@ -3079,6 +3080,32 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             generation already paid for.
             """
             raw = out_dir / f"{name}_{tag}_raw.png"
+            # REUSE THE PAINTING IF IT IS ALREADY HERE. Every geometry change
+            # in this tool — the diamond carve, the panel masks, the sampling
+            # scale — was iterated by regenerating art that had not changed,
+            # which costs money, burns time and hands the provider another
+            # chance to refuse a texture it already painted once. The raw
+            # generation is kept beside the atlas precisely so it can be
+            # re-cut; `reuse=False` forces a fresh roll.
+            if reuse and raw.is_file():
+                img = _Img.open(raw).convert("RGBA")
+                span = max(2, int(tile_px * _TEXTURE_ZOOM))
+                zoom = img.resize((span, span), _Img.LANCZOS)
+                ox0, oy0 = max(0, (span - tw) // 2), max(0, (span - th) // 2)
+                jitter = ((tw // 2, th // 2), (-tw // 2, th), (tw, -th // 2))
+                extra = []
+                for jx, jy in jitter[:variants]:
+                    cx = min(max(0, ox0 + jx), max(0, span - tw))
+                    cy = min(max(0, oy0 + jy), max(0, span - th))
+                    extra.append(zoom.crop((cx, cy, cx + tw, cy + th)))
+                patch = zoom.crop((ox0, oy0, ox0 + tw // 2, oy0 + th // 2))
+                base = _tilemask.mirror_tile(patch).resize((tw, th),
+                                                           _Img.NEAREST)
+                extra = [_tilemask.mirror_tile(
+                    e.crop((0, 0, tw // 2, th // 2))).resize((tw, th),
+                                                             _Img.NEAREST)
+                         for e in extra]
+                return base, extra, 0.0
             # SAY WHAT YOU WANT, NOT WHAT YOU DO NOT. This asked for a
             # texture with "no border, no vignette, no objects", and a pile
             # of negations reads as an attempt to suppress rather than to
@@ -3112,13 +3139,21 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                        if "filter" in why or "Prohibited" in why else ""))
             cost = float(got.get("estimated_usd") or 0.02)
             img = _Img.open(raw).convert("RGBA")
-            zoom = img.resize((4 * tile_px, 4 * tile_px), _Img.LANCZOS)
+            # SAMPLE THE PAINTING FINE, NOT BIG. At 4x the tile the crop held
+            # a few large features, so the floor read as a handful of motifs
+            # repeating — and mirroring them to kill the diamond seams only
+            # turned the motifs into butterflies. A floor material wants many
+            # small features per tile: that is what carpet, concrete and
+            # stone actually look like at a metre away, and it is what makes
+            # the repeat stop being legible at all.
+            span = max(2, int(tile_px * _TEXTURE_ZOOM))
+            zoom = img.resize((span, span), _Img.LANCZOS)
             # CROP the tile's real proportions out of the painting rather than
             # resizing a square into them. An isometric tile is 2:1, and
             # squashing a square crop to fit would halve the material's
             # vertical scale — the brick would still be a brick, drawn by a
             # bricklayer who had been stood on.
-            ox0, oy0 = (4 * tile_px - tw) // 2, (4 * tile_px - th) // 2
+            ox0, oy0 = max(0, (span - tw) // 2), max(0, (span - th) // 2)
             # VARIANTS ARE MEANT TO BE THE SAME CARPET, NOT A DIFFERENT ONE.
             # These were cut from the four far corners of the painting, which
             # on any material with large-scale structure gives four visibly
@@ -3129,10 +3164,19 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             jitter = ((tw // 2, th // 2), (-tw // 2, th), (tw, -th // 2))
             extra = []
             for jx, jy in jitter[:variants]:
-                cx = min(max(0, ox0 + jx), 4 * tile_px - tw)
-                cy = min(max(0, oy0 + jy), 4 * tile_px - th)
+                cx = min(max(0, ox0 + jx), max(0, span - tw))
+                cy = min(max(0, oy0 + jy), max(0, span - th))
                 extra.append(zoom.crop((cx, cy, cx + tw, cy + th)))
-            return (zoom.crop((ox0, oy0, ox0 + tw, oy0 + th)), extra, cost)
+            # MIRROR-QUAD A HALF TILE, so the material is continuous across
+            # the diagonals where diamonds actually meet — see
+            # tilemask.mirror_tile for why "seamless" from the model is not
+            # the same question.
+            patch = zoom.crop((ox0, oy0, ox0 + tw // 2, oy0 + th // 2))
+            base = _tilemask.mirror_tile(patch).resize((tw, th),
+                                                       _Img.NEAREST)
+            extra = [_tilemask.mirror_tile(e.crop((0, 0, tw // 2, th // 2)))
+                     .resize((tw, th), _Img.NEAREST) for e in extra]
+            return base, extra, cost
 
         floor_tile, floor_variants, usd = _texture(prompt, "floor",
                                                    variants=3)
@@ -3322,9 +3366,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                 # from one-cell partitions renders as a maze of corridors
                 # instead of rooms with walls between them. These are the
                 # same wall at the same height with a narrow footprint.
-                for ax in ("x", "y", "post"):
-                    parts.append((f"panel_{ax}", _tilemask.iso_panel(
-                        wmat, ax, tile_size=(tw, th), lift=lift)))
+                for mk in range(16):
+                    parts.append((f"panel{mk}", _tilemask.iso_panel(
+                        wmat, mk, tile_size=(tw, th), lift=lift)))
                 for _kind, part in parts:
                     if not part.get("ok"):
                         raise ValueError(part.get("reason"))
@@ -7378,6 +7422,45 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
 
         side = _iso_blocks(tiles_disk)
         layers = []
+        # CLIP THE FLOOR TO WHAT THE WALLS ENCLOSE. A designed level paints
+        # floor past its own perimeter — margin, underlay, whatever the
+        # original wall art covered — and the original covers it because its
+        # wall tiles are tall enough to hide the strip. Re-emitted honestly,
+        # that strip leaks out beyond the boundary as a fringe of carpet
+        # floating outside the building. The enclosed region is the walkable
+        # component the doors connect, plus the cells under the walls
+        # themselves; anything else is backing, not floor.
+        walk_all = (floor_cells - wall_cells) | door_cells
+        keep, seen = set(), set()
+        for cell in sorted(walk_all):
+            if cell in seen:
+                continue
+            comp, stack = set(), [cell]
+            while stack:
+                cx0, cy0 = stack.pop()
+                if (cx0, cy0) in comp:
+                    continue
+                comp.add((cx0, cy0))
+                for q in ((cx0 + 1, cy0), (cx0 - 1, cy0),
+                          (cx0, cy0 + 1), (cx0, cy0 - 1)):
+                    if q in walk_all and q not in comp:
+                        stack.append(q)
+            seen |= comp
+            if len(comp) > len(keep):
+                keep = comp
+        # AND NOT UNDER THE OUTER SHELL. Floor stays under an INTERIOR wall,
+        # because a thin panel does not cover its whole cell and the rooms
+        # either side have to meet under it. Under the outermost ring there
+        # is nothing on the far side to meet, so the same tile shows past the
+        # panel as a fringe of carpet hanging outside the building — which is
+        # only invisible in the original because its wall art is a full cell
+        # wide and covers it.
+        shell = {c for c in wall_cells
+                 if not any((c[0] + dx, c[1] + dy) in keep
+                            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))}
+        outside = len(floor_cells) - len(((keep | wall_cells) - shell)
+                                         & floor_cells)
+        floor_cells = ((keep | wall_cells) - shell) & floor_cells
         terrain = _terrain("grid16", 0, 0, 0, 4, "Floor")
         cells = _autotile.resolve(sorted(floor_cells), terrain)
         missing = _autotile.unmapped(sorted(floor_cells), terrain)
@@ -7489,6 +7572,7 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                 "floor_cells": len(floor_cells),
                 "wall_cells": len(wall_cells),
                 "doors": len(door_cells),
+                "clipped_outside": outside,
                 "walls": ("blocks" if side and wall_src else
                           "source 1" if wall_src else
                           "not drawn: the new tileset has no wall source"),
@@ -7582,28 +7666,32 @@ def _read_prop_manifest(root, ref: str) -> dict:
 
 
 #: Which wall tile a cell wants, from the wall cells around it. A run of wall
-#: along the cell x axis renders down-right, along y renders down-left, and a
-#: junction keeps the full-footprint post so two panels meeting at different
-#: angles do not leave a notch between them.
-def _panel_axis(cell, wall_cells) -> str:
+#: along the cell x axis renders down-right, along y down-left, and a corner
+#: gets stubs on exactly the two sides that continue — a tile that always
+#: reached all four ways put a nub out into open floor at every corner.
+def _panel_mask(cell, wall_cells) -> int:
+    from bgate_core import tilemask as _tm
+
     x, y = cell
-    run_x = (x + 1, y) in wall_cells or (x - 1, y) in wall_cells
-    run_y = (x, y + 1) in wall_cells or (x, y - 1) in wall_cells
-    if run_x and not run_y:
-        return "x"
-    if run_y and not run_x:
-        return "y"
-    return "post"
+    mask = 0
+    if (x, y - 1) in wall_cells:
+        mask |= _tm.BIT_N
+    if (x + 1, y) in wall_cells:
+        mask |= _tm.BIT_E
+    if (x, y + 1) in wall_cells:
+        mask |= _tm.BIT_S
+    if (x - 1, y) in wall_cells:
+        mask |= _tm.BIT_W
+    return mask
 
 
 def _wall_tile_at(blocks: dict, cell, wall_cells):
-    """The atlas coordinate for one wall cell — a panel when the set has
-    them, the solid block when it does not."""
+    """The atlas coordinate for one wall cell — a masked panel when the set
+    has them, the solid block when it does not."""
     if not blocks:
         return None
-    axis = _panel_axis(cell, wall_cells)
-    return (blocks.get(f"panel_{axis}") or blocks.get("panel_post")
-            or blocks.get("wall"))
+    at = blocks.get(f"panel{_panel_mask(cell, wall_cells)}")
+    return at or blocks.get("wall")
 
 
 def _iso_blocks(tiles_disk: _Path) -> Optional[dict]:
@@ -7679,6 +7767,14 @@ def _manifest_source(tiles_disk: _Path, man: dict) -> int:
     if not got["reused"]:
         tiles_disk.write_text(got["text"], encoding="utf-8")
     return got["id"]
+
+
+#: How much of the painting one tile holds, as a multiple of the tile. Small
+#: means fine grain: the whole generation squeezed into roughly one tile, so a
+#: floor is a texture rather than a pattern of motifs. Raise it for a material
+#: whose features are meant to be legible individually — a brick wall, a plank
+#: floor — where reading one brick matters more than hiding the repeat.
+_TEXTURE_ZOOM = 1.5
 
 
 #: Where each prop TYPE sits on its atlas when the caller says nothing — one

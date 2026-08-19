@@ -1126,31 +1126,35 @@ def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
 PANEL_DEPTH = 0.34
 
 
-def iso_panel(material, axis: str, *, tile_size: tuple[int, int], lift: int,
+def iso_panel(material, mask, *, tile_size: tuple[int, int], lift: int,
               depth: float = PANEL_DEPTH,
               faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
               ) -> dict:
-    """A thin wall standing along one cell axis, rather than filling the cell.
+    """A thin wall standing along the directions its neighbours actually run.
 
-    ``axis`` is "x" (the wall runs toward the cell's +x/-x neighbours, which
-    renders down-right/up-left) or "y" (+y/-y, down-left/up-right), or "post"
-    for a junction, which keeps the full diamond so corners and T-joins do not
-    leave a notch where two panels meet at different angles.
+    ``mask`` is a 4-bit neighbour mask (BIT_N/E/S/W) — or "x"/"y" for a plain
+    straight run — and the footprint is a stub from the cell's CENTRE toward
+    each direction the mask sets, plus the centre itself. That is the whole
+    fix for the nubs: a junction tile that always extended all four ways put
+    a stub out into open floor at every corner and T, because an L-corner is
+    two directions and the tile drew four. Sixteen tiles is not a lot of art
+    when every one of them is the same wall with a different footprint.
 
     The footprint is computed in CELL space for the same reason the ramp's
     slope is: `a = (u + v) / 2` runs along +x and `b = (v - u) / 2` along +y,
-    so "thin in y" is `|b| <= depth/2` exactly, at any tile aspect. Everything
-    else — the extrusion, the two face values, the origin — is the block's,
-    because a panel is a block with a narrower footprint and nothing else
-    about it should differ.
+    so a stub is a half-open interval on one of them at any tile aspect.
     """
     from PIL import Image
 
     tw, th = int(tile_size[0]), int(tile_size[1])
     lift = int(lift)
-    axis = str(axis or "").strip().lower()
-    if axis not in ("x", "y", "post"):
-        return {"ok": False, "reason": f"{axis!r} is not x, y or post"}
+    if isinstance(mask, str):
+        named = {"x": BIT_E | BIT_W, "y": BIT_N | BIT_S,
+                 "cross": BIT_N | BIT_E | BIT_S | BIT_W, "post": 0}
+        if mask.strip().lower() not in named:
+            return {"ok": False, "reason": f"{mask!r} is not a wall mask"}
+        mask = named[mask.strip().lower()]
+    mask = int(mask)
     if lift < 1:
         return {"ok": False, "reason": f"a {lift}px lift is not a wall"}
     mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
@@ -1161,14 +1165,21 @@ def iso_panel(material, axis: str, *, tile_size: tuple[int, int], lift: int,
     def inside(u, v):
         if abs(u) + abs(v) > 1.0:
             return False
-        if axis == "post":
-            return True
         a, b = (u + v) / 2.0, (v - u) / 2.0
-        return abs(b) <= half if axis == "x" else abs(a) <= half
+        if abs(a) <= half and abs(b) <= half:
+            return True                       # the centre is always there
+        if mask & BIT_E and a >= 0 and abs(b) <= half:
+            return True
+        if mask & BIT_W and a <= 0 and abs(b) <= half:
+            return True
+        if mask & BIT_S and b >= 0 and abs(a) <= half:
+            return True
+        if mask & BIT_N and b <= 0 and abs(a) <= half:
+            return True
+        return False
 
     out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
     opx = out.load()
-    # the top face, lifted
     for py in range(th):
         v = ((py + 0.5) - th / 2.0) / (th / 2.0)
         for px in range(tw):
@@ -1177,13 +1188,6 @@ def iso_panel(material, axis: str, *, tile_size: tuple[int, int], lift: int,
                 r, g, b_, al = mpx[px, py]
                 if al:
                     opx[px, py] = (r, g, b_, 255)
-    if lift:
-        shifted = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
-        shifted.paste(out.crop((0, 0, tw, th)), (0, 0))
-        out = shifted
-        opx = out.load()
-    # the sides: from each column's lowest opaque pixel down to where the
-    # footprint's own boundary would sit `lift` lower
     for px in range(tw):
         u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
         rows = [py for py in range(th) if opx[px, py][3]]
@@ -1195,4 +1199,35 @@ def iso_panel(material, axis: str, *, tile_size: tuple[int, int], lift: int,
             if al:
                 opx[px, py] = (int(r * k), int(g * k), int(b_ * k), 255)
     return {"ok": True, "image": out, "origin": (0, lift // 2),
-            "size": (tw, th + lift), "axis": axis}
+            "size": (tw, th + lift), "mask": mask}
+
+
+def mirror_tile(patch):
+    """A texture that is continuous under ANY offset, by mirror-quadding it.
+
+    THE LATTICE. Isometric diamonds do not meet edge-to-edge like squares:
+    the neighbour at +x sits half a tile right and half a tile down, so a
+    texture only has to be seamless at the FULL tile period to still show a
+    hard join along every diagonal — which reads as a quilt of diamond
+    outlines over the whole floor, and no amount of asking the model for a
+    "seamless" texture fixes it, because the model is answering the wrong
+    question.
+
+    Mirroring answers the right one. A tile built as a patch and its three
+    reflections matches itself across every edge AND across the half-offset
+    lines where the mirror falls, so neighbours agree at any alignment. The
+    cost is symmetry, which on a fine-grained material — carpet, stone,
+    concrete, the things floors are made of — is invisible at tile size and
+    is the trade every hand-made tileset makes.
+    """
+    from PIL import Image
+
+    w, h = patch.size
+    out = Image.new("RGBA", (w * 2, h * 2), (0, 0, 0, 0))
+    flip_h = patch.transpose(Image.FLIP_LEFT_RIGHT)
+    flip_v = patch.transpose(Image.FLIP_TOP_BOTTOM)
+    out.paste(patch, (0, 0))
+    out.paste(flip_h, (w, 0))
+    out.paste(flip_v, (0, h))
+    out.paste(flip_h.transpose(Image.FLIP_TOP_BOTTOM), (w, h))
+    return out
