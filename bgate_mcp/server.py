@@ -7935,6 +7935,7 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
 
 @_tool
 def level_plan(width: int = 48, height: int = 32, seed: int = 0,
+               layout: str = "bsp", rooms: int = 5, side_rooms: int = 1,
                min_leaf: int = 10, min_room: int = 4, margin: int = 1,
                max_depth: int = 5, corridor_width: int = 2,
                room_fill: float = 0.8) -> dict:
@@ -7967,11 +7968,24 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
                       rooms fuse into one L-shaped cavity.
     """
     try:
-        level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
-                               min_room=min_room, margin=margin,
-                               max_depth=max_depth,
-                               corridor_width=corridor_width,
-                               room_fill=room_fill)
+        # A PARTITION OR A ROUTE. BSP gives rooms that are all the same KIND
+        # of thing — every one a box off a corridor, none first or last — and
+        # a designed floor is not that. Shown a real tutorial floor its author
+        # described it as five main rooms with a side room and drew the path
+        # through them, which is a sequence with branches; `layout="path"`
+        # builds that, and reports which rooms are the route and which are the
+        # detour so a caller can dress them differently.
+        if str(layout).strip().lower() in ("path", "route", "chain"):
+            level = _levelgen.plan_path(
+                width, height, seed=seed, rooms=rooms,
+                side_rooms=side_rooms, corridor_width=corridor_width,
+                margin=max(1, margin), room_w=min_leaf, room_h=min_leaf)
+        else:
+            level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
+                                   min_room=min_room, margin=margin,
+                                   max_depth=max_depth,
+                                   corridor_width=corridor_width,
+                                   room_fill=room_fill)
         return {"ok": True, "seed": seed, "width": width, "height": height,
                 "rooms": level["rooms"], "room_count": len(level["rooms"]),
                 "corridor_count": len(level["corridors"]),
@@ -8041,7 +8055,17 @@ def _wall_tile_at(blocks: dict, cell, wall_cells):
     if not blocks:
         return None
     at = blocks.get(f"panel{_panel_mask(cell, wall_cells)}")
-    return at or blocks.get("wall")
+    if at is None:
+        at = blocks.get("wall")
+    # A LIST MEANS STAGGER THEM. These tiles carry a vertical panel joint,
+    # and one tile repeated down a run puts that joint on every cell — a
+    # regular rib that reads as a waffle rather than a wall. The set ships
+    # two variants with the joint on opposite sides for exactly this, and
+    # the original level alternates them; picking by cell parity reproduces
+    # that and keeps the choice deterministic, so a re-run is the same scene.
+    if at and isinstance(at[0], (list, tuple)):
+        at = at[(cell[0] + cell[1]) % len(at)]
+    return at
 
 
 def _iso_blocks(tiles_disk: _Path) -> Optional[dict]:
@@ -8230,6 +8254,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                    min_leaf: int = 10, min_room: int = 4, margin: int = 1,
                    max_depth: int = 5, corridor_width: int = 2,
                    room_fill: float = 0.8,
+                   layout: str = "bsp", rooms: int = 5,
+                   side_rooms: int = 1,
                    levels: int = 1, raised: float = 0.35,
                    props: bool = False, prop_manifest: str = "",
                    prop_source: int = 0,
@@ -8594,6 +8620,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "seed": seed, "size": [width, height],
             "rooms": len(level["rooms"]),
             "corridors": len(level["corridors"]),
+            **({"main_path": level["main_path"], "side_rooms": level["side"]}
+               if level.get("main_path") is not None else {}),
             "tile_variants": varied,
             **({"iso_walls": iso_walls} if iso_walls else {}),
             **({"elevation": {

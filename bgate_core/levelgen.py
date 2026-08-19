@@ -492,3 +492,112 @@ def terrace(level: dict, *, seed: int = 0, levels: int = 2,
     out["connected"] = len(got) == len(floor)
     out["unreachable"] = sorted(c for c in floor if c not in got)
     return out
+
+
+# ---------------------------------------------------------------------------
+# A route, not a partition
+# ---------------------------------------------------------------------------
+# BSP ANSWERS THE WRONG QUESTION FOR A DESIGNED FLOOR. Splitting a rectangle
+# until the pieces are room-sized gives rooms that are all the same KIND of
+# thing: every one is a box off a corridor, none is first or last, and nothing
+# says which way a player is going. Shown a real tutorial floor, the designer
+# described it as five main rooms with a side room and drew the route through
+# them — which is a sequence with branches, and no partition of a rectangle
+# has a sequence in it.
+#
+# So this lays a CHAIN: rooms in order from entrance to exit, each connected to
+# the next, with side rooms hung off the chain as optional stops. Spawn is the
+# first room and exit the last, by construction rather than by picking the two
+# farthest apart afterwards.
+
+
+def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
+              side_rooms: int = 1, room_w: int = 11, room_h: int = 11,
+              corridor_width: int = 3, margin: int = 2,
+              jitter: float = 0.45) -> dict:
+    """A level as a ROUTE through rooms, with optional side rooms off it.
+
+    ``rooms`` is how many the critical path visits; ``side_rooms`` how many
+    hang off it. The result has the same shape `plan` returns, plus
+    ``main_path`` (the room indices in walking order) and ``side`` (the ones
+    that are optional), so a caller can dress the route differently from the
+    detour — which is the distinction a floor plan is actually made of.
+    """
+    if rooms < 2:
+        raise LevelError(f"{rooms} rooms is not a route")
+    rng = random.Random(seed)
+    span = width - 2 * margin
+    if span < rooms * 6:
+        raise LevelError(
+            f"a {width}-wide level cannot hold {rooms} rooms in a row — it "
+            f"needs about {rooms * 6 + 2 * margin}")
+
+    # one column per room, room centred in it with vertical wander so the
+    # route bends instead of running dead straight
+    col = span / rooms
+    placed: list[Rect] = []
+    for i in range(rooms):
+        rw = min(room_w, int(col) - 2)
+        rw = max(5, rw)
+        rh = max(5, min(room_h, height - 2 * margin))
+        cx = int(margin + col * i + col / 2)
+        drift = int((rng.random() - 0.5) * 2 * jitter * (height - rh - 2 * margin))
+        cy = height // 2 + drift
+        x = max(margin, min(width - margin - rw, cx - rw // 2))
+        y = max(margin, min(height - margin - rh, cy - rh // 2))
+        placed.append(Rect(x, y, rw, rh))
+
+    main = list(range(rooms))
+    # SIDE ROOMS HANG OFF THE CHAIN, never between two links of it: a detour
+    # you must pass through is not a detour, it is the route.
+    side: list[int] = []
+    for _ in range(max(0, side_rooms)):
+        host = rng.randrange(1, rooms - 1) if rooms > 2 else 0
+        base = placed[host]
+        rw, rh = max(5, room_w - 3), max(5, room_h - 4)
+        above = base.y - rh - 3 >= margin
+        y = (base.y - rh - 3) if above else (base.y + base.h + 3)
+        if y < margin or y + rh > height - margin:
+            continue
+        x = max(margin, min(width - margin - rw, base.x))
+        side.append(len(placed))
+        placed.append(Rect(x, y, rw, rh))
+
+    floor: set = set()
+    for r in placed:
+        floor |= r.cells()
+    corridors = []
+    spread = tuple(range(corridor_width))
+
+    def join(a: Rect, b: Rect):
+        pa, pb = a.center, b.center
+        cells, path = _elbow(pa, pb, rng, width=corridor_width)
+        corridors.append({"from": list(pa), "to": list(pb),
+                          "path": path, "cells": len(cells)})
+        return cells
+
+    for i in range(rooms - 1):
+        floor |= join(placed[i], placed[i + 1])
+    for j, idx in enumerate(side):
+        host = rng.randrange(1, rooms - 1) if rooms > 2 else 0
+        floor |= join(placed[idx], placed[host])
+
+    floor = {c for c in floor
+             if 0 <= c[0] < width and 0 <= c[1] < height}
+    walls = wall_ring(floor)
+    solid = {(x, y) for y in range(height) for x in range(width)} - floor
+    ordered = placed
+    return {
+        "seed": seed, "width": width, "height": height,
+        "region": [0, 0, width, height],
+        "rooms": [r.as_dict() for r in ordered],
+        "corridors": corridors,
+        "floor": sorted(floor, key=lambda c: (c[1], c[0])),
+        "walls": sorted(walls, key=lambda c: (c[1], c[0])),
+        "solid": sorted(solid, key=lambda c: (c[1], c[0])),
+        "connected": connected(floor),
+        "spawn": list(ordered[0].center),
+        "exit": list(ordered[rooms - 1].center),
+        "main_path": main,
+        "side": side,
+    }
