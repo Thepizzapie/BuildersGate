@@ -33,7 +33,7 @@ def root(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def calls(monkeypatch):
+def calls(monkeypatch, routable_gateway):
     """Stub every generation. Records (task_kind, prompt, refs) per call and
     writes a real keyed PNG so the structural gates downstream are exercised
     against a plausible file rather than skipped."""
@@ -289,3 +289,39 @@ async def test_a_view_that_fails_is_dropped_not_fatal(root, calls, monkeypatch):
     assert got["model_sheet_dropped"][0]["view"] == "profile"
     # And the poses still ran, on the views that survived.
     assert [c for c in calls if c["task_kind"] == "animation"]
+
+
+@pytest.mark.anyio
+async def test_the_contract_supplies_the_shape_the_caller_did_not_type(root, calls):
+    """The declared cell and view fill the call - same rule as the tileset
+    manifest in level_generate. Typing frame_width=160 next to a 96x80
+    contract is re-deriving a settled fact, usually wrongly."""
+    from bgate_core import spritecontract as sc
+
+    sc.save(root, {"view": "top_down_3q", "cell": [96, 80]})
+    # archetypes, because `view` reaches the prompts through the catalogue's
+    # pose builder - which is also the ordering path the brief recommends.
+    got = await call("image_sprites", character_prompt="a boxer", poses=[],
+                     archetypes=["idle"], name="boxer", project_dir=str(root))
+    assert got.get("ok") is True, got
+    assert got["contract_used"] is True
+    assert got["cell"] == [96, 80]
+    # the contract's view arrives as the shared prose clause, so the camera
+    # convention in every pose prompt matches what the bible path would say
+    pose_prompts = [c["prompt"] for c in calls if c["task_kind"] != "anchor"]
+    assert pose_prompts and all("three-quarter top-down" in p
+                                for p in pose_prompts)
+
+
+@pytest.mark.anyio
+async def test_an_explicit_shape_switches_the_contract_off(root, calls):
+    from bgate_core import spritecontract as sc
+
+    sc.save(root, {"view": "top_down_3q", "cell": [96, 80]})
+    got = await call("image_sprites", character_prompt="a boxer",
+                     poses=POSES, name="boxer", frame_width=200,
+                     frame_height=300, view="worm's-eye view",
+                     project_dir=str(root))
+    assert got.get("ok") is True, got
+    assert got["contract_used"] is False
+    assert got["cell"] == [200, 300]

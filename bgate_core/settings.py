@@ -124,6 +124,7 @@ LABELS: dict[str, str] = {
     "dispatch.max_turns": "Stop an agent after this many turns",
     # Gates
     "gate.mode": "Who signs off finished work",
+    "qa.require_evidence": "Scene work must show a render before it counts as done",
     "qa.max_rounds": "How many times work may bounce back for fixes",
     "qa.gated_seats": "Seats whose work gets checked automatically",
     "signoff.hours": "How long finished work waits for your sign-off",
@@ -382,6 +383,16 @@ SETTINGS: tuple[Setting, ...] = (
         help="Who signs off before an agent's work counts as done: nobody, the "
              "QA seat, or you. An agent cannot change this: switching off your "
              "own reviewer is the same act as granting yourself the repo."),
+    Setting(
+        key="qa.require_evidence", group="Gates", kind=BOOL, default=True,
+        store=("registry", "qa.require_evidence"),
+        help="A run that wrote scenes may not report 'done' without a render "
+             "to show for it - a fresh godot_screenshot from the run, or an "
+             "evidence path on queue_complete. Exists because agents kept "
+             "judging levels by geometry stats over a picture with holes in "
+             "it; the numbers were all true and the scene was broken. The "
+             "refusal names the screenshot call, so it redirects rather than "
+             "blocks; failed reports never need evidence."),
     Setting(
         key="qa.max_rounds", group="Gates", kind=INT, default=3,
         minimum=1, maximum=10, store=("registry", "qa.max_rounds"),

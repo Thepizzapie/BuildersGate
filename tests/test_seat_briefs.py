@@ -440,7 +440,12 @@ class TestTheBriefRoutesToTheStrongerTool:
         assert "image_sprites" in opening, (
             "the 3D block has to name the painted path it is routing away to, "
             "or 'not a hero character' is a complaint rather than a route")
-        assert "krea" in opening
+        # The route stays provider-shy on purpose - naming one hard-fails a
+        # project keyed elsewhere - but the model doctrine is pinned: this
+        # said "krea's nano-banana-2" for a while, contradicting the house
+        # rules' kie-mints division on the one fact stated as a HARD rule.
+        assert "nano-banana-2" in opening
+        assert "kie" in opening
 
     def test_the_two_dimensional_note_routes_the_same_way(self):
         note = seats._kind_note("art", "2d")

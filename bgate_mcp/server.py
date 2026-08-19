@@ -5061,6 +5061,14 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     registered on the body's mass, stitched into <name>_sheet.png +
     <name>_frames.tres - drop-in for AnimatedSprite2D.
 
+    THE SPRITE CONTRACT SUPPLIES THE SHAPE YOU DID NOT TYPE. When
+    frame_width/frame_height and `view` are left at their defaults, they are
+    read from sprite_contract_get(character=name) - the cell size and camera
+    the game DECLARED - so the usual call carries no geometry at all and a
+    minted sheet cannot disagree with the contract by a typo. Passing either
+    explicitly wins outright; `contract_used` in the result says which
+    authority shaped the sheet.
+
     character_prompt: the character + art style (full body, single character - framing/transparency contracts are appended automatically).
     poses: [{"name": "jab", "description": "lead fist fully extended right,
     body driving forward"}] - name becomes the animation; description is the
@@ -5123,6 +5131,30 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
     judge cannot see, because every one of those faults is perfectly on-model.
     """
     try:
+        # THE CONTRACT SUPPLIES WHAT THE CALLER DID NOT - same rule as the
+        # tileset manifest in level_generate: sprite_contract_set declared
+        # the game's sheet shape ONCE (cell size, view), so the caller who
+        # types frame_width=160 next to a 96x80 contract is re-deriving a
+        # settled fact and usually getting it wrong. Any explicitly
+        # non-default value wins outright; `contract_used` in the result
+        # says which authority shaped the sheet.
+        contract_used = False
+        try:
+            from bgate_core import spritecontract as _sc
+            _c = _sc.contract_for(_scratch_root(), character=name)
+            cell = list(_c.get("cell") or ())
+            if (frame_width, frame_height) == (160, 240) and len(cell) == 2:
+                frame_width, frame_height = int(cell[0]), int(cell[1])
+                contract_used = True
+            if not view and _c.get("view"):
+                # The contract stores the view as a NAME; this tool takes the
+                # camera as PROSE prepended to every pose. VIEW_CLAUSES is the
+                # one mapping between them - the same clause the bible path
+                # uses, so the two cannot disagree about what isometric means.
+                view = _sc.VIEW_CLAUSES.get(str(_c["view"]), str(_c["view"]))
+                contract_used = True
+        except Exception:
+            pass  # no contract is the pre-contract world, not an error
         timing: dict = {}
         if archetypes:
             # The catalogue REPLACES a hand-written pose list rather than
@@ -5146,6 +5178,13 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if "name" not in p:
                 raise ValueError(f"each pose needs a 'name': {p}")
         root = _Path(_scratch_root())
+        # The most expensive tool here carried its own spend math and never
+        # got the provider preflight the cheaper image tools gained - so a
+        # drained board learned it from a paid 402 on the reference call.
+        refused = _provider_gate(str(root), "image",
+                                 f"a painted sprite set ({name!r})")
+        if refused:
+            return refused
         # An unnamed provider is the preference, then the identity routing —
         # the old default was the literal string "openai", which agents never
         # overrode, so the routing rule and the stored preference were both
@@ -5625,6 +5664,11 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 assembled, consistency = _assemble_and_gate()
 
         assembled["reference"] = ref_path
+        # Which authority shaped the sheet - the declared contract or this
+        # call's own arguments. On a set that arrived the wrong size, this is
+        # the one-read answer to "did somebody hand-type the cell".
+        assembled["contract_used"] = contract_used
+        assembled["cell"] = [frame_width, frame_height]
         # The model sheet is part of the run's provenance, not a detail of it:
         # "which views was this character conditioned on" is the first question
         # to ask about a set that drifted, and the answer has to survive into the
@@ -6959,6 +7003,7 @@ def sidescroll_generate(godot_project: str, scene: str, tileset: str,
     elif fresh:
         scene_disk.parent.mkdir(parents=True, exist_ok=True)
         scene_disk.write_text(wired["text"], encoding="utf-8")
+        _note_tool_write(_root(), scene_disk)
         written = {"written": True, "created": True}
     else:
         written = _scenewire.apply(scene_disk, wired["text"], root=_root())
@@ -7598,6 +7643,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # typo'd path everywhere else.
         scene_disk.parent.mkdir(parents=True, exist_ok=True)
         scene_disk.write_text(wired["text"], encoding="utf-8")
+        _note_tool_write(_root(), scene_disk)
         written = {"written": True, "backup": None, "created": True}
     else:
         written = _scenewire.apply(scene_disk, wired["text"], root=_root())
@@ -7681,6 +7727,7 @@ def godot_screenshot(godot_project: str, at: float = 1.0, scene: Optional[str] =
         result = _godot.screenshot(godot_project, out, at=at, scene=scene,
                                    timeout=timeout)
         if result.get("ok"):
+            _note_tool_write(_root(), result["path"])
             archived = _archive_preview(result["path"], f"shot-{label or 'game'}")
             if archived:
                 result["preview"] = archived
@@ -10336,11 +10383,22 @@ def queue_claim_next() -> dict:
 
 
 @_tool
-def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
+def queue_complete(item_id: int, result: str, failed: bool = False,
+                   evidence: str = "") -> dict:
     """Close out a work item with an honest one-paragraph result.
 
     failed=True when the work did not land - say why plainly; a false 'done'
     poisons the queue's trustworthiness for everyone.
+
+    THE EYES GATE: a run that WROTE SCENES (.tscn) may not report 'done'
+    without a render to show for it. Either this run already took a
+    godot_screenshot (the usual case - you looked before claiming), or pass
+    `evidence` = the path to a render/screenshot you actually judged. The
+    refusal is a redirect, not a wall: it names the screenshot call and the
+    scenes you wrote. Exists because geometry stats, node counts and green
+    checks kept standing in for a picture with holes in it - every number
+    was true and the level was broken. failed=True never needs evidence,
+    and an honest 'failed' is always accepted.
 
     WHAT "CLOSED" MEANS DEPENDS ON THE PROJECT'S APPROVAL GATE, and the returned
     row says which happened. Under the agent gate the item goes to 'done' and a
@@ -10350,7 +10408,98 @@ def queue_complete(item_id: int, result: str, failed: bool = False) -> dict:
     'review' status by re-reporting: it is the gate working.
     """
     from bgate_core import queue as _q
-    return _q.complete(_root(), item_id, result=result, failed=failed)
+    root = _root()
+    if not failed:
+        refused = _evidence_gate(root, int(item_id), evidence)
+        if refused:
+            return refused
+    return _q.complete(root, item_id, result=result, failed=failed)
+
+
+# Extensions whose write means "this run changed what a player SEES the scene
+# do" - the gate keys on scenes rather than on images because a written image
+# is itself viewable evidence, while a written scene proves nothing about how
+# it renders.
+_SCENE_SUFFIXES = (".tscn",)
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def _note_tool_write(root, path) -> None:
+    """A dispatched run's server-side file write lands in its writelog.
+
+    The hook records only the agent's OWN Write/Edit/Bash; a file this server
+    process writes on the agent's behalf (a fresh scene from level_generate,
+    a godot_screenshot shot) was invisible to everything writelog feeds -
+    including the evidence gate above, which could neither see the scene nor
+    credit the shot. Best-effort: bookkeeping never fails the work.
+    """
+    try:
+        owner = _work_item_id()
+        if not owner:
+            return
+        from bgate_core import writelog as _writelog
+        rel = _Path(path).resolve().relative_to(_Path(root).resolve())
+        _writelog.record(root, str(rel), _seat(), f"item-{owner}",
+                         tool=_CALL_TOOL.get() or "")
+    except Exception:
+        pass
+
+
+def _evidence_gate(root: str, item_id: int, evidence: str) -> Optional[dict]:
+    """Refuse a 'done' over scene writes with no render, or None to proceed.
+
+    Enforced HERE, on the agent's own claim, and deliberately not in
+    queue.complete: the reaper banks dead runs through that same function,
+    and a corpse cannot be asked for a screenshot. Best-effort on its own
+    faults - an unreadable writelog must not dam a completion.
+    """
+    try:
+        from bgate_core import settings as _settings
+        try:
+            if not _settings.get(root, "qa.require_evidence"):
+                return None
+        except Exception:
+            pass  # unreadable registry keeps the shipped default: on
+        from bgate_core import writelog as _writelog
+        writes = _writelog.paths_for(root, f"item-{item_id}")
+        scenes = [p for p in writes
+                  if p.lower().endswith(_SCENE_SUFFIXES)
+                  and not p.startswith(".bgate/")]
+        if not scenes:
+            return None
+        # A shot taken this run is the usual proof - godot_screenshot lands
+        # under .bgate_out/shots/ and the hook records the write like any
+        # other, so looking-before-claiming passes with nothing extra.
+        rendered = any("shots" in _Path(p).parts
+                       and p.lower().endswith(_IMAGE_SUFFIXES)
+                       for p in writes)
+        if rendered:
+            return None
+        if evidence:
+            shot = _Path(evidence)
+            shot = shot if shot.is_absolute() else _Path(root) / shot
+            if shot.is_file() and shot.suffix.lower() in _IMAGE_SUFFIXES:
+                return None
+            return {"ok": False, "stage": "evidence_gate",
+                    "error": (f"evidence {evidence!r} is not an image file on "
+                              "disk - pass the path of a render you actually "
+                              "looked at, or take one: godot_screenshot("
+                              f"scene={scenes[0]!r})")}
+        return {"ok": False, "stage": "evidence_gate", "scenes": scenes[:6],
+                "error": (
+                    "this run wrote scene(s) "
+                    + ", ".join(scenes[:3])
+                    + (" …" if len(scenes) > 3 else "")
+                    + " and no render was taken, so 'done' would be a claim "
+                      "about pixels nobody has seen. Geometry stats and green "
+                      "checks are one check, never the full check. Take the "
+                      f"picture - godot_screenshot(scene={scenes[0]!r}) - "
+                      "LOOK at it, then complete again (the shot itself "
+                      "satisfies this gate; `evidence=<path>` also works for "
+                      "a render you already have). Reporting failed=True "
+                      "never needs evidence.")}
+    except Exception:
+        return None
 
 
 @_tool

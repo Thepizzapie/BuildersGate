@@ -288,7 +288,8 @@ POSES = [{"name": "idle/0", "description": "standing"},
 
 
 @pytest.mark.anyio
-async def test_image_sprites_refuses_past_the_per_run_ceiling(wired, no_paid_calls):
+async def test_image_sprites_refuses_past_the_per_run_ceiling(wired, no_paid_calls,
+                                                              routable_gateway):
     spend.set_budget(wired, per_item_usd=0.05, enforced=1)
 
     got = await call("image_sprites", character_prompt="a fighter", poses=POSES,
@@ -300,7 +301,8 @@ async def test_image_sprites_refuses_past_the_per_run_ceiling(wired, no_paid_cal
 
 
 @pytest.mark.anyio
-async def test_image_sprites_refuses_past_the_project_budget(wired, no_paid_calls):
+async def test_image_sprites_refuses_past_the_project_budget(wired, no_paid_calls,
+                                                              routable_gateway):
     spend.set_budget(wired, per_project_usd=1.0, enforced=1)
     spend.record(wired, 0.95, kind="image", detail="earlier batch")
 
@@ -312,7 +314,8 @@ async def test_image_sprites_refuses_past_the_project_budget(wired, no_paid_call
 
 
 @pytest.mark.anyio
-async def test_an_affordable_run_passes_the_gate(wired, monkeypatch):
+async def test_an_affordable_run_passes_the_gate(wired, monkeypatch,
+                                                 routable_gateway):
     """The cap must refuse the overrun and nothing else — a gate that also
     blocks affordable work is just an outage."""
     spend.set_budget(wired, per_item_usd=5.0, enforced=1)
@@ -333,7 +336,8 @@ async def test_an_affordable_run_passes_the_gate(wired, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_max_cost_usd_overrides_the_configured_ceiling(wired, monkeypatch):
+async def test_max_cost_usd_overrides_the_configured_ceiling(wired, monkeypatch,
+                                                             routable_gateway):
     """The confirm-the-spend escape hatch item_variants already had as `limit`:
     a tighter cap than the budget still binds, a deliberate looser one buys."""
     spend.set_budget(wired, per_item_usd=0.05, enforced=1)
