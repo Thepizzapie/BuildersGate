@@ -824,3 +824,139 @@ def collision_polygons(masks: Sequence[int], *, tile_size: tuple[int, int],
                 bands.append(rect(x0, y0, x1, y1))
         out[mask] = bands
     return out
+
+
+# ---------------------------------------------------------------------------
+# Isometric — the diamond
+# ---------------------------------------------------------------------------
+# A SQUARE CARVE CANNOT SERVE A DIAMOND, which is why `tileset_generate`
+# refused isometric projects rather than shipping a plausible-looking set. In
+# an isometric tilemap the tile's art is a diamond inscribed in the tile rect,
+# its corners transparent by construction, and the four EDGES of that diamond
+# are the four cell neighbours — not the four sides of the rect. Carving square
+# bands would put the shadow on the rect's edges, i.e. across the diamond's
+# corners, and every room outline would read as a grid of notches.
+#
+# Which edge is which neighbour comes from the projection this module's own
+# `tilemap.cell_center` implements, not from a guess. In DIAMOND_DOWN,
+# screen = ((x - y) * w/2, (x + y) * h/2), so from any cell:
+#
+#     -y (N) renders UP-RIGHT      +x (E) renders DOWN-RIGHT
+#     -x (W) renders UP-LEFT       +y (S) renders DOWN-LEFT
+#
+# and the diamond's four edges take those four names in that order.
+#
+# In normalised tile coordinates — u across, v down, both -1..1 from the tile's
+# centre — the diamond is |u| + |v| <= 1. That single expression carries
+# everything: |u| + |v| > 1 is outside the tile's art entirely, the value runs
+# 0 at the centre to 1 at the edge so a band is a threshold on it, and the
+# SIGNS of u and v name which edge a pixel belongs to. No trigonometry, no
+# per-edge line equations, and it is exact at any tile size or aspect.
+
+#: The diamond's edge band, which is DEEPER than the square set's EDGE_INSET
+#: and has to be. A square tile's lip is read against the wall layer filling
+#: the cell beside it; an isometric floor tile has nothing behind it but the
+#: background, so its own rim is the only thing that says where the floor
+#: stops. At 0.1 a generated level rendered as flat cut-out slabs with no
+#: edge at all — compared side by side at 0.1 / 0.18 / 0.26, this is where the
+#: edge reads without the band starting to eat the tile.
+ISO_EDGE_INSET = 0.18
+
+#: How far the band is darkened from the floor's own material, as a multiplier.
+#: Not a separate generation: see the derivation note in `tileset_generate`.
+ISO_BAND_LEVEL = 0.55
+
+#: (bit, sign of u, sign of v) for each diamond edge. `0` in a sign slot means
+#: "either", which only the vertices hit.
+_DIAMOND_EDGES = (
+    (BIT_N, +1, -1),      # up-right
+    (BIT_E, +1, +1),      # down-right
+    (BIT_S, -1, +1),      # down-left
+    (BIT_W, -1, -1),      # up-left
+)
+
+
+def diamond_edge_for(u: float, v: float) -> int:
+    """Which neighbour's edge a point in the tile belongs to."""
+    su = 1 if u >= 0 else -1
+    sv = 1 if v >= 0 else -1
+    for bit, want_u, want_v in _DIAMOND_EDGES:
+        if su == want_u and sv == want_v:
+            return bit
+    return BIT_N                                     # unreachable in practice
+
+
+def diamond_polygon(tile_size: tuple[int, int], *,
+                    inset: float = 0.0) -> list[tuple[float, float]]:
+    """The diamond as a Godot collision polygon, centred on the tile.
+
+    The walkable region of an isometric floor tile IS the diamond, so this is
+    four points rather than the square path's edge bands. Centred, because
+    that is the space Godot's tile collision uses.
+    """
+    tw, th = float(tile_size[0]), float(tile_size[1])
+    k = max(0.0, 1.0 - float(inset))
+    hw, hh = tw / 2.0 * k, th / 2.0 * k
+    return [(0.0, -hh), (hw, 0.0), (0.0, hh), (-hw, 0.0)]
+
+
+def diamond_tiles(floor_tile, void_tile, wanted: Sequence[int], *,
+                  tile_size: tuple[int, int], inset: float = ISO_EDGE_INSET,
+                  clear: bool = False) -> dict:
+    """Build every isometric mask tile from a floor and a void texture.
+
+    The counterpart of :func:`normalise_edges` for the diamond, and like it
+    the geometry is IMPOSED rather than detected: coverage cannot be partial
+    because every tile is constructed, and neighbours cannot disagree about
+    where the floor stops because one number decides it for all of them.
+
+    ``clear`` carves the band to transparent instead of painting the void
+    texture into it — the same question the square path documents, with the
+    same answer: opaque when a wall layer fills behind it, carved over a bare
+    canvas. Outside the diamond is ALWAYS transparent, which is not a choice;
+    it is what makes the tile a diamond.
+
+    Returns ``{ok, image, table, inset}`` — the sheet packed four to a row in
+    canonical mask order, so it is a tileset any consumer can read.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    if tw < 2 or th < 2:
+        return {"ok": False, "reason": f"a {tw}x{th} tile has no diamond in it"}
+    floor = floor_tile.convert("RGBA").resize((tw, th), Image.NEAREST)
+    void = void_tile.convert("RGBA").resize((tw, th), Image.NEAREST)
+    fpx, vpx = floor.load(), void.load()
+
+    masks = list(wanted)
+    tiles: dict[int, "Image.Image"] = {}
+    for mask in masks:
+        tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        tpx = tile.load()
+        for py in range(th):
+            # sample at the pixel's CENTRE: a pixel is a square of area, and
+            # testing its top-left corner biases every edge half a pixel up
+            # and left, which at a 32px tile is a visible stair.
+            v = ((py + 0.5) - th / 2.0) / (th / 2.0)
+            for px in range(tw):
+                u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+                s = abs(u) + abs(v)
+                if s > 1.0:
+                    continue                    # outside the diamond
+                if s > 1.0 - inset and not mask & diamond_edge_for(u, v):
+                    if clear:
+                        continue
+                    tpx[px, py] = vpx[px, py]
+                else:
+                    tpx[px, py] = fpx[px, py]
+        tiles[mask] = tile
+
+    cols = 4
+    rows = (len(masks) + cols - 1) // cols
+    sheet = Image.new("RGBA", (cols * tw, rows * th), (0, 0, 0, 0))
+    table: dict[int, tuple[int, int]] = {}
+    for i, mask in enumerate(masks):
+        tx, ty = i % cols, i // cols
+        sheet.paste(tiles[mask], (tx * tw, ty * th))
+        table[mask] = (tx, ty)
+    return {"ok": True, "image": sheet, "table": table, "inset": inset}

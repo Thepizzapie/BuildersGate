@@ -358,3 +358,65 @@ class TestDiagonalsAreWhySixteenIsNotEnough:
         assert (a[ty*16:(ty+1)*16, tx*16 + 15, 3] == 0).all(), \
             "the whole east band is void, corner or not"
         assert E  # keeps the import honest
+
+
+class TestTheDiamond:
+    """Isometric tiles — the geometry a square carve cannot express."""
+
+    def _mats(self, tw=64, th=32):
+        from PIL import Image
+        return (Image.new("RGBA", (tw, th), (200, 170, 120, 255)),
+                Image.new("RGBA", (tw, th), (20, 10, 30, 255)))
+
+    def _tile(self, got, mask, tw=64, th=32):
+        tx, ty = got["table"][mask]
+        return got["image"].crop((tx * tw, ty * th,
+                                  (tx + 1) * tw, (ty + 1) * th))
+
+    def test_the_corners_are_transparent_and_the_centre_is_not(self):
+        """That is what makes the tile a diamond rather than a square."""
+        floor, void = self._mats()
+        got = tilemask.diamond_tiles(floor, void, list(range(16)),
+                                     tile_size=(64, 32))
+        assert got["ok"]
+        full = tilemask.BIT_N | tilemask.BIT_E | tilemask.BIT_S | tilemask.BIT_W
+        tile = self._tile(got, full)
+        px = tile.load()
+        for corner in ((0, 0), (63, 0), (0, 31), (63, 31)):
+            assert px[corner][3] == 0, f"corner {corner} is opaque"
+        assert px[32, 16][3] == 255, "the middle of the diamond is a hole"
+
+    def test_every_mask_is_built_so_coverage_cannot_be_partial(self):
+        floor, void = self._mats()
+        got = tilemask.diamond_tiles(floor, void, list(range(16)),
+                                     tile_size=(64, 32))
+        assert sorted(got["table"]) == list(range(16))
+
+    def test_a_missing_neighbour_darkens_ITS_edge_and_no_other(self):
+        """The mapping that makes this isometric rather than decorative: in
+        DIAMOND_DOWN the cell's east neighbour renders down-RIGHT, so the E
+        bit owns the lower-right edge of the diamond."""
+        floor, void = self._mats()
+        full = tilemask.BIT_N | tilemask.BIT_E | tilemask.BIT_S | tilemask.BIT_W
+        got = tilemask.diamond_tiles(floor, void, [full, full & ~tilemask.BIT_E],
+                                     tile_size=(64, 32))
+        no_east = self._tile(got, full & ~tilemask.BIT_E).load()
+        # (48, 23) sits inside the diamond and within the band, in the
+        # +u/+v quadrant — the lower-right edge, which E owns.
+        assert no_east[48, 23][:3] == (20, 10, 30), "east edge not carved"
+        # (15, 23) is its mirror across the vertical axis: same distance from
+        # the outline, lower-LEFT edge, owned by S — which is still floor.
+        assert no_east[15, 23][:3] == (200, 170, 120), "south edge was touched"
+        # and the full tile has neither carved
+        both = self._tile(got, full).load()
+        assert both[48, 23][:3] == (200, 170, 120)
+
+    def test_the_collider_is_the_diamond_not_a_rectangle(self):
+        poly = tilemask.diamond_polygon((64, 32))
+        assert len(poly) == 4
+        xs = sorted(p[0] for p in poly)
+        ys = sorted(p[1] for p in poly)
+        assert xs[0] == -32.0 and xs[-1] == 32.0
+        assert ys[0] == -16.0 and ys[-1] == 16.0
+        # every vertex sits ON an axis — that is what a diamond is
+        assert all(p[0] == 0.0 or p[1] == 0.0 for p in poly)

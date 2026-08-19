@@ -525,16 +525,49 @@ class TestTheViewRoutesTheGeometry:
         side = pathlib.Path(out["tileset"]).with_name("kietiles.tiles.json")
         assert json.loads(side.read_text(encoding="utf-8"))["variants"]
 
-    async def test_the_iso_tileset_generator_refuses_rather_than_misreads(
-            self, root, game):
-        """The mask detector reads square boundaries; a diamond's corners are
-        transparent by construction. Refusing with the reason beats a
-        confident wrong tileset."""
-        from bgate_core import gameview
+    async def test_an_isometric_project_gets_an_isometric_tileset(
+            self, root, game, monkeypatch):
+        """The diamond path: 2:1 tiles, an ISOMETRIC/DIAMOND_DOWN resource,
+        and colliders that are the diamond rather than a rectangle."""
+        from PIL import Image
+
+        from bgate_adapters import kie
+        from bgate_core import gameview, tilemap
+
         gameview.save(root, "isometric")
-        out = await call("tileset_generate", name="isoset",
-                         prompt="stone floor meeting void")
-        assert out["ok"] is False and "isometric" in out["error"]
+
+        def fake_generate(prompt, out_path, **kw):
+            Image.new("RGBA", (1024, 1024), (170, 150, 120, 255)).save(out_path)
+            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+
+        monkeypatch.setattr(kie, "generate_image", fake_generate)
+        out = await call("tileset_generate", name="isoset", tile_px=64,
+                         prompt="worn flagstone", godot_project=str(game),
+                         res_dir="tiles", install=False)
+        assert out["ok"], out.get("error")
+        assert out["shape"] == "isometric"
+        assert out["tile_size"] == [64, 32], "an iso tile is 2:1"
+        # bits is forced to 4: a diamond has four edges and each IS a
+        # neighbour, so the 16-mask set is complete rather than reduced.
+        assert out["bits"] == 4
+        assert out["coverage"]["have"] == 16
+        assert out["seams"]["skipped"].startswith("isometric")
+
+        parsed = tilemap.parse_tileset(
+            open(out["tileset"], encoding="utf-8").read())
+        assert parsed["shape"] == tilemap.ISOMETRIC
+        assert parsed["layout"] == tilemap.DIAMOND_DOWN
+        assert parsed["tile_size"] == [64, 32]
+        text = open(out["tileset"], encoding="utf-8").read()
+        assert "physics_layer_0/polygon_0/points" in text
+        # four points, each on an axis — the diamond, not a box
+        import re
+        pts = re.search(r"polygon_0/points = PackedVector2Array\(([^)]*)\)",
+                        text).group(1)
+        nums = [float(v) for v in pts.split(",")]
+        assert len(nums) == 8
+        assert all(x == 0.0 or y == 0.0
+                   for x, y in zip(nums[::2], nums[1::2]))
 
 
 @pytest.mark.anyio
