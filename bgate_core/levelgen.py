@@ -645,9 +645,19 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
 
     for i in range(len(main) - 1):
         floor |= join(placed[i], placed[i + 1])
+    # SIDE ROOMS CHAIN. A detour that leads to another detour is the shape a
+    # floor plan actually has — a store room off the break room, the server
+    # closet behind IT — and hanging every side room directly off the route
+    # gives a comb instead. Each one attaches to the nearest room already
+    # reachable, main or side, so depth appears where the geometry allows it.
+    reached = list(main)
     for idx in side:
-        host = rng.randrange(0, len(main))
+        here = placed[idx].center
+        host = min(reached,
+                   key=lambda h: abs(placed[h].center[0] - here[0])
+                   + abs(placed[h].center[1] - here[1]))
         floor |= join(placed[idx], placed[host])
+        reached.append(idx)
 
     floor = {c for c in floor
              if 0 <= c[0] < width and 0 <= c[1] < height}
