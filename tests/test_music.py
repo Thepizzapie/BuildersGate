@@ -1015,7 +1015,7 @@ class TestBothDoorsExist:
     tool a seat actually calls is still a broken feature."""
 
     @pytest.mark.parametrize("name", [
-        "kie_music_options", "kie_music_generate", "kie_music_status",
+        "music_options", "music_generate", "music_status",
         "music_candidates", "music_keep", "music_discard",
     ])
     def test_the_tool_is_registered(self, name):
@@ -1033,6 +1033,6 @@ class TestBothDoorsExist:
 
         from bgate_mcp import server
 
-        source = inspect.getsource(server.kie_music_generate)
+        source = inspect.getsource(server.music_generate)
         assert "_music.generate" in source
         assert "kie.generate_music" not in source

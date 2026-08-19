@@ -54,6 +54,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+from bgate_core import agentlog as _agentlog
 from bgate_core import db
 from bgate_ui.deps import root
 
@@ -386,7 +387,10 @@ TEXT_CAP = 1200
 _QUIET_SYSTEM = {"thinking_tokens", "hook_started", "hook_response",
                  "task_started", "task_notification", "task_updated",
                  "background_tasks_changed"}
-_STEER_MARKER = "STEER FROM THE DIRECTOR (act on this now): "
+# Shared with every other reader of this format - see bgate_core.agentlog,
+# which owns the stream-json vocabulary. A private copy of the marker is
+# how a reader silently stops seeing steers.
+_STEER_MARKER = _agentlog.STEER_MARKER
 
 # Tools that PRODUCE, and tools that merely LOOK. An agent reads an order of
 # magnitude more than it writes, and a list that conflates the two is noise —
@@ -411,10 +415,7 @@ _MAX_IMAGE_PATHS = 300
 _RESULT_SCAN = 4000
 
 
-def _blocks(event: dict) -> list:
-    message = event.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    return [b for b in (content or []) if isinstance(b, dict)]
+_blocks = _agentlog.blocks
 
 
 def _step(steps: list, run: int, offset: int, kind: str, **rest) -> None:
@@ -481,7 +482,7 @@ def _parse(path: Path) -> dict:
                         inp = block.get("input")
                         inp = inp if isinstance(inp, dict) else {}
                         raw_name = str(block.get("name", "?"))
-                        name = raw_name.replace("mcp__builders-gate__", "")
+                        name = raw_name.replace(_agentlog.MCP_TOOL_PREFIX, "")
                         hint = (inp.get("path") or inp.get("file_path")
                                 or inp.get("command") or inp.get("title")
                                 or inp.get("query") or inp.get("pattern")

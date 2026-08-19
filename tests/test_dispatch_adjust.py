@@ -426,7 +426,9 @@ class TestSeatRulesAreProjectScoped:
         item = queue.add(root, "narrative", "write a bark")
         prompt = dispatch._prompt_for(str(root), item)
         assert "godot_check_project" not in prompt
-        assert "LOOK at what you produce" in prompt
+        # The eyes rule survives in the engine-less branch: no godot tools,
+        # but the agent is still told the render is the check.
+        assert "LOOK AT IT" in prompt
 
     def test_a_seat_rule_can_be_overridden_and_turned_off(self, root):
         (Path(root) / ".bgate").mkdir(parents=True, exist_ok=True)

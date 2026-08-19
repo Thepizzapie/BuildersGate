@@ -13,14 +13,14 @@ from bgate_core import modules, settings
 class TestTheRegistry:
     def test_tool_gating_is_by_prefix(self):
         off = {"music", "cinematic"}
-        assert not modules.tool_enabled("kie_music_generate", off)
+        assert not modules.tool_enabled("music_generate", off)
         assert not modules.tool_enabled("cinematic_plan", off)
         assert not modules.tool_enabled("storyboard_auto", off)
         assert modules.tool_enabled("queue_add", off)
         assert modules.tool_enabled("image_generate", off)
 
     def test_everything_on_gates_nothing(self):
-        assert modules.tool_enabled("kie_music_generate", set())
+        assert modules.tool_enabled("music_generate", set())
 
     def test_a_shared_doctor_row_survives_one_module_leaving(self):
         # ffmpeg is named by cinematic AND playtest: off one, still required.
@@ -60,7 +60,7 @@ class TestTheServerRegistry:
         from bgate_mcp import server
 
         monkeypatch.setattr(server, "_MODULES_OFF", {"music", "three_d"})
-        assert not server._module_registers("kie_music_generate")
+        assert not server._module_registers("music_generate")
         assert not server._module_registers("blender_rig")
         assert server._module_registers("queue_add")
         assert server._module_registers("godot_run")
@@ -71,7 +71,7 @@ class TestTheServerRegistry:
         monkeypatch.setattr(server, "_MODULES_OFF", None)
         monkeypatch.delenv("BGATE_ROOT", raising=False)
         # No project resolvable in the test cwd -> empty disabled set.
-        assert server._module_registers("kie_music_generate")
+        assert server._module_registers("music_generate")
         monkeypatch.setattr(server, "_MODULES_OFF", None)  # drop the cache
 
 
@@ -97,7 +97,7 @@ class TestSeatScopedTools:
         assert modules.seat_tool_enabled("blender_rig", "art")
         assert modules.seat_tool_enabled("queue_add", "art")       # spine
         assert modules.seat_tool_enabled("seat_brief", "gameplay")  # spine
-        assert not modules.seat_tool_enabled("kie_music_generate", "art")
+        assert not modules.seat_tool_enabled("music_generate", "art")
         assert not modules.seat_tool_enabled("blender_rig", "gameplay")
         assert not modules.seat_tool_enabled("cinematic_plan", "audio")
 
@@ -106,9 +106,9 @@ class TestSeatScopedTools:
         assert not modules.seat_tool_enabled("image_generate", "narrative")
 
     def test_unknown_and_absent_seats_are_unscoped(self):
-        assert modules.seat_tool_enabled("kie_music_generate", "")
-        assert modules.seat_tool_enabled("kie_music_generate", "director")
-        assert modules.seat_tool_enabled("kie_music_generate", "mystery-seat")
+        assert modules.seat_tool_enabled("music_generate", "")
+        assert modules.seat_tool_enabled("music_generate", "director")
+        assert modules.seat_tool_enabled("music_generate", "mystery-seat")
 
     def test_the_server_gate_composes_seat_and_modules(self, monkeypatch):
         from bgate_mcp import server

@@ -105,9 +105,11 @@ class TestLadder:
     """One dial for both enforcers. The hook and the server disagreeing about
     what BGATE_AEGIS=block means is not a policy, it is a coin flip."""
 
-    def test_default_is_warn(self, monkeypatch):
+    def test_default_is_block(self, monkeypatch):
+        # warn -> block on 2026-08-19: the project boundary IS what a seat
+        # enforces now that lanes are advisory.
         monkeypatch.delenv("BGATE_AEGIS", raising=False)
-        assert aegis.mode() == "warn" == aegis.DEFAULT_MODE
+        assert aegis.mode() == "block" == aegis.DEFAULT_MODE
 
     @pytest.mark.parametrize("mode", aegis.MODES)
     def test_hook_and_server_read_the_same_ladder(self, monkeypatch, mode):

@@ -39,11 +39,18 @@ SATISFIED = ("done",)
 # of them ends up grabbing an escalation a human was supposed to read.
 #   qa-gate-escalation — two agents could not agree and a human has to decide.
 #   chat — a message to the director; the console dispatches those itself.
-#   failure-escalation — an item failed past its automatic-retry cap. The whole
-#     point of the cap is that nothing else is spent on it until a person has
-#     read the failure, so an escalation an auto-dispatcher picked up would be
-#     the harness paying to rediscover the blocker it just stopped paying for.
-HELD_SOURCES = ("qa-gate-escalation", "chat", "failure-escalation")
+#
+# failure-escalation is NOT held any more (2026-08-19). It was, on the theory
+# that a failure past its retry cap needed a person — and the observed result
+# was the board's worst dead end: the escalation sat queued forever, the
+# failed item sat failed forever, and the human's actual job became clearing
+# and re-dispatching by hand. The console's director session still gets first
+# claim on a fresh escalation (followup._hand_to_director_session reserves
+# it); when no such session exists, autodeploy now spawns a director-seat
+# agent whose brief is to DIAGNOSE AND ACT — read the failure, fix the brief,
+# queue_reopen or route the real blocker. Spend is bounded the same way it
+# always was: ONE escalation per item, ever (followup.fail_escalated).
+HELD_SOURCES = ("qa-gate-escalation", "chat")
 
 # The source stamped on that escalation. Named here rather than in the router
 # that files them because the hold above and the filing must never drift apart:
@@ -1006,6 +1013,40 @@ def release(root: str | os.PathLike[str], item_id: int) -> bool:
     return undone
 
 
+def ready(root: str | os.PathLike[str], seat: str = "",
+          limit: int = 120) -> list[dict]:
+    """Queued items an auto-dispatcher may start, most deserving first.
+
+    THE ONE COPY OF THE READINESS RULE. Both dispatchers - the dashboard's
+    autodeploy loop and a worker's claim_next - used to carry their own SQL
+    for "queued, not held, brief real, parents landed", and the two copies
+    had already drifted once (autodeploy joined the single-column parent,
+    claim_next re-derived it) before this function existed. A candidate that
+    one dispatcher considers ready and the other does not is a race with a
+    personality; readiness is now a fact about the ROW, answered here, and
+    the dispatchers differ only in what they do with the list.
+
+    Multi-parent deps (work_item_dep) are checked via blocker() in Python -
+    the SQL join sees only the depends_on column - which is also why the
+    LIMIT matters: it bounds the per-call blocker() sweep. Items filtered
+    out here produce NO refusal by design; a blocked successor is the board
+    working as intended, and the row's own `waiting_on` (queue_list) is
+    where the reason surfaces.
+    """
+    marks = ", ".join("?" * len(HELD_SOURCES))
+    seat_clause = "AND i.seat = ? " if seat else ""
+    params = (*( (seat,) if seat else () ), *HELD_SOURCES, PLACEHOLDER_BRIEF)
+    candidates = rows(db.connect(root).execute(
+        f"SELECT i.* FROM work_item i "
+        f"LEFT JOIN work_item d ON d.id = i.depends_on "
+        f"WHERE i.status = 'queued' {seat_clause}"
+        f"AND i.source NOT IN ({marks}) AND i.brief NOT LIKE ? "
+        "AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
+        f"ORDER BY i.priority DESC, i.id LIMIT {max(1, int(limit))}",
+        params))
+    return [c for c in candidates if blocker(root, int(c["id"])) is None]
+
+
 def claim_next(root: str | os.PathLike[str], seat: str,
                actor: str) -> Optional[dict]:
     """Atomically claim the next READY item for a seat — the worker pickup loop.
@@ -1029,18 +1070,7 @@ def claim_next(root: str | os.PathLike[str], seat: str,
         raise ValueError(f"unknown seat {seat!r}; seats are {tuple(_seats.DEFAULT_SEATS)}")
     if not str(actor or "").strip():
         raise ValueError("claim_next needs the claiming execution's identity")
-    marks = ", ".join("?" * len(HELD_SOURCES))
-    candidates = rows(db.connect(root).execute(
-        f"SELECT i.id FROM work_item i "
-        f"LEFT JOIN work_item d ON d.id = i.depends_on "
-        f"WHERE i.status = 'queued' AND i.seat = ? "
-        f"  AND i.source NOT IN ({marks}) AND i.brief NOT LIKE ? "
-        "  AND (i.depends_on IS NULL OR d.id IS NULL OR d.status = 'done') "
-        "ORDER BY i.priority DESC, i.id LIMIT 10",
-        (seat, *HELD_SOURCES, PLACEHOLDER_BRIEF)))
-    for row in candidates:
-        if blocker(root, int(row["id"])) is not None:
-            continue                      # an extra parent has not landed
+    for row in ready(root, seat=seat, limit=10):
         if not reserve(root, int(row["id"])):
             continue                      # lost the race — next candidate
         item = set_run_fields(root, int(row["id"]), actor=str(actor).strip())

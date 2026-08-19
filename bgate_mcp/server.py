@@ -276,9 +276,9 @@ _READ_ONLY_TOOLS = frozenset({
     "dialogue_list", "sfx_list", "brainstorm_list", "brainstorm_feed",
     "playtest_list", "playtest_brief", "art_tournament_standings",
     # long-running production pipelines, read side
-    "kie_music_options", "music_candidates", "cinematic_options",
+    "music_options", "music_candidates", "cinematic_options",
     "cinematic_styles", "cinematic_sequences", "cinematic_candidates",
-    "cinematic_shot_status", "cinematic_estimate", "kie_music_status",
+    "cinematic_shot_status", "cinematic_estimate", "music_status",
     "storyboard_boards", "storyboard_open",
 })
 
@@ -767,7 +767,20 @@ def _module_registers(tool_name: str) -> bool:
 def _fail(exc: Exception) -> dict:
     # ok=false alongside the message: one predicate for every failure in this
     # module, whatever the tool. See _normalize.
-    return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    out = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    # A BILLING-SHAPED FAILURE CARRIES ITS OWN REDIRECT. The observed agent
+    # response to "no credit" is to conclude the pipeline is closed and
+    # hand-roll the asset - while a second provider sits keyed and funded.
+    # Appending the gateway's board here, in the same tool result as the
+    # refusal, reaches the agent at the exact moment it is deciding that.
+    # Best-effort by the _fail rule: explaining a failure must never raise.
+    try:
+        from bgate_core import gateway as _gateway
+        if _gateway.is_billing_error(out["error"]):
+            out["route"] = _gateway.billing_note(_root_hint())
+    except Exception:
+        pass
+    return out
 
 
 _RUN_SEQ = itertools.count()
@@ -2707,6 +2720,53 @@ def blender_sprites(base_script: str, poses: list[dict], name: str = "sprite",
                             (f" ({len(result['failed'])} failed)" if result["failed"] else ""),
                  ref=result["sheet"])
         return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+# ---------------------------------------------------------------------------
+# The provider gateway
+# ---------------------------------------------------------------------------
+@_tool
+def provider_status(capability: str = "", fresh: bool = False) -> dict:
+    """Which paid providers are LIVE - keyed, and funded where they will say.
+
+    READ THIS BEFORE CONCLUDING A PIPELINE IS CLOSED. One account answering
+    "no credit" is a routing event, not an outage: the same job usually has a
+    second keyed provider, and the observed failure is an agent that tried
+    one key, read $0, and hand-rolled the asset while another account sat
+    funded. Every billing-shaped tool failure also carries this board in its
+    `route` field, so you should rarely need to guess.
+
+    Per provider: `keyed` (offline truth), `balance` (a NUMBER only where the
+    provider exposes one - kie and Retro Diffusion do; openai never says, and
+    krea's API balance shows only as a 402 at call time - so None means
+    UNKNOWN and the provider is still routable), and the adapter's own
+    `reason` when unkeyed.
+
+    Pass `capability` ("image" | "animate" | "three_d" | "music" | "video")
+    to also get `pick`: the provider that job should route to right now,
+    honouring the craft division (sprites/stills mint with kie; motion is
+    Retro Diffusion; music/video are kie). `fresh=true` re-probes past the
+    2-minute cache - the right call after the human tops an account up.
+
+    Keys never appear here, and there is no tool that writes one - a human
+    sets keys (bgate key / the Generators panel), deliberately.
+    """
+    try:
+        from bgate_core import gateway as _gateway
+        try:
+            root = _root()
+        except LookupError:
+            root = None
+            _keys()
+        out = {"ok": True,
+               "providers": _gateway.status(root, fresh=bool(fresh)),
+               "capabilities": {k: list(v)
+                                for k, v in _gateway.CAPABILITIES.items()}}
+        if capability:
+            out["pick"] = _gateway.pick(root, str(capability))
+        return out
     except Exception as exc:
         return _fail(exc)
 
@@ -9938,7 +9998,7 @@ def voice_speak(text: str, out_path: str = "",
 # SFX - synthesized, not generated
 # ---------------------------------------------------------------------------
 # THE AUDIO SEAT COULD NOT MAKE A GAME SOUND. Its mission opens "Own SFX and
-# music hooks" and every tool it had was a paid, keyed provider - kie_music_*
+# music hooks" and every tool it had was a paid, keyed provider - music_*
 # for beds, voice_* for speech - so a project without a key produced no audio at
 # all, and even with one there was no path to a coin pickup or a laser. These
 # three tools need no key, no network and no budget: an SFX is four oscillator
@@ -10157,7 +10217,8 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
     """
     try:
         from bgate_core import queue as _q
-        rows = _q.list_items(_root(), status=status, seat=seat)
+        root = _root()
+        rows = _q.list_items(root, status=status, seat=seat)
         cap = max(1, min(int(limit or 40), 200))
         shown = rows[:cap]
         items = []
@@ -10169,6 +10230,31 @@ def queue_list(status: Optional[str] = None, seat: Optional[str] = None,
                 item["brief"] = brief[:240]
                 item["brief_len"] = len(brief)
                 item["result"] = result[:240]
+            # WHY IS THIS NOT RUNNING - answered on the row, because a queued
+            # item that nothing will ever dispatch used to look exactly like
+            # one that is next in line, and the difference lived in three
+            # different modules. Best-effort: an unreadable blocker is not a
+            # reason to fail the whole listing.
+            if item.get("status") == "queued":
+                if str(item.get("source") or "") in _q.HELD_SOURCES:
+                    item["waiting_on"] = (
+                        f"held: source {item.get('source')!r} is never "
+                        "auto-dispatched - a human (or the director session) "
+                        "must take it")
+                else:
+                    try:
+                        blk = _q.blocker(root, int(item["id"]))
+                    except Exception:
+                        blk = None
+                    if blk is not None:
+                        item["waiting_on"] = (
+                            f"blocked: depends on #{blk['id']} which is "
+                            f"{blk['status']!r}"
+                            + ("" if blk["status"] in ("queued", "dispatched",
+                                                       "review")
+                               else " - that predecessor will never reach "
+                                    "'done' on its own; queue_reopen it or "
+                                    "queue_cut_dependency to release this"))
             items.append(item)
         return {
             "items": items,
@@ -10626,6 +10712,43 @@ def agent_steer(item_id: int, text: str) -> dict:
 
 
 @_tool
+def agent_activity(item_id: int, limit: int = 30) -> dict:
+    """Watch a dispatched agent work - its recent steps, result and liveness.
+
+    The read half of agent_steer: queue_add hands work out, agent_steer
+    corrects it mid-run, and this is how you SEE what the run is doing before
+    deciding either. Everything comes off disk (the item's stream-json log
+    plus the machine-wide agent registry), so it works from any session -
+    CLI, desktop, a second dashboard - whether or not `bgate serve` is up.
+
+    Returns the last ``limit`` steps ("say" / "tool" / "result" / "steer"),
+    the run's final result event if it has one, `running` (True/False, or
+    null when the host will not vouch for the pid), and the log path for
+    anyone who wants the whole transcript. `step_count`/`truncated` say
+    whether the window is the full story.
+
+    Read this BEFORE clearing or re-dispatching a failed item: the last few
+    steps almost always name the actual wall the agent hit, and a
+    queue_reopen whose reason quotes it beats one that guesses.
+    """
+    try:
+        from bgate_core import agentlog as _agentlog
+        root = _root()
+        out = _agentlog.tail(root, int(item_id), limit=int(limit))
+        try:
+            from bgate_core import queue as _q
+            item = _q.get(root, int(item_id))
+            out["status"] = item["status"]
+            out["seat"] = out.get("seat") or item.get("seat") or ""
+            out["title"] = item.get("title") or ""
+        except LookupError:
+            out["status"] = None
+        return {"ok": True, **out}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def ask_human(question: str, refs: Optional[list] = None) -> dict:
     """Ask the human who owns this project ONE question - and keep working.
 
@@ -10940,7 +11063,7 @@ def kie_status() -> dict:
 
 
 @_tool
-def kie_music_options() -> dict:
+def music_options() -> dict:
     """What a music generation may ask for: models, per-mode character limits,
     which model takes a duration, and whether kie is reachable at all.
 
@@ -10957,7 +11080,7 @@ def kie_music_options() -> dict:
 
 
 @_tool
-def kie_music_generate(prompt: str, name: str = "", instrumental: bool = True,
+def music_generate(prompt: str, name: str = "", instrumental: bool = True,
                        model: str = "", custom: bool = False, style: str = "",
                        title: str = "", negative_tags: str = "",
                        vocal_gender: str = "", duration: Optional[int] = None,
@@ -10979,7 +11102,7 @@ def kie_music_generate(prompt: str, name: str = "", instrumental: bool = True,
     custom=False (simple mode) takes a 500-character DESCRIPTION and Suno writes
     everything. custom=True takes lyrics up to 3,000-5,000 characters depending
     on the model, plus `style` and `title` - which are refused in simple mode
-    rather than silently dropped. See kie_music_options for the exact ceilings.
+    rather than silently dropped. See music_options for the exact ceilings.
 
     duration is V5_5 ONLY (10-360s). Every other model would be charged for its
     default length while ignoring the request, so it is refused here.
@@ -11014,15 +11137,15 @@ def kie_music_generate(prompt: str, name: str = "", instrumental: bool = True,
 
 
 @_tool
-def kie_music_status(task_id: str) -> dict:
+def music_status(task_id: str) -> dict:
     """Where a Suno task got to, straight from kie. Costs nothing.
 
     Reports the eight documented statuses. CALLBACK_EXCEPTION is the subtle one:
     it means kie could not deliver its webhook, NOT that the music failed, so it
     is only a failure when the record also carries no audio.
 
-    This only LOOKS. When it says `recoverable`, kie_music_recover is what puts
-    the audio on disk - do not re-run kie_music_generate to get files for a task
+    This only LOOKS. When it says `recoverable`, music_recover is what puts
+    the audio on disk - do not re-run music_generate to get files for a task
     that already has them, that is paying twice.
     """
     try:
@@ -11045,7 +11168,7 @@ def music_stuck_tracks(older_than_s: int = 0, poll: bool = True) -> dict:
 
     Run it after any crash, kill or dashboard restart. `recoverable` is the list
     worth acting on: those are finished generations sitting on the provider that
-    kie_music_recover can still collect - but only inside the provider's
+    music_recover can still collect - but only inside the provider's
     retention window, which the result names. `poll=False` answers from local
     tickets alone and reaches no provider, which is the right call when you only
     want to know whether anything is outstanding.
@@ -11060,10 +11183,10 @@ def music_stuck_tracks(older_than_s: int = 0, poll: bool = True) -> dict:
 
 
 @_tool
-def kie_music_recover(task_id: str, name: str = "") -> dict:
+def music_recover(task_id: str, name: str = "") -> dict:
     """Download and register the tracks of a task ALREADY PAID FOR. Costs nothing.
 
-    kie_music_generate submits, waits, downloads and files in one blocking call,
+    music_generate submits, waits, downloads and files in one blocking call,
     so anything that goes wrong after the submit - a timeout, a dropped
     connection, a cancel, a CDN refusing the download - leaves a task id, a
     charge, and no files. kie holds the audio for FOURTEEN DAYS from generation.

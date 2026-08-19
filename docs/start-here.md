@@ -36,7 +36,7 @@ This is more machinery than a small project needs.
 | Term | Meaning |
 |---|---|
 | **Seat** | A fixed job title an agent adopts for a session. Eight of them: director, narrative, gameplay, tech, art, audio, cinematic, qa. A seat is an identity, not a process: a session sets `BGATE_SEAT=art` and inherits art's mission and writable paths. |
-| **Lane** | The glob patterns a seat may write. Art's are `game/assets/**`, `blender/**`, `art/**`; gameplay's are `game/scripts/**`, `game/scenes/**`. Writes outside your lane are refused, and unknown seats fail closed. |
+| **Lane** | The glob patterns a seat normally writes. Art's are `game/assets/**`, `blender/**`, `art/**`; gameplay's are `game/scripts/**`, `game/scenes/**`. Advisory by default: an out-of-lane write lands and is reported to you rather than refused (`BGATE_LANES=block` restores hard enforcement). The hard boundary is the project itself — a dispatched agent cannot touch files outside the game it was dispatched for. |
 | **Lock** | A claim on one binary file. Text merges, a `.blend` does not. `asset_lock` before editing, `asset_release` after. A held lock errors instead of queueing, so the second agent goes and does something else. |
 | **Work item** | One unit of queued work: seat, title, brief, status. A database row. Filing one costs nothing and starts nothing. |
 | **Dispatch** | Turning a queued item into a running agent. This is where money gets spent and where the refusals live. |
@@ -121,8 +121,9 @@ channel that leaves the machine.
 
 Settings holds every switch, each row saying whether its value is the default,
 something you stored, or an environment variable overriding both. Two of them
-decide how much runs without you: `autopilot` (does work start without you) and
-the approval gate (does it finish without you).
+decide how much runs without you: `autopilot` (does work start without you —
+ON by default, so a filed chain runs as soon as `bgate serve` is up) and the
+approval gate (does it finish without you).
 
 ### 3. Register the server and install the hook
 
@@ -142,11 +143,13 @@ fine. This is the most common failure on Windows.
 not pick up a newly registered server. Confirm by asking Claude to call
 `project_status`; if that tool is not in its list, the server is not connected.
 
-`hook-install` writes a PreToolUse hook into `.claude/settings.json` that calls
-`seat_can_write` before every Bash, Write or Edit and blocks out-of-lane or
-lock-violating writes. It is inert unless a session sets `BGATE_SEAT`, and it
-fails open on anything unexpected. `hook-status` proves enforcement is live and
-exits 1 if it is not.
+`hook-install` writes a PreToolUse hook into `.claude/settings.json` that
+checks every Bash, Write or Edit: writes outside the dispatched project are
+refused, writes over another run's lock are refused, and out-of-lane writes
+land with a warning to you (advisory by default; `BGATE_LANES=block` hardens
+them). It is inert unless a session sets `BGATE_SEAT`, and it fails open on
+anything unexpected. `hook-status` proves enforcement is live and exits 1 if
+it is not.
 
 ### 4. Write the bible before you build anything
 

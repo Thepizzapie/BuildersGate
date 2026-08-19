@@ -49,7 +49,7 @@ MODULES: dict[str, dict] = {
         "label": "Music",
         "blurb": "Suno music generation through kie.ai — candidates, "
                  "audition, keep/discard. Needs a KIE key.",
-        "tools": ("kie_music_", "music_"), "extras": (), "doctor": (),
+        "tools": ("music_",), "extras": (), "doctor": (),
     },
     "cinematic": {
         "label": "Cinematics",
@@ -167,7 +167,7 @@ def doctor_row_enabled(row_name: str, off: set[str]) -> bool:
 # Seat tool surfaces — which CRAFT a dispatched seat actually practises
 # ---------------------------------------------------------------------------
 # Modules trim the registry per PROJECT; crafts trim it per SEAT. A gameplay
-# agent carried every cinematic_, blender_ and kie_music_ schema in its
+# agent carried every cinematic_, blender_ and music_ schema in its
 # context on every turn — tools it has no lane, no brief step and no business
 # calling. Craft groups are the unambiguous generation/authoring surfaces;
 # everything outside them (queue, seats, bible, lore, godot, scene, assets,
@@ -180,7 +180,7 @@ CRAFTS: dict[str, tuple[str, ...]] = {
               "animation_generate", "sprite_contract_", "tileset_",
               "game_view_", "prop_generate"),
     "three_d": ("blender_", "character_generate", "godot_retarget_check"),
-    "music": ("kie_music_", "music_"),
+    "music": ("music_",),
     "cinematic": ("cinematic_", "storyboard_", "kie_video_"),
     "voice": ("voice_",),
     "sfx": ("sfx_",),

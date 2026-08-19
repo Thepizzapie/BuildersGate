@@ -3,7 +3,7 @@ genres, downloaded next to the floor's other art and listed in a manifest.
 
 WHY THIS IS A SCRIPT AND NOT AN MCP TOOL, which is the open question the floor
 plan left and this settles. The music tools that already exist -
-kie_music_generate, music_keep, music_install - file every take as an ARTIFACT
+music_generate, music_keep, music_install - file every take as an ARTIFACT
 REVISION under the engine project and install the kept one into the GAME's music
 library. That is correct for a game's score and wrong for this: the floor's
 soundtrack is harness UI audio, the same kind of thing as the cast sprites and

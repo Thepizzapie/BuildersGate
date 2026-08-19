@@ -1147,17 +1147,18 @@ def _do_reopen(root, action: dict) -> dict:
 
 
 def _do_fail_escalate(root, action: dict) -> dict:
-    """File ONE director item about a failure nobody is going to retry.
+    """File ONE director item about a failure the harness stopped retrying.
 
-    QUEUED, NEVER AUTO-DISPATCHED — the same shape as ``qa_gate._escalate``
-    and for a stronger reason. The cap that produced this escalation exists
-    because more agent time on this item is expected to be wasted; buying a
-    WORKER agent to announce that would spend the money the cap just refused.
-    ``queue.HELD_SOURCES`` carries the other half of that promise: no
-    auto-dispatcher may pick this row up either. What CAN take it is the
-    console's director session — a decider, not a worker; see
-    :func:`_hand_to_director_session` — and when no such session exists the
-    row is held for the dashboard exactly as shipped.
+    DISPATCHABLE since 2026-08-19. This used to be queued-never-dispatched
+    (queue.HELD_SOURCES), on the theory that a decision needed a person — and
+    the observed result was the board's deepest dead end: with no console
+    director session open, every escalation sat queued forever and the human's
+    job became clearing and re-dispatching by hand. The console's director
+    session still gets FIRST claim (:func:`_hand_to_director_session` reserves
+    the row); failing that, autodeploy spawns a director-seat agent whose
+    brief is to diagnose and ACT — file the real blocker, fix the brief and
+    reopen, ask the human, or cut it. Spend stays bounded where it always
+    was: one escalation per item, ever (``fail_escalated``).
 
     The guard is re-run here, not trusted from the snapshot, because the batch
     that decided it can be replayed and because the same item can fail twice
@@ -1417,11 +1418,13 @@ def failure_escalation_brief(root: str | os.PathLike[str], item: dict,
         "Nothing further has been dispatched against it, and nothing will be "
         "until you decide.\n")
     lines.append(
-        "You hold the director seat. Read the failure, then take exactly ONE of "
-        "the moves at the bottom and close THIS item saying which and why. Do "
-        "not do the failed item's work yourself: that is seat work, and doing "
-        "it here is unlaned, unlogged, unbudgeted and ungated — and it walks "
-        "straight around the retry cap that filed this.\n")
+        "You hold the director seat. INVESTIGATE FOR REAL — the failed item's "
+        "result note, agent_activity(%d) for its last steps, the files it "
+        "touched — then take exactly ONE of the moves at the bottom and close "
+        "THIS item saying which and why. A small, obvious fix that unblocks "
+        "the reopen (a wrong path in the brief, a missing one-liner) is yours "
+        "to make; redoing the failed item's whole deliverable here is not — "
+        "that walks around the retry cap that filed this.\n" % item_id)
 
     lines.append("WHAT FAILED")
     lines.append(f"  #{item_id} [{seat}] \"{str(item.get('title') or '')[:120]}\"")
