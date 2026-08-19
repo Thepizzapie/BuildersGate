@@ -2983,7 +2983,7 @@ def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> 
 def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                      bits: int = 8, void_prompt: str = "",
                      wall_prompt: str = "", wall_lift: int = 0,
-                     reuse: bool = True,
+                     reuse: bool = True, materials: str = "",
                      godot_project: str = "", res_dir: str = "assets/tiles",
                      install: bool = False,
                      collide: bool = True,
@@ -3110,8 +3110,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             # texture with "no border, no vignette, no objects", and a pile
             # of negations reads as an attempt to suppress rather than to
             # describe.
-            prompt_text = (f"seamless tiling texture of {what}, seen straight "
-                           "on, evenly lit, filling the whole frame")
+            prompt_text = _TEXTURE_STYLE.format(what=what)
             # AND RETRY, because the refusals are a COIN TOSS rather than a
             # verdict on the words. Measured here: "dark navy blue office
             # partition panel, matte painted surface" was refused by the
@@ -3122,8 +3121,15 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             # only surfaces once the provider has said no repeatedly.
             got = {}
             for attempt in range(3):
+                # SEEDREAM FIRST, and the fallback is the interesting part.
+                # The nano-banana family shares Google's safety filter, which
+                # refuses plain material descriptions at random — the same
+                # office carpet three times running, in words that had worked
+                # minutes before. A texture pipeline cannot rest on that, so
+                # the non-Google model leads and Google's is the second try.
+                model = "seedream-4-t2i" if attempt == 0 else "nano-banana-2"
                 got = _kie.generate_image(
-                    prompt_text, str(raw), model="nano-banana-2",
+                    prompt_text, str(raw), model=model,
                     size="1024x1024", task_kind="tile", tileable=True,
                     root=str(root))
                 if got.get("ok"):
@@ -3407,8 +3413,73 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                 wall_source = {"ok": False,
                                "error": f"{type(exc).__name__}: {exc}"}
 
+        # EXTRA FLOOR MATERIALS, one atlas source each. A floor with one
+        # surface everywhere is the single loudest thing about a generated
+        # level: real buildings change underfoot at every threshold — carpet
+        # to walkway to lino to the cold vinyl of a server room — and the
+        # layout that is being dressed already knows where those lines are,
+        # because it drew them with different tiles. This is what lets a
+        # re-skin keep them.
+        extra_sources, extra_meta = [], {}
+        for spec in [s for s in str(materials).split(";") if s.strip()]:
+            mat_name, _, mat_prompt = spec.partition("=")
+            mat_name = mat_name.strip() or f"mat{len(extra_sources) + 2}"
+            mat_prompt = mat_prompt.strip() or mat_name
+            try:
+                mtile, mvars, usd = _texture(mat_prompt, mat_name, variants=3)
+                spent += usd
+                mnorm = _tilemask.diamond_tiles(mtile, mtile, wanted,
+                                                tile_size=(tw, th))
+                if not mnorm.get("ok"):
+                    raise ValueError(mnorm.get("reason"))
+                msheet, mtable = mnorm["image"], mnorm["table"]
+                mcols = max(1, msheet.width // tw)
+                n0m = len(wanted)
+                need = (n0m + len(mvars) + mcols - 1) // mcols
+                if need * th > msheet.height:
+                    grown = _Img.new("RGBA", (msheet.width, need * th),
+                                     (0, 0, 0, 0))
+                    grown.paste(msheet, (0, 0))
+                    msheet = grown
+                mvar_at = []
+                for j, vt in enumerate(mvars):
+                    vt = _tilemask.diamond_tiles(vt, vt, [full],
+                                                 tile_size=(tw, th))["image"]
+                    txm, tym = (n0m + j) % mcols, (n0m + j) // mcols
+                    msheet.paste(vt, (txm * tw, tym * th))
+                    mvar_at.append([txm, tym])
+                mpath = out_dir / f"{name}_{mat_name}.png"
+                msheet.save(mpath)
+                if pinned:
+                    _spritekit.lock_palette(str(mpath), pinned)
+                sid = 2 + len(extra_sources)
+                extra_sources.append({
+                    "id": sid,
+                    "texture": f"res://{res_dir.strip('/')}/"
+                               f"{name}_{mat_name}.png",
+                    "tiles": sorted({(tx, ty) for ty in
+                                     range(msheet.height // th)
+                                     for tx in range(msheet.width // tw)
+                                     if msheet.crop((tx * tw, ty * th,
+                                                     (tx + 1) * tw,
+                                                     (ty + 1) * th))
+                                     .getbbox() is not None}),
+                    "path": str(mpath)})
+                extra_meta[mat_name] = {
+                    "source": sid,
+                    "interior": list(mtable[15 if bits == 4 else 255]),
+                    "variants": mvar_at}
+            except Exception as exc:                        # noqa: BLE001
+                # ONE MATERIAL FAILING IS NOT THE SET FAILING. The provider
+                # refuses plain descriptions at random, and losing a whole
+                # tileset because the third of five textures was unlucky is
+                # a worse answer than shipping four and naming the fifth.
+                extra_meta[mat_name] = {"ok": False,
+                                        "error": f"{type(exc).__name__}: {exc}"}
+
         sidecar = {"interior": list(interior_at),
-                   "variants": [list(v) for v in variant_coords]}
+                   "variants": [list(v) for v in variant_coords],
+                   **({"materials": extra_meta} if extra_meta else {})}
         if iso and wall_source and wall_source.get("ok"):
             # WHERE THE RAISED TILES ARE, for the generator that places them.
             # A .tres can say a tile exists; it cannot say which one is a ramp
@@ -3490,6 +3561,8 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                                          (tw / 2, th / 2),
                                          (-tw / 2, th / 2)]]})
                 if collide else {}})
+        for src in extra_sources:
+            sources.append({k: v for k, v in src.items() if k != "path"})
         shape, layout = ((_tilemap.ISOMETRIC, _tilemap.DIAMOND_DOWN) if iso
                          else (_tilemap.SQUARE, _tilemap.DIAMOND_RIGHT))
         tres_text = _tilemap.write_tileset(
@@ -3517,6 +3590,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                   # tile and paints a level entirely out of seams.
                   "solid": list(interior_at),
                   "interior_variants": [list(v) for v in variant_coords],
+                  **({"materials": extra_meta} if extra_meta else {}),
                   "seams": seams, "edge_inset": result_inset,
                   **({"wall": wall_source} if wall_source else {}),
                   "collision": {"tiles": len([m for m, v in collision.items()
@@ -3538,6 +3612,9 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             import shutil as _sh
             _sh.copyfile(atlas_png, dest_dir / f"{name}.png")
             _sh.copyfile(sidecar_path, dest_dir / f"{name}.tiles.json")
+            for src in extra_sources:
+                _sh.copyfile(src["path"],
+                             dest_dir / _Path(src["path"]).name)
             if wall_source and wall_source.get("ok"):
                 _sh.copyfile(wall_source["path"], dest_dir / f"{name}_wall.png")
             (dest_dir / f"{name}.tres").write_text(tres_text, encoding="utf-8")
@@ -7318,7 +7395,7 @@ def game_view_set(view: str) -> dict:
 def level_reskin(godot_project: str, scene: str, tileset: str,
                  out_scene: str = "", floor_layer: str = "",
                  wall_layer: str = "Walls", sunken: str = "",
-                 doors: str = "", parent: str = ".",
+                 doors: str = "", material_map: str = "", parent: str = ".",
                  dry_run: bool = False) -> dict:
     """RE-BUILD AN EXISTING LEVEL'S LAYOUT against a different tileset.
 
@@ -7383,13 +7460,14 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                 "layout in the wrong projection")}
 
         text = src_disk.read_text(encoding="utf-8", errors="replace")
-        found = {}
+        found, found_packed = {}, {}
         for name, body in _re2.findall(
                 r'\[node name="([^"]+)" type="TileMapLayer"[^\]]*\]'
                 r'((?:(?!\n\[node).)*)', text, _re2.S):
             hit = _re2.search(r'tile_map_data = PackedByteArray\("([^"]*)"\)',
                               body)
             if hit:
+                found_packed[name] = hit.group(1)
                 found[name] = {(c["x"], c["y"])
                                for c in _tilemap.decode_cells(hit.group(1))}
         if not found:
@@ -7448,23 +7526,69 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
             seen |= comp
             if len(comp) > len(keep):
                 keep = comp
-        # AND NOT UNDER THE OUTER SHELL. Floor stays under an INTERIOR wall,
-        # because a thin panel does not cover its whole cell and the rooms
-        # either side have to meet under it. Under the outermost ring there
-        # is nothing on the far side to meet, so the same tile shows past the
-        # panel as a fringe of carpet hanging outside the building — which is
-        # only invisible in the original because its wall art is a full cell
-        # wide and covers it.
-        shell = {c for c in wall_cells
-                 if not any((c[0] + dx, c[1] + dy) in keep
-                            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)))}
-        outside = len(floor_cells) - len(((keep | wall_cells) - shell)
-                                         & floor_cells)
-        floor_cells = ((keep | wall_cells) - shell) & floor_cells
+        # WHAT IS OUTSIDE IS WHAT YOU CAN REACH FROM OUTSIDE. The shell
+        # heuristic this replaces — drop wall cells with no walkable
+        # neighbour — left a fringe anywhere the perimeter was two cells
+        # thick or stepped, because the inner of the two still touched the
+        # room. Flooding inward from beyond the bounding box answers the
+        # actual question: a cell is outside the building when open air
+        # reaches it without crossing a wall. Everything else is interior,
+        # including the floor under interior walls, which has to stay because
+        # a thin panel does not cover its own cell.
+        xs = [c[0] for c in floor_cells] or [0]
+        ys = [c[1] for c in floor_cells] or [0]
+        x0, x1 = min(xs) - 1, max(xs) + 1
+        y0, y1 = min(ys) - 1, max(ys) + 1
+        air, stack = set(), [(x0, y0)]
+        while stack:
+            cx0, cy0 = stack.pop()
+            if (cx0, cy0) in air or not (x0 <= cx0 <= x1 and y0 <= cy0 <= y1):
+                continue
+            if (cx0, cy0) in wall_cells:
+                continue                      # air does not cross a wall
+            air.add((cx0, cy0))
+            stack.extend(((cx0 + 1, cy0), (cx0 - 1, cy0),
+                          (cx0, cy0 + 1), (cx0, cy0 - 1)))
+        outside = len(floor_cells & air)
+        floor_cells = floor_cells - air
         terrain = _terrain("grid16", 0, 0, 0, 4, "Floor")
         cells = _autotile.resolve(sorted(floor_cells), terrain)
         missing = _autotile.unmapped(sorted(floor_cells), terrain)
         _scatter_variants(cells, tiles_disk)
+
+        # KEEP THE SURFACES THE LAYOUT ALREADY HAD. A designed floor changes
+        # underfoot at every threshold and says so by drawing those cells
+        # from a different atlas source — this floor uses fifteen. Collapsing
+        # them all onto one material is what makes a re-skin read as bland
+        # when the original did not, so `material_map` carries the original
+        # source id onto a generated material and the thresholds survive.
+        mats = (side or {}).get("materials") or {}
+        mapped = 0
+        if material_map and mats:
+            want = {}
+            for pair in material_map.replace(";", " ").split():
+                sid, _, mat = pair.partition("=")
+                if sid.strip().isdigit() and mats.get(mat.strip(), {}).get("source"):
+                    want[int(sid)] = mats[mat.strip()]
+            if want:
+                by_cell = {}
+                for name0, cset in found.items():
+                    if name0 != floor_name:
+                        continue
+                for c in _tilemap.decode_cells(found_packed[floor_name]):
+                    by_cell[(c["x"], c["y"])] = c["source"]
+                for cell in cells:
+                    meta = want.get(by_cell.get((cell["x"], cell["y"])))
+                    if not meta:
+                        continue
+                    cell["source"] = int(meta["source"])
+                    ax, ay = meta["interior"]
+                    variants = [tuple(v) for v in meta.get("variants") or []]
+                    pick = ((cell["x"] * 928_371 + cell["y"] * 689_287)
+                            % (len(variants) + 1)) if variants else 0
+                    at = variants[pick - 1] if pick else (ax, ay)
+                    cell["ax"], cell["ay"] = int(at[0]), int(at[1])
+                    mapped += 1
         layers.append({"name": "Floor", "terrain": "Floor", "cells": cells,
                        "unmapped": {}})
 
@@ -7573,6 +7697,7 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                 "wall_cells": len(wall_cells),
                 "doors": len(door_cells),
                 "clipped_outside": outside,
+                "material_cells": mapped,
                 "walls": ("blocks" if side and wall_src else
                           "source 1" if wall_src else
                           "not drawn: the new tileset has no wall source"),
@@ -7767,6 +7892,25 @@ def _manifest_source(tiles_disk: _Path, man: dict) -> int:
     if not got["reused"]:
         tiles_disk.write_text(got["text"], encoding="utf-8")
     return got["id"]
+
+
+#: THE MEDIUM IS PART OF THE ORDER. Every prompt here used to name a material
+#: and nothing else — "worn olive office carpet, soft even light" — so the
+#: models did the sensible thing and returned a PHOTOGRAPH of a floor, one of
+#: them with a vanishing point in it. Downscaling a photograph to a 64x32
+#: diamond gives exactly what it sounds like: mush with no readable detail,
+#: which is what "bland and repetitive" actually was. A tile for a 16-bit game
+#: has to be ordered as one: the era, the projection, the palette discipline
+#: and the pixel scale, before the material is ever mentioned.
+_TEXTURE_STYLE = (
+    "16-bit SNES-era pixel art floor tile texture, {what}. "
+    "Top-down orthographic flat view, perfectly flat with no perspective and "
+    "no vanishing point, even ambient light with no highlight or shadow "
+    "gradient across the frame. Hand-placed pixels with visible dithering, "
+    "limited palette of roughly twelve flat colours, crisp single-pixel "
+    "detail and hard edges, no photographic blur, no anti-aliased gradients. "
+    "The whole frame is the material, repeating edge to edge, seamless."
+)
 
 
 #: How much of the painting one tile holds, as a multiple of the tile. Small
