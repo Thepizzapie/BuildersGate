@@ -665,19 +665,27 @@ def plan_path(width: int, height: int, *, seed: int = 0, rooms: int = 5,
     # each leaf attaches to ONE room already reachable — a main room, or
     # another leaf, which is how a store room ends up behind a break room.
     # One join means one way in and out: a dead end, not a shortcut.
-    reached = list(main)
-    for idx in side:
-        here = placed[idx].center
-        # and it hangs off a MIDDLE room, never the first or the last: a
-        # branch at either end of the route is indistinguishable from the
-        # route itself continuing.
-        inner = [h for h in reached
-                 if h not in (main[0], main[-1])] or list(reached)
-        host = min(inner,
-                   key=lambda h: abs(placed[h].center[0] - here[0])
-                   + abs(placed[h].center[1] - here[1]))
+    # WHERE EACH BRANCH GOES IS A DESIGN DECISION, not a nearest-neighbour
+    # search. Left to distance alone every leaf clustered on whichever room
+    # happened to be closest, which gives a floor one fat lump on its side.
+    # The order is deliberate: the first branch hangs off the MIDDLE of the
+    # route, the second off the room before the exit — the last beat before
+    # the door, where a player is most likely to want one more look around —
+    # and anything after that hangs off THAT branch, so it forks instead of
+    # crowding the spine.
+    inner = [h for h in main if h not in (main[0], main[-1])] or list(main)
+    mid_host = inner[len(inner) // 2]
+    pre_exit = main[-2] if len(main) >= 2 else main[0]
+    hub = None
+    for n, idx in enumerate(side):
+        if n == 0:
+            host = mid_host
+        elif n == 1:
+            host = pre_exit
+            hub = idx
+        else:
+            host = hub if hub is not None else pre_exit
         floor |= join(placed[idx], placed[host])
-        reached.append(idx)
 
     floor = {c for c in floor
              if 0 <= c[0] < width and 0 <= c[1] < height}
