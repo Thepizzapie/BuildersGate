@@ -1116,3 +1116,83 @@ def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
                 opx[px, py] = (int(r * k), int(g * k), int(b_ * k), 255)
     return {"ok": True, "image": out, "origin": (0, lift // 2),
             "size": (tw, th + lift), "facing": facing}
+
+
+#: How deep a wall PANEL is, as a fraction of the cell. A wall in a building
+#: is a plane, not a cube: it stands ON the boundary between two cells and the
+#: floor runs up to both of its faces. Drawing one cell of wall as a full
+#: block eats the whole cell, which is why a floor with one-cell partitions
+#: renders as a maze of corridors instead of rooms with walls between them.
+PANEL_DEPTH = 0.34
+
+
+def iso_panel(material, axis: str, *, tile_size: tuple[int, int], lift: int,
+              depth: float = PANEL_DEPTH,
+              faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
+              ) -> dict:
+    """A thin wall standing along one cell axis, rather than filling the cell.
+
+    ``axis`` is "x" (the wall runs toward the cell's +x/-x neighbours, which
+    renders down-right/up-left) or "y" (+y/-y, down-left/up-right), or "post"
+    for a junction, which keeps the full diamond so corners and T-joins do not
+    leave a notch where two panels meet at different angles.
+
+    The footprint is computed in CELL space for the same reason the ramp's
+    slope is: `a = (u + v) / 2` runs along +x and `b = (v - u) / 2` along +y,
+    so "thin in y" is `|b| <= depth/2` exactly, at any tile aspect. Everything
+    else — the extrusion, the two face values, the origin — is the block's,
+    because a panel is a block with a narrower footprint and nothing else
+    about it should differ.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    lift = int(lift)
+    axis = str(axis or "").strip().lower()
+    if axis not in ("x", "y", "post"):
+        return {"ok": False, "reason": f"{axis!r} is not x, y or post"}
+    if lift < 1:
+        return {"ok": False, "reason": f"a {lift}px lift is not a wall"}
+    mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
+    mpx = mat.load()
+    left_k, right_k = faces
+    half = max(0.02, float(depth)) / 2.0
+
+    def inside(u, v):
+        if abs(u) + abs(v) > 1.0:
+            return False
+        if axis == "post":
+            return True
+        a, b = (u + v) / 2.0, (v - u) / 2.0
+        return abs(b) <= half if axis == "x" else abs(a) <= half
+
+    out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+    opx = out.load()
+    # the top face, lifted
+    for py in range(th):
+        v = ((py + 0.5) - th / 2.0) / (th / 2.0)
+        for px in range(tw):
+            u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+            if inside(u, v):
+                r, g, b_, al = mpx[px, py]
+                if al:
+                    opx[px, py] = (r, g, b_, 255)
+    if lift:
+        shifted = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+        shifted.paste(out.crop((0, 0, tw, th)), (0, 0))
+        out = shifted
+        opx = out.load()
+    # the sides: from each column's lowest opaque pixel down to where the
+    # footprint's own boundary would sit `lift` lower
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        rows = [py for py in range(th) if opx[px, py][3]]
+        if not rows:
+            continue
+        k = left_k if u < 0 else right_k
+        for py in range(max(rows) + 1, min(max(rows) + 1 + lift, th + lift)):
+            r, g, b_, al = mpx[px, py % th]
+            if al:
+                opx[px, py] = (int(r * k), int(g * k), int(b_ * k), 255)
+    return {"ok": True, "image": out, "origin": (0, lift // 2),
+            "size": (tw, th + lift), "axis": axis}

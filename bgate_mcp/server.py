@@ -3119,11 +3119,19 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             # vertical scale — the brick would still be a brick, drawn by a
             # bricklayer who had been stood on.
             ox0, oy0 = (4 * tile_px - tw) // 2, (4 * tile_px - th) // 2
-            corners = ((0, 0), (4 * tile_px - tw, 0),
-                       (0, 4 * tile_px - th), (4 * tile_px - tw,
-                                               4 * tile_px - th))
-            extra = [zoom.crop((cx, cy, cx + tw, cy + th))
-                     for cx, cy in corners[:variants]]
+            # VARIANTS ARE MEANT TO BE THE SAME CARPET, NOT A DIFFERENT ONE.
+            # These were cut from the four far corners of the painting, which
+            # on any material with large-scale structure gives four visibly
+            # different swatches — laid next to each other they read as a
+            # patchwork quilt and, in the user's words, strain the eyes. A
+            # short step from the centre breaks the repeat without changing
+            # the material.
+            jitter = ((tw // 2, th // 2), (-tw // 2, th), (tw, -th // 2))
+            extra = []
+            for jx, jy in jitter[:variants]:
+                cx = min(max(0, ox0 + jx), 4 * tile_px - tw)
+                cy = min(max(0, oy0 + jy), 4 * tile_px - th)
+                extra.append(zoom.crop((cx, cy, cx + tw, cy + th)))
             return (zoom.crop((ox0, oy0, ox0 + tw, oy0 + th)), extra, cost)
 
         floor_tile, floor_variants, usd = _texture(prompt, "floor",
@@ -3308,6 +3316,15 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                 for face in ("n", "e", "s", "w"):
                     parts.append((f"ramp_{face}", _tilemask.iso_ramp(
                         floor_tile, face, tile_size=(tw, th), lift=step)))
+                # A WALL IN A BUILDING IS A PLANE, NOT A CUBE. The block
+                # above is right for terrain — a plateau, a ledge — and wrong
+                # for architecture: it eats the whole cell, so a floor built
+                # from one-cell partitions renders as a maze of corridors
+                # instead of rooms with walls between them. These are the
+                # same wall at the same height with a narrow footprint.
+                for ax in ("x", "y", "post"):
+                    parts.append((f"panel_{ax}", _tilemask.iso_panel(
+                        wmat, ax, tile_size=(tw, th), lift=lift)))
                 for _kind, part in parts:
                     if not part.get("ok"):
                         raise ValueError(part.get("reason"))
@@ -7439,11 +7456,16 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
             elif 1 in parsed_set["sources"]:
                 wall_at, wall_src = (0, 0), 1
             if wall_at is not None:
+                blocks = (side or {}).get("blocks") or {}
+                wall_out = []
+                for (x, y) in sorted(wall_cells):
+                    at = (_wall_tile_at(blocks, (x, y), wall_cells)
+                          if iso else None) or wall_at
+                    wall_out.append({"x": x, "y": y, "source": wall_src,
+                                     "ax": int(at[0]), "ay": int(at[1]),
+                                     "alt": 0})
                 layers.append({
-                    "name": "Walls", "terrain": "Walls",
-                    "cells": [{"x": x, "y": y, "source": wall_src,
-                               "ax": wall_at[0], "ay": wall_at[1], "alt": 0}
-                              for (x, y) in sorted(wall_cells)],
+                    "name": "Walls", "terrain": "Walls", "cells": wall_out,
                     "unmapped": {},
                     **({"props": {"y_sort_enabled": True}} if iso else {})})
 
@@ -7557,6 +7579,31 @@ def _read_prop_manifest(root, ref: str) -> dict:
                         if isinstance(v, dict) else tuple(v))
                     for k, v in (man.get("atlas") or {}).items()}
     return man
+
+
+#: Which wall tile a cell wants, from the wall cells around it. A run of wall
+#: along the cell x axis renders down-right, along y renders down-left, and a
+#: junction keeps the full-footprint post so two panels meeting at different
+#: angles do not leave a notch between them.
+def _panel_axis(cell, wall_cells) -> str:
+    x, y = cell
+    run_x = (x + 1, y) in wall_cells or (x - 1, y) in wall_cells
+    run_y = (x, y + 1) in wall_cells or (x, y - 1) in wall_cells
+    if run_x and not run_y:
+        return "x"
+    if run_y and not run_x:
+        return "y"
+    return "post"
+
+
+def _wall_tile_at(blocks: dict, cell, wall_cells):
+    """The atlas coordinate for one wall cell — a panel when the set has
+    them, the solid block when it does not."""
+    if not blocks:
+        return None
+    axis = _panel_axis(cell, wall_cells)
+    return (blocks.get(f"panel_{axis}") or blocks.get("panel_post")
+            or blocks.get("wall"))
 
 
 def _iso_blocks(tiles_disk: _Path) -> Optional[dict]:
