@@ -8343,7 +8343,13 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             # The sidecar is the only thing that can answer the question, so
             # a set without one keeps whatever the caller passed.
             side = _iso_blocks(tiles_disk)
-            block_at = 1 if (side and side["blocks"].get("wall")) else None
+            # THE SIDECAR NAMES ITS OWN SOURCE. Source 1 is where this tool
+            # writes blocks; a project's hand-built set numbers them however
+            # it likes — downsizing's wall panels are source 41 — and the
+            # whole point of the sidecar is that a set can describe itself
+            # instead of matching one tool's habits.
+            block_at = (int(side.get("wall_source", 1))
+                        if (side and side["blocks"]) else None)
             if block_at is not None and block_at in parsed_set["sources"]:
                 # the sidecar NAMES the source; the resource has to actually
                 # carry it. A stale sidecar beside an edited tileset would
@@ -8454,6 +8460,25 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 layers.append({"name": "Terrace", "terrain": "Terrace",
                                "cells": raised_cells, "unmapped": {},
                                "props": {"y_sort_enabled": True}})
+
+        # PER-CELL WALL TILES HERE TOO. The iso wall path routes to a SOLID
+        # layout, which paints one atlas coordinate at every wall cell — and
+        # with a set whose straights are thin panels that renders as a picket
+        # fence with daylight between the posts. level_reskin already chose a
+        # tile per cell from its neighbours; the generator has to do the same
+        # or the walls it builds are not walls.
+        if iso and iso_walls == "blocks":
+            side_w = _iso_blocks(tiles_disk)
+            blocks_w = (side_w or {}).get("blocks") or {}
+            wall_set = {(c["x"], c["y"]) for ly in layers
+                        if ly["name"] == wall_name for c in ly["cells"]}
+            for ly in layers:
+                if ly["name"] != wall_name:
+                    continue
+                for c in ly["cells"]:
+                    at = _wall_tile_at(blocks_w, (c["x"], c["y"]), wall_set)
+                    if at:
+                        c["ax"], c["ay"] = int(at[0]), int(at[1])
 
         varied = sum(_scatter_variants(ly["cells"], tiles_disk)
                      for ly in layers)
