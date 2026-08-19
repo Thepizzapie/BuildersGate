@@ -1188,12 +1188,18 @@ def iso_panel(material, mask, *, tile_size: tuple[int, int], lift: int,
                 r, g, b_, al = mpx[px, py]
                 if al:
                     opx[px, py] = (r, g, b_, 255)
+    # ONE FACE, NOT TWO — the difference between a partition and a cube, and
+    # the reason a wall run came out looking like a barcode. A block shows the
+    # camera both of its lower faces, so shading them differently is what
+    # makes it read as solid. A thin panel shows only the face turned toward
+    # the camera; splitting its side at the tile's centre column gave every
+    # tile a light half and a dark half, and a row of them alternated
+    # light-dark-light-dark down the whole wall.
+    k = (left_k + right_k) / 2.0
     for px in range(tw):
-        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
         rows = [py for py in range(th) if opx[px, py][3]]
         if not rows:
             continue
-        k = left_k if u < 0 else right_k
         for py in range(max(rows) + 1, min(max(rows) + 1 + lift, th + lift)):
             r, g, b_, al = mpx[px, py % th]
             if al:
@@ -1231,3 +1237,64 @@ def mirror_tile(patch):
     out.paste(flip_v, (0, h))
     out.paste(flip_h.transpose(Image.FLIP_TOP_BOTTOM), (w, h))
     return out
+
+
+def synth_material(base, *, tile_size: tuple[int, int], palette=None,
+                   grain: float = 0.35, seam: float = 0.0, seed: int = 0,
+                   speck: float = 0.0):
+    """A floor material built pixel by pixel instead of cropped from a painting.
+
+    WHY NOT GENERATE IT. A generated texture carries structure at roughly
+    tile scale, so cropping one onto a diamond grid lays a regular lattice of
+    motifs across the floor, and mirroring to hide the seams only trades the
+    lattice for symmetry. The tiles this is written to match are nearly
+    featureless — near-black, a faint grain, at most one soft quadrant seam —
+    and that is a thing arithmetic makes better than a model does: the grain
+    is per-pixel noise, so it cannot repeat, and every value is a palette
+    entry by construction rather than by conform.
+
+    ``base`` is an (r, g, b) or "#rrggbb"; ``palette`` snaps every pixel to
+    the project's own colours. ``grain`` is how often a pixel steps to a
+    neighbouring value, ``speck`` how often it takes a much lighter one (wear,
+    flecks, litter), ``seam`` how dark the cross through the tile's middle is
+    — which is what reads as floor PANELS rather than broadloom.
+    """
+    import random as _random
+
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    if isinstance(base, str):
+        s = base.lstrip("#")
+        base = tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+    base = tuple(int(v) for v in base[:3])
+    pal = [tuple(int(c) for c in p[:3]) for p in (palette or [])] or None
+    rng = _random.Random(seed)
+
+    def snap(rgb):
+        if not pal:
+            return tuple(max(0, min(255, int(v))) for v in rgb)
+        return min(pal, key=lambda p: sum((p[i] - rgb[i]) ** 2
+                                          for i in range(3)))
+
+    img = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+    px = img.load()
+    for y in range(th):
+        for x in range(tw):
+            v = list(base)
+            if rng.random() < grain:
+                step = rng.choice((-10, -6, -3, 3, 6, 10))
+                v = [c + step for c in v]
+            if speck and rng.random() < speck:
+                v = [c + rng.randint(14, 30) for c in v]
+            if seam:
+                # the panel cross: a darker line down the tile's own middle,
+                # in CELL space so it reads as a square panel seen in
+                # projection rather than a screen-aligned plus.
+                u = ((x + 0.5) - tw / 2.0) / (tw / 2.0)
+                w = ((y + 0.5) - th / 2.0) / (th / 2.0)
+                a, b = (u + w) / 2.0, (w - u) / 2.0
+                if abs(a) < 0.04 or abs(b) < 0.04:
+                    v = [c * (1.0 - seam) for c in v]
+            px[x, y] = (*snap(v), 255)
+    return img

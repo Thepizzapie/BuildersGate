@@ -7392,10 +7392,192 @@ def game_view_set(view: str) -> dict:
         return _fail(exc)
 
 @_tool
+def tileset_synth(name: str, floors: str, walls: str = "",
+                  tile_px: int = 64, wall_lift: int = 68,
+                  godot_project: str = "", res_dir: str = "assets/tiles",
+                  install: bool = False, collide: bool = True) -> dict:
+    """BUILD AN ISOMETRIC TILESET FROM THE PALETTE, with no image model at all.
+
+    The counterpart to `tileset_generate`, and the right tool for the
+    surfaces a building is mostly made of. A generated texture carries
+    structure at roughly tile scale, so cropping one onto a diamond grid
+    lays a visible lattice of motifs across the floor, and mirroring it to
+    hide the diamond seams trades that lattice for symmetry. The tiles a
+    real project ships are nearly featureless — near-black, a faint grain,
+    at most one soft panel seam — and that is arithmetic's job: per-pixel
+    noise cannot repeat, every value is a palette entry by construction, a
+    variant is a different SEED rather than a different crop, and the whole
+    set costs nothing and arrives in a second.
+
+    Reach for `tileset_generate` when a material's features are meant to be
+    read individually — terrazzo chips, a checkerboard lino, a poster wall.
+    Reach for this for carpet, concrete, vinyl, asphalt and every other
+    surface whose job is to be quiet.
+
+    `floors` and `walls` are semicolon lists of
+    ``name=#rrggbb[,grain][,seam][,speck]`` — one atlas source each, so a
+    level generator can put a different surface in every room.
+    """
+    try:
+        from PIL import Image as _Img
+
+        from bgate_core import tilemap as _tilemap
+        from bgate_core import tilemask as _tilemask
+
+        root = _Path(_root())
+        view = _gameview.load(root)
+        if view != "isometric":
+            return {"ok": False, "error": (
+                f"this project's view is {view!r}; tileset_synth builds the "
+                "diamond set. Use tileset_generate for a square view.")}
+        tw, th = int(tile_px), int(tile_px) // 2
+        lift = int(wall_lift) or th
+        pal = _artdirection.palette_pinned(str(root)) or None
+        wanted = list(range(16))
+        full = (_tilemask.BIT_N | _tilemask.BIT_E |
+                _tilemask.BIT_S | _tilemask.BIT_W)
+        out_dir = root / ".bgate_out" / "tiles"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        def _spec(text):
+            got = []
+            for chunk in [c for c in str(text).split(";") if c.strip()]:
+                key, _, rest = chunk.partition("=")
+                bits = [b.strip() for b in rest.split(",")]
+                got.append({
+                    "name": key.strip(),
+                    "base": bits[0] if bits and bits[0] else "#242424",
+                    "grain": float(bits[1]) if len(bits) > 1 and bits[1] else 0.22,
+                    "seam": float(bits[2]) if len(bits) > 2 and bits[2] else 0.0,
+                    "speck": float(bits[3]) if len(bits) > 3 and bits[3] else 0.0,
+                })
+            return got
+
+        sources, meta_floor, meta_wall = [], {}, {}
+        sid = 0
+        for spec in _spec(floors):
+            # THREE VARIANTS, THREE SEEDS. The repeat a floor shows is the
+            # tile's own content coming back; different noise per variant
+            # means there is no motif to recognise in the first place.
+            tiles = [_tilemask.synth_material(
+                spec["base"], tile_size=(tw, th), palette=pal,
+                grain=spec["grain"], seam=spec["seam"], speck=spec["speck"],
+                seed=abs(hash((name, spec["name"], v))) % 10_000)
+                for v in range(4)]
+            built = _tilemask.diamond_tiles(tiles[0], tiles[0], wanted,
+                                            tile_size=(tw, th))
+            if not built.get("ok"):
+                return {"ok": False, "error": built.get("reason")}
+            sheet, table = built["image"], built["table"]
+            cols = max(1, sheet.width // tw)
+            need = (len(wanted) + 3 + cols - 1) // cols
+            if need * th > sheet.height:
+                grown = _Img.new("RGBA", (sheet.width, need * th), (0, 0, 0, 0))
+                grown.paste(sheet, (0, 0))
+                sheet = grown
+            variant_at = []
+            for j, vt in enumerate(tiles[1:]):
+                vd = _tilemask.crop_tile(
+                    _tilemask.diamond_tiles(vt, vt, [full],
+                                            tile_size=(tw, th))["image"],
+                    (0, 0), (tw, th))
+                tx, ty = (len(wanted) + j) % cols, (len(wanted) + j) // cols
+                sheet.paste(vd, (tx * tw, ty * th))
+                variant_at.append([tx, ty])
+            png = out_dir / f"{name}_{spec['name']}.png"
+            sheet.save(png)
+            sources.append({"id": sid, "path": str(png),
+                            "texture": f"res://{res_dir.strip('/')}/{png.name}",
+                            "tiles": sorted(table.values()) + [tuple(v) for v
+                                                               in variant_at]})
+            meta_floor[spec["name"]] = {"source": sid,
+                                        "interior": list(table[15]),
+                                        "variants": variant_at,
+                                        "table": {str(m): list(c) for m, c
+                                                  in sorted(table.items())}}
+            sid += 1
+
+        for spec in _spec(walls):
+            mat = _tilemask.synth_material(
+                spec["base"], tile_size=(tw, th), palette=pal,
+                grain=spec["grain"], seam=0.0, speck=spec["speck"],
+                seed=abs(hash((name, spec["name"]))) % 10_000)
+            panels, strip_at = {}, {}
+            imgs = []
+            for mk in range(16):
+                got = _tilemask.iso_panel(mat, mk, tile_size=(tw, th),
+                                          lift=lift)
+                if not got.get("ok"):
+                    return {"ok": False, "error": got.get("reason")}
+                imgs.append(got["image"])
+            bw, bh = tw, th + lift
+            strip = _Img.new("RGBA", (bw * 16, bh), (0, 0, 0, 0))
+            for mk, im in enumerate(imgs):
+                strip.paste(im, (mk * bw, 0))
+                panels[f"panel{mk}"] = [mk, 0]
+            png = out_dir / f"{name}_{spec['name']}_wall.png"
+            strip.save(png)
+            sources.append({
+                "id": sid, "path": str(png),
+                "texture": f"res://{res_dir.strip('/')}/{png.name}",
+                "tiles": [(mk, 0) for mk in range(16)],
+                "region": (bw, bh),
+                "origins": {(mk, 0): (0, lift // 2) for mk in range(16)},
+                "collision": ({(mk, 0): [_tilemask.diamond_polygon((tw, th))]
+                               for mk in range(16)} if collide else {})})
+            meta_wall[spec["name"]] = {"source": sid, "blocks": panels,
+                                       "lift": lift}
+            sid += 1
+
+        if not sources:
+            return {"ok": False, "error": "no materials given"}
+        tres = _tilemap.write_tileset(
+            [{k: v for k, v in s.items() if k != "path"} for s in sources],
+            tile_size=(tw, th), shape=_tilemap.ISOMETRIC,
+            layout=_tilemap.DIAMOND_DOWN, physics=bool(collide))
+        tres_path = out_dir / f"{name}.tres"
+        tres_path.write_text(tres, encoding="utf-8")
+        first = next(iter(meta_floor.values()), {})
+        side = {"interior": first.get("interior", [3, 3]),
+                "variants": first.get("variants", []),
+                "materials": meta_floor, "wall_sets": meta_wall,
+                "lift": lift}
+        if meta_wall:
+            side["blocks"] = next(iter(meta_wall.values()))["blocks"]
+        side_path = out_dir / f"{name}.tiles.json"
+        side_path.write_text(_json.dumps(side, indent=1), encoding="utf-8")
+
+        result = {"ok": True, "name": name, "tileset": str(tres_path),
+                  "tile_size": [tw, th], "lift": lift,
+                  "floors": {k: v["source"] for k, v in meta_floor.items()},
+                  "walls": {k: v["source"] for k, v in meta_wall.items()},
+                  "palette": len(pal or []), "spend": {"usd": 0.0}}
+        if install and godot_project:
+            import shutil as _sh
+            proj = _Path(godot_project)
+            dest = proj / res_dir.strip("/")
+            dest.mkdir(parents=True, exist_ok=True)
+            for s in sources:
+                _sh.copyfile(s["path"], dest / _Path(s["path"]).name)
+            _sh.copyfile(side_path, dest / side_path.name)
+            (dest / f"{name}.tres").write_text(tres, encoding="utf-8")
+            result["import"] = _godot.check_project(str(proj))
+            result["engine"] = _godot.inspect_tileset(
+                str(proj), f"res://{res_dir.strip('/')}/{name}.tres")
+            result["installed"] = str(dest / f"{name}.tres")
+        _log("art", f"synth tileset {name}: {len(meta_floor)} floors, "
+                    f"{len(meta_wall)} walls", ref=str(tres_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
 def level_reskin(godot_project: str, scene: str, tileset: str,
                  out_scene: str = "", floor_layer: str = "",
                  wall_layer: str = "Walls", sunken: str = "",
-                 doors: str = "", material_map: str = "", parent: str = ".",
+                 doors: str = "", material_map: str = "",
+                 wall_map: str = "", parent: str = ".",
                  dry_run: bool = False) -> dict:
     """RE-BUILD AN EXISTING LEVEL'S LAYOUT against a different tileset.
 
@@ -7664,11 +7846,30 @@ def level_reskin(godot_project: str, scene: str, tileset: str,
                 wall_at, wall_src = (0, 0), 1
             if wall_at is not None:
                 blocks = (side or {}).get("blocks") or {}
+                # PER-AREA WALLS, the same way the floors work. A partition,
+                # a glazed meeting room and an exec office are different
+                # surfaces in the original too — it draws them from different
+                # atlases — and a re-skin that puts one panel everywhere
+                # throws away the reading that tells you which room you are
+                # standing in.
+                wsets = (side or {}).get("wall_sets") or {}
+                wwant = {}
+                for pair in wall_map.replace(";", " ").split():
+                    sid0, _, wname = pair.partition("=")
+                    if sid0.strip().isdigit() and wname.strip() in wsets:
+                        wwant[int(sid0)] = wsets[wname.strip()]
+                by_wall = {}
+                if wwant and found_packed.get(wall_layer):
+                    for c in _tilemap.decode_cells(found_packed[wall_layer]):
+                        by_wall[(c["x"], c["y"])] = c["source"]
                 wall_out = []
                 for (x, y) in sorted(wall_cells):
-                    at = (_wall_tile_at(blocks, (x, y), wall_cells)
+                    setm = wwant.get(by_wall.get((x, y)))
+                    use_blocks = (setm or {}).get("blocks") or blocks
+                    src = int((setm or {}).get("source", wall_src))
+                    at = (_wall_tile_at(use_blocks, (x, y), wall_cells)
                           if iso else None) or wall_at
-                    wall_out.append({"x": x, "y": y, "source": wall_src,
+                    wall_out.append({"x": x, "y": y, "source": src,
                                      "ax": int(at[0]), "ay": int(at[1]),
                                      "alt": 0})
                 layers.append({
