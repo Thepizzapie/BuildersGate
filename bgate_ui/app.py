@@ -770,7 +770,9 @@ def state() -> dict:
     previews_dir = root / ".bgate" / "previews"
     previews = []
     if previews_dir.is_dir():
-        files = sorted(previews_dir.glob("*.png"),
+        # PNG and GIF: animation previews archive as .gif, and /api/preview
+        # already serves the suffix correctly — this glob was the only gate.
+        files = sorted([*previews_dir.glob("*.png"), *previews_dir.glob("*.gif")],
                        key=lambda p: p.stat().st_mtime, reverse=True)[:24]
         previews = [{"rel": str(p.relative_to(root)).replace("\\", "/"),
                      "name": p.stem,

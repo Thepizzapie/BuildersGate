@@ -16,8 +16,8 @@
  * This file converts cells to pixels and draws.
  */
 
-import { type FloorPlan, type PlanRoom, type Prop, type Rect, type Spot,
-         stationFace } from "./floorplan";
+import { type FloorPlan, type PlanRoom, type Prop, type Rect,
+         type Spot } from "./floorplan";
 import { type Occupant } from "./occupancy";
 import { type Nav } from "./route";
 import { castFrames } from "./castFrames";
@@ -1875,9 +1875,13 @@ export class FloorRenderer {
          Only left and right, because that is the whole of what mirroring a
          sprite can say; a seat whose work is straight up or down keeps the
          drawn orientation rather than being turned to a lie. */
-      const facingRight = moving
-        ? ch.facingRight
-        : anim === "working" && stationFace(p.seat) === "right";
+      /* Working strips are DIRECTION-DRAWN now: each cast's working
+         animation is generated at its declared station facing (the sprite
+         contract's per-seat override — n into a wall desk, ne for the couch
+         and bench, sw for the writing desks), so mirroring one would turn a
+         correct back-3/4 into its opposite corner. The stationFace flip
+         retired with the pre-contract strips it existed to serve. */
+      const facingRight = moving ? ch.facingRight : false;
       if (facingRight) {
         ctx.translate(artW / 2, 0);
         ctx.scale(-1, 1);

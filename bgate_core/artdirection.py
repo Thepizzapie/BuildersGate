@@ -210,7 +210,11 @@ _WORLD = frozenset({"anchor", "animation", "background", "gear", "item", "prop",
 # Aliases are included because an agent naming this itself will reach for
 # "material" or "albedo" as readily as "texture", and a near-miss kind silently
 # means "unknown" — which is the failure mode this whole file exists to close.
-TEXTURE_KINDS = frozenset({"texture", "material", "albedo"})
+# "tile" belongs here and was missing, which made `tileable=True` a
+# no-op for the one kind actually named after tiling: form_clause only
+# appends the seamless directive for a TEXTURE kind, so every tile ever
+# generated asked for a tile and never asked for it to tile.
+TEXTURE_KINDS = frozenset({"texture", "material", "albedo", "tile"})
 DECAL_KINDS = frozenset({"decal", "logo", "insignia", "emblem", "sticker"})
 
 # Every kind any tool in this repo actually asks for, named rather than implied.
@@ -271,7 +275,18 @@ def is_decal_kind(task_kind: str) -> bool:
     return str(task_kind or "").strip().lower() in DECAL_KINDS
 
 
+#: Texture kinds that must STILL forbid text. The no-text ban is dropped for
+#: textures because a material can legitimately carry a logo or stencilled
+#: lettering — but a terrain tile cannot: letters in a dungeon floor repeat
+#: across the whole level, and autotiling scatters them at every rotation. So
+#: "tile" takes the texture treatment (flat albedo, seamless, square) and keeps
+#: the ban.
+TEXTURE_KINDS_KEEPING_NO_TEXT = frozenset({"tile"})
+
+
 def _drops_no_text(kind: str) -> bool:
+    if kind in TEXTURE_KINDS_KEEPING_NO_TEXT:
+        return False
     return kind in TEXTURE_KINDS or kind in DECAL_KINDS
 
 
@@ -364,6 +379,60 @@ def anchors_for(root: str | os.PathLike[str], *, kinds: Sequence[str] = ("style"
     return out[:limit]
 
 
+#: The bible section palette_pin writes and palette_pinned reads. The marker
+#: word makes it a LOCKED constraint by the existing title convention.
+PALETTE_TITLE = "PALETTE LOCKED"
+
+_HEX = re.compile(r"#?([0-9a-fA-F]{6})\b")
+
+
+def palette_pinned(root: str | os.PathLike[str]) -> list[tuple[int, int, int]]:
+    """The project palette, as RGB triples. [] when none is pinned.
+
+    Read out of locked art constraints whose TITLE says palette — the body of
+    a style section may name a hex in passing ("the villain wears #ff0000")
+    without meaning "and nothing else exists", so mentioning a colour is not
+    pinning a palette. Order preserved, duplicates dropped: index 0 matters to
+    indexed-mode consumers.
+    """
+    out: list[tuple[int, int, int]] = []
+    seen: set[str] = set()
+    for section in constraints(root, locked_only=True):
+        if "palette" not in str(section.get("title") or "").lower():
+            continue
+        for match in _HEX.finditer(str(section.get("body") or "")):
+            hexcode = match.group(1).lower()
+            if hexcode in seen:
+                continue
+            seen.add(hexcode)
+            out.append(tuple(int(hexcode[i:i + 2], 16) for i in (0, 2, 4)))
+    return out
+
+
+def off_palette_fraction(path: str | os.PathLike[str],
+                         palette: Sequence[Sequence[int]]) -> float:
+    """The fraction of opaque pixels whose colour is not exactly in `palette`.
+
+    Exact, not near: this measures whether the conform pass ran, and a
+    conformed image is exactly-on by construction. Bounded to a NEAREST
+    thumbnail — NEAREST only ever samples pixels the file actually contains,
+    so the measurement stays exact on a 4K plate.
+    """
+    from PIL import Image
+
+    allowed = {tuple(int(c) for c in colour) for colour in palette}
+    with Image.open(path) as im:
+        im = im.convert("RGBA")
+        if max(im.size) > 512:
+            im.thumbnail((512, 512), Image.NEAREST)
+        pixels = list(im.getdata())
+    opaque = [(r, g, b) for r, g, b, a in pixels if a > 8]
+    if not opaque:
+        return 0.0
+    off = sum(1 for rgb in opaque if rgb not in allowed)
+    return off / len(opaque)
+
+
 def check(root: str | os.PathLike[str], path: str | os.PathLike[str], *,
           anchors: Optional[Sequence[str]] = None,
           max_palette_distance: float = 190.0) -> dict:
@@ -407,8 +476,21 @@ def check(root: str | os.PathLike[str], path: str | os.PathLike[str], *,
         except Exception as exc:
             measured["palette_error"] = str(exc)
 
-    # 2. Pixel-grid test, only when the bible actually asked for pixel art.
-    # 2. Pixel-grid measurement — REPORTED, NEVER FATAL. See _pixel_block.
+    # 2. Distance from the PINNED palette — measured here, GATED after the
+    # conform pass. This check runs on every raw generation (chroma._art_check),
+    # which is BEFORE anything has conformed the image, so a hard flag here
+    # would reject every generation the pipeline was about to fix. The hard
+    # gate lives where conform has already run: image_sprites' post-assembly
+    # palette stage, and the item minting path.
+    pinned = palette_pinned(root)
+    measured["palette_pinned"] = len(pinned)
+    if pinned:
+        try:
+            measured["off_palette"] = round(off_palette_fraction(path, pinned), 4)
+        except Exception as exc:
+            measured["off_palette_error"] = str(exc)
+
+    # 3. Pixel-grid measurement — REPORTED, NEVER FATAL. See _pixel_block.
     wants_pixel = "pixel art" in locked_blob or "chunky pixel" in locked_blob
     measured["pixel_required"] = wants_pixel
     if wants_pixel:

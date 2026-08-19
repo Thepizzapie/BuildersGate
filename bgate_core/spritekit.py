@@ -357,6 +357,16 @@ def lock_palette(path: Any, palette: Sequence[Sequence[int]], *,
         # into every transparent pixel it touched.
         out.paste((0, 0, 0, 0), (0, 0),
                   alpha.point(lambda a: 255 if a <= 8 else 0))
+        # DEFRINGE, AFTER THE SNAP. Generators blend the silhouette's edge
+        # toward the (former) background, and those blend pixels hide against
+        # transparency — until quantisation maps a dim halo pixel to whichever
+        # palette entry is nearest in RGB, which can be a LIGHT one, and the
+        # sprite grows a rim of bright speckles it never visibly had. Found by
+        # a human on the first real conform; every A/B before it looked clean
+        # at 1x. Two mechanical repairs, both scoped to the silhouette edge:
+        # stray ink with no body evaporates, and an edge pixel wearing a
+        # colour none of its neighbours wear takes its neighbours' colour.
+        _defringe(out)
         out.save(dst)
     except Exception as exc:                                    # noqa: BLE001
         return {"ok": False, "path": str(src), "colors": len(entries),
@@ -367,6 +377,60 @@ def lock_palette(path: Any, palette: Sequence[Sequence[int]], *,
             "changed": round(changed, 4),
             "note": f"every opaque pixel snapped to one of {len(entries)} "
                     "reference colours — palette drift is now unrepresentable"}
+
+
+def _defringe(img) -> int:
+    """Silhouette-edge repair, in place on an RGBA image. Returns pixels touched.
+
+    Two rules, both restricted to pixels TOUCHING transparency so the figure's
+    interior is never edited:
+
+      * STRAY INK: an opaque pixel with at most one opaque neighbour is debris
+        — a fleck of anti-aliasing that survived keying, invisible at 1x until
+        quantisation dressed it in a palette colour. It becomes transparent.
+      * HALO: an edge pixel whose colour matches NONE of its opaque neighbours
+        is a background blend the snap sent to the wrong palette entry. It
+        takes the most common colour among those neighbours — a colour the
+        edge already wears, so the repair cannot introduce anything new.
+
+    One pass, reading the original and writing a copy, so a repair never
+    cascades into eating the outline pixel by pixel.
+    """
+    width, height = img.size
+    src = img.load()
+    original = img.copy().load()
+    touched = 0
+    for y in range(height):
+        for x in range(width):
+            if original[x, y][3] <= 8:
+                continue
+            neighbours = []
+            transparent = 0
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if not dx and not dy:
+                        continue
+                    nx, ny = x + dx, y + dy
+                    if not (0 <= nx < width and 0 <= ny < height):
+                        transparent += 1
+                        continue
+                    pixel = original[nx, ny]
+                    if pixel[3] <= 8:
+                        transparent += 1
+                    else:
+                        neighbours.append(pixel[:3])
+            if not transparent:
+                continue                     # interior — never edited
+            if len(neighbours) <= 1:
+                src[x, y] = (0, 0, 0, 0)     # stray ink
+                touched += 1
+            elif original[x, y][:3] not in neighbours:
+                counts: dict[tuple, int] = {}
+                for rgb in neighbours:
+                    counts[rgb] = counts.get(rgb, 0) + 1
+                src[x, y] = (*max(counts, key=counts.get), original[x, y][3])
+                touched += 1
+    return touched
 
 
 def _fraction_differing(before, after, alpha) -> float:
@@ -608,7 +672,451 @@ def sheet_report(ordered: Sequence[str], frame_files: dict[str, str], *,
         anims[anim] = report
         if report["flagged"]:
             flagged.append(anim)
-    return {"ok": True, "animations": anims, "flagged": flagged}
+
+    # FACING, per ANIMATION GROUP, not across the whole set. A yaw flip is
+    # invisible to every measurement above, and the generated path never ran
+    # this vote at all until a human caught two camera-facing frames in a walk.
+    # The grouping matters as much as the vote: under a sprite contract one
+    # sheet carries several DIRECTIONS ("walk_nw", "walk_sw"), and a back row
+    # voting against a front row would flag a perfectly correct sheet — the
+    # rows are SUPPOSED to disagree. Each animation votes alone; a direction
+    # suffix on the name declares which way its majority must lean, and a
+    # group whose vote contradicts its own name is `wrong_direction`.
+    facing_all: dict[str, dict] = {}
+    for anim, items in by_anim.items():
+        group = [pose for _, pose in sorted(items) if pose in frame_files]
+        if not group:
+            continue
+        facing = facing_report(group, frame_files, airborne=airborne,
+                               expected=_direction_of(anim))
+        facing["findings"].extend(
+            flicker_report(group, frame_files)["findings"])
+        facing_all[anim] = facing
+        if facing.get("findings") and anim in anims:
+            anims[anim]["findings"].extend(facing["findings"])
+            anims[anim]["flagged"] = True
+            if anim not in flagged:
+                flagged.append(anim)
+    return {"ok": True, "animations": anims, "flagged": flagged,
+            "facing": facing_all}
+
+
+#: Compass suffixes an animation name may carry under a sprite contract, and
+#: the east/west LEAN each implies for the head-skew sign (+1 right/east,
+#: -1 left/west, 0 no verdict). North-ish directions are 0 ON PURPOSE: they
+#: are BACK views, head_skew reads FACE detail, and a back of a head carries
+#: hair, not a face — measured on the first contract run, where a perfectly
+#: correct walk_nw row was called wrong_direction by its own hair highlight.
+_DIRECTION_LEAN = {"e": 1, "se": 1, "w": -1, "sw": -1,
+                   "n": 0, "s": 0, "ne": 0, "nw": 0}
+
+
+def _direction_of(anim: str) -> str:
+    """"walk_nw" -> "nw"; names without a direction suffix return ''."""
+    _, _, tail = str(anim).rpartition("_")
+    return tail if tail in _DIRECTION_LEAN else ""
+
+
+#: How far a frame's drawn height may sit from the SET median before it is an
+#: outlier. Distinct from _sequence_flags' adjacent-pair jitter: a first and
+#: last frame drawn tall are not adjacent to each other, bracket the set, and
+#: sailed through the pairwise check on a real 8-frame walk — while being the
+#: first thing a human saw on the sheet. Calibrated on that sheet (median
+#: 145.5px): the honest six sat within 3.8% — stride genuinely changes drawn
+#: height — and the worst offender at 5.8%. The margin is thin and that is the
+#: honest shape of the signal: below 5% this fires on real stride variation,
+#: and a mild offender (the same sheet's other bad frame, at 4.5%) is left to
+#: the facing vote, which caught it.
+HEIGHT_OUTLIER_FRAC = 0.05
+
+#: Full-set height spread past which the set is broken even when no minority
+#: exists to name. Genuine stride measured ≤6%; the real failure this catches
+#: measured 33% (a 50/50 fork into two character scales).
+HEIGHT_SPLIT_FRAC = 0.12
+
+
+def normalise_heights(ordered: Sequence[str], frame_files: dict[str, str], *,
+                      airborne: Iterable[str] = (),
+                      frac: float = HEIGHT_OUTLIER_FRAC) -> dict:
+    """Scale pure-size outlier frames to the set's median height, IN PLACE.
+
+    The cheap half of a height finding. An oversized frame is usually the
+    same drawing at the wrong scale — the character, the palette and the
+    pose are all fine — and arithmetic fixes what a re-roll would re-gamble
+    money on. Only frames past ``frac`` of the median move, only a MINORITY
+    moves (half the set being 'wrong' means there is no majority to trust),
+    and the resample is NEAREST so a locked palette stays locked: no new
+    colours, no softened edges.
+
+    Bottom-anchored: feet are where a sprite meets the world, so the scaled
+    content keeps its baseline and its horizontal mass centre. Returns
+    ``{scaled: {pose: ratio}, median: px}`` — empty ``scaled`` means the set
+    was already one height, and calling this twice is a no-op.
+    """
+    from PIL import Image
+
+    airborne = set(airborne)
+    boxes: list[tuple[str, tuple]] = []
+    for pose in ordered:
+        path = frame_files.get(pose)
+        if not path or pose.partition("/")[0] in airborne:
+            continue
+        try:
+            bbox = _open(path).getbbox()
+        except Exception:                                       # noqa: BLE001
+            continue
+        if bbox:
+            boxes.append((pose, bbox))
+    if len(boxes) < 4:
+        return {"scaled": {}, "median": None}
+    heights = sorted(b[3] - b[1] for _, b in boxes)
+    median = heights[len(heights) // 2]
+    tall = [(p, b) for p, b in boxes
+            if median and abs((b[3] - b[1]) - median) / median > frac]
+    if not tall or len(tall) * 2 >= len(boxes):
+        return {"scaled": {}, "median": median}
+
+    scaled: dict[str, float] = {}
+    for pose, bbox in tall:
+        path = frame_files[pose]
+        img = _open(path).convert("RGBA")
+        content = img.crop(bbox)
+        ratio = median / (bbox[3] - bbox[1])
+        nw = max(1, round(content.width * ratio))
+        nh = max(1, round(content.height * ratio))
+        content = content.resize((nw, nh), Image.NEAREST)
+        out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        cx = (bbox[0] + bbox[2]) // 2
+        out.paste(content, (max(0, cx - nw // 2), max(0, bbox[3] - nh)))
+        out.save(path)
+        scaled[pose] = round(ratio, 3)
+    return {"scaled": scaled, "median": median}
+
+
+def facing_report(ordered: Sequence[str], frame_files: dict[str, str], *,
+                  airborne: Iterable[str] = (), expected: str = "",
+                  reference: str = "") -> dict:
+    """Per-frame geometry against the whole set: facing vote + height outliers.
+
+    Facing: :func:`head_skew` per frame (where the face's dark detail sits in
+    the head band), majority vote over every frame with a readable skew.
+    Frames on the losing side are the finding; a set that splits down the
+    middle is reported ``ambiguous`` instead — half the frames are wrong
+    either way, and pretending to know which half helps nobody.
+
+    Height: trimmed ink height against the set MEDIAN. The area anchor
+    normalises visual mass, so a frame drawn at a more front-facing angle
+    (narrower silhouette, same area) comes out TALLER — a height outlier is
+    usually the shadow of a camera-angle drift no silhouette measure can name
+    directly. Airborne animations are excluded: a jump tucks its legs.
+    """
+    airborne = set(airborne)
+    skews: list[tuple[str, float]] = []
+    heights: list[tuple[str, int]] = []
+    for pose in ordered:
+        path = frame_files.get(pose)
+        if not path:
+            continue
+        try:
+            img = _open(path)
+            value = head_skew(img)
+            bbox = img.getbbox()
+        except Exception:                                       # noqa: BLE001
+            continue
+        skews.append((pose, value))
+        if bbox and pose.partition("/")[0] not in airborne:
+            heights.append((pose, bbox[3] - bbox[1]))
+    voters = [(pose, s) for pose, s in skews if abs(s) >= FACING_SKEW_MIN]
+    out = {"skews": {pose: round(s, 3) for pose, s in skews},
+           "heights": dict(heights),
+           "voters": len(voters), "findings": []}
+
+    if len(heights) >= 4:
+        ordered_h = sorted(h for _, h in heights)
+        median = ordered_h[len(ordered_h) // 2]
+        tall = [(pose, h) for pose, h in heights
+                if median and abs(h - median) / median > HEIGHT_OUTLIER_FRAC]
+        if tall and len(tall) * 2 < len(heights):
+            out["findings"].append({
+                "kind": "height_outlier",
+                "frames": [pose for pose, _ in tall], "iou": None,
+                "note": f"drawn height sits off the set's median ({median}px) "
+                        f"by more than {HEIGHT_OUTLIER_FRAC:.0%}: "
+                        + ", ".join(f"{p} at {h}px" for p, h in tall)
+                        + ". With the area anchor holding mass constant, a "
+                          "taller frame is usually a narrower one — the model "
+                          "drifted toward a more front-facing angle. Re-roll "
+                          "these frames."})
+        elif median and (ordered_h[-1] - ordered_h[0]) / median > HEIGHT_SPLIT_FRAC:
+            # No MINORITY to name — but a spread this wide is wrong no matter
+            # which half is right. Found on a real nb2 walk that forked 50/50
+            # into 103px and 154px knights: the outlier vote correctly refused
+            # to pick a side and then said nothing at all about a 33% split.
+            short_half = [p for p, h in heights if h - ordered_h[0] < ordered_h[-1] - h]
+            out["findings"].append({
+                "kind": "height_split",
+                "frames": [p for p, _ in heights], "iou": None,
+                "note": f"the set splits into two heights "
+                        f"({ordered_h[0]}-{ordered_h[-1]}px, "
+                        f"{(ordered_h[-1] - ordered_h[0]) / median:.0%} of median) "
+                        f"with no minority to blame — {', '.join(short_half)} "
+                        "sit in the short cluster. Genuine stride varies a few "
+                        "percent; this is two drawings of the character at two "
+                        "scales. Re-roll one cluster against the other."})
+
+    if len(voters) >= 3:
+        right = sum(1 for _, s in voters if s > 0)
+        left = len(voters) - right
+        # A DECLARED direction ("walk_nw" under a sprite contract) turns the
+        # vote into a verdict: the majority must lean the declared way, and a
+        # group that votes against its own name is wrong as a WHOLE — the
+        # single most shipped defect in the reference project (ten of the
+        # drone's twenty facings), and one internal consistency can never see,
+        # because a uniformly backwards sheet is perfectly consistent.
+        # WHICH SIGN MEANS "CORRECT" is style-dependent: head_skew reads
+        # dark detail, which is a visor on a knight (face side) and a hair
+        # mass on a pale-faced office worker (BACK of head) — the compass
+        # table called a KNOWN-GOOD shipped strip backwards. A reference
+        # frame from a known-correct strip is style-independent ground
+        # truth: the set must lean the way its own seed leans. The compass
+        # table is the fallback when no reference exists.
+        lean = _DIRECTION_LEAN.get(str(expected or "").strip().lower(), 0)
+        if reference:
+            try:
+                ref_skew = head_skew(_open(reference))
+                if abs(ref_skew) >= FACING_SKEW_MIN:
+                    lean = 1 if ref_skew > 0 else -1
+                elif lean:
+                    # The seed itself is faceless (a back view): the lean
+                    # table's face-visible claim is wrong for this strip.
+                    lean = 0
+            except Exception:                                   # noqa: BLE001
+                pass
+        if lean and len(voters) * 2 < len(skews):
+            # DECLARED FACE-VISIBLE, DRAWN FACELESS. Abstaining when no face
+            # is readable is right for an undeclared set and exactly wrong
+            # for one whose contract says east: a working strip that turned
+            # its whole cast to a back view sailed through as "no verdict"
+            # while a human called it immediately.
+            out["findings"].append({
+                "kind": "turned_away", "iou": None,
+                "frames": [pose for pose, s in skews
+                           if abs(s) < FACING_SKEW_MIN],
+                "note": f"declared {expected!r} (a face-visible direction) "
+                        "but most frames show no readable face detail — the "
+                        "camera turned away from the declared side. "
+                        "Regenerate with the facing pinned in the prompt, or "
+                        "re-declare the direction if the turn is intended."})
+        if lean:
+            majority_sign = 1 if right > left else (-1 if left > right else 0)
+            if majority_sign and majority_sign != lean:
+                side = "east/right" if lean > 0 else "west/left"
+                out["findings"].append({
+                    "kind": "wrong_direction", "iou": None,
+                    "frames": [pose for pose, _ in voters],
+                    "note": f"declared {expected!r} (facing {side}) but the "
+                            "set's own majority leans the other way — the "
+                            "whole group was drawn facing backwards. Mirror "
+                            "the sheet, or regenerate from a start frame that "
+                            "actually faces the declared side."})
+        if right == left:
+            out["ambiguous"] = True
+        else:
+            majority = 1 if right > left else -1
+            odd = [pose for pose, s in voters
+                   if (1 if s > 0 else -1) != majority]
+            if odd and len(odd) * 2 < len(voters):
+                out["findings"].append({
+                    "kind": "facing_flip", "frames": odd, "iou": None,
+                    "note": f"{len(odd)} frame(s) face the other way from the "
+                            "rest of the set — the head's dark detail (visor, "
+                            "eyes, muzzle) sits on the wrong side. Re-roll "
+                            "these frames; a mirror flip in paint also works "
+                            "when the design is symmetric enough."})
+            else:
+                yaw = _yaw_gap([(p, abs(s)) for p, s in voters
+                                if (1 if s > 0 else -1) == majority])
+                if yaw:
+                    # A frame TOO frontal to vote (|skew| under the floor) is
+                    # not innocent, it is the furthest-rotated frame of all —
+                    # a flat-on head has no side for the detail to sit on.
+                    if "toward the camera" in yaw["note"]:
+                        flat = [pose for pose, s in skews
+                                if abs(s) < FACING_SKEW_MIN
+                                and pose not in yaw["frames"]]
+                        yaw["frames"].extend(flat)
+                    out["findings"].append(yaw)
+    return out
+
+
+#: Where a magnitude gap in same-sign skews becomes a camera-angle finding.
+#: Calibrated on real sheets: an RD walk whose last three frames rotated
+#: toward camera clustered at |skew| 0.04-0.06 against a 0.11-0.14 profile
+#: majority (1.7x gap); an honest kie walk sat in one band, 0.061-0.081
+#: (1.16x worst adjacent step). The SIGN vote cannot see this — every frame
+#: still faces the same way, just not by the same amount.
+YAW_GAP_RATIO = 1.6
+
+
+#: Cross-sheet drift bounds. Within one character's SET (every direction of an
+#: action, every action of a character) the palette should be one palette and
+#: the drawn scale one scale — the "same person in every sheet" floor. Palette
+#: distance shares chroma's colour metric; height compares median drawn ink.
+SET_PALETTE_MAX = 120.0
+SET_HEIGHT_FRAC = 0.12
+
+
+def set_drift(groups: dict[str, Sequence[str]]) -> dict:
+    """Do these sheets contain the SAME character? {findings, measured}.
+
+    ``groups`` maps a label ("walk_nw", or "idle"/"attack" across actions) to
+    that group's frame paths. Two cheap cross-group measures: worst pairwise
+    palette distance (a colour one group has that no other group approaches)
+    and median drawn-height spread. Advisory findings, same shape as
+    motion_report's, because "these two sheets disagree" needs a human to say
+    which one is right.
+    """
+    from bgate_core import chroma
+
+    palettes: dict[str, list] = {}
+    heights: dict[str, int] = {}
+    for label, paths in groups.items():
+        pal: list = []
+        tall: list[int] = []
+        for path in paths:
+            pal.extend(chroma.palette_of(path, colors=8))
+            try:
+                img = _open(path)
+                bbox = img.getbbox()
+                if bbox:
+                    tall.append(bbox[3] - bbox[1])
+            except Exception:                                   # noqa: BLE001
+                continue
+        if pal:
+            palettes[label] = pal
+        if tall:
+            heights[label] = sorted(tall)[len(tall) // 2]
+
+    findings: list[dict] = []
+    measured: dict[str, Any] = {"palette": {}, "heights": dict(heights)}
+    labels = sorted(palettes)
+    for i, a in enumerate(labels):
+        for b in labels[i + 1:]:
+            worst = max((chroma.distance_to(c, palettes[b])
+                         for c in palettes[a]), default=0.0)
+            measured["palette"][f"{a}|{b}"] = round(worst, 1)
+            if worst > SET_PALETTE_MAX:
+                findings.append({
+                    "kind": "set_drift", "pair": f"{a}|{b}", "iou": None,
+                    "note": f"{a} carries a colour {worst:.0f} away from "
+                            f"anything in {b} — the sheets read as two "
+                            "different characters. Re-conform to the pinned "
+                            "palette, or regenerate the drifted sheet."})
+    if len(heights) >= 2:
+        ordered_h = sorted(heights.values())
+        median = ordered_h[len(ordered_h) // 2]
+        if median and (ordered_h[-1] - ordered_h[0]) / median > SET_HEIGHT_FRAC:
+            worst_labels = sorted(heights, key=heights.get)
+            findings.append({
+                "kind": "set_drift",
+                "pair": f"{worst_labels[0]}|{worst_labels[-1]}", "iou": None,
+                "note": f"drawn height ranges {ordered_h[0]}-{ordered_h[-1]}px "
+                        f"across the set ({(ordered_h[-1] - ordered_h[0]) / median:.0%} "
+                        "of median) — the character changes size between "
+                        "sheets. Regenerate the outlier against a start frame "
+                        "from a conforming sheet."})
+    return {"findings": findings, "measured": measured,
+            "flagged": bool(findings)}
+
+
+
+#: Per-frame share of the strip's CONSENSUS ink a frame may lack before it is
+#: a flicker. Calibrated on a 45-strip floor-cast run: strips a human called
+#: bugged (white pants on half the frames, a jacket that vanishes) measured
+#: 0.11-0.13 worst-frame; honest strips sat at or under 0.05.
+FLICKER_LOST_MAX = 0.08
+
+
+def flicker_report(ordered: Sequence[str], frame_files: dict[str, str]) -> dict:
+    """Frames whose INK disagrees with the strip's consensus — garment-colour
+    flicker, vanishing clothing, hallucinated props. {findings, lost}.
+
+    Reuses the band-novelty machinery row_report has had all along
+    (_ink_palette_hist/_novelty), pointed at FRAMES: for each frame, how much
+    of the other frames' pooled colour mass is missing from it ("lost"), and
+    how much of its own colour appears nowhere else ("added"). Lost is the
+    stronger signal — a white-pants frame is missing the real trousers.
+    """
+    from PIL import Image
+
+    cells = []
+    labels = []
+    for pose in ordered:
+        path = frame_files.get(pose)
+        if not path:
+            continue
+        try:
+            cells.append(Image.open(path).convert("RGBA"))
+            labels.append(pose)
+        except Exception:                                       # noqa: BLE001
+            continue
+    if len(cells) < 3:
+        return {"findings": [], "lost": {}}
+    hists = [_ink_palette_hist([c]) for c in cells]
+    lost: dict[str, float] = {}
+    added: dict[str, float] = {}
+    for i, hist in enumerate(hists):
+        others = [o for j, o in enumerate(hists) if j != i]
+        merged: dict = {}
+        for other in others:
+            for key, share in other.items():
+                merged[key] = merged.get(key, 0.0) + share / len(others)
+        lost[labels[i]] = round(_novelty(merged, [hist]), 4)
+        added[labels[i]] = round(_novelty(hist, others), 4)
+    bad = [pose for pose, v in lost.items() if v > FLICKER_LOST_MAX]
+    findings = []
+    if bad and len(bad) * 2 <= len(labels) + 1:
+        findings.append({
+            "kind": "ink_flicker", "frames": bad, "iou": None,
+            "note": f"{len(bad)} frame(s) are missing a large share of the "
+                    "strip's consensus colours — clothing changed colour or "
+                    "vanished on those frames (worst "
+                    f"{max(lost[p] for p in bad):.0%} of consensus ink "
+                    f"absent, limit {FLICKER_LOST_MAX:.0%}). Re-roll the "
+                    "strip; this does not repair frame by frame."})
+    return {"findings": findings, "lost": lost, "added": added}
+
+
+def _yaw_gap(magnitudes: list[tuple[str, float]]) -> Optional[dict]:
+    """A yaw-DEGREE cluster split among same-facing frames, or None.
+
+    Sorts |skew|, finds the widest adjacent ratio step; a step past
+    YAW_GAP_RATIO with at least two frames on each side splits the set into a
+    profile cluster and a more-frontal cluster (lower magnitude — the face
+    detail moves toward centre as the head turns to camera). The SMALLER
+    cluster is the finding, whichever side of the gap it sits on.
+    """
+    if len(magnitudes) < 4:
+        return None
+    ordered = sorted(magnitudes, key=lambda kv: kv[1])
+    gap_at, gap_ratio = 0, 1.0
+    for i in range(1, len(ordered)):
+        lo, hi = ordered[i - 1][1], ordered[i][1]
+        ratio = hi / lo if lo > 0 else float("inf")
+        if ratio > gap_ratio:
+            gap_ratio, gap_at = ratio, i
+    low, high = ordered[:gap_at], ordered[gap_at:]
+    if gap_ratio < YAW_GAP_RATIO or len(low) < 2 or len(high) < 2:
+        return None
+    minority = low if len(low) < len(high) else high
+    toward = "toward the camera" if minority is low else "further into profile"
+    return {"kind": "yaw_drift", "iou": None,
+            "frames": [p for p, _ in minority],
+            "note": f"{len(minority)} frame(s) hold the head at a different "
+                    f"angle — rotated {toward} relative to the rest (facing "
+                    f"detail offset {minority[0][1]:.2f}-{minority[-1][1]:.2f} "
+                    f"vs the majority's band). Same left/right facing, "
+                    "different camera angle; re-roll these frames."}
 
 
 def _split_figure(path: str) -> bool:

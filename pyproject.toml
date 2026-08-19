@@ -18,6 +18,16 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "Pillow>=10.0",
+    # THE SAME STORY AS comtypes BELOW, one release later. numpy was declared
+    # only by the `record` extra, and the art pipeline grew a hard dependency
+    # on it: propsheet's conform and border measure, retrodiffusion's
+    # background keying, the wall tile's tone match. Every one of those is
+    # core — a prop sheet is not an optional feature of a 2D game — and every
+    # one worked on the machines this was written on, because sounddevice or
+    # an unrelated package had already pulled numpy in. A clean install
+    # without [record] would have raised ImportError the first time an agent
+    # generated a prop. Linux CI is what finally said so out loud.
+    "numpy>=1.26",
     "openai>=1.30",
 ]
 
@@ -40,7 +50,10 @@ stt = ["faster-whisper>=1.0"]
 # with an import error rather than a sentence. deepgram.available() reports its
 # absence explicitly for the same reason.
 voice = ["websockets>=13"]
-record = ["sounddevice>=0.4", "numpy>=1.26"]
+# numpy is NOT repeated here: it moved into the core dependencies above, and
+# an extra that re-declares it is a second place to keep a version floor in
+# step with the first.
+record = ["sounddevice>=0.4"]
 # `bgate app` — the dashboard in a native window. On Windows this renders
 # through the Edge WebView2 runtime that ships with 11, so there is no bundled
 # browser here either way.

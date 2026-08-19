@@ -1470,18 +1470,10 @@ export function Room({ seat }: { seat?: string } = {}) {
         </>
         )}
 
-        {/* THE RULE, IN WORDS, AT THE FOOT OF THE ROSTER. Outside the branch
-            above on purpose: it is true of every room, and a narrative room —
-            which trades its sketch pad for canon — needs it just as much. A
-            room is only cheap and only safe while what is in it cannot act. */}
-        <div className="bg4-rule">
-          <Ti name="tools-off" size={15} />
-          <div>
-            A seat in here is spawned without its tools. It can read the room,
-            the pads and its own lane — it cannot write, run, or queue. What it
-            says is an opinion until you promote it.
-          </div>
-        </div>
+        {/* The toolless-seat rule still HOLDS (brainstorm seats cannot write,
+            run, or queue — that is enforced server-side, not by this banner);
+            the standing explainer was cut at the user's request because it
+            spent roster space restating something the room never violates. */}
       </aside>
 
       {/* THE REAL WORKSPACE, FULL SIZE, OVER THE ROOM.

@@ -102,17 +102,24 @@ def _leaves(node: dict) -> list[dict]:
 
 
 def _place_room(leaf: Rect, rng: random.Random, *, min_room: int,
-                margin: int) -> Rect:
+                margin: int, fill: float = 0.8) -> Rect:
     """A room inside a leaf, never touching the leaf's edge.
 
     The margin is why two rooms in adjacent leaves cannot fuse into one
     L-shaped cavity — with it at zero, the partition is still correct and the
     level stops reading as rooms.
+
+    ``fill`` is the floor on how much of the leaf the room must take, and it
+    exists because uniform sizing looked wrong for a reason that is invisible
+    in the plan: a room half its leaf's width leaves the OTHER half as solid
+    rock, so the level renders as thin rooms separated by slabs. The rock
+    between two rooms should read as a wall, which means the rooms have to
+    come close to their partition.
     """
     max_w = leaf.w - 2 * margin
     max_h = leaf.h - 2 * margin
-    w = rng.randint(min_room, max(min_room, max_w))
-    h = rng.randint(min_room, max(min_room, max_h))
+    w = rng.randint(max(min_room, int(max_w * fill)), max(min_room, max_w))
+    h = rng.randint(max(min_room, int(max_h * fill)), max(min_room, max_h))
     x = rng.randint(leaf.x + margin, leaf.x + leaf.w - margin - w)
     y = rng.randint(leaf.y + margin, leaf.y + leaf.h - margin - h)
     return Rect(x, y, w, h)
@@ -212,11 +219,16 @@ def connected(floor: Iterable[tuple[int, int]]) -> bool:
 
 def plan(width: int, height: int, *, seed: int = 0, min_leaf: int = 10,
          min_room: int = 4, margin: int = 1, max_depth: int = 5,
-         corridor_width: int = 1) -> dict:
+         corridor_width: int = 2, room_fill: float = 0.8) -> dict:
     """A level layout: rooms, corridors, and the floor and wall cells they make.
 
     Everything is validated up front, because the alternative is a plan that
     comes back with one room in it and no explanation.
+
+    ``corridor_width`` defaults to TWO. One is a legal design and it renders as
+    a crack: the tile art carries the wall boundary inside its own edge, so a
+    one-cell passage loses over half its width to the two carved sides and
+    reads as a seam in the rock rather than as somewhere you walk.
     """
     if width < 1 or height < 1:
         raise LevelError("width and height must be positive")
@@ -228,6 +240,8 @@ def plan(width: int, height: int, *, seed: int = 0, min_leaf: int = 10,
         raise LevelError("margin cannot be negative")
     if corridor_width < 1:
         raise LevelError("corridor_width must be at least 1")
+    if not 0.0 <= room_fill <= 1.0:
+        raise LevelError("room_fill is a share of the leaf, 0.0 to 1.0")
     if min_leaf < min_room + 2 * margin:
         raise LevelError(
             f"min_leaf={min_leaf} cannot hold a {min_room} room with a "
@@ -243,7 +257,7 @@ def plan(width: int, height: int, *, seed: int = 0, min_leaf: int = 10,
     leaves = _leaves(root)
     for leaf in leaves:
         leaf["room"] = _place_room(leaf["rect"], rng, min_room=min_room,
-                                   margin=margin)
+                                   margin=margin, fill=room_fill)
 
     floor: set[tuple[int, int]] = set()
     for leaf in leaves:
@@ -257,6 +271,13 @@ def plan(width: int, height: int, *, seed: int = 0, min_leaf: int = 10,
     floor = {(x, y) for (x, y) in floor if 0 <= x < width and 0 <= y < height}
     walls = wall_ring(floor)
 
+    # SOLID ROCK: every cell that is not floor, not just the one-cell ring.
+    # A ring is a wall with nothing behind it, and on a finished map that reads
+    # as a shelf jutting into empty space — the level has to be carved out of
+    # something.
+    solid = {(x, y) for x in range(width) for y in range(height)
+             if (x, y) not in floor}
+
     ordered = [leaf["room"] for leaf in leaves]
     return {
         "seed": seed,
@@ -267,6 +288,7 @@ def plan(width: int, height: int, *, seed: int = 0, min_leaf: int = 10,
         "corridors": corridors,
         "floor": sorted(floor, key=lambda c: (c[1], c[0])),
         "walls": sorted(walls, key=lambda c: (c[1], c[0])),
+        "solid": sorted(solid, key=lambda c: (c[1], c[0])),
         "connected": connected(floor),
         "spawn": list(ordered[0].center) if ordered else None,
         "exit": list(ordered[-1].center) if ordered else None,
@@ -294,7 +316,8 @@ def ascii_map(level: dict) -> str:
 # ---------------------------------------------------------------------------
 def layers(level: dict, *, floor: autotile.Terrain,
            wall: Optional[autotile.Terrain] = None,
-           floor_name: str = "Floor", wall_name: str = "Walls") -> list[dict]:
+           floor_name: str = "Floor", wall_name: str = "Walls",
+           wall_fill: bool = True) -> list[dict]:
     """The plan resolved into TileMapLayer payloads, one per terrain.
 
     Two layers, not one, because they are two terrains and a TileMapLayer holds
@@ -305,6 +328,12 @@ def layers(level: dict, *, floor: autotile.Terrain,
     Walls resolve with ``outside=True`` — beyond the level bounds is solid rock,
     not open air, and telling the mask otherwise puts an outward-facing edge
     around the entire perimeter.
+
+    ``wall_fill`` paints EVERY non-floor cell rather than the one-cell ring, and
+    it is the default for the reason above: a ring leaves the rest of the map
+    empty, so the wall has no rock behind it and the floor layer's own carved
+    edge is the only boundary — drawn twice, once by each layer, which is what
+    made corridors render at half their width.
     """
     region = tuple(level["region"])
     out = [{
@@ -316,7 +345,9 @@ def layers(level: dict, *, floor: autotile.Terrain,
                                       region=region),
     }]
     if wall is not None:
-        wall_cells = [tuple(c) for c in level["walls"]]
+        wall_cells = [tuple(c) for c in
+                      (level.get("solid") if wall_fill and level.get("solid")
+                       else level["walls"])]
         out.append({
             "name": wall_name,
             "terrain": wall.name or wall_name,

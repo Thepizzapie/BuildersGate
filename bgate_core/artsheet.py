@@ -58,18 +58,39 @@ def _num(meta: dict, *path: str) -> Optional[float]:
     return cur if isinstance(cur, (int, float)) and not isinstance(cur, bool) else None
 
 
-def frame_count(size: str) -> Optional[int]:
+def frame_count(size: str, *, cell: Optional[Sequence[int]] = None,
+                rows: int = 1) -> Optional[int]:
     """How many frames a ``"1536x512"`` row holds, or None if it is not a row.
 
     None is a real answer here. A 1024x1024 portrait is one image, and calling
     it "one frame" and calling a 3-cell row "three frames" using the same word
     would let the caller draw a strip over something that has no strip.
+
+    ``cell``/``rows`` come from a project's SPRITE CONTRACT when it has one:
+    a four-corner game's 96x80-cell cols x 2 grid is not a square strip and
+    the old rule went blind on it — every per-frame measurement silently
+    stopped happening on exactly the sheets the project ships. With a
+    declared cell the grid is arithmetic; without one the square-strip rule
+    stands, because guessing a grid was never the failure mode, missing a
+    declared one was.
     """
     try:
         w, h = (int(part) for part in str(size).lower().split("x", 1))
     except (ValueError, TypeError):
         return None
-    if w <= 0 or h <= 0 or w % h:
+    if w <= 0 or h <= 0:
+        return None
+    if cell:
+        try:
+            cw, ch = int(cell[0]), int(cell[1])
+        except (IndexError, TypeError, ValueError):
+            return None
+        grid_rows = max(1, int(rows))
+        if cw <= 0 or ch <= 0 or w % cw or h != ch * grid_rows:
+            return None
+        n = (w // cw) * grid_rows
+        return n if 1 <= n <= MAX_FRAMES else None
+    if w % h:
         return None
     n = w // h
     return n if 1 < n <= MAX_FRAMES else None

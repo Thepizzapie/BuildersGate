@@ -221,6 +221,284 @@ def parse_tileset(text: str) -> dict:
     }
 
 
+def _source_lines(src: dict, ext_ref: str) -> list[str]:
+    """The .tres lines of ONE TileSetAtlasSource sub_resource.
+
+    Factored out of :func:`write_tileset` so :func:`append_source` emits a
+    new source in exactly the format the writer does — two emitters of an
+    undocumented format is how they drift.
+    """
+    out = [f'[sub_resource type="TileSetAtlasSource" '
+           f'id="TileSetAtlasSource_{src["id"]}"]',
+           f'texture = ExtResource("{ext_ref}")',
+           f"texture_region_size = Vector2i({src['region'][0]}, "
+           f"{src['region'][1]})"]
+    if src.get("origin") and tuple(src["origin"]) != (0, 0):
+        out.append(f"texture_origin = Vector2i({src['origin'][0]}, "
+                   f"{src['origin'][1]})")
+    for x, y in src["tiles"]:
+        # ANIMATION IS A TILE PROPERTY, NOT AN ALTERNATIVE'S, and it is
+        # written BEFORE the `x:y/0 = 0` line that declares the tile.
+        # Both facts came from having Godot author one and reading it back:
+        # emitting `x:y/0/animation_columns` — the shape texture_origin
+        # genuinely uses — loaded without complaint and simply never played,
+        # which is the same silent-acceptance failure as polygons_count.
+        span = (src.get("sizes") or {}).get((x, y))
+        if span and span != (1, 1):
+            if span[0] < 1 or span[1] < 1:
+                raise TileError(
+                    f"tile {x}:{y} spans {span[0]}x{span[1]} atlas cells, "
+                    "which is not a tile")
+            out.append(f"{x}:{y}/size_in_atlas = "
+                       f"Vector2i({span[0]}, {span[1]})")
+        anim = (src.get("animation") or {}).get((x, y))
+        if anim:
+            frames = int(anim.get("frames") or 0)
+            if frames < 2:
+                raise TileError(
+                    f"tile {x}:{y} declares {frames} animation frames — an "
+                    "animation needs at least two, and one frame is a "
+                    "static tile that should not declare animation at all")
+            cols = int(anim.get("columns") or frames)
+            out.append(f"{x}:{y}/animation_columns = {cols}")
+            if anim.get("speed"):
+                out.append(f"{x}:{y}/animation_speed = "
+                           f"{float(anim['speed'])}")
+            durations = list(anim.get("durations") or [])
+            for f in range(frames):
+                d = durations[f] if f < len(durations) else 1.0
+                out.append(f"{x}:{y}/animation_frame_{f}/duration = "
+                           f"{float(d)}")
+        out.append(f"{x}:{y}/0 = 0")
+        nudge = (src.get("origins") or {}).get((x, y))
+        if nudge and nudge != (0, 0):
+            out.append(f"{x}:{y}/0/texture_origin = "
+                       f"Vector2i({nudge[0]}, {nudge[1]})")
+        # A tile with no polygon is WALKABLE-BY-OMISSION, which is the
+        # right default. A tile can need SEVERAL — a corridor is solid on
+        # two sides, an isolated tile on four — and each band is its own
+        # convex polygon because a ring is not one.
+        #
+        # NO polygons_count LINE. Godot infers the count from the highest
+        # polygon_N present and writing the count explicitly made it drop
+        # every polygon silently: the resource loaded, the physics layer
+        # existed, and the engine reported zero shapes. Confirmed by
+        # having Godot author a tileset and reading back what it wrote —
+        # which is the only way to learn a format nobody documents.
+        for i, poly in enumerate((src.get("collision") or {}).get((x, y))
+                                 or []):
+            pts = ", ".join(f"{px}, {py}" for px, py in poly)
+            out.append(f"{x}:{y}/0/physics_layer_0/polygon_{i}/points "
+                       f"= PackedVector2Array({pts})")
+    return out
+
+
+def write_tileset(sources: list[dict], *, tile_size: tuple[int, int],
+                  shape: int = SQUARE, layout: int = DIAMOND_RIGHT,
+                  physics: bool = False) -> str:
+    """A Godot 4 TileSet resource over one or more atlas textures.
+
+    THE OTHER HALF OF :func:`parse_tileset`, and the piece whose absence kept
+    the whole level chain dark: levelgen, autotile, encode_cells and
+    wire_tilemap were all real and all blocked on a resource nothing here could
+    produce, so a generated level needed a human to open the Godot editor first.
+
+    ``sources``: ``[{id, texture, tiles, region?, origin?, origins?, collision?}]``
+    — ``texture`` is
+    a ``res://`` path, ``tiles`` the ``(atlas_x, atlas_y)`` coordinates the
+    source DEFINES. A coordinate not listed here cannot be placed: Godot draws
+    nothing and reports nothing, which is the failure `_TILE_RE` exists to let
+    callers pre-empt.
+
+    ``origin`` shifts every tile in the source; ``origins`` shifts ONE tile,
+    ``{(x, y): (dx, dy)}``. Per-tile is what a mounted prop needs: a torch drawn
+    centred in its wall cell reads as lying in the middle of the stone, and the
+    sprite has to sit against the cell's inner edge to read as bolted to a wall.
+
+    Byte-stable — coordinates sorted, ids ordered — for the same reason
+    :func:`encode_cells` is: a regenerated tileset that differs only in line
+    order is a diff nobody can review.
+
+    The round trip is the cheap half of the check: ``parse_tileset`` reads this
+    back and must agree. It cannot catch a misconception the reader and writer
+    share, so the engine itself is the real referee — see godot.inspect_tileset.
+    """
+    if not sources:
+        raise TileError("a tileset needs at least one atlas source")
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    if tw < 1 or th < 1:
+        raise TileError(f"tile size {tw}x{th} is not drawable")
+
+    clean: list[dict] = []
+    for entry in sources:
+        texture = str(entry.get("texture") or "").strip()
+        if not texture:
+            raise TileError("an atlas source needs a texture path")
+        tiles = sorted({(int(x), int(y)) for x, y in (entry.get("tiles") or [])})
+        if not tiles:
+            # An empty source parses back as a source with no tiles, which
+            # level_generate then refuses one layer later with a coordinate
+            # list. Refusing here names the actual mistake.
+            raise TileError(f"atlas {texture} defines no tiles")
+        if any(x < 0 or y < 0 for x, y in tiles):
+            raise TileError(f"atlas {texture} has a negative tile coordinate")
+        region = entry.get("region") or (tw, th)
+        clean.append({
+            "id": int(entry.get("id", len(clean))),
+            "texture": texture,
+            "tiles": tiles,
+            "region": (int(region[0]), int(region[1])),
+            "origin": tuple(int(v) for v in (entry.get("origin") or (0, 0))),
+            # {(x, y): (w, h)} — a tile spanning SEVERAL atlas cells, which is
+            # how a prop gets proportions: a pillar is one cell wide and two
+            # high, and drawing it into a 1x1 tile is what makes every prop look
+            # squat and flat.
+            "sizes": {(int(cx), int(cy)): (int(w), int(h))
+                      for (cx, cy), (w, h)
+                      in (entry.get("sizes") or {}).items()},
+            # {(x, y): {frames, columns?, speed?, durations?}} — a LOOPING
+            # tile animation, which Godot plays without a node. See the emit
+            # loop for the format, which is learned rather than documented.
+            "animation": {(int(cx), int(cy)): dict(spec)
+                          for (cx, cy), spec
+                          in (entry.get("animation") or {}).items()},
+            "origins": {(int(cx), int(cy)):
+                        (int(ox), int(oy))
+                        for (cx, cy), (ox, oy)
+                        in (entry.get("origins") or {}).items()},
+            # Carried through the normalisation, which it was not: the emit
+            # loop reads from THIS dict, so a collision map left behind here
+            # is a collision map that silently never reaches the file.
+            "collision": {(int(cx), int(cy)): polys
+                          for (cx, cy), polys
+                          in (entry.get("collision") or {}).items()},
+        })
+    for src in clean:
+        # A SPANNING TILE OWNS THE CELLS IT COVERS. Godot logs "tiles are
+        # already present in the space the tile would cover" and then simply
+        # does not create the tile — the resource loads, the tile is missing,
+        # and the map draws nothing there. Refusing here names it.
+        owned: dict = {}
+        for x, y in src["tiles"]:
+            w, h = (src.get("sizes") or {}).get((x, y), (1, 1))
+            for dx in range(max(1, w)):
+                for dy in range(max(1, h)):
+                    at = (x + dx, y + dy)
+                    if at in owned:
+                        raise TileError(
+                            f"atlas {src['texture']}: tiles {owned[at]} and "
+                            f"{(x, y)} both cover cell {at} — a spanning tile "
+                            "owns every cell of its region, and Godot drops "
+                            "the loser without loading anything differently")
+                    owned[at] = (x, y)
+        # An animation's frames live in the cells to the RIGHT of the tile and
+        # are equally owned: defining one of them as its own tile is the same
+        # collision by another route.
+        for (x, y), spec in (src.get("animation") or {}).items():
+            w, _h = (src.get("sizes") or {}).get((x, y), (1, 1))
+            for f in range(1, int(spec.get("frames") or 1)):
+                at = (x + f * max(1, w), y)
+                if at in owned and owned[at] != (x, y):
+                    raise TileError(
+                        f"atlas {src['texture']}: tile {(x, y)} animates over "
+                        f"cell {at}, which tile {owned[at]} already defines")
+
+    if len({s["id"] for s in clean}) != len(clean):
+        raise TileError("two atlas sources share one source id")
+    clean.sort(key=lambda s: s["id"])
+
+    # load_steps counts the ext_resources plus the sub_resources plus one.
+    steps = len(clean) * 2 + 1
+    out = [f'[gd_resource type="TileSet" load_steps={steps} format=3]', ""]
+    for i, src in enumerate(clean, start=1):
+        out.append(f'[ext_resource type="Texture2D" path="{src["texture"]}" '
+                   f'id="{i}"]')
+    out.append("")
+    for i, src in enumerate(clean, start=1):
+        out.extend(_source_lines(src, str(i)))
+        out.append("")
+    out.append("[resource]")
+    out.append(f"tile_size = Vector2i({tw}, {th})")
+    if physics:
+        # One physics layer on collision layer 1 — the default a 2D game
+        # starts from. Ordering and spelling copied from a tileset Godot
+        # saved itself; the per-tile polygons reference this layer by index.
+        out.append("physics_layer_0/collision_layer = 1")
+    if shape != SQUARE:
+        out.append(f"tile_shape = {int(shape)}")
+        out.append(f"tile_layout = {int(layout)}")
+    for src in clean:
+        out.append(f'sources/{src["id"]} = SubResource('
+                   f'"TileSetAtlasSource_{src["id"]}")')
+    out.append("")
+    return chr(10).join(out)
+
+
+def append_source(text: str, source: dict) -> dict:
+    """Add one atlas source to an EXISTING TileSet .tres, textually.
+
+    The seam this closes: prop_generate writes an atlas and a manifest,
+    level generators place cells that reference that atlas by source id —
+    and nothing ever taught the tileset the atlas exists, so the cells
+    pointed at a source the resource never defined. Rewriting the whole
+    file through write_tileset would drop whatever parse_tileset does not
+    round-trip (another writer's collision, animation, terrain data), so
+    the existing text is kept byte-for-byte and one source is appended in
+    the writer's own format.
+
+    ``source`` is a write_tileset source dict; ``id`` defaults to one past
+    the highest existing. Returns ``{text, id, reused}`` — a source whose
+    texture is already in the set is returned as-is, so this is idempotent.
+    """
+    parsed = parse_tileset(text)
+    for sid, src in parsed["sources"].items():
+        if src["texture"] == source.get("texture"):
+            return {"text": text, "id": sid, "reused": True}
+
+    sid = int(source.get("id") or 0)
+    if not sid or sid in parsed["sources"]:
+        sid = max(parsed["sources"], default=-1) + 1
+    src = dict(source, id=sid)
+    src.setdefault("region", parsed["tile_size"])
+    src.setdefault("origin", (0, 0))
+
+    ext_ids = set(re.findall(r'\[ext_resource[^\]]*?id="([^"]+)"', text))
+    ext_ref = f"{len(ext_ids) + 1}_src{sid}"
+    while ext_ref in ext_ids:
+        ext_ref += "_"
+
+    lines = text.split("\n")
+    res_at = next((i for i, l in enumerate(lines)
+                   if l.strip() == "[resource]"), None)
+    if res_at is None:
+        raise TileError("no [resource] section — this is not a .tres")
+    last_ext = max((i for i, l in enumerate(lines)
+                    if l.startswith("[ext_resource")), default=0)
+
+    ext_line = (f'[ext_resource type="Texture2D" '
+                f'path="{src["texture"]}" id="{ext_ref}"]')
+    sub_lines = _source_lines({
+        **src,
+        "tiles": sorted({(int(x), int(y)) for x, y in src["tiles"]}),
+    }, ext_ref)
+
+    out = (lines[:last_ext + 1] + [ext_line]
+           + lines[last_ext + 1:res_at] + sub_lines + [""]
+           + lines[res_at:])
+    out.append(f'sources/{sid} = SubResource("TileSetAtlasSource_{sid}")')
+
+    def _bump(m):
+        return f"load_steps={int(m.group(1)) + 2}"
+
+    joined = re.sub(r"load_steps=(\d+)", _bump, "\n".join(out), count=1)
+    # the writer's own reader must agree before anyone else is asked to
+    check = parse_tileset(joined)
+    if sid not in check["sources"]:
+        raise TileError("appended source did not parse back — refusing to "
+                        "hand the engine a resource this module cannot read")
+    return {"text": joined, "id": sid, "reused": False}
+
+
 # ---------------------------------------------------------------------------
 # Cell -> pixels
 # ---------------------------------------------------------------------------

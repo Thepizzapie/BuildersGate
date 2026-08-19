@@ -45,6 +45,8 @@ import inspect
 import itertools
 import json as _json
 import os
+import re as _re
+import tempfile as _tempfile
 import threading
 import time as _time
 from pathlib import Path as _Path
@@ -64,6 +66,11 @@ from bgate_core import aegis as _aegis
 from bgate_core import assets as _assets
 from bgate_core import autotile as _autotile
 from bgate_core import levelgen as _levelgen
+from bgate_core import gameview as _gameview
+from bgate_core import props as _props
+from bgate_core import propsheet as _propsheet
+from bgate_core import jump as _jumpmod
+from bgate_core import sidescroll as _sidescroll
 from bgate_core import providers as _providers
 from bgate_core import scenewire as _scenewire
 from bgate_core import tilemap as _tilemap
@@ -91,6 +98,7 @@ from bgate_core import search as _search
 from bgate_core import animspec as _animspec
 from bgate_core import spritekit as _spritekit
 from bgate_core import vfx as _vfx
+from bgate_core import artdirection as _artdirection
 
 # THE ONE CHANNEL THAT CANNOT BE DROPPED BY CHANGING DIRECTORY.
 #
@@ -840,7 +848,12 @@ def _archive_preview(src: str, label: str) -> Optional[str]:
         previews = root / ".bgate" / "previews"
         previews.mkdir(parents=True, exist_ok=True)
         safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)[:40]
-        dest = previews / f"{time.strftime('%Y%m%d-%H%M%S')}_{safe or 'render'}.png"
+        # The SOURCE suffix, not a hardcoded .png: this used to copy a GIF's
+        # bytes under a .png name, which browsers would sniff and animate but
+        # the API would serve with the wrong type. An archive that renames a
+        # file's format is lying about the one fact its name carries.
+        suffix = _Path(src).suffix.lower() or ".png"
+        dest = previews / f"{time.strftime('%Y%m%d-%H%M%S')}_{safe or 'render'}{suffix}"
         shutil.copy2(src, dest)
         return str(dest)
     except Exception:
@@ -2744,6 +2757,18 @@ def image_status() -> dict:
         except Exception as exc:
             legs["kie"] = {"available": False,
                            "reason": f"{type(exc).__name__}: {exc}"}
+        # RETRO DIFFUSION IS AN ART PROVIDER TOO, and this tool did not know —
+        # the same staleness krea hit, one provider later. It does not PAINT
+        # (that is the kie/openai/krea leg); it animates a sheet that already
+        # exists, which is its own credential and its own answer to "can this
+        # machine make the asset". A leg missing here reads as a leg that is
+        # unavailable.
+        try:
+            from bgate_adapters import retrodiffusion as _rdp
+            legs["retrodiffusion"] = dict(_rdp.available(root))
+        except Exception as exc:
+            legs["retrodiffusion"] = {"available": False,
+                                      "reason": f"{type(exc).__name__}: {exc}"}
         try:
             from bgate_adapters import localgen
             legs["local"] = dict(localgen.status(probe=True))
@@ -2751,13 +2776,25 @@ def image_status() -> dict:
             legs["local"] = {"available": False,
                              "reason": f"{type(exc).__name__}: {exc}"}
 
-        usable = [name for name, leg in legs.items() if leg.get("available")]
+        # PAINTING AND ANIMATING ARE DIFFERENT ANSWERS. Every leg is REPORTED,
+        # because "is my RD key working" is a real question and a missing leg
+        # reads as a broken one — but only the legs that can MINT an image
+        # count toward `available`/`auto_picks`, which is what a caller asks
+        # before generating art. Counting RD would tell a project holding only
+        # an animation key that it can paint, and the first thing to notice
+        # would be a generation failing.
+        PAINTERS = ("openai", "krea", "kie", "local")
+        usable = [name for name, leg in legs.items()
+                  if leg.get("available") and name in PAINTERS]
+        animators = [name for name, leg in legs.items()
+                     if leg.get("available") and name not in PAINTERS]
         return {
             # `available` answers about the LEG, not about one adapter: any
             # usable provider means painted art is available. A caller that only
             # reads this key gets the honest answer now.
             "available": bool(usable),
             "providers": usable,
+            "animation_providers": animators,
             "auto_picks": (usable[0] if usable else ""),
             "legs": legs,
             "project": root or "",
@@ -2901,6 +2938,370 @@ def _pick_provider(asked: str = "") -> str:
     # sees is the familiar "OPENAI_API_KEY not set", not a surprise about a
     # provider they never mentioned.
     return "openai"
+
+
+def _wall_tile_from(wall_img, floor_sheet, tile_px: int, out_dir, name: str) -> dict:
+    """One clean wall tile out of a generated wall sheet, toned to the floor.
+
+    Picks the most UNIFORM cell — a wall is a mass, and the least varied cell
+    is the one without a transition running through it — then scales its
+    luminance to sit below the floor. Generated wall art came back at 1.97x
+    the floor's brightness, which renders as lit paths around dark pits.
+    """
+    import numpy as np
+
+    best, best_var = None, float("inf")
+    for ty in range(wall_img.height // tile_px):
+        for tx in range(wall_img.width // tile_px):
+            cell = wall_img.crop((tx * tile_px, ty * tile_px,
+                                  (tx + 1) * tile_px, (ty + 1) * tile_px))
+            var = float(np.asarray(cell.convert("RGB")).astype(float).std())
+            if var < best_var:
+                best, best_var = cell, var
+    if best is None:
+        return {"ok": False, "error": "wall sheet held no tiles"}
+
+    arr = np.asarray(best.convert("RGB")).astype(float)
+    floor_arr = np.asarray(floor_sheet.convert("RGB")).astype(float)
+    floor_lum = float(floor_arr[floor_arr.mean(axis=2) > 45].mean())         if (floor_arr.mean(axis=2) > 45).any() else 90.0
+    wall_lum = float(arr.mean()) or 1.0
+    scale = (floor_lum * 0.62) / wall_lum
+    toned = np.clip(arr * scale, 0, 255).astype("uint8")
+
+    from PIL import Image
+
+    path = out_dir / f"{name}_wall.png"
+    Image.fromarray(toned).convert("RGBA").save(path)
+    return {"ok": True, "path": str(path), "uniformity": round(best_var, 1),
+            "tone_scale": round(scale, 2),
+            "luminance": {"floor": round(floor_lum), "wall": round(float(toned.mean()))}}
+
+
+
+
+@_tool
+def tileset_generate(name: str, prompt: str, tile_px: int = 32,
+                     bits: int = 8, void_prompt: str = "",
+                     wall_prompt: str = "",
+                     godot_project: str = "", res_dir: str = "assets/tiles",
+                     install: bool = False,
+                     collide: bool = True,
+                     max_cost_usd: float = 1.0) -> dict:
+    """GENERATE A GODOT TILESET — the bridge the level pipeline was missing.
+
+    levelgen, autotile, tilemap and wire_tilemap have all been real for a
+    while and all blocked on the same thing: nothing here could WRITE a
+    TileSet, so level_generate refused unless a human had already built one in
+    the Godot editor. This makes one.
+
+    THE PROVIDER DIVISION IS A HOUSE RULE, not a convenience: kie draws every
+    static asset, Retro Diffusion only ever ANIMATES a sheet that already
+    exists. An earlier build of this tool generated on RD's tile styles and
+    its coverage varied 16/16 to 7/16 per roll — the kie path replaced it and
+    removed the roll entirely.
+
+    `prompt` names the FLOOR material, `void_prompt` what shows where there
+    is no floor (default: featureless darkness). kie paints each as a
+    material texture; the tile is cut from it and every mask tile is built
+    GEOMETRICALLY from those two — the same `normalise_edges` inset a
+    hand-made autotile set has by construction. Coverage is total by
+    construction, so the old partial-roll refusal has nothing to refuse; the
+    seam report and the engine load are the gates that remain.
+
+    `bits`: 8 for blob47 (the default), 4 for the 16-mask side set.
+
+    EIGHT IS THE DEFAULT BECAUSE FOUR HAS A VISIBLE DEFECT. A 4-bit mask cannot
+    say "floor to the north and east, void at the north-east corner", so at every
+    step in a room's outline there is no tile to draw and the shadow band along
+    the wall breaks — a row of notches down the level that reads as broken art.
+    The corner tiles are a nibble out of the tile and pure geometry, so
+    eight bits costs no extra image call and no extra money.
+    `install=False` lands everything in .bgate_out/tiles/ for review; True also
+    writes into the Godot project and LOADS IT IN THE ENGINE to prove it.
+
+    The atlas is also written as an Aseprite master — every AI-generated
+    sheet goes through the Aseprite cleanup, tilesets included.
+    """
+    try:
+        from PIL import Image as _Img
+
+        from bgate_adapters import kie as _kie
+        from bgate_core import autotile as _autotile
+
+        view = _gameview.load(_root())
+        if view == "isometric":
+            return {"ok": False, "error": (
+                "this project's view is 'isometric' and this generator "
+                "cannot honestly serve it yet: the mask tiles are carved as "
+                "square edge bands, and a diamond tile's edges run on the "
+                "diagonal — the square carve would ship as confident "
+                "garbage. Until a diamond-aware compositor exists, author "
+                "or import an isometric TileSet in the Godot editor — "
+                "level_generate accepts it and checks its shape.")}
+        from bgate_core import tilemap as _tilemap
+        from bgate_core import tilemask as _tilemask
+
+        root = _Path(_root())
+        if bits not in (4, 8):
+            return {"ok": False, "error": "bits is 4 (16 masks) or 8 (blob47)"}
+        tile_px = int(tile_px)
+        if 2 * 0.02 > max_cost_usd:
+            return {"ok": False, "error": (
+                f"two texture drawings is about $0.04, over the "
+                f"${max_cost_usd:.2f} ceiling")}
+
+        out_dir = root / ".bgate_out" / "tiles"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        spent = 0.0
+
+        def _texture(what: str, tag: str, variants: int = 0):
+            """One tile of material, painted by kie at canvas size.
+
+            The tile is CUT from a 4x-tile downscale of the painting rather
+            than the whole frame squeezed into one tile — squeezing turns a
+            wall of bricks into noise; cutting keeps the material at a scale
+            where a brick is still a brick. ``variants`` cuts that many MORE
+            tiles from other corners of the same painting: one interior tile
+            repeated is wallpaper, and the repeat is broken with crops the
+            generation already paid for.
+            """
+            raw = out_dir / f"{name}_{tag}_raw.png"
+            got = _kie.generate_image(
+                f"seamless repeating flat texture of {what}, viewed straight "
+                "on, even lighting, no border, no vignette, no objects, "
+                "fills the whole frame edge to edge",
+                str(raw), model="nano-banana-2", size="1024x1024",
+                task_kind="tile", tileable=True, root=str(root))
+            if not got.get("ok"):
+                raise ValueError(f"the {tag} texture failed to generate: "
+                                 f"{str(got.get('error'))[:200]}")
+            cost = float(got.get("estimated_usd") or 0.02)
+            img = _Img.open(raw).convert("RGBA")
+            zoom = img.resize((4 * tile_px, 4 * tile_px), _Img.LANCZOS)
+            off = (4 * tile_px - tile_px) // 2
+            corners = ((0, 0), (3 * tile_px, 0), (0, 3 * tile_px),
+                       (3 * tile_px, 3 * tile_px))
+            extra = [zoom.crop((ox, oy, ox + tile_px, oy + tile_px))
+                     for ox, oy in corners[:variants]]
+            return (zoom.crop((off, off, off + tile_px, off + tile_px)),
+                    extra, cost)
+
+        floor_tile, floor_variants, usd = _texture(prompt, "floor",
+                                                   variants=3)
+        spent += usd
+        void_tile, _unused, usd = _texture(
+            void_prompt or "deep darkness with the faintest rock texture, "
+                           "near black", "void")
+        spent += usd
+
+        # The working sheet is two tiles: the floor material and the void
+        # material. Everything else is geometry.
+        sheet = _Img.new("RGBA", (2 * tile_px, tile_px), (0, 0, 0, 0))
+        sheet.paste(floor_tile, (0, 0))
+        sheet.paste(void_tile, (tile_px, 0))
+        pinned = _artdirection.palette_pinned(str(root))
+        raw_png = out_dir / f"{name}_raw.png"
+        sheet.save(raw_png)
+        if pinned:
+            _spritekit.lock_palette(str(raw_png), pinned)
+            sheet = _Img.open(raw_png).convert("RGBA")
+
+        def _tile_mean(tx):
+            return _tilemask._mean(list(
+                sheet.crop((tx * tile_px, 0, (tx + 1) * tile_px, tile_px))
+                .convert("RGB").getdata()))
+
+        colours = [_tile_mean(0), _tile_mean(1)]
+        full = (_tilemask.BIT_N | _tilemask.BIT_E |
+                _tilemask.BIT_S | _tilemask.BIT_W)
+        wanted = (list(range(16)) if bits == 4
+                  else _autotile.blob47_masks())
+        # ONE EDGE INSET FOR THE WHOLE SET, same machinery the RD path used
+        # to repair its sheets — here it is not a repair, it is the whole
+        # construction: full-floor donor at (0,0), void donor at (1,0), and
+        # every wanted mask carved between them. Coverage cannot be partial.
+        norm = _tilemask.normalise_edges(
+            sheet, {full: (0, 0), 0: (1, 0)}, wanted,
+            tile_size=(tile_px, tile_px), colours=colours)
+        if not norm.get("ok"):
+            return {"ok": False, "stage": "compose",
+                    "error": norm.get("reason"), "raw": str(raw_png),
+                    "spend": {"usd": round(spent, 4)}}
+        sheet, table = norm["image"], norm["table"]
+        result_inset = norm["inset"]
+
+        # BREAK THE WALLPAPER. One interior tile repeated across a floor is
+        # the single loudest generated-level tell, so the atlas carries the
+        # variant crops as extra tiles after the mask set, and the level
+        # generators scatter them over interior cells. The sidecar is how
+        # they learn which tiles those are — a .tres cannot say it.
+        interior_at = table[15 if bits == 4 else 255]
+        cols = max(1, sheet.width // tile_px)
+        n0 = len(wanted)
+        rows_need = (n0 + len(floor_variants) + cols - 1) // cols
+        if rows_need * tile_px > sheet.height:
+            grown = _Img.new("RGBA", (sheet.width, rows_need * tile_px),
+                             (0, 0, 0, 0))
+            grown.paste(sheet, (0, 0))
+            sheet = grown
+        variant_coords = []
+        for j, vt in enumerate(floor_variants):
+            tx, ty = (n0 + j) % cols, (n0 + j) // cols
+            sheet.paste(vt, (tx * tile_px, ty * tile_px))
+            variant_coords.append((tx, ty))
+
+        atlas_png = out_dir / f"{name}.png"
+        sheet.save(atlas_png)
+        if pinned:
+            _spritekit.lock_palette(str(atlas_png), pinned)
+            sheet = _Img.open(atlas_png).convert("RGBA")
+        sidecar = {"interior": list(interior_at),
+                   "variants": [list(v) for v in variant_coords]}
+        sidecar_path = out_dir / f"{name}.tiles.json"
+        sidecar_path.write_text(_json.dumps(sidecar, indent=1),
+                                encoding="utf-8")
+        seams = _tilemask.seam_report(sheet, table,
+                                      tile_size=(tile_px, tile_px),
+                                      colours=colours)
+
+        # WALLS, when asked for. A wall is a solid MASS whose shape comes
+        # from the level's wall ring, not a 16-mask terrain — so this needs
+        # one clean tile, not a set, and it is attached as a second source in
+        # the same resource (level_generate addresses floor and wall by
+        # source id). Toned DOWN relative to the floor on purpose: generated
+        # wall art came back brighter than the floor, which reads as lit
+        # paths around dark pits rather than as rooms with walls.
+        wall_source = None
+        if wall_prompt:
+            try:
+                wtile, usd = _texture(wall_prompt, "wall")
+                spent += usd
+                wall_source = _wall_tile_from(wtile, sheet, tile_px, out_dir,
+                                              name)
+            except Exception as exc:                            # noqa: BLE001
+                wall_source = {"ok": False,
+                               "error": f"{type(exc).__name__}: {exc}"}
+
+        # COLLISION, derived from the inset the tiles were rebuilt with —
+        # not traced from pixels, because the walkable region is a rectangle
+        # we chose and tracing would rediscover it with jitter and hand Godot
+        # fifty points per tile. Verified by physics rather than by the file:
+        # without it a body stood in the void on 223 of 280 sampled frames,
+        # with it on 0.
+        collision = _tilemask.collision_polygons(
+            sorted(table), tile_size=(tile_px, tile_px),
+            inset=result_inset or _tilemask.EDGE_INSET) if collide else {}
+
+        res_texture = f"res://{res_dir.strip('/')}/{name}.png"
+        # EVERY TILE IN THE ATLAS, not just the chosen terrain's table. The
+        # table is the autotiling vocabulary for ONE terrain; the resource is
+        # what Godot can paint with at all, and a coordinate missing from it
+        # cannot be placed by anything — level_generate refused a hand-picked
+        # floor tile for exactly this reason, and the tile was sitting in the
+        # atlas the whole time.
+        all_tiles = sorted({
+            (tx, ty)
+            for ty in range(sheet.height // tile_px)
+            for tx in range(sheet.width // tile_px)
+            if sheet.crop((tx * tile_px, ty * tile_px,
+                           (tx + 1) * tile_px, (ty + 1) * tile_px))
+            .getbbox() is not None})
+        sources = [{"id": 0, "texture": res_texture, "tiles": all_tiles,
+                    "collision": {table[m]: polys
+                                  for m, polys in collision.items()
+                                  if m in table and polys}}]
+        if wall_source and wall_source.get("ok"):
+            sources.append({
+                "id": 1,
+                "texture": f"res://{res_dir.strip('/')}/{name}_wall.png",
+                "tiles": [(0, 0)],
+                # The wall is solid all the way through, so its collider is
+                # the whole cell rather than an edge band.
+                "collision": {(0, 0): [[(-tile_px / 2, -tile_px / 2),
+                                        (tile_px / 2, -tile_px / 2),
+                                        (tile_px / 2, tile_px / 2),
+                                        (-tile_px / 2, tile_px / 2)]]}
+                if collide else {}})
+        tres_text = _tilemap.write_tileset(
+            sources, tile_size=(tile_px, tile_px), physics=bool(collide))
+        tres_path = out_dir / f"{name}.tres"
+        tres_path.write_text(tres_text, encoding="utf-8")
+
+        result = {"ok": True, "name": name,
+                  "atlas": str(atlas_png), "tileset": str(tres_path),
+                  "tile_px": tile_px, "bits": bits,
+                  "colours": {"floor": [round(c) for c in colours[0]],
+                              "void": [round(c) for c in colours[1]]},
+                  # Coverage is total BY CONSTRUCTION — every mask is carved
+                  # from the two textures, so there is no roll to fail and
+                  # nothing to refuse. The seam report and the engine load
+                  # are the gates that remain.
+                  "coverage": {"have": len(table), "want": len(wanted),
+                               "constructed": True},
+                  "table": {str(m): list(c) for m, c in sorted(table.items())},
+                  # The tile that is SAFE AS A SOLID FILL — mask 15/255 is
+                  # "every neighbour is me", i.e. an interior. Surfaced because
+                  # a caller picking atlas coordinates by eye picks an edge
+                  # tile and paints a level entirely out of seams.
+                  "solid": list(interior_at),
+                  "interior_variants": [list(v) for v in variant_coords],
+                  "seams": seams, "edge_inset": result_inset,
+                  **({"wall": wall_source} if wall_source else {}),
+                  "collision": {"tiles": len([m for m, v in collision.items()
+                                              if v]),
+                                "polygons": sum(len(v) for v in
+                                                collision.values())},
+                  "spend": {"usd": round(spent, 4), "provider": "kie"}}
+
+        master = _tileset_master_for(str(atlas_png), out_dir / f"{name}.aseprite",
+                                     (tile_px, tile_px))
+        if master is not None:
+            result["aseprite"] = master
+
+        if install and godot_project:
+            proj = _Path(_assets.normalize_path(root, godot_project))
+            proj = proj if proj.is_absolute() else root / proj
+            dest_dir = proj / res_dir.strip("/")
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            import shutil as _sh
+            _sh.copyfile(atlas_png, dest_dir / f"{name}.png")
+            _sh.copyfile(sidecar_path, dest_dir / f"{name}.tiles.json")
+            if wall_source and wall_source.get("ok"):
+                _sh.copyfile(wall_source["path"], dest_dir / f"{name}_wall.png")
+            (dest_dir / f"{name}.tres").write_text(tres_text, encoding="utf-8")
+            result["installed"] = {
+                "atlas": str(dest_dir / f"{name}.png"),
+                "tileset": str(dest_dir / f"{name}.tres")}
+            # A NEWLY COPIED PNG DOES NOT EXIST AS FAR AS GODOT IS CONCERNED.
+            # Godot 4 loads textures through their .import metadata, so a
+            # tileset whose ExtResource names a never-imported file fails to
+            # load with no useful error — measured: the engine gate caught
+            # exactly this on the first end-to-end run, and the resource was
+            # perfectly well-formed. check_project already runs --import, so
+            # the pass exists; it just was not on this path.
+            result["import"] = _godot.check_project(str(proj))
+            # THE ONLY CHECK THAT COUNTS: our writer agreeing with our own
+            # parser proves nothing, because both were written against the
+            # same reading of a format neither owns.
+            result["engine"] = _godot.inspect_tileset(
+                str(proj), f"res://{res_dir.strip('/')}/{name}.tres")
+
+        _log("art", f"tileset {name}: {len(table)}/{len(wanted)} masks, "
+                    f"${spent:.2f}", ref=str(atlas_png))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _tileset_master_for(atlas: str, out, tile_size) -> Optional[dict]:
+    """Best-effort .aseprite tileset beside the atlas. None without Aseprite."""
+    from bgate_adapters import aseprite as _ase
+    if not _ase.available().get("available"):
+        return None
+    try:
+        return _ase.tileset_master(atlas, str(out), tile_size=tile_size)
+    except Exception as exc:                                    # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @_tool
@@ -3208,6 +3609,17 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
         return {"ok": False, "name": spec["name"], "error": result.get("error"),
                 "alpha": result.get("alpha"), "prompt": spec["prompt"]}
 
+    # Project-palette conform, BEFORE the preview is archived — the preview a
+    # human approves must be the pixels that ship. Advisory when it cannot run;
+    # an item minted without a pinned palette is the pre-palette status quo.
+    conform = None
+    palette = _artdirection.palette_pinned(root)
+    if palette:
+        got = _spritekit.lock_palette(result["path"], palette)
+        conform = ({"ok": True, "colors": len(palette), "source": "bible",
+                    "changed": got.get("changed")}
+                   if got.get("ok") else got)
+
     archived = _archive_preview(result["path"], f"item-{spec['name']}")
     _register_artifact(spec["name"], result["path"], producer="item_generate",
                        model=result.get("model", ""), prompt=spec["prompt"],
@@ -3226,11 +3638,14 @@ def _mint_item(root: _Path, spec: dict, quality: str) -> dict:
     man_path.parent.mkdir(parents=True, exist_ok=True)
     man_path.write_text(_json.dumps(man, indent=2), encoding="utf-8")
     indexed = _index_item(root, man)
-    return {"ok": True, "name": spec["name"], "item_class": spec["item_class"],
-            "slot": spec["slot"], "sprite": rel,
-            "manifest": _items.rel_manifest_path(spec["name"]),
-            "indexed": indexed,
-            "preview": archived or result["path"]}
+    out_row = {"ok": True, "name": spec["name"], "item_class": spec["item_class"],
+               "slot": spec["slot"], "sprite": rel,
+               "manifest": _items.rel_manifest_path(spec["name"]),
+               "indexed": indexed,
+               "preview": archived or result["path"]}
+    if conform:
+        out_row["palette"] = conform
+    return out_row
 
 
 @_tool
@@ -3457,6 +3872,799 @@ def item_to_spriteframes(sprite: str, name: str, res_dir: str = "assets/gear",
         return _fail(exc)
 
 
+@_tool
+def sprite_contract_get(character: str = "", action: str = "") -> dict:
+    """The project's SPRITE CONTRACT - the declared shape of every sheet.
+
+    View (side / top-down / isometric), direction set, which directions are
+    DRAWN vs mirrored at runtime, cell size, layout, frames per action, and
+    per-character overrides. Generation, checks and emitters all read this;
+    it is how a four-corner top-down game and an E/W side-scroller use the
+    same pipeline. With character/action, returns the fully resolved contract
+    for that piece of work (override ladder applied)."""
+    try:
+        root = _root()
+        from bgate_core import spritecontract as _sc
+        if character or action:
+            return {"ok": True, **_sc.contract_for(root, character, action)}
+        return {"ok": True, **_sc.load(root),
+                "presets": sorted(_sc.PRESETS)}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def sprite_contract_set(preset: str = "", patch: Optional[dict] = None) -> dict:
+    """Declare or change the sprite contract. preset one of single /
+    sidescroller / four_corner / four_dir / eight_dir, then patch overrides
+    individual fields (cell, actions, characters, ...). A preset REPLACES the
+    shape wholesale - half of one preset merged into another is how
+    contradictions are born. Without preset, patch edits the stored contract.
+
+    This is the swappable-config lever: setting a different preset reshapes
+    what every future generation produces, what the battery expects, and how
+    sheets are laid out, with no other changes anywhere."""
+    try:
+        root = _root()
+        from bgate_core import spritecontract as _sc
+        if preset:
+            saved = _sc.apply_preset(root, preset, patch)
+        else:
+            current = _sc.load(root)
+            current.update(patch or {})
+            saved = _sc.save(root, current)
+        _log("art", f"sprite contract set: {saved['preset']} "
+                    f"({len(saved['directions'])} directions, "
+                    f"{saved['cell'][0]}x{saved['cell'][1]})")
+        return {"ok": True, **saved}
+    except Exception as exc:
+        return _fail(exc)
+
+
+#: Game-side action names -> RD's advanced-animation styles. Anything not
+#: here becomes custom_action with the game name as the motion prompt, which
+#: costs more ($0.25 vs $0.14) and is exactly what custom_action is for.
+_RD_ACTIONS = {"walk": "walking", "run": "walking", "idle": "idle",
+               "jump": "jump", "crouch": "crouch", "attack": "attack",
+               "ability": "custom_action", "hurt": "custom_action",
+               "ko": "custom_action", "death": "custom_action"}
+_RD_PROMPTS = {"walk": "confident, steady steps",
+               "run": "fast, urgent running strides",
+               "hurt": "flinching backward from a hit",
+               "ability": "casting an ability with a flourish",
+               "ko": "collapsing to the ground, defeated",
+               "death": "collapsing to the ground, defeated"}
+
+
+@_tool
+def animation_generate(character: str, action: str,
+                       source_sheet: str = "", prompt: str = "",
+                       frames: int = 0, max_retries: int = 1,
+                       max_cost_usd: float = 2.0) -> dict:
+    """CONTRACT-DRIVEN character animation via Retro Diffusion.
+
+    Reads the sprite contract (sprite_contract_get) for this character+action:
+    which directions to draw, cell size, frame count, layout. For each DRAWN
+    direction it takes a start frame from the character's existing sheet,
+    sends it to RD's purpose-trained animation model (~$0.14/direction), runs
+    the full battery (facing, height, motion, palette conform when pinned),
+    and stitches the contract-shaped sheet + SpriteFrames .tres with
+    animations named {action}_{direction}. Mirrored directions are reported
+    for runtime flip_h - the contract's mirror map, no pixels duplicated.
+
+    source_sheet: the sheet whose row-0-per-direction cells seed each start
+    frame; defaults to the character's idle sheet, then the action's own.
+    Start-frame quality decides identity fidelity: in-distribution characters
+    (small, game-styled) come back intact; large detailed characters get
+    redrawn at ~70% and this tool says so rather than hiding it."""
+    try:
+        import base64 as _b64mod
+        import io as _io
+
+        from PIL import Image as _Img
+
+        from bgate_adapters import retrodiffusion as _rd
+        from bgate_core import spritecontract as _sc
+
+        root = _Path(_root())
+        contract = _sc.contract_for(str(root), character, action)
+        act = str(action).strip().lower()
+        drawn = contract["drawn"]
+        cw, ch = contract["cell"]
+        spec = contract.get("action") or {}
+        n_frames = int(frames or spec.get("frames") or 8)
+        # RD only generates 4/6/8/10/12/16; the CONTRACT owns the sheet's
+        # frame count. Generate the nearest count AT OR ABOVE and keep the
+        # first n_frames — a 2-frame hurt is the first two cells of a 4-frame
+        # flinch, not a format the game has to bend for.
+        eligible = [f for f in _rd.FRAME_COUNTS if f >= n_frames]
+        rd_frames = min(eligible) if eligible else max(_rd.FRAME_COUNTS)
+        keep = min(n_frames, rd_frames)
+        fps = float(spec.get("fps") or 8.0)
+        rd_action = _RD_ACTIONS.get(act, "custom_action")
+        motion = prompt or _RD_PROMPTS.get(act, f"{act} animation, smooth motion")
+
+        probe = _rd.available(str(root))
+        if not probe.get("available"):
+            return {"ok": False, "error": probe.get("reason")}
+        est = len(drawn) * _rd.ACTION_COST.get(rd_action, _rd.DEFAULT_ACTION_COST)
+        if max_cost_usd and est > max_cost_usd:
+            return {"ok": False, "error":
+                    f"{len(drawn)} direction(s) at {rd_action} ≈ ${est:.2f}, "
+                    f"over max_cost_usd={max_cost_usd:.2f}"}
+
+        starts = _anim_start_frames(root, character, act, contract, source_sheet)
+        if not starts.get("ok"):
+            return starts
+
+        out_dir = root / ".bgate_out" / "sprites"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pinned = _artdirection.palette_pinned(str(root))
+        per_dir: dict[str, dict] = {}
+        frame_files: dict[str, str] = {}
+        ordered: list[str] = []
+        spent = 0.0
+        loop = spec.get("loop")
+        if loop is None:
+            loop = act not in _sprites.NO_LOOP
+        # WHICH generated frames survive a trim is not "the first keep". A
+        # one-shot's payoff is its LAST frame — trimming a 4-frame collapse to
+        # its first 3 shipped a ko that never reached the floor. One-shots
+        # sample evenly INCLUDING the endpoint; loops stride the cycle so the
+        # wrap-around stays a genuine adjacent pair.
+        if keep >= rd_frames:
+            picks = list(range(rd_frames))
+        elif loop:
+            picks = [(i * rd_frames) // keep for i in range(keep)]
+        elif keep == 1:
+            picks = [rd_frames - 1]
+        else:
+            picks = [round(i * (rd_frames - 1) / (keep - 1))
+                     for i in range(keep)]
+        for direction in drawn:
+            # RE-ROLL LOOP. RD is stochastic: the same seed frame can come
+            # back with white trousers on half the frames one run and clean
+            # the next. A flagged strip is re-bought (bounded by max_retries
+            # and the cost ceiling) and the roll with the fewest findings is
+            # the one that ships — the hr_bard pattern, automated.
+            best = None
+            attempts = max(1, 1 + int(max_retries))
+            for attempt in range(attempts):
+                if attempt and max_cost_usd and spent + est / max(1, len(drawn)) > max_cost_usd:
+                    break
+                got = _rd.animate(starts["frames"][direction], rd_action,
+                                  frames=rd_frames, size=(cw, ch), prompt=motion,
+                                  root=str(root))
+                spent += float(got.get("usd") or 0.0)
+                sheet_img = _rd.key_background(_Img.open(
+                    _io.BytesIO(_b64mod.b64decode(got["sheet_b64"]))))
+                cols = max(1, sheet_img.width // cw)
+                trial_files: dict[str, str] = {}
+                trial_order: list[str] = []
+                for i, src_index in enumerate(picks):
+                    r, c = divmod(src_index, cols)
+                    cell = sheet_img.crop((c * cw, r * ch,
+                                           (c + 1) * cw, (r + 1) * ch))
+                    path = out_dir / (f"{character}_{act}_{direction}_{i}"
+                                      + (f"_try{attempt}" if attempt else "")
+                                      + ".png")
+                    cell.save(path)
+                    if pinned:
+                        _spritekit.lock_palette(str(path), pinned)
+                    label = f"{act}_{direction}/{i}"
+                    trial_files[label] = str(path)
+                    trial_order.append(label)
+                report = _spritekit.facing_report(
+                    trial_order, trial_files, expected=direction,
+                    reference=starts["frames"][direction])
+                report["findings"].extend(_spritekit.flicker_report(
+                    trial_order, trial_files)["findings"])
+                trial = {"files": trial_files, "order": trial_order,
+                         "findings": report["findings"],
+                         "balance": got.get("balance"), "attempt": attempt}
+                if best is None or len(trial["findings"]) < len(best["findings"]):
+                    best = trial
+                if not trial["findings"]:
+                    break
+            # promote the winning attempt to the canonical filenames
+            for i, label in enumerate(best["order"]):
+                src = _Path(best["files"][label])
+                dest = out_dir / f"{character}_{act}_{direction}_{i}.png"
+                if src != dest:
+                    src.replace(dest)
+                frame_files[label] = str(dest)
+                ordered.append(label)
+            per_dir[direction] = {
+                "findings": best["findings"],
+                "attempts": best["attempt"] + 1,
+                "balance": best["balance"],
+            }
+
+        # Contract-shaped sheet: one row per drawn direction, in drawn order.
+        plan = _spritekit.layout(len(ordered), cw, ch, columns=keep)
+        sheet_path = out_dir / f"{character}_{act}_sheet.png"
+        _sprites._stitch([frame_files[p] for p in ordered], sheet_path,  # noqa: SLF001
+                         plan=plan)
+        anims = [(f"{act}_{d}", keep) for d in drawn]
+        timing = {name: {"fps": fps, "loop": bool(loop)} for name, _ in anims}
+        tres_path = out_dir / f"{character}_{act}_frames.tres"
+        tres_path.write_text(
+            _sprites._sprite_frames_tres(  # noqa: SLF001 - shared emitter
+                sheet_path.name, anims, (cw, ch), fps, "assets/characters",
+                timing=timing, plan=plan),
+            encoding="utf-8")
+        previews = _gif_previews(frame_files, str(sheet_path),
+                                 f"{character}_{act}", timing, fps)
+        motion_report = _spritekit.sheet_report(
+            ordered, frame_files,
+            no_loop=() if loop else tuple(name for name, _ in anims))
+        # THE CROSS-DIRECTION CHECK — the consistency the per-strip battery
+        # cannot see: every direction of this action must contain the same
+        # character at the same scale on the same palette.
+        drift = _spritekit.set_drift({
+            f"{act}_{d}": [frame_files[p] for p in ordered
+                           if p.startswith(f"{act}_{d}/")]
+            for d in drawn})
+        # The .aseprite master, same as image_sprites builds — a contract
+        # sheet is exactly the thing somebody hand-fixes one frame of.
+        ase = _ase_master_for(str(sheet_path), (cw, ch),
+                              {name: rd_frames for name, _ in anims},
+                              timing, fps)
+        result = {"ok": True, "character": character, "action": act,
+                  "sheet": str(sheet_path), "tres": str(tres_path),
+                  "animations": {name: rd_frames for name, _ in anims},
+                  "mirror": contract["mirror"],
+                  "unplayable": contract.get("unplayable", []),
+                  "cell": [cw, ch], "frames_per_direction": rd_frames,
+                  "directions": per_dir, "motion": motion_report,
+                  "set": drift,
+                  **({"aseprite": ase} if ase is not None else {}),
+                  "animation_previews": previews,
+                  "start_frames": starts["frames"],
+                  "spend": {"usd": round(spent, 4), "calls": len(drawn),
+                            "provider": "retrodiffusion"}}
+        archived = _archive_preview(str(sheet_path), f"anim-{character}-{act}")
+        artifact = _register_artifact(
+            f"{character}_{act}", str(sheet_path),
+            producer="animation_generate",
+            refs=list(starts["frames"].values()),
+            metadata={"contract": {k: contract[k] for k in
+                                   ("preset", "view", "drawn", "cell", "layout")},
+                      "preview": archived or "",
+                      "animation_previews": previews,
+                      "motion": motion_report,
+                      "directions": {d: r["findings"] for d, r in per_dir.items()},
+                      "estimated_usd": round(spent, 4)})
+        if artifact:
+            result["artifact"] = artifact
+        _log("art", f"animated {character} {act}: {len(drawn)} direction(s), "
+                    f"${spent:.2f}", ref=str(sheet_path))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _anim_start_frames(root: _Path, character: str, action: str,
+                       contract: dict, source_sheet: str) -> dict:
+    """One start frame per drawn direction, sliced from an existing sheet.
+
+    The sheet's rows are directions (the contract's row order); the first
+    column of each row seeds that direction. Search order: an explicit
+    source_sheet, the character's idle sheet, the action's own sheet - idle
+    first because a neutral stance is the best seed for any motion.
+    """
+    from PIL import Image as _Img
+
+    slug = str(character).strip()
+    candidates = []
+    if source_sheet:
+        candidates.append(root / _assets.normalize_path(root, source_sheet))
+    for name in ("idle", action):
+        candidates.extend(root.glob(f"**/{slug}/{slug}_{name}.png"))
+        candidates.extend(root.glob(f"**/{slug}_{name}.png"))
+    sheet_path = next((c for c in candidates if c.is_file()), None)
+    if sheet_path is None:
+        return {"ok": False, "error":
+                f"no source sheet found for {slug!r} - pass source_sheet, or "
+                "generate a reference first (image_sprites / image_generate)"}
+    cw, ch = contract["cell"]
+    rows = contract["rows"]
+    out_dir = root / ".bgate_out" / "sprites" / "starts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames: dict[str, str] = {}
+    with _Img.open(sheet_path) as img:
+        sheet = img.convert("RGBA")
+        if sheet.height < ch * len(rows) or sheet.width < cw:
+            return {"ok": False, "error":
+                    f"{sheet_path.name} is {sheet.width}x{sheet.height}; the "
+                    f"contract expects rows of {cw}x{ch} cells x {len(rows)} "
+                    "direction row(s) - fix the contract or the sheet"}
+        for row_index, direction in enumerate(rows):
+            if direction not in contract["drawn"]:
+                continue
+            cell = sheet.crop((0, row_index * ch, cw, (row_index + 1) * ch))
+            dest = out_dir / f"{slug}_{action}_{direction}_start.png"
+            cell.save(dest)
+            frames[direction] = str(dest)
+    missing = [d for d in contract["drawn"] if d not in frames]
+    if missing:
+        return {"ok": False, "error":
+                f"source sheet rows cover {sorted(frames)} but the contract "
+                f"draws {contract['drawn']} - missing {missing}. Its rows and "
+                "the contract's disagree; set characters overrides to match."}
+    return {"ok": True, "frames": frames, "source": str(sheet_path)}
+
+
+def _ase_anim_specs(animations: dict, timing: Optional[dict],
+                    fps: float) -> list[dict]:
+    """The per-frame durations aseprite.master needs, from the sheet's own plan.
+
+    ``animations`` is {anim: frame_count} in sheet order; ``timing`` is the
+    animspec dict image_sprites already carries. Holds are relative, so a hold
+    of 2.0 at 8fps is 250ms — the master plays exactly what the .tres plays.
+    """
+    from bgate_adapters.sprites import NO_LOOP
+    specs = []
+    for anim, count in animations.items():
+        spec = (timing or {}).get(anim) or {}
+        anim_fps = float(spec.get("fps") or fps) or 8.0
+        holds = list(spec.get("holds") or [])
+        holds += [1.0] * (int(count) - len(holds))
+        loop = spec.get("loop")
+        if loop is None:
+            loop = anim not in NO_LOOP
+        specs.append({"name": str(anim).replace(":", "_").replace("|", "_"),
+                      "durations_ms": [max(1, round(float(h) * 1000.0 / anim_fps))
+                                       for h in holds[:int(count)]],
+                      "loop": bool(loop)})
+    return specs
+
+
+def _gif_previews(frame_map: dict, sheet: str, name: str,
+                  timing: Optional[dict], fps: float) -> dict[str, str]:
+    """One playable GIF per animation, beside the sheet. {} on any failure.
+
+    ``frame_map`` is {pose: path} in sheet order, pose names "anim/idx" or
+    bare — the same grouping rule _group_frames uses. The first animation's
+    GIF is also archived so the dashboard gallery shows motion, not a grid.
+    """
+    try:
+        from bgate_adapters.sprites import NO_LOOP
+        from bgate_core import animgif as _animgif
+
+        by_anim: dict[str, list[str]] = {}
+        for pose, path in frame_map.items():
+            by_anim.setdefault(str(pose).split("/", 1)[0], []).append(path)
+        written = _animgif.write_gifs(by_anim, str(_Path(sheet).parent), name,
+                                      timing=timing, fps=fps, no_loop=NO_LOOP,
+                                      scale=2 if _gif_cells_small(frame_map) else 1)
+        if written:
+            first = next(iter(written.values()))
+            archived = _archive_preview(first, f"anim-{name}")
+            if archived:
+                written["_archived"] = archived
+        return written
+    except Exception:                                           # noqa: BLE001
+        return {}
+
+
+def _gif_cells_small(frame_map: dict) -> bool:
+    """Upscale the preview 2x when the frames are small enough to squint at."""
+    try:
+        from PIL import Image
+        with Image.open(next(iter(frame_map.values()))) as im:
+            return max(im.size) <= 128
+    except Exception:                                           # noqa: BLE001
+        return False
+
+
+def _ase_master_for(sheet: str, cell: tuple[int, int],
+                    animations: dict, timing: Optional[dict],
+                    fps: float) -> Optional[dict]:
+    """Best-effort .aseprite master beside the sheet. None when Aseprite is absent.
+
+    Never raises and never fails the sheet: the master is a convenience for
+    hand edits, and a machine without Aseprite still ships the same PNG+tres.
+    """
+    from bgate_adapters import aseprite as _ase
+    if not _ase.available().get("available"):
+        return None
+    out = str(_Path(sheet).with_suffix(".aseprite"))
+    try:
+        got = _ase.master(sheet, out, cell=cell,
+                          anims=_ase_anim_specs(animations, timing, fps))
+    except Exception as exc:                                    # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    got["master"] = out
+    return got
+
+
+@_tool
+def aseprite_status() -> dict:
+    """Is Aseprite usable on this machine? Path and version, or what to do.
+
+    Aseprite is OPTIONAL: sheets, conform and .tres still work without it.
+    What needs it: .aseprite masters (aseprite_master, auto-built by
+    image_sprites), re-export of hand-edited masters (aseprite_export), and
+    palette derivation from refs (palette_pin without explicit colors)."""
+    from bgate_adapters import aseprite as _ase
+    try:
+        info = _ase.available()
+        if info.get("available"):
+            info.update(_ase.version())
+        return {"ok": True, **info}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def palette_pin(colors: Optional[list[str]] = None,
+                max_colors: int = 32) -> dict:
+    """PIN THE PROJECT PALETTE in the art bible - the fix for uneven pixel art.
+
+    Generated "pixel art" carries thousands of smeared colours per sheet, and
+    every sheet invents its own, which is why assets look mushy alone and
+    mismatched together. Pinning writes a LOCKED bible constraint listing the
+    palette; from then on every image_sprites sheet, item and vfx set is
+    conformed to exactly these colours, artdirection measures compliance on
+    every generation, and drift becomes unrepresentable rather than reviewable.
+
+    colors: explicit hex list ("#1a1c2c" or "1a1c2c"). Omitted: derived from
+    the pinned style refs (ref_pin kind="style") - Aseprite quantises them to
+    at most max_colors; without Aseprite, the refs' dominant colours are used.
+    Re-running replaces the pinned palette. 16-40 colours is the useful range:
+    fewer flattens faces, more stops being a palette."""
+    try:
+        root = _root()
+        hexes: list[str] = []
+        source = "explicit"
+        if colors:
+            for entry in colors:
+                text = str(entry).strip().lstrip("#").lower()
+                if len(text) != 6 or any(c not in "0123456789abcdef" for c in text):
+                    return {"ok": False, "error": f"not a hex colour: {entry!r}"}
+                if text not in hexes:
+                    hexes.append(text)
+        else:
+            anchors = _artdirection.anchors_for(root, limit=4)
+            if not anchors:
+                return {"ok": False, "error":
+                        "no colors given and no style refs pinned to derive "
+                        "from - pass colors=[...] or ref_pin a style image first"}
+            from bgate_adapters import aseprite as _ase
+            if _ase.available().get("available"):
+                source = "derived (aseprite quantise over style refs)"
+                seen: list[str] = []
+                for anchor in anchors:
+                    with _tempfile.TemporaryDirectory() as tmp:
+                        got = _ase.conform(anchor, str(_Path(tmp) / "q.png"),
+                                           max_colors=max(2, int(max_colors)))
+                    for hexcode in got.get("palette") or []:
+                        if hexcode not in seen:
+                            seen.append(hexcode)
+                hexes = seen
+            else:
+                source = "derived (dominant ref colours - no aseprite)"
+                for anchor in anchors:
+                    for r, g, b in _chroma.palette_of(anchor, colors=max_colors):
+                        hexcode = f"{r:02x}{g:02x}{b:02x}"
+                        if hexcode not in hexes:
+                            hexes.append(hexcode)
+            if len(hexes) > int(max_colors):
+                # Multiple refs can each contribute a near-duplicate ramp; cap
+                # by re-quantising the union down to the asked-for size.
+                from PIL import Image as _Img
+                strip = _Img.new("RGB", (len(hexes), 1))
+                strip.putdata([tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+                               for h in hexes])
+                quant = strip.quantize(colors=int(max_colors),
+                                       method=_Img.Quantize.MEDIANCUT)
+                table = quant.getpalette() or []
+                used = sorted(set(quant.getdata()))
+                hexes = [f"{table[i * 3]:02x}{table[i * 3 + 1]:02x}"
+                         f"{table[i * 3 + 2]:02x}" for i in used]
+        if not hexes:
+            return {"ok": False, "error": "no colours to pin"}
+
+        body = ("Every shipped 2D asset uses exactly these colours - sheets, "
+                "items and VFX are conformed to them automatically:\n"
+                + " ".join(f"#{h}" for h in hexes))
+        existing = next(
+            (s for s in _bible.list_sections(root, "constraint")
+             if _artdirection.PALETTE_TITLE in str(s.get("title") or "")), None)
+        if existing:
+            _bible.update(root, int(existing["id"]), body=body)
+            section_id = int(existing["id"])
+        else:
+            section_id = _bible.add(root, "constraint",
+                                    _artdirection.PALETTE_TITLE, body)["id"]
+        _log("art", f"pinned {len(hexes)}-colour project palette ({source})")
+        return {"ok": True, "section_id": section_id, "source": source,
+                "colors": [f"#{h}" for h in hexes], "count": len(hexes),
+                "note": "every future sheet/item/vfx conforms to this palette; "
+                        "regenerate or re-conform existing art to migrate it"}
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def aseprite_master(sheet: str, cell: list[int],
+                    anims: Optional[list[dict]] = None,
+                    fps: float = 8.0) -> dict:
+    """Sheet PNG -> tagged .aseprite MASTER, the file a human edits.
+
+    The master is a playable animation - each cell a real frame, each
+    animation a named tag with its authored timing - so fixes happen with
+    onion-skin and scrub instead of nudging pixels in a flat strip. Written
+    beside the sheet. image_sprites builds one automatically; this tool is
+    for sheets that predate that or came from elsewhere.
+
+    cell: [width, height] of one frame. anims: [{name, frames, fps?, loop?}]
+    in sheet order; omitted, the whole sheet becomes one looping "default".
+    After editing in Aseprite, aseprite_export brings it back as sheet + an
+    EXACT SpriteFrames .tres."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, sheet)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no sheet at {rel}"}
+        from bgate_adapters import aseprite as _ase
+        from PIL import Image as _Img
+        cw, ch = int(cell[0]), int(cell[1])
+        with _Img.open(src) as im:
+            width, height = im.size
+        if width % cw or height % ch:
+            return {"ok": False, "error":
+                    f"cell {cw}x{ch} does not tile the {width}x{height} sheet"}
+        total = (width // cw) * (height // ch)
+        if anims:
+            animations = {str(a["name"]): int(a.get("frames") or 1) for a in anims}
+            timing = {str(a["name"]): {"fps": float(a["fps"])} for a in anims
+                      if a.get("fps")}
+            for a in anims:
+                if a.get("loop") is not None:
+                    timing.setdefault(str(a["name"]), {})["loop"] = bool(a["loop"])
+            claimed = sum(animations.values())
+            if claimed > total:
+                return {"ok": False, "error":
+                        f"anims claim {claimed} frames but the sheet has {total}"}
+        else:
+            animations, timing = {"default": total}, {}
+        got = _ase.master(str(src), str(src.with_suffix(".aseprite")),
+                          cell=(cw, ch),
+                          anims=_ase_anim_specs(animations, timing, float(fps)))
+        got["master"] = _assets.normalize_path(root, src.with_suffix(".aseprite"))
+        return got
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def aseprite_export(master: str, res_dir: str = "assets/sprites",
+                    out_dir: str = "") -> dict:
+    """Hand-edited .aseprite -> sheet PNG + EXACT SpriteFrames .tres.
+
+    The export JSON states every frame's rect, duration and tag, so the .tres
+    is a translation of facts, not a grid guess - per-animation speeds and
+    per-frame holds survive exactly as authored in Aseprite. This is the way
+    back from a hand edit: fix frames in Aseprite, save, call this, import
+    the pair into the game at res://<res_dir>/. Output lands beside the
+    master (or in out_dir), named <stem>_sheet.png + <stem>_frames.tres.
+
+    Also, when present in the master:
+    - SLICES named after rig slots (main_hand, off_hand, muzzle, ... - drag
+      one over the hand, key it per frame) become EXACT per-frame anchors:
+      merged into <stem>_sheet.rig.json and emitted as <stem>_offsets.json,
+      which gear_rig.gd's `offsets` parameter consumes. Hand-authored labels
+      in the sidecar are never overwritten.
+    - Every tag gets a playable GIF preview at the authored timing, and the
+      export is re-graded (motion_report + pinned-palette check) ADVISORY -
+      a human edited this on purpose, so findings report, never refuse."""
+    try:
+        root = _Path(_root())
+        rel = _assets.normalize_path(root, master)
+        src = root / rel
+        if not src.exists():
+            return {"ok": False, "error": f"no master at {rel}"}
+        from bgate_adapters import aseprite as _ase
+        from bgate_core import asejson as _asejson
+        stem = src.stem.removesuffix("_sheet")
+        dest = (root / out_dir) if out_dir else src.parent
+        dest.mkdir(parents=True, exist_ok=True)
+        sheet_path = dest / f"{stem}_sheet.png"
+        data_path = dest / f"{stem}_frames.json"
+        data = _ase.export(str(src), str(sheet_path), str(data_path))
+        tres_path = dest / f"{stem}_frames.tres"
+        tres_path.write_text(
+            _asejson.spriteframes_text(data, sheet_path.name, res_dir),
+            encoding="utf-8")
+        frames = data.get("frames") or []
+        tags = [t.get("name") for t in
+                (data.get("meta") or {}).get("frameTags") or []]
+        try:
+            _assets.track(root, sheet_path)
+        except Exception:
+            pass
+        result = {"ok": True,
+                  "sheet": _assets.normalize_path(root, sheet_path),
+                  "tres": _assets.normalize_path(root, tres_path),
+                  "data": _assets.normalize_path(root, data_path),
+                  "frames": len(frames), "animations": tags or ["default"],
+                  "res_dir": res_dir}
+        result.update(_ase_export_review(root, data, sheet_path, stem))
+        result.update(_ase_export_anchors(data, sheet_path, stem))
+        return result
+    except Exception as exc:
+        return _fail(exc)
+
+
+def _ase_export_review(root: _Path, data: dict, sheet_path: _Path,
+                       stem: str) -> dict:
+    """Re-grade a re-exported master, advisory, plus playable GIF previews.
+
+    Every other art path passes motion_report and the palette check; a hand
+    edit was the one door with no mirror on it. Advisory on purpose - a
+    human changed this file deliberately, so a finding is for their eyes,
+    not a refusal. Never raises: the pair on disk is the deliverable and it
+    is already written.
+    """
+    import tempfile as _tf
+
+    out: dict = {}
+    try:
+        from PIL import Image as _Img
+
+        from bgate_core import animgif as _animgif
+
+        frames = data.get("frames") or []
+        tags = list((data.get("meta") or {}).get("frameTags") or [])
+        if not tags:
+            tags = [{"name": "default", "from": 0, "to": len(frames) - 1}]
+        with _tf.TemporaryDirectory(prefix="bgate-ase-review-") as tmp, \
+                _Img.open(sheet_path) as sheet_img:
+            sheet = sheet_img.convert("RGBA")
+            ordered: list[str] = []
+            frame_files: dict[str, str] = {}
+            by_anim: dict[str, list[str]] = {}
+            no_loop: set[str] = set()
+            for tag in tags:
+                name = str(tag.get("name") or "default")
+                lo, hi = int(tag.get("from", 0)), int(tag.get("to", -1))
+                if not (0 <= lo <= hi < len(frames)):
+                    continue
+                if str(tag.get("repeat") or "") == "1":
+                    no_loop.add(name)
+                for i, frame in enumerate(range(lo, hi + 1)):
+                    rect = frames[frame].get("frame") or {}
+                    cell = sheet.crop((rect["x"], rect["y"],
+                                       rect["x"] + rect["w"],
+                                       rect["y"] + rect["h"]))
+                    path = str(_Path(tmp) / f"{name}_{i}.png")
+                    cell.save(path)
+                    label = f"{name}/{i}"
+                    ordered.append(label)
+                    frame_files[label] = path
+                    by_anim.setdefault(name, []).append(path)
+            if ordered:
+                out["motion"] = _spritekit.sheet_report(
+                    ordered, frame_files, no_loop=no_loop)
+                previews: dict[str, str] = {}
+                for anim, paths in by_anim.items():
+                    lo = next(int(t.get("from", 0)) for t in tags
+                              if str(t.get("name") or "default") == anim)
+                    durs = [max(20, int(frames[lo + i].get("duration") or 100))
+                            for i in range(len(paths))]
+                    # Scale by CELL size, not sheet size — a 12-frame strip is
+                    # 768px wide while its cells are still 64px sprites nobody
+                    # can review unscaled.
+                    first_rect = (frames[0].get("frame") or {}) if frames else {}
+                    small = max(int(first_rect.get("w") or 0),
+                                int(first_rect.get("h") or 0)) <= 128
+                    dest = sheet_path.parent / f"{stem}_{anim}.gif"
+                    got = _animgif.write_gif(paths, str(dest), durations=durs,
+                                             loop=anim not in no_loop,
+                                             scale=2 if small else 1)
+                    if got.get("ok"):
+                        previews[anim] = str(dest)
+                if previews:
+                    first = next(iter(previews.values()))
+                    archived = _archive_preview(first, f"anim-{stem}")
+                    if archived:
+                        previews["_archived"] = archived
+                    out["animation_previews"] = previews
+        pinned = _artdirection.palette_pinned(str(root))
+        if pinned:
+            off = _artdirection.off_palette_fraction(sheet_path, pinned)
+            out["palette"] = {
+                "ok": off == 0.0, "source": "bible", "off_palette": round(off, 4),
+                "note": ("on the pinned palette" if off == 0.0 else
+                         f"{off:.1%} of the ink is off the pinned palette - a "
+                         "hand edit introduced outside colours; re-conform or "
+                         "extend the palette with palette_pin")}
+        for key in ("motion", "palette"):
+            if key in out:
+                try:
+                    _artifacts.record_check(str(root), str(sheet_path), key,
+                                            out[key])
+                except Exception:
+                    pass
+    except Exception as exc:                                    # noqa: BLE001
+        out["review_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def _ase_export_anchors(data: dict, sheet_path: _Path, stem: str) -> dict:
+    """Slices -> rig sidecar labels + the runtime offsets file. {} when none.
+
+    Slice labels replace only earlier SLICE labels; a label a person placed
+    in spriteedit (`authored`) wins over one from the same person's Aseprite
+    session only because the sidecar was there first and stomping it would
+    lose work silently - the report says when that happened.
+    """
+    out: dict = {}
+    try:
+        from PIL import Image as _Img
+
+        from bgate_core import asejson as _asejson
+        from bgate_core import rigmap as _rigmap
+
+        labels, skipped = _asejson.slice_labels(data)
+        if not labels and not skipped:
+            return {}
+        rig = _rigmap.load(sheet_path)
+        frames = data.get("frames") or []
+        first = (frames[0].get("frame") or {}) if frames else {}
+        with _Img.open(sheet_path) as im:
+            sheet_size = im.size
+        cw, ch = int(first.get("w") or 0), int(first.get("h") or 0)
+        if cw and ch and sheet_size[0] % cw == 0 and sheet_size[1] % ch == 0:
+            rig["grid"] = {"cell_w": cw, "cell_h": ch,
+                           "cols": sheet_size[0] // cw,
+                           "rows": sheet_size[1] // ch}
+        # Tags become the sidecar's animations so offsets_json knows play order.
+        anims = []
+        for tag in (data.get("meta") or {}).get("frameTags") or []:
+            lo, hi = int(tag.get("from", 0)), int(tag.get("to", -1))
+            if 0 <= lo <= hi < len(frames):
+                anims.append({"name": str(tag.get("name") or "default"),
+                              "frames": list(range(lo, hi + 1)),
+                              "loop": str(tag.get("repeat") or "") != "1"})
+        if anims:
+            rig["animations"] = anims
+        kept = [lab for lab in rig.get("labels") or []
+                if lab.get("source") != "slice"]
+        taken = {(lab["slot"], lab["frame"]) for lab in kept}
+        shadowed = []
+        merged = list(kept)
+        for lab in labels:
+            if (lab["slot"], lab["frame"]) in taken:
+                shadowed.append(f"{lab['slot']}@{lab['frame']}")
+                continue
+            merged.append(lab)
+        rig["labels"] = merged
+        _rigmap.save(sheet_path, rig, sheet_size=sheet_size)
+        saved = _rigmap.load(sheet_path)
+        offsets_path = sheet_path.parent / f"{stem}_offsets.json"
+        slots = _rigmap.slots_used(saved)
+        primary = "main_hand" if "main_hand" in slots else (slots[0] if slots else "")
+        if primary:
+            offsets_path.write_text(
+                _json.dumps(_rigmap.offsets_json(saved, primary), indent=2),
+                encoding="utf-8")
+        out["anchors"] = {
+            "slots": slots,
+            "labels": len([lab for lab in saved["labels"]
+                           if lab.get("source") == "slice"]),
+            "rig": str(_rigmap.sidecar_path(sheet_path)),
+            "offsets": str(offsets_path) if primary else "",
+            **({"skipped_slices": skipped} if skipped else {}),
+            **({"kept_authored": shadowed} if shadowed else {})}
+    except Exception as exc:                                    # noqa: BLE001
+        out["anchors_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
 def vfx_animate(key_frame: str, name: str, motion: str = "burst",
                 frames: int = 4, peak: int = 1, cell: Optional[list[int]] = None,
                 fps: float = 14.0, res_dir: str = "assets/vfx",
@@ -3512,14 +4720,22 @@ def vfx_animate(key_frame: str, name: str, motion: str = "burst",
         res = _vfx.animate(
             str(src), str(dest), name, motion=motion, frames=int(frames),
             peak=int(peak), cell=tuple(cell) if cell else (64, 64),
-            fps=float(fps), res_dir=res_dir, loop=loop, overrides=overrides)
+            fps=float(fps), res_dir=res_dir, loop=loop, overrides=overrides,
+            target_palette=_artdirection.palette_pinned(str(root)) or None)
         if not res.get("ok"):
             return res
+        previews_gif = _gif_previews(
+            {f"default/{i}": p for i, p in enumerate(res["frames"])},
+            res["sheet"], name,
+            {"default": {"loop": res["loop"]}}, float(fps))
+        if previews_gif:
+            res["animation_previews"] = previews_gif
         _register_artifact(name, res["sheet"], producer="vfx_animate",
                            refs=[str(src)],
                            metadata={"motion": motion, "frames": frames,
                                      "anchor": res["anchor"],
-                                     "coverage": res["coverage"]})
+                                     "coverage": res["coverage"],
+                                     "animation_previews": previews_gif})
         for key in ("sheet", "tres"):
             res[key] = _assets.normalize_path(root, res[key])
         res["frames"] = [_assets.normalize_path(root, p) for p in res["frames"]]
@@ -4269,23 +5485,40 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
         # painterly work with real gradients is left alone, because locking it
         # would band the shading and that is a downgrade nobody ordered.
         lock_mode = str(palette_lock or "auto").strip().lower()
+        # A palette PINNED IN THE BIBLE outranks the auto guess: pinning is the
+        # project saying "these colours, everywhere", and it names the target
+        # (the auto path can only lock to the reference's own colours). An
+        # explicit palette_lock="off" still wins — a human's off is an off.
+        pinned_palette = _artdirection.palette_pinned(str(root))
         if lock_mode in ("auto", ""):
-            do_lock = _spritekit.looks_limited_palette(ref_path)
-            lock_why = ("the reference reads as flat / limited-palette art, "
-                        "where locking is free" if do_lock else
-                        "the reference reads as painterly (many near-identical "
-                        "shades), where locking would band the shading - left off")
+            if pinned_palette:
+                do_lock = True
+                lock_why = (f"the project pins a {len(pinned_palette)}-colour "
+                            "palette in the art bible - every sheet conforms to it")
+            else:
+                do_lock = _spritekit.looks_limited_palette(ref_path)
+                lock_why = ("the reference reads as flat / limited-palette art, "
+                            "where locking is free" if do_lock else
+                            "the reference reads as painterly (many near-identical "
+                            "shades), where locking would band the shading - left off")
         else:
             do_lock = lock_mode in ("on", "true", "yes", "1")
             lock_why = f"palette_lock={palette_lock!r}, set explicitly"
 
         def _assemble_and_gate():
+            # ARITHMETIC BEFORE MONEY: a pure-scale outlier is the same
+            # drawing at the wrong size, so it is scaled to the set median
+            # for free here — the re-roll loop below is for defects a
+            # resize cannot fix.
+            fixed = _spritekit.normalise_heights(
+                [p for p, _ in pose_files], pose_path)
             asm = _sp.from_pose_images(
                 [(p, pose_path[p]) for p in pose_order],
                 out_dir=str(root / ".bgate_out" / "sprites"), name=name,
                 frame_size=(frame_width, frame_height), res_dir=res_dir, fps=fps,
                 ref_path=ref_path, timing=timing or None,
                 palette_lock=do_lock, palette_colors=palette_colors,
+                target_palette=pinned_palette or None,
                 pad=max(0, int(sheet_padding)))
             asm.setdefault("failed", [])
             asm["failed"].extend(pose_errors)
@@ -4295,10 +5528,32 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             if asm.get("ok"):
                 fm = asm.get("frames", {})
                 cons = _vision_consistency(ref_path, [(p, fp) for p, fp in fm.items()])
+                # THE GEOMETRY RUNS EVEN WHEN THE JUDGE CANNOT. The vision
+                # judge is provider-gated and sits out without its key — and
+                # for one whole build that meant NO gate ran and a walk with
+                # two 40%-oversized frames shipped as ok:True. facing_report
+                # is free and local: its height findings join the flag set,
+                # so the re-roll loop chases them with or without a judge,
+                # and a judge that sat out is said out loud instead of
+                # reading as a pass.
+                if not cons.get("ok"):
+                    cons = {"ok": True, "min": None, "flagged": [],
+                            "scores": {},
+                            "judge": "unavailable - geometry only"}
+                geom = _spritekit.facing_report(
+                    [p for p in pose_order if p in fm], fm)
+                cons["geometry"] = geom["findings"]
+                cons["height_fix"] = fixed["scaled"]
+                geo_flag = {fr for f in geom["findings"]
+                            if f["kind"] == "height_outlier"
+                            for fr in f["frames"]}
+                cons["flagged"] = sorted(
+                    set(cons.get("flagged") or []) | geo_flag)
             return asm, cons
 
         assembled, consistency = _assemble_and_gate()
         best_min = consistency.get("min") if consistency.get("ok") else None
+        best_flags = len(consistency.get("flagged") or [])
         tries = max(0, int(max_retries))
         while (consistency.get("ok") and consistency.get("flagged") and tries > 0):
             tries -= 1
@@ -4329,8 +5584,19 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 _edit_pose(pose_desc[pname], _rolling_refs(pname), pose_path[pname])
             asm2, cons2 = _assemble_and_gate()
             new_min = cons2.get("min") if cons2.get("ok") else None
-            if new_min is not None and (best_min is None or new_min > best_min):
-                best_min = new_min; assembled, consistency = asm2, cons2
+            # Better means: the judge's floor rose — or, when the judge sat
+            # out and there is no floor to compare, fewer flagged frames.
+            # Without the second clause a geometry-only re-roll could never
+            # be kept: min stays None, None never beats None, every fix
+            # reverted.
+            better = (new_min is not None
+                      and (best_min is None or new_min > best_min))
+            if new_min is None and best_min is None:
+                better = len(cons2.get("flagged") or []) < best_flags
+            if better:
+                best_min = new_min
+                best_flags = len(cons2.get("flagged") or [])
+                assembled, consistency = asm2, cons2
                 for bak in backups.values():
                     try: os.remove(bak)
                     except Exception: pass
@@ -4366,6 +5632,15 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
             frame_map = assembled.get("frames", {})
             assembled["consistency"] = consistency
 
+            # PLAYABLE previews, one GIF per animation, at the sheet's own
+            # timing. Motion review has only ever had stills; a pop or a loop
+            # hitch is obvious in two seconds of playback and invisible in a
+            # grid. Best-effort, before registration so they ride metadata.
+            previews_gif = _gif_previews(frame_map, assembled["sheet"], name,
+                                         timing, fps)
+            if previews_gif:
+                assembled["animation_previews"] = previews_gif
+
             artifact = _register_artifact(
                 name, assembled["sheet"], producer="image_sprites",
                 prompt=character_prompt,
@@ -4373,6 +5648,7 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                 metadata={"poses": poses, "frames": frame_map,
                           "failed": assembled.get("failed", []),
                           "preview": archived or "",
+                          "animation_previews": previews_gif,
                           "consistency": consistency,
                           "sequence": assembled.get("sequence"),
                           "motion": assembled.get("motion"),
@@ -4392,6 +5668,37 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                                             consistency)
                 except Exception:
                     pass
+            # PALETTE: recorded like consistency is, and GATED HERE rather than
+            # in artdirection.check - check() runs on raw generations before
+            # anything has conformed them, so a hard flag there would reject
+            # every image the pipeline was about to fix. Here the conform has
+            # either run or failed to, which is the fact worth gating on.
+            pal = assembled.get("palette") or {}
+            if pinned_palette:
+                try:
+                    off = _artdirection.off_palette_fraction(
+                        assembled["sheet"], pinned_palette)
+                    pal["off_palette"] = round(off, 4)
+                except Exception as exc:
+                    pal["off_palette_error"] = str(exc)
+                assembled["palette"] = pal
+                try:
+                    _artifacts.record_check(_root(), assembled["sheet"], "palette",
+                                            {"ok": bool(pal.get("ok")),
+                                             **{k: pal[k] for k in
+                                                ("colors", "source", "off_palette")
+                                                if k in pal}})
+                except Exception:
+                    pass
+                if do_lock and not pal.get("ok"):
+                    assembled["ok"] = False
+                    assembled["stage"] = "palette"
+                    assembled["error"] = (
+                        "the project pins a palette but this sheet could not be "
+                        f"conformed to it: {pal.get('note') or 'conform failed'}. "
+                        "The sheet was kept for inspection but MUST NOT be "
+                        "installed as-is.")
+
             cons_note = ""
             if consistency.get("ok"):
                 cons_note = (f", consistency min {consistency.get('min')}"
@@ -4422,6 +5729,18 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                     "installed as-is - tighten character_prompt on the drifting "
                     "detail, or lower the floor if this is as good as the model gets.")
 
+            # The .aseprite master, built whether or not a gate flipped ok -
+            # a flagged sheet is exactly the one somebody opens to fix by
+            # hand, and the master is how they do that with onion-skin
+            # instead of a flat strip. Best-effort: absent Aseprite, absent
+            # key, nothing changes.
+            ase = _ase_master_for(assembled["sheet"],
+                                  (frame_width, frame_height),
+                                  assembled.get("animations") or {},
+                                  timing or None, fps)
+            if ase is not None:
+                assembled["aseprite"] = ase
+
             seq = assembled.get("sequence") or {}
             seq_note = (f", height-jitter in {seq['flagged']}"
                         if seq.get("flagged") else "")
@@ -4440,6 +5759,20 @@ def image_sprites(character_prompt: str, poses: list[dict], name: str,
                             + (f", {len(assembled['failed'])} FAILED" if assembled["failed"] else "")
                             + cons_note + seq_note + motion_note,
                  ref=assembled["sheet"])
+        # A MINT IS NOT MOTION. These frames are independently painted
+        # stills — identity holds, but there is no cycle, and a character
+        # shipped straight from here reads stiff as a board in the running
+        # game. A screenshot cannot fail a motion check that never ran,
+        # which is exactly how one shipped.
+        assembled["next"] = (
+            "this sheet is the MINT: identity, anchors, a start frame per "
+            "drawn direction. IF this character moves in-game, the motion "
+            "comes from animation_generate (RD animates the character's own "
+            "frames into real cycles, ~$0.14/direction) — "
+            "sprite_contract_set first if the project has no contract. A "
+            "character that never moves (portrait, static NPC) is done "
+            "here. Watch the animation_previews GIF before shipping "
+            "anything that moves; stiffness is invisible in a screenshot.")
         return assembled
     except Exception as exc:
         return _fail(exc)
@@ -5102,11 +6435,625 @@ def _res_pair(godot_project: str, path: str, suffix: str) -> tuple[_Path, str]:
     return disk, f"res://{rel}"
 
 
+
+
+#: What each prop IS, in words a generator can draw. The CAMERA is not here —
+#: it comes from the project's view, per mount, so a prop set generated for a
+#: top-down game and one generated for a platformer differ by declaration
+#: rather than by whoever wrote the prompt that day.
+_PROP_SUBJECTS = {
+    "torch": "an iron wall torch bracket holding a burning flame, angled to "
+             "the RIGHT, the bracket ALONE with no wall behind it",
+    "sconce": "a stone wall sconce holding a burning flame, the sconce ALONE "
+              "with no wall behind it",
+    "banner": "a long narrow cloth banner hanging down, the banner ALONE",
+    "shelf": "a wooden wall shelf holding jars and clutter, the shelf ALONE",
+    "cobweb": "a dusty grey cobweb",
+    "barrel": "one wooden barrel with iron bands, standing upright so its "
+              "circular lid faces the camera",
+    "crate": "one wooden crate, standing so its square lid faces the camera",
+    "rubble": "a small pile of broken stone rubble lying on the ground",
+    "bones": "a scatter of old bones and a skull lying on the ground",
+    "chest": "a closed wooden treasure chest with iron fittings, its lid "
+             "facing the camera",
+    "pillar": "one round carved stone pillar, its circular capital facing the "
+              "camera",
+    "crack": "a thin jagged black crack splitting stone, just the fracture "
+             "line, thin and irregular",
+    "stain": "a dark blackish-brown stain soaked into stone, muted and almost "
+             "black, NOT orange and NOT red",
+    "drain": "a round iron grate drain, its circular grate facing the camera",
+    "altar": "a low rectangular carved stone altar slab, wide and low, its "
+             "flat top facing the camera, NOT a cube",
+    "well": "a low circular ring of stacked stone blocks forming a round "
+            "opening",
+    "statue": "a carved stone statue standing on a plinth",
+    "door": "a heavy closed wooden door with iron bands in a stone frame",
+    "arch": "an empty stone archway, the opening a flat dark shape",
+    "stairs_up": "a short flight of stone steps rising, the treads reading as "
+                 "stacked horizontal bars",
+    "stairs_down": "a dark square opening in the ground with stone steps "
+                   "descending into it",
+}
+
+_PROP_LOOK = (
+    "16-bit SNES-era pixel art game sprite, crisp hard pixel edges, no "
+    "anti-aliasing, flat solid pure black background, the object centred and "
+    "filling the frame, no ground shadow, no scene, no floor tile, no border, "
+    "no text, no logo"
+)
+
+
+@_tool
+def prop_generate(name: str, style: str = "", types: str = "",
+                  tile_px: int = 32, godot_project: str = "",
+                  res_dir: str = "assets/tiles", install: bool = False,
+                  max_cost_usd: float = 2.0) -> dict:
+    """GENERATE THE PROPS FOR A LEVEL - art, cleanup, atlas and manifest.
+
+    ONE CALL. You do not pack an atlas, you do not work out texture origins,
+    you do not build an atlas string, and you do not have to remember which
+    cleanup steps exist. Pass a name and the types you want; hand the manifest
+    this returns to `level_generate(prop_manifest=...)` and the props are in
+    the level.
+
+    THAT IS WHY THIS TOOL EXISTS. The first prop set was made by a hand-written
+    script, and the script silently dropped the palette conform and the
+    defringe: 32-pixel sprites carrying 600 colours, two thirds of them off the
+    pinned palette, with feathered edges. Nobody chose that. There was no
+    pipeline for the decision to live in, the way `animation_generate` is the
+    pipeline for a character cycle - so the steps were skipped by omission.
+
+    THE CHAIN, all of it mandatory:
+      * the project's VIEW decides the camera per prop mount (`game_view_get`)
+      * `props.art_spec` decides the canvas, the ground anchor and how many
+        DRAWINGS each type needs - a wall mount needs one per facing, because
+        the engine mirrors a sprite but NOT its texture_origin
+      * kie draws the sprite. RD is for motion and never for originating a look
+      * the background is keyed client-side, the sprite is stepped down in
+        halves to the contract box, its alpha is hardened to binary, and it is
+        conformed to the pinned palette
+      * the atlas packs on 2x2 slots so no spanning tile can overlap another,
+        which Godot answers by silently dropping the tile
+      * a MANIFEST is written beside the atlas with every coordinate, size,
+        facing and animation
+
+    `types` is a comma list, "" for the default set. `install=False` leaves
+    everything in `.bgate_out/props/` for review.
+    """
+    try:
+        from PIL import Image
+
+        from bgate_adapters import kie as _kie
+        from bgate_adapters import retrodiffusion as _rd
+
+        root = _Path(_root())
+        view = _gameview.load(root)
+        want = tuple(types.replace(",", " ").split()) or _props.DEFAULT_TYPES
+        for n in want:
+            _props.prop_type(n)
+            if not _gameview.supports(view, _props.PROP_TYPES[n]["mount"]):
+                return {"ok": False, "error": (
+                    f"{n} mounts on {_props.PROP_TYPES[n]['mount']!r}, which "
+                    f"means nothing in a {view} level")}
+
+        palette = _artdirection.palette_pinned(str(root))
+        if not palette:
+            return {"ok": False, "error": (
+                "no palette is pinned - call palette_pin first. A prop that "
+                "skips the conform carries hundreds of off-palette colours "
+                "and will not match the tileset it stands on.")}
+
+        specs = [_props.art_spec(n, tile_px=tile_px, view=view) for n in want]
+        drawings = sum(max(1, len(s["facings"])) for s in specs)
+        estimate = drawings * 0.02
+        if estimate > max_cost_usd:
+            return {"ok": False, "error": (
+                f"{drawings} drawings is about ${estimate:.2f}, over the "
+                f"${max_cost_usd:.2f} ceiling - raise max_cost_usd or ask for "
+                "fewer types")}
+
+        out_dir = root / ".bgate_out" / "props" / name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        images: dict = {}
+        reports: dict = {}
+        spent = 0.0
+        for spec in specs:
+            subject = _PROP_SUBJECTS.get(spec["type"], spec["type"])
+            prompt = f"{subject}. {spec['camera']} {style or _PROP_LOOK}"
+            raw = out_dir / f"{spec['type']}_raw.png"
+            size = ("1024x1024" if spec["cells"][0] == spec["cells"][1]
+                    else "1024x2048" if spec["cells"][1] > spec["cells"][0]
+                    else "2048x1024")
+            got = _kie.generate_image(prompt, str(raw), model="nano-banana-2",
+                                      size=size, task_kind="prop",
+                                      root=str(root))
+            if not got.get("ok"):
+                return {"ok": False, "error": (
+                    f"{spec['type']} failed to generate: "
+                    f"{str(got.get('error'))[:200]}")}
+            spent += float(got.get("estimated_usd") or 0.02)
+            keyed = _rd.key_background(Image.open(raw))
+            img = keyed.get("image") if isinstance(keyed, dict) else keyed
+            fitted, rep = _propsheet.conform(img, size=spec["cell_px"],
+                                             art_size=spec["art_px"],
+                                             palette=palette)
+            dest = out_dir / f"{spec['type']}.png"
+            fitted.save(dest)
+            _spritekit.lock_palette(dest, palette, out_path=dest)
+            done = Image.open(dest)
+            images[spec["type"]] = done
+            reports[spec["type"]] = {**rep,
+                                     **_propsheet.measure(done, palette)}
+
+        packed = _propsheet.pack(images, want, tile_px=tile_px, view=view)
+        atlas_png = out_dir / f"{name}_props.png"
+        _propsheet.write(packed["image"], atlas_png)
+
+        # mount_origins wants a plan; one stub prop per drawing is enough to
+        # ask "what offset does this facing need", and it keeps the origin
+        # rule in ONE place instead of restating it here
+        stub = {"props": [{"type": n, "mount": _props.PROP_TYPES[n]["mount"],
+                           "faces": f, "x": 0, "y": 0}
+                          for n, f in _propsheet.slots_for(want, view=view)]}
+        origins = _props.mount_origins(stub, packed["atlas"],
+                                       tile_size=(tile_px, tile_px))
+        manifest = {
+            "name": name, "view": view, "tile_px": tile_px,
+            "texture": f"res://{res_dir}/{name}_props.png",
+            "types": list(want),
+            "atlas": {k: ({f: list(c) for f, c in v.items()}
+                          if isinstance(v, dict) else list(v))
+                      for k, v in packed["atlas"].items()},
+            "tiles": [list(c) for c in packed["tiles"]],
+            "sizes": {f"{k[0]},{k[1]}": list(v)
+                      for k, v in packed["sizes"].items()},
+            "origins": {f"{k[0]},{k[1]}": list(v) for k, v in origins.items()},
+            "animation": {f"{k[0]},{k[1]}": v for k, v in
+                          _propsheet.animation_frames(want, packed["atlas"],
+                                                      view=view).items()},
+            "spec": packed["spec"],
+        }
+        man_path = out_dir / f"{name}_props.json"
+        man_path.write_text(_json.dumps(manifest, indent=1), encoding="utf-8")
+
+        # EVERY AI-GENERATED SHEET GETS AN ASEPRITE MASTER — house rule, not
+        # a convenience. The props atlas was the one generated sheet that
+        # skipped the cleanup path; a human fixing one bad prop edits the
+        # master and aseprite_export brings it back, same as characters.
+        ase = _ase_master_for(str(atlas_png), (tile_px, tile_px), {}, None,
+                              fps=8.0)
+
+        installed = None
+        if install and godot_project:
+            import shutil as _shutil
+
+            dest_dir = _Path(godot_project) / res_dir
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            _shutil.copy(atlas_png, dest_dir / atlas_png.name)
+            _shutil.copy(man_path, dest_dir / man_path.name)
+            # a freshly copied PNG does not exist to Godot until --import runs
+            _godot.check_project(str(godot_project))
+            installed = f"res://{res_dir}/{man_path.name}"
+
+        dirty = sorted(k for k, v in reports.items()
+                       if v.get("off_palette", 0) > _propsheet.OFF_PALETTE_MAX
+                       or v.get("feathered", 0))
+        # a prop touching its own border is oversized or brought a background
+        bordered = sorted(k for k, v in reports.items()
+                          if v.get("border_fill", 0) > _propsheet.BORDER_MAX
+                          and _props.prop_type(k).get("footprint", 0.75) < 1.0)
+        _log("props", f"generated {len(want)} prop types for {name} ({view})",
+             ref=name)
+        return {"ok": True, "name": name, "view": view, "types": list(want),
+                "drawings": packed["slots"], "atlas": str(atlas_png),
+                **({"aseprite": ase} if ase is not None else {}),
+                "manifest": str(man_path),
+                "prop_manifest": installed or str(man_path),
+                "installed": installed, "spent_usd": round(spent, 3),
+                "reports": reports,
+                "findings": {**({"unconformed": dirty} if dirty else {}),
+                             **({"touches_border": bordered} if bordered
+                                else {})},
+                "next": ("level_generate(prop_manifest=<manifest>) - the atlas "
+                         "coordinates, sizes, origins and animation all come "
+                         "from that file; you do not pass them")}
+    except Exception as exc:
+        return _fail(exc)
+
+
+
+# @export var speed := 220.0  |  @export var gravity: float = 980.0
+_EXPORT_VAR_RE = _re.compile(
+    r"^@export\s+var\s+(\w+)\s*(?::\s*\w+\s*=|:=|=)\s*(-?\d+(?:\.\d+)?)\s*$",
+    _re.MULTILINE)
+
+_JUMP_TUNABLES = ("speed", "jump_velocity", "gravity")
+
+
+def _player_jump(godot_dir: _Path, scene_disk: _Path) -> dict:
+    """The jump tunables a player scene actually carries, in pixels.
+
+    Two layers, same precedence the engine uses: the script's ``@export``
+    defaults, overridden by any value the scene file sets on its root node.
+    Returns ``{speed, jump_velocity, gravity, fall_multiplier, script}`` or
+    raises naming exactly what is missing — a guessed default here would
+    rebuild the drift this function exists to close.
+    """
+    text = scene_disk.read_text(encoding="utf-8", errors="replace")
+    parsed = _scenewire.parse(text)
+    if not parsed["nodes"]:
+        raise ValueError(f"{scene_disk.name} has no nodes")
+
+    vals: dict = {}
+    script_rel = ""
+    for ext in parsed["ext"]:
+        if str(ext.get("path", "")).endswith(".gd"):
+            script_rel = ext["path"][len("res://"):]
+            script_disk = (godot_dir / script_rel).resolve()
+            if script_disk.is_file():
+                body = script_disk.read_text(encoding="utf-8",
+                                             errors="replace")
+                for name, num in _EXPORT_VAR_RE.findall(body):
+                    vals[name] = float(num)
+            break
+
+    root_props = _scenewire.properties(text, parsed, parsed["nodes"][0])
+    for key in (*_JUMP_TUNABLES, "fall_multiplier"):
+        raw = root_props.get(key)
+        if raw is not None:
+            try:
+                vals[key] = float(str(raw))
+            except ValueError:
+                raise ValueError(
+                    f"{scene_disk.name} sets {key} = {raw!r}, which is not a "
+                    "number this can convert")
+
+    missing = [k for k in _JUMP_TUNABLES if k not in vals]
+    if missing:
+        raise ValueError(
+            f"{scene_disk.name} does not declare {missing} — looked at the "
+            f"scene's root node and {script_rel or 'no attached script'}. The "
+            "level is built FROM these numbers; without them there is nothing "
+            "to build for. templates/2d's player.gd exports all three.")
+    vals.setdefault("fall_multiplier", 1.0)
+    vals["script"] = script_rel
+    return vals
+
+
+@_tool
+def sidescroll_generate(godot_project: str, scene: str, tileset: str,
+                        length: int = 160, height: int = 16, seed: int = 0,
+                        run: float = 9.0, jump_speed: float = 18.0,
+                        gravity: float = 40.0, body_cells: int = 2,
+                        difficulty: float = 0.5, segments: str = "",
+                        solid_source: int = 0, solid_layout: str = "grid16",
+                        solid_columns: int = 4,
+                        solid_atlas_x: int = 0, solid_atlas_y: int = 0,
+                        prop_manifest: str = "", prop_source: int = 1,
+                        prop_types: str = "", prop_spacing: int = 9,
+                        player_scene: str = "",
+                        parent: str = ".", solid_name: str = "Solid",
+                        prop_name: str = "Props",
+                        create: bool = False, dry_run: bool = False) -> dict:
+    """GENERATE A SIDE-SCROLLING LEVEL and write it into a scene.
+
+    The platformer counterpart of `level_generate`, and a separate tool because
+    it is a separate problem. `level_generate` partitions a SPACE into rooms and
+    guarantees the floor is one connected region. Under gravity that guarantee
+    is meaningless — you cannot walk upward — so this builds a SEQUENCE of
+    segments left to right and guarantees something else entirely: that the
+    goal can be REACHED, by a character with this exact jump.
+
+    THE JUMP IS AN INPUT, not a detail. `run`, `jump_speed` and `gravity` are
+    in CELLS PER SECOND, and every segment sizes itself from what they allow: a
+    pit is never wider than this character clears, a pipe never taller than it
+    rises. An unclearable gap is unrepresentable rather than generated and
+    rejected.
+
+    `player_scene` IS THE WAY TO PASS THEM. Point it at the player's .tscn and
+    the tunables are read from the scene itself — its script's @export
+    defaults, overridden by anything the scene sets — converted to cells by
+    the tileset's own tile size, and the player is INSTANCED AT SPAWN in the
+    written scene. The loose run/jump_speed/gravity arguments are then ignored,
+    because two sources of the same number is the drift this parameter closes:
+    a level built for one jump and played with another is the failure the whole
+    parameterisation exists to prevent. `fall_multiplier` is honoured by
+    modelling with the fall gravity, so the error runs only in the safe
+    direction. Without `player_scene` the loose numbers are trusted as given —
+    then it is on you to keep the player scene agreeing with them.
+
+    IT REFUSES AN UNPLAYABLE LEVEL rather than reporting one. The checks are
+    `reachable` (the goal is in the flood fill of jump arcs from spawn),
+    `clearance` (the body fits where it must pass), `softlock` (nowhere you can
+    land and never leave) and `stranded` (no platform outside its own jump).
+    A finding here is a bug to report, not a difficulty dial.
+
+    `segments` is a comma list from flat, pit, stair, hop, blocks, pipe — "" for
+    all of them. `prop_manifest` is what `prop_generate` wrote; pass it and the
+    props are placed and drawn, and you never type an atlas coordinate.
+
+    Returns the ASCII map, which is the cheapest way to see a level before
+    anything is spent on art for it.
+    """
+    try:
+        root = _root()
+        view = _gameview.load(root)
+        if view != "side_scroller":
+            return {"ok": False, "error": (
+                f"this project's view is {view!r}. A side-scrolling level in a "
+                f"{view} game is the wrong geometry, not a style choice — set "
+                "it with game_view_set if that is what you meant.")}
+
+        scene_disk, scene_res = _res_pair(godot_project, scene, ".tscn")
+        tiles_disk, tiles_res = _res_pair(godot_project, tileset, ".tres")
+        if not tiles_disk.is_file():
+            return {"ok": False, "error": (
+                f"no tileset at {tiles_res} - generate or import it first; a "
+                "level cannot pick tiles from nothing")}
+        parsed_set = _tilemap.parse_tileset(
+            tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        if parsed_set["shape"] != _tilemap.SQUARE:
+            return {"ok": False, "error": (
+                f"{tiles_res} is not a square-tile set (shape "
+                f"{parsed_set['shape']}). A platformer's cells are the squares "
+                "the jump arithmetic runs on — this tileset belongs to a "
+                "different projection.")}
+
+        jump_source = "arguments"
+        player_report: dict = {}
+        if player_scene:
+            player_disk, player_res = _res_pair(godot_project, player_scene,
+                                                ".tscn")
+            if not player_disk.is_file():
+                return {"ok": False, "error": (
+                    f"no player scene at {player_res} — the jump is read from "
+                    "the player, so the player has to exist first. "
+                    "godot_scaffold's 2d template ships one.")}
+            tw, th = parsed_set["tile_size"]
+            if tw != th:
+                return {"ok": False, "error": (
+                    f"{tiles_res} has {tw}x{th} tiles. The jump arithmetic "
+                    "runs on square cells; converting a player's pixels "
+                    "through a rectangular cell would be a guess in one axis.")}
+            tuned = _player_jump(_Path(godot_project), player_disk)
+            spec = _jumpmod.from_pixels(
+                speed=tuned["speed"], jump_velocity=tuned["jump_velocity"],
+                gravity=tuned["gravity"],
+                fall_multiplier=tuned["fall_multiplier"],
+                tile_px=tw, body=(1, max(1, body_cells)))
+            jump_source = "player_scene"
+            player_report = {"scene": player_res, "script": tuned["script"],
+                             "pixels": {k: tuned[k] for k in
+                                        (*_JUMP_TUNABLES, "fall_multiplier")}}
+        else:
+            spec = _jumpmod.JumpSpec(run=run, jump_speed=jump_speed,
+                                     gravity=gravity,
+                                     body=(1, max(1, body_cells)))
+        kinds = tuple(segments.replace(",", " ").split()) or None
+        level = _sidescroll.plan(length, height, seed=seed, spec=spec,
+                                 difficulty=difficulty, kinds=kinds)
+        verdict = _sidescroll.check(level, spec)
+        if not verdict["ok"]:
+            return {"ok": False, "error": (
+                "this level cannot be played by the character it was built "
+                "for — that is a generator bug, not a difficulty setting"),
+                "findings": verdict["findings"],
+                "ascii": _sidescroll.ascii_map(level, width=min(length, 120))}
+
+        fresh = not scene_disk.is_file()
+        if fresh and not create:
+            return {"ok": False, "error": (
+                f"no scene at {scene_res}. Pass create=true to start a new "
+                "one, or point at an existing scene.")}
+        text = (_EMPTY_SCENE.format(root=scene_disk.stem.title() or "Level")
+                if fresh else
+                scene_disk.read_text(encoding="utf-8", errors="replace"))
+
+        solid = {tuple(c) for c in level["solid"]}
+        terrain = _terrain(solid_layout, solid_source, solid_atlas_x,
+                           solid_atlas_y, solid_columns, solid_name)
+        cells = _autotile.resolve(sorted(solid), terrain,
+                                  region=(0, 0, length, height))
+        varied = _scatter_variants(cells, tiles_disk)
+        layers = [{"name": solid_name, "terrain": solid_name,
+                   "cells": cells, "unmapped": {}}]
+
+        prop_report: dict = {}
+        if prop_manifest:
+            man = _read_prop_manifest(root, prop_manifest)
+            prop_source = _manifest_source(tiles_disk, man)
+            parsed_set = _tilemap.parse_tileset(
+                tiles_disk.read_text(encoding="utf-8", errors="replace"))
+            want = tuple(prop_types.replace(",", " ").split()) or \
+                tuple(man["types"])
+            # GROUND MOUNTS ONLY. A side view has no floor plane to stand a
+            # prop on except the surface itself, and `jump.surfaces` already
+            # knows which cells those are — the same function the reachability
+            # gate uses, so a prop can never sit where the player cannot.
+            stand = sorted(_jumpmod.surfaces(solid, body=spec.body))
+            import random as _random
+
+            rng = _random.Random(seed)
+            placed, used = [], []
+            for cell in stand:
+                if any(abs(cell[0] - u) < max(2, prop_spacing) for u in used):
+                    continue
+                name = want[rng.randrange(len(want))]
+                spot = man["atlas"].get(name)
+                if isinstance(spot, dict):
+                    spot = next(iter(spot.values()))
+                if not spot:
+                    continue
+                placed.append({"x": cell[0], "y": cell[1],
+                               "source": int(prop_source),
+                               "ax": int(spot[0]), "ay": int(spot[1]),
+                               "alt": 0})
+                used.append(cell[0])
+            if placed:
+                layers.append({"name": prop_name, "terrain": prop_name,
+                               "cells": placed, "unmapped": {}})
+            prop_report = {"placed": len(placed), "types": list(want),
+                           "manifest": prop_manifest}
+
+        absent = {}
+        for layer in layers:
+            want_at = {(c["source"], c["ax"], c["ay"]) for c in layer["cells"]}
+            gaps = sorted((ax, ay) for src, ax, ay in want_at
+                          if (ax, ay) not in set(map(tuple,
+                              parsed_set["sources"][src]["tiles"])))
+            if gaps:
+                absent[layer["name"]] = [list(g) for g in gaps]
+        if absent:
+            return {"ok": False, "error": (
+                f"{tiles_res} does not define these atlas tiles: {absent}. A "
+                "cell pointing at an undefined tile draws nothing and says "
+                "nothing.")}
+
+        wired = _scenewire.wire_tilemap(text, tiles_res, layers,
+                                        parent=parent,
+                                        owns=[solid_name, prop_name])
+
+        tw, th = parsed_set["tile_size"]
+        spawn_px = [round((level["spawn"][0] + 0.5) * tw, 1),
+                    round((level["spawn"][1] + 0.5) * th, 1)]
+        goal_px = [round((level["goal"][0] + 0.5) * tw, 1),
+                   round((level["goal"][1] + 0.5) * th, 1)]
+        if player_scene:
+            # The player goes INTO the scene, at spawn — placed here rather
+            # than left as a coordinate in the result, because a returned
+            # number is a step someone forgets and a placed node is not.
+            # Re-running MOVES the existing instance instead of stacking a
+            # second player, same discipline wire_tilemap holds for layers.
+            ptxt = wired["text"]
+            pparsed = _scenewire.parse(ptxt)
+            want = _scenewire._default_name(player_res)
+            if any(n["name"] == want and n.get("instance")
+                   for n in pparsed["nodes"]):
+                node_name = want if parent == "." else f"{parent}/{want}"
+                placed = "moved"
+            else:
+                w = _scenewire.wire(ptxt, player_res, parent=parent,
+                                    node_name=want)
+                ptxt, node_name = w["text"], w["node"]
+                node_name = (node_name if parent == "."
+                             else f"{parent}/{node_name}")
+                placed = "added"
+            ptxt = _scenewire.set_property(
+                ptxt, node_name, "position",
+                f"Vector2({spawn_px[0]}, {spawn_px[1]})")["text"]
+            wired["text"] = ptxt
+            player_report.update({"node": node_name, "placed": placed,
+                                  "position": spawn_px})
+
+        if dry_run:
+            written = {"written": False}
+        elif fresh:
+            scene_disk.parent.mkdir(parents=True, exist_ok=True)
+            scene_disk.write_text(wired["text"], encoding="utf-8")
+            written = {"written": True, "created": True}
+        else:
+            written = _scenewire.apply(scene_disk, wired["text"], root=_root())
+
+        if not dry_run:
+            _log("level", f"side-scroller {length}x{height} seed {seed} "
+                          f"into {scene_res}", ref=scene_res)
+        return {"ok": True, "scene": scene_res, "tileset": tiles_res,
+                "seed": seed, "size": [length, height],
+                "spawn": level["spawn"], "goal": level["goal"],
+                "spawn_px": spawn_px, "goal_px": goal_px,
+                "segments": len(level["segments"]),
+                "tile_variants": varied,
+                "jump": {**level["limits"], "source": jump_source},
+                "player": player_report,
+                "playable": verdict,
+                "props": prop_report,
+                "layers": wired["layers"], "summary": wired["summary"],
+                "written": written.get("written", False),
+                "created": bool(written.get("created")),
+                "ascii": _sidescroll.ascii_map(level, width=min(length, 120)),
+                "next": (("the player is in the scene with the jump the level "
+                          "was checked against — godot_run it")
+                         if player_scene else
+                         ("give your player scene the SAME run/jump_speed/"
+                          "gravity — or pass player_scene= and both halves "
+                          "of that sentence happen for you"))}
+    except Exception as exc:
+        return _fail(exc)
+
+@_tool
+def game_view_get() -> dict:
+    """WHICH 2D VIEW THIS GAME IS, and everything that follows from it.
+
+    Read this BEFORE generating any level art or any prop. The view is not a
+    style preference, it decides what "correct" means: a barrel showing its lid
+    and a sliver of side is right for a top-down game and wrong for a
+    platformer, and a barrel showing two side faces is right for an isometric
+    game and wrong for both of the others.
+
+    It was not declared anywhere until now, and the cost was measured: a prop
+    batch prompted with "a high 3/4 top-down game view" came back ISOMETRIC —
+    to an image model "three-quarter" means the standard product render — and
+    every prop showed two side faces, to stand on a floor tileset drawn flat
+    top-down. The prompt was the proximate cause. The real one was that the
+    view lived in a prompt instead of in the project, so each agent re-derived
+    it and drifted.
+
+    The result carries the camera clause per prop mount (`cameras`), the tile
+    geometry, which prop mounts exist at all in this view, and how the level
+    generator checks playability. USE `cameras`, do not paraphrase it: the
+    clauses forbid the wrong reading BY NAME, because a clause that only says
+    what it wants inherits the model's default for everything it forgot to
+    forbid.
+    """
+    try:
+        root = _root()
+        view = _gameview.load(root)
+        out = _gameview.describe(view)
+        out["cameras"] = {m: _gameview.camera_clause(view, m)
+                          for m in _gameview.mounts(view)}
+        out["views_available"] = list(_gameview.VIEWS)
+        out["ok"] = True
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
+
+@_tool
+def game_view_set(view: str) -> dict:
+    """Declare which 2D view this game is: top_down, side_scroller, isometric.
+
+    DIRECTOR CALL, and it should be made before any level or prop art exists —
+    changing it later invalidates every prop that was drawn to the old camera,
+    because a sprite cannot be re-projected after the fact.
+
+    Accepts the obvious aliases (platformer, iso, top-down) and refuses
+    anything else by name rather than guessing.
+    """
+    try:
+        root = _root()
+        spec = _gameview.save(root, view)
+        _log("view", f"game view declared: {spec['view']}", ref=spec["view"])
+        out = _gameview.describe(spec["view"])
+        out["ok"] = True
+        out["warning"] = ("Art already drawn to a different camera cannot be "
+                          "re-projected — it has to be regenerated.")
+        return out
+    except Exception as exc:
+        return _fail(exc)
+
 @_tool
 def level_plan(width: int = 48, height: int = 32, seed: int = 0,
                min_leaf: int = 10, min_room: int = 4, margin: int = 1,
-               max_depth: int = 5, corridor_width: int = 1) -> dict:
+               max_depth: int = 5, corridor_width: int = 2,
+               room_fill: float = 0.8) -> dict:
     """Lay out a room-and-corridor level and show it, WITHOUT touching a scene.
+
+    `room_fill` is the share of its BSP cell a room must take, and it is the
+    difference between a dungeon and a set of thin rooms with slabs between
+    them: at 0 a room is a uniform-random slice of its cell, so the rest of the
+    cell stays solid. `corridor_width` defaults to 2 because a one-cell passage
+    loses most of its width to the wall the tile art draws inside its own edge.
 
     BSP: cut the map in two until a piece holds one room, put a room in each
     piece, then join the two halves of every cut on the way back up. That join
@@ -5132,7 +7079,8 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
         level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
                                min_room=min_room, margin=margin,
                                max_depth=max_depth,
-                               corridor_width=corridor_width)
+                               corridor_width=corridor_width,
+                               room_fill=room_fill)
         return {"ok": True, "seed": seed, "width": width, "height": height,
                 "rooms": level["rooms"], "room_count": len(level["rooms"]),
                 "corridor_count": len(level["corridors"]),
@@ -5144,18 +7092,187 @@ def level_plan(width: int = 48, height: int = 32, seed: int = 0,
         return _fail(exc)
 
 
+def _read_prop_manifest(root, ref: str) -> dict:
+    """A prop manifest written by `prop_generate`, by res:// path or disk path.
+
+    Refuses a manifest whose view disagrees with the project's, because that is
+    art drawn to a camera this game does not use — every sprite in it shows the
+    wrong faces, and no placement rule can correct a projection after the fact.
+    """
+    from bgate_core import gameview as _gv
+
+    path = _Path(str(ref).replace("res://", "").strip()) if str(ref).startswith(
+        "res://") else _Path(str(ref))
+    if not path.is_absolute():
+        for base in (_Path(root), _Path(root) / ".bgate_out" / "props"):
+            if (base / path).exists():
+                path = base / path
+                break
+    if not path.exists():
+        raise ValueError(f"no prop manifest at {ref!r} — prop_generate writes "
+                         "one beside the atlas it packs")
+    man = _json.loads(path.read_text(encoding="utf-8"))
+    want = _gv.load(root)
+    if man.get("view") and man["view"] != want:
+        raise ValueError(
+            f"that prop sheet was drawn for a {man['view']} game and this "
+            f"project is {want} — the sprites show the wrong faces, and a "
+            "projection cannot be corrected after the fact. Regenerate it.")
+    man["atlas"] = {k: ({f: tuple(c) for f, c in v.items()}
+                        if isinstance(v, dict) else tuple(v))
+                    for k, v in (man.get("atlas") or {}).items()}
+    return man
+
+
+def _scatter_variants(cells: list, tiles_disk: _Path) -> int:
+    """Swap interior cells between the tileset's variant tiles, in place.
+
+    Reads the ``<name>.tiles.json`` sidecar tileset_generate writes; without
+    one this is a no-op, so hand-built tilesets are untouched. Deterministic
+    by coordinate — the same seed keeps producing byte-identical scenes.
+    """
+    side = tiles_disk.with_name(tiles_disk.stem + ".tiles.json")
+    if not side.is_file():
+        return 0
+    try:
+        meta = _json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    interior = tuple(meta.get("interior") or ())
+    variants = [tuple(v) for v in meta.get("variants") or []]
+    if not interior or not variants:
+        return 0
+    swapped = 0
+    for c in cells:
+        if (c["ax"], c["ay"]) != interior:
+            continue
+        pick = (c["x"] * 928_371 + c["y"] * 689_287) % (len(variants) + 1)
+        if pick:
+            c["ax"], c["ay"] = variants[pick - 1]
+            swapped += 1
+    return swapped
+
+
+def _manifest_source(tiles_disk: _Path, man: dict) -> int:
+    """The tileset source id of the manifest's atlas, ADDING it if absent.
+
+    The seam nobody closed: prop_generate installs an atlas and writes a
+    manifest, the level generators place cells referencing it by source id —
+    and the tileset had never been told the atlas exists, so every prop cell
+    pointed at a source the resource did not define. The manifest carries
+    everything a source needs (texture, tiles, spans, origins, animation);
+    this hands it to the tileset once and is idempotent after that.
+    """
+    def _keyed(d):
+        return {tuple(int(v) for v in k.split(",")): tuple(vv)
+                for k, vv in (d or {}).items()}
+
+    text = tiles_disk.read_text(encoding="utf-8", errors="replace")
+    got = _tilemap.append_source(text, {
+        "texture": man["texture"],
+        "tiles": [tuple(t) for t in (man.get("tiles") or [])],
+        "region": (int(man.get("tile_px") or 32),) * 2,
+        "sizes": _keyed(man.get("sizes")),
+        "origins": _keyed(man.get("origins")),
+        "animation": {tuple(int(v) for v in k.split(",")): dict(vv)
+                      for k, vv in (man.get("animation") or {}).items()},
+    })
+    if not got["reused"]:
+        tiles_disk.write_text(got["text"], encoding="utf-8")
+    return got["id"]
+
+
+#: Where each prop TYPE sits on its atlas when the caller says nothing — one
+#: row, in `props.DEFAULT_TYPES` order, because that is how a generated prop
+#: sheet is packed and a default nobody has to think about is the point.
+_PROP_ATLAS_DEFAULT = {"torch": (0, 0), "barrel": (1, 0),
+                       "rubble": (2, 0), "altar": (3, 0)}
+
+
+def _prop_atlas(spec: str, source: int) -> dict:
+    """"torch=0,0 barrel=1,0;2,0" into the map `props.cells` takes.
+
+    Keyed on the prop TYPE, not its role: a torch and a banner are both wall
+    mounts, with different sprites and different mounting rules, and a single
+    entry for "wall" cannot express that.
+
+    Refuses a malformed spec rather than falling back to the default, because a
+    typo would otherwise put every prop on tile (0, 0) and the level would look
+    dressed with the wrong sprite everywhere.
+    """
+    if not spec.strip():
+        return dict(_PROP_ATLAS_DEFAULT)
+    out: dict = {}
+    for chunk in spec.split():
+        if "=" not in chunk:
+            raise ValueError(
+                f"prop_atlas entry {chunk!r} needs type=x,y — for example "
+                '"torch=0,0 barrel=1,0;2,0"')
+        kind, spots = chunk.split("=", 1)
+        kind, _, facing = kind.strip().partition(".")
+        if kind not in _props.PROP_TYPES:
+            raise ValueError(f"unknown prop type {kind!r}; "
+                             f"declared types are {sorted(_props.PROP_TYPES)}")
+        if facing and facing not in _props.MOUNTABLE_SIDES:
+            raise ValueError(
+                f"{kind}.{facing} is not a mountable facing; a wall's inner "
+                f"face points one of {list(_props.MOUNTABLE_SIDES)} "
+                "— \"n\" is the wall you see the back of")
+        coords = []
+        for one in spots.split(";"):
+            parts = one.split(",")
+            if len(parts) != 2:
+                raise ValueError(
+                    f"prop_atlas {kind}={one!r} is not an x,y atlas coordinate")
+            try:
+                coords.append((int(parts[0]), int(parts[1])))
+            except ValueError:
+                raise ValueError(
+                    f"prop_atlas {kind}={one!r} has a non-integer coordinate"
+                    ) from None
+        # "torch.e=0,0 torch.w=1,0" — ONE TILE PER FACING, which is what a
+        # seated wall mount needs: Godot's flip bit mirrors the sprite but NOT
+        # its texture_origin (measured in the engine), so a shared tile would
+        # seat the prop correctly on one wall and wrongly on the other.
+        if facing:
+            if not isinstance(out.get(kind), dict):
+                if kind in out:
+                    raise ValueError(
+                        f"prop_atlas gives {kind} both a plain entry and a "
+                        f"per-facing one ({kind}.{facing}) — pick one")
+                out[kind] = {}
+            out[kind][facing] = coords[0] if len(coords) == 1 else coords
+        else:
+            if isinstance(out.get(kind), dict):
+                raise ValueError(
+                    f"prop_atlas gives {kind} both a per-facing entry and a "
+                    "plain one — pick one")
+            out[kind] = coords if len(coords) > 1 else coords[0]
+    if not out:
+        raise ValueError("prop_atlas named no types")
+    return out
+
+
 @_tool
 def level_generate(godot_project: str, scene: str, tileset: str,
                    width: int = 48, height: int = 32, seed: int = 0,
                    floor_source: int = 0, floor_atlas_x: int = 0,
                    floor_atlas_y: int = 0,
+                   floor_layout: str = "solid",
+                   floor_columns: int = 4,
                    wall_source: int = 0, wall_layout: str = "blob47",
                    wall_atlas_x: int = 0, wall_atlas_y: int = 0,
                    wall_columns: int = 8,
                    min_leaf: int = 10, min_room: int = 4, margin: int = 1,
-                   max_depth: int = 5, corridor_width: int = 1,
+                   max_depth: int = 5, corridor_width: int = 2,
+                   room_fill: float = 0.8,
+                   props: bool = False, prop_manifest: str = "",
+                   prop_source: int = 0,
+                   prop_density: float = 0.1, prop_atlas: str = "",
+                   prop_types: str = "",
                    parent: str = ".", floor_name: str = "Floor",
-                   wall_name: str = "Walls", create: bool = False,
+                   wall_name: str = "Walls", prop_name: str = "Props",
+                   create: bool = False,
                    dry_run: bool = False) -> dict:
     """Generate a level and write it into a scene as TileMapLayer nodes.
 
@@ -5174,6 +7291,25 @@ def level_generate(godot_project: str, scene: str, tileset: str,
       solid    one tile everywhere. No autotiling.
       none     no wall layer at all; floor only.
 
+    `props=True` adds a third layer of DRESSING — wall torches, clutter against
+    the architecture, cover in the rooms you walk through, a feature in the dead
+    ends. Placement is by what the room is for (see `bgate_core.props`) and every
+    solid prop is refused if it would break the level into two regions, checked
+    by flood filling rather than by reasoning about it. `prop_types` names the
+    sprites you actually have — "torch,barrel,rubble,altar" — and `prop_atlas`
+    says where each lives, "torch=0,0 barrel=1,0;2,0".
+
+    EACH TYPE DECLARES ITS OWN CONSTRAINTS and the placer obeys them instead of
+    assuming a prop goes anywhere. A wall mount occupies the WALL cell, so it is
+    attached rather than floating in the room beside it. A side-view or angled
+    sprite declares which walls it can be drawn on — `torch` is ("e", "w"), so it
+    never lands on a horizontal wall where a three-quarter view reads as pasted
+    on. Nothing mounts on the wall south of a room, whose inner face points away
+    from the camera, and nothing mounts on a corner, where the face it needs is
+    interrupted. If your north walls come back dark that is `no_side` in the
+    report, and the fix is a front-facing type such as `sconce` rather than a
+    wider tolerance. Godot's flip bit mirrors a sprite whose type allows it.
+
     THAT ORDER IS A CONVENTION, NOT A STANDARD. A sheet authored in Tilesetter
     or bought from an asset pack has its own order, and a wrong order draws a
     complete, confident, wrong-looking level. Check the first screenshot. If
@@ -5188,6 +7324,17 @@ def level_generate(godot_project: str, scene: str, tileset: str,
     scene/tileset: res:// paths, or paths relative to that directory.
     """
     try:
+        # THE SAME GATE sidescroll_generate holds in the other direction.
+        # Under gravity a connected floor guarantees nothing — you cannot
+        # walk upward — so rooms-and-corridors geometry in a platformer is
+        # the wrong geometry, not a style choice.
+        view = _gameview.load(_root())
+        if view == "side_scroller":
+            return {"ok": False, "error": (
+                "this project's view is 'side_scroller'. Rooms and corridors "
+                "are top-down geometry — use sidescroll_generate, which "
+                "builds for this character's jump, or game_view_set if the "
+                "declared view is wrong.")}
         if wall_layout not in _WALL_LAYOUTS:
             raise ValueError(
                 f"wall_layout {wall_layout!r} is not one of {_WALL_LAYOUTS}")
@@ -5199,6 +7346,19 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                              "first; a level cannot pick tiles from nothing")
         parsed_set = _tilemap.parse_tileset(
             tiles_disk.read_text(encoding="utf-8", errors="replace"))
+        # THE TILESET'S SHAPE MUST AGREE WITH THE VIEW. A square set on an
+        # isometric project renders a plausible, wrong-looking grid — the
+        # exact silent failure tilemap.py documents — and the inverse draws
+        # diamonds flat. Neither errors in the engine, so it errors here.
+        iso = view == "isometric"
+        want_shape = _tilemap.ISOMETRIC if iso else _tilemap.SQUARE
+        if parsed_set["shape"] != want_shape:
+            raise ValueError(
+                f"{tiles_res} has tile shape {parsed_set['shape']} and this "
+                f"project's view is {view!r} (wants shape {want_shape}). "
+                "Godot renders the mismatch without complaint and it looks "
+                "wrong everywhere — fix the tileset or the declared view, "
+                "not this call.")
         have = sorted(parsed_set["sources"])
         wanted = {floor_source} | ({wall_source} if wall_layout != "none" else set())
         missing = sorted(w for w in wanted if w not in parsed_set["sources"])
@@ -5220,15 +7380,85 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         level = _levelgen.plan(width, height, seed=seed, min_leaf=min_leaf,
                                min_room=min_room, margin=margin,
                                max_depth=max_depth,
-                               corridor_width=corridor_width)
+                               corridor_width=corridor_width,
+                               room_fill=room_fill)
         layers = _levelgen.layers(
             level,
-            floor=_terrain("solid", floor_source, floor_atlas_x, floor_atlas_y,
-                           1, floor_name),
+            # FLOORS AUTOTILE TOO. This was pinned to "solid", so a floor
+            # could only ever be one repeated tile — and with a terrain
+            # transition set that is the WHOLE look: the wall is drawn into
+            # the floor tiles' own edges, so a solid fill throws away every
+            # edge and corner the sheet came with and paints the level in
+            # one square.
+            floor=_terrain(floor_layout, floor_source, floor_atlas_x,
+                           floor_atlas_y, floor_columns, floor_name),
             wall=(None if wall_layout == "none" else
                   _terrain(wall_layout, wall_source, wall_atlas_x, wall_atlas_y,
                            wall_columns, wall_name)),
             floor_name=floor_name, wall_name=wall_name)
+        if iso:
+            # Isometric is a depth sort or it is a lie: a wall drawn after
+            # the player standing south of it reads as the player inside the
+            # wall. The floor stays flat — nothing ever stands behind a
+            # floor — everything above it y-sorts.
+            for ly in layers:
+                if ly["name"] != floor_name:
+                    ly["props"] = {**(ly.get("props") or {}),
+                                   "y_sort_enabled": True}
+        varied = sum(_scatter_variants(ly["cells"], tiles_disk)
+                     for ly in layers)
+
+        prop_report: dict = {}
+        if props:
+            want = tuple(prop_types.replace(",", " ").split()) or None
+            # THE MANIFEST IS THE EASY PATH and the one to use: prop_generate
+            # writes it, and it already knows every atlas coordinate, span,
+            # texture origin and animation. The loose prop_atlas/prop_types
+            # arguments stay for a hand-built sheet, but nobody should be
+            # typing atlas coordinates into a tool call to dress a level.
+            if prop_manifest:
+                man = _read_prop_manifest(_root(), prop_manifest)
+                atlas = man["atlas"]
+                prop_source = _manifest_source(tiles_disk, man)
+                if not want:
+                    want = tuple(man["types"])
+            else:
+                atlas = _prop_atlas(prop_atlas, prop_source)
+            walls = _levelgen.wall_ring({tuple(c) for c in level["floor"]})
+            plan_props = _props.plan(level, seed=seed, density=prop_density,
+                                     walls=walls, types=want,
+                                     view=_gameview.load(_root()))
+            # ONE LAYER PER DRAW LEVEL. A TileMapLayer holds a single tile
+            # per coordinate, so a crack in the floor and the barrel standing
+            # on it can only coexist as two layers — and the decals have to be
+            # under, which is what the LAYERS order is.
+            built = {"types": {}, "mirrored": 0, "cells": []}
+            for lname in _props.LAYERS:
+                part = _props.cells(plan_props, atlas, source=prop_source,
+                                    layer=lname)
+                if not part["cells"]:
+                    continue
+                node = prop_name if lname == "props" else f"{prop_name}{lname.title()}"
+                layers.append({"name": node, "terrain": node,
+                               "cells": part["cells"], "unmapped": {},
+                               **({"props": {"y_sort_enabled": True}}
+                                  if iso and lname != "decals" else {})})
+                built["cells"] += part["cells"]
+                built["mirrored"] += part["mirrored"]
+                for k, v in part["types"].items():
+                    built["types"][k] = built["types"].get(k, 0) + v
+            prop_report = {"placed": built["types"],
+                           "mirrored": built["mirrored"],
+                           "purposes": plan_props["purposes"],
+                           "layers": plan_props["layers"],
+                           "view": plan_props["view"],
+                           "skipped": plan_props["skipped"],
+                           "checks": plan_props["checks"]}
+            if not plan_props["checks"]["still_connected"]:
+                raise ValueError(
+                    "the props broke the level into more than one region — "
+                    "this should be impossible, every solid prop is gated on a "
+                    "flood fill, so treat it as a bug and not as a dial")
 
         # THE CHECK THAT MATTERS. The built-in layouts are complete by
         # construction - every mask has an entry - so "unmapped" can only ever
@@ -5255,7 +7485,15 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                   "says nothing - add the tiles to the atlas, move the layout "
                   "with *_atlas_x/_atlas_y, or change wall_layout.")
 
-        wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent)
+        # THE LAYERS THIS GENERATOR OWNS, so a run that produces fewer than the
+        # last one removes what it no longer makes. Turning props off left the
+        # old prop and decal layers in the scene, still drawing, and the scene
+        # loads perfectly — the level just quietly keeps dressing nobody asked
+        # for.
+        owns = [floor_name, wall_name, prop_name,
+                f"{prop_name}{'decals'.title()}"]
+        wired = _scenewire.wire_tilemap(text, tiles_res, layers, parent=parent,
+                                        owns=owns)
         if dry_run:
             written = {"written": False, "backup": None}
         elif fresh:
@@ -5273,6 +7511,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "seed": seed, "size": [width, height],
             "rooms": len(level["rooms"]),
             "corridors": len(level["corridors"]),
+            "tile_variants": varied,
             "connected": level["connected"],
             "spawn": level["spawn"], "exit": level["exit"],
             "layers": wired["layers"], "summary": wired["summary"],
@@ -5282,6 +7521,8 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "dry_run": bool(dry_run),
             "ascii": _levelgen.ascii_map(level),
         }
+        if props:
+            result["props"] = prop_report
         if not dry_run:
             _log("level", f"generated {width}x{height} level seed {seed} "
                           f"({len(level['rooms'])} rooms) into {scene_res}",

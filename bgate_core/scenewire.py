@@ -421,7 +421,7 @@ def _layer_block(name: str, parent: str, packed: str, rid: str,
 
 
 def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
-                 parent: str = ".") -> dict:
+                 parent: str = ".", owns: Optional[Sequence[str]] = None) -> dict:
     """Write generated tile layers into a scene, REPLACING same-named ones.
 
     Replacing is the whole point. A generator is re-run — new seed, wider
@@ -433,6 +433,14 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
     So a node of the same name under the same parent is overwritten in place,
     and one that exists but is NOT a TileMapLayer is refused rather than
     clobbered — that name belongs to something the generator did not make.
+
+    ``owns`` names every layer this generator MAY produce, and any of them not
+    in `layers` this run is REMOVED. Replacing by name alone covers the run
+    that produces the same layers again; it does not cover the run that
+    produces FEWER. A level generated with decals and then regenerated without
+    them left the old decal layer in place, still drawing — forty-two stains
+    over a level that had asked for none, and the scene loads perfectly. Same
+    failure family as the stacked-Ground case above, in the other direction.
 
     Each layer is ``{name, cells, props?}`` where cells are the dicts
     ``tilemap.encode_cells`` takes. Returns ``{text, layers, id, summary}``;
@@ -484,6 +492,23 @@ def wire_tilemap(text: str, tileset_res: str, layers: Sequence[dict], *,
             action = "replace"
         written.append({"node": full, "action": action,
                         "cells": len(layer.get("cells") or [])})
+
+    # -- drop the layers this generator owns but did not produce -----------
+    made = {sanitize_node_name(ly.get("name") or "TileMapLayer")
+            for ly in layers}
+    for name in sorted({sanitize_node_name(n) for n in (owns or ())} - made):
+        parsed = parse(out)
+        full = f"{parent}/{name}" if parent != "." else name
+        target = next((n for n in parsed["nodes"] if node_path(n) == full), None)
+        if target is None:
+            continue
+        if target["type"] != TILE_LAYER_TYPE:
+            # a name this generator claims but something else now owns is left
+            # alone — removing it would delete work nobody asked us to touch
+            continue
+        start, end = block_span(out, parsed, target)
+        out = out[:start] + out[end:]
+        written.append({"node": full, "action": "remove", "cells": 0})
 
     out = _with_load_steps(out, parse(out), 0)
     return {

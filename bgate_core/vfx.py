@@ -487,7 +487,8 @@ def animate(key_path: str, out_dir: str, name: str, *, motion: str = "burst",
             frames: int = 4, peak: int = 1, cell: tuple[int, int] = (64, 64),
             fps: float = 14.0, res_dir: str = "assets/vfx", pad: float = 0.92,
             anim: str = "default", loop: Optional[bool] = None,
-            overrides: Optional[dict] = None, seed: int = 0) -> dict:
+            overrides: Optional[dict] = None, seed: int = 0,
+            target_palette: Optional[list] = None) -> dict:
     """ONE approved key frame -> frames + `<name>_sheet.png` + `<name>_frames.tres`.
 
     The sheet and the SpriteFrames come out of the SAME emitters
@@ -528,6 +529,23 @@ def animate(key_path: str, out_dir: str, name: str, *, motion: str = "burst",
         names.append(pose)
         paths.append(str(dest))
 
+    # Project palette, applied to the derived frames before stitching — the
+    # same conform every character sheet gets, so a VFX flash cannot introduce
+    # colours the game does not have. The key frame's own look survives it
+    # because derive_frames only rearranges the key's pixels anyway.
+    palette_note = None
+    if target_palette:
+        from bgate_core import spritekit as _kit2
+        palette = [tuple(int(c) for c in colour) for colour in target_palette]
+        moved = []
+        for path in paths:
+            got = _kit2.lock_palette(path, palette)
+            if got.get("ok"):
+                moved.append(got["changed"])
+        palette_note = {
+            "ok": True, "colors": len(palette), "source": "bible",
+            "mean_changed": round(sum(moved) / len(moved), 4) if moved else 0.0}
+
     sheet = out / f"{name}_sheet.png"
     _stitch(paths, sheet)
     is_loop = MOTIONS[motion]["loop"] if loop is None else bool(loop)
@@ -543,6 +561,8 @@ def animate(key_path: str, out_dir: str, name: str, *, motion: str = "burst",
            "anchor": [cell[0] // 2, cell[1] // 2],
            "motion": motion, "loop": is_loop, "parts": parts_in(src),
            "coverage": cov, "notes": []}
+    if palette_note:
+        res["palette"] = palette_note
 
     # A motion that moves parts INDEPENDENTLY needs there to BE parts. A key
     # frame drawn as one solid mass has exactly one, so `scatter` and `gravity`

@@ -470,3 +470,61 @@ def test_repeated_wiring_stays_consistent(tmp_path):
         text = scenewire.wire(text, f"res://assets/sheet_{i}.png")["text"]
         _consistent(text)
     assert len(scenewire.parse(text)["nodes"]) == 14
+
+
+class TestALayerNoLongerProducedIsRemoved:
+    """Replacing by name covers the run that makes the SAME layers again. It
+    does not cover the run that makes FEWER: a level generated with decals and
+    regenerated without them kept the old decal layer, still drawing — 42
+    stains over a level that asked for none, in a scene that loads perfectly.
+    Same family as the stacked-Ground defect, in the other direction."""
+
+    BASE = ('[gd_scene load_steps=1 format=3]\n\n'
+            '[node name="Root" type="Node2D"]\n')
+
+    def _cells(self):
+        return [{"x": 0, "y": 0, "source": 0, "ax": 0, "ay": 0, "alt": 0}]
+
+    def _two_then_one(self, owns):
+        c = self._cells()
+        first = scenewire.wire_tilemap(
+            self.BASE, "res://t.tres",
+            [{"name": "Floor", "cells": c}, {"name": "Decals", "cells": c}],
+            owns=owns)
+        second = scenewire.wire_tilemap(
+            first["text"], "res://t.tres", [{"name": "Floor", "cells": c}],
+            owns=owns)
+        return first, second
+
+    def test_the_dropped_layer_goes(self):
+        _, second = self._two_then_one(["Floor", "Decals"])
+        assert 'name="Decals"' not in second["text"]
+        assert 'name="Floor"' in second["text"]
+        assert any(w["action"] == "remove" for w in second["layers"])
+
+    def test_a_layer_not_claimed_is_left_alone(self):
+        """`owns` is the generator's own list. Anything outside it belongs to
+        somebody else and is not ours to delete."""
+        _, second = self._two_then_one(["Floor"])
+        assert 'name="Decals"' in second["text"]
+
+    def test_without_owns_nothing_is_removed(self):
+        c = self._cells()
+        first = scenewire.wire_tilemap(
+            self.BASE, "res://t.tres",
+            [{"name": "Floor", "cells": c}, {"name": "Decals", "cells": c}])
+        second = scenewire.wire_tilemap(
+            first["text"], "res://t.tres", [{"name": "Floor", "cells": c}])
+        assert 'name="Decals"' in second["text"]
+
+    def test_a_claimed_name_held_by_another_node_type_survives(self):
+        """Removing it would delete work nobody asked us to touch."""
+        c = self._cells()
+        first = scenewire.wire_tilemap(self.BASE, "res://t.tres",
+                                       [{"name": "Floor", "cells": c}],
+                                       owns=["Floor", "Decals"])
+        text = first["text"] + '\n[node name="Decals" type="Sprite2D" parent="."]\n'
+        second = scenewire.wire_tilemap(text, "res://t.tres",
+                                        [{"name": "Floor", "cells": c}],
+                                        owns=["Floor", "Decals"])
+        assert 'type="Sprite2D"' in second["text"]

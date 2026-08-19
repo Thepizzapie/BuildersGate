@@ -188,8 +188,20 @@ def test_layers_split_floor_and_wall_onto_their_own_tilemaps():
                           wall=autotile.Terrain.blob47(1))
     assert [ly["name"] for ly in out] == ["Floor", "Walls"]
     assert len(out[0]["cells"]) == len(level["floor"])
-    assert len(out[1]["cells"]) == len(level["walls"])
+    # walls FILL the rock by default; this test used to pin the one-cell ring,
+    # which is what left the rest of the map empty behind every wall
+    assert len(out[1]["cells"]) == len(level["solid"])
     assert out[1]["unmapped"] == {}
+
+
+def test_a_wall_ring_is_still_available_for_open_terrain():
+    """A ring is right when the level is not carved out of rock — an outdoor
+    map wants a wall edge, not a solid fill over everything that is not path."""
+    level = levelgen.plan(40, 32, seed=5)
+    out = levelgen.layers(level, floor=autotile.Terrain.solid(0, (0, 0)),
+                          wall=autotile.Terrain.blob47(1), wall_fill=False)
+    assert len(out[1]["cells"]) == len(level["walls"])
+    assert len(level["solid"]) > len(level["walls"])
 
 
 def test_every_layer_encodes_without_a_coordinate_collision():
@@ -394,3 +406,261 @@ class TestLevelTools:
                          scene="scenes/level.tscn", tileset="tiles/small.tres",
                          wall_layout="grid16", wall_columns=4, create=True)
         assert out["ok"] and out["written"]
+
+    async def test_a_side_scroller_project_is_refused_the_top_down_geometry(
+            self, root, game):
+        """Under gravity a connected floor guarantees nothing, so the guard
+        points at the generator that builds for the jump instead."""
+        from bgate_core import gameview
+        gameview.save(root, "side_scroller")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
+                         create=True)
+        assert out["ok"] is False and "sidescroll_generate" in out["error"]
+        assert not (game / "scenes" / "level.tscn").exists()
+
+    async def test_a_top_down_project_is_refused_the_platformer_geometry(
+            self, game):
+        """The mirror of the guard above: the default view is top_down, and
+        sidescroll_generate refuses it before touching the scene."""
+        out = await call("sidescroll_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/dungeon.tres",
+                         create=True)
+        assert out["ok"] is False and "game_view_set" in out["error"]
+        assert not (game / "scenes" / "level.tscn").exists()
+
+
+ISO_TILESET = TILESET.replace("\n[resource]\ntile_size",
+                              "\n[resource]\ntile_shape = 1\n"
+                              "tile_layout = 5\ntile_size")
+
+PLAYER_GD = (
+    "extends CharacterBody2D\n"
+    "@export var speed := 220.0\n"
+    "@export var jump_velocity := -380.0\n"
+    "@export var gravity := 980.0\n"
+    "@export var fall_multiplier := 1.6\n")
+
+PLAYER_TSCN = (
+    '[gd_scene load_steps=2 format=3]\n\n'
+    '[ext_resource type="Script" path="res://scripts/player.gd" id="1_p"]\n\n'
+    '[node name="Player" type="CharacterBody2D"]\n'
+    'script = ExtResource("1_p")\n')
+
+
+@pytest.mark.anyio
+class TestTheViewRoutesTheGeometry:
+    """The tileset's shape and the project's view must tell one story."""
+
+    async def test_an_isometric_project_refuses_a_square_tileset(
+            self, root, game):
+        from bgate_core import gameview
+        gameview.save(root, "isometric")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres", create=True)
+        assert out["ok"] is False and "shape" in out["error"]
+        assert not (game / "scenes" / "level.tscn").exists()
+
+    async def test_a_top_down_project_refuses_a_diamond_tileset(
+            self, game):
+        (game / "tiles" / "iso.tres").write_text(ISO_TILESET,
+                                                 encoding="utf-8")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/iso.tres",
+                         create=True)
+        assert out["ok"] is False and "shape" in out["error"]
+
+    async def test_an_isometric_level_y_sorts_everything_above_the_floor(
+            self, root, game):
+        """A wall drawn after the player standing south of it reads as the
+        player inside the wall — depth sort or the projection is a lie."""
+        from bgate_core import gameview
+        gameview.save(root, "isometric")
+        (game / "tiles" / "iso.tres").write_text(ISO_TILESET,
+                                                 encoding="utf-8")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/iso.tres",
+                         seed=5, create=True)
+        assert out["ok"] and out["written"]
+        text = (game / "scenes" / "level.tscn").read_text(encoding="utf-8")
+        walls = text[text.index('[node name="Walls"'):]
+        walls = walls[:walls.index("[node") if "[node" in walls[1:] else None]
+        assert "y_sort_enabled = true" in walls
+        floor = text[text.index('[node name="Floor"'):text.index('[node name="Walls"')]
+        assert "y_sort_enabled" not in floor
+
+    async def test_a_tileset_is_composed_from_two_kie_textures(
+            self, game, monkeypatch):
+        """The provider rule: kie draws the materials, geometry does the
+        rest. Coverage is total by construction — no roll to fail."""
+        from PIL import Image
+
+        from bgate_adapters import kie
+        from bgate_core import tilemap
+
+        calls = []
+
+        def fake_generate(prompt, out_path, **kw):
+            calls.append(kw)
+            colour = (200, 180, 140, 255) if len(calls) == 1 else (20, 8, 30, 255)
+            Image.new("RGBA", (1024, 1024), colour).save(out_path)
+            return {"ok": True, "path": str(out_path), "estimated_usd": 0.02}
+
+        monkeypatch.setattr(kie, "generate_image", fake_generate)
+        out = await call("tileset_generate", name="kietiles",
+                         prompt="warm sandstone floor", bits=4)
+        assert out["ok"], out.get("error")
+        assert out["spend"]["provider"] == "kie"
+        assert out["coverage"] == {"have": 16, "want": 16,
+                                   "constructed": True}
+        assert len(calls) == 2 and all(k.get("tileable") for k in calls)
+        # 16 mask tiles + 3 interior variants, all defined in the resource
+        assert len(out["interior_variants"]) == 3
+        parsed = tilemap.parse_tileset(
+            open(out["tileset"], encoding="utf-8").read())
+        assert sorted(len(s["tiles"]) for s in parsed["sources"].values()) == [19]
+        assert out["collision"]["tiles"] > 0
+        import pathlib
+        side = pathlib.Path(out["tileset"]).with_name("kietiles.tiles.json")
+        assert json.loads(side.read_text(encoding="utf-8"))["variants"]
+
+    async def test_the_iso_tileset_generator_refuses_rather_than_misreads(
+            self, root, game):
+        """The mask detector reads square boundaries; a diamond's corners are
+        transparent by construction. Refusing with the reason beats a
+        confident wrong tileset."""
+        from bgate_core import gameview
+        gameview.save(root, "isometric")
+        out = await call("tileset_generate", name="isoset",
+                         prompt="stone floor meeting void")
+        assert out["ok"] is False and "isometric" in out["error"]
+
+
+@pytest.mark.anyio
+class TestThePlayerCarriesItsOwnJump:
+    """sidescroll_generate(player_scene=...) — the handoff, closed."""
+
+    @pytest.fixture()
+    def platformer(self, root, game):
+        from bgate_core import gameview
+        gameview.save(root, "side_scroller")
+        (game / "scripts").mkdir()
+        (game / "scripts" / "player.gd").write_text(PLAYER_GD,
+                                                    encoding="utf-8")
+        (game / "player.tscn").write_text(PLAYER_TSCN, encoding="utf-8")
+        return game
+
+    async def test_the_jump_is_read_from_the_player_and_the_player_is_placed(
+            self, platformer):
+        out = await call("sidescroll_generate", godot_project=str(platformer),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         player_scene="player.tscn",
+                         length=80, height=14, seed=3, create=True)
+        assert out["ok"], out.get("error")
+        assert out["jump"]["source"] == "player_scene"
+        assert out["player"]["placed"] == "added"
+        assert out["player"]["position"] == out["spawn_px"]
+        assert out["player"]["pixels"]["speed"] == 220.0
+        text = (platformer / "scenes" / "level.tscn").read_text(
+            encoding="utf-8")
+        assert 'instance=ExtResource' in text
+        assert f"Vector2({out['spawn_px'][0]}, {out['spawn_px'][1]})" in text
+
+    async def test_rerunning_moves_the_player_instead_of_stacking_a_second(
+            self, platformer):
+        kw = dict(godot_project=str(platformer), scene="scenes/level.tscn",
+                  tileset="tiles/dungeon.tres", player_scene="player.tscn",
+                  length=80, height=14, create=True)
+        await call("sidescroll_generate", seed=3, **kw)
+        out = await call("sidescroll_generate", seed=9, **kw)
+        assert out["ok"] and out["player"]["placed"] == "moved"
+        text = (platformer / "scenes" / "level.tscn").read_text(
+            encoding="utf-8")
+        assert text.count('[node name="Player"') == 1
+
+    async def test_interior_variants_break_the_wallpaper(self, platformer):
+        """A sidecar beside the tileset scatters interior cells across the
+        variant tiles, deterministically — same seed, same bytes."""
+        (platformer / "tiles" / "dungeon.tiles.json").write_text(
+            json.dumps({"interior": [3, 3], "variants": [[4, 0], [5, 0]]}),
+            encoding="utf-8")
+        kw = dict(godot_project=str(platformer), scene="scenes/level.tscn",
+                  tileset="tiles/dungeon.tres", player_scene="player.tscn",
+                  length=80, height=14, seed=3, create=True)
+        out = await call("sidescroll_generate", **kw)
+        assert out["ok"], out.get("error")
+        assert out["tile_variants"] > 0
+        text_a = (platformer / "scenes" / "level.tscn").read_text(
+            encoding="utf-8")
+        await call("sidescroll_generate", **kw)
+        text_b = (platformer / "scenes" / "level.tscn").read_text(
+            encoding="utf-8")
+        assert text_a == text_b
+
+    async def test_a_player_scene_that_does_not_exist_is_refused(
+            self, platformer):
+        out = await call("sidescroll_generate", godot_project=str(platformer),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         player_scene="ghost.tscn", create=True)
+        assert out["ok"] is False and "player" in out["error"].lower()
+
+    async def test_a_player_with_no_tunables_is_refused_naming_them(
+            self, platformer):
+        (platformer / "bare.tscn").write_text(
+            '[gd_scene format=3]\n\n'
+            '[node name="Bare" type="CharacterBody2D"]\n', encoding="utf-8")
+        out = await call("sidescroll_generate", godot_project=str(platformer),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         player_scene="bare.tscn", create=True)
+        assert out["ok"] is False and "speed" in out["error"]
+
+    async def test_a_prop_manifest_teaches_the_tileset_its_atlas(
+            self, root, platformer):
+        """The seam the acceptance run hit live: prop cells referenced a
+        source id the tileset never defined — KeyError in the gap check,
+        and had it slipped past, Godot would draw nothing and say nothing.
+        The manifest now becomes a source on first use."""
+        from bgate_core import tilemap
+
+        (root / "assets" / "tiles").mkdir(parents=True, exist_ok=True)
+        (root / "assets" / "tiles" / "props.json").write_text(
+            json.dumps({
+                "name": "p", "view": "side_scroller", "tile_px": 16,
+                "texture": "res://assets/tiles/p_props.png",
+                "types": ["barrel"], "atlas": {"barrel": [0, 0]},
+                "tiles": [[0, 0]], "sizes": {}, "origins": {},
+                "animation": {}}), encoding="utf-8")
+        out = await call("sidescroll_generate", godot_project=str(platformer),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         player_scene="player.tscn",
+                         prop_manifest="assets/tiles/props.json",
+                         length=80, height=14, seed=3, create=True)
+        assert out["ok"], out.get("error")
+        assert out["props"]["placed"] > 0
+        back = tilemap.parse_tileset(
+            (platformer / "tiles" / "dungeon.tres").read_text(
+                encoding="utf-8"))
+        assert any(s["texture"] == "res://assets/tiles/p_props.png"
+                   for s in back["sources"].values())
+
+    async def test_the_scene_override_beats_the_script_default(
+            self, platformer):
+        """Same precedence the engine uses. Half a gravity means twice the
+        modelled arc, so the spec must see what the game will run."""
+        (platformer / "floaty.tscn").write_text(
+            PLAYER_TSCN.replace('script = ExtResource("1_p")\n',
+                                'script = ExtResource("1_p")\n'
+                                'gravity = 490.0\n'),
+            encoding="utf-8")
+        out = await call("sidescroll_generate", godot_project=str(platformer),
+                         scene="scenes/level.tscn",
+                         tileset="tiles/dungeon.tres",
+                         player_scene="floaty.tscn",
+                         length=80, height=14, seed=3, create=True)
+        assert out["ok"], out.get("error")
+        assert out["player"]["pixels"]["gravity"] == 490.0

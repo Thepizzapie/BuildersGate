@@ -138,8 +138,12 @@ def test_anchors_map_to_gear_anchors_with_authored_provenance():
     assert (a.row, a.col) == (1, 1)          # frame 5 of a 4-wide grid
     assert (a.x, a.y) == (9.0, 3.0)
     assert a.source == rigmap.AUTHORED
-    # Authored is its own thing — it must not masquerade as gear.py's "measured".
-    assert a.source not in MEASURED_SOURCES
+    # Authored COUNTS as measured now: rigmap has always documented it as
+    # outranking every inferred source, but gear.py's ladder never learned it,
+    # so Anchor.measured was False for the one anchor a person explicitly
+    # placed. (This test used to pin that gap as if it were the contract.)
+    assert a.source in MEASURED_SOURCES
+    assert a.measured is True
 
 
 def test_coverage_names_the_frames_a_slot_is_missing_from():
@@ -200,3 +204,31 @@ def test_rows_as_animations_covers_every_cell_once():
     anims = rigmap.rows_as_animations(GRID, ["idle", "walk"])
     assert [a["name"] for a in anims] == ["idle", "walk"]
     assert sorted(f for a in anims for f in a["frames"]) == list(range(8))
+
+
+# ---------------------------------------------------------------------------
+# The runtime offsets carrier
+# ---------------------------------------------------------------------------
+class TestOffsetsJson:
+    def test_entries_follow_play_order_not_sheet_order(self):
+        data = rigmap.normalise(_rig(
+            animations=[{"name": "swing", "frames": [2, 1, 0]}],
+            labels=[{"slot": "main_hand", "frame": 0, "x": 1, "y": 2},
+                    {"slot": "main_hand", "frame": 2, "x": 5, "y": 6}]))
+        got = rigmap.offsets_json(data, "main_hand")
+        assert got["cell"] == [32, 32]
+        # Play order is 2, 1, 0 — and frame 1 has no label, so null, not (0,0).
+        assert got["animations"]["swing"] == [[5.0, 6.0], None, [1.0, 2.0]]
+
+    def test_other_slots_do_not_leak_in(self):
+        data = rigmap.normalise(_rig(
+            labels=[{"slot": "main_hand", "frame": 0, "x": 1, "y": 2},
+                    {"slot": "muzzle", "frame": 0, "x": 9, "y": 9}]))
+        got = rigmap.offsets_json(data, "muzzle")
+        assert got["slot"] == "muzzle"
+        assert got["animations"]["walk"][0] == [9.0, 9.0]
+
+    def test_a_rig_without_grid_reports_no_cell(self):
+        data = rigmap.normalise({
+            "animations": [], "labels": [], "fps": 10})
+        assert rigmap.offsets_json(data)["cell"] is None

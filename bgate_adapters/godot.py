@@ -2854,3 +2854,104 @@ def _errors(output: str) -> list[str]:
         if line not in hits:
             hits.append(line)
     return hits[:20]
+
+# ---------------------------------------------------------------------------
+# TileSets — the only referee that counts
+# ---------------------------------------------------------------------------
+# bgate_core.tilemap can now WRITE a TileSet as well as parse one, and those
+# two agreeing proves nothing: they were written against the same reading of a
+# format neither of them owns. No Godot-authored TileSet existed on the machine
+# to check against, so the engine itself is the ground truth — this loads the
+# resource the way the game will and reports what Godot actually built.
+_TILESET_GD = """
+extends SceneTree
+
+func _init() -> void:
+    var path := OS.get_environment("BGATE_TILESET")
+    var out := {"ok": false, "path": path}
+    var res = load(path)
+    if res == null:
+        out["error"] = "Godot could not load the resource at all"
+    elif not (res is TileSet):
+        out["error"] = "loaded, but it is a %s, not a TileSet" % res.get_class()
+    else:
+        var ts: TileSet = res
+        var sources := {}
+        for i in range(ts.get_source_count()):
+            var sid := ts.get_source_id(i)
+            var src := ts.get_source(sid)
+            var coords := []
+            var polys := 0
+            var tiles_with_collision := 0
+            if src is TileSetAtlasSource:
+                var atlas: TileSetAtlasSource = src
+                for k in range(atlas.get_tiles_count()):
+                    var c := atlas.get_tile_id(k)
+                    coords.append([c.x, c.y])
+                    # COLLISION IS THE CLAIM, so count the actual shapes: a
+                    # tileset that loads is not a tileset that collides, and
+                    # Godot drops polygons silently when the physics layer
+                    # they reference does not exist.
+                    if ts.get_physics_layers_count() > 0:
+                        var data := atlas.get_tile_data(c, 0)
+                        if data != null:
+                            var n := data.get_collision_polygons_count(0)
+                            polys += n
+                            if n > 0:
+                                tiles_with_collision += 1
+            coords.sort_custom(func(a, b): return a[1] < b[1] or (a[1] == b[1] and a[0] < b[0]))
+            sources[str(sid)] = {"class": src.get_class(), "tiles": coords,
+                                 "collision_polygons": polys,
+                                 "tiles_with_collision": tiles_with_collision}
+        out["ok"] = true
+        out["tile_size"] = [ts.tile_size.x, ts.tile_size.y]
+        out["tile_shape"] = int(ts.tile_shape)
+        out["source_count"] = ts.get_source_count()
+        out["physics_layers"] = ts.get_physics_layers_count()
+        out["sources"] = sources
+    print("BGATE_JSON_START")
+    print(JSON.stringify(out))
+    print("BGATE_JSON_END")
+    quit()
+"""
+
+
+def inspect_tileset(project_dir: str, res_path: str,
+                    timeout: int = 180) -> dict:
+    """Load a TileSet IN THE ENGINE and report what Godot actually built.
+
+    ``res_path`` is a ``res://`` path inside ``project_dir``. Returns
+    ``{ok, tile_size, tile_shape, source_count, sources: {id: {class, tiles}}}``
+    — enough for a writer to assert that every coordinate it emitted came back,
+    which is the check that catches a format misconception rather than a typo.
+    """
+    import json
+    import tempfile
+
+    exe = find_godot()
+    tmp = Path(tempfile.mkdtemp(prefix="bgate_tileset_"))
+    try:
+        script = tmp / "inspect_tileset.gd"
+        script.write_text(_TILESET_GD, encoding="utf-8")
+        env = {**os.environ, "BGATE_TILESET": res_path}
+        cmd = [exe, "--headless", "--path", str(project_dir),
+               "--script", str(script)]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout,
+                                  stdin=subprocess.DEVNULL, env=env,
+                                  creationflags=_NO_WINDOW, **_TEXT)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"inspect timed out after {timeout}s"}
+        output = proc.stdout or ""
+        if "BGATE_JSON_START" not in output:
+            return {"ok": False, "error": "inspector produced no result",
+                    "stdout": output[-1200:], "stderr": (proc.stderr or "")[-800:]}
+        blob = output.split("BGATE_JSON_START", 1)[1].split(
+            "BGATE_JSON_END", 1)[0].strip()
+        try:
+            return json.loads(blob)
+        except json.JSONDecodeError as exc:
+            return {"ok": False, "error": f"unreadable inspector output: {exc}",
+                    "raw": blob[:500]}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

@@ -9,6 +9,135 @@ repository at first publication. There is no earlier release history to record.
 
 ## [Unreleased]
 
+### Added
+- **Tilesets: the bridge that unblocked level generation.** `levelgen`,
+  `autotile`, `tilemap` and `wire_tilemap` were all real and all dark, because
+  every one of them needed a Godot `TileSet.tres` and nothing here could write
+  one — `level_generate` refused unless a human had built the resource in the
+  editor first. `tilemap.write_tileset` writes it, and the new
+  `tileset_generate` runs the whole path: Retro Diffusion's terrain styles for
+  the art, `tilemask.detect` to read each tile's neighbour mask off its own
+  pixels, free fills (mirror, rotate, then quadrant-compositing) to complete
+  the set, a seam check, a canonical repack so the atlas is a STANDARD tileset
+  any consumer can read, and an `.aseprite` tileset master so the artist can
+  draw what generation could not.
+
+  Verified by the engine rather than by ourselves: no Godot-authored TileSet
+  existed to check against, so `godot.inspect_tileset` loads the resource in
+  Godot and reports what it actually built. That gate earned its keep
+  immediately — the first end-to-end run produced a perfectly well-formed
+  resource that Godot could not load at all, because a freshly copied PNG has
+  no `.import` metadata and does not exist as far as the engine is concerned.
+  The install path now runs the import pass first.
+
+  Three bugs it exposed on the way, all fixed: the resource carried only the
+  chosen terrain's tiles, so most of the atlas was unplaceable; `level_generate`
+  pinned floors to `solid`, which throws away every edge and corner a terrain
+  set comes with; and `task_kind="tile"` was missing from `TEXTURE_KINDS`, so
+  `tileable=True` had always been a no-op for the one kind named after tiling.
+
+  Honest limits: coverage varies per generation (one roll reached 16/16, the
+  next 7/16 before fills), the composited straight-corridor tiles are visible
+  as slight beading along corridor edges, and isometric, props and collision
+  are not in this.
+
+- **Sprite contracts: declare the sheet, then generate to it.** Every game
+  needs a different sheet shape — E/W side-scroller, four-corner top-down,
+  eight-direction — and that shape lived nowhere the pipeline could read;
+  the proof of cost is a shipped game whose runtime hand-encodes all of it
+  (cell size, direction rows, per-character drawn sides, per-action
+  exceptions, the flip rule) because generation could not be trusted to
+  agree with itself. `sprite_contract_set(preset=...)` now declares it once
+  — presets `single` / `sidescroller` / `four_corner` / `four_dir` /
+  `eight_dir`, plus per-character and per-(character, action) overrides —
+  and generation, the check battery, and the emitters all read it. A
+  contract that would generate contradictions (a mirror of an undrawn side,
+  a direction nobody makes) is refused, never repaired.
+
+- **`animation_generate`: contract-driven character animation via Retro
+  Diffusion** (new provider, `RETRO_DIFFUSION_API_KEY`, ~$0.14 per
+  direction). For each DRAWN direction it slices a start frame from the
+  character's own existing sheet, sends it to the purpose-trained animation
+  model (the motion testbed's verdict: general image models make clean
+  frames and no gait; this model's training data is the gait), conforms to
+  the pinned palette, grades every strip, and emits the contract-shaped
+  sheet + .tres with animations named `walk_nw`-style. Mirrored facings are
+  reported for runtime flip_h, not duplicated as pixels. Acceptance:
+  hr_bard's complete two-row walk regenerated into the shipped 384x160
+  format from one call, both rows battery-clean, $0.28.
+
+- **The battery learned directions.** Facing votes run per animation group
+  (a back row voting against a front row flagged a correct sheet), a
+  declared direction turns the vote into a verdict (`wrong_direction` — the
+  reference project shipped ten of twenty facings backwards), north-ish
+  directions deliberately abstain (head_skew reads face detail and a back
+  view carries hair — measured false positive on the first contract run),
+  and `set_drift` compares palette and scale ACROSS sheets, the
+  "same character in every sheet" floor no per-strip check could see.
+  `artsheet.frame_count` reads contract grids (non-square cells went
+  silently unmeasured), and the no-loop rule matches base actions so
+  `ko_sw` cannot loop in exactly one facing.
+
+- **A project palette, pinned once and enforced everywhere.** Generated "pixel
+  art" carries thousands of smeared colours per sheet and every sheet invents
+  its own — measured at 7-10k unique colours on real shipped 384×160 sheets,
+  which is the mushy, uneven look, and why characters do not match each other.
+  `palette_pin` writes a LOCKED bible constraint (explicit hexes, or derived
+  from the pinned style refs); from then on every `image_sprites` sheet, minted
+  item and VFX set is conformed to exactly those colours, `artdirection.check`
+  reports the off-palette fraction on every generation, and a sheet that could
+  not be conformed fails with `stage: "palette"` the same way an off-model one
+  fails with `stage: "consistency"`. Drift stops being reviewable and becomes
+  unrepresentable.
+
+- **Aseprite as a first-class adapter** (`bgate_adapters/aseprite.py`,
+  discovered from `BGATE_ASEPRITE` → PATH → the usual install dirs, with a
+  doctor row; optional, and paid — so unlike ffmpeg there is no fetch button).
+  What it buys:
+  - `aseprite_master` — a stitched sheet becomes a tagged `.aseprite` whose
+    frames carry the animspec timing, so a human fixes frames with onion-skin
+    and scrub instead of nudging pixels in a flat strip. `image_sprites`
+    builds one automatically beside every sheet, including flagged ones —
+    those are exactly the sheets somebody opens to repair.
+  - `aseprite_export` — a hand-edited master comes back as sheet PNG plus a
+    SpriteFrames `.tres` translated from Aseprite's own frame-data JSON
+    (`bgate_core/asejson.py`): exact rects, per-animation speeds and
+    per-frame holds from the authored millisecond timing (GCD-reduced),
+    play-once tags, ping-pong baked into the frame list. The first `.tres`
+    emitter in the project built from facts rather than a layout it either
+    constructed or guessed.
+  - `palette_pin` derivation — without explicit colours, the pinned style
+    refs are quantised through Aseprite's indexed conversion (dithering off,
+    deliberately: dither noise is the per-pixel unevenness this exists to
+    remove), falling back to PIL when Aseprite is absent.
+
+- **Animations you can watch.** Every review surface judged motion on stills —
+  a pop or a loop hitch is obvious in two seconds of playback and invisible in
+  a grid. `image_sprites`, `vfx_animate` and `aseprite_export` now write one
+  playable GIF per animation at the authored timing (pure Pillow, one palette
+  for the whole GIF so the preview cannot flicker), archive one into the
+  dashboard gallery — which lists and animates `.gif` now, and the preview
+  archive keeps a file's real suffix instead of renaming everything `.png` —
+  and hand the QA reviewer brief an `animation_preview(s)` line per candidate.
+
+- **Hand edits are re-graded on the way back in.** `aseprite_export` was the
+  one art door with no mirror on it: it now slices the exported sheet by its
+  own frame JSON and runs `motion_report` plus the pinned-palette check,
+  recorded on the artifact like every generated sheet's — advisory, because a
+  human changed the file on purpose, so findings report rather than refuse.
+
+- **Aseprite slices become exact gear anchors.** Drag a slice named after a
+  rig slot (`main_hand`, `muzzle`, ...) over the hand in the master, key it
+  per frame, and `aseprite_export` merges it into the sheet's `.rig.json`
+  (never overwriting a label a person placed in the sprite editor) and emits
+  `<name>_offsets.json` — per-frame anchor positions in play order. The 2D
+  template's `gear_rig.gd` gained the matching `offsets` parameter: the
+  weapon follows the hand frame by frame instead of hovering at one average
+  position, and a frame without an anchor falls back to the static offset
+  rather than snapping to the origin. `gear.py`'s provenance ladder finally
+  learned what rigmap documented all along: an anchor a person placed
+  (`authored`, and now `slice`) counts as measured.
+
 ## [0.1.42]
 
 The director you talk to is a real session, a failed item no longer stops
