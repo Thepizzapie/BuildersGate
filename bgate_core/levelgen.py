@@ -357,3 +357,138 @@ def layers(level: dict, *, floor: autotile.Terrain,
                                           outside=True),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Elevation
+# ---------------------------------------------------------------------------
+# A RAISED CELL IS SCENERY UNTIL SOMETHING CAN WALK ONTO IT. The isometric
+# block gave levels height and gave the player nothing: `connected` asks
+# whether the floor is one region four-directionally, which is exactly the
+# question that stops meaning anything the moment two adjacent cells sit at
+# different heights. A terrace nobody can reach and a wall are the same object.
+#
+# So height comes with its own reachability, and with the thing that makes the
+# height crossable: a RAMP. A ramp is a floor cell at height h that also
+# connects to the neighbour in ONE direction at h-1 — the tile art slopes that
+# way, and the walk rule and the drawing agree because both read this field.
+#
+# Corridors stay on the base plane and rooms are what rise. That is a design
+# choice and worth stating: it means every raised room is entered through its
+# own doorways, so a ramp goes where a corridor already meets it, and no
+# corridor ever needs a slope running along its length.
+
+#: (dx, dy) per ramp direction name. These are CELL directions, which the
+#: isometric projection renders as the four diagonals — the same mapping
+#: `tilemask` carves the diamond's edges with.
+RAMP_DIRS = {"n": (0, -1), "e": (1, 0), "s": (0, 1), "w": (-1, 0)}
+
+
+def _height_of(heights: dict, cell) -> int:
+    return int(heights.get(tuple(cell), 0))
+
+
+def step_ok(a, b, heights: dict, ramps: dict) -> bool:
+    """May a walker move between these two adjacent cells?
+
+    Same height is always fine. A height change is fine ONLY across a ramp
+    facing that way — which is what stops a generator from calling a level
+    connected because two rooms happen to touch at different altitudes.
+    """
+    a, b = tuple(a), tuple(b)
+    ha, hb = _height_of(heights, a), _height_of(heights, b)
+    if ha == hb:
+        return True
+    high, low = (a, b) if ha > hb else (b, a)
+    if abs(ha - hb) != 1:
+        return False
+    facing = ramps.get(high)
+    if not facing:
+        return False
+    dx, dy = RAMP_DIRS[facing]
+    return (high[0] + dx, high[1] + dy) == low
+
+
+def reachable(floor, heights: dict, ramps: dict, start=None) -> set:
+    """Every cell a walker can get to, obeying height and ramps."""
+    floor = {tuple(c) for c in floor}
+    if not floor:
+        return set()
+    start = tuple(start) if start is not None else next(iter(sorted(floor)))
+    if start not in floor:
+        return set()
+    seen, stack = {start}, [start]
+    while stack:
+        x, y = stack.pop()
+        for p in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if p in floor and p not in seen and step_ok((x, y), p, heights,
+                                                        ramps):
+                seen.add(p)
+                stack.append(p)
+    return seen
+
+
+def terrace(level: dict, *, seed: int = 0, levels: int = 2,
+            raised: float = 0.35) -> dict:
+    """Give a flat plan its heights and the ramps that make them walkable.
+
+    Rooms rise, corridors stay on the base plane, and every cell where a
+    raised room meets the corridor that serves it becomes a ramp facing down
+    into it. Built that way the level is reachable BY CONSTRUCTION rather than
+    checked afterwards and re-rolled — the same discipline the side-scroller's
+    segments follow.
+
+    Returns the level with ``heights``, ``ramps`` and a height-aware
+    ``connected``; the flat ``floor`` set is untouched, so every consumer that
+    does not care about elevation keeps working.
+    """
+    if levels < 1:
+        raise LevelError(f"{levels} levels is not a level")
+    rng = random.Random(seed ^ 0x5EED)
+    floor = {tuple(c) for c in level["floor"]}
+    rooms = level.get("rooms") or []
+
+    room_cells: list[set] = []
+    for room in rooms:
+        x, y, w, h = room["x"], room["y"], room["w"], room["h"]
+        room_cells.append({(cx, cy) for cx in range(x, x + w)
+                           for cy in range(y, y + h)} & floor)
+
+    heights: dict = {}
+    if levels > 1:
+        for cells in room_cells:
+            if not cells or rng.random() > raised:
+                continue
+            lift = rng.randint(1, levels - 1)
+            for c in cells:
+                heights[c] = lift
+
+    # A RAMP WHERE THE GROUND CHANGES, facing DOWN the step. Every raised cell
+    # with a lower neighbour is a candidate; taking them all would terrace the
+    # whole rim into a slope, so one per lower neighbour DIRECTION per room is
+    # enough to enter by and keeps the room's outline reading as a ledge.
+    ramps: dict = {}
+    for cells in room_cells:
+        chosen: set = set()
+        for cell in sorted(cells):
+            h = _height_of(heights, cell)
+            if not h:
+                continue
+            for name, (dx, dy) in RAMP_DIRS.items():
+                below = (cell[0] + dx, cell[1] + dy)
+                if below in floor and _height_of(heights, below) == h - 1:
+                    if name in chosen:
+                        continue
+                    ramps[cell] = name
+                    chosen.add(name)
+                    break
+
+    out = dict(level)
+    out["heights"] = {f"{x},{y}": h for (x, y), h in sorted(heights.items())}
+    out["ramps"] = {f"{x},{y}": d for (x, y), d in sorted(ramps.items())}
+    out["levels"] = levels
+    spawn = tuple(level["spawn"]) if level.get("spawn") else None
+    got = reachable(floor, heights, ramps, start=spawn)
+    out["connected"] = len(got) == len(floor)
+    out["unreachable"] = sorted(c for c in floor if c not in got)
+    return out

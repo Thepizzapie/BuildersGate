@@ -3079,15 +3079,37 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             generation already paid for.
             """
             raw = out_dir / f"{name}_{tag}_raw.png"
-            got = _kie.generate_image(
-                f"seamless repeating flat texture of {what}, viewed straight "
-                "on, even lighting, no border, no vignette, no objects, "
-                "fills the whole frame edge to edge",
-                str(raw), model="nano-banana-2", size="1024x1024",
-                task_kind="tile", tileable=True, root=str(root))
+            # SAY WHAT YOU WANT, NOT WHAT YOU DO NOT. This asked for a
+            # texture with "no border, no vignette, no objects", and a pile
+            # of negations reads as an attempt to suppress rather than to
+            # describe.
+            prompt_text = (f"seamless tiling texture of {what}, seen straight "
+                           "on, evenly lit, filling the whole frame")
+            # AND RETRY, because the refusals are a COIN TOSS rather than a
+            # verdict on the words. Measured here: "dark navy blue office
+            # partition panel, matte painted surface" was refused by the
+            # provider's safety filter on one call and generated on the very
+            # next, unchanged; an office carpet did the same. A pipeline that
+            # dies on a false positive makes the human rewrite a prompt that
+            # was never the problem, so the retry happens here and the error
+            # only surfaces once the provider has said no repeatedly.
+            got = {}
+            for attempt in range(3):
+                got = _kie.generate_image(
+                    prompt_text, str(raw), model="nano-banana-2",
+                    size="1024x1024", task_kind="tile", tileable=True,
+                    root=str(root))
+                if got.get("ok"):
+                    break
             if not got.get("ok"):
-                raise ValueError(f"the {tag} texture failed to generate: "
-                                 f"{str(got.get('error'))[:200]}")
+                why = str(got.get("error"))[:200]
+                raise ValueError(
+                    f"the {tag} texture failed three times: {why}"
+                    + (" — that is the provider's safety filter refusing a "
+                       "plain material description, which it does "
+                       "intermittently; the prompt is not the problem and "
+                       "re-running usually is the fix."
+                       if "filter" in why or "Prohibited" in why else ""))
             cost = float(got.get("estimated_usd") or 0.02)
             img = _Img.open(raw).convert("RGBA")
             zoom = img.resize((4 * tile_px, 4 * tile_px), _Img.LANCZOS)
@@ -3210,11 +3232,6 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
         if pinned:
             _spritekit.lock_palette(str(atlas_png), pinned)
             sheet = _Img.open(atlas_png).convert("RGBA")
-        sidecar = {"interior": list(interior_at),
-                   "variants": [list(v) for v in variant_coords]}
-        sidecar_path = out_dir / f"{name}.tiles.json"
-        sidecar_path.write_text(_json.dumps(sidecar, indent=1),
-                                encoding="utf-8")
         # THE SEAM CHECK IS SQUARE-ONLY, and saying so beats reporting a
         # number that means nothing. It samples the tile RECT's edges and asks
         # whether neighbouring tiles agree there; on a diamond those edges are
@@ -3263,21 +3280,59 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                     # read as floor, which is the distinction the square path
                     # already makes by toning its wall to 0.62 of the floor.
                     wmat = void_tile
-                block = _tilemask.iso_block(
-                    _tilemask.crop_tile(
-                        _tilemask.diamond_tiles(wmat, wmat, [full],
+                def _diamond_of(mat):
+                    return _tilemask.crop_tile(
+                        _tilemask.diamond_tiles(mat, mat, [full],
                                                 tile_size=(tw, th))["image"],
-                        (0, 0), (tw, th)),
-                    wmat, tile_size=(tw, th), lift=lift)
-                if not block.get("ok"):
-                    raise ValueError(block.get("reason"))
+                        (0, 0), (tw, th))
+
+                # THREE KINDS OF RAISED CELL, and the difference is what its
+                # top is made of. A WALL's top is rock, because nothing stands
+                # on it. A TERRACE's top is the floor, because something does.
+                # A RAMP is a terrace with its top tilted toward the neighbour
+                # one level down. Drawing them from one primitive is why a
+                # ledge and the ramp leading onto it cannot disagree.
+                # A WALL AND A STEP ARE NOT THE SAME HEIGHT, and drawing
+                # them so is what turned the first terraced render into
+                # noise: a terrace top and a wall top at one altitude give
+                # the eye no profile to read, just two colours interleaved.
+                # A barrier is full height; something you walk up is half of
+                # it — which is also what makes the ramp a ramp rather than
+                # a cliff with a slope painted on.
+                step = max(2, lift // 2)
+                parts = [("wall", _tilemask.iso_block(
+                    _diamond_of(wmat), wmat, tile_size=(tw, th), lift=lift))]
+                parts.append(("terrace", _tilemask.iso_block(
+                    _diamond_of(floor_tile), wmat, tile_size=(tw, th),
+                    lift=step)))
+                for face in ("n", "e", "s", "w"):
+                    parts.append((f"ramp_{face}", _tilemask.iso_ramp(
+                        floor_tile, face, tile_size=(tw, th), lift=step)))
+                for _kind, part in parts:
+                    if not part.get("ok"):
+                        raise ValueError(part.get("reason"))
+                # ONE REGION AND ONE ORIGIN for the whole source, because an
+                # atlas source has exactly one texture_region_size. A shorter
+                # tile is pasted at the BOTTOM of the tall cell, so its own
+                # top face lands `step` above the floor while the resource
+                # still describes one rectangle.
+                bw, bh = tw, th + lift
+                strip = _Img.new("RGBA", (bw * len(parts), bh), (0, 0, 0, 0))
+                blocks = {}
+                for i, (kind, part) in enumerate(parts):
+                    strip.paste(part["image"],
+                                (i * bw, bh - part["size"][1]))
+                    blocks[kind] = [i, 0]
                 wall_png = out_dir / f"{name}_wall.png"
-                block["image"].save(wall_png)
+                strip.save(wall_png)
                 if pinned:
                     _spritekit.lock_palette(str(wall_png), pinned)
                 wall_source = {"ok": True, "path": str(wall_png),
-                               "lift": lift, "origin": list(block["origin"]),
-                               "size": list(block["size"])}
+                               "lift": lift,
+                               "origin": list(parts[0][1]["origin"]),
+                               "size": [bw, bh], "step": step,
+                               "tiles": [tuple(v) for v in blocks.values()],
+                               "blocks": blocks}
             except Exception as exc:                            # noqa: BLE001
                 wall_source = {"ok": False,
                                "error": f"{type(exc).__name__}: {exc}"}
@@ -3290,6 +3345,20 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             except Exception as exc:                            # noqa: BLE001
                 wall_source = {"ok": False,
                                "error": f"{type(exc).__name__}: {exc}"}
+
+        sidecar = {"interior": list(interior_at),
+                   "variants": [list(v) for v in variant_coords]}
+        if iso and wall_source and wall_source.get("ok"):
+            # WHERE THE RAISED TILES ARE, for the generator that places them.
+            # A .tres can say a tile exists; it cannot say which one is a ramp
+            # facing east, and that is the field level_generate needs to turn
+            # a height map into cells. Written AFTER the blocks are built,
+            # which is the kind of ordering a NameError is good at finding.
+            sidecar["blocks"] = wall_source["blocks"]
+            sidecar["lift"] = wall_source["lift"]
+        sidecar_path = out_dir / f"{name}.tiles.json"
+        sidecar_path.write_text(_json.dumps(sidecar, indent=1),
+                                encoding="utf-8")
 
         # COLLISION, derived from the inset the tiles were rebuilt with —
         # not traced from pixels, because the walkable region is a rectangle
@@ -3333,7 +3402,7 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
             sources.append({
                 "id": 1,
                 "texture": f"res://{res_dir.strip('/')}/{name}_wall.png",
-                "tiles": [(0, 0)],
+                "tiles": wall_source.get("tiles") or [(0, 0)],
                 # A BLOCK IS TALLER THAN ITS CELL, and the resource has to say
                 # so twice: the region is the art's real size, and the origin
                 # puts the art's bottom edge on the diamond's bottom vertex so
@@ -3345,14 +3414,20 @@ def tileset_generate(name: str, prompt: str, tile_px: int = 32,
                 # in a screenshot, wrong by lift/2 everywhere. The engine
                 # probe is what said so.
                 **({"region": tuple(wall_source["size"]),
-                    "origins": {(0, 0): tuple(wall_source["origin"])}}
+                    "origins": {tuple(at): tuple(wall_source["origin"])
+                                for at in wall_source["tiles"]}}
                    if iso else {}),
                 # The wall is solid all the way through, so its collider is
                 # the whole cell rather than an edge band.
-                "collision": {(0, 0): [
-                    _tilemask.diamond_polygon((tw, th)) if iso else
-                    [(-tw / 2, -th / 2), (tw / 2, -th / 2),
-                     (tw / 2, th / 2), (-tw / 2, th / 2)]]}
+                "collision": ({at: [_tilemask.diamond_polygon((tw, th))]
+                               for at in map(tuple,
+                                             wall_source.get("tiles")
+                                             or [(0, 0)])}
+                              if iso else
+                              {(0, 0): [[(-tw / 2, -th / 2),
+                                         (tw / 2, -th / 2),
+                                         (tw / 2, th / 2),
+                                         (-tw / 2, th / 2)]]})
                 if collide else {}})
         shape, layout = ((_tilemap.ISOMETRIC, _tilemap.DIAMOND_DOWN) if iso
                          else (_tilemap.SQUARE, _tilemap.DIAMOND_RIGHT))
@@ -7260,6 +7335,23 @@ def _read_prop_manifest(root, ref: str) -> dict:
     return man
 
 
+def _iso_blocks(tiles_disk: _Path) -> Optional[dict]:
+    """The raised-tile map tileset_generate wrote beside an isometric set.
+
+    A .tres can say a tile exists; it cannot say which one is a ramp facing
+    east. Without this file a level can still be drawn flat, so its absence
+    is a None rather than a raise.
+    """
+    side = tiles_disk.with_name(tiles_disk.stem + ".tiles.json")
+    if not side.is_file():
+        return None
+    try:
+        meta = _json.loads(side.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if meta.get("blocks") else None
+
+
 def _scatter_variants(cells: list, tiles_disk: _Path) -> int:
     """Swap interior cells between the tileset's variant tiles, in place.
 
@@ -7402,6 +7494,7 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                    min_leaf: int = 10, min_room: int = 4, margin: int = 1,
                    max_depth: int = 5, corridor_width: int = 2,
                    room_fill: float = 0.8,
+                   levels: int = 1, raised: float = 0.35,
                    props: bool = False, prop_manifest: str = "",
                    prop_source: int = 0,
                    prop_density: float = 0.1, prop_atlas: str = "",
@@ -7506,11 +7599,26 @@ def level_generate(godot_project: str, scene: str, tileset: str,
         # a default the caller never typed.
         iso_walls = None
         if iso and wall_layout in ("blob47", "grid16"):
-            if 1 in parsed_set["sources"] or wall_source in parsed_set["sources"]:
+            # ONLY A SET THAT SAYS SO. This used to route walls to source 1
+            # on the assumption that source 1 is the block strip, which is
+            # true of every tileset this tool writes and false of a hand-built
+            # one: pointed at a real project's set it chose `floor_carpet_b`
+            # for the walls, because that is what its source 1 happens to be.
+            # The sidecar is the only thing that can answer the question, so
+            # a set without one keeps whatever the caller passed.
+            side = _iso_blocks(tiles_disk)
+            block_at = 1 if (side and side["blocks"].get("wall")) else None
+            if block_at is not None and block_at in parsed_set["sources"]:
+                # the sidecar NAMES the source; the resource has to actually
+                # carry it. A stale sidecar beside an edited tileset would
+                # otherwise route every wall at a source that is not there.
                 wall_layout = "solid"
-                if wall_source == 0 and 1 in parsed_set["sources"]:
-                    wall_source = 1
+                if wall_source == 0:
+                    wall_source = block_at
                 iso_walls = "blocks"
+            elif wall_source in parsed_set["sources"] and wall_source != 0:
+                wall_layout = "solid"
+                iso_walls = f"solid tiles from source {wall_source}"
             else:
                 wall_layout = "none"
                 iso_walls = ("floor only: this tileset has no block source. "
@@ -7563,6 +7671,54 @@ def level_generate(godot_project: str, scene: str, tileset: str,
                 if ly["name"] != floor_name:
                     ly["props"] = {**(ly.get("props") or {}),
                                    "y_sort_enabled": True}
+        # ELEVATION, and the ramps that make it terrain rather than scenery.
+        # The heights go on AFTER the flat plan because every guarantee the
+        # BSP gives — rooms that do not touch, a floor that is one region —
+        # is still wanted; what changes is that `connected` now has to mean
+        # "a walker can get there", which is a different question the moment
+        # two adjacent cells sit at different altitudes.
+        terraced = None
+        if iso and levels > 1:
+            terraced = _levelgen.terrace(level, seed=seed, levels=levels,
+                                         raised=raised)
+            if not terraced["connected"]:
+                return {"ok": False, "error": (
+                    f"{len(terraced['unreachable'])} floor cells cannot be "
+                    "walked to once the terraces are placed — that is a "
+                    "generator bug, not a layout to ship"),
+                    "unreachable": terraced["unreachable"][:20]}
+            side = _iso_blocks(tiles_disk)
+            if not side:
+                return {"ok": False, "error": (
+                    "this tileset has no raised tiles, so a level with "
+                    "levels>1 cannot be drawn. tileset_generate writes them "
+                    "for an isometric project; a hand-built set needs a "
+                    "<name>.tiles.json naming its terrace and ramp tiles.")}
+            heights = {tuple(int(v) for v in k.split(",")): h
+                       for k, h in terraced["heights"].items()}
+            ramps = {tuple(int(v) for v in k.split(",")): d
+                     for k, d in terraced["ramps"].items()}
+            raised_cells = []
+            for cell, h in sorted(heights.items()):
+                if not h:
+                    continue
+                face = ramps.get(cell)
+                at = (side["blocks"].get(f"ramp_{face}") if face
+                      else side["blocks"].get("terrace"))
+                if not at:
+                    continue
+                raised_cells.append({"x": cell[0], "y": cell[1],
+                                     "source": 1, "ax": int(at[0]),
+                                     "ay": int(at[1]), "alt": 0})
+            if raised_cells:
+                # ITS OWN LAYER, above the floor and y-sorted: a terrace
+                # overlaps the cells behind it, which is the whole point of
+                # drawing it raised, and only a sorted layer draws the one in
+                # front last.
+                layers.append({"name": "Terrace", "terrain": "Terrace",
+                               "cells": raised_cells, "unmapped": {},
+                               "props": {"y_sort_enabled": True}})
+
         varied = sum(_scatter_variants(ly["cells"], tiles_disk)
                      for ly in layers)
 
@@ -7671,6 +7827,11 @@ def level_generate(godot_project: str, scene: str, tileset: str,
             "corridors": len(level["corridors"]),
             "tile_variants": varied,
             **({"iso_walls": iso_walls} if iso_walls else {}),
+            **({"elevation": {
+                "levels": levels,
+                "raised_cells": len(terraced["heights"]),
+                "ramps": terraced["ramps"],
+                "reachable": True}} if terraced else {}),
             "connected": level["connected"],
             "spawn": level["spawn"], "exit": level["exit"],
             "layers": wired["layers"], "summary": wired["summary"],

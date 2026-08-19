@@ -1036,3 +1036,83 @@ def crop_tile(sheet, at: Sequence[int], tile_size: tuple[int, int]):
     tw, th = int(tile_size[0]), int(tile_size[1])
     tx, ty = int(at[0]), int(at[1])
     return sheet.crop((tx * tw, ty * th, tx * tw + tw, ty * th + th))
+
+
+def iso_ramp(material, facing: str, *, tile_size: tuple[int, int], lift: int,
+             faces: tuple[float, float] = (ISO_FACE_LEFT, ISO_FACE_RIGHT)
+             ) -> dict:
+    """A raised cell whose top face SLOPES down toward one neighbour.
+
+    The piece that turns elevation from scenery into terrain: a block is a
+    step nothing can climb, and this is the same cell with its top tilted so
+    a walker arrives at the height of the neighbour it faces.
+
+    The tilt is computed in CELL space, not screen space, which is the only
+    way it can line up with the neighbour it serves. Screen u and v carry the
+    cell axes as ``a = (u + v) / 2`` along +x (east) and ``b = (v - u) / 2``
+    along +y (south) — read straight off the DIAMOND_DOWN projection this
+    module already carves edges with — so a ramp facing east falls with `a`
+    and one facing south falls with `b`, exactly and at any tile aspect.
+
+    ``facing`` is the direction the ramp descends: the neighbour that way sits
+    one level lower, which is the same field `levelgen.step_ok` reads when it
+    decides whether a walker may cross. The art and the walk rule cannot
+    disagree because they are the same number.
+    """
+    from PIL import Image
+
+    tw, th = int(tile_size[0]), int(tile_size[1])
+    lift = int(lift)
+    facing = str(facing or "").strip().lower()
+    if facing not in ("n", "e", "s", "w"):
+        return {"ok": False, "reason": f"{facing!r} is not a ramp direction"}
+    if lift < 1:
+        return {"ok": False, "reason": f"a {lift}px lift is not a ramp"}
+    mat = material.convert("RGBA").resize((tw, th), Image.NEAREST)
+    mpx = mat.load()
+    left_k, right_k = faces
+
+    out = Image.new("RGBA", (tw, th + lift), (0, 0, 0, 0))
+    opx = out.load()
+    # SUPERSAMPLED DOWN THE COLUMN, because this maps source pixels FORWARD
+    # to shifted destinations and neighbouring rows do not shift by the same
+    # whole number. Stepping one source row at a time left a destination row
+    # untouched wherever the shift jumped — a checkerboard of holes across
+    # every sloped face, which is a dither pattern at a glance and a leaking
+    # surface in the game.
+    SUB = 4
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        for step in range(th * SUB):
+            fy = (step + 0.5) / SUB
+            v = (fy - th / 2.0) / (th / 2.0)
+            if abs(u) + abs(v) > 1.0:
+                continue
+            # cell-space position within the tile, both -0.5..0.5
+            a, b = (u + v) / 2.0, (v - u) / 2.0
+            drop = {"e": 0.5 + a, "w": 0.5 - a,
+                    "s": 0.5 + b, "n": 0.5 - b}[facing]
+            dest = int(fy + lift * (1.0 - drop))
+            if not (0 <= dest < th + lift):
+                continue
+            r, g, b_, al = mpx[px, min(th - 1, int(fy))]
+            if al:
+                opx[px, dest] = (r, g, b_, 255)
+    # the skirt: everything under the sloped top, so the ramp is solid rather
+    # than a floating ribbon. Walk each column down from its lowest opaque
+    # pixel to the block's base.
+    for px in range(tw):
+        u = ((px + 0.5) - tw / 2.0) / (tw / 2.0)
+        if abs(u) > 1.0:
+            continue
+        low = max((py for py in range(th + lift) if opx[px, py][3]), default=-1)
+        if low < 0:
+            continue
+        base = int((th / 2.0) * (2.0 - abs(u))) + lift
+        k = left_k if u < 0 else right_k
+        for py in range(low + 1, min(base, th + lift)):
+            r, g, b_, al = mpx[px, py % th]
+            if al:
+                opx[px, py] = (int(r * k), int(g * k), int(b_ * k), 255)
+    return {"ok": True, "image": out, "origin": (0, lift // 2),
+            "size": (tw, th + lift), "facing": facing}

@@ -434,6 +434,24 @@ ISO_TILESET = TILESET.replace("\n[resource]\ntile_size",
                               "\n[resource]\ntile_shape = 1\n"
                               "tile_layout = 5\ntile_size")
 
+#: An isometric set with a BLOCK source, which is the shape tileset_generate
+#: writes: source 0 the floor diamonds, source 1 the raised tiles.
+ISO_TILESET_BLOCKS = (
+    ISO_TILESET
+    .replace('[ext_resource type="Texture2D" path="res://t.png" id="1_t"]',
+             '[ext_resource type="Texture2D" path="res://t.png" id="1_t"]\n'
+             '[ext_resource type="Texture2D" path="res://w.png" id="2_w"]')
+    .replace("\n[resource]",
+             '\n[sub_resource type="TileSetAtlasSource" id="B"]\n'
+             'texture = ExtResource("2_w")\n'
+             "texture_region_size = Vector2i(64, 64)\n"
+             "0:0/0 = 0\n"
+             "0:0/0/texture_origin = Vector2i(0, 16)\n"
+             "\n[resource]")
+    .replace('sources/0 = SubResource("A")',
+             'sources/0 = SubResource("A")\nsources/1 = SubResource("B")'))
+
+
 PLAYER_GD = (
     "extends CharacterBody2D\n"
     "@export var speed := 220.0\n"
@@ -477,8 +495,13 @@ class TestTheViewRoutesTheGeometry:
         player inside the wall — depth sort or the projection is a lie."""
         from bgate_core import gameview
         gameview.save(root, "isometric")
-        (game / "tiles" / "iso.tres").write_text(ISO_TILESET,
+        (game / "tiles" / "iso.tres").write_text(ISO_TILESET_BLOCKS,
                                                  encoding="utf-8")
+        # the sidecar is what says source 1 holds the blocks
+        (game / "tiles" / "iso.tiles.json").write_text(
+            json.dumps({"interior": [3, 3], "variants": [],
+                        "blocks": {"wall": [0, 0]}, "lift": 32}),
+            encoding="utf-8")
         out = await call("level_generate", godot_project=str(game),
                          scene="scenes/level.tscn", tileset="tiles/iso.tres",
                          seed=5, create=True)
@@ -489,6 +512,23 @@ class TestTheViewRoutesTheGeometry:
         assert "y_sort_enabled = true" in walls
         floor = text[text.index('[node name="Floor"'):text.index('[node name="Walls"')]
         assert "y_sort_enabled" not in floor
+
+    async def test_a_hand_built_set_keeps_the_wall_source_it_was_given(
+            self, root, game):
+        """Routing walls to source 1 is only safe for a set this tool wrote.
+        Pointed at a real project's tileset the guess picked a FLOOR variant
+        for the walls, because that is what its source 1 happened to be."""
+        from bgate_core import gameview
+        gameview.save(root, "isometric")
+        (game / "tiles" / "iso.tres").write_text(ISO_TILESET,
+                                                 encoding="utf-8")
+        out = await call("level_generate", godot_project=str(game),
+                         scene="scenes/level.tscn", tileset="tiles/iso.tres",
+                         seed=5, create=True)
+        assert out["ok"], out.get("error")
+        assert out["iso_walls"].startswith("floor only")
+        text = (game / "scenes" / "level.tscn").read_text(encoding="utf-8")
+        assert '[node name="Walls"' not in text
 
     async def test_a_tileset_is_composed_from_two_kie_textures(
             self, game, monkeypatch):
@@ -697,3 +737,84 @@ class TestThePlayerCarriesItsOwnJump:
                          length=80, height=14, seed=3, create=True)
         assert out["ok"], out.get("error")
         assert out["player"]["pixels"]["gravity"] == 490.0
+
+
+# ---------------------------------------------------------------------------
+# Elevation: heights, ramps, and a reachability that knows about both
+# ---------------------------------------------------------------------------
+class TestHeightAwareReachability:
+    """A raised cell is scenery until something can walk onto it, and the
+    flat `connected` cannot tell the difference."""
+
+    def test_same_height_neighbours_always_connect(self):
+        assert levelgen.step_ok((0, 0), (1, 0), {}, {})
+
+    def test_a_step_without_a_ramp_is_not_a_step(self):
+        """The whole point: two rooms touching at different altitudes are not
+        connected, however adjacent their cells are."""
+        heights = {(1, 0): 1}
+        assert levelgen.step_ok((0, 0), (1, 0), heights, {}) is False
+
+    def test_a_ramp_connects_only_the_way_it_faces(self):
+        heights = {(1, 0): 1}
+        # the ramp is the HIGH cell, facing down toward (0, 0) which is west
+        assert levelgen.step_ok((0, 0), (1, 0), heights, {(1, 0): "w"})
+        # facing the other way it does not serve this step
+        assert levelgen.step_ok((0, 0), (1, 0), heights,
+                                {(1, 0): "e"}) is False
+
+    def test_a_ramp_climbs_one_level_not_two(self):
+        heights = {(1, 0): 2}
+        assert levelgen.step_ok((0, 0), (1, 0), heights,
+                                {(1, 0): "w"}) is False
+
+    def test_an_unramped_terrace_is_reported_unreachable(self):
+        """Proof the checker bites rather than agreeing with the generator."""
+        floor = {(0, 0), (1, 0), (2, 0)}
+        heights = {(2, 0): 1}
+        got = levelgen.reachable(floor, heights, {}, start=(0, 0))
+        assert got == {(0, 0), (1, 0)}
+
+    def test_the_same_terrace_with_its_ramp_is_reachable(self):
+        floor = {(0, 0), (1, 0), (2, 0)}
+        heights = {(2, 0): 1}
+        got = levelgen.reachable(floor, heights, {(2, 0): "w"}, start=(0, 0))
+        assert got == floor
+
+
+class TestTerrace:
+    def test_every_seed_comes_back_connected(self):
+        """Reachable BY CONSTRUCTION — the ramps go where the ground changes,
+        so this is a property of the generator and not a re-roll."""
+        for seed in range(12):
+            flat = levelgen.plan(44, 36, seed=seed)
+            got = levelgen.terrace(flat, seed=seed, levels=2)
+            assert got["connected"], (seed, got["unreachable"][:4])
+            assert got["unreachable"] == []
+
+    def test_raising_nothing_leaves_a_flat_level(self):
+        flat = levelgen.plan(40, 32, seed=1)
+        got = levelgen.terrace(flat, seed=1, levels=1)
+        assert got["heights"] == {} and got["ramps"] == {}
+        assert got["connected"]
+
+    def test_a_raised_room_actually_gets_a_ramp(self):
+        flat = levelgen.plan(44, 36, seed=3)
+        got = levelgen.terrace(flat, seed=3, levels=2, raised=1.0)
+        assert got["heights"], "nothing rose"
+        assert got["ramps"], "a terrace with no way up"
+        # every ramp faces a cell one level below it
+        heights = {tuple(int(v) for v in k.split(",")): h
+                   for k, h in got["heights"].items()}
+        for key, face in got["ramps"].items():
+            cell = tuple(int(v) for v in key.split(","))
+            dx, dy = levelgen.RAMP_DIRS[face]
+            below = (cell[0] + dx, cell[1] + dy)
+            assert heights.get(cell, 0) - heights.get(below, 0) == 1
+
+    def test_the_flat_floor_set_is_left_alone_for_everyone_else(self):
+        """Consumers that do not care about elevation keep working."""
+        flat = levelgen.plan(40, 32, seed=5)
+        got = levelgen.terrace(flat, seed=5, levels=2)
+        assert got["floor"] == flat["floor"]
+        assert got["walls"] == flat["walls"]
