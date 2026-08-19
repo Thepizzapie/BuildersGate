@@ -286,11 +286,22 @@ def check(root: str | os.PathLike[str], *, projected_usd: float = 0.0) -> dict:
 
 
 def item_ceiling(root: str | os.PathLike[str], item: dict) -> float:
-    """The per-run cost ceiling for one item: its own override, else the default."""
+    """The per-run cost ceiling for one item. 0 means uncapped.
+
+    An item's OWN max_cost_usd always acts - a human (or the brief) set that
+    number on that item deliberately. The budget row's per_item_usd default
+    acts only when the budget is ENFORCED: with enforcement off (the
+    default), the numbers are reports, and a default ceiling that kept
+    killing runs nobody asked it to bound was exactly the "budget gate on by
+    default" complaint that flipped budget.enforced off.
+    """
     override = (item or {}).get("max_cost_usd")
     if override:
         return float(override)
-    return float(budget(root).get("per_item_usd") or 0)
+    b = budget(root)
+    if not b.get("enforced"):
+        return 0.0
+    return float(b.get("per_item_usd") or 0)
 
 
 def runtime_ceiling(root: str | os.PathLike[str], item: dict) -> int:

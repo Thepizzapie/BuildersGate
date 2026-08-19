@@ -60,11 +60,16 @@ They come from the same `result` event and they are not the same thing. Speaking
 the terminal channel would read tool JSON out loud; showing only the spoken
 channel would make the transcript view a duplicate of the chat pane.
 
-NOTHING HERE IMPORTS bgate_ui.dispatch, on purpose. The two modules spawn
-processes the same way and share nothing else: dispatch's whole job is to give
-an agent the tool set this one exists to withhold, and the two small parsers
-below are copied rather than imported so that the brainstorm path cannot be one
-refactor away from holding the dispatcher.
+ALMOST NOTHING HERE IMPORTS bgate_ui.dispatch, on purpose. The two modules
+spawn processes the same way and share little else: dispatch's whole job is to
+give an agent the tool set this one exists to withhold, and the two small
+parsers below are copied rather than imported so that the brainstorm path
+cannot be one refactor away from holding the dispatcher. The two exceptions
+are the CAPABILITY-REDUCING helpers - _scrubbed_environ (the env allowlist;
+this room used to fork the spawn without it, so the thinking partner inherited
+every credential the dashboard's shell held) and _kill_tree (which was a
+byte-for-byte copy that would have drifted). Neither hands this module a way
+to dispatch anything.
 """
 from __future__ import annotations
 
@@ -81,6 +86,9 @@ from typing import Any, Optional
 from bgate_core import settings as _settings
 from bgate_core import spend as _spend
 from bgate_ui import runners as _runners
+# The only two things taken from dispatch, both capability-REDUCING - see the
+# module docstring for why nothing else may come from there.
+from bgate_ui.dispatch import _kill_tree, _scrubbed_environ
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
@@ -574,17 +582,9 @@ def _reap(key: tuple[str, int], entry: dict) -> None:
             del _live[key]
 
 
-def _kill_tree(pid: int) -> None:
-    """The CLI spawns children even with no MCP servers; kill the tree."""
-    try:
-        if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, creationflags=_NO_WINDOW,
-                           timeout=15)
-        else:
-            os.kill(pid, 9)
-    except Exception:
-        pass
+# _kill_tree is dispatch's - it was a byte-for-byte fork here (the CLI spawns
+# children even with no MCP servers, so the tree is what must die), and a fork
+# of kill logic is two places for the same platform bug to be fixed once.
 
 
 def stop(root, session_id: int, seat: str = "") -> dict:
@@ -730,10 +730,18 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
     args = runner.chat.build_args(exe, system=system, model=_model_for(root),
                                   max_usd=_ceiling(root),
                                   mcp_config=mcp_config, resume=resume)
-    # The environment is the dashboard's MINUS the seat stamps. A thinking
-    # session is nobody's seat and holds no work item, and leaving BGATE_SEAT
-    # set would let anything that reads it (the hook, an env-sniffing tool a
-    # future runner does have) treat this room as a dispatched agent.
+    # The environment is dispatch's SCRUBBED one MINUS the seat stamps. It used
+    # to be the dashboard's whole os.environ, which forked the spawn without
+    # the one filter that matters: the dashboard is started from the user's own
+    # shell and holds every credential that shell holds, and the thinking
+    # partner - a process whose entire promise is that it cannot act - was
+    # inheriting cloud tokens and signing keys the game has no use for.
+    # _scrubbed_environ is the allowlist the seat agents already run under.
+    #
+    # Then the seat stamps come off. A thinking session is nobody's seat and
+    # holds no work item, and leaving BGATE_SEAT set would let anything that
+    # reads it (the hook, an env-sniffing tool a future runner does have) treat
+    # this room as a dispatched agent.
     #
     # AN INVITED SEAT IS STRIPPED TOO, AND THAT IS NOT AN OVERSIGHT. It is
     # ANSWERING AS the art seat; it is not HOLDING the art seat. Stamping
@@ -742,8 +750,9 @@ def _spawn(root, session_id: int, runner: "_runners.Runner", system: str, *,
     # whose entire value is that nothing in it can act. What the seat says here
     # is an opinion, and an opinion needs no lane. Which seat is speaking rides
     # in BGATE_ACTOR instead, which nothing enforces against.
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("BGATE_SEAT", "BGATE_WORK_ITEM", "BGATE_LOCK_OWNER")}
+    env = {k: v for k, v in _scrubbed_environ().items()
+           if k.upper() not in ("BGATE_SEAT", "BGATE_WORK_ITEM",
+                                "BGATE_LOCK_OWNER")}
     env["BGATE_ACTOR"] = (f"brainstorm:{int(session_id)}"
                           + (f":{_seat_tag(seat)}" if _seat_tag(seat) else ""))
     try:

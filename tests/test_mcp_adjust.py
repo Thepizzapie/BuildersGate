@@ -99,20 +99,38 @@ async def test_a_human_can_still_set_lanes(wired):
 async def test_two_slow_tool_calls_overlap_instead_of_serialising(wired,
                                                                  monkeypatch):
     """The blocking-loop blocker, asserted as concurrency rather than as an
-    implementation detail: if the bodies ran on the loop, two 0.4s calls would
-    take 0.8s and every other seat would wait behind them."""
+    implementation detail: if the bodies ran on the loop, the two sleeps
+    would run back to back and every other seat would wait behind them.
+
+    MEASURED AS WINDOW OVERLAP, not against a wall-clock budget - the same
+    lesson the next test's docstring records. The first version demanded
+    both calls inside 0.7s, which is 0.3s of headroom for anyio's thread
+    spin-up on a shared runner; it passed everywhere and then failed once
+    on a busy Windows box at 1.28s, which read as "the calls serialised"
+    and was really "the runner stalled". Serialised execution has DISJOINT
+    sleep windows however slow the hardware; overlap is the property.
+    """
+    import threading
+
+    windows: list[tuple[float, float]] = []
+    note = threading.Lock()
+
     def slow(*args, **kwargs):
+        t0 = time.monotonic()
         time.sleep(0.4)
+        t1 = time.monotonic()
+        with note:
+            windows.append((t0, t1))
         return []
 
     monkeypatch.setattr(server._seats, "read_notes", slow)
 
-    started = time.monotonic()
     both = await asyncio.gather(call("seat_notes"), call("seat_notes"))
-    elapsed = time.monotonic() - started
 
     assert all("notes" in one for one in both)
-    assert elapsed < 0.7, f"the two calls serialised ({elapsed:.2f}s)"
+    (a0, a1), (b0, b1) = sorted(windows)
+    assert a0 < b1 and b0 < a1, \
+        f"the two calls serialised (windows {windows})"
 
 
 @pytest.mark.anyio
@@ -120,39 +138,44 @@ async def test_the_loop_still_answers_while_a_tool_is_blocked(wired, monkeypatch
     """The failure the user actually reports: the dashboard goes dead while one
     seat is mid-batch. A cheap call must return while the slow one is running.
 
-    MEASURED AS A FRACTION OF THE BLOCKING CALL, not against a fixed number of
-    milliseconds. The first version slept 0.5s and demanded an answer inside
-    0.3s, which is 0.2s of headroom on a shared CI runner: it passed everywhere
-    and then failed once on a busy machine at 0.53s, which reads as "the loop
-    blocks" and was really "the runner stalled". A wall-clock budget on shared
-    hardware measures the hardware.
-
-    The property being tested is not a latency figure. It is that the quick
-    call does NOT serialise behind the slow one, so the question worth asking
-    is whether it came back before the blocker finished. Half the sleep is a
-    wide margin for that and needs no tuning: a serialised call lands at 1.0x,
-    a concurrent one at roughly 0.0x, and there is nothing in between to be
-    unlucky about.
+    MEASURED AGAINST THE BLOCKER'S OWN WINDOW, not against any clock budget.
+    Two earlier versions each failed once on a busy CI box: a fixed 0.3s
+    budget (0.53s read as "the loop blocks" and was really "the runner
+    stalled"), then a half-the-sleep ratio, which failed the same way at
+    0.53s of a 1.0s block - a stall that lands while the quick call is in
+    flight eats any margin denominated in seconds OR in fractions. The
+    property has a stall-proof phrasing: the quick call must COMPLETE BEFORE
+    THE BLOCKER'S SLEEP ENDS. A freeze delays the quick call and does not
+    extend the sleep, so it costs headroom only up to the whole block; a
+    genuinely held loop cannot pass at all, because the quick call then
+    starts after the sleep has already ended.
     """
+    import threading
+
     BLOCK_FOR = 1.0          # long enough that scheduler noise is not the signal
+    entered = threading.Event()
+    slow_end = [0.0]
 
     def slow(*args, **kwargs):
+        entered.set()
         time.sleep(BLOCK_FOR)
+        slow_end[0] = time.monotonic()
         return []
 
     monkeypatch.setattr(server._seats, "read_notes", slow)
 
     slow_call = asyncio.ensure_future(call("seat_notes"))
-    await asyncio.sleep(0.05)          # let the blocking tool actually start
-    started = time.monotonic()
+    while not entered.is_set():        # the blocker is genuinely running
+        await asyncio.sleep(0.01)
     quick = await call("project_status")
-    served_in = time.monotonic() - started
+    quick_done = time.monotonic()
     await slow_call
 
     assert quick["project"]["name"] == "Test Game"
-    assert served_in < BLOCK_FOR / 2, (
-        f"the quick call queued behind the slow one: {served_in:.2f}s of a "
-        f"{BLOCK_FOR:.1f}s block, so the loop is not answering during it")
+    assert quick_done < slow_end[0], (
+        f"the quick call queued behind the slow one: it finished "
+        f"{quick_done - slow_end[0]:.2f}s AFTER the {BLOCK_FOR:.1f}s block "
+        "ended, so the loop was not answering during it")
 
 
 @pytest.mark.anyio

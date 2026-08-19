@@ -296,3 +296,29 @@ class TestConcurrentTicksCannotDoubleQueue:
                 if r.get("source_ref") == f"run:{run['id']}:tech"]
         assert len(rows) == 1
         assert int(b["work_item_id"]) == int(a["work_item_id"])
+
+    def test_run_node_on_a_stale_read_does_not_file_a_second_item(self, root, monkeypatch):
+        """run_node reads node rows, then queues; a poll of advance() can queue
+        the same node in between. The claim inside _queue_step lets the poll's
+        item stand and the ▶ press files nothing — before it, that press was a
+        second paid session for a step already in flight."""
+        run = workflows.start(root, graph())          # the start tick queued 'art'
+        first = node(run, "art")["work_item_id"]
+
+        real_sync = workflows._sync_items
+
+        def stale(root_, run_id_, specs_, node_rows_, ups_):
+            live = real_sync(root_, run_id_, specs_, node_rows_, ups_)
+            held = dict(live["art"])
+            held["status"] = "pending"                # what run_node read before
+            held["work_item_id"] = None               # the poll won the race
+            live = dict(live)
+            live["art"] = held
+            return live
+
+        monkeypatch.setattr(workflows, "_sync_items", stale)
+        after = workflows.run_node(root, run["id"], "art", actor="human@box")
+        items = [r for r in queue.list_items(root)
+                 if r.get("source_ref") == f"run:{run['id']}:art"]
+        assert len(items) == 1
+        assert int(node(after, "art")["work_item_id"]) == int(first)

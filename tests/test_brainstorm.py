@@ -978,3 +978,63 @@ def test_listing_has_no_guests_when_nobody_was_invited(tmp_path):
     _bs.create(tmp_path, "director", "Empty")
     row = _bs.list_sessions(tmp_path)[0]
     assert row["guests"] == [] and row["spent_usd"] == 0
+
+
+class TestPartnerEnvironmentIsScrubbed:
+    """The thinking partner's environment is dispatch's allowlist, not the
+    dashboard's whole shell. The spawn was forked from dispatch WITHOUT the
+    scrub, so the one process whose promise is 'cannot act' inherited every
+    credential the dashboard's shell held."""
+
+    class _StubChat:
+        cost_tracked = True
+        readonly_by = "stub"
+
+        def build_args(self, exe, **kw):
+            return [exe]
+
+    class _StubRunner:
+        name = "claude"
+        chat = None  # set per instance below
+
+        def __init__(self):
+            self.chat = TestPartnerEnvironmentIsScrubbed._StubChat()
+
+        def find(self):
+            return "claude-stub"
+
+    def test_the_spawn_env_drops_foreign_credentials(self, root, monkeypatch):
+        from bgate_ui import brainsession
+
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "not-for-the-room")
+        monkeypatch.setenv("BGATE_SEAT", "art")          # a stray seat stamp
+        monkeypatch.setenv("BGATE_CUSTOM_TOGGLE", "keep")
+        seen = {}
+
+        def fake_popen(args, cwd=None, env=None, **kw):
+            seen["env"] = env
+            raise OSError("stop before a real process")
+
+        monkeypatch.setattr(brainsession.subprocess, "Popen", fake_popen)
+        with pytest.raises(brainsession.Unavailable):
+            brainsession._spawn(str(root), 1, self._StubRunner(), "think",
+                                register=False, pads=False)
+
+        env = seen["env"]
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        # The seat stamps come off even though BGATE_* rides the allowlist:
+        # a thinking session is nobody's seat and holds no work item.
+        assert "BGATE_SEAT" not in env
+        assert "BGATE_WORK_ITEM" not in env
+        assert "BGATE_LOCK_OWNER" not in env
+        # The harness's own namespace still passes, and the room is stamped.
+        assert env.get("BGATE_CUSTOM_TOGGLE") == "keep"
+        assert env["BGATE_ACTOR"].startswith("brainstorm:1")
+        # The toolchain still starts (the scrub keeps the original casing,
+        # which on Windows can be "Path").
+        assert any(k.upper() == "PATH" for k in env)
+
+    def test_the_kill_logic_is_dispatchs_not_a_fork(self):
+        from bgate_ui import brainsession, dispatch as _dispatch
+
+        assert brainsession._kill_tree is _dispatch._kill_tree

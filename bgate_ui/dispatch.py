@@ -78,8 +78,22 @@ MAX_FEEDS = 200      # parsed feeds held at once
 HARD_RUNTIME_S = int(os.environ.get("BGATE_MAX_RUNTIME_S") or 2 * 60 * 60)
 STALL_S = int(os.environ.get("BGATE_STALL_S") or 25 * 60)
 
-# Projects whose stranded-item reconciliation has already run this process.
-_reconciled: set[str] = set()
+# When each project's stranded-item reconciliation last ran (monotonic). It
+# used to be a once-per-process set, which meant an item stranded 'dispatched'
+# AFTER the first sweep stayed stranded until the next server restart - and its
+# whole chain parked behind it, because 'dispatched' never satisfies a
+# dependency. Age-gated instead: reconcile() re-runs per project once the last
+# pass is RECONCILE_EVERY_S old. The original guard's purpose survives on its
+# own merits - reconcile skips anything in _live or _starting (this process's
+# runs) and anything the pid ledger shows recent progress for (adopted runs),
+# so a rerun cannot fight a run the same process just spawned.
+_reconciled: dict[str, float] = {}
+RECONCILE_EVERY_S = int(os.environ.get("BGATE_RECONCILE_EVERY_S") or 10 * 60)
+
+
+def _reconcile_due(project: str) -> bool:
+    last = _reconciled.get(project)
+    return last is None or (time.monotonic() - last) >= RECONCILE_EVERY_S
 
 
 def _pkey(root) -> str:
@@ -980,6 +994,14 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
                         f"{runner.name} would be given `{escape}`, which grants "
                         f"the agent a directory outside {root}")
 
+    # BUILT BEFORE THE PROCESS EXISTS, deliberately. _prompt_for reads seat
+    # rules, gate descriptions and project rows, any of which can raise - and a
+    # raise between the Popen and the _live insertion used to leave a live
+    # claude tree that nothing owned: dispatch()'s conditional release saw no
+    # _live entry, put the item back to 'queued', and the orphan sat on its
+    # stdin until the pid sweep found it. Everything that can fail without a
+    # process is done while there is no process to strand.
+    prompt = _prompt_for(root, item, native_images=native_images)
     try:
         log_handle = open(log_path, "ab")
     except OSError as exc:
@@ -989,26 +1011,31 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # first-run result being shown as current, and old echoes falsely marking
     # fresh steers consumed, were real observed bugs. Marker + byte offset.
     import time as _time
-    log_handle.write((json.dumps({"type": "bgate_run_start",
-                                  "item_id": item_id,
-                                  "base_commit": base_commit,
-                                  "ts": _time.time()}) + "\n").encode("utf-8"))
-    log_handle.flush()
-    run_start_pos = log_handle.tell()
     try:
+        log_handle.write((json.dumps({"type": "bgate_run_start",
+                                      "item_id": item_id,
+                                      "base_commit": base_commit,
+                                      "ts": _time.time()})
+                          + "\n").encode("utf-8"))
+        log_handle.flush()
+        run_start_pos = log_handle.tell()
         proc = subprocess.Popen(args, cwd=cwd, env=env,
                                 stdin=subprocess.PIPE, stdout=log_handle,
                                 stderr=log_handle, creationflags=_NO_WINDOW)
     except OSError as exc:
         log_handle.close()
         return _refused("spawn_failed", f"could not start the agent CLI: {exc}")
+    except Exception:
+        # An unanticipated raise with no process yet: close the handle and let
+        # dispatch()'s conditional release put the reservation back.
+        log_handle.close()
+        raise
     # Deliver the task. A streaming runner takes it as the first user message
     # and keeps the pipe open as a steer channel; `codex exec` reads stdin ONCE
     # and acts on what it got, so the pipe has to be closed or the run never
     # starts - the difference between "waiting for more input" and "hung" is
     # invisible from out here, which is why prompt_via is declared rather than
     # inferred.
-    prompt = _prompt_for(root, item, native_images=native_images)
     try:
         if runner.prompt_via == "stream":
             proc.stdin.write(_user_msg(prompt).encode("utf-8"))
@@ -1017,9 +1044,18 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
             proc.stdin.write(prompt.encode("utf-8"))
             proc.stdin.flush()
             proc.stdin.close()
-    except OSError as exc:
-        proc.kill()
+    except Exception as exc:
+        # THE INVARIANT: a process that exists but never reaches _live must not
+        # outlive this frame. The TREE, not proc.kill() - the CLI can already
+        # have MCP children holding the pipe - and the log handle goes with it.
+        _kill_tree(proc.pid)
+        try:
+            log_handle.close()
+        except OSError:
+            pass
         _queue.release(root, item_id)
+        if not isinstance(exc, (OSError, ValueError)):
+            raise  # already released; dispatch()'s release is a no-op CAS
         return {"ok": False, "error": f"could not send prompt to agent: {exc}"}
     with _lock:
         _live[item_id] = {"proc": proc, "log": str(log_path), "handle": log_handle,
@@ -1050,17 +1086,29 @@ def _spawn(root: str, item_id: int, *, permission_mode: str = "acceptEdits",
     # Status is already 'dispatched' - the reservation above wrote it before any
     # of the slow work, which is what makes two dispatchers safe against each
     # other. Writing it again here would wipe the item's result note for nothing.
-    _queue.set_run_fields(root, item_id, base_commit=base_commit, branch=branch,
-                          worktree=worktree, actor=actor or None,
-                          max_cost_usd=ceiling_usd or None,
-                          max_runtime_s=ceiling_s or None)
+    #
+    # GUARDED, because the process is live and in _live now: from here to the
+    # watchdog thread start, nothing may raise. A locked DB losing the run
+    # fields costs metadata; a raise here used to skip the watchdog entirely,
+    # leaving a live run with no ceilings and no reaper until the next sweep.
+    try:
+        _queue.set_run_fields(root, item_id, base_commit=base_commit,
+                              branch=branch, worktree=worktree,
+                              actor=actor or None,
+                              max_cost_usd=ceiling_usd or None,
+                              max_runtime_s=ceiling_s or None)
+    except Exception:
+        pass
     _record_pid(root, proc.pid, item_id)
     # And in the MACHINE-WIDE registry, which is the one that survives this
     # process. pids.json above is per project and is read by the orphan sweep;
     # this entry is what lets a restarted dashboard - or a second one, or one
     # opened on a different project entirely - see and stop this agent at all.
-    _agentreg.record(proc.pid, item_id=item_id, seat=item.get("seat") or "",
-                     root=str(root), runner=runner.name, log=str(log_path))
+    try:
+        _agentreg.record(proc.pid, item_id=item_id, seat=item.get("seat") or "",
+                         root=str(root), runner=runner.name, log=str(log_path))
+    except Exception:
+        pass
     # The streamed session waits on stdin forever; close it once the agent
     # self-reports so it exits even when no dashboard is polling /api/agents.
     threading.Thread(target=_watch_completion, args=(root, item_id),
@@ -1697,8 +1745,8 @@ def sweep(root: str) -> dict:
     """
     root = str(root)
     project = _pkey(root)
-    if project not in _reconciled:
-        _reconciled.add(project)
+    if _reconcile_due(project):
+        _reconciled[project] = time.monotonic()
         reconcile(root)
     with _lock:
         entries = [(i, e) for i, e in _live.items()
@@ -1740,7 +1788,11 @@ def reconcile(root: str) -> dict:
     for item in stranded:
         item_id = int(item["id"])
         with _lock:
-            if item_id in _live:
+            # _starting matters now that reconcile re-runs: an item between
+            # queue.reserve() and its Popen is 'dispatched' with no _live entry,
+            # no pid and no log yet - exactly what a stranded item looks like,
+            # except it is seconds old and this process is mid-spawn on it.
+            if item_id in _live or item_id in _starting:
                 continue  # this server run owns it
         # STILL WORKING IS NOT STRANDED. reap_orphans now ADOPTS an inherited
         # agent that is making progress instead of killing it - but this pass
@@ -2110,13 +2162,14 @@ def reap_orphans(root: str) -> dict:
 
 
 def _reconcile_quietly(root: str) -> None:
-    """Reconcile once per project, never raising - reap_orphans runs at server
-    startup and its return shape is a contract, so this cannot add keys or
-    blow up on a directory that has no project in it."""
+    """Reconcile at most once per RECONCILE_EVERY_S per project, never raising
+    - reap_orphans runs at server startup and its return shape is a contract,
+    so this cannot add keys or blow up on a directory that has no project in
+    it."""
     project = _pkey(root)
-    if project in _reconciled:
+    if not _reconcile_due(project):
         return
-    _reconciled.add(project)
+    _reconciled[project] = time.monotonic()
     try:
         reconcile(root)
     except Exception:
